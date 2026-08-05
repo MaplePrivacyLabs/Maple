@@ -1,6 +1,6 @@
 # Nitro Toolkit
 
-A collection of essential utilities for working with AWS Nitro Enclaves. These tools help manage credentials, logging, networking, and base image creation for Nitro Enclaves.
+A collection of host-side utilities for working with AWS Nitro Enclaves. These tools help manage credentials, logging, and networking for Nitro Enclaves.
 
 ## Components
 
@@ -17,8 +17,8 @@ A Python-based service that securely handles AWS credential management for Nitro
 
 #### Usage
 ```bash
-# Build the Docker image
-docker build -t credential-requester .
+# Build the Docker image from the repository root
+docker build -t credential-requester credential_requester
 
 # Run the container
 docker run -d --restart always \
@@ -29,24 +29,6 @@ docker run -d --restart always \
   -e PORT=8003 \
   credential-requester:latest
 ```
-
-### Enclave Base Image
-
-A foundational Docker image for building AWS Nitro Enclaves libraries and binaries, based on Amazon Linux 2.
-
-#### Features
-- Pre-built with essential AWS Nitro Enclave SDK components
-- Includes KMS tools and NSM library
-- Optimized for minimal size and security
-- Built with necessary dependencies for enclave operations
-
-#### Key Components
-- AWS Nitro Enclaves SDK (C)
-- AWS-LC (Cryptography)
-- S2N-TLS
-- AWS Common Runtime (CRT) libraries
-- JSON-C library
-- NSM API library
 
 ### Logging
 
@@ -61,8 +43,8 @@ A CloudWatch logging solution specifically designed for Nitro Enclaves.
 
 #### Usage
 ```bash
-# Build the Docker image
-docker build -t enclave-logging .
+# Build the Docker image from the repository root
+docker build -t enclave-logging logging
 
 # Run the container
 docker run -d --restart always \
@@ -121,16 +103,16 @@ python vsock_helper.py 3 8003 '{"request_type":"credentials","key_name":null}'
 
 1. Clone the repository:
 ```bash
-git clone https://github.com/your-org/nitro-tools.git
-cd nitro-tools
+git clone https://github.com/OpenSecretCloud/nitro-toolkit.git
+cd nitro-toolkit
 ```
 
-2. Each tool can be built and run independently using Docker. See the individual component sections for specific instructions.
+2. Build the credential requester and logging containers from their component directories. The traffic forwarder and VSOCK helper are standalone Python utilities. See the individual component sections for specific instructions.
 
 ## Requirements
 
 - AWS Nitro Enclaves enabled instance
-- Docker
+- Docker (for the credential requester and logging containers)
 - Python 3.9+
 - AWS CLI configured with appropriate permissions
 - Proper IAM roles and policies configured for AWS services
