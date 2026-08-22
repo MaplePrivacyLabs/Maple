@@ -223,9 +223,15 @@ For v1, generation protects transactional compare-and-swap and stale-operation d
 
 ### Envelope layout and ciphertext bounds
 
-The envelope bytes should contain a magic value and wrapping version rather than relying only on mutable database columns. Authenticate all public envelope metadata and reject column/header mismatches.
+Follow the existing seed-wrap representation:
 
-Define a small maximum envelope size from the maximum canonical mnemonic length plus header, nonce, and tag. A normal wrapped 12-word mnemonic is only a few hundred bytes. Reject oversized `recovery_seed_enc` values before copying or decrypting them. The SQL check and Rust constant must use the same reviewed bound.
+```text
+12-byte nonce || ciphertext || 16-byte GCM tag
+```
+
+Do not add an embedded magic value or self-describing header in v1. Recovery-specific key derivation, trusted AAD, the dedicated user column, and `recovery_wrapping_version` provide the necessary format and domain separation while remaining consistent with current code.
+
+Define a small maximum envelope size from the maximum canonical mnemonic length plus nonce and tag. A normal wrapped 12-word mnemonic is only a few hundred bytes. Reject oversized `recovery_seed_enc` values before copying or decrypting them. The SQL check and Rust constant must use the same reviewed bound.
 
 ## Persistence design
 
@@ -448,7 +454,7 @@ The current login/reset routes have no source-visible per-account attempt limits
 - Bound active reset requests and clean expired rows.
 - Parse and checksum the recovery code before derivation, while preserving generic public outcomes.
 - Perform at most one recovery AEAD open per request.
-- Bound the code, ciphertext, envelope header, and decoded metadata in SQL and Rust.
+- Bound the code, ciphertext, and decoded metadata in SQL and Rust.
 - Emit security events containing only allowlisted metadata such as event type, project-scoped opaque user identifier, outcome class, and timestamp. Never include emails, codes, ciphertext, seed bytes, verifier strings, headers, or request bodies.
 - Alert on unusual reset and failure rates without creating a credential oracle.
 - Send account notifications after enrollment, revocation, rotation, and successful recovery. Notification content must not include recovery material.
@@ -483,7 +489,7 @@ No OpenSecret SDK or Maple checkout is present in this repository. Their concret
 
 ### Phase 1: freeze the protocol
 
-- Freeze code encoding, normalization, checksum, labels, canonical field order, envelope header, versions, and fixed test vectors.
+- Freeze code encoding, normalization, checksum, labels, canonical field order, versions, and fixed test vectors.
 - Record the v1 full-database rollback exclusion explicitly in the security model.
 - Decide OAuth and API-key revocation policy.
 - Review recovery UX and one-time-display behavior with SDK and Maple owners.
@@ -532,7 +538,7 @@ No OpenSecret SDK or Maple checkout is present in this repository. Their concret
 
 - Fixed vectors for code parse/format/checksum and cryptographic derivation.
 - Round trip for arbitrary seeds and recovery secrets.
-- Reject changes to user, project, generation, format version, wrapping version, envelope header, nonce, ciphertext, tag, root key, and recovery secret.
+- Reject changes to user, project, generation, format version, wrapping version, nonce, ciphertext, tag, root key, and recovery secret.
 - Reject cross-domain use as password, OAuth, reset-code, lookup, or JWT binding material.
 - Reject non-ASCII, Unicode lookalikes, invalid separators, unknown versions, wrong lengths, and checksum errors.
 - Verify no accepted alternative spelling derives different bytes.
