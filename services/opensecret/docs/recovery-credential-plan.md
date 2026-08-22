@@ -21,6 +21,15 @@ The v1 design uses these agreed constraints:
 8. Recovery remains reset-scoped. It is not an ordinary login credential, JWT authentication method, or second factor for routine login.
 9. The existing destructive reset remains an explicit fallback for users who did not enroll recovery or lost both their password and recovery code.
 10. A malicious rollback of the entire database to an internally consistent historical snapshot is outside the v1 threat model. The generation counter protects against ordinary races and stale writes, not full-database rollback.
+11. Preserving recovery requires the complete existing email reset proof: emailed code plus client-generated reset secret.
+12. Recovery codes use grouped Crockford Base32 over 256 random bits plus a 40-bit checksum.
+13. V1 supports only email-backed password users. Guest and OAuth-only users cannot enroll or use recovery.
+14. New password users are prompted to enroll immediately after registration/login, but enrollment does not block account creation.
+15. Authenticated users may rotate recovery after current-password step-up.
+16. Creating a password-reset request invalidates all earlier reset requests for that user; only the newest remains active.
+17. Five failed recovery attempts consume the associated email-reset challenge and require a new reset request.
+18. Successful preserving recovery revokes OAuth connections/wraps and all user API keys.
+19. Destructive password reset does not clear an enrolled recovery envelope. Email/reset-channel authority alone may rotate the active seed and erase active seed-key data, but it may not revoke the independent recovery capability for the old seed.
 
 ## Executive summary
 
@@ -38,6 +47,7 @@ Add one recovery envelope to the user record. The recovery code materially parti
 - Keep recovery authority narrower than password or OAuth authentication.
 - Support opt-in enrollment for existing users and post-registration enrollment for new users.
 - Rotate the recovery code after every successful use by overwriting the single stored envelope atomically.
+- Preserve an enrolled recovery envelope across destructive password reset so an email attacker cannot destroy the legitimate owner's independent rescue path to the old seed.
 - Bound recovery code, ciphertext, and cryptographic work for every request.
 - Avoid storing the recovery code, seed, derived keys, or plaintext-equivalent verifier in PostgreSQL, logs, analytics, URLs, email, or public AAD.
 - Roll out additively for existing users and independently released clients.
@@ -52,6 +62,7 @@ Add one recovery envelope to the user record. The recovery code materially parti
 - Turn recovery into a normal login method or second factor.
 - Backfill recovery envelopes in SQL or startup migrations. Existing rows cannot be rewrapped without access to the user-owned seed.
 - Replace the existing email reset challenge in the first release.
+- Support recovery enrollment or use for guest or OAuth-only users in v1.
 
 ## Current implementation trace
 
@@ -104,6 +115,7 @@ Existing tests already cover many required primitives and lifecycle properties:
 - New-envelope open-and-compare before persistence.
 - Password change preserving the seed and invalidating old authentication context.
 - Destructive reset rotating the seed and deleting seed-key-encrypted data.
+- Destructive reset behavior must be revised to preserve an enrolled recovery envelope; current tests assert deletion of all seed wraps but no recovery fields exist yet.
 - Password-change/reset races and copied reset-row rejection.
 
 Relevant files are `src/seed_wrapping.rs`, `src/crypto_property_tests.rs`, `src/aead_db_tamper_tests.rs`, and `src/security_invariants.rs`.
@@ -134,12 +146,13 @@ Given approved enclave code, the intended KMS policy, and an uncompromised encla
 Generate a 32-byte secret using `generate_random_enclave::<32>`. Encode it using a versioned, checksummed representation such as:
 
 ```text
-OSRC1-XXXX-XXXX-XXXX-XXXX-XXXX-XXXX-XXXX-XXXX-XXXX-XXXX-XXXX-XXXX-XXXX
+OSRC1-XXXX-XXXX-XXXX-XXXX-XXXX-XXXX-XXXX-XXXX-XXXX-XXXX-XXXX-XXXX-XXXX-CCCC-CCCC
 ```
 
 - `OSRC1` is a fixed format marker, not a cryptographic domain.
 - The payload encodes all 256 random bits using Crockford Base32 or another reviewed non-BIP39 encoding.
-- A versioned checksum detects transcription mistakes. It adds no entropy.
+- A 40-bit checksum, encoded as eight additional Base32 characters, detects transcription mistakes. It adds no entropy.
+- `X` groups represent the secret payload and `C` groups represent the checksum; the final grouping must account for the Base32 encoding's exact bit length without ambiguous padding.
 - Group encoded characters in fixed-width blocks for display and printing.
 - Parsing accepts ASCII case-insensitively and ignores only ASCII hyphens and spaces. Reject all other characters, Unicode lookalikes, wrong lengths, unknown versions, and checksum failures before database work.
 - Canonical output is uppercase with fixed grouping. Persist only decoded bytes transiently in enclave memory, never user-supplied text.
@@ -266,9 +279,9 @@ CHECK (
 )
 ```
 
-No recovery secret, deterministic secret digest, credential UUID, pending state, or historical credential row is stored. Nullable envelope fields mean recovery is not enrolled. Revocation clears the envelope/version/timestamp fields and increments generation.
+No recovery secret, deterministic secret digest, credential UUID, pending state, or historical credential row is stored. Nullable envelope fields mean recovery is not enrolled. Explicit authenticated revocation clears the envelope/version/timestamp fields and increments generation. Destructive password reset does not clear these fields.
 
-Update `src/models/users.rs`, `src/models/schema.rs`, database queries, and the encrypted-schema classification in `src/security_invariants.rs`. Destructive reset and account deletion must clear/remove recovery state.
+Update `src/models/users.rs`, `src/models/schema.rs`, database queries, and the encrypted-schema classification in `src/security_invariants.rs`. Account deletion clears recovery state. Destructive password reset preserves recovery state when enrolled.
 
 ### Why columns instead of a table
 
@@ -289,7 +302,7 @@ GET /protected/recovery-code
 Authorization:
 
 - User access JWT only; API-key context must never authorize recovery management.
-- The JWT's signed `AuthContext` must still open an active password or OAuth seed wrap.
+- The JWT's signed password `AuthContext` must still open an active password seed wrap. V1 excludes OAuth-only and guest users.
 
 Encrypted response:
 
@@ -311,7 +324,7 @@ POST /protected/recovery-code
 Authorization:
 
 - Valid user JWT and live encrypted session.
-- Require recent step-up authentication. For password users, verify the current password. For OAuth users, require a fresh provider reauthentication or defer OAuth-only enrollment until such proof exists.
+- Require current-password step-up authentication for the email-backed password user.
 - Do not accept API keys.
 
 Operation:
@@ -389,7 +402,27 @@ The replacement is immediately active and the prior code no longer works. The UI
 
 ### Destructive fallback
 
-Keep `POST /password-reset/confirm` destructive for backward compatibility. New clients must warn that it creates a new cryptographic identity and erases seed-key-encrypted data. Never silently fall back from failed recovery to destructive reset; require a separate user action and request.
+Keep `POST /password-reset/confirm` destructive for backward compatibility. New clients must warn that it creates a new active cryptographic identity and erases seed-key-encrypted data from the active account. Never silently fall back from failed recovery to destructive reset; require a separate user action and request.
+
+An enrolled recovery envelope must survive destructive reset unchanged. The destructive transaction still creates a new active seed, removes old password/OAuth seed wraps, deletes seed-key-encrypted storage roots, and installs the new password wrap. It must not increment recovery generation, replace `recovery_seed_enc`, clear recovery versions, or clear `recovery_enrolled_at`.
+
+This deliberately leaves two seed identities associated with the account after destructive reset:
+
+- The new active seed, accessible through the new password.
+- The old recovery-wrapped seed, accessible only by completing the email reset proof and presenting the pre-existing recovery code.
+
+The new password must not gain access to the old seed or old encrypted data. Current destructive reset deletes the known seed-key-encrypted storage roots, so later rescue can restore the old cryptographic identity but cannot recreate data already deleted unless separate retention/backup is designed. The product must describe this distinction accurately: preserving the recovery envelope preserves the old seed, not necessarily deleted application records.
+
+On a later successful recovery using the preserved code, the preserving flow installs the recovered old seed as the active password-wrapped seed, generates a replacement recovery code, and removes the intervening destructive-reset seed wrap. This restores the old derived key identity. The transaction must handle this state explicitly rather than assuming the recovery envelope always contains the currently active password seed.
+
+Only these operations may revoke or replace the preserved recovery envelope:
+
+- Authenticated manual revocation with current-password step-up.
+- Authenticated manual rotation with current-password step-up.
+- Successful preserving recovery using the current recovery code.
+- Account deletion.
+
+Email reset proof without the recovery code is intentionally insufficient to revoke recovery.
 
 ## Preserving-reset transaction
 
@@ -423,7 +456,7 @@ Recovery is an account-takeover-sensitive event. V1 should default to:
 - Delete all old password seed wraps before inserting the replacement, invalidating old password access and refresh JWTs.
 - Consume all password reset requests.
 - Preserve all seed-key-encrypted user data because the seed is unchanged.
-- Revoke all user API keys unless product review establishes a narrower safe policy. The current destructive reset preserves API keys, but preserving recovery should not automatically retain bearer credentials after possible account compromise.
+- Revoke all user API keys. The current destructive reset preserves API keys, but preserving recovery must not retain bearer credentials after possible account compromise.
 - Leave transport sessions alone because they confer no identity and are not reliably associated with a user.
 
 These choices must be user-visible and tested. If product chooses to preserve OAuth links or API keys, document the threat model and provide post-recovery account activity review.
@@ -442,22 +475,22 @@ Enrollment is opt-in and lazy. A valid current JWT plus step-up password verific
 
 ### OAuth-only and guest users
 
-- OAuth-only enrollment requires a defined fresh-provider proof. Do not treat an old OAuth JWT as sufficient step-up without review. Launch password-user enrollment first if provider proof is not ready.
-- Guest accounts have no email reset channel. They cannot use this forgotten-password flow until a separate reset gate is designed. Do not implicitly turn recovery into ordinary guest login.
+V1 excludes OAuth-only and guest users from enrollment and recovery. OAuth-only users continue to recover through their linked provider. Guest users have no email reset channel. Any future support requires a separate authority design and must not implicitly turn the recovery code into ordinary login.
 
 ## Abuse resistance and operational controls
 
 The current login/reset routes have no source-visible per-account attempt limits. Recovery must add controls before release:
 
 - Rate limit reset requests by project, normalized account key, session/IP risk signal, and bounded global capacity.
-- Limit recovery attempts per reset request and user. Atomically exhaust or delay a reset challenge after a reviewed number of failures.
+- Track recovery failures on the selected password-reset request. The fifth failed recovery attempt atomically consumes that request; the user must start a new email reset flow.
+- A new password-reset request atomically consumes all earlier active requests for that user, leaving only the newest active.
 - Bound active reset requests and clean expired rows.
 - Parse and checksum the recovery code before derivation, while preserving generic public outcomes.
 - Perform at most one recovery AEAD open per request.
 - Bound the code, ciphertext, and decoded metadata in SQL and Rust.
 - Emit security events containing only allowlisted metadata such as event type, project-scoped opaque user identifier, outcome class, and timestamp. Never include emails, codes, ciphertext, seed bytes, verifier strings, headers, or request bodies.
 - Alert on unusual reset and failure rates without creating a credential oracle.
-- Send account notifications after enrollment, revocation, rotation, and successful recovery. Notification content must not include recovery material.
+- Send account notifications after enrollment, revocation, rotation, destructive reset, and successful recovery. Notification content must not include recovery material. A destructive-reset notice should state that an enrolled recovery code remains the only path to the prior seed identity.
 
 Because the code has 256 random bits, rate limiting primarily addresses abuse, enumeration, resource exhaustion, and compromised-code scenarios rather than weak entropy.
 
@@ -472,8 +505,8 @@ Treat OpenSecret, released SDKs, and Maple as independently versioned protocol p
 3. Add client UX for one-time display, print/copy, destructive-fallback warning, recovery input, and replacement-code display.
 4. Enable opt-in enrollment for password users in a test environment, then a small production cohort.
 5. Enable preserving reset after enrollment telemetry, encrypted-client smoke tests, security review, and recovery transaction tests pass.
-6. Prompt existing users after successful login and new users after registration/login.
-7. Add OAuth-only and guest behavior only after their independent reset authority is designed.
+6. Prompt existing users after successful login and new users immediately after registration/login without blocking account creation.
+7. Keep OAuth-only and guest recovery disabled in v1.
 
 ### Compatibility matrix
 
@@ -491,7 +524,7 @@ No OpenSecret SDK or Maple checkout is present in this repository. Their concret
 
 - Freeze code encoding, normalization, checksum, labels, canonical field order, versions, and fixed test vectors.
 - Record the v1 full-database rollback exclusion explicitly in the security model.
-- Decide OAuth and API-key revocation policy.
+- Encode the settled policy: preserving recovery revokes OAuth links/wraps and API keys; destructive reset preserves an enrolled recovery envelope.
 - Review recovery UX and one-time-display behavior with SDK and Maple owners.
 
 ### Phase 2: cryptographic module
@@ -506,13 +539,13 @@ No OpenSecret SDK or Maple checkout is present in this repository. Their concret
 
 - Add a timestamped reversible migration, generated Diesel schema, user model fields, constraints, and transaction methods.
 - Classify `users.recovery_seed_enc` in encrypted-schema/destructive-reset invariants.
-- Extend destructive reset to clear recovery state.
+- Extend destructive reset to preserve enrolled recovery state and add explicit handling for an old recovery seed that differs from the new active seed.
 - Define migration ordering for mixed old/new servers before deployment.
 
 ### Phase 4: authenticated enrollment
 
 - Implement authenticated status, enroll/rotate, and revoke routes.
-- Add password step-up; gate OAuth-only enrollment until fresh-provider proof exists.
+- Require current-password step-up and reject guest/OAuth-only enrollment in v1.
 - Use generation and password-state compare-and-swap under a user-row lock.
 - Add account security notifications without sensitive content.
 
@@ -556,7 +589,9 @@ Use the disposable migrated PostgreSQL harness and upgrade-shaped rows:
 - Unknown, malformed, wrong, or revoked codes cause no mutation.
 - Successful preserving reset keeps every seed-key-encrypted record decryptable and preserves derived key identity.
 - Successful preserving reset invalidates old password JWTs, consumes reset requests, applies OAuth/API-key policy, replaces the old recovery code, and returns a code that opens the committed envelope.
-- Destructive reset still rotates the seed, deletes seed-key data, and clears recovery fields.
+- Destructive reset rotates the active seed and deletes seed-key data but preserves the old recovery envelope, versions, generation, and enrollment timestamp byte-for-byte.
+- A later preserving recovery with that retained code restores the pre-reset seed identity, removes the intervening password seed wrap, rotates recovery, and does not falsely claim deleted application records were restored.
+- Destructive reset without prior enrollment leaves recovery fields null.
 - Two concurrent recovery attempts have one winner.
 - Recovery versus password change, enrollment, revoke, destructive reset, and account deletion has one documented winner and no ordinary stale resurrection.
 - Inject failures before every transaction write and verify full rollback.
@@ -572,6 +607,7 @@ Use the disposable migrated PostgreSQL harness and upgrade-shaped rows:
 - Verify logs contain no recovery code, seed, verifier, decrypted payload, raw headers, response payload, or ciphertext.
 - Verify retries do not duplicate rotation, permit both old and new codes, or trigger destructive fallback.
 - Test client interruption after enrollment commit and after recovery commit. Confirm subsequent password login can rotate recovery if the returned code was lost.
+- Test an email-attacker scenario: destructive reset succeeds without the recovery code, cannot open the old recovery seed, and cannot alter or revoke the recovery envelope.
 
 ### Repository validation
 
@@ -614,21 +650,20 @@ Then run encrypted SDK and affected Maple flows. EIF/PCR comparison, KMS/IAM ins
 - Reset consumption, password replacement, password-wrap replacement, recovery overwrite, and secondary-credential revocation commit atomically.
 - Generation compare-and-swap rejects ordinary stale operations.
 - The full-database rollback exclusion is documented and not overstated.
-- Account deletion and destructive reset clear recovery state.
+- Account deletion clears recovery state; destructive reset preserves it.
+- Email reset authority without the recovery code cannot revoke or rotate recovery.
 - Sensitive values cannot reach logs, traces, analytics, URLs, email, or plaintext errors.
 - Old/new server and client combinations have explicit behavior.
 - Tests cover cryptographic negatives, persistence, concurrency, interruption, and encrypted client contracts.
 
 ## Open decisions before implementation
 
-1. Is 256-bit Crockford Base32 with a checksum the preferred non-BIP39 representation, or should another encoding with the same entropy and strict normalization be used?
-2. Will preserving recovery require the existing email reset challenge for all password users, or another independent factor?
-3. Should OAuth links and API keys always be revoked after recovery? This plan recommends yes.
-4. What fresh-provider proof enables enrollment for OAuth-only users?
-5. Are guest users excluded from forgotten-password recovery, or will a separate reset gate be designed?
-6. What exact rate limits, failure budgets, envelope-size bound, and reset expiry apply per deployment?
-7. Which SDK and Maple versions will implement the new contract, and what capability-discovery mechanism will they use?
+1. What exact Base32 grouping should include the 256-bit payload and 40-bit checksum?
+2. What per-IP/project/account reset-request rate-limit windows supplement the settled five-attempt per-request limit?
+3. What exact envelope-size bound should SQL and Rust enforce?
+4. Should old seed-key-encrypted records eventually be retained in an inaccessible archived state so later recovery can restore data as well as seed identity, or is current destructive deletion intentional?
+5. Which SDK and Maple versions will implement the new contract, and what capability-discovery mechanism will they use?
 
 ## Recommended decision
 
-Proceed with one recovery envelope on `users`, 256 bits of enclave-generated entropy, immediate activation without re-entry confirmation, and a separate preserving-reset endpoint. On successful recovery, prove the current code by opening the existing envelope, preserve the exact seed, atomically replace password and recovery wraps, and return the new recovery code once. Keep destructive reset separate and explicitly accept complete consistent database rollback as outside the v1 threat model.
+Proceed with one recovery envelope on `users`, 256 bits of enclave-generated entropy encoded as grouped Crockford Base32 with a 40-bit checksum, immediate activation without re-entry confirmation, and a separate preserving-reset endpoint. Require the existing email code and client reset secret, consume the challenge after five failures, keep only the newest reset request, and limit v1 to email-backed password users. On successful recovery, revoke OAuth and API keys, prove the current recovery code by opening the existing envelope, preserve the exact seed, atomically replace password and recovery wraps, and return the new code once. Destructive reset remains separate and must preserve any enrolled recovery envelope so compromise of the email channel cannot revoke the legitimate owner's independent path to the old seed.
