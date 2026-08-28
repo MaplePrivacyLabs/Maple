@@ -17,9 +17,13 @@ V1 adds a recovery credential kind to `user_seed_wrappings`. It does not otherwi
 - Enrollment activates the code immediately. The user does not re-enter it.
 - Successful preserving recovery keeps the existing recovery code active.
 - Rotation is explicit and requires an authenticated session plus current-password verification.
-- A recovery attempt uses the existing email code and client reset secret. A failed recovery attempt consumes that reset request, so retry requires a new reset request.
+- Authenticated users may disable recovery with current-password verification; the current recovery code is not required.
+- The legacy one-shot password reset remains destructive and never reads recovery state or uses recovery material.
+- A legacy reset request containing a `recovery_code` field is rejected before project, user, reset-request, or recovery lookup.
+- The additive v2 reset flow verifies the existing email code and client reset secret, then reports whether recovery is enrolled and returns a short-lived, one-use continuation.
+- A malformed or checksum-invalid recovery code does not consume the v2 continuation. A well-formed code that fails authenticated seed unwrap consumes it.
 - Current reset-request creation semantics remain unchanged: multiple unexpired reset requests may coexist until one reset succeeds.
-- Password reset without a recovery code remains destructive exactly as today, except it also generates a recovery code and wraps the newly generated seed with it.
+- Password reset without a recovery code remains destructive exactly as today and leaves recovery disabled afterward.
 - V1 does not add broad OAuth or API-key revocation beyond current behavior.
 - Complete, internally consistent database rollback remains outside the v1 threat model.
 
@@ -95,10 +99,10 @@ impl RecoveryCode {
 Canonical display shape:
 
 ```text
-OSRC1-XXXX-XXXX-XXXX-XXXX-XXXX-XXXX-XXXX-XXXX-XXXX-XXXX-XXXX-XXXX-XXXX-CCCC-CCCC
+MPLRC1-XXXX-XXXX-XXXX-XXXX-XXXX-XXXX-XXXX-XXXX-XXXX-XXXX-XXXX-XXXX-XXXX-CCCC-CCCC
 ```
 
-- `OSRC1` identifies the display format.
+- `MPLRC1` identifies the Maple recovery-code display format.
 - `X` groups encode the 256-bit secret using Crockford Base32.
 - `C` groups encode a 40-bit checksum over the version and secret.
 - Parsing is ASCII case-insensitive and ignores only ASCII spaces and hyphens.
@@ -172,24 +176,41 @@ struct RotateRecoveryResponse {
     recovery_code: String,
 }
 
-struct RecoveryPasswordResetRequest {
+struct DisableRecoveryRequest {
+    current_password: String,
+}
+
+struct VerifyPasswordResetV2Request {
     email: String,
     alphanumeric_code: String,
     plaintext_secret: String,
-    recovery_code: String,
-    new_password: String,
     client_id: Uuid,
 }
 
-struct RecoveryPasswordResetResponse {
+struct VerifyPasswordResetV2Response {
+    continuation_token: String,
+    recovery_enrolled: bool,
+}
+
+enum CompletePasswordResetMode {
+    Preserve {
+        recovery_code: String,
+    },
+    Destructive {
+        acknowledge_data_loss: bool,
+    },
+}
+
+struct CompletePasswordResetV2Request {
+    continuation_token: String,
+    new_password: String,
+    mode: CompletePasswordResetMode,
+}
+
+struct CompletePasswordResetV2Response {
     message: String,
     access_token: String,
     refresh_token: String,
-}
-
-struct DestructivePasswordResetResponse {
-    message: String,
-    recovery_code: String,
 }
 ```
 
@@ -199,7 +220,10 @@ Proposed routes:
 GET  /protected/recovery-code
 POST /protected/recovery-code/enroll
 POST /protected/recovery-code/rotate
-POST /password-reset/recovery/confirm
+DELETE /protected/recovery-code
+
+POST /password-reset/v2/verify
+POST /password-reset/v2/complete
 ```
 
 Protected recovery management requires a user JWT and encrypted session. API keys cannot enroll or rotate recovery.
@@ -285,9 +309,75 @@ async fn rotate_recovery(
 
 Future MFA may replace or supplement current-password step-up.
 
-## Recovery-Preserving Password Reset
+## Disable Recovery
 
-This flow verifies the existing email reset proof and recovery code, opens the existing seed, and creates a new password wrap over that same seed. The recovery wrap remains unchanged.
+Disablement deletes the recovery wrap. It requires the same authenticated current-password step-up as rotation, but does not require the recovery code.
+
+```mermaid
+flowchart LR
+    A[JWT and encrypted session] --> B[Verify current password]
+    B --> C[Verify active password seed wrap]
+    C --> D[Delete recovery wrap in transaction]
+    D --> E[Recovery disabled]
+```
+
+```rust
+async fn disable_recovery(
+    user: User,
+    auth_context: AuthContext,
+    current_password: String,
+) -> Result<(), ApiError> {
+    require_email_password_user(&user)?;
+    reauthenticate_password(&user, current_password).await?;
+    verify_seed_wrap_for_auth_context(&user, &auth_context)?;
+    delete_recovery_wrap_for_user(user.uuid)?;
+    Ok(())
+}
+```
+
+The operation is idempotent at the API boundary. A concurrent preserving reset must either observe the recovery wrap and commit before disablement, or fail its unchanged-row check.
+
+## V2 Reset Continuation
+
+The existing API has no global version prefix. `v2` is scoped to the reset flow so it can coexist with the legacy one-shot endpoint.
+
+V2 first verifies the existing email reset proof. Only then does it reveal whether recovery is enrolled. It consumes the selected reset request and replaces it with an opaque, short-lived continuation used for the final choice.
+
+### Continuation Model
+
+Add a dedicated table because continuation state has an independent expiry and one-use lifecycle:
+
+```rust
+struct PasswordResetContinuation {
+    id: Uuid,
+    reset_request_id: i32,
+    user_id: Uuid,
+    project_id: i32,
+    recovery_enrolled: bool,
+    state_mac: Vec<u8>,
+    expires_at: DateTime<Utc>,
+    consumed_at: Option<DateTime<Utc>>,
+    created_at: DateTime<Utc>,
+}
+```
+
+`id` is a random opaque bearer value returned to the client. `state_mac` is an enclave-keyed HMAC over canonical continuation facts:
+
+```rust
+fn continuation_mac(
+    enclave_root: &[u8],
+    continuation_id: Uuid,
+    reset_request_id: i32,
+    user_id: Uuid,
+    project_id: i32,
+    recovery_enrolled: bool,
+    expires_at: DateTime<Utc>,
+) -> [u8; 32];
+```
+
+The database row is a candidate, not authority. V2 completion reconstructs and verifies the MAC before trusting the row.
+
+### Verify Reset Proof
 
 ```mermaid
 sequenceDiagram
@@ -295,24 +385,18 @@ sequenceDiagram
     participant E as OpenSecret enclave
     participant D as PostgreSQL
 
-    M->>E: Email code + reset secret + recovery code + new password
-    E->>E: Verify email reset request
-    E->>D: Load user's recovery wrapping
-    D-->>E: Recovery wrap candidate
-    E->>E: Parse code and open existing seed
-    E->>E: Create and verify new password wrap over same seed
-    E->>D: Lock user and reset request
-    E->>D: Revalidate and consume reset request
-    E->>D: Replace password verifier and password wrap
-    Note over E,D: Recovery wrap remains unchanged
+    M->>E: Email code + client reset secret
+    E->>E: Verify existing reset proof
+    E->>D: Lock and consume selected reset request
+    E->>D: Snapshot recovery enrollment and insert continuation
     D-->>E: Commit
-    E-->>M: Encrypted new access and refresh tokens
+    E-->>M: Encrypted continuation + recovery_enrolled
 ```
 
 ```rust
-async fn confirm_recovery_password_reset(
-    request: RecoveryPasswordResetRequest,
-) -> Result<AuthResponse, ApiError> {
+async fn verify_password_reset_v2(
+    request: VerifyPasswordResetV2Request,
+) -> Result<VerifyPasswordResetV2Response, ApiError> {
     let (user, reset_request) = verify_existing_reset_proof(
         request.email,
         request.alphanumeric_code,
@@ -320,7 +404,77 @@ async fn confirm_recovery_password_reset(
         request.client_id,
     )?;
 
-    let recovery_code = RecoveryCode::parse(&request.recovery_code)?;
+    let continuation = consume_reset_and_create_continuation(
+        &user,
+        &reset_request,
+        recovery_wrap_exists(user.uuid)?,
+        short_expiry(),
+    )?;
+
+    Ok(VerifyPasswordResetV2Response {
+        continuation_token: continuation.id.to_string(),
+        recovery_enrolled: continuation.recovery_enrolled,
+    })
+}
+```
+
+Creating the continuation atomically consumes only the selected reset request. Other unexpired reset requests retain current behavior. Successful completion consumes all remaining active reset requests, matching the current successful-reset transaction.
+
+## V2 Completion
+
+Maple uses `recovery_enrolled` to show an informed choice:
+
+- If recovery is enrolled, offer seed-preserving recovery first and explain that destructive reset deletes encrypted data.
+- If recovery is not enrolled, offer only destructive reset.
+- If the user lost the recovery code, destructive reset remains an explicit option.
+
+```mermaid
+flowchart TD
+    A[Verify email reset proof] --> B[Return continuation and recovery status]
+    B --> C{Recovery enrolled?}
+    C -->|No| D[Explicit destructive completion]
+    C -->|Yes, code available| E[Preserving completion]
+    C -->|Yes, code lost| F[Warn and explicitly choose destruction]
+    E --> G[Keep seed and encrypted data]
+    D --> H[Current destructive reset behavior]
+    F --> H
+```
+
+### Preserving Completion
+
+This flow verifies the continuation and recovery code, opens the existing seed, and creates a new password wrap over that same seed. The recovery wrap remains unchanged.
+
+```mermaid
+sequenceDiagram
+    participant M as Maple
+    participant E as OpenSecret enclave
+    participant D as PostgreSQL
+
+    M->>E: Continuation + recovery code + new password
+    E->>E: Verify continuation MAC, expiry, state, and recovery snapshot
+    E->>D: Load user's recovery wrapping
+    D-->>E: Recovery wrap candidate
+    E->>E: Parse code and open existing seed
+    E->>E: Create and verify new password wrap over same seed
+    E->>D: Lock user and continuation
+    E->>D: Revalidate and consume continuation
+    E->>D: Replace password verifier and password wrap
+    Note over E,D: Recovery wrap remains unchanged
+    D-->>E: Commit
+    E-->>M: Encrypted new access and refresh tokens
+```
+
+```rust
+async fn complete_preserving_password_reset_v2(
+    continuation_token: Uuid,
+    recovery_code_input: String,
+    new_password: String,
+) -> Result<AuthResponse, ApiError> {
+    let continuation = verify_continuation(continuation_token)?;
+    require_recovery_enrolled(&continuation)?;
+    let user = get_user_for_continuation(&continuation)?;
+
+    let recovery_code = RecoveryCode::parse(&recovery_code_input)?;
     let recovery_wrap = get_recovery_wrap(user.uuid)?
         .ok_or(ApiError::BadRequest)?;
 
@@ -328,12 +482,12 @@ async fn confirm_recovery_password_reset(
         .map_err(|_| ApiError::BadRequest)?;
     validate_mnemonic(&seed)?;
 
-    let new_password = new_password_verifier_and_wrap(&user, request.new_password, &seed).await?;
+    let new_password = new_password_verifier_and_wrap(&user, new_password, &seed).await?;
     verify_new_password_wrap(&user, &new_password, &seed)?;
 
     complete_preserving_password_reset(
         &user,
-        &reset_request,
+        &continuation,
         &recovery_wrap,
         new_password,
     )?;
@@ -344,69 +498,84 @@ async fn confirm_recovery_password_reset(
 
 The transaction must:
 
-1. Lock the user and selected reset request.
-2. Recheck that the reset request is unused and unexpired.
-3. Recheck the client reset-secret proof.
-4. Recheck that the recovery wrap is unchanged from the opened candidate.
-5. Consume the selected reset request and all other active reset requests, matching current successful-reset behavior.
-6. Replace the encrypted password verifier and password wrap.
-7. Leave the recovery wrap, OAuth behavior, API keys, and seed-key-encrypted data unchanged.
+1. Lock the user and continuation.
+2. Recheck the continuation MAC, expiry, recovery snapshot, and unused state.
+3. Recheck that the recovery wrap is unchanged from the opened candidate.
+4. Consume the continuation and all active reset requests for the user.
+5. Replace the encrypted password verifier and password wrap.
+6. Leave the recovery wrap, OAuth behavior, API keys, and seed-key-encrypted data unchanged.
 
-A failed recovery-code parse or unwrap must consume the selected reset request atomically. The user must request a new email reset code before retrying. Public errors must not reveal which factor failed.
-
-## Destructive Password Reset
-
-The existing `/password-reset/confirm` flow remains destructive. It continues to generate a new seed, delete old wraps and seed-key-encrypted state, disconnect OAuth, preserve API keys, and install a new password wrap as it does today.
-
-The only addition is a recovery wrap over the same newly generated seed:
-
-```mermaid
-flowchart TD
-    A[Verify existing email reset proof] --> B[Generate new seed]
-    B --> C[Create and verify new password wrap]
-    B --> D[Generate recovery code]
-    D --> E[Create and verify recovery wrap over new seed]
-    C --> F[Existing destructive reset transaction]
-    E --> F
-    F --> G[Delete old wraps and seed-key state]
-    G --> H[Insert new password and recovery wraps]
-    H --> I[Return recovery code once]
-```
+Maple should validate format and checksum locally. The enclave independently parses and validates before database work:
 
 ```rust
-async fn confirm_destructive_password_reset(...) -> Result<DestructivePasswordResetResponse, ApiError> {
-    let reset = verify_existing_reset_proof(...)?;
-    let seed = generate_twelve_word_seed(...).await?;
-
-    let password = new_password_verifier_and_wrap(&reset.user, new_password, seed.as_bytes()).await?;
-    verify_new_password_wrap(&reset.user, &password, seed.as_bytes())?;
-
-    let recovery_code = RecoveryCode::generate(...).await;
-    let recovery_wrap = new_recovery_seed_wrapping(&reset.user, &recovery_code, seed.as_bytes())?;
-    verify_recovery_seed_wrapping(&reset.user, &recovery_code, seed.as_bytes(), &recovery_wrap)?;
-
-    complete_destructive_password_reset(
-        &reset.user,
-        &reset.request,
-        password,
-        recovery_wrap,
-    )?;
-
-    Ok(DestructivePasswordResetResponse {
-        message: "Password reset successful".into(),
-        recovery_code: recovery_code.display().to_string(),
-    })
+match RecoveryCode::parse(&input) {
+    Err(InvalidFormat | InvalidChecksum) => {
+        // Return a stable input error; continuation remains usable.
+    }
+    Ok(code) => match decrypt_recovery_seed(...) {
+        Ok(seed) => complete_preserving_reset(...),
+        Err(_) => consume_continuation_and_return_bad_request(...),
+    }
 }
 ```
 
-The password and recovery wraps must be inserted in the existing destructive-reset transaction. Failure to build either wrap leaves current account state unchanged.
+Public errors must not disclose account identity, database state, or whether the submitted well-formed secret was close to correct.
+
+### Explicit Destructive Completion
+
+```rust
+async fn complete_destructive_password_reset_v2(
+    continuation_token: Uuid,
+    new_password: String,
+    acknowledge_data_loss: bool,
+) -> Result<CompletePasswordResetV2Response, ApiError> {
+    if !acknowledge_data_loss {
+        return Err(ApiError::BadRequest);
+    }
+
+    let continuation = verify_continuation(continuation_token)?;
+    complete_existing_destructive_reset(&continuation, new_password).await
+}
+```
+
+The transaction consumes the continuation and all active reset requests, then runs the existing destructive cleanup and new-seed/password-wrap creation. It does not create a recovery wrap.
+
+## Legacy Destructive Password Reset
+
+The existing `/password-reset/confirm` flow remains one-shot and destructive. It continues to generate a new seed, delete old wraps and seed-key-encrypted state, disconnect OAuth, preserve API keys, and install a new password wrap exactly as today. It does not inspect recovery enrollment and does not create a recovery wrap.
+
+Add only an early guard so recovery material cannot be accidentally sent to the destructive endpoint:
+
+```rust
+struct PasswordResetConfirmPayload {
+    email: String,
+    alphanumeric_code: String,
+    plaintext_secret: String,
+    new_password: String,
+    client_id: Uuid,
+    #[serde(default)]
+    recovery_code: Option<String>,
+}
+
+async fn password_reset_confirm(payload: PasswordResetConfirmPayload) -> Result<..., ApiError> {
+    if payload.recovery_code.is_some() {
+        return Err(ApiError::BadRequest);
+    }
+
+    // Existing handler behavior follows unchanged.
+}
+```
+
+The guard runs before project, user, reset-request, or recovery lookup. Existing clients omit the field and retain current behavior. V2 is the only flow that parses or uses recovery codes.
 
 ## Concurrency Rules
 
 - Enrollment inserts only if no recovery wrap exists.
 - Rotation replaces only the exact recovery row observed before encryption.
-- Preserving reset commits only if the opened recovery row is still current.
-- Password change, recovery reset, destructive reset, enrollment, and rotation must use a consistent user-row lock/CAS order.
+- Disablement and preserving reset have a defined one-winner race.
+- V2 verification atomically consumes one reset request and creates one continuation.
+- V2 completion commits only if the continuation and opened recovery row are still current.
+- Password change, recovery reset, destructive reset, enrollment, rotation, and disablement must use a consistent user-row lock/CAS order.
 - New wraps are verified before entering the transaction.
 - No unwrap failure generates a seed or falls through to destructive reset.
 
@@ -426,11 +595,19 @@ The password and recovery wraps must be inserted in the existing destructive-res
 - Enrollment creates one recovery wrap over the existing seed.
 - Concurrent enrollment has one winner.
 - Rotation preserves the seed, replaces the wrap, and invalidates the old code.
+- Disablement removes the recovery wrap without requiring the recovery code.
+- Disablement is idempotent and races safely with rotation and preserving reset.
 - Preserving reset keeps the seed/private key and existing encrypted data unchanged.
 - Preserving reset leaves the recovery wrap byte-for-byte unchanged.
-- A failed recovery attempt consumes only its selected reset request; other currently valid reset requests retain current behavior.
+- V2 verification consumes only its selected reset request and returns recovery status only after proof succeeds.
+- Continuation-row and MAC substitution across users, projects, reset requests, recovery status, and expiry fails.
+- Continuations expire, are one-use, and have one winner under concurrent completion.
+- Invalid recovery format/checksum leaves the continuation active.
+- A well-formed recovery code that fails AEAD consumes the continuation.
 - Successful preserving reset consumes all active reset requests, matching current reset behavior.
-- Destructive reset retains all current deletion and credential behavior, creates a new seed, and inserts password and recovery wraps over that same seed.
+- V2 explicit destruction consumes the continuation and retains current destructive-reset behavior without creating recovery.
+- Legacy destructive reset retains its current request, response, deletion, and credential behavior without creating recovery.
+- Legacy reset with any `recovery_code` value fails before database access or mutation.
 - Recovery reset races safely with password change, enrollment, rotation, and destructive reset.
 - Copied recovery wraps fail across users and projects.
 
@@ -440,7 +617,8 @@ The password and recovery wraps must be inserted in the existing destructive-res
 - Guest and OAuth-only users cannot enroll or recover in v1.
 - Success responses are encrypted and errors are sanitized.
 - Recovery codes, seeds, verifiers, decrypted payloads, and ciphertext do not enter logs.
-- Old clients continue using existing login and reset contracts; the destructive reset response change must be coordinated with SDK/Maple decoding.
+- Old clients continue using the existing one-shot destructive reset contract unchanged.
+- V2 status is not an unauthenticated recovery-enrollment oracle.
 
 ## Frontend Rollout
 
