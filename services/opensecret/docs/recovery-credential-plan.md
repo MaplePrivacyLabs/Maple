@@ -20,8 +20,8 @@ V1 adds a recovery credential kind to `user_seed_wrappings`. It does not otherwi
 - Authenticated users may disable recovery with current-password verification; the current recovery code is not required.
 - The legacy one-shot password reset remains destructive and never reads recovery state or uses recovery material.
 - A legacy reset request containing a `recovery_code` field is rejected before project, user, reset-request, or recovery lookup.
-- The additive v2 reset flow verifies the existing email code and client reset secret, then reports whether recovery is enrolled and returns a short-lived, one-use continuation.
-- A malformed or checksum-invalid recovery code does not consume the v2 continuation. A well-formed code that fails authenticated seed unwrap consumes it.
+- The additive v2 reset flow verifies the existing email code and client reset secret before reporting whether recovery is enrolled. The client resubmits the same proof when completing the chosen reset mode.
+- A malformed or checksum-invalid recovery code does not consume the reset request. A well-formed code that fails authenticated seed unwrap consumes the selected reset request through the same guarded update pattern used by successful reset.
 - Current reset-request creation semantics remain unchanged: multiple unexpired reset requests may coexist until one reset succeeds.
 - Password reset without a recovery code remains destructive exactly as today and leaves recovery disabled afterward.
 - V1 does not add broad OAuth or API-key revocation beyond current behavior.
@@ -180,16 +180,21 @@ struct DisableRecoveryRequest {
     current_password: String,
 }
 
-struct VerifyPasswordResetV2Request {
+#[derive(Clone)]
+struct PasswordResetV2Proof {
     email: String,
     alphanumeric_code: String,
     plaintext_secret: String,
     client_id: Uuid,
 }
 
-struct VerifyPasswordResetV2Response {
-    continuation_token: String,
+struct PasswordResetV2OptionsRequest {
+    proof: PasswordResetV2Proof,
+}
+
+struct PasswordResetV2OptionsResponse {
     recovery_enrolled: bool,
+    destructive_reset_available: bool,
 }
 
 enum CompletePasswordResetMode {
@@ -202,7 +207,7 @@ enum CompletePasswordResetMode {
 }
 
 struct CompletePasswordResetV2Request {
-    continuation_token: String,
+    proof: PasswordResetV2Proof,
     new_password: String,
     mode: CompletePasswordResetMode,
 }
@@ -222,7 +227,7 @@ POST /protected/recovery-code/enroll
 POST /protected/recovery-code/rotate
 DELETE /protected/recovery-code
 
-POST /password-reset/v2/verify
+POST /password-reset/v2/options
 POST /password-reset/v2/complete
 ```
 
@@ -337,47 +342,15 @@ async fn disable_recovery(
 
 The operation is idempotent at the API boundary. A concurrent preserving reset must either observe the recovery wrap and commit before disablement, or fail its unchanged-row check.
 
-## V2 Reset Continuation
+## V2 Reset Options
 
 The existing API has no global version prefix. `v2` is scoped to the reset flow so it can coexist with the legacy one-shot endpoint.
 
-V2 first verifies the existing email reset proof. Only then does it reveal whether recovery is enrolled. It consumes the selected reset request and replaces it with an opaque, short-lived continuation used for the final choice.
+V2 first verifies the existing email reset proof. Only then does it reveal whether recovery is enrolled. The options request is read-only: it does not consume or modify the reset request. Completion resubmits and reverifies the same proof before performing either preserving or destructive reset.
 
-### Continuation Model
+No continuation token, table, enclave-local state, sticky-routing dependency, or new bearer capability is needed.
 
-Add a dedicated table because continuation state has an independent expiry and one-use lifecycle:
-
-```rust
-struct PasswordResetContinuation {
-    id: Uuid,
-    reset_request_id: i32,
-    user_id: Uuid,
-    project_id: i32,
-    recovery_enrolled: bool,
-    state_mac: Vec<u8>,
-    expires_at: DateTime<Utc>,
-    consumed_at: Option<DateTime<Utc>>,
-    created_at: DateTime<Utc>,
-}
-```
-
-`id` is a random opaque bearer value returned to the client. `state_mac` is an enclave-keyed HMAC over canonical continuation facts:
-
-```rust
-fn continuation_mac(
-    enclave_root: &[u8],
-    continuation_id: Uuid,
-    reset_request_id: i32,
-    user_id: Uuid,
-    project_id: i32,
-    recovery_enrolled: bool,
-    expires_at: DateTime<Utc>,
-) -> [u8; 32];
-```
-
-The database row is a candidate, not authority. V2 completion reconstructs and verifies the MAC before trusting the row.
-
-### Verify Reset Proof
+### Get Reset Options
 
 ```mermaid
 sequenceDiagram
@@ -387,38 +360,30 @@ sequenceDiagram
 
     M->>E: Email code + client reset secret
     E->>E: Verify existing reset proof
-    E->>D: Lock and consume selected reset request
-    E->>D: Snapshot recovery enrollment and insert continuation
-    D-->>E: Commit
-    E-->>M: Encrypted continuation + recovery_enrolled
+    E->>D: Check whether recovery wrap exists
+    D-->>E: Recovery enrollment state
+    E-->>M: Encrypted recovery options
 ```
 
 ```rust
-async fn verify_password_reset_v2(
-    request: VerifyPasswordResetV2Request,
-) -> Result<VerifyPasswordResetV2Response, ApiError> {
-    let (user, reset_request) = verify_existing_reset_proof(
-        request.email,
-        request.alphanumeric_code,
-        request.plaintext_secret,
-        request.client_id,
+async fn password_reset_v2_options(
+    request: PasswordResetV2OptionsRequest,
+) -> Result<PasswordResetV2OptionsResponse, ApiError> {
+    let (user, _reset_request) = verify_existing_reset_proof(
+        request.proof.email,
+        request.proof.alphanumeric_code,
+        request.proof.plaintext_secret,
+        request.proof.client_id,
     )?;
 
-    let continuation = consume_reset_and_create_continuation(
-        &user,
-        &reset_request,
-        recovery_wrap_exists(user.uuid)?,
-        short_expiry(),
-    )?;
-
-    Ok(VerifyPasswordResetV2Response {
-        continuation_token: continuation.id.to_string(),
-        recovery_enrolled: continuation.recovery_enrolled,
+    Ok(PasswordResetV2OptionsResponse {
+        recovery_enrolled: recovery_wrap_exists(user.uuid)?,
+        destructive_reset_available: true,
     })
 }
 ```
 
-Creating the continuation atomically consumes only the selected reset request. Other unexpired reset requests retain current behavior. Successful completion consumes all remaining active reset requests, matching the current successful-reset transaction.
+The response reveals recovery status only to a caller that presents the valid email code and matching client reset secret. Other unexpired reset requests retain current behavior. The reset proof may be submitted to `/options` repeatedly until it expires, is consumed by completion, or another successful reset consumes all active requests.
 
 ## V2 Completion
 
@@ -430,7 +395,7 @@ Maple uses `recovery_enrolled` to show an informed choice:
 
 ```mermaid
 flowchart TD
-    A[Verify email reset proof] --> B[Return continuation and recovery status]
+    A[Verify email reset proof] --> B[Return recovery status]
     B --> C{Recovery enrolled?}
     C -->|No| D[Explicit destructive completion]
     C -->|Yes, code available| E[Preserving completion]
@@ -442,7 +407,7 @@ flowchart TD
 
 ### Preserving Completion
 
-This flow verifies the continuation and recovery code, opens the existing seed, and creates a new password wrap over that same seed. The recovery wrap remains unchanged.
+This flow reverifies the email reset proof and recovery code, opens the existing seed, and creates a new password wrap over that same seed. The recovery wrap remains unchanged.
 
 ```mermaid
 sequenceDiagram
@@ -450,14 +415,14 @@ sequenceDiagram
     participant E as OpenSecret enclave
     participant D as PostgreSQL
 
-    M->>E: Continuation + recovery code + new password
-    E->>E: Verify continuation MAC, expiry, state, and recovery snapshot
+    M->>E: Email code + reset secret + recovery code + new password
+    E->>E: Reverify existing reset proof
     E->>D: Load user's recovery wrapping
     D-->>E: Recovery wrap candidate
     E->>E: Parse code and open existing seed
     E->>E: Create and verify new password wrap over same seed
-    E->>D: Lock user and continuation
-    E->>D: Revalidate and consume continuation
+    E->>D: Lock user and reset request
+    E->>D: Revalidate and consume reset request
     E->>D: Replace password verifier and password wrap
     Note over E,D: Recovery wrap remains unchanged
     D-->>E: Commit
@@ -466,13 +431,16 @@ sequenceDiagram
 
 ```rust
 async fn complete_preserving_password_reset_v2(
-    continuation_token: Uuid,
+    reset_proof: PasswordResetV2Proof,
     recovery_code_input: String,
     new_password: String,
 ) -> Result<AuthResponse, ApiError> {
-    let continuation = verify_continuation(continuation_token)?;
-    require_recovery_enrolled(&continuation)?;
-    let user = get_user_for_continuation(&continuation)?;
+    let (user, reset_request) = verify_existing_reset_proof(
+        reset_proof.email,
+        reset_proof.alphanumeric_code,
+        reset_proof.plaintext_secret,
+        reset_proof.client_id,
+    )?;
 
     let recovery_code = RecoveryCode::parse(&recovery_code_input)?;
     let recovery_wrap = get_recovery_wrap(user.uuid)?
@@ -487,7 +455,7 @@ async fn complete_preserving_password_reset_v2(
 
     complete_preserving_password_reset(
         &user,
-        &continuation,
+        &reset_request,
         &recovery_wrap,
         new_password,
     )?;
@@ -498,10 +466,10 @@ async fn complete_preserving_password_reset_v2(
 
 The transaction must:
 
-1. Lock the user and continuation.
-2. Recheck the continuation MAC, expiry, recovery snapshot, and unused state.
+1. Lock the user and selected reset request.
+2. Recheck that the reset request is unused, unexpired, and still matches the client reset secret.
 3. Recheck that the recovery wrap is unchanged from the opened candidate.
-4. Consume the continuation and all active reset requests for the user.
+4. Consume the selected reset request and all other active reset requests for the user.
 5. Replace the encrypted password verifier and password wrap.
 6. Leave the recovery wrap, OAuth behavior, API keys, and seed-key-encrypted data unchanged.
 
@@ -510,14 +478,34 @@ Maple should validate format and checksum locally. The enclave independently par
 ```rust
 match RecoveryCode::parse(&input) {
     Err(InvalidFormat | InvalidChecksum) => {
-        // Return a stable input error; continuation remains usable.
+        // Return a stable input error; reset request remains usable.
     }
     Ok(code) => match decrypt_recovery_seed(...) {
         Ok(seed) => complete_preserving_reset(...),
-        Err(_) => consume_continuation_and_return_bad_request(...),
+        Err(_) => consume_reset_request_and_return_bad_request(...),
     }
 }
 ```
+
+`consume_reset_request_and_return_bad_request` uses the existing guarded reset-row update shape:
+
+```rust
+let updated = diesel::update(
+    password_reset_requests::table
+        .filter(password_reset_requests::id.eq(reset_request.id))
+        .filter(password_reset_requests::user_id.eq(user.uuid))
+        .filter(password_reset_requests::is_reset.eq(false))
+        .filter(password_reset_requests::expiration_time.gt(diesel::dsl::now)),
+)
+.set(password_reset_requests::is_reset.eq(true))
+.execute(conn)?;
+
+if updated != 1 {
+    return Err(DBError::PasswordResetRequestNotFound);
+}
+```
+
+This consumes only the selected request. It does not change the password, wraps, recovery enrollment, other reset requests, or user data. A correct completion racing the failed attempt uses the same guarded predicate in its final transaction, so exactly one operation wins.
 
 Public errors must not disclose account identity, database state, or whether the submitted well-formed secret was close to correct.
 
@@ -525,7 +513,7 @@ Public errors must not disclose account identity, database state, or whether the
 
 ```rust
 async fn complete_destructive_password_reset_v2(
-    continuation_token: Uuid,
+    reset_proof: PasswordResetV2Proof,
     new_password: String,
     acknowledge_data_loss: bool,
 ) -> Result<CompletePasswordResetV2Response, ApiError> {
@@ -533,12 +521,17 @@ async fn complete_destructive_password_reset_v2(
         return Err(ApiError::BadRequest);
     }
 
-    let continuation = verify_continuation(continuation_token)?;
-    complete_existing_destructive_reset(&continuation, new_password).await
+    let (user, reset_request) = verify_existing_reset_proof(
+        reset_proof.email,
+        reset_proof.alphanumeric_code,
+        reset_proof.plaintext_secret,
+        reset_proof.client_id,
+    )?;
+    complete_existing_destructive_reset(&user, &reset_request, new_password).await
 }
 ```
 
-The transaction consumes the continuation and all active reset requests, then runs the existing destructive cleanup and new-seed/password-wrap creation. It does not create a recovery wrap.
+The transaction consumes the selected and all other active reset requests, then runs the existing destructive cleanup and new-seed/password-wrap creation. It does not create a recovery wrap.
 
 ## Legacy Destructive Password Reset
 
@@ -573,8 +566,8 @@ The guard runs before project, user, reset-request, or recovery lookup. Existing
 - Enrollment inserts only if no recovery wrap exists.
 - Rotation replaces only the exact recovery row observed before encryption.
 - Disablement and preserving reset have a defined one-winner race.
-- V2 verification atomically consumes one reset request and creates one continuation.
-- V2 completion commits only if the continuation and opened recovery row are still current.
+- V2 options is read-only and does not consume reset state.
+- V2 completion commits only if the repeated reset proof and opened recovery row are still current.
 - Password change, recovery reset, destructive reset, enrollment, rotation, and disablement must use a consistent user-row lock/CAS order.
 - New wraps are verified before entering the transaction.
 - No unwrap failure generates a seed or falls through to destructive reset.
@@ -599,13 +592,13 @@ The guard runs before project, user, reset-request, or recovery lookup. Existing
 - Disablement is idempotent and races safely with rotation and preserving reset.
 - Preserving reset keeps the seed/private key and existing encrypted data unchanged.
 - Preserving reset leaves the recovery wrap byte-for-byte unchanged.
-- V2 verification consumes only its selected reset request and returns recovery status only after proof succeeds.
-- Continuation-row and MAC substitution across users, projects, reset requests, recovery status, and expiry fails.
-- Continuations expire, are one-use, and have one winner under concurrent completion.
-- Invalid recovery format/checksum leaves the continuation active.
-- A well-formed recovery code that fails AEAD consumes the continuation.
+- V2 options returns recovery status only after reset proof succeeds and does not mutate the reset request.
+- V2 complete rejects copied reset rows across users and projects through the existing reset-code MAC and client-secret proof.
+- Invalid recovery format/checksum leaves the selected reset request active.
+- A well-formed recovery code that fails AEAD consumes only the selected reset request.
+- A correct completion racing a failed well-formed attempt has exactly one winner.
 - Successful preserving reset consumes all active reset requests, matching current reset behavior.
-- V2 explicit destruction consumes the continuation and retains current destructive-reset behavior without creating recovery.
+- V2 explicit destruction reverifies the reset proof and retains current destructive-reset behavior without creating recovery.
 - Legacy destructive reset retains its current request, response, deletion, and credential behavior without creating recovery.
 - Legacy reset with any `recovery_code` value fails before database access or mutation.
 - Recovery reset races safely with password change, enrollment, rotation, and destructive reset.
@@ -634,3 +627,4 @@ Maple exposes recovery enrollment through a feature-flagged Security settings UI
 - Broad OAuth/API-key revocation after preserving recovery.
 - Changes to reset-request multiplicity.
 - Retaining old encrypted vaults or seed identities after destructive reset.
+- Session-bound or enclave-memory continuation capabilities for future MFA/authentication flows.
