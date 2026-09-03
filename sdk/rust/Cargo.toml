@@ -27,13 +27,15 @@ percent-encoding = "2.3"
 # Cryptography
 aes-gcm = "0.10"
 chacha20poly1305 = "0.10"
-x25519-dalek = { version = "2.0", features = ["static_secrets"] }
+x25519-dalek = { version = "2.0", features = ["static_secrets", "zeroize"] }
 hkdf = "0.12"
 p256 = { version = "0.13", features = ["ecdh", "pkcs8"] }
 sha2 = "0.10"
 base64 = "0.22"
 ring = "0.17"  # For certificate validation
 hex = "0.4"  # For debug output
+subtle = "2.6"
+zeroize = { version = "1.8", features = ["derive"] }
 
 # X.509 and certificate handling
 x509-parser = "0.16"
