@@ -137,6 +137,37 @@ export async function authenticate(
   trustedRootCert: Uint8Array,
   nonce: string
 ): Promise<AttestationDocument> {
+  return authenticateWithNonceBytes(
+    attestationDocumentBase64,
+    trustedRootCert,
+    new TextEncoder().encode(nonce)
+  );
+}
+
+/**
+ * Verifies a Nitro attestation document against a byte-exact nonce.
+ *
+ * Transport V2 challenges are arbitrary random bytes, while the original V1
+ * entry point uses a textual UUID. Both paths share the complete certificate,
+ * signature, timestamp, and nonce verification below.
+ */
+export async function authenticateBytes(
+  attestationDocumentBase64: string,
+  trustedRootCert: Uint8Array,
+  nonce: Uint8Array
+): Promise<AttestationDocument> {
+  return authenticateWithNonceBytes(
+    attestationDocumentBase64,
+    trustedRootCert,
+    new Uint8Array(nonce)
+  );
+}
+
+async function authenticateWithNonceBytes(
+  attestationDocumentBase64: string,
+  trustedRootCert: Uint8Array,
+  nonce: Uint8Array
+): Promise<AttestationDocument> {
   try {
     // Following the steps here: https://docs.aws.amazon.com/enclaves/latest/user/verify-root.html
     // Step 1. Decode the CBOR object and map it to a COSE_Sign1 structure
@@ -150,13 +181,12 @@ export async function authenticate(
       throw new Error("Attestation document does not have a nonce.");
     }
 
-    const decoder = new TextDecoder("utf-8");
-    const documentNonce = decoder.decode(document.nonce);
-
-    if (nonce !== documentNonce) {
+    const documentNonce = document.nonce;
+    if (
+      nonce.length !== documentNonce.length ||
+      nonce.some((byte, index) => byte !== documentNonce[index])
+    ) {
       console.log("Nonce mismatch");
-      console.log("Provided nonce:", nonce);
-      console.log("Attestation document nonce:", documentNonce);
       throw new Error("Attestation document's nonce does not match the provided nonce.");
     }
 

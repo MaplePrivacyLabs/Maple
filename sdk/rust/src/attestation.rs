@@ -47,6 +47,47 @@ impl AttestationVerifier {
         document_b64: &str,
         expected_nonce: &str,
     ) -> Result<AttestationDocument> {
+        self.verify_attestation_document_with(document_b64, |nonce_bytes| {
+            let nonce_str = String::from_utf8(nonce_bytes.to_vec()).map_err(|e| {
+                Error::AttestationVerificationFailed(format!("Invalid nonce encoding: {}", e))
+            })?;
+
+            if nonce_str != expected_nonce {
+                return Err(Error::AttestationVerificationFailed(
+                    "Nonce mismatch".to_string(),
+                ));
+            }
+            Ok(())
+        })
+    }
+
+    /// Verify a Nitro document against an exact binary nonce.
+    ///
+    /// Transport v2 uses a uniformly random 32-byte challenge. Keeping this
+    /// entry point beside the established verifier ensures certificate and
+    /// COSE validation remain identical without forcing binary freshness
+    /// material through UTF-8. The caller still applies its PCR policy, and
+    /// the public string API above is unchanged.
+    pub(crate) fn verify_attestation_document_bytes(
+        &self,
+        document_b64: &str,
+        expected_nonce: &[u8],
+    ) -> Result<AttestationDocument> {
+        self.verify_attestation_document_with(document_b64, |nonce_bytes| {
+            if nonce_bytes != expected_nonce {
+                return Err(Error::AttestationVerificationFailed(
+                    "Nonce mismatch".to_string(),
+                ));
+            }
+            Ok(())
+        })
+    }
+
+    fn verify_attestation_document_with(
+        &self,
+        document_b64: &str,
+        verify_nonce: impl FnOnce(&[u8]) -> Result<()>,
+    ) -> Result<AttestationDocument> {
         let document_bytes = BASE64.decode(document_b64)?;
 
         // Parse COSE_Sign1 structure
@@ -100,22 +141,13 @@ impl AttestationVerifier {
 
         let doc = self.parse_attestation_document(&doc_cbor)?;
 
-        // Verify nonce
-        if let Some(nonce_bytes) = &doc.nonce {
-            let nonce_str = String::from_utf8(nonce_bytes.to_vec()).map_err(|e| {
-                Error::AttestationVerificationFailed(format!("Invalid nonce encoding: {}", e))
-            })?;
-
-            if nonce_str != expected_nonce {
-                return Err(Error::AttestationVerificationFailed(
-                    "Nonce mismatch".to_string(),
-                ));
-            }
-        } else {
-            return Err(Error::AttestationVerificationFailed(
+        // Verify freshness before accepting any attested key material.
+        let nonce_bytes = doc.nonce.as_deref().ok_or_else(|| {
+            Error::AttestationVerificationFailed(
                 "Missing nonce in attestation document".to_string(),
-            ));
-        }
+            )
+        })?;
+        verify_nonce(nonce_bytes)?;
 
         // Verify certificate chain
         self.verify_certificate_chain(&doc)?;
