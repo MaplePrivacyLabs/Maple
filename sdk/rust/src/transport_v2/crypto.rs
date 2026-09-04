@@ -390,6 +390,37 @@ pub(super) fn seal_response_for_test(
 }
 
 #[cfg(test)]
+pub(super) fn open_request_for_test(
+    secrets: &SessionSecrets,
+    record: &[u8],
+) -> (RequestId, Vec<u8>) {
+    let request_id = RequestId::from_bytes(
+        record
+            .get(..16)
+            .expect("test request record contains an id")
+            .try_into()
+            .expect("test request id has the fixed width"),
+    );
+    let key = derive_record_subkey(
+        &secrets.request_key,
+        REQUEST_SUBKEY_INFO,
+        secrets.session_id,
+        request_id,
+    )
+    .expect("valid request test key");
+    let plaintext = open(
+        &key,
+        &request_aad(secrets.session_id, request_id),
+        [0; RECORD_NONCE_BYTES],
+        record
+            .get(16..)
+            .expect("test request record contains ciphertext"),
+    )
+    .expect("valid encrypted test request");
+    (request_id, plaintext)
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -429,33 +460,36 @@ mod tests {
         let request_id = RequestId::from_bytes([1; 16]);
         let record = seal_response_for_test(&first, request_id, 0, b"response");
 
-        assert_eq!(
+        assert!(matches!(
             second
                 .response_opener(request_id)
                 .unwrap()
                 .open_next(&record),
             Err(TransportV2Error::Authentication)
-        );
-        assert_eq!(
+        ));
+        assert!(matches!(
             first
                 .response_opener(RequestId::from_bytes([2; 16]))
                 .unwrap()
                 .open_next(&record),
             Err(TransportV2Error::Authentication)
-        );
+        ));
         let mut reordered = first.response_opener(request_id).unwrap();
         let sequence_one = seal_response_for_test(&first, request_id, 1, b"response");
-        assert_eq!(
+        assert!(matches!(
             reordered.open_next(&sequence_one),
             Err(TransportV2Error::Authentication)
-        );
+        ));
     }
 
     #[test]
     fn session_id_wire_encoding_is_canonical() {
         let session_id = SessionId::from_bytes([0xab; 16]);
         assert_eq!(session_id.to_string(), "abababababababababababababababab");
-        assert_eq!(SessionId::from_str(&session_id.to_string()), Ok(session_id));
+        assert_eq!(
+            SessionId::from_str(&session_id.to_string()).unwrap(),
+            session_id
+        );
         assert!(SessionId::from_str("ABABABABABABABABABABABABABABABAB").is_err());
     }
 }

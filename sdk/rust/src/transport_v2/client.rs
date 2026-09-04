@@ -63,6 +63,15 @@ pub(crate) struct PreparedRequestId {
     request_id: RequestId,
 }
 
+/// A single request after its one-time ID has been allocated and its complete
+/// logical contents have been sealed. This value is deliberately non-Clone and
+/// is consumed by `send_sealed`, preserving the transport's no-resend rule.
+pub(crate) struct SealedRequest {
+    session_id: SessionId,
+    encrypted: Vec<u8>,
+    response_opener: super::crypto::ResponseOpener,
+}
+
 impl std::fmt::Debug for TransportV2Session {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
@@ -74,12 +83,21 @@ impl std::fmt::Debug for TransportV2Session {
 }
 
 impl TransportV2Session {
+    #[cfg(test)]
     pub(crate) fn encoded_id(&self) -> String {
         self.secrets.session_id().to_string()
     }
 
+    pub(crate) fn id_bytes(&self) -> [u8; 16] {
+        *self.secrets.session_id().as_bytes()
+    }
+
+    pub(crate) fn is_expired(&self) -> bool {
+        Instant::now() >= self.expires_at
+    }
+
     pub(crate) fn prepare_request_id(&self) -> Result<PreparedRequestId> {
-        if Instant::now() >= self.expires_at {
+        if self.is_expired() {
             return Err(TransportV2Error::SessionExpired);
         }
         Ok(PreparedRequestId {
@@ -90,6 +108,7 @@ impl TransportV2Session {
 }
 
 impl PreparedRequestId {
+    #[cfg(test)]
     pub(crate) fn encoded(&self) -> String {
         self.request_id.to_string()
     }
@@ -149,7 +168,7 @@ impl TransportV2Client {
             .json(&request)
             .send()
             .await
-            .map_err(|_| TransportV2Error::Http)?;
+            .map_err(TransportV2Error::Http)?;
         if response.status() != reqwest::StatusCode::OK
             || exact_content_type(response.headers()) != Some(SESSION_CONTENT_TYPE)
         {
@@ -170,14 +189,7 @@ impl TransportV2Client {
             let document = AttestationVerifier::new()
                 .verify_attestation_document_bytes(&response.attestation_document, &challenge)
                 .map_err(|_| TransportV2Error::AttestationRejected)?;
-            let pcr0 = document
-                .pcrs
-                .get(&0)
-                .ok_or(TransportV2Error::AttestationRejected)?;
-            self.pcr0_trust_policy
-                .verify_pcr0(pcr0)
-                .await
-                .map_err(|_| TransportV2Error::AttestationRejected)?;
+            verify_attested_pcr0(&self.pcr0_trust_policy, &document).await?;
             document
         };
 
@@ -199,22 +211,45 @@ impl TransportV2Client {
 
     /// Send exactly one encrypted request. This method never retries or falls
     /// back to transport v1.
+    #[cfg(test)]
     pub(crate) async fn send(
         &self,
         session: &TransportV2Session,
         request: LogicalRequest,
     ) -> Result<ResponseEventStream> {
-        let prepared = session.prepare_request_id()?;
-        self.send_with_id(session, prepared, request).await
+        let sealed = self.seal(session, request)?;
+        self.send_sealed(sealed).await
     }
 
+    #[cfg(test)]
     pub(crate) async fn send_with_id(
         &self,
         session: &TransportV2Session,
         prepared: PreparedRequestId,
         request: LogicalRequest,
     ) -> Result<ResponseEventStream> {
-        if Instant::now() >= session.expires_at {
+        let sealed = self.seal_with_id(session, prepared, request)?;
+        self.send_sealed(sealed).await
+    }
+
+    /// Allocate a one-time request ID and synchronously seal one logical
+    /// request. No network work or other await point occurs here.
+    pub(crate) fn seal(
+        &self,
+        session: &TransportV2Session,
+        request: LogicalRequest,
+    ) -> Result<SealedRequest> {
+        let prepared = session.prepare_request_id()?;
+        self.seal_with_id(session, prepared, request)
+    }
+
+    fn seal_with_id(
+        &self,
+        session: &TransportV2Session,
+        prepared: PreparedRequestId,
+        request: LogicalRequest,
+    ) -> Result<SealedRequest> {
+        if session.is_expired() {
             return Err(TransportV2Error::SessionExpired);
         }
         if prepared.session_id != session.secrets.session_id() {
@@ -228,15 +263,25 @@ impl TransportV2Client {
         let response_opener = session.secrets.response_opener(request_id)?;
         debug_assert!(encrypted.len() >= MIN_REQUEST_RECORD_BYTES);
 
+        Ok(SealedRequest {
+            session_id: session.secrets.session_id(),
+            encrypted,
+            response_opener,
+        })
+    }
+
+    /// Transmit one already-sealed request exactly once. Callers must not
+    /// retain or reconstruct `sealed` after this function begins.
+    pub(crate) async fn send_sealed(&self, sealed: SealedRequest) -> Result<ResponseEventStream> {
         let response = self
             .client
             .post(format!("{}/v2/request", self.base_url))
             .header(header::CONTENT_TYPE, REQUEST_CONTENT_TYPE)
-            .header("x-session-id", session.secrets.session_id().to_string())
-            .body(encrypted)
+            .header("x-session-id", sealed.session_id.to_string())
+            .body(sealed.encrypted)
             .send()
             .await
-            .map_err(|_| TransportV2Error::Http)?;
+            .map_err(TransportV2Error::Http)?;
         if response.status() != reqwest::StatusCode::OK
             || exact_content_type(response.headers()) != Some(REQUEST_CONTENT_TYPE)
         {
@@ -244,10 +289,10 @@ impl TransportV2Client {
         }
 
         let mut source = response.bytes_stream();
-        let mut decoder = ResponseDecoder::new(response_opener);
+        let mut decoder = ResponseDecoder::new(sealed.response_opener);
         let stream = async_stream::try_stream! {
             while let Some(chunk) = source.next().await {
-                let chunk = chunk.map_err(|_| TransportV2Error::Http)?;
+                let chunk = chunk.map_err(TransportV2Error::Http)?;
                 for event in decoder.push(&chunk)? {
                     yield event;
                 }
@@ -256,6 +301,20 @@ impl TransportV2Client {
         };
         Ok(Box::pin(stream))
     }
+}
+
+async fn verify_attested_pcr0(
+    policy: &Pcr0TrustPolicy,
+    document: &AttestationDocument,
+) -> Result<()> {
+    let pcr0 = document
+        .pcrs
+        .get(&0)
+        .ok_or(TransportV2Error::AttestationRejected)?;
+    policy
+        .verify_pcr0(pcr0)
+        .await
+        .map_err(|_| TransportV2Error::AttestationRejected)
 }
 
 fn fresh_challenge() -> Result<[u8; HANDSHAKE_CHALLENGE_BYTES]> {
@@ -298,7 +357,7 @@ async fn read_bounded_response(response: reqwest::Response, limit: usize) -> Res
     let mut source = response.bytes_stream();
     let mut body = BytesMut::new();
     while let Some(chunk) = source.next().await {
-        let chunk = chunk.map_err(|_| TransportV2Error::Http)?;
+        let chunk = chunk.map_err(TransportV2Error::Http)?;
         let next = body
             .len()
             .checked_add(chunk.len())
@@ -412,21 +471,83 @@ impl TransportV2Session {
 }
 
 #[cfg(test)]
+pub(crate) use tests::{SessionResponder, TestV2ServerState};
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::transport_v2::{
-        crypto::{session_from_shared_for_test, HandshakeTranscript},
-        envelope::LogicalRequest,
+        crypto::{open_request_for_test, session_from_shared_for_test, HandshakeTranscript},
+        envelope::{Credential, CredentialKind, LogicalHeader, LogicalRequest},
+        framing::frame_response_for_test,
     };
     use http::Method;
+    use std::{
+        collections::VecDeque,
+        sync::{Arc, Mutex as StdMutex},
+    };
     use wiremock::{
         matchers::{method, path},
         Mock, MockServer, Request, Respond, ResponseTemplate,
     };
     use x25519_dalek::StaticSecret;
 
-    struct SessionResponder {
-        server_secret: [u8; 32],
+    #[derive(Clone)]
+    pub(crate) struct TestV2ServerState {
+        secrets: Arc<StdMutex<Option<Arc<SessionSecrets>>>>,
+        responses: Arc<StdMutex<VecDeque<TestLogicalResponse>>>,
+        requests: Arc<StdMutex<Vec<serde_json::Value>>>,
+    }
+
+    struct TestLogicalResponse {
+        status: u16,
+        headers: Vec<LogicalHeader>,
+        body: Bytes,
+    }
+
+    impl TestV2ServerState {
+        pub(crate) fn new() -> Self {
+            Self {
+                secrets: Arc::new(StdMutex::new(None)),
+                responses: Arc::new(StdMutex::new(VecDeque::new())),
+                requests: Arc::new(StdMutex::new(Vec::new())),
+            }
+        }
+
+        pub(crate) fn queue_json_response(&self, status: u16, body: serde_json::Value) {
+            self.responses
+                .lock()
+                .unwrap()
+                .push_back(TestLogicalResponse {
+                    status,
+                    headers: vec![LogicalHeader::new(
+                        "content-type".to_string(),
+                        "application/json".to_string(),
+                    )
+                    .unwrap()],
+                    body: Bytes::from(serde_json::to_vec(&body).unwrap()),
+                });
+        }
+
+        pub(crate) fn captured_requests(&self) -> Vec<serde_json::Value> {
+            self.requests.lock().unwrap().clone()
+        }
+
+        pub(crate) fn request_responder(&self) -> RequestResponder {
+            RequestResponder {
+                state: self.clone(),
+            }
+        }
+    }
+
+    pub(crate) struct SessionResponder {
+        pub(crate) server_secret: [u8; 32],
+        pub(crate) state: Option<TestV2ServerState>,
+        pub(crate) delay: Option<Duration>,
+    }
+
+    pub(crate) struct RequestResponder {
+        state: TestV2ServerState,
     }
 
     impl Respond for SessionResponder {
@@ -448,6 +569,10 @@ mod tests {
             let transcript =
                 HandshakeTranscript::new(challenge, client_public_key, server_public_key);
             let secrets = session_from_shared_for_test(*shared_secret.as_bytes(), transcript);
+            let session_id = secrets.session_id();
+            if let Some(state) = &self.state {
+                *state.secrets.lock().unwrap() = Some(Arc::new(secrets));
+            }
 
             let payload = CborValue::Map(vec![
                 (
@@ -469,12 +594,71 @@ mod tests {
                 CborValue::Bytes(cbor::to_vec(&payload).unwrap()),
                 CborValue::Bytes(Vec::new()),
             ]);
-            ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            let response = ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "version": VERSION,
-                "session_id": secrets.session_id().to_string(),
+                "session_id": session_id.to_string(),
                 "attestation_document": STANDARD.encode(cbor::to_vec(&cose).unwrap()),
                 "expires_in_seconds": EXPECTED_SESSION_LIFETIME_SECONDS,
-            }))
+            }));
+            match self.delay {
+                Some(delay) => response.set_delay(delay),
+                None => response,
+            }
+        }
+    }
+
+    impl Respond for RequestResponder {
+        fn respond(&self, request: &Request) -> ResponseTemplate {
+            let secrets = self
+                .state
+                .secrets
+                .lock()
+                .unwrap()
+                .clone()
+                .expect("test session was established before its request");
+            let (request_id, plaintext) = open_request_for_test(&secrets, &request.body);
+            let metadata_length = u32::from_be_bytes(
+                plaintext[..4]
+                    .try_into()
+                    .expect("test request metadata length is present"),
+            ) as usize;
+            let metadata: serde_json::Value =
+                serde_json::from_slice(&plaintext[4..4 + metadata_length]).unwrap();
+            self.state.requests.lock().unwrap().push(metadata);
+
+            let response = self
+                .state
+                .responses
+                .lock()
+                .unwrap()
+                .pop_front()
+                .expect("test response was queued");
+            let mut start = vec![1];
+            start.extend(
+                serde_json::to_vec(&serde_json::json!({
+                    "status": response.status,
+                    "headers": response.headers,
+                }))
+                .unwrap(),
+            );
+            let mut wire = frame_response_for_test(&secrets, request_id, 0, &start);
+            let mut sequence = 1;
+            if !response.body.is_empty() {
+                let chunk = [&[2][..], response.body.as_ref()].concat();
+                wire.extend(frame_response_for_test(
+                    &secrets, request_id, sequence, &chunk,
+                ));
+                sequence += 1;
+            }
+            wire.extend(frame_response_for_test(
+                &secrets,
+                request_id,
+                sequence,
+                &[3],
+            ));
+            ResponseTemplate::new(200)
+                .insert_header("content-type", REQUEST_CONTENT_TYPE)
+                .set_body_bytes(wire)
         }
     }
 
@@ -485,20 +669,54 @@ mod tests {
         ))
     }
 
+    fn test_attestation_document(pcr0: Option<Vec<u8>>) -> AttestationDocument {
+        let mut pcrs = HashMap::new();
+        if let Some(pcr0) = pcr0 {
+            pcrs.insert(0, pcr0);
+        }
+        AttestationDocument {
+            module_id: "test-module".to_string(),
+            timestamp: 1,
+            digest: "SHA384".to_string(),
+            pcrs,
+            certificate: Vec::new(),
+            cabundle: Vec::new(),
+            public_key: Some(vec![0x33; X25519_PUBLIC_KEY_BYTES]),
+            user_data: Some(attestation_user_data(&[0x22; X25519_PUBLIC_KEY_BYTES])),
+            nonce: Some(vec![0x11; HANDSHAKE_CHALLENGE_BYTES]),
+        }
+    }
+
     #[test]
     fn only_exact_http_loopback_uses_mock_attestation() {
-        assert!(
-            canonical_base_url("http://127.0.0.1:3000".into())
-                .unwrap()
-                .1
-        );
+        for url in [
+            "http://localhost:3000",
+            "http://localhost.:3000",
+            "http://127.0.0.1:3000",
+            "http://[::1]:3000",
+        ] {
+            assert!(canonical_base_url(url.into()).unwrap().1, "{url}");
+        }
         assert!(
             !canonical_base_url("https://localhost:3000".into())
                 .unwrap()
                 .1
         );
-        assert!(canonical_base_url("http://example.com".into()).is_err());
-        assert!(canonical_base_url("https://user@example.com".into()).is_err());
+        for url in [
+            "http://example.com",
+            "http://localhost.example.com",
+            "http://127.0.0.1.example.com",
+            "http://0.0.0.0:3000",
+            "https://user@example.com",
+            "https://example.com?redirect=http://localhost",
+            "https://example.com#localhost",
+        ] {
+            assert!(canonical_base_url(url.into()).is_err(), "{url}");
+        }
+        assert_eq!(
+            canonical_base_url("http://10.0.2.2:3000".into()).is_ok(),
+            cfg!(target_os = "android")
+        );
     }
 
     #[tokio::test]
@@ -508,6 +726,8 @@ mod tests {
             .and(path("/v2/session"))
             .respond_with(SessionResponder {
                 server_secret: [0x77; 32],
+                state: None,
+                delay: None,
             })
             .expect(1)
             .mount(&server)
@@ -516,6 +736,69 @@ mod tests {
         let session = client.establish_session().await.unwrap();
         assert_eq!(session.encoded_id().len(), 32);
         assert!(session.prepare_request_id().is_ok());
+    }
+
+    #[test]
+    fn transcript_rejects_mismatched_nonce_or_client_key_binding() {
+        let challenge = [0x11; HANDSHAKE_CHALLENGE_BYTES];
+        let client_public_key = [0x22; X25519_PUBLIC_KEY_BYTES];
+        let valid = test_attestation_document(None);
+        assert_eq!(
+            validate_attested_transcript(&valid, &challenge, &client_public_key).unwrap(),
+            [0x33; X25519_PUBLIC_KEY_BYTES]
+        );
+
+        let mut wrong_nonce = valid.clone();
+        wrong_nonce.nonce = Some(vec![0x12; HANDSHAKE_CHALLENGE_BYTES]);
+        assert!(matches!(
+            validate_attested_transcript(&wrong_nonce, &challenge, &client_public_key),
+            Err(TransportV2Error::AttestationRejected)
+        ));
+
+        let mut wrong_client_key = valid;
+        wrong_client_key.user_data = Some(attestation_user_data(&[0x23; X25519_PUBLIC_KEY_BYTES]));
+        assert!(matches!(
+            validate_attested_transcript(&wrong_client_key, &challenge, &client_public_key),
+            Err(TransportV2Error::AttestationRejected)
+        ));
+    }
+
+    #[tokio::test]
+    async fn verified_document_must_pass_the_configured_pcr0_policy() {
+        let approved = vec![0x42; 48];
+        let policy = Pcr0TrustPolicy::from_static_allowlist([hex::encode(&approved)]).unwrap();
+
+        verify_attested_pcr0(&policy, &test_attestation_document(Some(approved)))
+            .await
+            .unwrap();
+        assert!(matches!(
+            verify_attested_pcr0(&policy, &test_attestation_document(Some(vec![0x43; 48]))).await,
+            Err(TransportV2Error::AttestationRejected)
+        ));
+        assert!(matches!(
+            verify_attested_pcr0(&policy, &test_attestation_document(None)).await,
+            Err(TransportV2Error::AttestationRejected)
+        ));
+    }
+
+    #[tokio::test]
+    async fn unavailable_v2_endpoint_never_falls_back_to_v1() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v2/session"))
+            .respond_with(ResponseTemplate::new(404))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = TransportV2Client::new(server.uri(), Pcr0TrustPolicy::default()).unwrap();
+        assert!(matches!(
+            client.establish_session().await,
+            Err(TransportV2Error::UntrustedOuterResponse)
+        ));
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].url.path(), "/v2/session");
     }
 
     #[tokio::test]
@@ -534,10 +817,10 @@ mod tests {
             .await;
 
         let client = TransportV2Client::new(server.uri(), Pcr0TrustPolicy::default()).unwrap();
-        assert_eq!(
-            client.establish_session().await.err(),
-            Some(TransportV2Error::UntrustedOuterResponse)
-        );
+        assert!(matches!(
+            client.establish_session().await,
+            Err(TransportV2Error::UntrustedOuterResponse)
+        ));
     }
 
     #[tokio::test]
@@ -550,13 +833,19 @@ mod tests {
             .mount(&server)
             .await;
         let client = TransportV2Client::new(server.uri(), Pcr0TrustPolicy::default()).unwrap();
-        let request =
-            LogicalRequest::new(None, None, Method::GET, "/v1/models".into(), vec![], None)
-                .unwrap();
-        assert_eq!(
-            client.send(&test_session(), request).await.err(),
-            Some(TransportV2Error::UntrustedOuterResponse)
-        );
+        let request = LogicalRequest::new(
+            Some(Credential::new(CredentialKind::ApiKey, "inside-only-secret".into()).unwrap()),
+            None,
+            Method::GET,
+            "/v1/models".into(),
+            vec![],
+            None,
+        )
+        .unwrap();
+        assert!(matches!(
+            client.send(&test_session(), request).await,
+            Err(TransportV2Error::UntrustedOuterResponse)
+        ));
 
         let requests = server.received_requests().await.unwrap();
         assert_eq!(requests.len(), 1);
@@ -573,6 +862,10 @@ mod tests {
             assert!(!request.headers.contains_key(forbidden));
         }
         assert!(request.body.len() >= MIN_REQUEST_RECORD_BYTES);
+        assert!(!request
+            .body
+            .windows(b"inside-only-secret".len())
+            .any(|window| window == b"inside-only-secret"));
     }
 
     #[tokio::test]
@@ -589,10 +882,10 @@ mod tests {
         let request =
             LogicalRequest::new(None, None, Method::GET, "/v1/models".into(), vec![], None)
                 .unwrap();
-        assert_eq!(
-            client.send_with_id(&second, prepared, request).await.err(),
-            Some(TransportV2Error::InvalidRequest)
-        );
+        assert!(matches!(
+            client.send_with_id(&second, prepared, request).await,
+            Err(TransportV2Error::InvalidRequest)
+        ));
         assert!(server.received_requests().await.unwrap().is_empty());
     }
 
@@ -607,17 +900,17 @@ mod tests {
             ),
             Instant::now(),
         );
-        assert_eq!(
-            expired.prepare_request_id().err(),
-            Some(TransportV2Error::SessionExpired)
-        );
+        assert!(matches!(
+            expired.prepare_request_id(),
+            Err(TransportV2Error::SessionExpired)
+        ));
         let request =
             LogicalRequest::new(None, None, Method::GET, "/v1/models".into(), vec![], None)
                 .unwrap();
-        assert_eq!(
-            client.send(&expired, request).await.err(),
-            Some(TransportV2Error::SessionExpired)
-        );
+        assert!(matches!(
+            client.send(&expired, request).await,
+            Err(TransportV2Error::SessionExpired)
+        ));
         assert!(server.received_requests().await.unwrap().is_empty());
     }
 }

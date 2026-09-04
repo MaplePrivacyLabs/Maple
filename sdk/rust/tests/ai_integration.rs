@@ -9,6 +9,8 @@ use maple_sdk::{
 use std::env;
 use uuid::Uuid;
 
+static TEST_USER_AUTH_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 fn chat_model() -> String {
     env::var("OPENSECRET_TEST_CHAT_MODEL")
         .or_else(|_| env::var("VITE_TEST_CHAT_MODEL"))
@@ -77,7 +79,9 @@ async fn setup_authenticated_client() -> Result<OpenSecretClient> {
         .parse::<Uuid>()
         .expect("Invalid client_id format");
 
-    // Try login first, if it fails then register
+    // Parallel tests share one configured user. Serialize only the login/register
+    // bootstrap so they cannot all observe a missing user and race registration.
+    let _auth_guard = TEST_USER_AUTH_LOCK.lock().await;
     match client
         .login(email.clone(), password.clone(), client_id)
         .await

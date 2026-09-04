@@ -1,5 +1,5 @@
 use clap::Parser;
-use maple_sdk::Pcr0Environment;
+use maple_sdk::{Pcr0Environment, TransportV2CacheNamespaceRoot};
 use serde::Serialize;
 use std::{net::SocketAddr, time::Duration};
 
@@ -39,6 +39,18 @@ pub struct Config {
     /// Default API key for Maple/OpenSecret (can be overridden by client Authorization header)
     #[arg(long, env = "MAPLE_API_KEY")]
     pub default_api_key: Option<String>,
+
+    /// Stable client secret used to namespace provider cache entries.
+    ///
+    /// This must be a canonical padded base64 encoding of exactly 32 bytes.
+    /// When omitted, the proxy generates a process-lifetime value and cache
+    /// continuity is lost when the process restarts.
+    #[arg(
+        long,
+        env = "MAPLE_CACHE_NAMESPACE_ROOT",
+        value_parser = parse_cache_namespace_root
+    )]
+    pub cache_namespace_root: Option<TransportV2CacheNamespaceRoot>,
 
     /// Enable debug logging
     #[arg(short, long, env = "MAPLE_DEBUG")]
@@ -89,6 +101,7 @@ impl Config {
             backend_url,
             pcr0_environment: Pcr0Environment::Production,
             default_api_key: None,
+            cache_namespace_root: None,
             debug: false,
             enable_cors: false,
             request_timeout_secs: DEFAULT_REQUEST_TIMEOUT_SECS,
@@ -113,6 +126,15 @@ impl Config {
     /// Builder-style method to set the API key
     pub fn with_api_key(mut self, api_key: String) -> Self {
         self.default_api_key = Some(api_key);
+        self
+    }
+
+    /// Builder-style method to use a stable provider-cache namespace root.
+    pub fn with_cache_namespace_root(
+        mut self,
+        cache_namespace_root: TransportV2CacheNamespaceRoot,
+    ) -> Self {
+        self.cache_namespace_root = Some(cache_namespace_root);
         self
     }
 
@@ -147,6 +169,12 @@ fn parse_pcr0_environment(value: &str) -> Result<Pcr0Environment, String> {
         "development" => Ok(Pcr0Environment::Development),
         _ => Err("PCR0 environment must be 'production' or 'development'".to_string()),
     }
+}
+
+fn parse_cache_namespace_root(value: &str) -> Result<TransportV2CacheNamespaceRoot, String> {
+    TransportV2CacheNamespaceRoot::from_base64(value).map_err(|_| {
+        "cache namespace root must be canonical padded base64 for exactly 32 bytes".to_string()
+    })
 }
 
 #[derive(Debug, Serialize)]
@@ -191,6 +219,7 @@ mod tests {
     use std::sync::Mutex;
 
     static PCR0_ENVIRONMENT_LOCK: Mutex<()> = Mutex::new(());
+    const CACHE_NAMESPACE_ROOT_BASE64: &str = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
 
     fn with_pcr0_environment_env<T>(value: Option<&str>, run: impl FnOnce() -> T) -> T {
         let _guard = PCR0_ENVIRONMENT_LOCK.lock().unwrap();
@@ -221,6 +250,7 @@ mod tests {
 
         assert_eq!(config.request_timeout_secs, DEFAULT_REQUEST_TIMEOUT_SECS);
         assert_eq!(config.pcr0_environment, Pcr0Environment::Production);
+        assert!(config.cache_namespace_root.is_none());
         assert_eq!(
             config.stream_idle_timeout_secs,
             DEFAULT_STREAM_IDLE_TIMEOUT_SECS
@@ -278,6 +308,61 @@ mod tests {
             Config::try_parse_from(["maple-proxy", "--pcr0-environment", "staging"]).unwrap_err();
 
         assert_eq!(error.kind(), ErrorKind::ValueValidation);
+    }
+
+    #[test]
+    fn cache_namespace_root_accepts_canonical_padded_base64() {
+        let config = Config::try_parse_from([
+            "maple-proxy",
+            "--cache-namespace-root",
+            CACHE_NAMESPACE_ROOT_BASE64,
+        ])
+        .unwrap();
+
+        assert_eq!(
+            config.cache_namespace_root.unwrap().to_base64(),
+            CACHE_NAMESPACE_ROOT_BASE64
+        );
+    }
+
+    #[test]
+    fn cache_namespace_root_rejects_noncanonical_base64() {
+        let unpadded = CACHE_NAMESPACE_ROOT_BASE64.trim_end_matches('=');
+        let error = Config::try_parse_from(["maple-proxy", "--cache-namespace-root", unpadded])
+            .unwrap_err();
+
+        assert_eq!(error.kind(), ErrorKind::ValueValidation);
+    }
+
+    #[test]
+    fn cache_namespace_root_builder_preserves_the_root() {
+        let root = TransportV2CacheNamespaceRoot::from_base64(CACHE_NAMESPACE_ROOT_BASE64).unwrap();
+        let config = Config::new(
+            "127.0.0.1".to_string(),
+            8080,
+            "https://enclave.trymaple.ai".to_string(),
+        )
+        .with_cache_namespace_root(root);
+
+        assert_eq!(
+            config.cache_namespace_root.unwrap().to_base64(),
+            CACHE_NAMESPACE_ROOT_BASE64
+        );
+    }
+
+    #[test]
+    fn cache_namespace_root_is_redacted_from_config_debug_output() {
+        let root = TransportV2CacheNamespaceRoot::from_base64(CACHE_NAMESPACE_ROOT_BASE64).unwrap();
+        let config = Config::new(
+            "127.0.0.1".to_string(),
+            8080,
+            "https://enclave.trymaple.ai".to_string(),
+        )
+        .with_cache_namespace_root(root);
+
+        let debug = format!("{config:?}");
+        assert!(!debug.contains(CACHE_NAMESPACE_ROOT_BASE64));
+        assert!(debug.contains("[REDACTED]"));
     }
 
     #[test]
