@@ -8,15 +8,26 @@ import {
   MAX_RESPONSE_CIPHERTEXT_BYTES,
   RECORD_TAG_BYTES,
   TransportV2ProtocolError,
+  decodeCanonicalBase64,
   decodeResponseRecord,
+  encodeCanonicalBase64,
   encodeRequestEnvelope,
   generateRequestId,
+  hexToFixedBytes,
   type TransportV2Header,
   type TransportV2Request
 } from "./protocol";
 
 const OUTER_CONTENT_TYPE = "application/octet-stream";
 const SESSION_EXPIRY_SKEW_MS = 30_000;
+
+export interface SerializedTransportV2Session {
+  version: 2;
+  session_id: string;
+  request_key: string;
+  response_key: string;
+  expires_at_ms: number;
+}
 
 export class TransportV2RemoteError extends Error {
   readonly code: string;
@@ -162,17 +173,19 @@ export class TransportV2Session {
   #keys: TransportV2SessionKeys;
   #expiresAtMs: number;
   #disposed = false;
+  #nowMs: () => number;
 
   constructor(
     keys: TransportV2SessionKeys,
     expiresInSeconds: number,
-    establishmentStartedAtMs = Date.now()
+    establishmentStartedAtMs = Date.now(),
+    nowMs: () => number = () => Date.now()
   ) {
     if (!Number.isSafeInteger(expiresInSeconds) || expiresInSeconds <= 0) {
       throw new TransportV2ProtocolError("Transport v2 session lifetime is invalid.");
     }
     const expiresAtMs = establishmentStartedAtMs + expiresInSeconds * 1000 - SESSION_EXPIRY_SKEW_MS;
-    if (!Number.isSafeInteger(expiresAtMs) || expiresAtMs <= Date.now()) {
+    if (!Number.isSafeInteger(expiresAtMs) || expiresAtMs <= nowMs()) {
       throw new TransportV2ProtocolError("Transport v2 session expired during establishment.");
     }
     this.#keys = {
@@ -182,6 +195,7 @@ export class TransportV2Session {
       responseKey: new Uint8Array(keys.responseKey)
     };
     this.#expiresAtMs = expiresAtMs;
+    this.#nowMs = nowMs;
   }
 
   get sessionId(): string {
@@ -189,14 +203,84 @@ export class TransportV2Session {
     return this.#keys.sessionId;
   }
 
+  get expiresAtMs(): number {
+    this.#requireActive();
+    return this.#expiresAtMs;
+  }
+
+  isUsable(nowMs = Date.now()): boolean {
+    return !this.#disposed && nowMs < this.#expiresAtMs;
+  }
+
+  serialize(): SerializedTransportV2Session {
+    this.#requireActive();
+    return {
+      version: 2,
+      session_id: this.#keys.sessionId,
+      request_key: encodeCanonicalBase64(this.#keys.requestKey),
+      response_key: encodeCanonicalBase64(this.#keys.responseKey),
+      expires_at_ms: this.#expiresAtMs
+    };
+  }
+
+  static restore(
+    value: SerializedTransportV2Session,
+    nowMs: () => number = () => Date.now()
+  ): TransportV2Session {
+    const restoredAtMs = nowMs();
+    if (
+      value.version !== 2 ||
+      !Number.isSafeInteger(value.expires_at_ms) ||
+      value.expires_at_ms <= restoredAtMs
+    ) {
+      throw new TransportV2ProtocolError("Transport v2 stored session is invalid or expired.");
+    }
+    const sessionIdBytes = hexToFixedBytes(value.session_id, 16);
+    const requestKey = decodeCanonicalBase64(value.request_key, 32);
+    const responseKey = decodeCanonicalBase64(value.response_key, 32);
+    try {
+      const session = new TransportV2Session(
+        {
+          sessionId: value.session_id,
+          sessionIdBytes,
+          requestKey,
+          responseKey
+        },
+        Math.ceil((value.expires_at_ms - restoredAtMs + SESSION_EXPIRY_SKEW_MS) / 1000),
+        restoredAtMs,
+        nowMs
+      );
+      // Preserve the enclave-issued absolute expiry exactly. The rounded
+      // constructor lifetime is used only to initialize validated state.
+      session.#expiresAtMs = value.expires_at_ms;
+      return session;
+    } finally {
+      sessionIdBytes.fill(0);
+      requestKey.fill(0);
+      responseKey.fill(0);
+    }
+  }
+
   #requireActive(): void {
     if (this.#disposed) {
       throw new TransportV2ProtocolError("Transport v2 session is disposed.");
     }
-    if (Date.now() >= this.#expiresAtMs) {
-      this.dispose();
+    if (this.#nowMs() >= this.#expiresAtMs) {
+      // The runtime retires expired sessions and disposes them only after all
+      // already-sent requests release their response-key ownership.
       throw new TransportV2ProtocolError("Transport v2 session is expired.");
     }
+  }
+
+  #requireRetained(): void {
+    if (this.#disposed) {
+      throw new TransportV2ProtocolError("Transport v2 session is disposed.");
+    }
+  }
+
+  /** Final synchronous lifetime gate for a newly sealed request. */
+  assertUsableForSend(): void {
+    this.#requireActive();
   }
 
   async sealRequest(
@@ -231,7 +315,9 @@ export class TransportV2Session {
     response: Response,
     requestId: Uint8Array
   ): Promise<TransportV2LogicalResponse> {
-    this.#requireActive();
+    // Expiry prevents new sends. It must not invalidate a request already sent
+    // while the runtime retains this session for response-key derivation.
+    this.#requireRetained();
     if (
       response.status !== 200 ||
       response.redirected ||

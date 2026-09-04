@@ -1,603 +1,566 @@
-import { beforeEach, describe, expect, test } from "bun:test";
+import { beforeEach, describe, expect, mock, test } from "bun:test";
 import {
   authenticatedApiCallWithDependencies,
+  authenticatedApiCallWithAuthorityAndDependencies,
   encryptedApiCallWithDependencies,
   openAiAuthenticatedApiCallWithDependencies,
   type EncryptedApiDependencies
 } from "../encryptedApi";
-import type { Attestation } from "../getAttestation";
-import { snapshotPcrConfig } from "../pcr";
-import { ERROR_CODE_HEADER, ERROR_CONTRACT_HEADER } from "../recovery";
+import { snapshotPcrConfig, type PcrConfig } from "../pcr";
+import {
+  clearTransportV2CacheRoot,
+  clearTransportV2Credentials,
+  type StoredTransportV2Credentials
+} from "../transportV2/auth";
+import type { TransportV2Authority, TransportV2AuthRuntime } from "../transportV2/authRuntime";
+import type {
+  TransportV2Runtime,
+  TransportV2RuntimeRequest,
+  TransportV2RuntimeResponse
+} from "../transportV2/runtime";
 
-const staleKey = new Uint8Array(32).fill(1);
-const freshKey = new Uint8Array(32).fill(2);
-const staleAttestation: Attestation = { sessionKey: staleKey, sessionId: "stale-session" };
-const freshAttestation: Attestation = { sessionKey: freshKey, sessionId: "fresh-session" };
+const appApiUrl = "https://api.example.test/gateway";
+const platformApiUrl = "https://platform.example.test/gateway";
 
-function encryptForTest(sessionKey: Uint8Array, plaintext: string): string {
-  return `${sessionKey[0]}:${plaintext}`;
+interface Harness {
+  dependencies: EncryptedApiDependencies;
+  authority: ReturnType<typeof mock>;
+  noteResponse: ReturnType<typeof mock>;
+  request: ReturnType<typeof mock>;
 }
 
-function decryptForTest(sessionKey: Uint8Array, ciphertext: string): string {
-  const prefix = `${sessionKey[0]}:`;
-  if (!ciphertext.startsWith(prefix)) throw new Error(`wrong key ${sessionKey[0]}`);
-  return ciphertext.slice(prefix.length);
+function credentials(kind: "user" | "platform", apiUrl: string): StoredTransportV2Credentials {
+  return {
+    kind,
+    principalId: `${kind}-principal`,
+    apiOrigin: new URL(apiUrl).origin,
+    revision: 7,
+    accessToken: `${kind}-access-token`,
+    refreshToken: `${kind}-refresh-token`,
+    accessExpiresAtUnixSeconds: 4_000_000_000,
+    refreshExpiresAtUnixSeconds: 4_000_000_000
+  };
 }
 
-function contractError(status: number, message: string, code?: string): Response {
-  const headers = new Headers({ [ERROR_CONTRACT_HEADER]: "1" });
-  if (code) headers.set(ERROR_CODE_HEADER, code);
-  return Response.json({ status, message }, { status, headers });
+function authorityFor(kind: "user" | "platform", apiUrl: string): TransportV2Authority {
+  const stored = credentials(kind, apiUrl);
+  return {
+    credential: { kind: "bearer", value: stored.accessToken },
+    credentials: stored,
+    snapshot: {
+      kind,
+      principalId: stored.principalId,
+      apiOrigin: stored.apiOrigin,
+      revision: stored.revision
+    },
+    assertCurrent() {}
+  };
 }
 
-function encryptedSuccess(sessionKey: Uint8Array, value: unknown): Response {
-  return Response.json(
-    { encrypted: encryptForTest(sessionKey, JSON.stringify(value)) },
-    { headers: { [ERROR_CONTRACT_HEADER]: "1" } }
+function exchange(
+  response: Response,
+  rememberOAuthContinuation: TransportV2RuntimeResponse["rememberOAuthContinuation"] = () => {}
+): TransportV2RuntimeResponse {
+  return { response, rememberOAuthContinuation };
+}
+
+function harness(
+  implementation: (input: TransportV2RuntimeRequest) => Promise<TransportV2RuntimeResponse>
+): Harness {
+  const request = mock(implementation);
+  const authority = mock(async (apiUrl: string, _pcrConfig: unknown, kind: "user" | "platform") =>
+    authorityFor(kind, apiUrl)
   );
-}
-
-function dependencies(overrides: Partial<EncryptedApiDependencies> = {}): EncryptedApiDependencies {
+  const noteResponse = mock(() => {});
+  const runtime = { request } as unknown as TransportV2Runtime;
+  const auth = { authority, noteResponse } as unknown as TransportV2AuthRuntime;
   return {
-    decryptMessage: decryptForTest,
-    encryptMessage: encryptForTest,
-    fetch: async () => new Response(null, { status: 500 }),
-    getAttestation: async () => staleAttestation,
-    getApiPcrConfig: () => snapshotPcrConfig({ environment: "development" }),
-    getApiUrl: () => "https://api.example.test",
-    getPlatformApiUrl: () => "https://platform.example.test",
-    getPlatformPcrConfig: () => snapshotPcrConfig({ environment: "development" }),
-    getAccessToken: () => window.localStorage.getItem("access_token"),
-    refreshAccessToken: async () => {},
-    resolveEndpoint: (url) => ({
-      baseUrl: "https://api.example.test",
-      context: url.includes("/platform/") ? "platform" : "app"
-    }),
-    ...overrides
+    request,
+    authority,
+    noteResponse,
+    dependencies: {
+      runtime,
+      auth,
+      getApiPcrConfig: () => snapshotPcrConfig({ environment: "development" }),
+      getApiUrl: () => appApiUrl,
+      getPlatformApiUrl: () => platformApiUrl,
+      getPlatformPcrConfig: () => snapshotPcrConfig({ environment: "production" })
+    }
   };
 }
 
-function recordedRequest(init: RequestInit | undefined, sessionKey: Uint8Array) {
-  const headers = new Headers(init?.headers);
-  const envelope = init?.body
-    ? (JSON.parse(String(init.body)) as { encrypted: string })
-    : undefined;
+function copyInput(input: TransportV2RuntimeRequest): TransportV2RuntimeRequest {
   return {
-    authorization: headers.get("Authorization"),
-    method: init?.method,
-    plaintext: envelope ? decryptForTest(sessionKey, envelope.encrypted) : undefined,
-    sessionId: headers.get("x-session-id")
+    ...input,
+    request: {
+      ...input.request,
+      headers: input.request.headers?.map((header) => ({ ...header })),
+      body: input.request.body ? new Uint8Array(input.request.body) : input.request.body,
+      cacheNamespaceRoot: input.request.cacheNamespaceRoot
+        ? new Uint8Array(input.request.cacheNamespaceRoot)
+        : undefined
+    }
   };
 }
 
-describe("encrypted API recovery", () => {
+function jsonResponse(value: unknown, init?: ResponseInit): Response {
+  return new Response(JSON.stringify(value), {
+    ...init,
+    headers: { "content-type": "application/json", ...init?.headers }
+  });
+}
+
+describe("simplified Transport V2 encrypted API seam", () => {
   beforeEach(() => {
-    window.localStorage.clear();
-    window.sessionStorage.clear();
+    globalThis.localStorage?.clear();
+    globalThis.sessionStorage?.clear();
+    clearTransportV2Credentials(appApiUrl);
+    clearTransportV2CacheRoot(appApiUrl);
+    clearTransportV2Credentials(platformApiUrl);
+    clearTransportV2CacheRoot(platformApiUrl);
   });
 
-  test("v1 session recovery re-encrypts one exact typed request", async () => {
-    let currentAttestation = staleAttestation;
-    let forcedAttestations = 0;
-    const data = { operation: "original" };
-    const urls: string[] = [];
-    const requests: ReturnType<typeof recordedRequest>[] = [];
-    const deps = dependencies({
-      getAttestation: async (forceRefresh) => {
-        if (forceRefresh) {
-          forcedAttestations += 1;
-          currentAttestation = freshAttestation;
-        }
-        return currentAttestation;
-      },
-      fetch: async (input, init) => {
-        urls.push(String(input));
-        const key =
-          new Headers(init?.headers).get("x-session-id") === "stale-session" ? staleKey : freshKey;
-        requests.push(recordedRequest(init, key));
-        if (requests.length === 1) {
-          data.operation = "mutated";
-          return contractError(400, "Bad Request", "session_not_found");
-        }
-        return encryptedSuccess(freshKey, { ok: true });
-      }
+  test("puts the credential, query, body presence, and JSON bytes in the logical request", async () => {
+    const seen: TransportV2RuntimeRequest[] = [];
+    const testHarness = harness(async (input) => {
+      seen.push(copyInput(input));
+      return exchange(jsonResponse({ ok: true }));
     });
 
-    const result = await encryptedApiCallWithDependencies<{ operation: string }, { ok: boolean }>(
-      "https://api.example.test/protected/action?mode=exact",
-      "PATCH",
-      data,
-      "api-key",
+    await encryptedApiCallWithDependencies<undefined, { ok: boolean }>(
+      `${appApiUrl}/protected/user?include=profile`,
+      "get",
       undefined,
-      deps
+      "explicit-bearer",
+      undefined,
+      testHarness.dependencies
+    );
+    await encryptedApiCallWithDependencies<{ enabled: boolean }, { ok: boolean }>(
+      `${appApiUrl}/protected/settings`,
+      "patch",
+      { enabled: true },
+      "explicit-bearer",
+      undefined,
+      testHarness.dependencies
     );
 
-    expect(result).toEqual({ ok: true });
-    expect(forcedAttestations).toBe(1);
-    expect(urls).toEqual([
-      "https://api.example.test/protected/action?mode=exact",
-      "https://api.example.test/protected/action?mode=exact"
-    ]);
-    expect(requests).toEqual([
-      {
-        authorization: "Bearer api-key",
-        method: "PATCH",
-        plaintext: '{"operation":"original"}',
-        sessionId: "stale-session"
-      },
-      {
-        authorization: "Bearer api-key",
-        method: "PATCH",
-        plaintext: '{"operation":"original"}',
-        sessionId: "fresh-session"
-      }
-    ]);
+    expect(seen[0].request).toEqual({
+      credential: { kind: "bearer", value: "explicit-bearer" },
+      cacheNamespaceRoot: undefined,
+      method: "GET",
+      target: "/protected/user?include=profile",
+      headers: undefined,
+      body: undefined
+    });
+    expect(seen[1].request).toMatchObject({
+      credential: { kind: "bearer", value: "explicit-bearer" },
+      method: "PATCH",
+      target: "/protected/settings",
+      headers: [{ name: "content-type", value: "application/json" }]
+    });
+    expect(new TextDecoder().decode(seen[1].request.body)).toBe('{"enabled":true}');
+    expect(testHarness.request).toHaveBeenCalledTimes(2);
+    expect(testHarness.authority).toHaveBeenCalledTimes(0);
   });
 
-  test("shares one session renewal across concurrent typed stale requests", async () => {
-    const callCount = 8;
-    let currentAttestation = staleAttestation;
-    let forcedAttestations = 0;
-    let attestationDocuments = 0;
-    let keyExchanges = 0;
-    let staleSends = 0;
-    let releaseStaleResponses!: () => void;
-    const allStaleRequestsStarted = new Promise<void>((resolve) => {
-      releaseStaleResponses = resolve;
-    });
-    const requests: Array<
-      ReturnType<typeof recordedRequest> & {
-        ciphertext: string | undefined;
-      }
-    > = [];
-
-    const deps = dependencies({
-      getAttestation: async (forceRefresh) => {
-        if (forceRefresh) {
-          forcedAttestations += 1;
-          attestationDocuments += 1;
-          await new Promise((resolve) => setTimeout(resolve, 10));
-          keyExchanges += 1;
-          currentAttestation = freshAttestation;
-        }
-        return currentAttestation;
-      },
-      fetch: async (_input, init) => {
-        const sessionId = new Headers(init?.headers).get("x-session-id");
-        const key = sessionId === freshAttestation.sessionId ? freshKey : staleKey;
-        const envelope = init?.body
-          ? (JSON.parse(String(init.body)) as { encrypted: string })
-          : undefined;
-        const request = {
-          ...recordedRequest(init, key),
-          ciphertext: envelope?.encrypted
-        };
-        requests.push(request);
-
-        if (sessionId === staleAttestation.sessionId) {
-          staleSends += 1;
-          if (staleSends === callCount) releaseStaleResponses();
-          await allStaleRequestsStarted;
-          return contractError(400, "Bad Request", "session_not_found");
-        }
-
-        const payload = JSON.parse(request.plaintext || "{}") as { operation?: string };
-        return encryptedSuccess(freshKey, { operation: payload.operation });
-      }
+  test("selects independent user and platform authority and attested endpoints", async () => {
+    const seen: TransportV2RuntimeRequest[] = [];
+    const testHarness = harness(async (input) => {
+      seen.push(copyInput(input));
+      return exchange(jsonResponse({ ok: true }));
     });
 
-    const results = await Promise.all(
-      Array.from({ length: callCount }, (_, index) =>
-        encryptedApiCallWithDependencies<{ operation: string }, { operation: string }>(
-          "https://api.example.test/protected/action",
-          "POST",
-          { operation: `call-${index}` },
-          "api-key",
-          undefined,
-          deps
-        )
-      )
+    await authenticatedApiCallWithDependencies<undefined, { ok: boolean }>(
+      `${appApiUrl}/protected/user`,
+      "GET",
+      undefined,
+      undefined,
+      testHarness.dependencies
+    );
+    await authenticatedApiCallWithDependencies<undefined, { ok: boolean }>(
+      `${platformApiUrl}/platform/organizations`,
+      "GET",
+      undefined,
+      undefined,
+      testHarness.dependencies
     );
 
-    expect(results).toEqual(
-      Array.from({ length: callCount }, (_, index) => ({ operation: `call-${index}` }))
+    expect(testHarness.authority).toHaveBeenNthCalledWith(
+      1,
+      appApiUrl,
+      expect.objectContaining({ environment: "development" }),
+      "user"
     );
-    expect(forcedAttestations).toBe(1);
-    expect(attestationDocuments).toBe(1);
-    expect(keyExchanges).toBe(1);
-    expect(requests.filter(({ sessionId }) => sessionId === "stale-session")).toHaveLength(
-      callCount
+    expect(testHarness.authority).toHaveBeenNthCalledWith(
+      2,
+      platformApiUrl,
+      expect.objectContaining({ environment: "production" }),
+      "platform"
     );
-    const freshRequests = requests.filter(({ sessionId }) => sessionId === "fresh-session");
-    expect(freshRequests).toHaveLength(callCount);
-    expect(freshRequests.every(({ ciphertext }) => ciphertext?.startsWith("2:") === true)).toBe(
-      true
-    );
-    expect(freshRequests.map(({ plaintext }) => plaintext).sort()).toEqual(
-      Array.from({ length: callCount }, (_, index) => `{"operation":"call-${index}"}`).sort()
-    );
+    expect(seen.map(({ apiUrl }) => apiUrl)).toEqual([appApiUrl, platformApiUrl]);
+    expect(seen.map(({ request }) => request.credential)).toEqual([
+      { kind: "bearer", value: "user-access-token" },
+      { kind: "bearer", value: "platform-access-token" }
+    ]);
+    expect(seen.map(({ request }) => request.target)).toEqual([
+      "/protected/user",
+      "/platform/organizations"
+    ]);
+    expect(testHarness.noteResponse).toHaveBeenCalledTimes(2);
   });
 
-  test("a staggered typed stale response joins after the leader clears the cache", async () => {
-    const lateKey = new Uint8Array(32).fill(3);
-    const lateAttestation: Attestation = {
-      sessionKey: lateKey,
-      sessionId: "late-extra-session"
+  test("pins endpoint and PCR policy across an asynchronous authority lookup", async () => {
+    const seen: TransportV2RuntimeRequest[] = [];
+    const testHarness = harness(async (input) => {
+      seen.push(copyInput(input));
+      return exchange(jsonResponse({ ok: true }));
+    });
+    let configuredApiUrl = appApiUrl;
+    let configuredPcr: PcrConfig = {
+      environment: "development",
+      remoteAttestation: false,
+      pcr0DevValues: ["11".repeat(48)]
     };
-    let currentAttestation: Attestation | null = staleAttestation;
-    let forcedAttestations = 0;
-    let fullHandshakes = 0;
-    let staleSends = 0;
-    let releaseCacheCleared!: () => void;
-    const cacheCleared = new Promise<void>((resolve) => {
-      releaseCacheCleared = resolve;
-    });
-    let releaseLateResponse!: () => void;
-    const lateResponseReturned = new Promise<void>((resolve) => {
-      releaseLateResponse = resolve;
-    });
-    const sessionIds: Array<string | null> = [];
-
-    const deps = dependencies({
-      getAttestation: async (forceRefresh) => {
-        if (forceRefresh) {
-          forcedAttestations += 1;
-          fullHandshakes += 1;
-          currentAttestation = null;
-          releaseCacheCleared();
-          await lateResponseReturned;
-          await new Promise((resolve) => setTimeout(resolve, 10));
-          currentAttestation = freshAttestation;
-          return freshAttestation;
-        }
-        if (currentAttestation) return currentAttestation;
-
-        fullHandshakes += 1;
-        currentAttestation = lateAttestation;
-        return lateAttestation;
-      },
-      fetch: async (_input, init) => {
-        const sessionId = new Headers(init?.headers).get("x-session-id");
-        sessionIds.push(sessionId);
-        if (sessionId === staleAttestation.sessionId) {
-          staleSends += 1;
-          if (staleSends === 2) {
-            await cacheCleared;
-            releaseLateResponse();
-          }
-          return contractError(400, "Bad Request", "session_not_found");
-        }
-
-        const key = sessionId === freshAttestation.sessionId ? freshKey : lateKey;
-        return encryptedSuccess(key, { ok: true });
+    testHarness.dependencies.getApiUrl = () => configuredApiUrl;
+    testHarness.dependencies.getApiPcrConfig = () => configuredPcr;
+    testHarness.authority.mockImplementation(
+      async (authorityApiUrl: string, authorityPcr: PcrConfig, kind: "user" | "platform") => {
+        expect(authorityApiUrl).toBe(appApiUrl);
+        expect(authorityPcr).toMatchObject({
+          environment: "development",
+          remoteAttestation: false,
+          pcr0DevValues: ["11".repeat(48)]
+        });
+        configuredApiUrl = "https://replacement.example.test/gateway";
+        configuredPcr = {
+          environment: "production",
+          remoteAttestation: true,
+          pcr0Values: ["22".repeat(48)]
+        };
+        return authorityFor(kind, authorityApiUrl);
       }
-    });
-
-    const results = await Promise.all(
-      ["first", "late"].map((operation) =>
-        encryptedApiCallWithDependencies<{ operation: string }, { ok: boolean }>(
-          "https://api.example.test/protected/action",
-          "POST",
-          { operation },
-          "api-key",
-          undefined,
-          deps
-        )
-      )
     );
 
-    expect(results).toEqual([{ ok: true }, { ok: true }]);
-    expect(forcedAttestations).toBe(1);
-    expect(fullHandshakes).toBe(1);
-    expect(sessionIds.filter((sessionId) => sessionId === "stale-session")).toHaveLength(2);
-    expect(sessionIds.filter((sessionId) => sessionId === "fresh-session")).toHaveLength(2);
-    expect(sessionIds).not.toContain("late-extra-session");
+    await authenticatedApiCallWithDependencies<undefined, { ok: boolean }>(
+      `${appApiUrl}/protected/user`,
+      "GET",
+      undefined,
+      undefined,
+      testHarness.dependencies
+    );
+
+    expect(seen).toHaveLength(1);
+    expect(seen[0].apiUrl).toBe(appApiUrl);
+    expect(seen[0].pcrConfig).toMatchObject({
+      environment: "development",
+      remoteAttestation: false,
+      pcr0DevValues: ["11".repeat(48)]
+    });
+    expect(seen[0].request.target).toBe("/protected/user");
+    expect(seen[0].request.credential).toEqual({
+      kind: "bearer",
+      value: "user-access-token"
+    });
   });
 
-  test("v1 access-token expiry refreshes once and replays with the new token", async () => {
-    window.localStorage.setItem("access_token", "expired-access-token");
-    let tokenRefreshes = 0;
-    const authorizations: Array<string | null> = [];
-    const deps = dependencies({
-      refreshAccessToken: async () => {
-        tokenRefreshes += 1;
-        window.localStorage.setItem("access_token", "fresh-access-token");
+  test("returns the exact authority used for the authenticated send and final fence", async () => {
+    let sent: TransportV2RuntimeRequest | undefined;
+    const testHarness = harness(async (input) => {
+      sent = input;
+      input.beforeSend?.();
+      return exchange(jsonResponse({ ok: true }));
+    });
+    const result = await authenticatedApiCallWithAuthorityAndDependencies<
+      undefined,
+      { ok: boolean }
+    >(
+      `${appApiUrl}/protected/user`,
+      "GET",
+      undefined,
+      undefined,
+      {
+        apiUrl: appApiUrl,
+        pcrConfig: { environment: "development", remoteAttestation: false },
+        kind: "user"
       },
-      fetch: async (_input, init) => {
-        authorizations.push(new Headers(init?.headers).get("Authorization"));
-        return authorizations.length === 1
-          ? contractError(401, "Invalid JWT", "access_token_expired")
-          : encryptedSuccess(staleKey, { ok: true });
-      }
+      testHarness.dependencies
+    );
+
+    expect(result.data).toEqual({ ok: true });
+    expect(result.authority.snapshot).toMatchObject({
+      kind: "user",
+      apiOrigin: "https://api.example.test",
+      revision: 7
+    });
+    expect(result.apiUrl).toBe(appApiUrl);
+    expect(result.pcrConfig).toMatchObject({ environment: "development" });
+    expect(testHarness.authority).toHaveBeenCalledTimes(1);
+    expect(sent?.request.credential).toBe(result.authority.credential);
+    expect(sent?.beforeSend).toBeDefined();
+  });
+
+  test("uses an explicit API key and one stable cache root for API-key and user inference", async () => {
+    const seen: TransportV2RuntimeRequest[] = [];
+    const testHarness = harness(async (input) => {
+      seen.push(copyInput(input));
+      return exchange(jsonResponse({ object: "list", data: [] }));
     });
 
-    expect(
-      await authenticatedApiCallWithDependencies<undefined, { ok: boolean }>(
-        "https://api.example.test/protected/user",
+    await openAiAuthenticatedApiCallWithDependencies<undefined, unknown>(
+      `${appApiUrl}/v1/models`,
+      "GET",
+      undefined,
+      undefined,
+      "api-key",
+      testHarness.dependencies
+    );
+    await openAiAuthenticatedApiCallWithDependencies<undefined, unknown>(
+      `${appApiUrl}/v1/models`,
+      "GET",
+      undefined,
+      undefined,
+      undefined,
+      testHarness.dependencies
+    );
+
+    expect(seen.map(({ request }) => request.credential)).toEqual([
+      { kind: "api_key", value: "api-key" },
+      { kind: "bearer", value: "user-access-token" }
+    ]);
+    expect(seen[0].request.cacheNamespaceRoot).toHaveLength(32);
+    expect(seen[1].request.cacheNamespaceRoot).toEqual(seen[0].request.cacheNamespaceRoot);
+    expect(testHarness.authority).toHaveBeenCalledTimes(1);
+
+    await expect(
+      openAiAuthenticatedApiCallWithDependencies<undefined, unknown>(
+        `${appApiUrl}/v1/models`,
         "GET",
         undefined,
         undefined,
-        deps
+        "",
+        testHarness.dependencies
       )
-    ).toEqual({ ok: true });
-    expect(tokenRefreshes).toBe(1);
-    expect(authorizations).toEqual(["Bearer expired-access-token", "Bearer fresh-access-token"]);
+    ).rejects.toThrow("API key cannot be empty");
+    expect(testHarness.request).toHaveBeenCalledTimes(2);
   });
 
-  for (const ordinary of [
-    { status: 400, code: undefined, message: "Encryption error" },
-    { status: 401, code: "invalid_jwt", message: "Invalid JWT" }
-  ]) {
-    test(`v1 ordinary ${ordinary.status} fails closed`, async () => {
-      window.localStorage.setItem("access_token", "access-token");
-      let sends = 0;
-      let forcedAttestations = 0;
-      let tokenRefreshes = 0;
-      const deps = dependencies({
-        getAttestation: async (forceRefresh) => {
-          if (forceRefresh) forcedAttestations += 1;
-          return staleAttestation;
-        },
-        refreshAccessToken: async () => {
-          tokenRefreshes += 1;
-        },
-        fetch: async () => {
-          sends += 1;
-          return contractError(ordinary.status, ordinary.message, ordinary.code);
-        }
-      });
+  test("keeps account-establishment routes anonymous for user and platform APIs", async () => {
+    const seen: TransportV2RuntimeRequest[] = [];
+    const testHarness = harness(async (input) => {
+      seen.push(copyInput(input));
+      return exchange(jsonResponse({ accepted: true }));
+    });
 
-      await expect(
-        authenticatedApiCallWithDependencies<undefined, never>(
-          "https://api.example.test/protected/user",
-          "GET",
-          undefined,
-          undefined,
-          deps
-        )
-      ).rejects.toThrow(ordinary.message);
-      expect(sends).toBe(1);
-      expect(forcedAttestations).toBe(0);
-      expect(tokenRefreshes).toBe(0);
+    await encryptedApiCallWithDependencies<{ email: string }, { accepted: boolean }>(
+      `${appApiUrl}/login`,
+      "POST",
+      { email: "person@example.test" },
+      undefined,
+      undefined,
+      testHarness.dependencies
+    );
+    await encryptedApiCallWithDependencies<{ code: string }, { accepted: boolean }>(
+      `${platformApiUrl}/platform/password-reset/confirm`,
+      "POST",
+      { code: "reset-code" },
+      undefined,
+      undefined,
+      testHarness.dependencies
+    );
+
+    expect(seen.map(({ request }) => request.credential)).toEqual([undefined, undefined]);
+    expect(seen.map(({ apiUrl }) => apiUrl)).toEqual([appApiUrl, platformApiUrl]);
+    expect(testHarness.authority).toHaveBeenCalledTimes(0);
+  });
+
+  for (const provider of ["github", "google"] as const) {
+    test(`${provider} initiation preserves public csrf_token shape and exact continuation state`, async () => {
+      const remember = mock(() => {});
+      const state = `${provider}-state`;
+      const testHarness = harness(async () =>
+        exchange(jsonResponse({ auth_url: `https://${provider}.example/auth`, state }), remember)
+      );
+
+      const value = await encryptedApiCallWithDependencies<
+        { client_id: string },
+        { auth_url: string; csrf_token: string }
+      >(
+        `${appApiUrl}/auth/${provider}`,
+        "POST",
+        { client_id: "client-id" },
+        undefined,
+        undefined,
+        testHarness.dependencies
+      );
+
+      expect(value).toEqual({
+        auth_url: `https://${provider}.example/auth`,
+        csrf_token: state
+      });
+      expect(remember).toHaveBeenCalledWith(provider, state);
+      expect(testHarness.authority).toHaveBeenCalledTimes(0);
     });
   }
 
-  test("headerless 400 and 401 retain legacy recovery", async () => {
-    window.localStorage.setItem("access_token", "expired-access-token");
-    let currentAttestation = staleAttestation;
-    let sessionSends = 0;
-    let authSends = 0;
-    let forcedAttestations = 0;
-    let tokenRefreshes = 0;
-    const deps = dependencies({
-      getAttestation: async (forceRefresh) => {
-        if (forceRefresh) {
-          forcedAttestations += 1;
-          currentAttestation = freshAttestation;
-        }
-        return currentAttestation;
-      },
-      refreshAccessToken: async () => {
-        tokenRefreshes += 1;
-        window.localStorage.setItem("access_token", "fresh-access-token");
-      },
-      fetch: async (input) => {
-        if (String(input).endsWith("/legacy-session")) {
-          sessionSends += 1;
-          return sessionSends === 1
-            ? Response.json({ message: "Bad Request" }, { status: 400 })
-            : encryptedSuccess(freshKey, { ok: "session" });
-        }
-        authSends += 1;
-        return authSends === 1
-          ? Response.json({ message: "Invalid JWT" }, { status: 401 })
-          : encryptedSuccess(freshKey, { ok: "auth" });
-      }
+  test("binds an OAuth callback to the exact provider and state without re-saving it", async () => {
+    const remember = mock(() => {});
+    let seen: TransportV2RuntimeRequest | undefined;
+    const testHarness = harness(async (input) => {
+      seen = copyInput(input);
+      return exchange(jsonResponse({ access_token: "access", refresh_token: "refresh" }), remember);
     });
 
-    expect(
-      await encryptedApiCallWithDependencies<undefined, { ok: string }>(
-        "https://api.example.test/legacy-session",
-        "GET",
-        undefined,
-        undefined,
-        undefined,
-        deps
-      )
-    ).toEqual({ ok: "session" });
-    expect(
-      await authenticatedApiCallWithDependencies<undefined, { ok: string }>(
-        "https://api.example.test/protected/legacy-auth",
-        "GET",
-        undefined,
-        undefined,
-        deps
-      )
-    ).toEqual({ ok: "auth" });
-    expect(sessionSends).toBe(2);
-    expect(authSends).toBe(2);
-    expect(forcedAttestations).toBe(1);
-    expect(tokenRefreshes).toBe(1);
+    const value = await encryptedApiCallWithDependencies<
+      { code: string; state: string },
+      { access_token: string; refresh_token: string }
+    >(
+      `${appApiUrl}/auth/github/callback`,
+      "POST",
+      { code: "provider-code", state: "exact-state" },
+      undefined,
+      undefined,
+      testHarness.dependencies
+    );
+
+    expect(value).toEqual({ access_token: "access", refresh_token: "refresh" });
+    expect(seen?.oauthCallback).toEqual({ provider: "github", state: "exact-state" });
+    expect(seen?.request.credential).toBeUndefined();
+    expect(remember).toHaveBeenCalledTimes(0);
   });
 
-  test("one target replay budget stops alternating recovery reasons", async () => {
-    window.localStorage.setItem("access_token", "access-token");
-    let currentAttestation = staleAttestation;
-    let sends = 0;
-    let forcedAttestations = 0;
-    let tokenRefreshes = 0;
-    const deps = dependencies({
-      getAttestation: async (forceRefresh) => {
-        if (forceRefresh) {
-          forcedAttestations += 1;
-          currentAttestation = freshAttestation;
-        }
-        return currentAttestation;
-      },
-      refreshAccessToken: async () => {
-        tokenRefreshes += 1;
-      },
-      fetch: async () => {
-        sends += 1;
-        return sends === 1
-          ? contractError(400, "Bad Request", "session_not_found")
-          : contractError(401, "Invalid JWT", "access_token_expired");
-      }
+  test("returns the typed completed Responses object from authenticated SSE", async () => {
+    const completed = { id: "resp_123", status: "completed", output: [] };
+    const sse = [
+      'event: response.created\ndata: {"type":"response.created"}',
+      `event: response.completed\ndata: ${JSON.stringify({
+        type: "response.completed",
+        response: completed
+      })}`,
+      "data: [DONE]",
+      ""
+    ].join("\n\n");
+    const testHarness = harness(async () =>
+      exchange(new Response(sse, { headers: { "content-type": "text/event-stream" } }))
+    );
+
+    const value = await openAiAuthenticatedApiCallWithDependencies<
+      { model: string },
+      typeof completed
+    >(
+      `${appApiUrl}/v1/responses`,
+      "POST",
+      { model: "model" },
+      undefined,
+      "api-key",
+      testHarness.dependencies
+    );
+
+    expect(value).toEqual(completed);
+    expect(testHarness.request).toHaveBeenCalledTimes(1);
+  });
+
+  for (const stream of [
+    {
+      name: "explicit error",
+      body: 'event: response.failed\ndata: {"type":"response.failed","error":{"message":"provider failed"}}\n\n',
+      error: "provider failed"
+    },
+    {
+      name: "missing application terminal",
+      body: 'event: response.created\ndata: {"type":"response.created"}\n\n',
+      error: "ended without a completed response"
+    },
+    {
+      name: "invalid JSON",
+      body: "event: response.completed\ndata: not-json\n\n",
+      error: "contained invalid JSON"
+    }
+  ]) {
+    test(`rejects Responses SSE with ${stream.name}`, async () => {
+      const testHarness = harness(async () => exchange(new Response(stream.body)));
+      await expect(
+        openAiAuthenticatedApiCallWithDependencies<{ model: string }, unknown>(
+          `${appApiUrl}/v1/responses`,
+          "POST",
+          { model: "model" },
+          undefined,
+          "api-key",
+          testHarness.dependencies
+        )
+      ).rejects.toThrow(stream.error);
+      expect(testHarness.request).toHaveBeenCalledTimes(1);
     });
+  }
+
+  test("surfaces authenticated logical errors and notifies user auth without retrying", async () => {
+    const logicalError = jsonResponse(
+      { message: "operation denied" },
+      {
+        status: 403,
+        headers: {
+          "x-opensecret-error-contract": "1",
+          "x-opensecret-error-code": "operation_denied"
+        }
+      }
+    );
+    const testHarness = harness(async () => exchange(logicalError));
 
     await expect(
       authenticatedApiCallWithDependencies<undefined, never>(
-        "https://api.example.test/protected/action",
-        "POST",
+        `${appApiUrl}/protected/user`,
+        "GET",
         undefined,
-        undefined,
-        deps
+        "fallback error",
+        testHarness.dependencies
       )
-    ).rejects.toThrow("Invalid JWT");
-    expect(sends).toBe(2);
-    expect(forcedAttestations).toBe(1);
-    expect(tokenRefreshes).toBe(0);
+    ).rejects.toThrow("operation denied");
+    expect(testHarness.request).toHaveBeenCalledTimes(1);
+    expect(testHarness.noteResponse).toHaveBeenCalledTimes(1);
   });
 
-  test("expired target JWT can refresh through one stale-session repair", async () => {
-    window.localStorage.setItem("access_token", "expired-access-token");
-    let currentAttestation = staleAttestation;
-    let forcedAttestations = 0;
-    let targetSends = 0;
-    let refreshSends = 0;
-    const targetRequests: ReturnType<typeof recordedRequest>[] = [];
-    const refreshRequests: ReturnType<typeof recordedRequest>[] = [];
-    let deps!: EncryptedApiDependencies;
-
-    deps = dependencies({
-      getAttestation: async (forceRefresh) => {
-        if (forceRefresh) {
-          forcedAttestations += 1;
-          currentAttestation = freshAttestation;
-        }
-        return currentAttestation;
-      },
-      refreshAccessToken: async () => {
-        const tokens = await encryptedApiCallWithDependencies<
-          { refresh_token: string },
-          { access_token: string; refresh_token: string }
-        >(
-          "https://api.example.test/refresh",
-          "POST",
-          { refresh_token: "refresh-token" },
-          undefined,
-          undefined,
-          deps
-        );
-        window.localStorage.setItem("access_token", tokens.access_token);
-      },
-      fetch: async (input, init) => {
-        const url = String(input);
-        const sessionId = new Headers(init?.headers).get("x-session-id");
-        const key = sessionId === "fresh-session" ? freshKey : staleKey;
-        if (url.includes("/refresh")) {
-          refreshSends += 1;
-          refreshRequests.push(recordedRequest(init, key));
-          return refreshSends === 1
-            ? contractError(400, "Bad Request", "session_not_found")
-            : encryptedSuccess(freshKey, {
-                access_token: "fresh-access-token",
-                refresh_token: "fresh-refresh-token"
-              });
-        }
-
-        targetSends += 1;
-        targetRequests.push(recordedRequest(init, key));
-        return targetSends === 1
-          ? contractError(401, "Invalid JWT", "access_token_expired")
-          : encryptedSuccess(freshKey, { ok: true });
-      }
+  test("does not dispatch when authenticated API authority changes in flight", async () => {
+    let outerSends = 0;
+    const testHarness = harness(async (input) => {
+      input.beforeSend?.();
+      outerSends += 1;
+      return exchange(jsonResponse({ ok: true }));
     });
-
-    expect(
-      await authenticatedApiCallWithDependencies<{ prompt: string }, { ok: boolean }>(
-        "https://api.example.test/v1/chat/completions?stream=false",
-        "POST",
-        { prompt: "same prompt" },
-        undefined,
-        deps
-      )
-    ).toEqual({ ok: true });
-    expect(targetSends).toBe(2);
-    expect(refreshSends).toBe(2);
-    expect(forcedAttestations).toBe(1);
-    expect(refreshRequests.map(({ plaintext }) => plaintext)).toEqual([
-      '{"refresh_token":"refresh-token"}',
-      '{"refresh_token":"refresh-token"}'
-    ]);
-    expect(targetRequests).toEqual([
-      {
-        authorization: "Bearer expired-access-token",
-        method: "POST",
-        plaintext: '{"prompt":"same prompt"}',
-        sessionId: "stale-session"
-      },
-      {
-        authorization: "Bearer fresh-access-token",
-        method: "POST",
-        plaintext: '{"prompt":"same prompt"}',
-        sessionId: "fresh-session"
+    const selected = authorityFor("user", appApiUrl);
+    testHarness.authority.mockImplementation(async () => ({
+      ...selected,
+      assertCurrent() {
+        throw new Error("Transport v2 authentication state changed before send.");
       }
-    ]);
-  });
-
-  test("a successful response decryption failure never replays", async () => {
-    let sends = 0;
-    let forcedAttestations = 0;
-    const deps = dependencies({
-      getAttestation: async (forceRefresh) => {
-        if (forceRefresh) forcedAttestations += 1;
-        return staleAttestation;
-      },
-      fetch: async () => {
-        sends += 1;
-        return Response.json({ encrypted: '2:{"ok":true}' });
-      }
-    });
+    }));
 
     await expect(
-      encryptedApiCallWithDependencies<undefined, never>(
-        "https://api.example.test/action",
-        "POST",
-        undefined,
-        undefined,
-        undefined,
-        deps
-      )
-    ).rejects.toThrow("Failed to decrypt or parse the response");
-    expect(sends).toBe(1);
-    expect(forcedAttestations).toBe(0);
-  });
-
-  test("API-key 401 never invokes access-token refresh", async () => {
-    let sends = 0;
-    let tokenRefreshes = 0;
-    const deps = dependencies({
-      refreshAccessToken: async () => {
-        tokenRefreshes += 1;
-      },
-      fetch: async () => {
-        sends += 1;
-        return contractError(401, "Invalid JWT", "access_token_expired");
-      }
-    });
-
-    await expect(
-      openAiAuthenticatedApiCallWithDependencies<undefined, never>(
-        "https://api.example.test/v1/models",
+      authenticatedApiCallWithDependencies<undefined, never>(
+        `${appApiUrl}/protected/user`,
         "GET",
         undefined,
         undefined,
-        "api-key",
-        deps
+        testHarness.dependencies
       )
-    ).rejects.toThrow("Invalid JWT");
-    expect(sends).toBe(1);
-    expect(tokenRefreshes).toBe(0);
+    ).rejects.toThrow("authentication state changed");
+    expect(testHarness.request).toHaveBeenCalledTimes(1);
+    expect(outerSends).toBe(0);
+  });
+
+  test("does not retry, resend, or fall back when V2 fails ambiguously", async () => {
+    const testHarness = harness(async () => {
+      throw new Error("transport v2 connection dropped after send");
+    });
+
+    await expect(
+      encryptedApiCallWithDependencies<{ action: string }, never>(
+        `${appApiUrl}/protected/action`,
+        "POST",
+        { action: "once" },
+        "explicit-bearer",
+        undefined,
+        testHarness.dependencies
+      )
+    ).rejects.toThrow("transport v2 connection dropped after send");
+    expect(testHarness.request).toHaveBeenCalledTimes(1);
   });
 });

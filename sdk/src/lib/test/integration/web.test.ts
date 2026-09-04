@@ -1,6 +1,5 @@
 import { afterEach, beforeEach, expect, mock, test } from "bun:test";
-import { decryptMessage, encryptMessage } from "../../encryption";
-import { cacheAttestationSessionForTesting } from "../../getAttestation";
+import { encodeURLSafe } from "@stablelib/base64";
 import type { PcrConfig } from "../../pcr";
 import {
   getApiPcrConfig,
@@ -13,39 +12,60 @@ import {
   type WebSearchRequest,
   type WebSearchResponse
 } from "../../api";
+import { clearTransportV2Credentials, installTransportV2Credentials } from "../../transportV2/auth";
+import {
+  transportV2Runtime,
+  type TransportV2RuntimeRequest,
+  type TransportV2RuntimeResponse
+} from "../../transportV2/runtime";
 
 const apiUrl = "https://api.example.com";
-const accessToken = "web-access-token";
-const sessionId = "web-session-id";
-const sessionKey = new Uint8Array(32).fill(19);
-const verifiedPcr0 =
-  "eeddbb58f57c38894d6d5af5e575fbe791c5bf3bbcfb5df8da8cfcf0c2e1da1913108e6a762112444740b88c163d7f4b";
-const pcrConfig: PcrConfig = { pcr0Values: [verifiedPcr0], remoteAttestation: false };
-const originalFetch = globalThis.fetch;
+const pcrConfig: PcrConfig = { environment: "development", remoteAttestation: false };
 const originalApiUrl = getApiUrl();
 const originalApiPcrConfig = getApiPcrConfig();
+const originalRuntimeRequest = transportV2Runtime.request;
 
-beforeEach(async () => {
-  window.localStorage.clear();
-  window.sessionStorage.clear();
-  window.localStorage.setItem("access_token", accessToken);
+function segment(value: unknown): string {
+  return encodeURLSafe(new TextEncoder().encode(JSON.stringify(value))).replace(/=+$/u, "");
+}
+
+function token(audience: string): string {
+  return `${segment({ alg: "ES256K", typ: "JWT" })}.${segment({
+    aud: audience,
+    sub: "web-user",
+    exp: 4_000_000_000,
+    tf: 2
+  })}.${segment("signature")}`;
+}
+
+function exchange(response: Response): TransportV2RuntimeResponse {
+  return { response, rememberOAuthContinuation: () => {} };
+}
+
+beforeEach(() => {
+  globalThis.localStorage.clear();
+  globalThis.sessionStorage.clear();
+  clearTransportV2Credentials(apiUrl);
+  transportV2Runtime.clear();
   setApiUrl(apiUrl, pcrConfig);
-  await cacheAttestationSessionForTesting(
+  installTransportV2Credentials(
     apiUrl,
-    pcrConfig,
-    { sessionKey, sessionId },
-    verifiedPcr0
+    "user",
+    token("urn:opensecret:internal:transport-v2:user:access-token"),
+    token("urn:opensecret:internal:transport-v2:user:refresh-token")
   );
 });
 
 afterEach(() => {
-  globalThis.fetch = originalFetch;
+  transportV2Runtime.request = originalRuntimeRequest;
+  transportV2Runtime.clear();
+  clearTransportV2Credentials(apiUrl);
   setApiUrl(originalApiUrl, originalApiPcrConfig);
-  window.localStorage.clear();
-  window.sessionStorage.clear();
+  globalThis.localStorage.clear();
+  globalThis.sessionStorage.clear();
 });
 
-test("webSearch sends an authenticated encrypted request and decrypts results", async () => {
+test("webSearch sends request data inside an authenticated V2 envelope", async () => {
   const request: WebSearchRequest = {
     query: "rust confidential computing",
     workflow: "news",
@@ -59,9 +79,7 @@ test("webSearch sends an authenticated encrypted request and decrypts results", 
       time_relative: "week",
       search_region: "US"
     },
-    filters: {
-      region: "US"
-    }
+    filters: { region: "US" }
   };
   const response: WebSearchResponse = {
     trace_id: "trace-search-1",
@@ -75,25 +93,22 @@ test("webSearch sends an authenticated encrypted request and decrypts results", 
       }
     ]
   };
-
-  globalThis.fetch = mock(async (input: string | URL | Request, init?: RequestInit) => {
-    expect(input.toString()).toBe(`${apiUrl}/v1/web/search`);
-    expect(init?.method).toBe("POST");
-    expect(init?.headers).toMatchObject({
-      Authorization: `Bearer ${accessToken}`,
-      "x-session-id": sessionId
-    });
-
-    const body = JSON.parse(String(init?.body)) as { encrypted: string };
-    expect(JSON.parse(decryptMessage(sessionKey, body.encrypted))).toEqual(request);
-
-    return new Response(
-      JSON.stringify({ encrypted: encryptMessage(sessionKey, JSON.stringify(response)) }),
-      { status: 200, headers: { "Content-Type": "application/json" } }
-    );
-  }) as typeof fetch;
+  let seen: TransportV2RuntimeRequest | undefined;
+  let seenBody: Uint8Array | undefined;
+  transportV2Runtime.request = mock(async (input) => {
+    seen = input;
+    seenBody = input.request.body ? new Uint8Array(input.request.body) : undefined;
+    return exchange(Response.json(response));
+  });
 
   await expect(webSearch(request)).resolves.toEqual(response);
+  expect(seen?.request).toMatchObject({
+    method: "POST",
+    target: "/v1/web/search",
+    headers: [{ name: "content-type", value: "application/json" }],
+    credential: { kind: "bearer" }
+  });
+  expect(JSON.parse(new TextDecoder().decode(seenBody))).toEqual(request);
 });
 
 test("webExtract preserves ordered pages and typed partial failures", async () => {
@@ -104,68 +119,40 @@ test("webExtract preserves ordered pages and typed partial failures", async () =
   const response: WebExtractResponse = {
     trace_id: "trace-extract-1",
     pages: [
-      {
-        url: request.urls[0],
-        markdown: "# First\n\nExtracted text."
-      },
+      { url: request.urls[0], markdown: "# First\n\nExtracted text." },
       {
         url: request.urls[1],
-        error: {
-          code: "no_content",
-          message: "No readable content was found."
-        }
+        error: { code: "no_content", message: "No readable content was found." }
       }
     ]
   };
-
-  globalThis.fetch = mock(async (input: string | URL | Request, init?: RequestInit) => {
-    expect(input.toString()).toBe(`${apiUrl}/v1/web/extract`);
-    expect(init?.method).toBe("POST");
-    expect(init?.headers).toMatchObject({
-      Authorization: `Bearer ${accessToken}`,
-      "x-session-id": sessionId
-    });
-
-    const body = JSON.parse(String(init?.body)) as { encrypted: string };
-    expect(JSON.parse(decryptMessage(sessionKey, body.encrypted))).toEqual(request);
-
-    return new Response(
-      JSON.stringify({ encrypted: encryptMessage(sessionKey, JSON.stringify(response)) }),
-      { status: 200, headers: { "Content-Type": "application/json" } }
-    );
-  }) as typeof fetch;
+  let seenBody: Uint8Array | undefined;
+  transportV2Runtime.request = mock(async (input) => {
+    seenBody = input.request.body ? new Uint8Array(input.request.body) : undefined;
+    return exchange(Response.json(response));
+  });
 
   const result = await webExtract(request);
-
   expect(result).toEqual(response);
   expect(result.pages.map((page) => page.url)).toEqual(request.urls);
   expect(result.pages[1].error?.code).toBe("no_content");
+  expect(JSON.parse(new TextDecoder().decode(seenBody))).toEqual(request);
 });
 
-test("web validation errors surface without an attestation retry", async () => {
-  let requestCount = 0;
-
-  globalThis.fetch = mock(async (input: string | URL | Request) => {
-    requestCount += 1;
-    expect(input.toString()).toBe(`${apiUrl}/v1/web/search`);
-
-    return new Response(
-      JSON.stringify({
-        status: 422,
-        code: "invalid_request",
-        message: "The web request is invalid."
-      }),
-      { status: 422, headers: { "Content-Type": "application/json" } }
+test("web validation errors surface without retry or anonymous fallback", async () => {
+  const request = mock(async (input: TransportV2RuntimeRequest) => {
+    expect(input.request.credential?.kind).toBe("bearer");
+    return exchange(
+      Response.json(
+        { status: 422, code: "invalid_request", message: "The web request is invalid." },
+        { status: 422 }
+      )
     );
-  }) as typeof fetch;
+  });
+  transportV2Runtime.request = request;
 
-  try {
-    await webSearch({ query: "maple privacy", limit: 51 });
-    throw new Error("expected webSearch to reject invalid input");
-  } catch (error) {
-    expect(error).toBeInstanceOf(Error);
-    expect((error as Error).message).toBe("The web request is invalid.");
-  }
-
-  expect(requestCount).toBe(1);
+  await expect(webSearch({ query: "maple privacy", limit: 51 })).rejects.toThrow(
+    "The web request is invalid."
+  );
+  expect(request).toHaveBeenCalledTimes(1);
 });

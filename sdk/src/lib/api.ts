@@ -1,14 +1,30 @@
 import { encode } from "@stablelib/base64";
-import { authenticatedApiCall, encryptedApiCall, openAiAuthenticatedApiCall } from "./encryptedApi";
+import {
+  authenticatedApiCall,
+  authenticatedApiCallWithAuthority,
+  authenticatedApiCallWithSelectedAuthority,
+  encryptedApiCall,
+  openAiAuthenticatedApiCall
+} from "./encryptedApi";
 import type { Model } from "openai/resources/models.js";
 import { snapshotPcrConfig, type PcrConfig } from "./pcr";
+import {
+  clearLegacyTransportV1Credentials,
+  installTransportV2Credentials,
+  readTransportV2Credentials,
+  snapshotTransportV2Auth,
+  type TransportV2AuthSnapshot
+} from "./transportV2/auth";
+import { transportV2AuthRuntime } from "./transportV2/authRuntime";
 
 let apiUrl = "";
 let apiPcrConfig: PcrConfig = snapshotPcrConfig();
+clearLegacyTransportV1Credentials();
 
 export function setApiUrl(url: string, pcrConfig?: PcrConfig) {
   apiUrl = url;
   apiPcrConfig = snapshotPcrConfig(pcrConfig);
+  clearLegacyTransportV1Credentials();
 }
 
 export function getApiUrl(): string {
@@ -49,13 +65,36 @@ type CredentialUpdateResponse = {
   refresh_token?: string;
 };
 
-function storeAuthTokens(response: CredentialUpdateResponse) {
-  if (response.access_token) {
-    window.localStorage.setItem("access_token", response.access_token);
+function installLoginResponse(
+  response: LoginResponse,
+  expected: TransportV2AuthSnapshot
+): LoginResponse {
+  installTransportV2Credentials(
+    apiUrl,
+    "user",
+    response.access_token,
+    response.refresh_token,
+    expected
+  );
+  return response;
+}
+
+function installCredentialUpdate(
+  response: CredentialUpdateResponse,
+  startedWith: TransportV2AuthSnapshot,
+  targetApiUrl: string
+): void {
+  if (!response.access_token && !response.refresh_token) return;
+  if (!response.access_token || !response.refresh_token) {
+    throw new Error("Transport v2 credential update returned an incomplete token pair.");
   }
-  if (response.refresh_token) {
-    window.localStorage.setItem("refresh_token", response.refresh_token);
-  }
+  installTransportV2Credentials(
+    targetApiUrl,
+    "user",
+    response.access_token,
+    response.refresh_token,
+    startedWith
+  );
 }
 
 export type KVListItem = {
@@ -70,11 +109,12 @@ export async function fetchLogin(
   password: string,
   client_id: string
 ): Promise<LoginResponse> {
-  return encryptedApiCall<{ email: string; password: string; client_id: string }, LoginResponse>(
-    `${apiUrl}/login`,
-    "POST",
-    { email, password, client_id }
-  );
+  const expected = snapshotTransportV2Auth(apiUrl, "user");
+  const response = await encryptedApiCall<
+    { email: string; password: string; client_id: string },
+    LoginResponse
+  >(`${apiUrl}/login`, "POST", { email, password, client_id });
+  return installLoginResponse(response, expected);
 }
 
 export async function fetchGuestLogin(
@@ -82,11 +122,12 @@ export async function fetchGuestLogin(
   password: string,
   client_id: string
 ): Promise<LoginResponse> {
-  return encryptedApiCall<{ id: string; password: string; client_id: string }, LoginResponse>(
-    `${apiUrl}/login`,
-    "POST",
-    { id, password, client_id }
-  );
+  const expected = snapshotTransportV2Auth(apiUrl, "user");
+  const response = await encryptedApiCall<
+    { id: string; password: string; client_id: string },
+    LoginResponse
+  >(`${apiUrl}/login`, "POST", { id, password, client_id });
+  return installLoginResponse(response, expected);
 }
 
 export async function fetchSignUp(
@@ -96,7 +137,8 @@ export async function fetchSignUp(
   client_id: string,
   name?: string | null
 ): Promise<LoginResponse> {
-  return encryptedApiCall<
+  const expected = snapshotTransportV2Auth(apiUrl, "user");
+  const response = await encryptedApiCall<
     {
       email: string;
       password: string;
@@ -112,6 +154,7 @@ export async function fetchSignUp(
     client_id,
     name
   });
+  return installLoginResponse(response, expected);
 }
 
 export async function fetchGuestSignUp(
@@ -119,7 +162,8 @@ export async function fetchGuestSignUp(
   inviteCode: string,
   client_id: string
 ): Promise<LoginResponse> {
-  return encryptedApiCall<
+  const expected = snapshotTransportV2Auth(apiUrl, "user");
+  const response = await encryptedApiCall<
     { password: string; inviteCode: string; client_id: string },
     LoginResponse
   >(`${apiUrl}/register`, "POST", {
@@ -127,30 +171,15 @@ export async function fetchGuestSignUp(
     inviteCode: inviteCode.toLowerCase(),
     client_id
   });
+  return installLoginResponse(response, expected);
 }
 
 export async function refreshToken(): Promise<RefreshResponse> {
-  const refresh_token = window.localStorage.getItem("refresh_token");
-  if (!refresh_token) throw new Error("No refresh token available");
-
-  const refreshData = { refresh_token };
-
-  try {
-    const response = await encryptedApiCall<typeof refreshData, RefreshResponse>(
-      `${apiUrl}/refresh`,
-      "POST",
-      refreshData,
-      undefined,
-      "Failed to refresh token"
-    );
-
-    window.localStorage.setItem("access_token", response.access_token);
-    window.localStorage.setItem("refresh_token", response.refresh_token);
-    return response;
-  } catch (error) {
-    console.error("Error refreshing token:", error);
-    throw error;
-  }
+  const refreshed = await transportV2AuthRuntime.refresh(apiUrl, apiPcrConfig, "user");
+  return {
+    access_token: refreshed.accessToken,
+    refresh_token: refreshed.refreshToken
+  };
 }
 
 export async function fetchUser(): Promise<UserResponse> {
@@ -159,6 +188,21 @@ export async function fetchUser(): Promise<UserResponse> {
     "GET",
     undefined,
     "Failed to fetch user"
+  );
+}
+
+/** @internal Keeps React publication tied to the exact authority used for this request. */
+export async function fetchUserWithTransportV2Authority(
+  targetApiUrl: string,
+  pcrConfig: PcrConfig,
+  authority: import("./transportV2/authRuntime").TransportV2Authority
+) {
+  return authenticatedApiCallWithSelectedAuthority<void, UserResponse>(
+    `${targetApiUrl}/protected/user`,
+    "GET",
+    undefined,
+    "Failed to fetch user",
+    { apiUrl: targetApiUrl, pcrConfig, kind: "user", authority }
   );
 }
 
@@ -314,17 +358,23 @@ export async function confirmPasswordReset(
 }
 
 export async function changePassword(currentPassword: string, newPassword: string): Promise<void> {
+  const targetApiUrl = apiUrl;
+  const pcrConfig = snapshotPcrConfig(apiPcrConfig);
   const changePasswordData = {
     current_password: currentPassword,
     new_password: newPassword
   };
-  const response = await authenticatedApiCall<typeof changePasswordData, CredentialUpdateResponse>(
-    `${apiUrl}/protected/change_password`,
+  const result = await authenticatedApiCallWithAuthority<
+    typeof changePasswordData,
+    CredentialUpdateResponse
+  >(
+    `${targetApiUrl}/protected/change_password`,
     "POST",
     changePasswordData,
-    "Failed to change password"
+    "Failed to change password",
+    { apiUrl: targetApiUrl, pcrConfig, kind: "user" }
   );
-  storeAuthTokens(response);
+  installCredentialUpdate(result.data, result.authority.snapshot, result.apiUrl);
 }
 
 export async function initiateGitHubAuth(
@@ -354,15 +404,17 @@ export async function handleGitHubCallback(
   state: string,
   inviteCode: string
 ): Promise<LoginResponse> {
+  const expected = snapshotTransportV2Auth(apiUrl, "user");
   const callbackData = { code, state, invite_code: inviteCode };
   try {
-    return await encryptedApiCall<typeof callbackData, LoginResponse>(
+    const response = await encryptedApiCall<typeof callbackData, LoginResponse>(
       `${apiUrl}/auth/github/callback`,
       "POST",
       callbackData,
       undefined,
       "GitHub callback failed"
     );
+    return installLoginResponse(response, expected);
   } catch (error) {
     console.error("Detailed GitHub callback error:", error);
     if (error instanceof Error) {
@@ -434,15 +486,17 @@ export async function handleGoogleCallback(
   state: string,
   inviteCode: string
 ): Promise<LoginResponse> {
+  const expected = snapshotTransportV2Auth(apiUrl, "user");
   const callbackData = { code, state, invite_code: inviteCode };
   try {
-    return await encryptedApiCall<typeof callbackData, LoginResponse>(
+    const response = await encryptedApiCall<typeof callbackData, LoginResponse>(
       `${apiUrl}/auth/google/callback`,
       "POST",
       callbackData,
       undefined,
       "Google callback failed"
     );
+    return installLoginResponse(response, expected);
   } catch (error) {
     console.error("Detailed Google callback error:", error);
     if (error instanceof Error) {
@@ -523,15 +577,17 @@ export async function handleAppleCallback(
   state: string,
   inviteCode: string
 ): Promise<LoginResponse> {
+  const expected = snapshotTransportV2Auth(apiUrl, "user");
   const callbackData = { code, state, invite_code: inviteCode };
   try {
-    return await encryptedApiCall<typeof callbackData, LoginResponse>(
+    const response = await encryptedApiCall<typeof callbackData, LoginResponse>(
       `${apiUrl}/auth/apple/callback`,
       "POST",
       callbackData,
       undefined,
       "Apple callback failed"
     );
+    return installLoginResponse(response, expected);
   } catch (error) {
     console.error("Detailed Apple callback error:", error);
     if (error instanceof Error) {
@@ -602,6 +658,7 @@ export async function handleAppleNativeSignIn(
   client_id: string,
   inviteCode?: string
 ): Promise<LoginResponse> {
+  const expected = snapshotTransportV2Auth(apiUrl, "user");
   // Combine the Apple user data with our app's client ID
   const signInData = {
     ...appleUser,
@@ -610,13 +667,14 @@ export async function handleAppleNativeSignIn(
   };
 
   try {
-    return await encryptedApiCall<typeof signInData, LoginResponse>(
+    const response = await encryptedApiCall<typeof signInData, LoginResponse>(
       `${apiUrl}/auth/apple/native`,
       "POST",
       signInData,
       undefined,
       "Apple Sign-In failed"
     );
+    return installLoginResponse(response, expected);
   } catch (error) {
     console.error("Detailed Apple Sign-In error:", error);
     if (error instanceof Error) {
@@ -1203,7 +1261,7 @@ export type ModelCatalogResponse = {
 export async function fetchModels(apiKey?: string): Promise<Model[]> {
   try {
     const hasIdentityCredential =
-      apiKey !== undefined || window.localStorage.getItem("access_token") !== null;
+      apiKey !== undefined || readTransportV2Credentials(apiUrl, "user") !== null;
     const response = hasIdentityCredential
       ? await openAiAuthenticatedApiCall<void, ModelsListResponse>(
           `${apiUrl}/v1/models`,

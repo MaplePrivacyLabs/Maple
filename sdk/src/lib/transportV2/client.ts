@@ -22,10 +22,15 @@ import {
   hexToFixedBytes,
   type TransportV2Request
 } from "./protocol";
-import { TransportV2Session, type TransportV2LogicalResponse } from "./session";
+import {
+  TransportV2Session,
+  type SerializedTransportV2Session,
+  type TransportV2LogicalResponse
+} from "./session";
 
 const MAX_SESSION_RESPONSE_BYTES = 64 * 1024;
 const EXPECTED_SESSION_LIFETIME_SECONDS = 65 * 60;
+const SESSION_ESTABLISHMENT_TIMEOUT_MS = 30_000;
 
 interface X25519KeyPair {
   publicKey: Uint8Array;
@@ -49,6 +54,8 @@ export interface TransportV2ClientDependencies {
     apiUrl: string,
     pcrConfig: PcrConfig
   ) => Promise<Uint8Array>;
+  /** Test override; production establishment is independently bounded to 30 seconds. */
+  establishmentTimeoutMs?: number;
 }
 
 function equalBytes(left: Uint8Array, right: Uint8Array): boolean {
@@ -60,7 +67,7 @@ function equalBytes(left: Uint8Array, right: Uint8Array): boolean {
   return difference === 0;
 }
 
-function canonicalApiUrl(value: string): string {
+export function canonicalizeTransportV2ApiUrl(value: string): string {
   let url: URL;
   try {
     url = new URL(value);
@@ -87,17 +94,37 @@ async function localDocument(encodedDocument: string): Promise<AttestationDocume
   return parseDocumentPayload(parsed.payload);
 }
 
-async function verifyDocument(
+/** @internal Dependency boundary for PCR-gate ordering tests. */
+export interface TransportV2AttestationVerificationDependencies {
+  isLocalDevelopmentApiUrl: typeof isLocalDevelopmentApiUrl;
+  authenticateDocument: typeof authenticateBytes;
+  parseLocalDocument: typeof localDocument;
+  requireTrustedPcr0: typeof requireTrustedPcr0;
+}
+
+const defaultVerificationDependencies: TransportV2AttestationVerificationDependencies = {
+  isLocalDevelopmentApiUrl,
+  authenticateDocument: authenticateBytes,
+  parseLocalDocument: localDocument,
+  requireTrustedPcr0
+};
+
+/**
+ * Verifies the complete Nitro document and PCR policy before returning the
+ * attested server key. Exported only for deterministic security tests.
+ */
+export async function verifyTransportV2AttestationDocumentWithDependencies(
   encodedDocument: string,
   challenge: Uint8Array,
   clientPublicKey: Uint8Array,
   apiUrl: string,
-  pcrConfig: PcrConfig
+  pcrConfig: PcrConfig,
+  dependencies: TransportV2AttestationVerificationDependencies = defaultVerificationDependencies
 ): Promise<Uint8Array> {
-  const local = isLocalDevelopmentApiUrl(apiUrl);
+  const local = dependencies.isLocalDevelopmentApiUrl(apiUrl);
   const document = local
-    ? await localDocument(encodedDocument)
-    : await authenticateBytes(encodedDocument, awsRootCertDer, challenge);
+    ? await dependencies.parseLocalDocument(encodedDocument)
+    : await dependencies.authenticateDocument(encodedDocument, awsRootCertDer, challenge);
 
   if (!document.nonce || !equalBytes(document.nonce, challenge)) {
     throw new TransportV2ProtocolError("Transport v2 attestation challenge does not match.");
@@ -110,7 +137,7 @@ async function verifyDocument(
     throw new TransportV2ProtocolError("Transport v2 attestation client key binding is invalid.");
   }
   if (!local) {
-    await requireTrustedPcr0(document.pcrs, pcrConfig);
+    await dependencies.requireTrustedPcr0(document.pcrs, pcrConfig);
   }
   return new Uint8Array(document.public_key);
 }
@@ -118,7 +145,7 @@ async function verifyDocument(
 const defaultDependencies: TransportV2ClientDependencies = {
   randomBytes: (length) => globalThis.crypto.getRandomValues(new Uint8Array(length)),
   generateKeyPair: () => nacl.box.keyPair(),
-  verifyDocument
+  verifyDocument: verifyTransportV2AttestationDocumentWithDependencies
 };
 
 async function readBoundedBody(response: Response, maximum: number): Promise<Uint8Array> {
@@ -213,7 +240,7 @@ export class TransportV2Client {
     dependencies: TransportV2ClientDependencies = defaultDependencies
   ): Promise<TransportV2Client> {
     const establishmentStartedAtMs = Date.now();
-    const apiUrl = canonicalApiUrl(options.apiUrl);
+    const apiUrl = canonicalizeTransportV2ApiUrl(options.apiUrl);
     const fetchImplementation = options.fetch ?? globalThis.fetch;
     const policy = snapshotPcrConfig(options.pcrConfig);
     const challenge = dependencies.randomBytes(CHALLENGE_BYTES);
@@ -237,14 +264,22 @@ export class TransportV2Client {
     let sessionKeys: TransportV2SessionKeys | undefined;
     let serverPublicKey: Uint8Array | undefined;
     let sharedSecret: Uint8Array | undefined;
+    const timeoutController = new AbortController();
+    let timedOut = false;
+    const timeout = setTimeout(() => {
+      timedOut = true;
+      timeoutController.abort();
+    }, dependencies.establishmentTimeoutMs ?? SESSION_ESTABLISHMENT_TIMEOUT_MS);
     try {
       const response = await fetchImplementation(`${apiUrl}/v2/session`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: requestBody,
         credentials: "omit",
-        redirect: "error"
+        redirect: "error",
+        signal: timeoutController.signal
       });
+      timeoutController.signal.throwIfAborted();
       if (
         response.status !== 200 ||
         response.redirected ||
@@ -258,6 +293,7 @@ export class TransportV2Client {
         );
       }
       const body = await readBoundedBody(response, MAX_SESSION_RESPONSE_BYTES);
+      timeoutController.signal.throwIfAborted();
       const sessionResponse = parseSessionResponse(body);
 
       // Full Nitro verification and PCR policy enforcement happen before any
@@ -269,6 +305,7 @@ export class TransportV2Client {
         apiUrl,
         policy
       );
+      timeoutController.signal.throwIfAborted();
       if (serverPublicKey.byteLength !== X25519_KEY_BYTES) {
         throw new TransportV2ProtocolError("Transport v2 attested server key is invalid.");
       }
@@ -278,6 +315,7 @@ export class TransportV2Client {
         clientPublicKey: keyPair.publicKey,
         serverPublicKey
       });
+      timeoutController.signal.throwIfAborted();
       if (sessionKeys.sessionId !== sessionResponse.sessionId) {
         throw new TransportV2ProtocolError("Transport v2 derived session ID does not match.");
       }
@@ -287,7 +325,13 @@ export class TransportV2Client {
         establishmentStartedAtMs
       );
       return new TransportV2Client(apiUrl, fetchImplementation, session);
+    } catch (error) {
+      if (timedOut) {
+        throw new TransportV2ProtocolError("Transport v2 session establishment timed out.");
+      }
+      throw error;
     } finally {
+      clearTimeout(timeout);
       challenge.fill(0);
       keyPair.publicKey.fill(0);
       keyPair.secretKey.fill(0);
@@ -299,8 +343,49 @@ export class TransportV2Client {
     }
   }
 
-  async request(request: TransportV2Request): Promise<TransportV2LogicalResponse> {
+  static restore(
+    options: Pick<TransportV2ClientOptions, "apiUrl" | "fetch">,
+    state: SerializedTransportV2Session,
+    nowMs?: () => number
+  ): TransportV2Client {
+    return new TransportV2Client(
+      canonicalizeTransportV2ApiUrl(options.apiUrl),
+      options.fetch ?? globalThis.fetch,
+      TransportV2Session.restore(state, nowMs)
+    );
+  }
+
+  get sessionId(): string {
+    return this.#session.sessionId;
+  }
+
+  get expiresAtMs(): number {
+    return this.#session.expiresAtMs;
+  }
+
+  isUsable(nowMs = Date.now()): boolean {
+    return this.#session.isUsable(nowMs);
+  }
+
+  serializeSession(): SerializedTransportV2Session {
+    return this.#session.serialize();
+  }
+
+  async request(
+    request: TransportV2Request,
+    signal?: AbortSignal | null,
+    beforeSend?: () => void
+  ): Promise<TransportV2LogicalResponse> {
+    signal?.throwIfAborted();
     const outer = await this.#session.sealRequest(request);
+    outer.init.signal = signal;
+    signal?.throwIfAborted();
+    this.#session.assertUsableForSend();
+    // No await may be inserted between this fence and fetch. Authentication
+    // can change while session establishment or AEAD sealing is in flight;
+    // the final synchronous check prevents an old principal's credential from
+    // leaving after logout or an account switch.
+    beforeSend?.();
     const response = await this.#fetch(`${this.#apiUrl}${outer.path}`, outer.init);
     return this.#session.openResponse(response, outer.requestId);
   }
