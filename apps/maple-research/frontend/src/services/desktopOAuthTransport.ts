@@ -4,6 +4,7 @@ export type DesktopOAuthProvider = "github" | "google" | "apple";
 const DESKTOP_OAUTH_TRANSPORT_KEY = "maple_desktop_oauth_transport_v1";
 const REDIRECT_TO_NATIVE_KEY = "redirect-to-native";
 const TRANSPORT_V2_PENDING_KEY = "maple_desktop_oauth_pending_v2";
+const TRANSPORT_V2_MINT_CLAIM_KEY = "maple_desktop_oauth_mint_claim_v2";
 const TRANSPORT_V2_INITIATION_CLAIM_KEY = "maple_desktop_oauth_initiation_claim_v2";
 
 export const TRANSPORT_V2_PENDING_TTL_MS = 15 * 60 * 1000;
@@ -68,6 +69,7 @@ function hasValidTimestamp(startedAt: unknown, now: number): startedAt is number
 function removeTransportV2PendingState(): void {
   sessionStorage.removeItem(TRANSPORT_V2_PENDING_KEY);
   sessionStorage.removeItem(TRANSPORT_V2_INITIATION_CLAIM_KEY);
+  sessionStorage.removeItem(TRANSPORT_V2_MINT_CLAIM_KEY);
 }
 
 export function buildTransportV2DesktopAuthUrl({
@@ -119,6 +121,7 @@ export function markTransportV2DesktopOAuth(
 
   if (!existing || pendingClaim(existing) !== pendingClaim(nextState)) {
     sessionStorage.removeItem(TRANSPORT_V2_INITIATION_CLAIM_KEY);
+    sessionStorage.removeItem(TRANSPORT_V2_MINT_CLAIM_KEY);
   }
   sessionStorage.setItem(TRANSPORT_V2_PENDING_KEY, JSON.stringify(nextState));
   markDesktopOAuthTransport("v2");
@@ -135,7 +138,6 @@ export function readTransportV2DesktopOAuth(
     const parsed = JSON.parse(encoded) as Partial<TransportV2DesktopOAuthState>;
     if (
       !isDesktopOAuthProvider(parsed.provider) ||
-      (expectedProvider !== undefined && parsed.provider !== expectedProvider) ||
       !isTransportV2PublicId(parsed.nativeSessionId) ||
       !isTransportV2PublicId(parsed.nativeRequestId) ||
       !hasValidTimestamp(parsed.startedAt, now)
@@ -143,6 +145,7 @@ export function readTransportV2DesktopOAuth(
       throw new Error("Invalid pending desktop authentication state");
     }
 
+    if (expectedProvider !== undefined && parsed.provider !== expectedProvider) return null;
     return parsed as TransportV2DesktopOAuthState;
   } catch {
     removeTransportV2PendingState();
@@ -208,20 +211,59 @@ export function buildTransportV2NativeAuthDeepLink(handoffGrant: string): string
   return deepLink.toString();
 }
 
-export async function mintTransportV2NativeAuthDeepLink(
-  provider: DesktopOAuthProvider,
-  mintGrant: NativeHandoffGrantIssuer,
-  now = Date.now()
-): Promise<string> {
-  const handoffTarget = readTransportV2DesktopOAuth(provider, now);
-  if (!handoffTarget) {
-    throw new Error("Desktop authentication state is missing or expired; please restart login");
-  }
+function sameDesktopOAuthTarget(
+  left: TransportV2DesktopOAuthState,
+  right: TransportV2DesktopOAuthState
+): boolean {
+  return pendingClaim(left) === pendingClaim(right) && left.startedAt === right.startedAt;
+}
 
-  const { grant } = await mintGrant(handoffTarget.nativeSessionId, handoffTarget.nativeRequestId);
-  const deepLink = buildTransportV2NativeAuthDeepLink(grant);
-  clearDesktopOAuthTransport();
-  return deepLink;
+export function isCurrentDesktopOAuthTarget(
+  expected: TransportV2DesktopOAuthState,
+  now = Date.now()
+): boolean {
+  const current = readTransportV2DesktopOAuth(undefined, now);
+  return isNativeOAuthRedirect() && current !== null && sameDesktopOAuthTarget(current, expected);
+}
+
+/** Clear only this flow, including expired state, without disturbing a newer login or V1. */
+export function clearDesktopOAuthTarget(expected: TransportV2DesktopOAuthState): void {
+  const encoded = sessionStorage.getItem(TRANSPORT_V2_PENDING_KEY);
+  if (!encoded) return;
+  try {
+    if (!sameDesktopOAuthTarget(JSON.parse(encoded), expected)) return;
+  } catch {
+    return;
+  }
+  removeTransportV2PendingState();
+  sessionStorage.removeItem(DESKTOP_OAUTH_TRANSPORT_KEY);
+  sessionStorage.removeItem(REDIRECT_TO_NATIVE_KEY);
+}
+
+export async function mintTransportV2NativeAuthDeepLink(
+  handoffTarget: TransportV2DesktopOAuthState,
+  mintGrant: NativeHandoffGrantIssuer,
+  ownsConfirmation: () => boolean,
+  now: () => number = Date.now
+): Promise<string> {
+  if (!isCurrentDesktopOAuthTarget(handoffTarget, now()) || !ownsConfirmation()) {
+    throw new Error("Native sign-in changed or expired; please restart login in Maple.");
+  }
+  // Persist before sending: a remount or an ambiguous network failure must not mint again.
+  const claim = `${pendingClaim(handoffTarget)}:${handoffTarget.startedAt}`;
+  if (sessionStorage.getItem(TRANSPORT_V2_MINT_CLAIM_KEY) === claim) {
+    throw new Error("Native sign-in has already been submitted; please restart login in Maple.");
+  }
+  sessionStorage.setItem(TRANSPORT_V2_MINT_CLAIM_KEY, claim);
+  try {
+    const { grant } = await mintGrant(handoffTarget.nativeSessionId, handoffTarget.nativeRequestId);
+    if (!isCurrentDesktopOAuthTarget(handoffTarget, now()) || !ownsConfirmation()) {
+      throw new Error("Native sign-in changed or expired; please restart login in Maple.");
+    }
+    return buildTransportV2NativeAuthDeepLink(grant);
+  } finally {
+    clearDesktopOAuthTarget(handoffTarget);
+  }
 }
 
 export function shouldLoadLegacyDesktopOAuth(

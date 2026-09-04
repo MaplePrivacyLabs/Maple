@@ -1,7 +1,7 @@
 use crate::native_transport_root::TransportRootState;
 use crate::open_secret_config::{configured_pcr0_environment, normalize_api_url};
 use maple_sdk::{
-    NativeOAuthHandoffGrant, OpenSecretClient, PreparedNativeOAuthHandoff,
+    LoginResponse, NativeOAuthHandoffGrant, OpenSecretClient, PreparedNativeOAuthHandoff,
     TransportV2CacheNamespaceRoot,
 };
 use rand::RngCore;
@@ -38,8 +38,20 @@ pub struct RedeemNativeOAuthRequest {
 #[serde(rename_all = "camelCase")]
 pub struct NativeOAuthAuthentication {
     user_id: String,
+    email: Option<String>,
     access_token: String,
     refresh_token: String,
+}
+
+impl From<LoginResponse> for NativeOAuthAuthentication {
+    fn from(login: LoginResponse) -> Self {
+        Self {
+            user_id: login.id.to_string(),
+            email: login.email,
+            access_token: login.access_token,
+            refresh_token: login.refresh_token,
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -152,11 +164,9 @@ impl NativeOAuthState {
                 );
             }
         };
-        Ok(NativeOAuthAuthentication {
-            user_id: login.id.to_string(),
-            access_token: login.access_token,
-            refresh_token: login.refresh_token,
-        })
+        // The confirmation identity comes from the authenticated redemption
+        // response, never from untrusted deep-link parameters.
+        Ok(login.into())
     }
 
     async fn cancel(&self, request: CancelNativeOAuthRequest) -> Result<(), String> {
@@ -254,6 +264,28 @@ pub async fn native_oauth_cancel(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn confirmation_identity_is_serialized_from_the_verified_login_response() {
+        for email in [Some("signed-in@example.test".to_string()), None] {
+            let login = LoginResponse {
+                id: "12345678-1234-4234-8234-123456789abc".parse().unwrap(),
+                email: email.clone(),
+                access_token: "test-access-token".to_string(),
+                refresh_token: "test-refresh-token".to_string(),
+            };
+            let authentication = NativeOAuthAuthentication::from(login);
+            assert_eq!(
+                serde_json::to_value(authentication).unwrap(),
+                serde_json::json!({
+                    "userId": "12345678-1234-4234-8234-123456789abc",
+                    "email": email,
+                    "accessToken": "test-access-token",
+                    "refreshToken": "test-refresh-token",
+                })
+            );
+        }
+    }
 
     #[test]
     fn local_attempt_ids_are_canonical_and_non_nil() {

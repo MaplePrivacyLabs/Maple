@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useOpenSecret } from "@mapleai/sdk";
 import { isTauri } from "@/utils/platform";
 import { listen } from "@tauri-apps/api/event";
@@ -6,9 +6,11 @@ import { getSafeInternalRedirect } from "@/utils/internalRedirect";
 import {
   authorizeNativeOAuthCallback,
   isNativeOAuthHandoffGrant,
-  redeemNativeOAuthGrant
+  redeemNativeOAuthGrant,
+  type NativeOAuthAccount
 } from "@/services/nativeOAuthAttempt";
 import { useNotification } from "@/contexts/NotificationContext";
+import { NativeOAuthAccountConfirmation } from "./NativeOAuthAccountConfirmation";
 
 // For direct deep link handling, we'll listen to our custom event
 // If we had the types installed, we would use:
@@ -19,10 +21,42 @@ export function DeepLinkHandler({ tauri = isTauri() }: { tauri?: boolean } = {})
   const { showNotification } = useNotification();
   const isAuthenticatedRef = useRef(false);
   const redeemingRef = useRef(false);
+  const activeRedemptionRef = useRef<AbortController | null>(null);
+  const confirmationRef = useRef<((approved: boolean) => void) | null>(null);
+  const [confirmation, setConfirmation] = useState<NativeOAuthAccount | null>(null);
   isAuthenticatedRef.current = Boolean(os.auth.user);
+
+  const resolveConfirmation = useCallback((approved: boolean) => {
+    const resolve = confirmationRef.current;
+    confirmationRef.current = null;
+    setConfirmation(null);
+    resolve?.(approved);
+  }, []);
+
+  const confirmAccount = useCallback(
+    (account: NativeOAuthAccount) =>
+      new Promise<boolean>((resolve) => {
+        resolveConfirmation(false);
+        if (isAuthenticatedRef.current) {
+          resolve(false);
+          return;
+        }
+        confirmationRef.current = resolve;
+        setConfirmation(account);
+      }),
+    [resolveConfirmation]
+  );
+
+  useEffect(() => {
+    if (os.auth.user && confirmationRef.current) {
+      activeRedemptionRef.current?.abort();
+      resolveConfirmation(false);
+    }
+  }, [os.auth.user, resolveConfirmation]);
 
   useEffect(() => {
     let unlisten: (() => void) | undefined;
+    let disposed = false;
 
     const setupDeepLinkHandling = async () => {
       try {
@@ -31,6 +65,7 @@ export function DeepLinkHandler({ tauri = isTauri() }: { tauri?: boolean } = {})
 
           // Listen for the custom event we emit from Rust
           unlisten = await listen<string>("deep-link-received", async (event) => {
+            if (disposed) return;
             const url = event.payload;
             let isAuthenticationCallback = false;
             console.log("[Deep Link] Received callback");
@@ -79,8 +114,14 @@ export function DeepLinkHandler({ tauri = isTauri() }: { tauri?: boolean } = {})
                 }
 
                 redeemingRef.current = true;
+                const controller = new AbortController();
+                activeRedemptionRef.current = controller;
                 try {
-                  const pending = await redeemNativeOAuthGrant(grantValues[0]);
+                  const pending = await redeemNativeOAuthGrant(grantValues[0], {
+                    confirmAccount,
+                    signal: controller.signal
+                  });
+                  if (!pending || disposed || controller.signal.aborted) return;
                   console.log("[Deep Link] Authentication grant accepted");
                   if (pending.selectedPlan) {
                     window.location.href = `/pricing?selected_plan=${encodeURIComponent(pending.selectedPlan)}`;
@@ -90,7 +131,11 @@ export function DeepLinkHandler({ tauri = isTauri() }: { tauri?: boolean } = {})
                     window.location.href = getSafeInternalRedirect(pending.next) ?? "/";
                   }
                 } finally {
-                  redeemingRef.current = false;
+                  if (activeRedemptionRef.current === controller) {
+                    activeRedemptionRef.current = null;
+                    redeemingRef.current = false;
+                    resolveConfirmation(false);
+                  }
                 }
               } else if (
                 firstPathPart === "payment" ||
@@ -143,6 +188,7 @@ export function DeepLinkHandler({ tauri = isTauri() }: { tauri?: boolean } = {})
                 console.warn("[Deep Link] Unknown deep link type:", firstPathPart);
               }
             } catch (error) {
+              if (disposed) return;
               if (isAuthenticationCallback) {
                 console.error("[Deep Link] Failed to complete authentication");
                 showNotification({
@@ -157,6 +203,11 @@ export function DeepLinkHandler({ tauri = isTauri() }: { tauri?: boolean } = {})
             }
           });
 
+          if (disposed) {
+            unlisten();
+            return;
+          }
+
           console.log("[Deep Link] Handler setup complete");
         }
       } catch (error) {
@@ -168,9 +219,16 @@ export function DeepLinkHandler({ tauri = isTauri() }: { tauri?: boolean } = {})
 
     // Return cleanup function
     return () => {
+      disposed = true;
+      activeRedemptionRef.current?.abort();
+      activeRedemptionRef.current = null;
+      redeemingRef.current = false;
+      resolveConfirmation(false);
       if (unlisten) unlisten();
     };
-  }, [showNotification, tauri]);
+  }, [confirmAccount, resolveConfirmation, showNotification, tauri]);
 
-  return null; // This component doesn't render anything
+  return confirmation ? (
+    <NativeOAuthAccountConfirmation account={confirmation} onDecision={resolveConfirmation} />
+  ) : null;
 }

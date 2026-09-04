@@ -2,11 +2,15 @@ import React, { useEffect, useRef, useState } from "react";
 import { useOpenSecret } from "@mapleai/sdk";
 import { Button, type ButtonProps } from "./ui/button";
 import { Apple } from "./icons/Apple";
+import { HostedNativeSignInConfirmation } from "./HostedNativeSignInConfirmation";
 import { getBillingService } from "@/billing/billingService";
 import {
   clearDesktopOAuthTransport,
+  clearDesktopOAuthTarget,
+  isCurrentDesktopOAuthTarget,
+  readTransportV2DesktopOAuth,
   isNativeOAuthRedirect,
-  mintTransportV2NativeAuthDeepLink
+  type TransportV2DesktopOAuthState
 } from "@/services/desktopOAuthTransport";
 
 interface AppleAuthProviderProps {
@@ -92,8 +96,11 @@ export function AppleAuthProvider({
   const os = useOpenSecret();
   const appleScriptLoaded = useRef(false);
   const isSignInPending = useRef(false);
-  const nativeRedirectTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const [nativeRedirectUrl, setNativeRedirectUrl] = useState<string | null>(null);
+  const active = useRef(true);
+  const ownedTarget = useRef<TransportV2DesktopOAuthState | null>(null);
+  const [nativeConfirmation, setNativeConfirmation] = useState<TransportV2DesktopOAuthState | null>(
+    null
+  );
 
   useEffect(() => {
     if (appleScriptLoaded.current) return;
@@ -114,14 +121,17 @@ export function AppleAuthProvider({
     };
   }, []);
 
-  useEffect(
-    () => () => {
-      if (nativeRedirectTimer.current) clearTimeout(nativeRedirectTimer.current);
-    },
-    []
-  );
+  useEffect(() => {
+    active.current = true;
+    return () => {
+      active.current = false;
+      queueMicrotask(() => {
+        if (!active.current && ownedTarget.current) clearDesktopOAuthTarget(ownedTarget.current);
+      });
+    };
+  }, []);
 
-  const initializeAppleAuth = async () => {
+  const initializeAppleAuth = async (target: TransportV2DesktopOAuthState | null) => {
     if (!window.AppleID) {
       throw new Error("Apple Sign In SDK not loaded");
     }
@@ -130,6 +140,7 @@ export function AppleAuthProvider({
 
     // A retry is a new authorization attempt, so it gets a fresh backend state and nonce.
     const initiateResult = await os.initiateAppleAuth(inviteCode || "");
+    if (!active.current || (target && !isCurrentDesktopOAuthTarget(target))) return;
     const nonce = getAppleAuthorizationNonce(initiateResult.auth_url);
 
     const state = initiateResult.state || "";
@@ -149,9 +160,15 @@ export function AppleAuthProvider({
     });
   };
 
-  const completeAuthorization = async (authorization: AppleAuthorization) => {
+  const completeAuthorization = async (
+    authorization: AppleAuthorization,
+    nativeFlow: boolean,
+    target: TransportV2DesktopOAuthState | null
+  ) => {
     sessionStorage.removeItem("apple_auth_state");
     await os.handleAppleCallback(authorization.code, authorization.state, inviteCode || "");
+
+    if (!active.current) return;
 
     try {
       getBillingService().clearToken();
@@ -159,17 +176,11 @@ export function AppleAuthProvider({
       console.warn("Failed to clear billing token:", billingError);
     }
 
-    const isTauriAuth = isNativeOAuthRedirect();
-    if (isTauriAuth) {
-      const deepLinkUrl = await mintTransportV2NativeAuthDeepLink(
-        "apple",
-        os.mintNativeHandoffGrant
-      );
-
-      setNativeRedirectUrl(deepLinkUrl);
-      nativeRedirectTimer.current = setTimeout(() => {
-        window.location.href = deepLinkUrl;
-      }, 1000);
+    if (nativeFlow) {
+      if (!target || !isCurrentDesktopOAuthTarget(target)) {
+        throw new Error("Native sign-in changed or expired; please restart login in Maple.");
+      }
+      setNativeConfirmation(target);
       return;
     }
 
@@ -178,22 +189,31 @@ export function AppleAuthProvider({
   };
 
   const handleAppleSignIn = async () => {
-    if (isSignInPending.current) return;
+    if (isSignInPending.current || nativeConfirmation || !active.current) return;
     isSignInPending.current = true;
+    const nativeFlow = isNativeOAuthRedirect();
+    const target = nativeFlow ? readTransportV2DesktopOAuth("apple") : null;
+    ownedTarget.current = target;
 
     try {
-      await initializeAppleAuth();
+      if (nativeFlow && !target) {
+        throw new Error("Native sign-in changed or expired; please restart login in Maple.");
+      }
+      await initializeAppleAuth(target);
+      if (!active.current || (target && !isCurrentDesktopOAuthTarget(target))) return;
 
       // Programmatic Apple sign-in returns one promise that resolves on success and rejects on
       // failure. It is the only completion channel; document events are intentionally unused.
       const authResult = await window.AppleID.auth.signIn();
+      if (!active.current || (target && !isCurrentDesktopOAuthTarget(target))) return;
       const authorization = authResult?.authorization;
       if (!authorization?.code || !authorization.state) {
         throw new Error("Missing required authentication data");
       }
 
-      await completeAuthorization(authorization);
+      await completeAuthorization(authorization, nativeFlow, target);
     } catch (error) {
+      if (!active.current || (target && !isCurrentDesktopOAuthTarget(target))) return;
       const signInError = getAppleAuthError(error);
       console.error("[Apple Auth] Sign In failed:", signInError);
 
@@ -209,17 +229,8 @@ export function AppleAuthProvider({
     return null;
   }
 
-  if (nativeRedirectUrl) {
-    return (
-      <Button
-        type="button"
-        onClick={() => (window.location.href = nativeRedirectUrl)}
-        variant={buttonVariant}
-        className={className || "w-full"}
-      >
-        Open Maple
-      </Button>
-    );
+  if (nativeConfirmation) {
+    return <HostedNativeSignInConfirmation target={nativeConfirmation} />;
   }
 
   return children ? (

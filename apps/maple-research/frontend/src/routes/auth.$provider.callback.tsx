@@ -1,6 +1,7 @@
 import { createFileRoute, useNavigate, useRouter, Link } from "@tanstack/react-router";
 import { useCallback, useEffect, useState, useRef } from "react";
 import { useOpenSecret } from "@mapleai/sdk";
+import { HostedNativeSignInConfirmation } from "@/components/HostedNativeSignInConfirmation";
 import { AlertDestructive } from "@/components/AlertDestructive";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Loader2 } from "lucide-react";
@@ -8,9 +9,11 @@ import { Button } from "@/components/ui/button";
 import { getBillingService } from "@/billing/billingService";
 import { getSafeInternalRedirect, navigateToSafeInternalRedirect } from "@/utils/internalRedirect";
 import {
-  clearDesktopOAuthTransport,
+  clearDesktopOAuthTarget,
+  isCurrentDesktopOAuthTarget,
+  readTransportV2DesktopOAuth,
   isNativeOAuthRedirect,
-  mintTransportV2NativeAuthDeepLink,
+  type TransportV2DesktopOAuthState,
   type DesktopOAuthProvider
 } from "@/services/desktopOAuthTransport";
 
@@ -39,43 +42,45 @@ function asDesktopOAuthProvider(provider: string): DesktopOAuthProvider | null {
 function OAuthCallback() {
   const [isProcessing, setIsProcessing] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [nativeRedirectUrl, setNativeRedirectUrl] = useState<string | null>(null);
+  const [nativeConfirmation, setNativeConfirmation] = useState<TransportV2DesktopOAuthState | null>(
+    null
+  );
+  const active = useRef(true);
+  const redirectTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const navigate = useNavigate();
   const router = useRouter();
-  const {
-    handleGitHubCallback,
-    handleGoogleCallback,
-    handleAppleCallback,
-    mintNativeHandoffGrant
-  } = useOpenSecret();
+  const { handleGitHubCallback, handleGoogleCallback, handleAppleCallback } = useOpenSecret();
   const processedRef = useRef(false);
 
   const { provider } = Route.useParams();
   const formattedProvider = formatProviderName(provider);
+  const [nativeFlow] = useState(() => {
+    const nativeProvider = asDesktopOAuthProvider(provider);
+    return {
+      requested: isNativeOAuthRedirect(),
+      target: nativeProvider ? readTransportV2DesktopOAuth(nativeProvider) : null
+    };
+  });
+
+  useEffect(() => {
+    active.current = true;
+    return () => {
+      active.current = false;
+      if (redirectTimer.current) clearTimeout(redirectTimer.current);
+      queueMicrotask(() => {
+        if (!active.current && nativeFlow.target) clearDesktopOAuthTarget(nativeFlow.target);
+      });
+    };
+  }, [nativeFlow]);
 
   // Helper functions for the callback process
   const handleSuccessfulAuth = useCallback(async () => {
-    // Check if this is a Tauri app auth flow (desktop or mobile)
-    const isTauriAuth = isNativeOAuthRedirect();
-
-    if (isTauriAuth) {
-      const nativeProvider = asDesktopOAuthProvider(provider);
-      if (!nativeProvider) {
-        throw new Error("Desktop authentication state is missing or expired; please restart login");
+    if (!active.current) return;
+    if (nativeFlow.requested) {
+      if (!nativeFlow.target || !isCurrentDesktopOAuthTarget(nativeFlow.target)) {
+        throw new Error("Native sign-in changed or expired; please restart login in Maple.");
       }
-      const deepLinkUrl = await mintTransportV2NativeAuthDeepLink(
-        nativeProvider,
-        mintNativeHandoffGrant
-      );
-
-      // Store the URL in state so we can show a manual open button as fallback
-      setNativeRedirectUrl(deepLinkUrl);
-
-      // Try auto-redirect (may be blocked by iOS Safari without user gesture)
-      setTimeout(() => {
-        window.location.href = deepLinkUrl;
-      }, 1000);
-
+      setNativeConfirmation(nativeFlow.target);
       return;
     }
 
@@ -87,7 +92,8 @@ function OAuthCallback() {
     sessionStorage.removeItem("post_auth_redirect");
     const safePostAuthRedirect = getSafeInternalRedirect(postAuthRedirect);
 
-    setTimeout(() => {
+    redirectTimer.current = setTimeout(() => {
+      if (!active.current) return;
       if (selectedPlan) {
         navigate({
           to: "/pricing",
@@ -99,18 +105,22 @@ function OAuthCallback() {
         navigate({ to: "/" });
       }
     }, 2000);
-  }, [mintNativeHandoffGrant, navigate, provider, router]);
+  }, [nativeFlow, navigate, router]);
 
-  const handleAuthError = (error: unknown) => {
-    if (isNativeOAuthRedirect()) clearDesktopOAuthTransport();
-    console.error(`Authentication callback error:`, error);
-    if (error instanceof Error) {
-      setError(error.message);
-    } else {
-      setError("Unknown error");
-    }
-    setIsProcessing(false);
-  };
+  const handleAuthError = useCallback(
+    (error: unknown) => {
+      if (!active.current) return;
+      if (nativeFlow.target) clearDesktopOAuthTarget(nativeFlow.target);
+      console.error(`Authentication callback error:`, error);
+      if (error instanceof Error) {
+        setError(error.message);
+      } else {
+        setError("Unknown error");
+      }
+      setIsProcessing(false);
+    },
+    [nativeFlow]
+  );
 
   useEffect(() => {
     const processCallback = async () => {
@@ -153,6 +163,8 @@ function OAuthCallback() {
             throw new Error(`Unsupported provider: ${provider}`);
           }
 
+          if (!active.current) return;
+
           // Clear any existing billing token to prevent session mixing
           try {
             getBillingService().clearToken();
@@ -166,10 +178,11 @@ function OAuthCallback() {
           // Handle authentication error
           handleAuthError(error);
         } finally {
-          setIsProcessing(false);
+          if (active.current) setIsProcessing(false);
         }
       } else {
-        if (isNativeOAuthRedirect()) clearDesktopOAuthTransport();
+        if (!active.current) return;
+        if (nativeFlow.target) clearDesktopOAuthTarget(nativeFlow.target);
         setError("Invalid callback parameters");
         setIsProcessing(false);
       }
@@ -178,26 +191,22 @@ function OAuthCallback() {
     processCallback();
   }, [
     handleAppleCallback,
+    handleAuthError,
     handleGitHubCallback,
     handleGoogleCallback,
     handleSuccessfulAuth,
+    nativeFlow,
     provider
   ]);
 
-  // After auth completes for a native app flow, show a button to open the app
-  if (nativeRedirectUrl) {
+  if (nativeConfirmation) {
     return (
       <Card className="max-w-md mx-auto mt-20">
         <CardHeader>
-          <CardTitle>{formattedProvider} Authentication Successful</CardTitle>
+          <CardTitle>Confirm Maple sign-in</CardTitle>
         </CardHeader>
         <CardContent>
-          <p className="mb-4">
-            Authentication successful! Tap the button below to return to Maple.
-          </p>
-          <div className="flex justify-center">
-            <Button onClick={() => (window.location.href = nativeRedirectUrl)}>Open Maple</Button>
-          </div>
+          <HostedNativeSignInConfirmation target={nativeConfirmation} />
         </CardContent>
       </Card>
     );
@@ -222,7 +231,7 @@ function OAuthCallback() {
   }
 
   // If this is a Tauri app auth flow (desktop or mobile), show processing UI
-  if (isNativeOAuthRedirect()) {
+  if (nativeFlow.requested) {
     return (
       <Card className="max-w-md mx-auto mt-20">
         <CardHeader>

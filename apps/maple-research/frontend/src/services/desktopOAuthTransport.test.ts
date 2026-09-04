@@ -5,6 +5,7 @@ import {
   buildTransportV2NativeAuthDeepLink,
   claimTransportV2DesktopOAuthInitiation,
   clearDesktopOAuthTransport,
+  clearDesktopOAuthTarget,
   isNativeOAuthRedirect,
   markDesktopOAuthTransport,
   markTransportV2DesktopOAuth,
@@ -149,12 +150,13 @@ describe("desktop OAuth transport selection", () => {
     const calls: string[][] = [];
 
     const deepLink = await mintTransportV2NativeAuthDeepLink(
-      "github",
+      { ...state, startedAt: 1_000 },
       async (sessionId, requestId) => {
         calls.push([sessionId, requestId]);
         return { grant: "head.payload.c2ln" };
       },
-      1_001
+      () => true,
+      () => 1_001
     );
 
     expect(calls).toEqual([[nativeSessionId, nativeRequestId]]);
@@ -169,15 +171,106 @@ describe("desktop OAuth transport selection", () => {
 
     await expect(
       mintTransportV2NativeAuthDeepLink(
-        "google",
+        { ...state, provider: "google", startedAt: 1_000 },
         async () => {
           calls += 1;
           return { grant: "head.payload.c2ln" };
         },
-        1_001
+        () => true,
+        () => 1_001
       )
-    ).rejects.toThrow("missing or expired");
+    ).rejects.toThrow("changed or expired");
     expect(calls).toBe(0);
+  });
+
+  test("rejects duplicate approval while a mint is in flight", async () => {
+    markTransportV2DesktopOAuth(state, 1_000);
+    const target = { ...state, startedAt: 1_000 };
+    let resolve!: (result: { grant: string }) => void;
+    let calls = 0;
+    const mint = () => {
+      calls += 1;
+      return new Promise<{ grant: string }>((done) => {
+        resolve = done;
+      });
+    };
+    const first = mintTransportV2NativeAuthDeepLink(
+      target,
+      mint,
+      () => true,
+      () => 1_001
+    );
+    await expect(
+      mintTransportV2NativeAuthDeepLink(
+        target,
+        mint,
+        () => true,
+        () => 1_001
+      )
+    ).rejects.toThrow("already been submitted");
+    resolve({ grant: "head.payload.c2ln" });
+    await first;
+    expect(calls).toBe(1);
+  });
+
+  for (const change of ["cancel", "target", "account", "expiry"] as const) {
+    test(`discards a late mint after ${change} and preserves a newer target`, async () => {
+      markTransportV2DesktopOAuth(state, 1_000);
+      const target = { ...state, startedAt: 1_000 };
+      let resolve!: (result: { grant: string }) => void;
+      let ownsAccount = true;
+      let now = 1_001;
+      const pending = mintTransportV2NativeAuthDeepLink(
+        target,
+        () =>
+          new Promise<{ grant: string }>((done) => {
+            resolve = done;
+          }),
+        () => ownsAccount,
+        () => now
+      );
+      const replacement = { ...state, nativeRequestId: "11".repeat(16) };
+      if (change === "cancel") clearDesktopOAuthTarget(target);
+      if (change === "target") markTransportV2DesktopOAuth(replacement, 1_002);
+      if (change === "account") ownsAccount = false;
+      if (change === "expiry") now += TRANSPORT_V2_PENDING_TTL_MS;
+      if (change === "target") now = 1_003;
+      resolve({ grant: "head.payload.c2ln" });
+      await expect(pending).rejects.toThrow("changed or expired");
+      if (change === "target") {
+        expect(readTransportV2DesktopOAuth(undefined, 1_003)).toEqual({
+          ...replacement,
+          startedAt: 1_002
+        });
+      }
+    });
+  }
+
+  test("does not retry after an ambiguous mint failure", async () => {
+    markTransportV2DesktopOAuth(state, 1_000);
+    const target = { ...state, startedAt: 1_000 };
+    let calls = 0;
+    const mint = async () => {
+      calls += 1;
+      throw new Error("network lost");
+    };
+    await expect(
+      mintTransportV2NativeAuthDeepLink(
+        target,
+        mint,
+        () => true,
+        () => 1_001
+      )
+    ).rejects.toThrow("network lost");
+    await expect(
+      mintTransportV2NativeAuthDeepLink(
+        target,
+        mint,
+        () => true,
+        () => 1_002
+      )
+    ).rejects.toThrow("changed or expired");
+    expect(calls).toBe(1);
   });
 
   test("rejects malformed or padded handoff grants", () => {
