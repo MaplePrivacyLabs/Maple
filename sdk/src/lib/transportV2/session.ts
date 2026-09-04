@@ -5,6 +5,7 @@ import {
   type TransportV2SessionKeys
 } from "./crypto";
 import {
+  CHALLENGE_BYTES,
   MAX_RESPONSE_CIPHERTEXT_BYTES,
   RECORD_TAG_BYTES,
   TransportV2ProtocolError,
@@ -24,9 +25,46 @@ const SESSION_EXPIRY_SKEW_MS = 30_000;
 export interface SerializedTransportV2Session {
   version: 2;
   session_id: string;
+  routing_key: string;
   request_key: string;
   response_key: string;
   expires_at_ms: number;
+}
+
+const SERIALIZED_SESSION_KEYS = [
+  "expires_at_ms",
+  "request_key",
+  "response_key",
+  "routing_key",
+  "session_id",
+  "version"
+] as const;
+
+function validateRoutingKey(value: unknown): string {
+  const decoded = decodeCanonicalBase64(value, CHALLENGE_BYTES);
+  decoded.fill(0);
+  return value as string;
+}
+
+function requireSerializedSessionShape(value: unknown): SerializedTransportV2Session {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new TransportV2ProtocolError("Transport v2 stored session is invalid.");
+  }
+  const object = value as Record<string, unknown>;
+  const actualKeys = Object.keys(object).sort();
+  if (
+    actualKeys.length !== SERIALIZED_SESSION_KEYS.length ||
+    actualKeys.some((key, index) => key !== SERIALIZED_SESSION_KEYS[index]) ||
+    object.version !== 2 ||
+    typeof object.session_id !== "string" ||
+    typeof object.routing_key !== "string" ||
+    typeof object.request_key !== "string" ||
+    typeof object.response_key !== "string" ||
+    typeof object.expires_at_ms !== "number"
+  ) {
+    throw new TransportV2ProtocolError("Transport v2 stored session is invalid.");
+  }
+  return object as unknown as SerializedTransportV2Session;
 }
 
 export class TransportV2RemoteError extends Error {
@@ -171,12 +209,14 @@ class CiphertextFrameReader {
  */
 export class TransportV2Session {
   #keys: TransportV2SessionKeys;
+  #routingKey: string;
   #expiresAtMs: number;
   #disposed = false;
   #nowMs: () => number;
 
   constructor(
     keys: TransportV2SessionKeys,
+    routingKey: string,
     expiresInSeconds: number,
     establishmentStartedAtMs = Date.now(),
     nowMs: () => number = () => Date.now()
@@ -184,6 +224,7 @@ export class TransportV2Session {
     if (!Number.isSafeInteger(expiresInSeconds) || expiresInSeconds <= 0) {
       throw new TransportV2ProtocolError("Transport v2 session lifetime is invalid.");
     }
+    const validatedRoutingKey = validateRoutingKey(routingKey);
     const expiresAtMs = establishmentStartedAtMs + expiresInSeconds * 1000 - SESSION_EXPIRY_SKEW_MS;
     if (!Number.isSafeInteger(expiresAtMs) || expiresAtMs <= nowMs()) {
       throw new TransportV2ProtocolError("Transport v2 session expired during establishment.");
@@ -194,6 +235,7 @@ export class TransportV2Session {
       requestKey: new Uint8Array(keys.requestKey),
       responseKey: new Uint8Array(keys.responseKey)
     };
+    this.#routingKey = validatedRoutingKey;
     this.#expiresAtMs = expiresAtMs;
     this.#nowMs = nowMs;
   }
@@ -217,6 +259,7 @@ export class TransportV2Session {
     return {
       version: 2,
       session_id: this.#keys.sessionId,
+      routing_key: this.#routingKey,
       request_key: encodeCanonicalBase64(this.#keys.requestKey),
       response_key: encodeCanonicalBase64(this.#keys.responseKey),
       expires_at_ms: this.#expiresAtMs
@@ -224,9 +267,10 @@ export class TransportV2Session {
   }
 
   static restore(
-    value: SerializedTransportV2Session,
+    serialized: SerializedTransportV2Session,
     nowMs: () => number = () => Date.now()
   ): TransportV2Session {
+    const value = requireSerializedSessionShape(serialized);
     const restoredAtMs = nowMs();
     if (
       value.version !== 2 ||
@@ -246,6 +290,7 @@ export class TransportV2Session {
           requestKey,
           responseKey
         },
+        value.routing_key,
         Math.ceil((value.expires_at_ms - restoredAtMs + SESSION_EXPIRY_SKEW_MS) / 1000),
         restoredAtMs,
         nowMs
@@ -299,6 +344,7 @@ export class TransportV2Session {
           method: "POST",
           headers: {
             "content-type": OUTER_CONTENT_TYPE,
+            "x-opensecret-routing-key": this.#routingKey,
             "x-session-id": this.#keys.sessionId
           },
           body,

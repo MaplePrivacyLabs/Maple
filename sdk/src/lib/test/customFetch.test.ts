@@ -357,6 +357,7 @@ describe("Transport V2 custom Fetch adapter", () => {
         "content-length": "4",
         "x-stainless-lang": "js",
         "x-stainless-retry-count": "0",
+        "x-opensecret-routing-key": "caller-route",
         "x-session-id": "caller-session",
         "x-openai-api-key": "caller-key",
         accept: "application/json",

@@ -29,7 +29,7 @@ import {
 } from "./session";
 
 const MAX_SESSION_RESPONSE_BYTES = 64 * 1024;
-const EXPECTED_SESSION_LIFETIME_SECONDS = 65 * 60;
+const EXPECTED_SESSION_LIFETIME_SECONDS = 60 * 60;
 const SESSION_ESTABLISHMENT_TIMEOUT_MS = 30_000;
 
 interface X25519KeyPair {
@@ -247,6 +247,7 @@ export class TransportV2Client {
     if (challenge.byteLength !== CHALLENGE_BYTES) {
       throw new TransportV2ProtocolError("Transport v2 challenge generator returned wrong length.");
     }
+    const routingKey = encodeCanonicalBase64(challenge);
     const keyPair = dependencies.generateKeyPair();
     if (
       keyPair.publicKey.byteLength !== X25519_KEY_BYTES ||
@@ -258,7 +259,7 @@ export class TransportV2Client {
 
     const requestBody = JSON.stringify({
       version: TRANSPORT_V2_VERSION,
-      challenge: encodeCanonicalBase64(challenge),
+      challenge: routingKey,
       client_public_key: encodeCanonicalBase64(keyPair.publicKey)
     });
     let sessionKeys: TransportV2SessionKeys | undefined;
@@ -273,7 +274,10 @@ export class TransportV2Client {
     try {
       const response = await fetchImplementation(`${apiUrl}/v2/session`, {
         method: "POST",
-        headers: { "content-type": "application/json" },
+        headers: {
+          "content-type": "application/json",
+          "x-opensecret-routing-key": routingKey
+        },
         body: requestBody,
         credentials: "omit",
         redirect: "error",
@@ -321,6 +325,7 @@ export class TransportV2Client {
       }
       const session = new TransportV2Session(
         sessionKeys,
+        routingKey,
         sessionResponse.expiresInSeconds,
         establishmentStartedAtMs
       );

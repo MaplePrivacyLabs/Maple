@@ -10,6 +10,8 @@ pub(crate) mod framing;
 
 use thiserror::Error;
 
+pub(crate) const ROUTING_KEY_HEADER: &str = "x-opensecret-routing-key";
+
 /// Stable, redacted failures from the private transport engine.
 #[derive(Debug, Error)]
 pub(crate) enum TransportV2Error {

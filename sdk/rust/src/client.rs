@@ -6,7 +6,7 @@ use crate::{
         client::{ResponseEventStream, TransportV2Client, TransportV2Session},
         envelope::{CacheNamespaceRoot, Credential, CredentialKind, LogicalHeader, LogicalRequest},
         framing::ResponseEvent,
-        TransportV2Error,
+        TransportV2Error, ROUTING_KEY_HEADER,
     },
     types::*,
 };
@@ -371,6 +371,7 @@ fn sanitize_inference_request_headers(headers: &HttpHeaderMap) -> HttpHeaderMap 
             && *name != header::COOKIE
             && *name != header::SET_COOKIE
             && name.as_str() != "x-session-id"
+            && name.as_str() != ROUTING_KEY_HEADER
             && name.as_str() != "forwarded"
             && name.as_str() != "via"
             && name.as_str() != "x-forwarded-for"
@@ -3015,6 +3016,7 @@ mod tests {
         headers.insert("x-forwarded-host", "outer.example".parse().unwrap());
         headers.insert("x-forwarded-proto", "https".parse().unwrap());
         headers.insert("x-session-id", "outer-session".parse().unwrap());
+        headers.insert(ROUTING_KEY_HEADER, "outer-routing-key".parse().unwrap());
         headers.insert("x-client-metadata", "kept".parse().unwrap());
         headers.append("x-client-metadata", "also-kept".parse().unwrap());
 
@@ -3042,6 +3044,7 @@ mod tests {
         assert!(!sanitized.contains_key("x-forwarded-host"));
         assert!(!sanitized.contains_key("x-forwarded-proto"));
         assert!(!sanitized.contains_key("x-session-id"));
+        assert!(!sanitized.contains_key(ROUTING_KEY_HEADER));
     }
 
     #[tokio::test]

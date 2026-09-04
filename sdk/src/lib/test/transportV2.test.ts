@@ -24,13 +24,15 @@ import {
   uint32,
   utf8
 } from "../transportV2/protocol";
-import { TransportV2Session } from "../transportV2/session";
+import { TransportV2Session, type SerializedTransportV2Session } from "../transportV2/session";
 
 const vectorTranscript = {
   challenge: new Uint8Array(32).fill(0x11),
   clientPublicKey: new Uint8Array(32).fill(0x22),
   serverPublicKey: new Uint8Array(32).fill(0x33)
 };
+const SESSION_LIFETIME_SECONDS = 60 * 60;
+const ROUTING_KEY = encodeCanonicalBase64(vectorTranscript.challenge);
 
 function hex(bytes: Uint8Array): string {
   return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
@@ -155,7 +157,7 @@ describe("Transport V2 protocol engine", () => {
 
   test("puts credential, cache root, target, headers, and raw body inside one record", async () => {
     const keys = await vectorKeys();
-    const session = new TransportV2Session(keys, 3900);
+    const session = new TransportV2Session(keys, ROUTING_KEY, SESSION_LIFETIME_SECONDS);
     let next = 0;
     const random = {
       getRandomValues<T extends ArrayBufferView | null>(array: T): T {
@@ -197,12 +199,56 @@ describe("Transport V2 protocol engine", () => {
     expect(sealed.path).toBe("/v2/request");
     expect(Object.keys(sealed.init.headers as Record<string, string>).sort()).toEqual([
       "content-type",
+      "x-opensecret-routing-key",
       "x-session-id"
     ]);
+    expect((sealed.init.headers as Record<string, string>)["x-opensecret-routing-key"]).toBe(
+      ROUTING_KEY
+    );
     expect((sealed.init.headers as Record<string, string>).authorization).toBeUndefined();
     expect(sealed.init.credentials).toBe("omit");
     expect(sealed.init.redirect).toBe("error");
     expect((sealed.init.body as Uint8Array).subarray(0, 16)).toEqual(new Uint8Array(16).fill(1));
+
+    expect(() =>
+      encodeRequestEnvelope({
+        method: "GET",
+        target: "/v1/models",
+        headers: [{ name: "x-opensecret-routing-key", value: ROUTING_KEY }]
+      })
+    ).toThrow(/logical header is invalid/i);
+  });
+
+  test("strictly persists the public routing key with the attested session", async () => {
+    const keys = await vectorKeys();
+    const session = new TransportV2Session(keys, ROUTING_KEY, SESSION_LIFETIME_SECONDS);
+    const serialized = session.serialize();
+    expect(serialized.routing_key).toBe(ROUTING_KEY);
+
+    const restored = TransportV2Session.restore(serialized);
+    const sealed = await restored.sealRequest({ method: "GET", target: "/v1/models" });
+    expect((sealed.init.headers as Record<string, string>)["x-opensecret-routing-key"]).toBe(
+      ROUTING_KEY
+    );
+
+    const missingRoutingKey = { ...serialized } as Partial<SerializedTransportV2Session>;
+    delete missingRoutingKey.routing_key;
+    expect(() =>
+      TransportV2Session.restore(missingRoutingKey as unknown as SerializedTransportV2Session)
+    ).toThrow(/stored session is invalid/i);
+
+    for (const routingKey of [
+      "not-base64",
+      ROUTING_KEY.replace(/=$/u, ""),
+      encodeCanonicalBase64(new Uint8Array(31).fill(0x11))
+    ]) {
+      expect(() => TransportV2Session.restore({ ...serialized, routing_key: routingKey })).toThrow(
+        /canonical base64/i
+      );
+    }
+
+    restored.dispose();
+    session.dispose();
   });
 
   test("preserves ordered duplicate logical response headers", () => {
@@ -233,7 +279,7 @@ describe("Transport V2 protocol engine", () => {
 
   test("streams ordered chunks and requires one authenticated terminal record", async () => {
     const keys = await vectorKeys();
-    const session = new TransportV2Session(keys, 3900);
+    const session = new TransportV2Session(keys, ROUTING_KEY, SESSION_LIFETIME_SECONDS);
     const requestId = new Uint8Array(16).fill(0x71);
     const response = await framedResponse(
       keys,
@@ -257,7 +303,7 @@ describe("Transport V2 protocol engine", () => {
 
   test("rejects EOF, post-terminal frames, response transplants, and sequence reordering", async () => {
     const keys = await vectorKeys();
-    const session = new TransportV2Session(keys, 3900);
+    const session = new TransportV2Session(keys, ROUTING_KEY, SESSION_LIFETIME_SECONDS);
     const requestId = new Uint8Array(16).fill(0x72);
 
     const truncated = await session.openResponse(
@@ -375,7 +421,7 @@ describe("Transport V2 protocol engine", () => {
         version: 2,
         session_id: keys.sessionId,
         attestation_document: "verified-by-test-boundary",
-        expires_in_seconds: 3900
+        expires_in_seconds: SESSION_LIFETIME_SECONDS
       });
     });
 
@@ -389,7 +435,13 @@ describe("Transport V2 protocol engine", () => {
     );
     expect(verified).toBe(true);
     expect(fetchMock).toHaveBeenCalledTimes(1);
-    expect(Object.keys(observedInit?.headers as Record<string, string>)).toEqual(["content-type"]);
+    expect(Object.keys(observedInit?.headers as Record<string, string>)).toEqual([
+      "content-type",
+      "x-opensecret-routing-key"
+    ]);
+    expect((observedInit?.headers as Record<string, string>)["x-opensecret-routing-key"]).toBe(
+      encodeCanonicalBase64(challenge)
+    );
     expect((observedInit?.headers as Record<string, string>).authorization).toBeUndefined();
     expect(observedInit?.credentials).toBe("omit");
     expect(observedInit?.redirect).toBe("error");
@@ -510,7 +562,7 @@ describe("Transport V2 protocol engine", () => {
         version: 2,
         session_id: "00000000000000000000000000000000",
         attestation_document: "untrusted",
-        expires_in_seconds: 3900
+        expires_in_seconds: SESSION_LIFETIME_SECONDS
       })
     );
     await expect(
@@ -572,7 +624,7 @@ describe("Transport V2 protocol engine", () => {
               version: 2,
               session_id: "00000000000000000000000000000000",
               attestation_document: "not-yet-verified",
-              expires_in_seconds: 3901
+              expires_in_seconds: SESSION_LIFETIME_SECONDS + 1
             })
           ) as typeof fetch
         },
@@ -582,14 +634,20 @@ describe("Transport V2 protocol engine", () => {
     expect(verifyDocument).not.toHaveBeenCalled();
 
     const keys = await vectorKeys();
-    expect(() => new TransportV2Session(keys, 3900, Date.now() - (3900 * 1000 - 29_000))).toThrow(
-      /expired during establishment/i
-    );
+    expect(
+      () =>
+        new TransportV2Session(
+          keys,
+          ROUTING_KEY,
+          SESSION_LIFETIME_SECONDS,
+          Date.now() - (SESSION_LIFETIME_SECONDS * 1000 - 29_000)
+        )
+    ).toThrow(/expired during establishment/i);
   });
 
   test("fails closed on an unauthenticated outer response without a V1 fallback", async () => {
     const keys = await vectorKeys();
-    const session = new TransportV2Session(keys, 3900);
+    const session = new TransportV2Session(keys, ROUTING_KEY, SESSION_LIFETIME_SECONDS);
     await expect(
       session.openResponse(
         new Response("legacy plaintext", {
@@ -622,7 +680,8 @@ describe("Transport V2 protocol engine", () => {
     expect(requests[0].init?.method).toBe("POST");
     expect(requests[0].init?.credentials).toBe("omit");
     expect(Object.keys(requests[0].init?.headers as Record<string, string>)).toEqual([
-      "content-type"
+      "content-type",
+      "x-opensecret-routing-key"
     ]);
   });
 
@@ -636,6 +695,7 @@ describe("Transport V2 protocol engine", () => {
       {
         version: 2,
         session_id: keys.sessionId,
+        routing_key: ROUTING_KEY,
         request_key: encodeCanonicalBase64(keys.requestKey),
         response_key: encodeCanonicalBase64(keys.responseKey),
         expires_at_ms: Date.now() + 60_000
@@ -667,6 +727,7 @@ describe("Transport V2 protocol engine", () => {
       {
         version: 2,
         session_id: keys.sessionId,
+        routing_key: ROUTING_KEY,
         request_key: encodeCanonicalBase64(keys.requestKey),
         response_key: encodeCanonicalBase64(keys.responseKey),
         expires_at_ms: expiresAtMs
@@ -716,6 +777,7 @@ describe("Transport V2 protocol engine", () => {
       {
         version: 2,
         session_id: keys.sessionId,
+        routing_key: ROUTING_KEY,
         request_key: encodeCanonicalBase64(keys.requestKey),
         response_key: encodeCanonicalBase64(keys.responseKey),
         expires_at_ms: expiresAtMs
@@ -744,7 +806,7 @@ describe("Transport V2 protocol engine", () => {
 
   test("rejects plaintext SSE even when the outer status is successful", async () => {
     const keys = await vectorKeys();
-    const session = new TransportV2Session(keys, 3900);
+    const session = new TransportV2Session(keys, ROUTING_KEY, SESSION_LIFETIME_SECONDS);
     await expect(
       session.openResponse(
         new Response("data: plaintext\n\n", {

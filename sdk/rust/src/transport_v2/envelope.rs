@@ -7,7 +7,7 @@ use p256::elliptic_curve::rand_core::{OsRng, RngCore};
 use serde::{Deserialize, Serialize, Serializer};
 use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
-use super::{Result, TransportV2Error};
+use super::{Result, TransportV2Error, ROUTING_KEY_HEADER};
 
 const VERSION: u8 = 2;
 const REQUEST_ID_BYTES: usize = 16;
@@ -290,6 +290,7 @@ fn is_gateway_controlled_header(name: &str) -> bool {
             | "x-forwarded-host"
             | "x-forwarded-proto"
             | "x-session-id"
+            | ROUTING_KEY_HEADER
     )
 }
 
@@ -345,7 +346,13 @@ mod tests {
 
     #[test]
     fn outer_authority_fields_cannot_enter_logical_headers_or_targets() {
-        for name in ["authorization", "cookie", "host", "x-session-id"] {
+        for name in [
+            "authorization",
+            "cookie",
+            "host",
+            "x-session-id",
+            ROUTING_KEY_HEADER,
+        ] {
             assert!(LogicalHeader::new(name.into(), "value".into()).is_err());
         }
         for target in ["https://example.com", "//example.com", "/ok#fragment"] {

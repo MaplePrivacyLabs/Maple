@@ -7,6 +7,7 @@ import {
 import {
   TransportV2ProtocolError,
   concatBytes,
+  encodeCanonicalBase64,
   uint32,
   utf8,
   type TransportV2Request
@@ -21,6 +22,8 @@ import { TransportV2Session, type SerializedTransportV2Session } from "../transp
 import { TransportV2Client } from "../transportV2/client";
 
 const API_URL = "https://api.example.test/service";
+const ROUTING_KEY = encodeCanonicalBase64(new Uint8Array(32).fill(0x33));
+const SESSION_LIFETIME_SECONDS = 60 * 60;
 
 interface Deferred<T> {
   promise: Promise<T>;
@@ -59,6 +62,7 @@ function serializedSession(sessionId: string): SerializedTransportV2Session {
   return {
     version: 2,
     session_id: sessionId,
+    routing_key: ROUTING_KEY,
     request_key: "ERERERERERERERERERERERERERERERERERERERERERE=",
     response_key: "IiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiI=",
     expires_at_ms: Date.now() + 60_000
@@ -404,7 +408,7 @@ describe("Transport V2 runtime", () => {
       clientPublicKey: new Uint8Array(32).fill(0x22),
       serverPublicKey: new Uint8Array(32).fill(0x33)
     });
-    const stored = new TransportV2Session(keys, 3900).serialize();
+    const stored = new TransportV2Session(keys, ROUTING_KEY, SESSION_LIFETIME_SECONDS).serialize();
     const releaseBody = deferred<void>();
     let call = 0;
     const fetchMock = mock(async (_input: string | URL | Request, init?: RequestInit) => {
@@ -556,5 +560,51 @@ describe("Transport V2 runtime", () => {
         request: { method: "POST", target: "/v1/oauth/google/callback" }
       })
     ).rejects.toThrow(/continuation is missing/i);
+  });
+
+  test("rejects OAuth continuations with a missing or malformed routing key", async () => {
+    const initial = fakeClient("11111111111111111111111111111111");
+    const restore = mock((options, state) => TransportV2Client.restore(options, state));
+    const runtime = new TransportV2Runtime({ establish: async () => initial, restore });
+    const begin = await runtime.request({
+      apiUrl: API_URL,
+      request: { method: "POST", target: "/v1/oauth/github" }
+    });
+
+    const tamperStoredRoutingKey = (state: string, replacement?: string) => {
+      begin.rememberOAuthContinuation("github", state);
+      expect(globalThis.sessionStorage.length).toBe(1);
+      const key = globalThis.sessionStorage.key(0);
+      expect(key).not.toBeNull();
+      const continuation = JSON.parse(globalThis.sessionStorage.getItem(key!)!) as {
+        session: Record<string, unknown>;
+      };
+      if (replacement === undefined) {
+        delete continuation.session.routing_key;
+      } else {
+        continuation.session.routing_key = replacement;
+      }
+      globalThis.sessionStorage.setItem(key!, JSON.stringify(continuation));
+    };
+
+    tamperStoredRoutingKey("missing-routing-key");
+    await expect(
+      runtime.request({
+        apiUrl: API_URL,
+        oauthCallback: { provider: "github", state: "missing-routing-key" },
+        request: { method: "POST", target: "/v1/oauth/github/callback" }
+      })
+    ).rejects.toThrow(/continuation is invalid/i);
+    expect(restore).toHaveBeenCalledTimes(0);
+
+    tamperStoredRoutingKey("malformed-routing-key", "not-base64");
+    await expect(
+      runtime.request({
+        apiUrl: API_URL,
+        oauthCallback: { provider: "github", state: "malformed-routing-key" },
+        request: { method: "POST", target: "/v1/oauth/github/callback" }
+      })
+    ).rejects.toThrow(/canonical base64/i);
+    expect(restore).toHaveBeenCalledTimes(1);
   });
 });
