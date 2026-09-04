@@ -1,7 +1,6 @@
-import React, { createContext, useState, useEffect } from "react";
+import React, { createContext, useState, useEffect, useRef } from "react";
 import * as api from "./api";
 import { createCustomFetch } from "./ai";
-import { clearAttestationSessions, getAttestation } from "./getAttestation";
 import type { Model } from "openai/resources/models.js";
 import { authenticate } from "./attestation";
 import {
@@ -13,6 +12,19 @@ import {
 import type { AttestationDocument } from "./attestation";
 import type { LoginResponse, ThirdPartyTokenResponse, DocumentResponse } from "./api";
 import { PcrConfig } from "./pcr";
+import {
+  clearTransportV2CredentialsIfCurrent,
+  readTransportV2Credentials,
+  snapshotTransportV2Auth,
+  subscribeTransportV2AuthInvalidation,
+  transportV2ProfilePublicationDecision
+} from "./transportV2/auth";
+import type { Attestation } from "./getAttestation";
+import { getTransportV2PublicAttestation, transportV2Runtime } from "./transportV2/runtime";
+import {
+  snapshotTransportV2AuthorityScope,
+  transportV2AuthRuntime
+} from "./transportV2/authRuntime";
 
 const DEFAULT_PCR_CONFIG: PcrConfig = { environment: "production" };
 
@@ -362,7 +374,11 @@ export type OpenSecretContextType = {
   /**
    * Gets an attested session after enforcing the effective PCR0 trust policy
    */
-  getAttestation: typeof getAttestation;
+  getAttestation: (
+    forceRefresh?: boolean,
+    explicitApiUrl?: string,
+    explicitPcrConfig?: PcrConfig
+  ) => Promise<Attestation>;
 
   /**
    * Authenticates an attestation document
@@ -945,7 +961,10 @@ export const OpenSecretContext = createContext<OpenSecretContextType>({
   aiCustomFetch: async () => new Response(),
   apiUrl: "",
   pcrConfig: DEFAULT_PCR_CONFIG,
-  getAttestation,
+  getAttestation: async () => ({
+    sessionKey: null,
+    sessionId: null
+  }),
   authenticate,
   parseAttestationForView,
   awsRootCertDer: AWS_ROOT_CERT_DER,
@@ -1036,6 +1055,11 @@ export function OpenSecretProvider({
     loading: true,
     user: undefined
   });
+  const authLoadGeneration = useRef(0);
+  const authorityScope = snapshotTransportV2AuthorityScope(apiUrl, pcrConfig, "user");
+  const authorityScopeKey = JSON.stringify([authorityScope.key, clientId]);
+  const currentAuthorityScopeKey = useRef(authorityScopeKey);
+  currentAuthorityScopeKey.current = authorityScopeKey;
   const [apiKey, setApiKeyState] = useState<string | undefined>();
   const [aiCustomFetch, setAiCustomFetch] = useState<OpenSecretContextType["aiCustomFetch"]>();
 
@@ -1088,9 +1112,15 @@ export function OpenSecretProvider({
   }, [apiUrl, apiKey, pcrConfig]);
 
   async function fetchUser() {
-    const access_token = window.localStorage.getItem("access_token");
-    const refresh_token = window.localStorage.getItem("refresh_token");
-    if (!access_token || !refresh_token) {
+    const generation = authLoadGeneration.current + 1;
+    authLoadGeneration.current = generation;
+    const capturedScope = authorityScope;
+    const capturedScopeKey = authorityScopeKey;
+    const ownsPublication = () =>
+      authLoadGeneration.current === generation &&
+      currentAuthorityScopeKey.current === capturedScopeKey;
+    if (!readTransportV2Credentials(capturedScope.apiUrl, "user")) {
+      if (!ownsPublication()) return;
       setAuth({
         loading: false,
         user: undefined
@@ -1098,13 +1128,38 @@ export function OpenSecretProvider({
       return;
     }
 
+    const attempted = snapshotTransportV2Auth(capturedScope.apiUrl, "user");
+    let authority: Awaited<ReturnType<typeof transportV2AuthRuntime.authority>> | undefined;
     try {
-      const user = await api.fetchUser();
+      authority = await transportV2AuthRuntime.authority(
+        capturedScope.apiUrl,
+        capturedScope.pcrConfig,
+        "user"
+      );
+      const user = await api.fetchUserWithTransportV2Authority(
+        capturedScope.apiUrl,
+        capturedScope.pcrConfig,
+        authority
+      );
+      const decision = transportV2ProfilePublicationDecision(authority.snapshot, ownsPublication());
+      if (decision === "reload") {
+        void fetchUser();
+        return;
+      }
+      if (decision === "discard") return;
       setAuth({
         loading: false,
         user
       });
     } catch (error) {
+      if (!ownsPublication()) return;
+      const sentWith = authority?.snapshot ?? attempted;
+      const decision = transportV2ProfilePublicationDecision(sentWith, true);
+      if (decision === "reload") {
+        void fetchUser();
+        return;
+      }
+      if (decision === "discard") return;
       console.error("Failed to fetch user:", error);
       setAuth({
         loading: false,
@@ -1114,15 +1169,22 @@ export function OpenSecretProvider({
   }
 
   useEffect(() => {
-    fetchUser();
-  }, []);
+    setAuth({ loading: true, user: undefined });
+    void fetchUser();
+    const unsubscribe = subscribeTransportV2AuthInvalidation(authorityScope.apiUrl, "user", () => {
+      authLoadGeneration.current += 1;
+      setAuth({ loading: false, user: undefined });
+    });
+    return () => {
+      authLoadGeneration.current += 1;
+      unsubscribe();
+    };
+  }, [authorityScopeKey]);
 
   async function signIn(email: string, password: string) {
     console.log("Signing in");
     try {
-      const { access_token, refresh_token } = await api.fetchLogin(email, password, clientId);
-      window.localStorage.setItem("access_token", access_token);
-      window.localStorage.setItem("refresh_token", refresh_token);
+      await api.fetchLogin(email, password, clientId);
       // Clear API key on new sign-in to ensure user-scoped keys
       setApiKey(undefined);
       await fetchUser();
@@ -1134,15 +1196,7 @@ export function OpenSecretProvider({
 
   async function signUp(email: string, password: string, inviteCode: string, name?: string) {
     try {
-      const { access_token, refresh_token } = await api.fetchSignUp(
-        email,
-        password,
-        inviteCode,
-        clientId,
-        name || null
-      );
-      window.localStorage.setItem("access_token", access_token);
-      window.localStorage.setItem("refresh_token", refresh_token);
+      await api.fetchSignUp(email, password, inviteCode, clientId, name || null);
       // Clear API key on new sign-up to ensure user-scoped keys
       setApiKey(undefined);
       await fetchUser();
@@ -1155,9 +1209,7 @@ export function OpenSecretProvider({
   async function signInGuest(id: string, password: string) {
     console.log("Signing in Guest");
     try {
-      const { access_token, refresh_token } = await api.fetchGuestLogin(id, password, clientId);
-      window.localStorage.setItem("access_token", access_token);
-      window.localStorage.setItem("refresh_token", refresh_token);
+      await api.fetchGuestLogin(id, password, clientId);
       // Clear API key on guest sign-in to ensure user-scoped keys
       setApiKey(undefined);
       await fetchUser();
@@ -1174,8 +1226,6 @@ export function OpenSecretProvider({
         inviteCode,
         clientId
       );
-      window.localStorage.setItem("access_token", access_token);
-      window.localStorage.setItem("refresh_token", refresh_token);
       // Clear API key on guest sign-up to ensure user-scoped keys
       setApiKey(undefined);
       await fetchUser();
@@ -1187,7 +1237,12 @@ export function OpenSecretProvider({
   }
 
   async function signOut() {
-    const refresh_token = window.localStorage.getItem("refresh_token");
+    const credentials = readTransportV2Credentials(apiUrl, "user");
+    const snapshot = snapshotTransportV2Auth(apiUrl, "user");
+    clearTransportV2CredentialsIfCurrent(snapshot);
+    setApiKey(undefined);
+    setAuth({ loading: false, user: undefined });
+    const refresh_token = credentials?.refreshToken;
     if (refresh_token) {
       try {
         await api.fetchLogout(refresh_token);
@@ -1195,15 +1250,6 @@ export function OpenSecretProvider({
         console.error("Error during logout:", error);
       }
     }
-    localStorage.removeItem("access_token");
-    localStorage.removeItem("refresh_token");
-    clearAttestationSessions();
-    // Clear any in-memory API key so no post-logout calls can use it
-    setApiKey(undefined);
-    setAuth({
-      loading: false,
-      user: undefined
-    });
   }
 
   const initiateGitHubAuth = async (inviteCode: string) => {
@@ -1217,13 +1263,7 @@ export function OpenSecretProvider({
 
   const handleGitHubCallback = async (code: string, state: string, inviteCode: string) => {
     try {
-      const { access_token, refresh_token } = await api.handleGitHubCallback(
-        code,
-        state,
-        inviteCode
-      );
-      window.localStorage.setItem("access_token", access_token);
-      window.localStorage.setItem("refresh_token", refresh_token);
+      await api.handleGitHubCallback(code, state, inviteCode);
       // Clear API key on OAuth sign-in to ensure user-scoped keys
       setApiKey(undefined);
       await fetchUser();
@@ -1244,13 +1284,7 @@ export function OpenSecretProvider({
 
   const handleGoogleCallback = async (code: string, state: string, inviteCode: string) => {
     try {
-      const { access_token, refresh_token } = await api.handleGoogleCallback(
-        code,
-        state,
-        inviteCode
-      );
-      window.localStorage.setItem("access_token", access_token);
-      window.localStorage.setItem("refresh_token", refresh_token);
+      await api.handleGoogleCallback(code, state, inviteCode);
       // Clear API key on OAuth sign-in to ensure user-scoped keys
       setApiKey(undefined);
       await fetchUser();
@@ -1271,13 +1305,7 @@ export function OpenSecretProvider({
 
   const handleAppleCallback = async (code: string, state: string, inviteCode: string) => {
     try {
-      const { access_token, refresh_token } = await api.handleAppleCallback(
-        code,
-        state,
-        inviteCode
-      );
-      window.localStorage.setItem("access_token", access_token);
-      window.localStorage.setItem("refresh_token", refresh_token);
+      await api.handleAppleCallback(code, state, inviteCode);
       // Clear API key on OAuth sign-in to ensure user-scoped keys
       setApiKey(undefined);
       await fetchUser();
@@ -1289,13 +1317,7 @@ export function OpenSecretProvider({
 
   const handleAppleNativeSignIn = async (appleUser: api.AppleUser, inviteCode?: string) => {
     try {
-      const { access_token, refresh_token } = await api.handleAppleNativeSignIn(
-        appleUser,
-        clientId,
-        inviteCode
-      );
-      window.localStorage.setItem("access_token", access_token);
-      window.localStorage.setItem("refresh_token", refresh_token);
+      await api.handleAppleNativeSignIn(appleUser, clientId, inviteCode);
       // Clear API key on OAuth sign-in to ensure user-scoped keys
       setApiKey(undefined);
       await fetchUser();
@@ -1367,7 +1389,14 @@ export function OpenSecretProvider({
     apiUrl,
     pcrConfig,
     getAttestation: (forceRefresh, explicitApiUrl, explicitPcrConfig) =>
-      getAttestation(forceRefresh, explicitApiUrl || apiUrl, explicitPcrConfig || pcrConfig),
+      getTransportV2PublicAttestation(
+        transportV2Runtime,
+        apiUrl,
+        pcrConfig,
+        forceRefresh,
+        explicitApiUrl,
+        explicitPcrConfig
+      ),
     authenticate,
     parseAttestationForView,
     awsRootCertDer: AWS_ROOT_CERT_DER,

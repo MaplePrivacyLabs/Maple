@@ -204,18 +204,15 @@ function validateHeaders(
   if (headers.length > maximum) {
     throw new TransportV2ProtocolError("Transport v2 has too many logical headers.");
   }
-  const names = new Set<string>();
   return headers.map(({ name, value }) => {
     if (
       !HTTP_TOKEN.test(name) ||
       name !== name.toLowerCase() ||
       (!allowGatewayHeaders && GATEWAY_HEADERS.has(name)) ||
-      names.has(name) ||
       !validVisibleAscii(value, true)
     ) {
       throw new TransportV2ProtocolError("Transport v2 logical header is invalid.");
     }
-    names.add(name);
     return { name, value };
   });
 }

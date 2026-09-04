@@ -1,15 +1,16 @@
 import { afterEach, beforeEach, expect, mock, test } from "bun:test";
-import { encryptMessage } from "../encryption";
-import { cacheAttestationSessionForTesting } from "../getAttestation";
+import { encodeURLSafe } from "@stablelib/base64";
 import type { PcrConfig } from "../pcr";
 import { fetchModelCatalog, fetchModels, getApiPcrConfig, getApiUrl, setApiUrl } from "../api";
+import { clearTransportV2Credentials, installTransportV2Credentials } from "../transportV2/auth";
+import {
+  transportV2Runtime,
+  type TransportV2RuntimeRequest,
+  type TransportV2RuntimeResponse
+} from "../transportV2/runtime";
 
 const apiUrl = "https://models.example.com";
-const sessionId = "models-session-id";
-const sessionKey = new Uint8Array(32).fill(23);
-const verifiedPcr0 =
-  "eeddbb58f57c38894d6d5af5e575fbe791c5bf3bbcfb5df8da8cfcf0c2e1da1913108e6a762112444740b88c163d7f4b";
-const pcrConfig: PcrConfig = { pcr0Values: [verifiedPcr0], remoteAttestation: false };
+const pcrConfig: PcrConfig = { environment: "development", remoteAttestation: false };
 const modelsResponse = {
   object: "list" as const,
   data: [
@@ -22,111 +23,119 @@ const modelsResponse = {
   ]
 };
 
-const originalFetch = globalThis.fetch;
 const originalApiUrl = getApiUrl();
 const originalApiPcrConfig = getApiPcrConfig();
+const originalRuntimeRequest = transportV2Runtime.request;
 
-beforeEach(async () => {
-  window.localStorage.clear();
-  window.sessionStorage.clear();
-  setApiUrl(apiUrl, pcrConfig);
-  await cacheAttestationSessionForTesting(
+function segment(value: unknown): string {
+  return encodeURLSafe(new TextEncoder().encode(JSON.stringify(value))).replace(/=+$/u, "");
+}
+
+function token(audience: string): string {
+  return `${segment({ alg: "ES256K", typ: "JWT" })}.${segment({
+    aud: audience,
+    sub: "models-user",
+    exp: 4_000_000_000,
+    tf: 2
+  })}.${segment("signature")}`;
+}
+
+function installUserCredentials(): void {
+  installTransportV2Credentials(
     apiUrl,
-    pcrConfig,
-    { sessionKey, sessionId },
-    verifiedPcr0
-  );
-});
-
-afterEach(() => {
-  globalThis.fetch = originalFetch;
-  setApiUrl(originalApiUrl, originalApiPcrConfig);
-  window.localStorage.clear();
-  window.sessionStorage.clear();
-});
-
-function encryptedModelsResponse() {
-  return new Response(
-    JSON.stringify({
-      encrypted: encryptMessage(sessionKey, JSON.stringify(modelsResponse))
-    }),
-    { status: 200, headers: { "Content-Type": "application/json" } }
+    "user",
+    token("urn:opensecret:internal:transport-v2:user:access-token"),
+    token("urn:opensecret:internal:transport-v2:user:refresh-token")
   );
 }
 
-test("fetchModels uses the encrypted session before sign-in", async () => {
-  globalThis.fetch = mock(async (input: string | URL | Request, init?: RequestInit) => {
-    expect(input.toString()).toBe(`${apiUrl}/v1/models`);
-    expect(init?.method).toBe("GET");
-    expect(init?.body).toBeUndefined();
+function exchange(response: Response): TransportV2RuntimeResponse {
+  return { response, rememberOAuthContinuation: () => {} };
+}
 
-    const headers = new Headers(init?.headers);
-    expect(headers.get("x-session-id")).toBe(sessionId);
-    expect(headers.has("Authorization")).toBe(false);
-
-    return encryptedModelsResponse();
-  }) as typeof fetch;
-
-  await expect(fetchModels()).resolves.toEqual(modelsResponse.data);
+beforeEach(() => {
+  globalThis.localStorage.clear();
+  globalThis.sessionStorage.clear();
+  clearTransportV2Credentials(apiUrl);
+  transportV2Runtime.clear();
+  setApiUrl(apiUrl, pcrConfig);
 });
 
-test("fetchModels preserves stored JWT authentication", async () => {
-  window.localStorage.setItem("access_token", "models-access-token");
-
-  globalThis.fetch = mock(async (_input: string | URL | Request, init?: RequestInit) => {
-    const headers = new Headers(init?.headers);
-    expect(headers.get("Authorization")).toBe("Bearer models-access-token");
-    expect(headers.get("x-session-id")).toBe(sessionId);
-    return encryptedModelsResponse();
-  }) as typeof fetch;
-
-  await expect(fetchModels()).resolves.toEqual(modelsResponse.data);
+afterEach(() => {
+  transportV2Runtime.request = originalRuntimeRequest;
+  transportV2Runtime.clear();
+  clearTransportV2Credentials(apiUrl);
+  setApiUrl(originalApiUrl, originalApiPcrConfig);
+  globalThis.localStorage.clear();
+  globalThis.sessionStorage.clear();
 });
 
-test("fetchModels never downgrades a rejected stored JWT to anonymous access", async () => {
-  let requestCount = 0;
-  window.localStorage.setItem("access_token", "rejected-access-token");
+test("fetchModels uses an anonymous encrypted V2 request before sign-in", async () => {
+  let seen: TransportV2RuntimeRequest | undefined;
+  transportV2Runtime.request = mock(async (input) => {
+    seen = input;
+    return exchange(Response.json(modelsResponse));
+  });
 
-  globalThis.fetch = mock(async (_input: string | URL | Request, init?: RequestInit) => {
-    requestCount += 1;
-    const headers = new Headers(init?.headers);
-    expect(headers.get("Authorization")).toBe("Bearer rejected-access-token");
+  await expect(fetchModels()).resolves.toEqual(modelsResponse.data);
+  expect(seen?.request).toMatchObject({
+    method: "GET",
+    target: "/v1/models",
+    credential: undefined,
+    cacheNamespaceRoot: undefined,
+    body: undefined
+  });
+});
 
-    return Response.json({ message: "Invalid JWT" }, { status: 401 });
-  }) as typeof fetch;
+test("fetchModels preserves V2 user authentication inside the request envelope", async () => {
+  installUserCredentials();
+  let seen: TransportV2RuntimeRequest | undefined;
+  transportV2Runtime.request = mock(async (input) => {
+    seen = input;
+    return exchange(Response.json(modelsResponse));
+  });
 
-  await expect(fetchModels()).rejects.toThrow("No refresh token available");
-  expect(requestCount).toBe(1);
+  await expect(fetchModels()).resolves.toEqual(modelsResponse.data);
+  expect(seen?.request.credential).toMatchObject({ kind: "bearer" });
+  expect(seen?.request.cacheNamespaceRoot).toHaveLength(32);
+});
+
+test("fetchModels never downgrades a rejected stored credential to anonymous access", async () => {
+  installUserCredentials();
+  const request = mock(async (input: TransportV2RuntimeRequest) => {
+    expect(input.request.credential?.kind).toBe("bearer");
+    return exchange(Response.json({ message: "Invalid JWT" }, { status: 401 }));
+  });
+  transportV2Runtime.request = request;
+
+  await expect(fetchModels()).rejects.toThrow("Invalid JWT");
+  expect(request).toHaveBeenCalledTimes(1);
 });
 
 test("fetchModels never downgrades a rejected API key to anonymous access", async () => {
-  let requestCount = 0;
-  window.localStorage.setItem("access_token", "stored-jwt");
-
-  globalThis.fetch = mock(async (_input: string | URL | Request, init?: RequestInit) => {
-    requestCount += 1;
-    const headers = new Headers(init?.headers);
-    expect(headers.get("Authorization")).toBe("Bearer invalid-api-key");
-
-    return Response.json({ message: "Invalid API key" }, { status: 401 });
-  }) as typeof fetch;
+  installUserCredentials();
+  const request = mock(async (input: TransportV2RuntimeRequest) => {
+    expect(input.request.credential).toEqual({ kind: "api_key", value: "invalid-api-key" });
+    return exchange(Response.json({ message: "Invalid API key" }, { status: 401 }));
+  });
+  transportV2Runtime.request = request;
 
   await expect(fetchModels("invalid-api-key")).rejects.toThrow("Invalid API key");
-  expect(requestCount).toBe(1);
+  expect(request).toHaveBeenCalledTimes(1);
 });
 
-test("fetchModels does not interpret an explicitly empty API key as anonymous", async () => {
-  const fetchMock = mock(async () => encryptedModelsResponse());
-  globalThis.fetch = fetchMock as typeof fetch;
+test("fetchModels rejects an explicitly empty API key before establishing a session", async () => {
+  const request = mock(async () => exchange(Response.json(modelsResponse)));
+  transportV2Runtime.request = request;
 
-  await expect(fetchModels("")).rejects.toThrow("No access token available");
-  expect(fetchMock).toHaveBeenCalledTimes(0);
+  await expect(fetchModels("")).rejects.toThrow("API key cannot be empty");
+  expect(request).toHaveBeenCalledTimes(0);
 });
 
 test("fetchModelCatalog remains authentication-required", async () => {
-  const fetchMock = mock(async () => encryptedModelsResponse());
-  globalThis.fetch = fetchMock as typeof fetch;
+  const request = mock(async () => exchange(Response.json(modelsResponse)));
+  transportV2Runtime.request = request;
 
   await expect(fetchModelCatalog()).rejects.toThrow("No access token available");
-  expect(fetchMock).toHaveBeenCalledTimes(0);
+  expect(request).toHaveBeenCalledTimes(0);
 });

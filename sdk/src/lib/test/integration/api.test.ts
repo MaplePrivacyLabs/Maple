@@ -22,13 +22,15 @@ import {
   fetchList,
   fetchDeleteAllKV
 } from "../../api";
+import { readTransportV2Credentials } from "../../transportV2/auth";
 
 const TEST_EMAIL = process.env.VITE_TEST_EMAIL;
 const TEST_PASSWORD = process.env.VITE_TEST_PASSWORD;
 const TEST_NAME = process.env.VITE_TEST_NAME;
 const TEST_CLIENT_ID = process.env.VITE_TEST_CLIENT_ID;
+const API_URL = process.env.VITE_OPEN_SECRET_API_URL;
 
-if (!TEST_EMAIL || !TEST_PASSWORD || !TEST_NAME || !TEST_CLIENT_ID) {
+if (!TEST_EMAIL || !TEST_PASSWORD || !TEST_NAME || !TEST_CLIENT_ID || !API_URL) {
   throw new Error("Test credentials must be set in .env.local");
 }
 
@@ -122,12 +124,11 @@ test("Guest change password keeps authenticated token state", async () => {
 
   const newPassword = `newpass${Date.now()}`;
   await changePassword(TEST_PASSWORD!, newPassword);
-  const updatedAccessToken = window.localStorage.getItem("access_token");
-  const updatedRefreshToken = window.localStorage.getItem("refresh_token");
-  // Current servers keep the existing tokens valid. AEAD-hardened servers return
-  // replacement tokens; the SDK must preserve a usable auth state in both cases.
-  expect(updatedAccessToken).toBeTruthy();
-  expect(updatedRefreshToken).toBeTruthy();
+  const updatedCredentials = readTransportV2Credentials(API_URL!, "user");
+  expect(updatedCredentials?.accessToken).toBeTruthy();
+  expect(updatedCredentials?.refreshToken).toBeTruthy();
+  expect(window.localStorage.getItem("access_token")).toBeNull();
+  expect(window.localStorage.getItem("refresh_token")).toBeNull();
 
   const userResponse = await fetchUser();
   expect(userResponse.user.id).toBe(guestSignup.id);
