@@ -241,6 +241,7 @@ export type OpenSecretContextType = {
   initiateAppleAuth: (inviteCode: string) => Promise<api.AppleAuthResponse>;
   handleAppleCallback: (code: string, state: string, inviteCode: string) => Promise<void>;
   handleAppleNativeSignIn: (appleUser: api.AppleUser, inviteCode?: string) => Promise<void>;
+  mintNativeHandoffGrant: typeof api.mintNativeHandoffGrant;
 
   /**
    * Retrieves the user's private key mnemonic phrase
@@ -954,6 +955,7 @@ export const OpenSecretContext = createContext<OpenSecretContextType>({
   initiateAppleAuth: async () => ({ auth_url: "", state: "" }),
   handleAppleCallback: async () => {},
   handleAppleNativeSignIn: async () => {},
+  mintNativeHandoffGrant: api.mintNativeHandoffGrant,
   getPrivateKey: api.fetchPrivateKey,
   getPrivateKeyBytes: api.fetchPrivateKeyBytes,
   getPublicKey: api.fetchPublicKey,
@@ -1381,6 +1383,7 @@ export function OpenSecretProvider({
     initiateAppleAuth,
     handleAppleCallback,
     handleAppleNativeSignIn,
+    mintNativeHandoffGrant: api.mintNativeHandoffGrant,
     getPrivateKey: api.fetchPrivateKey,
     getPrivateKeyBytes: api.fetchPrivateKeyBytes,
     getPublicKey: api.fetchPublicKey,

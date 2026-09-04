@@ -5,6 +5,7 @@ export type {
   UserResponse,
   GithubAuthResponse,
   GoogleAuthResponse,
+  NativeHandoffGrantResponse,
   DocumentResponse,
   DocumentUploadInitResponse,
   DocumentStatusRequest,
@@ -74,6 +75,18 @@ export type {
 
 // Export API key management functions
 export { createApiKey, listApiKeys, deleteApiKey } from "./api";
+
+export { mintNativeHandoffGrant } from "./api";
+
+export {
+  prepareNativeOAuthHandoff,
+  readNativeUserAuth,
+  installNativeOAuthHandoffCredentials,
+  type NativeOAuthHandoffAuthFence,
+  type NativeOAuthHandoffPreparation,
+  type NativeUserCredentialPair,
+  type NativeUserAuthState
+} from "./transportV2/nativeAuth";
 
 export { fetchModels, fetchModelCatalog } from "./api";
 

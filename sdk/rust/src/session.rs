@@ -2,6 +2,7 @@ use crate::error::{Error, Result};
 use crate::types::{SessionState, TokenPair};
 use std::sync::{Arc, RwLock};
 use uuid::Uuid;
+use zeroize::Zeroizing;
 
 #[derive(Debug, Clone)]
 pub(crate) struct CredentialSnapshot {
@@ -191,6 +192,18 @@ impl SessionManager {
         })
     }
 
+    pub(crate) fn anonymous_generation(&self) -> Result<u64> {
+        let credentials = self.credentials.read().map_err(|e| {
+            Error::Authentication(format!("Failed to acquire credentials read lock: {}", e))
+        })?;
+        if credentials.tokens.is_some() || credentials.api_key.is_some() {
+            return Err(Error::Authentication(
+                "Native OAuth handoff requires an anonymous client".to_string(),
+            ));
+        }
+        Ok(credentials.generation)
+    }
+
     /// Linearize one request admission against synchronous credential changes.
     ///
     /// The closure must be synchronous and must not call back into this
@@ -236,6 +249,56 @@ impl SessionManager {
             ));
         }
         admit()
+    }
+
+    /// Linearize an anonymous-only operation against every credential change.
+    ///
+    /// Native OAuth handoff prepares a request identifier before the hosted
+    /// browser flow begins. The exact same anonymous authority must still be
+    /// current when that identifier is later sealed for redemption.
+    pub(crate) fn admit_if_anonymous_generation_is_current<T>(
+        &self,
+        expected_generation: u64,
+        admit: impl FnOnce() -> Result<T>,
+    ) -> Result<T> {
+        let credentials = self.credentials.read().map_err(|e| {
+            Error::Authentication(format!("Failed to acquire credentials read lock: {}", e))
+        })?;
+        if credentials.generation != expected_generation
+            || credentials.tokens.is_some()
+            || credentials.api_key.is_some()
+        {
+            return Err(Error::Authentication(
+                "Authentication changed during native OAuth handoff".to_string(),
+            ));
+        }
+        admit()
+    }
+
+    pub(crate) fn set_tokens_if_anonymous_generation(
+        &self,
+        expected_generation: u64,
+        access_token: String,
+        refresh_token: String,
+    ) -> Result<bool> {
+        let mut access_token = Zeroizing::new(access_token);
+        let mut refresh_token = Zeroizing::new(refresh_token);
+        let mut credentials = self.credentials.write().map_err(|e| {
+            Error::Authentication(format!("Failed to acquire credentials write lock: {}", e))
+        })?;
+        if credentials.generation != expected_generation
+            || credentials.tokens.is_some()
+            || credentials.api_key.is_some()
+        {
+            return Ok(false);
+        }
+        credentials.tokens = Some(TokenPair {
+            access_token: std::mem::take(&mut *access_token),
+            refresh_token: Some(std::mem::take(&mut *refresh_token)),
+        });
+        credentials.generation = credentials.generation.wrapping_add(1);
+        credentials.token_generation = credentials.token_generation.wrapping_add(1);
+        Ok(true)
     }
 
     pub fn get_tokens(&self) -> Result<Option<TokenPair>> {
@@ -433,5 +496,54 @@ mod tests {
             Some("new-access")
         );
         assert_eq!(manager.get_api_key().unwrap().as_deref(), Some("new-key"));
+    }
+
+    #[test]
+    fn native_handoff_tokens_install_only_into_the_same_anonymous_generation() {
+        let manager = SessionManager::new();
+        let anonymous_generation = manager.get_credential_snapshot().unwrap().generation;
+
+        assert!(manager
+            .set_tokens_if_anonymous_generation(
+                anonymous_generation,
+                "handoff-access".to_string(),
+                "handoff-refresh".to_string(),
+            )
+            .unwrap());
+        let tokens = manager.get_tokens().unwrap().unwrap();
+        assert_eq!(tokens.access_token, "handoff-access");
+        assert_eq!(tokens.refresh_token.as_deref(), Some("handoff-refresh"));
+
+        assert!(!manager
+            .set_tokens_if_anonymous_generation(
+                anonymous_generation,
+                "stale-access".to_string(),
+                "stale-refresh".to_string(),
+            )
+            .unwrap());
+        assert_eq!(
+            manager.get_access_token().unwrap().as_deref(),
+            Some("handoff-access")
+        );
+    }
+
+    #[test]
+    fn native_handoff_tokens_do_not_replace_newer_api_key_state() {
+        let manager = SessionManager::new();
+        let anonymous_generation = manager.get_credential_snapshot().unwrap().generation;
+        manager.set_api_key("new-api-key".to_string()).unwrap();
+
+        assert!(!manager
+            .set_tokens_if_anonymous_generation(
+                anonymous_generation,
+                "stale-access".to_string(),
+                "stale-refresh".to_string(),
+            )
+            .unwrap());
+        assert!(manager.get_tokens().unwrap().is_none());
+        assert_eq!(
+            manager.get_api_key().unwrap().as_deref(),
+            Some("new-api-key")
+        );
     }
 }

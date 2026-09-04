@@ -1,12 +1,13 @@
-import React, { useEffect, useRef } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { useOpenSecret } from "@mapleai/sdk";
-import { v4 as uuidv4 } from "uuid";
-import { sha256 } from "@noble/hashes/sha256";
-import { bytesToHex } from "@noble/hashes/utils";
 import { Button, type ButtonProps } from "./ui/button";
 import { Apple } from "./icons/Apple";
 import { getBillingService } from "@/billing/billingService";
-import { getSafeInternalRedirect } from "@/utils/internalRedirect";
+import {
+  clearDesktopOAuthTransport,
+  isNativeOAuthRedirect,
+  mintTransportV2NativeAuthDeepLink
+} from "@/services/desktopOAuthTransport";
 
 interface AppleAuthProviderProps {
   onSuccess?: () => void;
@@ -60,6 +61,23 @@ function isAppleAuthCancellation(error: Error): boolean {
   return error.message === "user_cancelled_authorize" || error.message === "popup_closed_by_user";
 }
 
+function getAppleAuthorizationNonce(authUrl: string): string {
+  let url: URL;
+  try {
+    url = new URL(authUrl);
+  } catch {
+    throw new Error("Apple authorization response did not contain a valid nonce");
+  }
+
+  const nonces = url.searchParams.getAll("nonce");
+  const nonce = nonces[0];
+  if (nonces.length !== 1 || !nonce || !/^[0-9a-f]{64}$/u.test(nonce)) {
+    throw new Error("Apple authorization response did not contain a valid nonce");
+  }
+
+  return nonce;
+}
+
 export function AppleAuthProvider({
   onSuccess,
   onError,
@@ -73,8 +91,9 @@ export function AppleAuthProvider({
 }: AppleAuthProviderProps) {
   const os = useOpenSecret();
   const appleScriptLoaded = useRef(false);
-  const rawNonceRef = useRef<string>("");
   const isSignInPending = useRef(false);
+  const nativeRedirectTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [nativeRedirectUrl, setNativeRedirectUrl] = useState<string | null>(null);
 
   useEffect(() => {
     if (appleScriptLoaded.current) return;
@@ -95,17 +114,24 @@ export function AppleAuthProvider({
     };
   }, []);
 
+  useEffect(
+    () => () => {
+      if (nativeRedirectTimer.current) clearTimeout(nativeRedirectTimer.current);
+    },
+    []
+  );
+
   const initializeAppleAuth = async () => {
     if (!window.AppleID) {
       throw new Error("Apple Sign In SDK not loaded");
     }
 
+    if (!isNativeOAuthRedirect()) clearDesktopOAuthTransport();
+
     // A retry is a new authorization attempt, so it gets a fresh backend state and nonce.
     const initiateResult = await os.initiateAppleAuth(inviteCode || "");
-    rawNonceRef.current = uuidv4();
-    const hashedNonce = bytesToHex(sha256(new TextEncoder().encode(rawNonceRef.current)));
+    const nonce = getAppleAuthorizationNonce(initiateResult.auth_url);
 
-    sessionStorage.setItem("apple_auth_nonce", rawNonceRef.current);
     const state = initiateResult.state || "";
     sessionStorage.setItem("apple_auth_state", state);
 
@@ -118,7 +144,7 @@ export function AppleAuthProvider({
       scope: "name email",
       redirectURI: window.location.origin + "/auth/apple/callback",
       state,
-      nonce: hashedNonce,
+      nonce,
       usePopup: true
     });
   };
@@ -133,27 +159,15 @@ export function AppleAuthProvider({
       console.warn("Failed to clear billing token:", billingError);
     }
 
-    const isTauriAuth = localStorage.getItem("redirect-to-native") === "true";
+    const isTauriAuth = isNativeOAuthRedirect();
     if (isTauriAuth) {
-      localStorage.removeItem("redirect-to-native");
+      const deepLinkUrl = await mintTransportV2NativeAuthDeepLink(
+        "apple",
+        os.mintNativeHandoffGrant
+      );
 
-      const accessToken = localStorage.getItem("access_token") || "";
-      const refreshToken = localStorage.getItem("refresh_token");
-      let deepLinkUrl = `cloud.opensecret.maple://auth?access_token=${encodeURIComponent(accessToken)}`;
-
-      if (refreshToken) {
-        deepLinkUrl += `&refresh_token=${encodeURIComponent(refreshToken)}`;
-      }
-
-      const postAuthRedirect = sessionStorage.getItem("post_auth_redirect");
-      sessionStorage.removeItem("post_auth_redirect");
-      const safePostAuthRedirect = getSafeInternalRedirect(postAuthRedirect);
-
-      if (!selectedPlan && safePostAuthRedirect) {
-        deepLinkUrl += `&next=${encodeURIComponent(safePostAuthRedirect)}`;
-      }
-
-      setTimeout(() => {
+      setNativeRedirectUrl(deepLinkUrl);
+      nativeRedirectTimer.current = setTimeout(() => {
         window.location.href = deepLinkUrl;
       }, 1000);
       return;
@@ -193,6 +207,19 @@ export function AppleAuthProvider({
 
   if (window.location.protocol === "tauri:") {
     return null;
+  }
+
+  if (nativeRedirectUrl) {
+    return (
+      <Button
+        type="button"
+        onClick={() => (window.location.href = nativeRedirectUrl)}
+        variant={buttonVariant}
+        className={className || "w-full"}
+      >
+        Open Maple
+      </Button>
+    );
   }
 
   return children ? (

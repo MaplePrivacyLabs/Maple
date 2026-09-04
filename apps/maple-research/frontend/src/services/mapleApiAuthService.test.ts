@@ -1,12 +1,13 @@
 import { describe, expect, test } from "bun:test";
+import type { NativeUserAuthState } from "@mapleai/sdk";
 import {
   MapleApiAuthService,
-  type BrowserTokenPair,
   type MapleApiAuthBridge,
-  type MapleApiAuthChanged,
-  type MapleApiAuthMetadata,
   type MapleApiAuthSnapshot
 } from "./mapleApiAuthService";
+
+const API_ORIGIN = "https://enclave.trymaple.ai";
+const CACHE_ROOT = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
 
 function deferred(): { promise: Promise<void>; resolve: () => void } {
   let resolve = () => {};
@@ -16,237 +17,144 @@ function deferred(): { promise: Promise<void>; resolve: () => void } {
   return { promise, resolve };
 }
 
-class FakeAuthBridge implements MapleApiAuthBridge {
-  browserTokens: BrowserTokenPair = {
-    accessToken: "access-one",
-    refreshToken: "refresh-one"
+function authState(principalId: string | null = "user-a", revision = 1): NativeUserAuthState {
+  return {
+    apiOrigin: API_ORIGIN,
+    revision,
+    principalId,
+    credentials: principalId
+      ? { accessToken: `${principalId}-access`, refreshToken: `${principalId}-refresh` }
+      : null,
+    cacheNamespaceRootBase64: CACHE_ROOT
   };
-  metadata: MapleApiAuthMetadata | null = null;
-  nativeSnapshot: MapleApiAuthSnapshot | null = null;
+}
+
+class FakeAuthBridge implements MapleApiAuthBridge {
+  browserAuth = authState();
+  desktop = true;
+  installRootCalls = 0;
   setCalls = 0;
-  getCalls = 0;
   clearCalls = 0;
-  listenFailures = 0;
   commandOrder: string[] = [];
+  installRootHook: (() => Promise<void>) | null = null;
   setHook: (() => Promise<void>) | null = null;
-  getHook: (() => Promise<void>) | null = null;
-  private handler: ((event: MapleApiAuthChanged) => Promise<void>) | null = null;
+  lastSetRequest: Record<string, unknown> | null = null;
 
   isDesktop(): boolean {
-    return true;
+    return this.desktop;
   }
 
   apiUrl(): string {
-    return "https://enclave.trymaple.ai";
+    return API_ORIGIN;
   }
 
-  readTokens(): BrowserTokenPair {
-    return { ...this.browserTokens };
+  readAuth(): NativeUserAuthState {
+    return structuredClone(this.browserAuth);
   }
 
-  writeTokens(tokens: BrowserTokenPair): void {
-    this.browserTokens = { ...tokens };
-  }
-
-  readMetadata(): MapleApiAuthMetadata | null {
-    return this.metadata ? { ...this.metadata } : null;
-  }
-
-  writeMetadata(metadata: MapleApiAuthMetadata | null): void {
-    this.metadata = metadata ? { ...metadata } : null;
+  async installRoot(apiUrl: string): Promise<void> {
+    expect(apiUrl).toBe(API_ORIGIN);
+    this.installRootCalls += 1;
+    this.commandOrder.push("root:start");
+    await this.installRootHook?.();
+    this.commandOrder.push("root:finish");
   }
 
   async invoke<T>(command: string, args: Record<string, unknown>): Promise<T> {
     if (command === "maple_api_set_auth") {
       this.setCalls += 1;
       this.commandOrder.push("set:start");
-      const request = args.request as {
-        userId: string;
-        accessToken: string;
-        refreshToken: string | null;
-      };
+      this.lastSetRequest = structuredClone(args.request as Record<string, unknown>);
       await this.setHook?.();
-      const prior = this.nativeSnapshot;
-      const unchanged =
-        prior?.userId === request.userId &&
-        prior.accessToken === request.accessToken &&
-        (prior.refreshToken || null) === request.refreshToken;
-      this.nativeSnapshot = {
-        userId: request.userId,
-        accessToken: request.accessToken,
-        refreshToken: request.refreshToken,
-        nativeInstanceId: "native-instance-1",
-        revision: unchanged ? prior.revision : (prior?.revision ?? 0) + 1
-      };
       this.commandOrder.push("set:finish");
-      return { ...this.nativeSnapshot } as T;
-    }
-    if (command === "maple_api_get_auth") {
-      this.getCalls += 1;
-      this.commandOrder.push("get");
-      await this.getHook?.();
-      if (!this.nativeSnapshot) throw new Error("native auth missing");
-      return { ...this.nativeSnapshot } as T;
+      return {
+        userId: (args.request as { userId: string }).userId,
+        nativeInstanceId: "native-instance-1",
+        revision: this.setCalls
+      } as T;
     }
     if (command === "maple_api_clear_auth") {
       this.clearCalls += 1;
       this.commandOrder.push("clear");
-      this.nativeSnapshot = null;
       return undefined as T;
     }
     throw new Error(`Unexpected command: ${command}`);
   }
-
-  async listen(handler: (event: MapleApiAuthChanged) => Promise<void>): Promise<void> {
-    if (this.listenFailures > 0) {
-      this.listenFailures -= 1;
-      throw new Error("listener unavailable");
-    }
-    this.handler = handler;
-  }
-
-  async emit(event: MapleApiAuthChanged): Promise<void> {
-    if (!this.handler) throw new Error("listener missing");
-    await this.handler(event);
-  }
-
-  setNativeRefresh(tokens: BrowserTokenPair, revision: number): void {
-    if (!this.nativeSnapshot) throw new Error("native auth missing");
-    this.nativeSnapshot = {
-      userId: this.nativeSnapshot.userId,
-      accessToken: tokens.accessToken,
-      refreshToken: tokens.refreshToken,
-      nativeInstanceId: this.nativeSnapshot.nativeInstanceId,
-      revision
-    };
-  }
 }
 
 describe("MapleApiAuthService", () => {
-  test("installs once and only pushes browser credentials after they change", async () => {
+  test("installs one fenced credential snapshot and never syncs it per operation", async () => {
     const bridge = new FakeAuthBridge();
     const service = new MapleApiAuthService(bridge);
 
-    await service.activate("user-a");
+    await service.activate("USER-A");
     await service.sync("user-a");
-    expect(bridge.setCalls).toBe(1);
-
-    bridge.browserTokens = {
-      accessToken: "browser-refreshed",
-      refreshToken: "browser-refresh-token"
-    };
     await service.sync("user-a");
-    expect(bridge.setCalls).toBe(2);
-    expect(bridge.nativeSnapshot?.accessToken).toBe("browser-refreshed");
-    expect(bridge.metadata?.nativeRevision).toBe(2);
-  });
 
-  test("reconciles an SDK-refreshed token pair back to the browser", async () => {
-    const bridge = new FakeAuthBridge();
-    const service = new MapleApiAuthService(bridge);
-    await service.activate("user-a");
-
-    bridge.setNativeRefresh(
-      { accessToken: "native-refreshed", refreshToken: "native-refresh-token" },
-      2
-    );
-    await bridge.emit({ userId: "user-a", revision: 2 });
-
-    expect(bridge.browserTokens).toEqual({
-      accessToken: "native-refreshed",
-      refreshToken: "native-refresh-token"
-    });
-    expect(bridge.metadata?.nativeRevision).toBe(2);
-  });
-
-  test("a new service recovers a missed native refresh using durable revision metadata", async () => {
-    const bridge = new FakeAuthBridge();
-    const firstService = new MapleApiAuthService(bridge);
-    await firstService.activate("user-a");
-
-    bridge.setNativeRefresh(
-      { accessToken: "native-refreshed", refreshToken: "native-refresh-token" },
-      2
-    );
-    const reloadedService = new MapleApiAuthService(bridge);
-    await reloadedService.activate("user-a");
-
-    expect(bridge.browserTokens).toEqual({
-      accessToken: "native-refreshed",
-      refreshToken: "native-refresh-token"
-    });
+    expect(bridge.installRootCalls).toBe(1);
     expect(bridge.setCalls).toBe(1);
-    expect(bridge.metadata?.nativeRevision).toBe(2);
+    expect(bridge.commandOrder).toEqual(["root:start", "root:finish", "set:start", "set:finish"]);
+    expect(bridge.lastSetRequest).toEqual({
+      userId: "user-a",
+      apiUrl: API_ORIGIN,
+      accessToken: "user-a-access",
+      refreshToken: "user-a-refresh",
+      cacheNamespaceRootBase64: CACHE_ROOT
+    });
   });
 
-  test("does not overwrite a browser refresh with a late native notification", async () => {
+  test("fails before native installation if browser authority changes while root is installed", async () => {
     const bridge = new FakeAuthBridge();
-    const service = new MapleApiAuthService(bridge);
-    await service.activate("user-a");
-
-    bridge.browserTokens = {
-      accessToken: "browser-won",
-      refreshToken: "browser-won-refresh"
+    bridge.installRootHook = async () => {
+      bridge.browserAuth = authState("user-b", 2);
     };
-    bridge.setNativeRefresh({ accessToken: "late-native", refreshToken: "late-native-refresh" }, 2);
-    await bridge.emit({ userId: "user-a", revision: 2 });
+    const service = new MapleApiAuthService(bridge);
 
-    expect(bridge.setCalls).toBe(2);
-    expect(bridge.browserTokens.accessToken).toBe("browser-won");
-    expect(bridge.nativeSnapshot?.accessToken).toBe("browser-won");
+    await expect(service.activate("user-a")).rejects.toThrow("current signed-in account");
+    expect(bridge.setCalls).toBe(0);
+    expect(bridge.clearCalls).toBe(0);
   });
 
-  test("a browser refresh during get_auth is reinstalled instead of overwritten", async () => {
+  test("clears the installed native client if browser authority changes during validation", async () => {
     const bridge = new FakeAuthBridge();
-    const service = new MapleApiAuthService(bridge);
-    await service.activate("user-a");
-    bridge.setNativeRefresh({ accessToken: "native-late", refreshToken: "native-late-refresh" }, 2);
-    bridge.getHook = async () => {
-      bridge.getHook = null;
-      bridge.browserTokens = {
-        accessToken: "browser-new",
-        refreshToken: "browser-new-refresh"
-      };
-    };
-
-    await bridge.emit({ userId: "user-a", revision: 2 });
-
-    expect(bridge.browserTokens.accessToken).toBe("browser-new");
-    expect(bridge.nativeSnapshot?.accessToken).toBe("browser-new");
-    expect(bridge.setCalls).toBe(2);
-  });
-
-  test("a browser refresh during set_auth is installed before sync resolves", async () => {
-    const bridge = new FakeAuthBridge();
-    const service = new MapleApiAuthService(bridge);
-    await service.activate("user-a");
-    bridge.browserTokens = {
-      accessToken: "browser-second",
-      refreshToken: "browser-second-refresh"
-    };
     bridge.setHook = async () => {
-      bridge.setHook = null;
-      bridge.browserTokens = {
-        accessToken: "browser-third",
-        refreshToken: "browser-third-refresh"
-      };
+      bridge.browserAuth = authState("user-b", 2);
     };
+    const service = new MapleApiAuthService(bridge);
 
-    await service.sync("user-a");
-
-    expect(bridge.setCalls).toBe(3);
-    expect(bridge.nativeSnapshot?.accessToken).toBe("browser-third");
+    await expect(service.activate("user-a")).rejects.toThrow("current signed-in account");
+    expect(bridge.setCalls).toBe(1);
+    expect(bridge.clearCalls).toBe(1);
+    expect(bridge.commandOrder.at(-1)).toBe("clear");
   });
 
-  test("serialized clear cannot be undone by a delayed credential install", async () => {
+  test("rejects a malformed native receipt and clears the candidate", async () => {
     const bridge = new FakeAuthBridge();
+    const originalInvoke = bridge.invoke.bind(bridge);
+    bridge.invoke = async <T>(command: string, args: Record<string, unknown>): Promise<T> => {
+      if (command !== "maple_api_set_auth") return await originalInvoke<T>(command, args);
+      bridge.setCalls += 1;
+      return {
+        userId: "user-b",
+        nativeInstanceId: "native-instance-1",
+        revision: 1
+      } as T;
+    };
     const service = new MapleApiAuthService(bridge);
+
+    await expect(service.activate("user-a")).rejects.toThrow("changed while credentials");
+    expect(bridge.clearCalls).toBe(1);
+  });
+
+  test("serialized clear cannot be overtaken by a delayed installation", async () => {
+    const bridge = new FakeAuthBridge();
     const setStarted = deferred();
     const releaseSet = deferred();
     bridge.setHook = async () => {
       setStarted.resolve();
       await releaseSet.promise;
     };
+    const service = new MapleApiAuthService(bridge);
 
     const activation = service.activate("user-a");
     await setStarted.promise;
@@ -254,38 +162,45 @@ describe("MapleApiAuthService", () => {
     releaseSet.resolve();
     await Promise.all([activation, clearing]);
 
-    expect(bridge.commandOrder).toEqual(["get", "set:start", "set:finish", "clear"]);
-    expect(bridge.nativeSnapshot).toBeNull();
-    expect(bridge.metadata).toBeNull();
-
-    bridge.setHook = null;
-    bridge.browserTokens = { accessToken: "account-b", refreshToken: "account-b-refresh" };
-    await service.activate("user-b");
-    expect(bridge.nativeSnapshot?.userId).toBe("user-b");
+    expect(bridge.commandOrder).toEqual([
+      "root:start",
+      "root:finish",
+      "set:start",
+      "set:finish",
+      "clear"
+    ]);
   });
 
-  test("clearing an account makes its late refresh notification inert", async () => {
+  test("inactive and cross-account operation gates do not reinstall credentials", async () => {
     const bridge = new FakeAuthBridge();
     const service = new MapleApiAuthService(bridge);
-    await service.activate("user-a");
-    const original = { ...bridge.browserTokens };
 
+    await expect(service.sync("user-a")).rejects.toThrow("changed before the operation");
+    await service.activate("user-a");
+    await expect(service.sync("user-b")).rejects.toThrow("changed before the operation");
+    expect(bridge.setCalls).toBe(1);
+  });
+
+  test("web clients do not invoke the native bridge", async () => {
+    const bridge = new FakeAuthBridge();
+    bridge.desktop = false;
+    const service = new MapleApiAuthService(bridge);
+
+    await service.activate("user-a");
+    await service.sync("user-a");
     await service.clear("user-a");
-    await bridge.emit({ userId: "user-a", revision: 2 });
 
-    expect(bridge.clearCalls).toBe(1);
-    expect(bridge.browserTokens).toEqual(original);
-    expect(bridge.nativeSnapshot).toBeNull();
+    expect(bridge.installRootCalls).toBe(0);
+    expect(bridge.setCalls).toBe(0);
+    expect(bridge.clearCalls).toBe(0);
   });
 
-  test("a transient listener failure can be retried without reloading", async () => {
-    const bridge = new FakeAuthBridge();
-    bridge.listenFailures = 1;
-    const service = new MapleApiAuthService(bridge);
-
-    await expect(service.activate("user-a")).rejects.toThrow("listener unavailable");
-    await service.activate("user-a");
-
-    expect(bridge.nativeSnapshot?.userId).toBe("user-a");
+  test("native receipts remain non-secret", () => {
+    const receipt: MapleApiAuthSnapshot = {
+      userId: "user-a",
+      nativeInstanceId: "native-instance-1",
+      revision: 1
+    };
+    expect(Object.keys(receipt).sort()).toEqual(["nativeInstanceId", "revision", "userId"]);
   });
 });

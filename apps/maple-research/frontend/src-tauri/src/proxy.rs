@@ -1,4 +1,7 @@
-use crate::open_secret_config::configured_pcr0_environment;
+use crate::{
+    native_transport_root::TransportRootState,
+    open_secret_config::{configured_pcr0_environment, normalize_api_url},
+};
 use anyhow::{anyhow, Result};
 use axum::{
     body::Body,
@@ -174,15 +177,17 @@ fn load_api_key(app_handle: &AppHandle) -> Result<Option<String>> {
 pub async fn start_proxy(
     app_handle: AppHandle,
     state: State<'_, ProxyState>,
+    transport_roots: State<'_, TransportRootState>,
     config: ProxyConfig,
 ) -> Result<ProxyStatus, String> {
     let _lifecycle_guard = state.lifecycle.lock().await;
-    start_proxy_inner(app_handle, &state, config).await
+    start_proxy_inner(app_handle, &state, &transport_roots, config).await
 }
 
 async fn start_proxy_inner(
     app_handle: AppHandle,
     state: &ProxyState,
+    transport_roots: &TransportRootState,
     config: ProxyConfig,
 ) -> Result<ProxyStatus, String> {
     log::info!(
@@ -206,8 +211,11 @@ async fn start_proxy_inner(
         .backend_url
         .clone()
         .unwrap_or_else(|| "https://enclave.trymaple.ai".to_string());
+    let backend_url = normalize_api_url(&backend_url)?;
+    let cache_namespace_root = transport_roots.require(&backend_url).await?;
 
-    let proxy_config = build_proxy_server_config(&config, backend_url)?;
+    let proxy_config = build_proxy_server_config(&config, backend_url)?
+        .with_cache_namespace_root(cache_namespace_root);
 
     // Try to bind to the address first to check if port is available
     let addr = proxy_config
@@ -1098,20 +1106,34 @@ pub async fn load_saved_proxy_config(app_handle: &AppHandle) -> Result<ProxyConf
     Ok(config)
 }
 
-// Initialize proxy on app startup if auto_start is enabled
-pub async fn init_proxy_on_startup_simple(app_handle: AppHandle) -> Result<()> {
-    let proxy_state: tauri::State<ProxyState> = app_handle.state();
+/// Initialize the proxy only after the renderer has registered event listeners
+/// and installed the stable Transport V2 root for the saved backend origin.
+#[tauri::command]
+pub async fn init_proxy_on_startup(
+    app_handle: AppHandle,
+    proxy_state: State<'_, ProxyState>,
+    transport_roots: State<'_, TransportRootState>,
+) -> Result<(), String> {
     let _lifecycle_guard = proxy_state.lifecycle.lock().await;
 
     // Load saved config
-    let config = load_saved_proxy_config(&app_handle).await?;
+    let config = load_saved_proxy_config(&app_handle)
+        .await
+        .map_err(|_| "Failed to load the saved proxy configuration".to_string())?;
 
     // Check if auto-start is enabled and we have an API key
     if config.auto_start && !config.api_key.is_empty() {
         log::info!("Auto-starting proxy from saved config");
 
         // Try to start the proxy
-        match start_proxy_inner(app_handle.clone(), &proxy_state, config.clone()).await {
+        match start_proxy_inner(
+            app_handle.clone(),
+            &proxy_state,
+            &transport_roots,
+            config.clone(),
+        )
+        .await
+        {
             Ok(_) => {
                 log::info!(
                     "Proxy auto-started successfully on {}:{}",

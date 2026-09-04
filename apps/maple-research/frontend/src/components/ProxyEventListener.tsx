@@ -3,6 +3,7 @@ import { listen } from "@tauri-apps/api/event";
 import { useNotification } from "@/contexts/NotificationContext";
 import { Server } from "lucide-react";
 import { isTauri } from "@/utils/platform";
+import { proxyService } from "@/services/proxyService";
 
 export function ProxyEventListener() {
   const { showNotification } = useNotification();
@@ -15,11 +16,12 @@ export function ProxyEventListener() {
 
     let unlistenAutoStarted: (() => void) | null = null;
     let unlistenAutoStartFailed: (() => void) | null = null;
+    let disposed = false;
 
     const setupListeners = async () => {
       try {
         // Listen for proxy auto-start success
-        unlistenAutoStarted = await listen("proxy-autostarted", (event) => {
+        const stopAutoStarted = await listen("proxy-autostarted", (event) => {
           const config = event.payload as { host: string; port: number };
           showNotification({
             type: "success",
@@ -29,9 +31,14 @@ export function ProxyEventListener() {
             duration: 5000
           });
         });
+        if (disposed) {
+          stopAutoStarted();
+          return;
+        }
+        unlistenAutoStarted = stopAutoStarted;
 
         // Listen for proxy auto-start failure
-        unlistenAutoStartFailed = await listen("proxy-autostart-failed", (event) => {
+        const stopAutoStartFailed = await listen("proxy-autostart-failed", (event) => {
           const error = event.payload as string;
           showNotification({
             type: "error",
@@ -40,8 +47,19 @@ export function ProxyEventListener() {
             duration: 7000
           });
         });
+        if (disposed) {
+          stopAutoStartFailed();
+          return;
+        }
+        unlistenAutoStartFailed = stopAutoStartFailed;
+
+        // The native command runs only after both listeners exist and after
+        // the stable Transport V2 root for the saved backend is installed.
+        await proxyService.initializeProxyOnStartup();
       } catch (error) {
-        console.error("Failed to setup proxy event listeners:", error);
+        if (!disposed) {
+          console.error("Failed to setup proxy event listeners:", error);
+        }
       }
     };
 
@@ -49,6 +67,7 @@ export function ProxyEventListener() {
 
     // Cleanup listeners on unmount
     return () => {
+      disposed = true;
       if (unlistenAutoStarted) unlistenAutoStarted();
       if (unlistenAutoStartFailed) unlistenAutoStartFailed();
     };

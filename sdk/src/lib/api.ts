@@ -1,4 +1,4 @@
-import { encode } from "@stablelib/base64";
+import { decodeURLSafe, encode, encodeURLSafe } from "@stablelib/base64";
 import {
   authenticatedApiCall,
   authenticatedApiCallWithAuthority,
@@ -448,6 +448,100 @@ export type GoogleAuthResponse = {
   auth_url: string;
   csrf_token: string;
 };
+
+export type NativeHandoffGrantResponse = {
+  grant: string;
+  expires_at: number;
+};
+
+const NATIVE_HANDOFF_ID_PATTERN = /^[0-9a-f]{32}$/u;
+const MAX_NATIVE_HANDOFF_GRANT_BYTES = 4 * 1024;
+
+function canonicalBase64UrlSegment(value: string): boolean {
+  if (!/^[A-Za-z0-9_-]+$/u.test(value) || value.length % 4 === 1) return false;
+  const padded = `${value}${"=".repeat((4 - (value.length % 4)) % 4)}`;
+  let decoded: Uint8Array;
+  try {
+    decoded = decodeURLSafe(padded);
+  } catch {
+    return false;
+  }
+  try {
+    return encodeURLSafe(decoded).replace(/=+$/u, "") === value;
+  } finally {
+    decoded.fill(0);
+  }
+}
+
+function validNativeHandoffId(value: string): boolean {
+  return typeof value === "string" && NATIVE_HANDOFF_ID_PATTERN.test(value);
+}
+
+/** @internal Strict response decoder kept exported only for focused protocol tests. */
+export function parseNativeHandoffGrantResponse(value: unknown): NativeHandoffGrantResponse {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new Error("Native OAuth handoff grant response is invalid.");
+  }
+  const response = value as Record<string, unknown>;
+  const keys = Object.keys(response).sort();
+  if (
+    keys.length !== 2 ||
+    keys[0] !== "expires_at" ||
+    keys[1] !== "grant" ||
+    typeof response.grant !== "string" ||
+    new TextEncoder().encode(response.grant).byteLength > MAX_NATIVE_HANDOFF_GRANT_BYTES ||
+    response.grant.split(".").length !== 3 ||
+    !response.grant.split(".").every(canonicalBase64UrlSegment) ||
+    typeof response.expires_at !== "number" ||
+    !Number.isSafeInteger(response.expires_at) ||
+    response.expires_at <= 0
+  ) {
+    throw new Error("Native OAuth handoff grant response is invalid.");
+  }
+  return { grant: response.grant, expires_at: response.expires_at };
+}
+
+/**
+ * Mints a short-lived signed grant for the exact native V2 session/request
+ * pair retained by the installed application.
+ */
+export async function mintNativeHandoffGrant(
+  nativeSessionId: string,
+  nativeRequestId: string
+): Promise<NativeHandoffGrantResponse> {
+  return mintNativeHandoffGrantWithCall(
+    nativeSessionId,
+    nativeRequestId,
+    (url, method, data, errorMessage) =>
+      authenticatedApiCall<typeof data, unknown>(url, method, data, errorMessage)
+  );
+}
+
+/** @internal Deterministic request boundary for focused native handoff tests. */
+export async function mintNativeHandoffGrantWithCall(
+  nativeSessionId: string,
+  nativeRequestId: string,
+  call: (
+    url: string,
+    method: string,
+    data: { native_session_id: string; native_request_id: string },
+    errorMessage: string
+  ) => Promise<unknown>
+): Promise<NativeHandoffGrantResponse> {
+  if (!validNativeHandoffId(nativeSessionId) || !validNativeHandoffId(nativeRequestId)) {
+    throw new Error("Native OAuth handoff requires canonical transport v2 identifiers.");
+  }
+  const response = await call(
+    `${apiUrl}/auth/native-handoff/grant`,
+    "POST",
+    {
+      native_session_id: nativeSessionId,
+      native_request_id: nativeRequestId
+    },
+    "Failed to mint native OAuth handoff grant"
+  );
+  return parseNativeHandoffGrantResponse(response);
+}
 
 /**
  * Response from initiating Apple OAuth authentication

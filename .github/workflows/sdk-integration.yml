@@ -132,6 +132,9 @@ jobs:
             set -euo pipefail
             cd sdk/rust
             cargo test --locked --all-features --tests
+            cargo test --locked --all-features --lib \
+              client::tests::native_handoff_full_stack_round_trip \
+              -- --ignored --exact --nocapture
           '
 
       - name: Show OpenSecret log on failure

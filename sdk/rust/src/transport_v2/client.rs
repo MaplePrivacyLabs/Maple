@@ -85,7 +85,6 @@ impl std::fmt::Debug for TransportV2Session {
 }
 
 impl TransportV2Session {
-    #[cfg(test)]
     pub(crate) fn encoded_id(&self) -> String {
         self.secrets.session_id().to_string()
     }
@@ -110,7 +109,6 @@ impl TransportV2Session {
 }
 
 impl PreparedRequestId {
-    #[cfg(test)]
     pub(crate) fn encoded(&self) -> String {
         self.request_id.to_string()
     }
@@ -248,7 +246,7 @@ impl TransportV2Client {
         self.seal_with_id(session, prepared, request)
     }
 
-    fn seal_with_id(
+    pub(crate) fn seal_with_id(
         &self,
         session: &TransportV2Session,
         prepared: PreparedRequestId,
@@ -505,12 +503,15 @@ mod tests {
         secrets: Arc<StdMutex<Option<Arc<SessionSecrets>>>>,
         responses: Arc<StdMutex<VecDeque<TestLogicalResponse>>>,
         requests: Arc<StdMutex<Vec<serde_json::Value>>>,
+        request_ids: Arc<StdMutex<Vec<String>>>,
+        request_bodies: Arc<StdMutex<Vec<Bytes>>>,
     }
 
     struct TestLogicalResponse {
         status: u16,
         headers: Vec<LogicalHeader>,
         body: Bytes,
+        delay: Option<Duration>,
     }
 
     impl TestV2ServerState {
@@ -519,6 +520,8 @@ mod tests {
                 secrets: Arc::new(StdMutex::new(None)),
                 responses: Arc::new(StdMutex::new(VecDeque::new())),
                 requests: Arc::new(StdMutex::new(Vec::new())),
+                request_ids: Arc::new(StdMutex::new(Vec::new())),
+                request_bodies: Arc::new(StdMutex::new(Vec::new())),
             }
         }
 
@@ -534,11 +537,41 @@ mod tests {
                     )
                     .unwrap()],
                     body: Bytes::from(serde_json::to_vec(&body).unwrap()),
+                    delay: None,
+                });
+        }
+
+        pub(crate) fn queue_delayed_json_response(
+            &self,
+            status: u16,
+            body: serde_json::Value,
+            delay: Duration,
+        ) {
+            self.responses
+                .lock()
+                .unwrap()
+                .push_back(TestLogicalResponse {
+                    status,
+                    headers: vec![LogicalHeader::new(
+                        "content-type".to_string(),
+                        "application/json".to_string(),
+                    )
+                    .unwrap()],
+                    body: Bytes::from(serde_json::to_vec(&body).unwrap()),
+                    delay: Some(delay),
                 });
         }
 
         pub(crate) fn captured_requests(&self) -> Vec<serde_json::Value> {
             self.requests.lock().unwrap().clone()
+        }
+
+        pub(crate) fn captured_request_ids(&self) -> Vec<String> {
+            self.request_ids.lock().unwrap().clone()
+        }
+
+        pub(crate) fn captured_request_bodies(&self) -> Vec<Bytes> {
+            self.request_bodies.lock().unwrap().clone()
         }
 
         pub(crate) fn request_responder(&self) -> RequestResponder {
@@ -633,6 +666,16 @@ mod tests {
             let metadata: serde_json::Value =
                 serde_json::from_slice(&plaintext[4..4 + metadata_length]).unwrap();
             self.state.requests.lock().unwrap().push(metadata);
+            self.state
+                .request_ids
+                .lock()
+                .unwrap()
+                .push(request_id.to_string());
+            self.state
+                .request_bodies
+                .lock()
+                .unwrap()
+                .push(Bytes::copy_from_slice(&plaintext[4 + metadata_length..]));
 
             let response = self
                 .state
@@ -664,9 +707,13 @@ mod tests {
                 sequence,
                 &[3],
             ));
-            ResponseTemplate::new(200)
+            let response_template = ResponseTemplate::new(200)
                 .insert_header("content-type", REQUEST_CONTENT_TYPE)
-                .set_body_bytes(wire)
+                .set_body_bytes(wire);
+            match response.delay {
+                Some(delay) => response_template.set_delay(delay),
+                None => response_template,
+            }
         }
     }
 

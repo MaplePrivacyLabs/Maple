@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { isTauriDesktop } from "@/utils/platform";
+import { ensureNativeTransportRoot } from "@/services/nativeTransportRoot";
 
 export interface ProxyConfig {
   host: string;
@@ -31,6 +32,7 @@ export interface AgentProxyKeyRegistry {
 
 const AGENT_PROXY_OWNER_KEY = "maple-agent-proxy-owner-v1";
 const AGENT_PROXY_KEY_REGISTRY_KEY = "maple-agent-proxy-keys-v1";
+const DEFAULT_PROXY_BACKEND_URL = "https://enclave.trymaple.ai";
 
 export function removeAgentProxyKeyRecord(
   registry: AgentProxyKeyRegistry,
@@ -62,6 +64,7 @@ export function manualProxyConfigsMatch(active: ProxyConfig, desired: ProxyConfi
 
 class ProxyService {
   private operationTail: Promise<void> = Promise.resolve();
+  private startupInitialization: Promise<void> | null = null;
 
   private validatePort(port: number): void {
     if (!Number.isInteger(port) || port < 0 || port > 65535) {
@@ -72,11 +75,25 @@ class ProxyService {
   async startProxy(config: ProxyConfig): Promise<ProxyStatus> {
     try {
       this.validatePort(config.port);
+      await ensureNativeTransportRoot(config.backend_url || DEFAULT_PROXY_BACKEND_URL);
       return await invoke<ProxyStatus>("start_proxy", { config });
     } catch (error) {
       console.error("Failed to start proxy:", error);
       throw error;
     }
+  }
+
+  initializeProxyOnStartup(): Promise<void> {
+    if (this.startupInitialization) return this.startupInitialization;
+
+    this.startupInitialization = (async () => {
+      const config = await this.loadProxyConfig();
+      if (config.auto_start && config.api_key.trim()) {
+        await ensureNativeTransportRoot(config.backend_url || DEFAULT_PROXY_BACKEND_URL);
+      }
+      await invoke<void>("init_proxy_on_startup");
+    })();
+    return this.startupInitialization;
   }
 
   async stopProxy(): Promise<ProxyStatus> {

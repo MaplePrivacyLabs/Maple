@@ -11,8 +11,8 @@ pub mod types;
 mod transport_v2;
 
 pub use client::{
-    InferenceRequest, InferenceResponse, InferenceSendBudget, OpenSecretClient, OpenSecretResponseBody,
-    TransportV2CacheNamespaceRoot,
+    InferenceRequest, InferenceResponse, InferenceSendBudget, NativeOAuthHandoffGrant, OpenSecretClient,
+    OpenSecretResponseBody, PreparedNativeOAuthHandoff, TransportV2CacheNamespaceRoot,
 };
 pub use error::{Error, Result};
 pub use pcr::{Pcr0Environment, Pcr0TrustPolicy};

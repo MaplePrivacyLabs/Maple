@@ -436,6 +436,19 @@ function validatedCredentials(
   return { access, refresh };
 }
 
+/**
+ * Returns the unverified principal hint shared by one syntactically valid
+ * credential pair. This is an internal pre-commit consistency check only;
+ * the enclave remains authoritative when the credential is presented.
+ */
+export function transportV2CredentialPrincipalHint(
+  kind: TransportV2AuthKind,
+  accessToken: string,
+  refreshToken: string
+): string {
+  return validatedCredentials(kind, accessToken, refreshToken).access.principalId;
+}
+
 function credentialsFromSlot(
   apiOrigin: string,
   kind: TransportV2AuthKind,
@@ -663,6 +676,36 @@ export function getOrCreateTransportV2CacheRoot(
   state.cache_namespace_root = encodeCanonicalBase64(root);
   commitState(state);
   return root;
+}
+
+/** @internal Native clients require this root to survive an app restart. */
+export function getOrCreatePersistedTransportV2CacheRoot(apiUrl: string): Uint8Array {
+  const apiOrigin = canonicalizeTransportV2ApiOrigin(apiUrl);
+  const root = getOrCreateTransportV2CacheRoot(apiOrigin);
+  const key = storageKey(apiOrigin);
+  try {
+    const persistent = persistentStorageResult();
+    if (persistent.kind !== "available" || fallbackOnlyKeys.has(key)) {
+      throw new Error("Transport v2 native cache root requires persistent browser storage.");
+    }
+    let encoded: string | null;
+    try {
+      encoded = persistent.storage.getItem(key);
+    } catch {
+      throw new Error("Transport v2 native cache root requires persistent browser storage.");
+    }
+    if (!encoded) {
+      throw new Error("Transport v2 native cache root was not persisted.");
+    }
+    const state = parseState(encoded, apiOrigin);
+    if (state.cache_namespace_root !== encodeCanonicalBase64(root)) {
+      throw new Error("Transport v2 native cache root does not match persistent storage.");
+    }
+    return root;
+  } catch (error) {
+    root.fill(0);
+    throw error;
+  }
 }
 
 export function clearTransportV2CacheRoot(apiUrl: string): void {
