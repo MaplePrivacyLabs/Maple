@@ -13,8 +13,9 @@ mod agent_tauri;
 mod legacy_tts_cleanup;
 #[cfg(desktop)]
 mod maple_api;
+mod native_oauth;
+mod native_transport_root;
 mod onnxruntime;
-#[cfg(desktop)]
 mod open_secret_config;
 mod pdf_extractor;
 mod pdf_ocr;
@@ -263,6 +264,8 @@ pub fn run() {
         .manage(agent_acp::AgentAcpState::new())
         .manage(agent_host::AgentHostLifecycle::new())
         .manage(maple_api::MapleApiAuthState::new())
+        .manage(native_oauth::NativeOAuthState::new())
+        .manage(native_transport_root::TransportRootState::new())
         .manage(proxy::ProxyState::new())
         .invoke_handler(tauri::generate_handler![
             agent_tauri::agent_get_runtime_status,
@@ -305,9 +308,13 @@ pub fn run() {
             agent_acp::agent_acp_stop,
             agent_acp::agent_acp_get_status,
             maple_api::maple_api_set_auth,
-            maple_api::maple_api_get_auth,
             maple_api::maple_api_clear_auth,
+            native_oauth::native_oauth_begin,
+            native_oauth::native_oauth_redeem,
+            native_oauth::native_oauth_cancel,
+            native_transport_root::install_native_transport_root,
             proxy::start_proxy,
+            proxy::init_proxy_on_startup,
             proxy::stop_proxy,
             proxy::stop_and_reset_proxy,
             proxy::get_proxy_status,
@@ -331,20 +338,6 @@ pub fn run() {
             let service = agent_host::build_service(app.handle())?;
             if !app.manage(service) {
                 return Err("Maple Agent service was already initialized".into());
-            }
-
-            // Initialize proxy auto-start
-            {
-                let app_handle_proxy = app.handle().clone();
-                tauri::async_runtime::spawn(async move {
-                    // Small delay to ensure app is fully initialized
-                    tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
-
-                    // Create a new State wrapper for the async context
-                    if let Err(e) = proxy::init_proxy_on_startup_simple(app_handle_proxy).await {
-                        log::error!("Failed to initialize proxy: {e}");
-                    }
-                });
             }
 
             // Set up the deep link handler
@@ -551,7 +544,9 @@ pub fn run() {
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_os::init())
-        .plugin(tauri_plugin_fs::init());
+        .plugin(tauri_plugin_fs::init())
+        .manage(native_oauth::NativeOAuthState::new())
+        .manage(native_transport_root::TransportRootState::new());
 
     // Only add the Apple Sign In plugin on iOS
     #[cfg(all(not(desktop), target_os = "ios"))]
@@ -564,6 +559,10 @@ pub fn run() {
     let app = builder
         .invoke_handler(tauri::generate_handler![
             pdf_extractor::extract_document_content,
+            native_oauth::native_oauth_begin,
+            native_oauth::native_oauth_redeem,
+            native_oauth::native_oauth_cancel,
+            native_transport_root::install_native_transport_root,
         ])
         .setup(|app| {
             // Set up the deep link handler for mobile
@@ -586,6 +585,10 @@ pub fn run() {
     let app = builder
         .invoke_handler(tauri::generate_handler![
             pdf_extractor::extract_document_content,
+            native_oauth::native_oauth_begin,
+            native_oauth::native_oauth_redeem,
+            native_oauth::native_oauth_cancel,
+            native_transport_root::install_native_transport_root,
         ])
         .setup(|app| {
             legacy_tts_cleanup::schedule(app.handle());

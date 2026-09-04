@@ -7,6 +7,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useSettingsNavigationLock } from "@/contexts/SettingsNavigationLockContext";
 import { SettingsPage, SettingsSection } from "./SettingsPage";
+import { mapleApiAuthService } from "@/services/mapleApiAuthService";
 
 export function SecuritySettings() {
   const os = useOpenSecret();
@@ -41,11 +42,28 @@ export function SecuritySettings() {
 
     setIsLoading(true);
     try {
+      const userId = os.auth.user?.user.id?.toString();
       await os.changePassword(currentPassword, newPassword);
       setSuccess(true);
       setCurrentPassword("");
       setNewPassword("");
       setConfirmPassword("");
+
+      if (userId) {
+        try {
+          // Password changes issue a replacement V2 credential pair. Native
+          // clients refresh independently during ordinary use, but this
+          // explicit credential-changing operation must install the new pair
+          // so Agent Mode is not stranded on the revoked authority.
+          await mapleApiAuthService.activate(userId);
+        } catch {
+          await mapleApiAuthService.clear(userId).catch(() => undefined);
+          console.error("Password changed, but native authentication could not be reconnected");
+          setError(
+            "Your password changed, but Maple could not reconnect native features. Sign out and back in before using Agent Mode."
+          );
+        }
+      }
     } catch (changeError) {
       console.error("Failed to change password:", changeError);
       setError("Failed to change password. Please check your current password and try again.");

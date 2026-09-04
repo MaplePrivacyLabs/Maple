@@ -3,15 +3,22 @@ import { useOpenSecret } from "@mapleai/sdk";
 import { isTauri } from "@/utils/platform";
 import { listen } from "@tauri-apps/api/event";
 import { getSafeInternalRedirect } from "@/utils/internalRedirect";
-import { authorizeNativeOAuthCallback } from "@/services/nativeOAuthAttempt";
+import {
+  authorizeNativeOAuthCallback,
+  isNativeOAuthHandoffGrant,
+  redeemNativeOAuthGrant
+} from "@/services/nativeOAuthAttempt";
+import { useNotification } from "@/contexts/NotificationContext";
 
 // For direct deep link handling, we'll listen to our custom event
 // If we had the types installed, we would use:
 // import { onOpenUrl } from '@tauri-apps/plugin-deep-link';
 
-export function DeepLinkHandler() {
+export function DeepLinkHandler({ tauri = isTauri() }: { tauri?: boolean } = {}) {
   const os = useOpenSecret();
+  const { showNotification } = useNotification();
   const isAuthenticatedRef = useRef(false);
+  const redeemingRef = useRef(false);
   isAuthenticatedRef.current = Boolean(os.auth.user);
 
   useEffect(() => {
@@ -19,12 +26,13 @@ export function DeepLinkHandler() {
 
     const setupDeepLinkHandling = async () => {
       try {
-        if (isTauri()) {
+        if (tauri) {
           console.log("[Deep Link] Setting up handler for Tauri app");
 
           // Listen for the custom event we emit from Rust
-          unlisten = await listen<string>("deep-link-received", (event) => {
+          unlisten = await listen<string>("deep-link-received", async (event) => {
             const url = event.payload;
+            let isAuthenticationCallback = false;
             console.log("[Deep Link] Received callback");
 
             try {
@@ -32,37 +40,57 @@ export function DeepLinkHandler() {
               const urlObj = new URL(url);
               // The URL path structure will be: cloud.opensecret.maple://path?params
               const pathParts = urlObj.pathname.split("/").filter(Boolean);
-              const firstPathPart = pathParts[0] || "";
+              const firstPathPart = pathParts[0] || urlObj.hostname;
 
               // Handle different types of deep links
-              if (firstPathPart === "auth" || firstPathPart === "") {
-                // Handle auth deep links
-                const accessToken = urlObj.searchParams.get("access_token");
-                const refreshToken = urlObj.searchParams.get("refresh_token");
-                const next = urlObj.searchParams.get("next");
-                const safeNext = getSafeInternalRedirect(next) ?? "/";
+              if (firstPathPart === "auth") {
+                isAuthenticationCallback = true;
+                const parameterNames = [...urlObj.searchParams.keys()];
+                const grantValues = urlObj.searchParams.getAll("handoff_grant");
+                const validEnvelope =
+                  urlObj.protocol === "cloud.opensecret.maple:" &&
+                  urlObj.hostname === "auth" &&
+                  (urlObj.pathname === "" || urlObj.pathname === "/") &&
+                  urlObj.username === "" &&
+                  urlObj.password === "" &&
+                  urlObj.port === "" &&
+                  urlObj.hash === "" &&
+                  parameterNames.length === 1 &&
+                  parameterNames[0] === "handoff_grant" &&
+                  grantValues.length === 1 &&
+                  isNativeOAuthHandoffGrant(grantValues[0]);
+                if (!validEnvelope) {
+                  console.error("[Deep Link] Authentication callback is malformed");
+                  return;
+                }
 
-                if (accessToken && refreshToken) {
-                  const authorization = authorizeNativeOAuthCallback(isAuthenticatedRef.current);
-                  if (authorization === "already_authenticated") {
-                    console.warn("[Deep Link] Ignoring auth callback for an existing session");
-                    return;
+                const authorization = authorizeNativeOAuthCallback(isAuthenticatedRef.current);
+                if (authorization === "already_authenticated") {
+                  console.warn("[Deep Link] Ignoring auth callback for an existing session");
+                  return;
+                }
+                if (authorization === "missing_or_expired_attempt") {
+                  console.warn("[Deep Link] Ignoring unsolicited or expired auth callback");
+                  return;
+                }
+                if (redeemingRef.current) {
+                  console.warn("[Deep Link] Authentication completion is already in progress");
+                  return;
+                }
+
+                redeemingRef.current = true;
+                try {
+                  const pending = await redeemNativeOAuthGrant(grantValues[0]);
+                  console.log("[Deep Link] Authentication grant accepted");
+                  if (pending.selectedPlan) {
+                    window.location.href = `/pricing?selected_plan=${encodeURIComponent(pending.selectedPlan)}`;
+                  } else if (pending.next === "/redeem" && pending.redemptionCode) {
+                    window.location.href = `/redeem?code=${encodeURIComponent(pending.redemptionCode)}`;
+                  } else {
+                    window.location.href = getSafeInternalRedirect(pending.next) ?? "/";
                   }
-                  if (authorization === "missing_or_expired_attempt") {
-                    console.warn("[Deep Link] Ignoring unsolicited or expired auth callback");
-                    return;
-                  }
-
-                  console.log("[Deep Link] Auth tokens received");
-
-                  // Store the tokens in localStorage with consistent naming
-                  localStorage.setItem("access_token", accessToken);
-                  localStorage.setItem("refresh_token", refreshToken);
-
-                  // Refresh the app state to reflect the logged-in status
-                  window.location.href = safeNext; // Reload the app at the requested internal route
-                } else {
-                  console.error("[Deep Link] Missing tokens in auth deep link");
+                } finally {
+                  redeemingRef.current = false;
                 }
               } else if (
                 firstPathPart === "payment" ||
@@ -115,7 +143,17 @@ export function DeepLinkHandler() {
                 console.warn("[Deep Link] Unknown deep link type:", firstPathPart);
               }
             } catch (error) {
-              console.error("[Deep Link] Failed to process deep link:", error);
+              if (isAuthenticationCallback) {
+                console.error("[Deep Link] Failed to complete authentication");
+                showNotification({
+                  type: "error",
+                  title: "Sign-in could not be completed",
+                  message: "Please restart sign-in from Maple.",
+                  duration: 0
+                });
+              } else {
+                console.error("[Deep Link] Failed to process deep link", error);
+              }
             }
           });
 
@@ -132,7 +170,7 @@ export function DeepLinkHandler() {
     return () => {
       if (unlisten) unlisten();
     };
-  }, []);
+  }, [showNotification, tauri]);
 
   return null; // This component doesn't render anything
 }

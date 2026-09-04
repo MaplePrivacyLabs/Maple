@@ -119,6 +119,7 @@ describe("AppleAuthProvider", () => {
   let signInControls: SignInControl[];
   let initiateAppleAuth: ReturnType<typeof mock>;
   let handleAppleCallback: ReturnType<typeof mock>;
+  let mintNativeHandoffGrant: ReturnType<typeof mock>;
   let onError: ReturnType<typeof mock>;
   let onSuccess: ReturnType<typeof mock>;
   let redirectAfterLogin: ReturnType<typeof mock>;
@@ -133,9 +134,14 @@ describe("AppleAuthProvider", () => {
     documentTarget = new FakeDocument();
     signInControls = [];
     const states = ["state-one", "state-two", "state-three", "state-four"];
+    const nonces = ["11", "22", "33", "44"].map((value) => value.repeat(32));
 
-    initiateAppleAuth = mock(async () => ({ state: states.shift() ?? "unexpected-state" }));
+    initiateAppleAuth = mock(async () => ({
+      auth_url: `https://appleid.apple.com/auth/authorize?nonce=${nonces.shift() ?? "55".repeat(32)}`,
+      state: states.shift() ?? "unexpected-state"
+    }));
     handleAppleCallback = mock(async () => {});
+    mintNativeHandoffGrant = mock(async () => ({ grant: "aaa.bbb.ccc", expires_at: 42 }));
     onError = mock(() => {});
     onSuccess = mock(() => {});
     redirectAfterLogin = mock(() => {});
@@ -149,7 +155,8 @@ describe("AppleAuthProvider", () => {
 
     currentOpenSecret = {
       initiateAppleAuth,
-      handleAppleCallback
+      handleAppleCallback,
+      mintNativeHandoffGrant
     };
     initBillingService(currentOpenSecret as never);
 
@@ -304,10 +311,22 @@ describe("AppleAuthProvider", () => {
     expect(initiateAppleAuth).toHaveBeenNthCalledWith(3, "invite-one");
     expect(initiateAppleAuth).toHaveBeenNthCalledWith(4, "invite-two");
     expect(appleInit).toHaveBeenCalledTimes(4);
-    expect(appleInit.mock.calls[0]?.[0]).toMatchObject({ state: "state-one" });
-    expect(appleInit.mock.calls[1]?.[0]).toMatchObject({ state: "state-two" });
-    expect(appleInit.mock.calls[2]?.[0]).toMatchObject({ state: "state-three" });
-    expect(appleInit.mock.calls[3]?.[0]).toMatchObject({ state: "state-four" });
+    expect(appleInit.mock.calls[0]?.[0]).toMatchObject({
+      nonce: "11".repeat(32),
+      state: "state-one"
+    });
+    expect(appleInit.mock.calls[1]?.[0]).toMatchObject({
+      nonce: "22".repeat(32),
+      state: "state-two"
+    });
+    expect(appleInit.mock.calls[2]?.[0]).toMatchObject({
+      nonce: "33".repeat(32),
+      state: "state-three"
+    });
+    expect(appleInit.mock.calls[3]?.[0]).toMatchObject({
+      nonce: "44".repeat(32),
+      state: "state-four"
+    });
     expect(handleAppleCallback).toHaveBeenCalledTimes(1);
     expect(handleAppleCallback).toHaveBeenCalledWith("promise-code", "state-four", "invite-two");
     expect(onError).toHaveBeenCalledTimes(1);
@@ -315,4 +334,63 @@ describe("AppleAuthProvider", () => {
     expect(redirectAfterLogin).toHaveBeenCalledTimes(1);
     expect(redirectAfterLogin).toHaveBeenCalledWith("max");
   });
+
+  test("keeps a manual Open Maple fallback after hosted native Apple authentication", async () => {
+    const { markTransportV2DesktopOAuth } = await import("@/services/desktopOAuthTransport");
+    markTransportV2DesktopOAuth({
+      provider: "apple",
+      nativeSessionId: "01".repeat(16),
+      nativeRequestId: "ab".repeat(16)
+    });
+
+    await act(async () => {
+      renderer = create(<AppleAuthProvider onError={onError} />);
+    });
+    const attempt = await startAttempt();
+    await act(async () => {
+      attempt.control.resolve({
+        authorization: { code: "native-code", state: "state-one" }
+      });
+      await attempt.completion;
+    });
+
+    expect(mintNativeHandoffGrant).toHaveBeenCalledWith("01".repeat(16), "ab".repeat(16));
+    const fallback = renderer?.root.findByType("button");
+    expect(fallback?.props.children).toBe("Open Maple");
+    act(() => fallback?.props.onClick());
+    expect(window.location.href).toBe("cloud.opensecret.maple://auth?handoff_grant=aaa.bbb.ccc");
+  });
+
+  for (const [name, authUrl] of [
+    ["a malformed authorization URL", "not a URL"],
+    ["a missing nonce", "https://appleid.apple.com/auth/authorize"],
+    ["an empty nonce", "https://appleid.apple.com/auth/authorize?nonce="],
+    [
+      "duplicate nonces",
+      `https://appleid.apple.com/auth/authorize?nonce=${"11".repeat(32)}&nonce=${"22".repeat(32)}`
+    ],
+    ["a noncanonical nonce", "https://appleid.apple.com/auth/authorize?nonce=ABCDEF"]
+  ] as const) {
+    test(`fails closed when initiation returns ${name}`, async () => {
+      initiateAppleAuth.mockImplementationOnce(async () => ({
+        auth_url: authUrl,
+        state: "state-one"
+      }));
+
+      await act(async () => {
+        renderer = create(<AppleAuthProvider onError={onError} />);
+      });
+      await act(async () => {
+        await renderer?.root.findByType("button").props.onClick();
+      });
+
+      expect(onError).toHaveBeenCalledTimes(1);
+      expect(onError.mock.calls[0]?.[0]).toEqual(
+        new Error("Apple authorization response did not contain a valid nonce")
+      );
+      expect(appleInit).not.toHaveBeenCalled();
+      expect(appleSignIn).not.toHaveBeenCalled();
+      expect(handleAppleCallback).not.toHaveBeenCalled();
+    });
+  }
 });

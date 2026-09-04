@@ -21,6 +21,7 @@ use p256::elliptic_curve::rand_core::{OsRng, RngCore};
 use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::{
+    fmt,
     pin::Pin,
     sync::{
         atomic::{AtomicUsize, Ordering},
@@ -90,6 +91,125 @@ struct LogicalRequestOptions<'a> {
 
 type TransportSessionSlot = Arc<RwLock<Option<Arc<TransportV2Session>>>>;
 type SessionRetirement = (TransportSessionSlot, Arc<TransportV2Session>);
+
+const MAX_NATIVE_OAUTH_HANDOFF_GRANT_BYTES: usize = 4 * 1024;
+
+/// One exact Transport V2 request reserved for native OAuth redemption.
+///
+/// This handle is intentionally opaque and non-Clone. Its advertised IDs are
+/// public routing values; session keys and the prepared request capability
+/// never leave the SDK.
+pub struct PreparedNativeOAuthHandoff {
+    session: Arc<TransportV2Session>,
+    prepared_request: crate::transport_v2::client::PreparedRequestId,
+    session_id: String,
+    request_id: String,
+    credential_generation: u64,
+}
+
+impl PreparedNativeOAuthHandoff {
+    pub fn session_id(&self) -> &str {
+        &self.session_id
+    }
+
+    pub fn request_id(&self) -> &str {
+        &self.request_id
+    }
+
+    /// Compares the unverified routing hints carried by a handoff grant with
+    /// this prepared request.
+    ///
+    /// This is only a local denial-of-service filter. The enclave remains the
+    /// authority for the grant signature, expiry, principal, and target
+    /// binding before it authenticates the session.
+    pub fn matches_untrusted_grant_target(&self, grant: &NativeOAuthHandoffGrant) -> bool {
+        grant.untrusted_target().is_some_and(|target| {
+            target.session_id == self.session_id && target.request_id == self.request_id
+        })
+    }
+}
+
+impl fmt::Debug for PreparedNativeOAuthHandoff {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("PreparedNativeOAuthHandoff")
+            .field("session_id", &self.session_id)
+            .field("request_id", &self.request_id)
+            .finish_non_exhaustive()
+    }
+}
+
+/// A short-lived signed grant minted by the authenticated hosted browser.
+pub struct NativeOAuthHandoffGrant(Zeroizing<String>);
+
+#[derive(Deserialize)]
+struct UntrustedNativeOAuthHandoffTarget {
+    #[serde(rename = "sid")]
+    session_id: String,
+    #[serde(rename = "rid")]
+    request_id: String,
+}
+
+impl NativeOAuthHandoffGrant {
+    pub fn new(value: impl Into<String>) -> Result<Self> {
+        let value = value.into();
+        if value.is_empty() || value.len() > MAX_NATIVE_OAUTH_HANDOFF_GRANT_BYTES {
+            return Err(Error::Authentication(
+                "Native OAuth handoff grant is invalid".to_string(),
+            ));
+        }
+        let segments = value.split('.').collect::<Vec<_>>();
+        if segments.len() != 3
+            || segments.iter().any(|segment| {
+                segment.is_empty()
+                    || URL_SAFE_NO_PAD
+                        .decode(segment)
+                        .ok()
+                        .is_none_or(|decoded| URL_SAFE_NO_PAD.encode(decoded) != *segment)
+            })
+        {
+            return Err(Error::Authentication(
+                "Native OAuth handoff grant is invalid".to_string(),
+            ));
+        }
+        Ok(Self(Zeroizing::new(value)))
+    }
+
+    fn as_str(&self) -> &str {
+        self.0.as_str()
+    }
+
+    fn untrusted_target(&self) -> Option<UntrustedNativeOAuthHandoffTarget> {
+        let payload = self.0.split('.').nth(1)?;
+        let decoded = Zeroizing::new(URL_SAFE_NO_PAD.decode(payload).ok()?);
+        let target: UntrustedNativeOAuthHandoffTarget =
+            serde_json::from_slice(decoded.as_slice()).ok()?;
+        if !is_canonical_transport_id(&target.session_id)
+            || !is_canonical_transport_id(&target.request_id)
+        {
+            return None;
+        }
+        Some(target)
+    }
+}
+
+fn is_canonical_transport_id(value: &str) -> bool {
+    value.len() == 32
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
+}
+
+impl fmt::Debug for NativeOAuthHandoffGrant {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("NativeOAuthHandoffGrant([REDACTED])")
+    }
+}
+
+#[derive(Serialize)]
+struct NativeOAuthHandoffRedeemRequest<'a> {
+    grant: &'a str,
+}
 
 /// Caller-persistable provider-cache namespace root for Transport V2.
 ///
@@ -715,6 +835,166 @@ impl OpenSecretClient {
             .map_err(|_| Error::Session("Transport V2 session state is unavailable".to_string()))?;
         *current = Some(session);
         Ok(())
+    }
+
+    /// Reserve one exact anonymous request for a hosted native OAuth handoff.
+    ///
+    /// The returned IDs may be sent to the hosted browser so the enclave can
+    /// bind its signed grant to this request. The handle itself must remain in
+    /// the native process and is consumed exactly once by redemption.
+    pub async fn prepare_native_oauth_handoff(&self) -> Result<PreparedNativeOAuthHandoff> {
+        let credential_generation = self.session_manager.anonymous_generation()?;
+        let session = self.ensure_transport_session().await?;
+        let prepared_request = {
+            let current = self.transport_session.read().map_err(|_| {
+                Error::Session("Transport V2 session state is unavailable".to_string())
+            })?;
+            if !current
+                .as_ref()
+                .is_some_and(|current| Arc::ptr_eq(current, &session))
+            {
+                return Err(Error::Session(
+                    "Native OAuth transport session is no longer current".to_string(),
+                ));
+            }
+            self.session_manager
+                .admit_if_anonymous_generation_is_current(credential_generation, || {
+                    session.prepare_request_id().map_err(transport_error)
+                })?
+        };
+        let session_id = session.encoded_id();
+        let request_id = prepared_request.encoded();
+        Ok(PreparedNativeOAuthHandoff {
+            session,
+            prepared_request,
+            session_id,
+            request_id,
+            credential_generation,
+        })
+    }
+
+    /// Redeem a hosted handoff grant through the exact request prepared above.
+    ///
+    /// No credential or cache namespace root is attached. This method sends at
+    /// most once and never allocates a replacement request ID.
+    pub async fn redeem_native_oauth_handoff(
+        &self,
+        prepared: PreparedNativeOAuthHandoff,
+        grant: NativeOAuthHandoffGrant,
+    ) -> Result<LoginResponse> {
+        // Hold the current-session read lock through sealing, and the
+        // credential read lock inside it. A concurrent session replacement or
+        // authentication change must linearize wholly before or after this
+        // exact request becomes eligible for transmission.
+        let sealed = {
+            let current = self.transport_session.read().map_err(|_| {
+                Error::Session("Transport V2 session state is unavailable".to_string())
+            })?;
+            let current = current.as_ref().ok_or_else(|| {
+                Error::Session("Native OAuth transport session is no longer current".to_string())
+            })?;
+            if current.is_expired() || !Arc::ptr_eq(current, &prepared.session) {
+                return Err(Error::Session(
+                    "Native OAuth transport session is no longer current".to_string(),
+                ));
+            }
+            self.session_manager
+                .admit_if_anonymous_generation_is_current(prepared.credential_generation, || {
+                    let body = Bytes::from(serde_json::to_vec(&NativeOAuthHandoffRedeemRequest {
+                        grant: grant.as_str(),
+                    })?);
+                    let request = LogicalRequest::new(
+                        None,
+                        None,
+                        http::Method::POST,
+                        "/auth/native-handoff/redeem".to_string(),
+                        vec![LogicalHeader::new(
+                            header::CONTENT_TYPE.as_str().to_string(),
+                            "application/json".to_string(),
+                        )
+                        .map_err(transport_error)?],
+                        Some(body),
+                    )
+                    .map_err(transport_error)?;
+                    self.transport_v2
+                        .seal_with_id(&prepared.session, prepared.prepared_request, request)
+                        .map_err(transport_error)
+                })?
+        };
+        drop(grant);
+
+        let events = match self.transport_v2.send_sealed(sealed).await {
+            Ok(events) => events,
+            Err(error) => {
+                // Delivery may have happened even when no authenticated
+                // response arrived. The enclave may therefore have bound the
+                // session while this client still appears anonymous.
+                self.clear_transport_session_if(&prepared.session)?;
+                return Err(transport_error(error));
+            }
+        };
+        let response = match response_from_events(
+            events,
+            Some((
+                Arc::clone(&self.transport_session),
+                Arc::clone(&prepared.session),
+            )),
+        )
+        .await
+        {
+            Ok(response) => response,
+            Err(error) => {
+                self.clear_transport_session_if(&prepared.session)?;
+                return Err(error);
+            }
+        };
+        let status = response.status();
+        let body = match collect_response_body(response.into_body()).await {
+            Ok(body) => body,
+            Err(error) => {
+                self.clear_transport_session_if(&prepared.session)?;
+                return Err(error);
+            }
+        };
+        if !status.is_success() {
+            self.clear_transport_session_if(&prepared.session)?;
+            return Err(Error::Api {
+                status: status.as_u16(),
+                message: String::from_utf8_lossy(&body).into_owned(),
+            });
+        }
+        let mut response: LoginResponse = match serde_json::from_slice(&body) {
+            Ok(response) => response,
+            Err(error) => {
+                self.clear_transport_session_if(&prepared.session)?;
+                return Err(error.into());
+            }
+        };
+        let installed = {
+            // The response belongs to the retained session. Do not install it
+            // into a client whose session was replaced while redemption was
+            // in flight, even if its credential generation is still anonymous.
+            let current = self.transport_session.read().map_err(|_| {
+                Error::Session("Transport V2 session state is unavailable".to_string())
+            })?;
+            current
+                .as_ref()
+                .is_some_and(|current| Arc::ptr_eq(current, &prepared.session))
+                && self.session_manager.set_tokens_if_anonymous_generation(
+                    prepared.credential_generation,
+                    response.access_token.clone(),
+                    response.refresh_token.clone(),
+                )?
+        };
+        if !installed {
+            response.access_token.zeroize();
+            response.refresh_token.zeroize();
+            self.clear_transport_session_if(&prepared.session)?;
+            return Err(Error::Authentication(
+                "Authentication changed during native OAuth handoff".to_string(),
+            ));
+        }
+        Ok(response)
     }
 
     async fn ensure_transport_session(&self) -> Result<Arc<TransportV2Session>> {
@@ -2445,6 +2725,12 @@ mod tests {
         format!("header.{payload}.signature")
     }
 
+    fn untrusted_handoff_grant(session_id: &str, request_id: &str) -> NativeOAuthHandoffGrant {
+        let payload = URL_SAFE_NO_PAD
+            .encode(serde_json::json!({ "sid": session_id, "rid": request_id }).to_string());
+        NativeOAuthHandoffGrant::new(format!("e30.{payload}.c2ln")).unwrap()
+    }
+
     fn response_events(
         events: Vec<std::result::Result<ResponseEvent, TransportV2Error>>,
     ) -> ResponseEventStream {
@@ -2511,6 +2797,411 @@ mod tests {
             TransportV2CacheNamespaceRoot::from_base64(canonical.trim_end_matches('=')).is_err()
         );
         assert!(TransportV2CacheNamespaceRoot::from_base64(&BASE64.encode([42; 31])).is_err());
+    }
+
+    #[test]
+    fn native_handoff_grant_is_canonical_bounded_and_redacted() {
+        let grant = NativeOAuthHandoffGrant::new("e30.e30.c2ln").unwrap();
+        assert_eq!(format!("{grant:?}"), "NativeOAuthHandoffGrant([REDACTED])");
+        for invalid in [
+            "",
+            "one.two",
+            "one.two.three.four",
+            "e30=.e30.c2ln",
+            "e30.e30.bad+alphabet",
+        ] {
+            assert!(NativeOAuthHandoffGrant::new(invalid).is_err(), "{invalid}");
+        }
+        assert!(NativeOAuthHandoffGrant::new(format!(
+            "{}.e30.c2ln",
+            "a".repeat(MAX_NATIVE_OAUTH_HANDOFF_GRANT_BYTES)
+        ))
+        .is_err());
+    }
+
+    #[tokio::test]
+    async fn prepared_handoff_filters_mismatched_untrusted_grant_targets_locally() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v2/session"))
+            .respond_with(SessionResponder {
+                server_secret: [0x89; 32],
+                state: None,
+                delay: None,
+            })
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = OpenSecretClient::new(server.uri()).unwrap();
+        let first = client.prepare_native_oauth_handoff().await.unwrap();
+        let second = client.prepare_native_oauth_handoff().await.unwrap();
+        let stale_first_grant = untrusted_handoff_grant(first.session_id(), first.request_id());
+
+        assert!(first.matches_untrusted_grant_target(&stale_first_grant));
+        assert!(
+            !second.matches_untrusted_grant_target(&stale_first_grant),
+            "an A callback must not consume a newer B request"
+        );
+        assert!(
+            second.matches_untrusted_grant_target(&untrusted_handoff_grant(
+                second.session_id(),
+                second.request_id()
+            ))
+        );
+        assert!(!second.matches_untrusted_grant_target(
+            &NativeOAuthHandoffGrant::new("e30.e30.c2ln").unwrap()
+        ));
+    }
+
+    #[tokio::test]
+    async fn native_handoff_redeems_the_advertised_request_once_without_outer_secrets() {
+        let server = MockServer::start().await;
+        let state = TestV2ServerState::new();
+        let user_id = Uuid::new_v4();
+        state.queue_json_response(
+            200,
+            serde_json::json!({
+                "id": user_id,
+                "email": "native@example.com",
+                "access_token": "native-access",
+                "refresh_token": "native-refresh",
+            }),
+        );
+        Mock::given(method("POST"))
+            .and(path("/v2/session"))
+            .respond_with(SessionResponder {
+                server_secret: [0x8a; 32],
+                state: Some(state.clone()),
+                delay: None,
+            })
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/v2/request"))
+            .respond_with(state.request_responder())
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = OpenSecretClient::new(server.uri()).unwrap();
+        let prepared = client.prepare_native_oauth_handoff().await.unwrap();
+        let advertised_session_id = prepared.session_id().to_string();
+        let advertised_request_id = prepared.request_id().to_string();
+        for id in [&advertised_session_id, &advertised_request_id] {
+            assert_eq!(id.len(), 32);
+            assert!(id
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f')));
+        }
+
+        let response = client
+            .redeem_native_oauth_handoff(
+                prepared,
+                NativeOAuthHandoffGrant::new("e30.e30.c2ln").unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.id, user_id);
+        let tokens = client.get_tokens().unwrap().unwrap();
+        assert_eq!(tokens.access_token, "native-access");
+        assert_eq!(tokens.refresh_token.as_deref(), Some("native-refresh"));
+
+        let logical = state.captured_requests();
+        assert_eq!(logical.len(), 1);
+        assert_eq!(logical[0]["version"], 2);
+        assert_eq!(logical[0]["credential"], serde_json::Value::Null);
+        assert_eq!(logical[0]["cache_namespace_root"], serde_json::Value::Null);
+        assert_eq!(logical[0]["method"], "POST");
+        assert_eq!(logical[0]["target"], "/auth/native-handoff/redeem");
+        assert_eq!(logical[0]["body_present"], true);
+        assert_eq!(logical[0]["headers"].as_array().unwrap().len(), 1);
+        assert_eq!(logical[0]["headers"][0]["name"], "content-type");
+        assert_eq!(logical[0]["headers"][0]["value"], "application/json");
+        assert_eq!(state.captured_request_ids(), vec![advertised_request_id]);
+        let bodies = state.captured_request_bodies();
+        assert_eq!(bodies.len(), 1);
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&bodies[0]).unwrap(),
+            serde_json::json!({ "grant": "e30.e30.c2ln" })
+        );
+
+        let outer = server.received_requests().await.unwrap();
+        assert_eq!(outer.len(), 2);
+        assert_eq!(outer[1].url.path(), "/v2/request");
+        assert_eq!(
+            outer[1].headers.get("x-session-id").unwrap(),
+            advertised_session_id.as_str()
+        );
+        assert!(!outer[1].headers.contains_key(header::AUTHORIZATION));
+        assert!(!outer[1].headers.contains_key(header::COOKIE));
+        for secret in ["e30.e30.c2ln", "native-access", "native-refresh"] {
+            assert!(!outer[1]
+                .body
+                .windows(secret.len())
+                .any(|window| window == secret.as_bytes()));
+        }
+    }
+
+    #[tokio::test]
+    async fn native_handoff_rejects_stale_anonymous_generation_before_network_use() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v2/session"))
+            .respond_with(SessionResponder {
+                server_secret: [0x8b; 32],
+                state: None,
+                delay: None,
+            })
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/v2/request"))
+            .respond_with(ResponseTemplate::new(500))
+            .expect(0)
+            .mount(&server)
+            .await;
+
+        let client = OpenSecretClient::new(server.uri()).unwrap();
+        let prepared = client.prepare_native_oauth_handoff().await.unwrap();
+        client
+            .set_tokens("new-access".to_string(), Some("new-refresh".to_string()))
+            .unwrap();
+        assert!(matches!(
+            client
+                .redeem_native_oauth_handoff(
+                    prepared,
+                    NativeOAuthHandoffGrant::new("e30.e30.c2ln").unwrap(),
+                )
+                .await,
+            Err(Error::Authentication(message))
+                if message == "Authentication changed during native OAuth handoff"
+        ));
+        assert_eq!(server.received_requests().await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn native_handoff_rejects_a_replaced_transport_session_before_network_use() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v2/session"))
+            .respond_with(SessionResponder {
+                server_secret: [0x8c; 32],
+                state: None,
+                delay: None,
+            })
+            .expect(2)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/v2/request"))
+            .respond_with(ResponseTemplate::new(500))
+            .expect(0)
+            .mount(&server)
+            .await;
+
+        let client = OpenSecretClient::new(server.uri()).unwrap();
+        let prepared = client.prepare_native_oauth_handoff().await.unwrap();
+        client.perform_attestation_handshake().await.unwrap();
+        assert!(matches!(
+            client
+                .redeem_native_oauth_handoff(
+                    prepared,
+                    NativeOAuthHandoffGrant::new("e30.e30.c2ln").unwrap(),
+                )
+                .await,
+            Err(Error::Session(message))
+                if message == "Native OAuth transport session is no longer current"
+        ));
+        assert_eq!(server.received_requests().await.unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn native_handoff_response_cannot_overwrite_credentials_changed_in_flight() {
+        let server = MockServer::start().await;
+        let state = TestV2ServerState::new();
+        state.queue_delayed_json_response(
+            200,
+            serde_json::json!({
+                "id": Uuid::new_v4(),
+                "email": "stale@example.com",
+                "access_token": "stale-access",
+                "refresh_token": "stale-refresh",
+            }),
+            std::time::Duration::from_millis(500),
+        );
+        Mock::given(method("POST"))
+            .and(path("/v2/session"))
+            .respond_with(SessionResponder {
+                server_secret: [0x8d; 32],
+                state: Some(state.clone()),
+                delay: None,
+            })
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/v2/request"))
+            .respond_with(state.request_responder())
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = Arc::new(OpenSecretClient::new(server.uri()).unwrap());
+        let prepared = client.prepare_native_oauth_handoff().await.unwrap();
+        let pending = {
+            let client = Arc::clone(&client);
+            tokio::spawn(async move {
+                client
+                    .redeem_native_oauth_handoff(
+                        prepared,
+                        NativeOAuthHandoffGrant::new("e30.e30.c2ln").unwrap(),
+                    )
+                    .await
+            })
+        };
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                if state.captured_requests().len() == 1 {
+                    return;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("native handoff request was not observed");
+        client
+            .set_tokens("new-access".to_string(), Some("new-refresh".to_string()))
+            .unwrap();
+
+        assert!(matches!(
+            pending.await.unwrap(),
+            Err(Error::Authentication(message))
+                if message == "Authentication changed during native OAuth handoff"
+        ));
+        let tokens = client.get_tokens().unwrap().unwrap();
+        assert_eq!(tokens.access_token, "new-access");
+        assert_eq!(tokens.refresh_token.as_deref(), Some("new-refresh"));
+        assert!(client.current_transport_session().unwrap().is_none());
+        assert_eq!(server.received_requests().await.unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn failed_native_handoff_is_not_retried_and_retires_ambiguous_session() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v2/session"))
+            .respond_with(SessionResponder {
+                server_secret: [0x8e; 32],
+                state: None,
+                delay: None,
+            })
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/v2/request"))
+            .respond_with(ResponseTemplate::new(503))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = OpenSecretClient::new(server.uri()).unwrap();
+        let prepared = client.prepare_native_oauth_handoff().await.unwrap();
+        assert!(client
+            .redeem_native_oauth_handoff(
+                prepared,
+                NativeOAuthHandoffGrant::new("e30.e30.c2ln").unwrap(),
+            )
+            .await
+            .is_err());
+        assert!(client.current_transport_session().unwrap().is_none());
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(requests.len(), 2);
+        assert_eq!(requests[0].url.path(), "/v2/session");
+        assert_eq!(requests[1].url.path(), "/v2/request");
+    }
+
+    #[tokio::test]
+    async fn native_handoff_requires_a_dedicated_anonymous_client() {
+        let client =
+            OpenSecretClient::new_with_api_key("http://127.0.0.1:1", "api-key".to_string())
+                .unwrap();
+        assert!(matches!(
+            client.prepare_native_oauth_handoff().await,
+            Err(Error::Authentication(message))
+                if message == "Native OAuth handoff requires an anonymous client"
+        ));
+    }
+
+    #[derive(Serialize)]
+    struct NativeHandoffGrantIntegrationRequest<'a> {
+        native_session_id: &'a str,
+        native_request_id: &'a str,
+    }
+
+    #[derive(Deserialize)]
+    struct NativeHandoffGrantIntegrationResponse {
+        grant: String,
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires the disposable OpenSecret SDK integration backend"]
+    async fn native_handoff_full_stack_round_trip() -> Result<()> {
+        let base_url = std::env::var("VITE_OPEN_SECRET_API_URL")
+            .expect("VITE_OPEN_SECRET_API_URL must identify the disposable backend");
+        let client_id = std::env::var("VITE_TEST_CLIENT_ID")
+            .ok()
+            .and_then(|value| Uuid::parse_str(&value).ok())
+            .expect("VITE_TEST_CLIENT_ID must be a UUID");
+
+        let browser = OpenSecretClient::new(base_url.clone())?;
+        let registered = browser
+            .register_guest(
+                format!("native_handoff_full_stack_{}", Uuid::new_v4()),
+                client_id,
+            )
+            .await?;
+
+        let native_a = OpenSecretClient::new(base_url.clone())?;
+        let native_b = OpenSecretClient::new(base_url)?;
+        let prepared_a = native_a.prepare_native_oauth_handoff().await?;
+        let prepared_b = native_b.prepare_native_oauth_handoff().await?;
+
+        let minted: NativeHandoffGrantIntegrationResponse = browser
+            .authenticated_api_call(
+                "/auth/native-handoff/grant",
+                "POST",
+                Some(NativeHandoffGrantIntegrationRequest {
+                    native_session_id: prepared_a.session_id(),
+                    native_request_id: prepared_a.request_id(),
+                }),
+            )
+            .await?;
+
+        let transplanted = native_b
+            .redeem_native_oauth_handoff(
+                prepared_b,
+                NativeOAuthHandoffGrant::new(minted.grant.clone())?,
+            )
+            .await;
+        assert!(
+            matches!(transplanted, Err(Error::Api { status: 401, .. })),
+            "a grant must not authenticate a different native session/request: {transplanted:?}"
+        );
+        assert!(native_b.get_tokens()?.is_none());
+
+        let redeemed = native_a
+            .redeem_native_oauth_handoff(prepared_a, NativeOAuthHandoffGrant::new(minted.grant)?)
+            .await?;
+        assert_eq!(redeemed.id, registered.id);
+        let native_user = native_a.get_user().await?;
+        assert_eq!(native_user.user.id, registered.id);
+        assert!(native_a.get_tokens()?.is_some());
+
+        Ok(())
     }
 
     #[test]

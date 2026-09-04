@@ -20,7 +20,8 @@ import { isIOS, isTauri } from "@/utils/platform";
 import { appUrl } from "@/config/domains";
 import { useRouteMeta } from "@/utils/routeMeta";
 import { getSafeInternalRedirect, navigateToSafeInternalRedirect } from "@/utils/internalRedirect";
-import { beginNativeOAuthAttempt, cancelNativeOAuthAttempt } from "@/services/nativeOAuthAttempt";
+import { startNativeOAuth } from "@/services/nativeOAuthAttempt";
+import { clearDesktopOAuthTransport } from "@/services/desktopOAuthTransport";
 
 type LoginSearchParams = {
   next?: string;
@@ -126,34 +127,14 @@ function LoginPage() {
       console.log("[OAuth] Using", isTauriEnv ? "Tauri" : "web", "flow");
 
       if (isTauriEnv) {
-        // For Tauri (desktop or mobile), redirect to the web app's desktop-auth route
-        let desktopAuthUrl = "https://trymaple.ai/desktop-auth?provider=github";
-
-        // If there's a selected plan, add it to the URL
-        if (selected_plan) {
-          desktopAuthUrl += `&selected_plan=${encodeURIComponent(selected_plan)}`;
-        }
-
-        // If there's a redemption code, add it to the URL
-        if (code) {
-          desktopAuthUrl += `&code=${encodeURIComponent(code)}`;
-        }
-
-        if (next) {
-          desktopAuthUrl += `&next=${encodeURIComponent(next)}`;
-        }
-
-        // Use the opener plugin by directly invoking the command
-        // This works for both desktop and mobile (iOS/Android)
-        console.log("[OAuth] Opening URL in external browser:", desktopAuthUrl);
-        const nativeOAuthAttemptId = beginNativeOAuthAttempt();
-        invoke("plugin:opener|open_url", { url: desktopAuthUrl }).catch((error: Error) => {
-          cancelNativeOAuthAttempt(nativeOAuthAttemptId);
-          console.error("[OAuth] Failed to open external browser:", error);
-          setError("Failed to open authentication page in browser");
+        await startNativeOAuth("github", import.meta.env.VITE_OPEN_SECRET_API_URL, {
+          selectedPlan: selected_plan,
+          next,
+          redemptionCode: code
         });
       } else {
         // Web flow remains unchanged
+        clearDesktopOAuthTransport();
         const { auth_url } = await os.initiateGitHubAuth("");
         sessionStorage.removeItem("selected_plan");
         if (selected_plan) {
@@ -179,34 +160,14 @@ function LoginPage() {
       console.log("[OAuth] Using", isTauriEnv ? "Tauri" : "web", "flow");
 
       if (isTauriEnv) {
-        // For Tauri (desktop or mobile), redirect to the web app's desktop-auth route
-        let desktopAuthUrl = "https://trymaple.ai/desktop-auth?provider=google";
-
-        // If there's a selected plan, add it to the URL
-        if (selected_plan) {
-          desktopAuthUrl += `&selected_plan=${encodeURIComponent(selected_plan)}`;
-        }
-
-        // If there's a redemption code, add it to the URL
-        if (code) {
-          desktopAuthUrl += `&code=${encodeURIComponent(code)}`;
-        }
-
-        if (next) {
-          desktopAuthUrl += `&next=${encodeURIComponent(next)}`;
-        }
-
-        // Use the opener plugin by directly invoking the command
-        // This works for both desktop and mobile (iOS/Android)
-        console.log("[OAuth] Opening URL in external browser:", desktopAuthUrl);
-        const nativeOAuthAttemptId = beginNativeOAuthAttempt();
-        invoke("plugin:opener|open_url", { url: desktopAuthUrl }).catch((error: Error) => {
-          cancelNativeOAuthAttempt(nativeOAuthAttemptId);
-          console.error("[OAuth] Failed to open external browser:", error);
-          setError("Failed to open authentication page in browser");
+        await startNativeOAuth("google", import.meta.env.VITE_OPEN_SECRET_API_URL, {
+          selectedPlan: selected_plan,
+          next,
+          redemptionCode: code
         });
       } else {
         // Web flow remains unchanged
+        clearDesktopOAuthTransport();
         const { auth_url } = await os.initiateGoogleAuth("");
         sessionStorage.removeItem("selected_plan");
         if (selected_plan) {
@@ -305,7 +266,7 @@ function LoginPage() {
             }
           );
 
-          console.log("[OAuth] Apple Sign-In result:", result);
+          console.log("[OAuth] Apple Sign-In completed");
 
           // Format the response for the API
           const appleUser = {
@@ -359,30 +320,10 @@ function LoginPage() {
           setError(errorMessage);
         }
       } else if (isTauriEnv) {
-        // For Tauri desktop and Android, redirect to the web app's desktop-auth route
-        let desktopAuthUrl = "https://trymaple.ai/desktop-auth?provider=apple";
-
-        // If there's a selected plan, add it to the URL
-        if (selected_plan) {
-          desktopAuthUrl += `&selected_plan=${encodeURIComponent(selected_plan)}`;
-        }
-
-        // If there's a redemption code, add it to the URL
-        if (code) {
-          desktopAuthUrl += `&code=${encodeURIComponent(code)}`;
-        }
-
-        if (next) {
-          desktopAuthUrl += `&next=${encodeURIComponent(next)}`;
-        }
-
-        // Use the opener plugin by directly invoking the command
-        console.log("[OAuth] Opening URL in external browser:", desktopAuthUrl);
-        const nativeOAuthAttemptId = beginNativeOAuthAttempt();
-        invoke("plugin:opener|open_url", { url: desktopAuthUrl }).catch((error: Error) => {
-          cancelNativeOAuthAttempt(nativeOAuthAttemptId);
-          console.error("[OAuth] Failed to open external browser:", error);
-          setError("Failed to open authentication page in browser");
+        await startNativeOAuth("apple", import.meta.env.VITE_OPEN_SECRET_API_URL, {
+          selectedPlan: selected_plan,
+          next,
+          redemptionCode: code
         });
       } else {
         // Web flow - use AppleAuthProvider component which will initiate the flow
