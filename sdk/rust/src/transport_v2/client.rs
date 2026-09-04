@@ -30,12 +30,12 @@ use super::{
     },
     envelope::{LogicalRequest, RequestId},
     framing::{ResponseDecoder, ResponseEvent},
-    Result, TransportV2Error,
+    Result, TransportV2Error, ROUTING_KEY_HEADER,
 };
 
 const VERSION: u8 = 2;
 const MAX_SESSION_RESPONSE_BYTES: usize = 64 * 1024;
-const EXPECTED_SESSION_LIFETIME_SECONDS: u64 = 65 * 60;
+const EXPECTED_SESSION_LIFETIME_SECONDS: u64 = 60 * 60;
 const SESSION_EXPIRY_SKEW: Duration = Duration::from_secs(30);
 const SESSION_CONTENT_TYPE: &str = "application/json";
 const REQUEST_CONTENT_TYPE: &str = "application/octet-stream";
@@ -52,6 +52,7 @@ pub(crate) struct TransportV2Client {
 
 pub(crate) struct TransportV2Session {
     secrets: Arc<SessionSecrets>,
+    routing_key: [u8; HANDSHAKE_CHALLENGE_BYTES],
     expires_at: Instant,
 }
 
@@ -68,6 +69,7 @@ pub(crate) struct PreparedRequestId {
 /// is consumed by `send_sealed`, preserving the transport's no-resend rule.
 pub(crate) struct SealedRequest {
     session_id: SessionId,
+    routing_key: [u8; HANDSHAKE_CHALLENGE_BYTES],
     encrypted: Vec<u8>,
     response_opener: super::crypto::ResponseOpener,
 }
@@ -153,11 +155,12 @@ impl TransportV2Client {
     pub(crate) async fn establish_session(&self) -> Result<TransportV2Session> {
         let started_at = Instant::now();
         let challenge = fresh_challenge()?;
+        let encoded_routing_key = STANDARD.encode(challenge);
         let client_secret = EphemeralSecret::random_from_rng(OsRng);
         let client_public_key = PublicKey::from(&client_secret).to_bytes();
         let request = CreateSessionRequest {
             version: VERSION,
-            challenge: STANDARD.encode(challenge),
+            challenge: encoded_routing_key.clone(),
             client_public_key: STANDARD.encode(client_public_key),
         };
 
@@ -165,6 +168,7 @@ impl TransportV2Client {
             .client
             .post(format!("{}/v2/session", self.base_url))
             .header(header::CONTENT_TYPE, SESSION_CONTENT_TYPE)
+            .header(ROUTING_KEY_HEADER, encoded_routing_key)
             .json(&request)
             .send()
             .await
@@ -203,6 +207,7 @@ impl TransportV2Client {
         }
         Ok(TransportV2Session {
             secrets: Arc::new(secrets),
+            routing_key: challenge,
             expires_at: started_at
                 + Duration::from_secs(EXPECTED_SESSION_LIFETIME_SECONDS)
                     .saturating_sub(SESSION_EXPIRY_SKEW),
@@ -265,6 +270,7 @@ impl TransportV2Client {
 
         Ok(SealedRequest {
             session_id: session.secrets.session_id(),
+            routing_key: session.routing_key,
             encrypted,
             response_opener,
         })
@@ -278,6 +284,7 @@ impl TransportV2Client {
             .post(format!("{}/v2/request", self.base_url))
             .header(header::CONTENT_TYPE, REQUEST_CONTENT_TYPE)
             .header("x-session-id", sealed.session_id.to_string())
+            .header(ROUTING_KEY_HEADER, STANDARD.encode(sealed.routing_key))
             .body(sealed.encrypted)
             .send()
             .await
@@ -465,6 +472,7 @@ impl TransportV2Session {
     fn from_secrets_with_expiry(secrets: SessionSecrets, expires_at: Instant) -> Self {
         Self {
             secrets: Arc::new(secrets),
+            routing_key: [0x11; HANDSHAKE_CHALLENGE_BYTES],
             expires_at,
         }
     }
@@ -738,6 +746,61 @@ mod tests {
         assert!(session.prepare_request_id().is_ok());
     }
 
+    #[tokio::test]
+    async fn attestation_challenge_routing_key_is_reused_for_the_session_request() {
+        let server = MockServer::start().await;
+        let state = TestV2ServerState::new();
+        state.queue_json_response(200, serde_json::json!({"ok": true}));
+        Mock::given(method("POST"))
+            .and(path("/v2/session"))
+            .respond_with(SessionResponder {
+                server_secret: [0x77; 32],
+                state: Some(state.clone()),
+                delay: None,
+            })
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/v2/request"))
+            .respond_with(state.request_responder())
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = TransportV2Client::new(server.uri(), Pcr0TrustPolicy::default()).unwrap();
+        let session = client.establish_session().await.unwrap();
+        let request =
+            LogicalRequest::new(None, None, Method::GET, "/v1/models".into(), vec![], None)
+                .unwrap();
+        let mut response = client.send(&session, request).await.unwrap();
+        while let Some(event) = response.next().await {
+            event.unwrap();
+        }
+
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(requests.len(), 2);
+        let session_routing_key = requests[0]
+            .headers
+            .get(ROUTING_KEY_HEADER)
+            .unwrap()
+            .to_str()
+            .unwrap();
+        let request_routing_key = requests[1]
+            .headers
+            .get(ROUTING_KEY_HEADER)
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert_eq!(request_routing_key, session_routing_key);
+        let session_body: serde_json::Value = serde_json::from_slice(&requests[0].body).unwrap();
+        assert_eq!(session_body["challenge"], session_routing_key);
+        let decoded = STANDARD.decode(session_routing_key).unwrap();
+        assert_eq!(decoded.len(), HANDSHAKE_CHALLENGE_BYTES);
+        assert_eq!(STANDARD.encode(decoded), session_routing_key);
+        assert!(session_routing_key.ends_with('='));
+    }
+
     #[test]
     fn transcript_rejects_mismatched_nonce_or_client_key_binding() {
         let challenge = [0x11; HANDSHAKE_CHALLENGE_BYTES];
@@ -857,6 +920,15 @@ mod tests {
         assert_eq!(
             request.headers.get("x-session-id").unwrap(),
             "f7258fb103137c612baab47ced4a5a02"
+        );
+        assert_eq!(
+            request
+                .headers
+                .get(ROUTING_KEY_HEADER)
+                .unwrap()
+                .to_str()
+                .unwrap(),
+            STANDARD.encode([0x11; HANDSHAKE_CHALLENGE_BYTES])
         );
         for forbidden in ["authorization", "proxy-authorization", "cookie"] {
             assert!(!request.headers.contains_key(forbidden));

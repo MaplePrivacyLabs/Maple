@@ -159,6 +159,7 @@ function parseSerializedSession(value: unknown): SerializedTransportV2Session {
   const object = exactObject(value, [
     "version",
     "session_id",
+    "routing_key",
     "request_key",
     "response_key",
     "expires_at_ms"
@@ -166,6 +167,7 @@ function parseSerializedSession(value: unknown): SerializedTransportV2Session {
   if (
     object.version !== 2 ||
     typeof object.session_id !== "string" ||
+    typeof object.routing_key !== "string" ||
     typeof object.request_key !== "string" ||
     typeof object.response_key !== "string" ||
     typeof object.expires_at_ms !== "number"

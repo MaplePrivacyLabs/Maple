@@ -43,6 +43,7 @@ const GATEWAY_HEADERS = new Set([
   "x-forwarded-for",
   "x-forwarded-host",
   "x-forwarded-proto",
+  "x-opensecret-routing-key",
   "x-session-id"
 ]);
 
