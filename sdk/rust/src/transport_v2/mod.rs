@@ -11,7 +11,7 @@ pub(crate) mod framing;
 use thiserror::Error;
 
 /// Stable, redacted failures from the private transport engine.
-#[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
+#[derive(Debug, Error)]
 pub(crate) enum TransportV2Error {
     #[error("transport-v2 configuration is invalid")]
     InvalidConfiguration,
@@ -35,8 +35,8 @@ pub(crate) enum TransportV2Error {
     Authentication,
     #[error("transport-v2 outer response is untrusted")]
     UntrustedOuterResponse,
-    #[error("transport-v2 HTTP exchange failed")]
-    Http,
+    #[error("transport-v2 HTTP exchange failed: {0}")]
+    Http(#[source] reqwest::Error),
     #[error("transport-v2 response frame is invalid")]
     InvalidFrame,
     #[error("transport-v2 response record is invalid")]

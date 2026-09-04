@@ -24,6 +24,10 @@ services:
       # Authentication - Uncomment ONLY for private/internal deployments!
       # For public deployments: Keep this commented out - clients will pass their own API keys
       # - MAPLE_API_KEY=${MAPLE_API_KEY}
+
+      # Optional: configure once and retain across restarts for provider-cache continuity.
+      # Keep this client-side secret out of source control and logs.
+      # - MAPLE_CACHE_NAMESPACE_ROOT=${MAPLE_CACHE_NAMESPACE_ROOT}
       
       # Optional configurations
       - MAPLE_DEBUG=${MAPLE_DEBUG:-false}

@@ -1,4 +1,4 @@
-use std::{collections::HashSet, fmt, str::FromStr};
+use std::{fmt, str::FromStr};
 
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use bytes::Bytes;
@@ -253,12 +253,8 @@ fn validate_headers(headers: &[LogicalHeader]) -> Result<()> {
     if headers.len() > MAX_HEADER_COUNT {
         return Err(TransportV2Error::InvalidRequest);
     }
-    let mut names = HashSet::with_capacity(headers.len());
     for header in headers {
         validate_header(header)?;
-        if !names.insert(header.name.as_str()) {
-            return Err(TransportV2Error::InvalidRequest);
-        }
     }
     Ok(())
 }
@@ -357,6 +353,28 @@ mod tests {
                 LogicalRequest::new(None, None, Method::GET, target.into(), vec![], None,).is_err()
             );
         }
+    }
+
+    #[test]
+    fn repeated_end_to_end_headers_remain_ordered() {
+        let encoded = LogicalRequest::new(
+            None,
+            None,
+            Method::GET,
+            "/v1/models".into(),
+            vec![
+                LogicalHeader::new("x-provider-option".into(), "first".into()).unwrap(),
+                LogicalHeader::new("x-provider-option".into(), "second".into()).unwrap(),
+            ],
+            None,
+        )
+        .unwrap()
+        .encode()
+        .unwrap();
+        let length = u32::from_be_bytes(encoded[..4].try_into().unwrap()) as usize;
+        let metadata: serde_json::Value = serde_json::from_slice(&encoded[4..4 + length]).unwrap();
+        assert_eq!(metadata["headers"][0]["value"], "first");
+        assert_eq!(metadata["headers"][1]["value"], "second");
     }
 
     #[test]

@@ -12,7 +12,7 @@ Maple Rust SDK for the OpenSecret backend: secure AI APIs, encrypted sessions, a
 - 🔐 **Nitro Attestation**: Verify server identity through AWS Nitro Enclaves
 - 🔑 **End-to-End Encryption**: All API calls encrypted with session keys
 - 👤 **Authentication**: Support for both email-based and guest users
-- 🔄 **Token Management**: Automatic token refresh and session management
+- 🔄 **Token Management**: Proactive, coalesced refresh without request replay
 - ↔️ **Lossless Inference Transport**: Provider-specific request and response fields pass through as raw bytes
 - 🛡️ **Secure by Default**: No plaintext data transmission
 
@@ -94,17 +94,17 @@ let client = OpenSecretClient::new_with_pcr0_trust_policy(
 Use `Pcr0TrustPolicy::from_static_allowlist(...)` to disable remote history and
 trust only an explicit custom set. Remote entries are size/time bounded and
 must verify against the SDK's hardcoded OpenSecret P-384 signing key. Exact
-localhost, loopback, and unspecified-address development endpoints continue to
-use mock attestation; Android also supports the exact emulator alias
-`10.0.2.2`. Other endpoints must use HTTPS.
+`http://` localhost and loopback development endpoints use mock attestation;
+Android also supports the exact emulator alias `10.0.2.2`. Other endpoints
+must use HTTPS.
 
 ## Inference APIs
 
 `send_inference_request` is the lossless inference API. The caller owns the
 HTTP method, route, query, headers, body bytes, and response parsing; the SDK
-owns attestation, authentication, encryption, retrying an expired session, and
-response decryption. It does not parse or rewrite inference parameters such as
-`stream`:
+owns attestation, authentication, encryption, and response decryption. It does
+not parse or rewrite inference parameters such as `stream`, and it never
+automatically resends an original request:
 
 ```rust
 use bytes::Bytes;
@@ -135,9 +135,36 @@ typed model, embedding, and chat-completion helpers remain available as
 compatibility wrappers over the same transport.
 
 The SDK manages transport credentials and framing. Caller-provided `Host`,
-`Authorization`, `x-session-id`, `Content-Length`, `Content-Type`,
-`Content-Encoding`, `Accept-Encoding`, `Content-MD5`, `Digest`, hop-by-hop, and
-`Connection`-listed headers are not forwarded; other headers are preserved.
+`Authorization`, cookies, `x-session-id`, `Forwarded`, `Via`,
+`X-Forwarded-*`, `Content-Length`, `Content-Encoding`, `Accept-Encoding`,
+`Content-MD5`, `Digest`, hop-by-hop, and `Connection`-listed headers are not
+forwarded. Logical `Content-Type` and other end-to-end headers are preserved,
+including multipart boundaries.
+
+API keys can also be supplied per request with
+`send_inference_request_with_api_key`. The key is encrypted inside that one
+logical request and is not installed as mutable client state.
+
+## Provider cache continuity
+
+Transport V2 uses a random 32-byte client secret to namespace provider cache
+entries. The default is random for each `OpenSecretClient`. Applications that
+need cache hits across restarts should generate a root once, store it as a
+secret, and restore it when constructing the client:
+
+```rust
+use opensecret::TransportV2CacheNamespaceRoot;
+
+let root = TransportV2CacheNamespaceRoot::generate()?;
+let persisted = root.to_base64();
+
+let restored = TransportV2CacheNamespaceRoot::from_base64(&persisted)?;
+let client = OpenSecretClient::new("https://api.opensecret.com")?
+    .with_cache_namespace_root(restored);
+```
+
+Do not derive this root from a user identifier or credential, and do not log
+it. The type redacts `Debug` output and zeroizes its bytes on drop.
 
 ## Authentication
 
@@ -181,6 +208,16 @@ let response = client.login_with_id(
 ).await?;
 ```
 
+### OAuth callbacks
+
+Transport V2 binds an OAuth attempt to the attested session that initiated it.
+Call `initiate_github_auth`, `initiate_google_auth`, or `initiate_apple_auth`
+and the matching `handle_*_callback` method on the same live
+`OpenSecretClient`. Reconstructing the client between those calls establishes
+a different session and intentionally cannot redeem the original attempt.
+Native applications should use OpenSecret's native handoff flow rather than
+trying to export transport keys.
+
 ### Token Management
 
 Tokens are automatically stored after login/registration. You can:
@@ -196,20 +233,22 @@ let refresh_token = client.get_refresh_token()?;
 // Refresh tokens
 client.refresh_token().await?;
 
-// Logout (clears session and tokens)
+// Logout (clears credentials; the identity-neutral crypto session is reusable)
 client.logout().await?;
 ```
 
 ## Session Management
 
-Every API call requires an encrypted session:
+Every API call uses an encrypted Transport V2 session:
 
 1. **Attestation Handshake**: Establishes trust and exchanges encryption keys
-2. **Encrypted Communication**: All subsequent calls use the session key
-3. **Token Authentication**: Protected endpoints require valid access tokens
+2. **Encrypted Communication**: The entire logical request, including its
+   credential, travels inside one authenticated envelope
+3. **Token Authentication**: Protected endpoints require a valid credential in
+   each encrypted request
 
 ```rust
-// Required before any API calls
+// Optional eager setup; API calls also establish a session lazily.
 client.perform_attestation_handshake().await?;
 
 // Check session status
@@ -217,6 +256,15 @@ if let Some(session_id) = client.get_session_id()? {
     println!("Active session: {}", session_id);
 }
 ```
+
+The crypto session is not bound to one user or API key. Token changes and
+logout therefore do not rotate it. Before a JWT-authenticated call, the SDK
+uses the token's untrusted `exp` claim only as a timing hint and coalesces a
+refresh when it is within 30 seconds of expiry. A refresh failure prevents that
+new call from being sent. Transient, outer-transport, or AEAD failures preserve
+stored credentials; only an authenticated 401 or 403 from the refresh request
+clears them. A request that was already sent is never replayed after refresh,
+reattestation, or any other recovery attempt.
 
 ## Error Handling
 
@@ -275,7 +323,8 @@ cargo run --locked --example auth_example
 2. **Store tokens securely** - the SDK keeps them in memory only
 3. **Use HTTPS** for all production API calls
 4. **Rotate tokens regularly** using the refresh mechanism
-5. **Clear sessions** after use with `logout()`
+5. **Clear credentials** after use with `logout()`; the identity-neutral
+   transport session may remain available for later anonymous use
 
 ## License
 

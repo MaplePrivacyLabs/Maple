@@ -186,12 +186,8 @@ fn decode_plaintext_record(encoded: &[u8]) -> Result<ResponseEvent> {
             {
                 return Err(TransportV2Error::InvalidRecord);
             }
-            let mut names = std::collections::HashSet::with_capacity(start.headers.len());
             for header in &start.headers {
                 LogicalHeader::new(header.name().to_owned(), header.value().to_owned())?;
-                if !names.insert(header.name()) {
-                    return Err(TransportV2Error::InvalidRecord);
-                }
             }
             Ok(ResponseEvent::Start {
                 status: start.status,
@@ -298,14 +294,17 @@ mod tests {
         let start = frame_response_for_test(&secrets, request_id, 0, &start_plaintext);
         let mut decoder = ResponseDecoder::new(secrets.response_opener(request_id).unwrap());
         decoder.push(&start).unwrap();
-        assert_eq!(decoder.finish(), Err(TransportV2Error::TruncatedResponse));
+        assert!(matches!(
+            decoder.finish(),
+            Err(TransportV2Error::TruncatedResponse)
+        ));
 
         let wire = response_frames(&secrets, request_id);
         let mut decoder = ResponseDecoder::new(secrets.response_opener(request_id).unwrap());
-        assert_eq!(
+        assert!(matches!(
             decoder.push(&[wire, vec![0]].concat()),
             Err(TransportV2Error::PostTerminalData)
-        );
+        ));
     }
 
     #[test]
@@ -318,18 +317,34 @@ mod tests {
         let start = frame_response_for_test(&first, request_id, 0, &start_plaintext);
 
         let mut wrong_session = ResponseDecoder::new(second.response_opener(request_id).unwrap());
-        assert_eq!(
+        assert!(matches!(
             wrong_session.push(&start),
             Err(TransportV2Error::Authentication)
-        );
+        ));
         let mut wrong_request = ResponseDecoder::new(
             first
                 .response_opener(RequestId::from_bytes([10; 16]))
                 .unwrap(),
         );
-        assert_eq!(
+        assert!(matches!(
             wrong_request.push(&start),
             Err(TransportV2Error::Authentication)
+        ));
+    }
+
+    #[test]
+    fn repeated_response_headers_are_valid_and_ordered() {
+        let mut encoded = vec![START_TAG];
+        encoded.extend_from_slice(
+            br#"{"status":200,"headers":[{"name":"warning","value":"first"},{"name":"warning","value":"second"}]}"#,
         );
+
+        let ResponseEvent::Start { headers, .. } = decode_plaintext_record(&encoded).unwrap()
+        else {
+            panic!("expected start record");
+        };
+        assert_eq!(headers.len(), 2);
+        assert_eq!(headers[0].value(), "first");
+        assert_eq!(headers[1].value(), "second");
     }
 }
