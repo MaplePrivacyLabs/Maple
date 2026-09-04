@@ -1,5 +1,12 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
+import { createContext, useContext, useState, type ReactNode } from "react";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
+import {
+  createMemoryHistory,
+  createRootRoute,
+  createRouter,
+  RouterProvider
+} from "@tanstack/react-router";
 
 import type { AppleAuthorization } from "./AppleAuthProvider";
 
@@ -81,20 +88,29 @@ function appleEvent(type: "AppleIDSignInOnSuccess" | "AppleIDSignInOnFailure", d
 }
 
 let currentOpenSecret: Record<string, unknown>;
+let currentAuthority: { principalId: string; revision: number; credentials: object };
+let useMockAuthority = false;
+const TestOpenSecretContext = createContext<Record<string, unknown> | null>(null);
 const realOpenSecret = await import("@mapleai/sdk");
+const originalReadNativeUserAuth = realOpenSecret.readNativeUserAuth;
 mock.module("@mapleai/sdk", () => ({
   ...realOpenSecret,
-  useOpenSecret: () => currentOpenSecret
+  useOpenSecret: () => useContext(TestOpenSecretContext) ?? currentOpenSecret,
+  readNativeUserAuth: (apiUrl: string) =>
+    useMockAuthority ? currentAuthority : originalReadNativeUserAuth(apiUrl)
 }));
 
 const { initBillingService } = await import("@/billing/billingService");
 const { AppleAuthProvider } = await import("./AppleAuthProvider");
+const { Route: callbackRoute } = await import("@/routes/auth.$provider.callback");
+const { Route: desktopRoute } = await import("@/routes/desktop-auth");
 
 const originalGlobals = {
   document: Object.getOwnPropertyDescriptor(globalThis, "document"),
   localStorage: Object.getOwnPropertyDescriptor(globalThis, "localStorage"),
   sessionStorage: Object.getOwnPropertyDescriptor(globalThis, "sessionStorage"),
-  window: Object.getOwnPropertyDescriptor(globalThis, "window")
+  window: Object.getOwnPropertyDescriptor(globalThis, "window"),
+  scrollTo: Object.getOwnPropertyDescriptor(globalThis, "scrollTo")
 };
 
 function setGlobal(name: string, value: unknown): void {
@@ -128,6 +144,7 @@ describe("AppleAuthProvider", () => {
   let originalConsoleError: typeof console.error;
 
   beforeEach(() => {
+    useMockAuthority = true;
     renderer = null;
     originalConsoleError = console.error;
     console.error = mock(() => {});
@@ -153,7 +170,10 @@ describe("AppleAuthProvider", () => {
         })
     );
 
+    currentAuthority = { principalId: "user-one", revision: 1, credentials: {} };
     currentOpenSecret = {
+      auth: { user: { user: { id: "user-one", email: "alice@example.com" } } },
+      apiUrl: "https://api.example.com",
       initiateAppleAuth,
       handleAppleCallback,
       mintNativeHandoffGrant
@@ -178,21 +198,27 @@ describe("AppleAuthProvider", () => {
       sessionStorage
     };
 
+    setGlobal(
+      "scrollTo",
+      mock(() => {})
+    );
     setGlobal("document", documentTarget);
     setGlobal("localStorage", localStorage);
     setGlobal("sessionStorage", sessionStorage);
     setGlobal("window", windowValue);
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     if (renderer) {
-      act(() => renderer?.unmount());
+      await act(async () => renderer?.unmount());
     }
+    restoreGlobal("scrollTo", originalGlobals.scrollTo);
     restoreGlobal("document", originalGlobals.document);
     restoreGlobal("localStorage", originalGlobals.localStorage);
     restoreGlobal("sessionStorage", originalGlobals.sessionStorage);
     restoreGlobal("window", originalGlobals.window);
     console.error = originalConsoleError;
+    useMockAuthority = false;
   });
 
   async function startAttempt(): Promise<{ completion: Promise<void>; control: SignInControl }> {
@@ -335,7 +361,7 @@ describe("AppleAuthProvider", () => {
     expect(redirectAfterLogin).toHaveBeenCalledWith("max");
   });
 
-  test("keeps a manual Open Maple fallback after hosted native Apple authentication", async () => {
+  test("requires account approval before minting and keeps a manual Open Maple fallback", async () => {
     const { markTransportV2DesktopOAuth } = await import("@/services/desktopOAuthTransport");
     markTransportV2DesktopOAuth({
       provider: "apple",
@@ -354,11 +380,298 @@ describe("AppleAuthProvider", () => {
       await attempt.completion;
     });
 
+    expect(mintNativeHandoffGrant).not.toHaveBeenCalled();
+    expect(JSON.stringify(renderer?.toJSON())).toContain("alice@example.com");
+    await act(async () => {
+      await renderer?.root
+        .findAllByType("button")
+        .find((button) => button.props.children === "Continue to Maple")
+        ?.props.onClick();
+    });
     expect(mintNativeHandoffGrant).toHaveBeenCalledWith("01".repeat(16), "ab".repeat(16));
-    const fallback = renderer?.root.findByType("button");
+    const fallback = renderer?.root
+      .findAllByType("button")
+      .find((button) => button.props.children === "Open Maple");
     expect(fallback?.props.children).toBe("Open Maple");
     act(() => fallback?.props.onClick());
     expect(window.location.href).toBe("cloud.opensecret.maple://auth?handoff_grant=aaa.bbb.ccc");
+  });
+
+  for (const action of ["cancel", "change account", "change target", "unmount"] as const) {
+    test(`does not mint after ${action} at hosted confirmation`, async () => {
+      const { markTransportV2DesktopOAuth } = await import("@/services/desktopOAuthTransport");
+      markTransportV2DesktopOAuth({
+        provider: "apple",
+        nativeSessionId: "01".repeat(16),
+        nativeRequestId: "ab".repeat(16)
+      });
+      await act(async () => {
+        renderer = create(<AppleAuthProvider onError={onError} />);
+      });
+      const attempt = await startAttempt();
+      await act(async () => {
+        attempt.control.resolve({ authorization: { code: "native-code", state: "state-one" } });
+        await attempt.completion;
+      });
+      const buttons = renderer!.root.findAllByType("button");
+      const approve = buttons.find((button) => button.props.children === "Continue to Maple")!.props
+        .onClick;
+      await act(async () => {
+        if (action === "cancel")
+          buttons.find((button) => button.props.children === "Cancel")!.props.onClick();
+        if (action === "change account")
+          currentAuthority = { ...currentAuthority, revision: 2, principalId: "user-two" };
+        if (action === "change target")
+          markTransportV2DesktopOAuth({
+            provider: "apple",
+            nativeSessionId: "02".repeat(16),
+            nativeRequestId: "cd".repeat(16)
+          });
+        if (action === "unmount") renderer!.unmount();
+      });
+      await act(async () => {
+        await approve();
+      });
+      expect(mintNativeHandoffGrant).not.toHaveBeenCalled();
+      expect(window.location.href).toBe("https://trymaple.ai/login");
+    });
+  }
+
+  test("discards a late mint after cancelling the confirmation", async () => {
+    const { markTransportV2DesktopOAuth } = await import("@/services/desktopOAuthTransport");
+    markTransportV2DesktopOAuth({
+      provider: "apple",
+      nativeSessionId: "01".repeat(16),
+      nativeRequestId: "ab".repeat(16)
+    });
+    let resolve!: (result: { grant: string }) => void;
+    mintNativeHandoffGrant.mockImplementationOnce(
+      () =>
+        new Promise((done) => {
+          resolve = done;
+        })
+    );
+    await act(async () => {
+      renderer = create(<AppleAuthProvider onError={onError} />);
+    });
+    const attempt = await startAttempt();
+    await act(async () => {
+      attempt.control.resolve({ authorization: { code: "native-code", state: "state-one" } });
+      await attempt.completion;
+    });
+    let completion!: Promise<void>;
+    await act(async () => {
+      const approve = renderer!.root
+        .findAllByType("button")
+        .find((button) => button.props.children === "Continue to Maple")!.props.onClick;
+      completion = approve();
+      await approve();
+    });
+    expect(mintNativeHandoffGrant).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      renderer!.root
+        .findAllByType("button")
+        .find((button) => button.props.children === "Cancel")!
+        .props.onClick();
+      resolve({ grant: "aaa.bbb.ccc" });
+      await completion;
+    });
+    expect(window.location.href).toBe("https://trymaple.ai/login");
+    expect(JSON.stringify(renderer?.toJSON())).not.toContain("Open Maple");
+  });
+
+  for (const provider of ["github", "google", "apple"] as const) {
+    test(`${provider} redirect callback waits for hosted account approval`, async () => {
+      const { markTransportV2DesktopOAuth } = await import("@/services/desktopOAuthTransport");
+      markTransportV2DesktopOAuth({
+        provider,
+        nativeSessionId: "01".repeat(16),
+        nativeRequestId: "ab".repeat(16)
+      });
+      let publish!: (value: Record<string, unknown>) => void;
+      const confirmedAuth = currentOpenSecret.auth;
+      currentOpenSecret.auth = { user: undefined };
+      function SdkProvider({ children }: { children: ReactNode }) {
+        const [value, setValue] = useState(currentOpenSecret);
+        publish = setValue;
+        return (
+          <TestOpenSecretContext.Provider value={value}>{children}</TestOpenSecretContext.Provider>
+        );
+      }
+      const callback = mock(async () => {
+        await Promise.resolve();
+        publish({ ...currentOpenSecret, auth: confirmedAuth });
+      });
+      currentOpenSecret.handleGitHubCallback = callback;
+      currentOpenSecret.handleGoogleCallback = callback;
+      currentOpenSecret.handleAppleCallback = callback;
+      Object.assign(window.location, {
+        search: "?code=provider-code&state=provider-state",
+        pathname: `/auth/${provider}/callback`
+      });
+      const rootRoute = createRootRoute();
+      const route = callbackRoute.update({
+        getParentRoute: () => rootRoute,
+        path: "/auth/$provider/callback"
+      } as never);
+      const router = createRouter({
+        routeTree: rootRoute.addChildren([route]),
+        history: createMemoryHistory({
+          initialEntries: [`/auth/${provider}/callback?code=provider-code&state=provider-state`]
+        })
+      });
+      await router.load();
+      await act(async () => {
+        renderer = create(
+          <SdkProvider>
+            <RouterProvider router={router} />
+          </SdkProvider>
+        );
+      });
+      expect(callback).toHaveBeenCalledWith("provider-code", "provider-state", "");
+      expect(mintNativeHandoffGrant).not.toHaveBeenCalled();
+      expect(JSON.stringify(renderer?.toJSON())).toContain("alice@example.com");
+      await act(async () => {
+        await renderer!.root
+          .findAllByType("button")
+          .find((button) => button.props.children === "Continue to Maple")!
+          .props.onClick();
+      });
+      expect(mintNativeHandoffGrant).toHaveBeenCalledTimes(1);
+      expect(window.location.href).toBe("cloud.opensecret.maple://auth?handoff_grant=aaa.bbb.ccc");
+    });
+  }
+
+  test("Apple desktop page does not recreate a cancelled target on SDK context updates", async () => {
+    const { readTransportV2DesktopOAuth } = await import("@/services/desktopOAuthTransport");
+    let publish!: (value: Record<string, unknown>) => void;
+    function SdkProvider({ children }: { children: ReactNode }) {
+      const [value, setValue] = useState(currentOpenSecret);
+      publish = setValue;
+      return (
+        <TestOpenSecretContext.Provider value={value}>{children}</TestOpenSecretContext.Provider>
+      );
+    }
+    const rootRoute = createRootRoute();
+    const route = desktopRoute.update({
+      getParentRoute: () => rootRoute,
+      path: "/desktop-auth"
+    } as never);
+    const router = createRouter({
+      routeTree: rootRoute.addChildren([route]),
+      history: createMemoryHistory({
+        initialEntries: [
+          `/desktop-auth?provider=apple&transport=v2&native_session_id=${"01".repeat(16)}&native_request_id=${"ab".repeat(16)}`
+        ]
+      })
+    });
+    await router.load();
+    await act(async () => {
+      renderer = create(
+        <SdkProvider>
+          <RouterProvider router={router} />
+        </SdkProvider>
+      );
+    });
+    const attempt = await startAttempt();
+    await act(async () => {
+      attempt.control.resolve({ authorization: { code: "native-code", state: "state-one" } });
+      await attempt.completion;
+    });
+    await act(async () => {
+      renderer!.root
+        .findAllByType("button")
+        .find((button) => button.props.children === "Cancel")!
+        .props.onClick();
+    });
+    expect(readTransportV2DesktopOAuth()).toBeNull();
+    await act(async () => {
+      publish({ ...currentOpenSecret });
+    });
+    expect(readTransportV2DesktopOAuth()).toBeNull();
+    expect(mintNativeHandoffGrant).not.toHaveBeenCalled();
+  });
+
+  for (const outcome of ["resolve", "reject"] as const) {
+    test(`ignores a replaced desktop initiation's late ${outcome}`, async () => {
+      const controls: Array<{
+        resolve(value: { auth_url: string }): void;
+        reject(error: Error): void;
+      }> = [];
+      const initiateGoogleAuth = mock(
+        () =>
+          new Promise<{ auth_url: string }>((resolve, reject) => {
+            controls.push({ resolve, reject });
+          })
+      );
+      currentOpenSecret.initiateGoogleAuth = initiateGoogleAuth;
+      const rootRoute = createRootRoute();
+      const route = desktopRoute.update({
+        getParentRoute: () => rootRoute,
+        path: "/desktop-auth"
+      } as never);
+      const router = createRouter({
+        routeTree: rootRoute.addChildren([route]),
+        history: createMemoryHistory({
+          initialEntries: [
+            `/desktop-auth?provider=google&transport=v2&native_session_id=${"01".repeat(16)}&native_request_id=${"ab".repeat(16)}`
+          ]
+        })
+      });
+      await router.load();
+      await act(async () => {
+        renderer = create(<RouterProvider router={router} />);
+      });
+      expect(initiateGoogleAuth).toHaveBeenCalledTimes(1);
+      await act(async () => {
+        await router.navigate({
+          to: "/desktop-auth",
+          search: {
+            provider: "google",
+            transport: "v2",
+            native_session_id: "02".repeat(16),
+            native_request_id: "cd".repeat(16)
+          }
+        });
+      });
+      expect(initiateGoogleAuth).toHaveBeenCalledTimes(2);
+      await act(async () => {
+        if (outcome === "resolve")
+          controls[0]!.resolve({ auth_url: "https://example.com/old-oauth" });
+        else controls[0]!.reject(new Error("old initiation failed"));
+      });
+      expect(window.location.href).toBe("https://trymaple.ai/login");
+      expect(router.state.location.pathname).toBe("/desktop-auth");
+      expect(router.state.location.search.native_request_id).toBe("cd".repeat(16));
+    });
+  }
+
+  test("ignores an Apple popup rejection after its target was replaced", async () => {
+    const { markTransportV2DesktopOAuth, readTransportV2DesktopOAuth } =
+      await import("@/services/desktopOAuthTransport");
+    markTransportV2DesktopOAuth({
+      provider: "apple",
+      nativeSessionId: "01".repeat(16),
+      nativeRequestId: "ab".repeat(16)
+    });
+    await act(async () => {
+      renderer = create(<AppleAuthProvider onError={onError} />);
+    });
+    const attempt = await startAttempt();
+    const replacement = {
+      provider: "apple" as const,
+      nativeSessionId: "02".repeat(16),
+      nativeRequestId: "cd".repeat(16)
+    };
+    markTransportV2DesktopOAuth(replacement);
+    await act(async () => {
+      attempt.control.reject(new Error("old popup failed"));
+      await attempt.completion;
+    });
+    expect(onError).not.toHaveBeenCalled();
+    expect(handleAppleCallback).not.toHaveBeenCalled();
+    expect(mintNativeHandoffGrant).not.toHaveBeenCalled();
+    expect(readTransportV2DesktopOAuth()).toMatchObject(replacement);
   });
 
   for (const [name, authUrl] of [

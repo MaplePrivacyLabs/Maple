@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, mock, spyOn, test } from "bun:test";
 
 interface AuthFence {
   version: 1;
@@ -21,6 +21,8 @@ const SESSION_ID = "01".repeat(16);
 const REQUEST_ID = "ab".repeat(16);
 const HANDOFF_GRANT = "aaa.bbb.ccc";
 const USER_ID = "12345678-1234-4234-8234-123456789abc";
+const USER_EMAIL = "signed-in@example.test";
+const APPROVE_ACCOUNT = { confirmAccount: async () => true };
 const EXPECTED_AUTH: AuthFence = {
   version: 1,
   apiOrigin: API_ORIGIN,
@@ -169,7 +171,7 @@ function nativeInvoke(
   calls: InvokeCall[],
   options: {
     begin?: ReturnType<typeof beginResponse>;
-    redeem?: { userId: string; accessToken: string; refreshToken: string };
+    redeem?: { userId: string; email: string | null; accessToken: string; refreshToken: string };
   } = {}
 ) {
   return async (command: string, args?: unknown): Promise<unknown> => {
@@ -179,6 +181,7 @@ function nativeInvoke(
       return (
         options.redeem ?? {
           userId: USER_ID,
+          email: USER_EMAIL,
           accessToken: "access-token",
           refreshToken: "refresh-token"
         }
@@ -188,10 +191,25 @@ function nativeInvoke(
   };
 }
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason: Error) => void;
+  const promise = new Promise<T>((onResolve, onReject) => {
+    resolve = onResolve;
+    reject = onReject;
+  });
+  return { promise, resolve, reject };
+}
+
 describe("native OAuth Transport V2 handoff", () => {
   let storage: MemoryStorage;
+  let now: number;
+  let restoreDateNow: () => void;
 
   beforeEach(() => {
+    now = 1_000;
+    const clock = spyOn(Date, "now").mockImplementation(() => now);
+    restoreDateNow = () => clock.mockRestore();
     storage = new MemoryStorage();
     Object.defineProperty(globalThis, "localStorage", {
       configurable: true,
@@ -217,6 +235,7 @@ describe("native OAuth Transport V2 handoff", () => {
   });
 
   afterEach(() => {
+    restoreDateNow();
     restoreStorage("localStorage");
     restoreStorage("sessionStorage");
   });
@@ -278,8 +297,14 @@ describe("native OAuth Transport V2 handoff", () => {
       nativeInvoke(calls)
     );
 
-    const completed = await redeemNativeOAuthGrant(HANDOFF_GRANT, nativeInvoke(calls));
+    const confirmAccount = mock(async () => true);
+    const completed = await redeemNativeOAuthGrant(
+      HANDOFF_GRANT,
+      { confirmAccount },
+      nativeInvoke(calls)
+    );
 
+    expect(confirmAccount).toHaveBeenCalledWith({ userId: USER_ID, email: USER_EMAIL });
     expect(calls[1]).toEqual({
       command: "native_oauth_redeem",
       args: { request: { handoffGrant: HANDOFF_GRANT } }
@@ -308,9 +333,303 @@ describe("native OAuth Transport V2 handoff", () => {
     installFailure = new Error("Transport V2 authority changed");
     sharedState().installFailure = installFailure;
 
-    await expect(redeemNativeOAuthGrant(HANDOFF_GRANT, nativeInvoke(calls))).rejects.toThrow(
-      "authority changed"
+    await expect(
+      redeemNativeOAuthGrant(HANDOFF_GRANT, APPROVE_ACCOUNT, nativeInvoke(calls))
+    ).rejects.toThrow("authority changed");
+    expect(installCalls).toHaveLength(1);
+    expect(readPendingNativeOAuthAttempt()).toBeNull();
+  });
+
+  test("keeps credentials out of storage and the confirmation callback until approval", async () => {
+    const calls: InvokeCall[] = [];
+    await beginNativeOAuthAttempt(API_URL, {}, now, nativeInvoke(calls));
+    const decision = deferred<boolean>();
+    const shown = deferred<void>();
+    const confirmAccount = mock((account: { userId: string; email: string | null }) => {
+      expect(account).toEqual({ userId: USER_ID, email: USER_EMAIL });
+      shown.resolve();
+      return decision.promise;
+    });
+    const completion = redeemNativeOAuthGrant(
+      HANDOFF_GRANT,
+      { confirmAccount },
+      nativeInvoke(calls)
     );
+    await shown.promise;
+
+    expect(installCalls).toHaveLength(0);
+    expect(calls.filter((call) => call.command === "native_oauth_redeem")).toHaveLength(1);
+    const saved = storage.getItem(storage.key(0)!);
+    expect(saved).not.toContain("access-token");
+    expect(saved).not.toContain("refresh-token");
+    expect(saved).not.toContain(USER_EMAIL);
+
+    decision.resolve(true);
+    expect(await completion).toMatchObject({ attemptId: ATTEMPT_ID });
+    expect(installCalls).toHaveLength(1);
+  });
+
+  test("declining the account discards the one-use result without installing", async () => {
+    const calls: InvokeCall[] = [];
+    await beginNativeOAuthAttempt(API_URL, {}, now, nativeInvoke(calls));
+
+    expect(
+      await redeemNativeOAuthGrant(
+        HANDOFF_GRANT,
+        { confirmAccount: async () => false },
+        nativeInvoke(calls)
+      )
+    ).toBeNull();
+    expect(installCalls).toHaveLength(0);
+    expect(readPendingNativeOAuthAttempt()).toBeNull();
+    await expect(
+      redeemNativeOAuthGrant(HANDOFF_GRANT, APPROVE_ACCOUNT, nativeInvoke(calls))
+    ).rejects.toThrow("not pending");
+    expect(calls.filter((call) => call.command === "native_oauth_redeem")).toHaveLength(1);
+  });
+
+  test("abort releases a pending confirmation immediately and ignores a later approval", async () => {
+    const calls: InvokeCall[] = [];
+    await beginNativeOAuthAttempt(API_URL, {}, now, nativeInvoke(calls));
+    const decision = deferred<boolean>();
+    const shown = deferred<void>();
+    const controller = new AbortController();
+    const completion = redeemNativeOAuthGrant(
+      HANDOFF_GRANT,
+      {
+        signal: controller.signal,
+        confirmAccount: () => {
+          shown.resolve();
+          return decision.promise;
+        }
+      },
+      nativeInvoke(calls)
+    );
+    await shown.promise;
+    controller.abort();
+
+    expect(await completion).toBeNull();
+    expect(installCalls).toHaveLength(0);
+    expect(readPendingNativeOAuthAttempt()).toBeNull();
+    decision.resolve(true);
+    await Promise.resolve();
+    expect(installCalls).toHaveLength(0);
+  });
+
+  test("an already aborted flow does not redeem or show confirmation", async () => {
+    const calls: InvokeCall[] = [];
+    await beginNativeOAuthAttempt(API_URL, {}, now, nativeInvoke(calls));
+    const controller = new AbortController();
+    controller.abort();
+    const confirmAccount = mock(async () => true);
+
+    expect(
+      await redeemNativeOAuthGrant(
+        HANDOFF_GRANT,
+        { confirmAccount, signal: controller.signal },
+        nativeInvoke(calls)
+      )
+    ).toBeNull();
+    expect(calls).toHaveLength(1);
+    expect(confirmAccount).not.toHaveBeenCalled();
+    expect(installCalls).toHaveLength(0);
+  });
+
+  for (const transition of ["new attempt", "cancellation", "auth change", "expiry"] as const) {
+    test(`${transition} during confirmation prevents installation of the older result`, async () => {
+      const calls: InvokeCall[] = [];
+      await beginNativeOAuthAttempt(API_URL, {}, now, nativeInvoke(calls));
+      const decision = deferred<boolean>();
+      const shown = deferred<void>();
+      const completion = redeemNativeOAuthGrant(
+        HANDOFF_GRANT,
+        {
+          confirmAccount: () => {
+            shown.resolve();
+            return decision.promise;
+          }
+        },
+        nativeInvoke(calls)
+      );
+      await shown.promise;
+      if (transition === "new attempt") {
+        await beginNativeOAuthAttempt(
+          API_URL,
+          { next: "/settings" },
+          now,
+          nativeInvoke(calls, {
+            begin: beginResponse(SECOND_ATTEMPT_ID, "02".repeat(16), "cd".repeat(16))
+          })
+        );
+      } else if (transition === "cancellation") {
+        await cancelNativeOAuthAttempt(ATTEMPT_ID, nativeInvoke(calls));
+      } else if (transition === "auth change") {
+        sharedState().installFailure = new Error("Transport V2 authority changed");
+      } else {
+        now += PENDING_NATIVE_OAUTH_ATTEMPT_TTL_MS + 1;
+      }
+      decision.resolve(true);
+
+      if (transition === "auth change") {
+        // The SDK's CAS is the final authority even before React observes a
+        // login/logout. This mock models its rejection, not an installation.
+        await expect(completion).rejects.toThrow("authority changed");
+        expect(installCalls[0]?.expectedAuth).toEqual(EXPECTED_AUTH);
+      } else {
+        expect(await completion).toBeNull();
+        expect(installCalls).toHaveLength(0);
+      }
+      if (transition === "new attempt") {
+        expect(readPendingNativeOAuthAttempt()).toMatchObject({
+          attemptId: SECOND_ATTEMPT_ID,
+          next: "/settings"
+        });
+      } else {
+        expect(readPendingNativeOAuthAttempt()).toBeNull();
+      }
+    });
+  }
+
+  for (const transition of ["new attempt", "abort", "expiry"] as const) {
+    test(`${transition} during redemption does not show or install the stale account`, async () => {
+      const calls: InvokeCall[] = [];
+      const invokeCommand = nativeInvoke(calls);
+      await beginNativeOAuthAttempt(API_URL, {}, now, invokeCommand);
+      const response = deferred<unknown>();
+      const controller = new AbortController();
+      const confirmAccount = mock(async () => true);
+      const completion = redeemNativeOAuthGrant(
+        HANDOFF_GRANT,
+        { confirmAccount, signal: controller.signal },
+        () => response.promise
+      );
+      if (transition === "new attempt") {
+        await beginNativeOAuthAttempt(
+          API_URL,
+          {},
+          now,
+          nativeInvoke(calls, {
+            begin: beginResponse(SECOND_ATTEMPT_ID, "02".repeat(16), "cd".repeat(16))
+          })
+        );
+      } else if (transition === "abort") {
+        controller.abort();
+      } else {
+        now += PENDING_NATIVE_OAUTH_ATTEMPT_TTL_MS + 1;
+      }
+      response.resolve(await invokeCommand("native_oauth_redeem"));
+
+      expect(await completion).toBeNull();
+      expect(confirmAccount).not.toHaveBeenCalled();
+      expect(installCalls).toHaveLength(0);
+      expect(readPendingNativeOAuthAttempt()?.attemptId ?? null).toBe(
+        transition === "new attempt" ? SECOND_ATTEMPT_ID : null
+      );
+    });
+  }
+
+  test("expired attempts do not invoke native redemption", async () => {
+    const calls: InvokeCall[] = [];
+    await beginNativeOAuthAttempt(API_URL, {}, now, nativeInvoke(calls));
+    now += PENDING_NATIVE_OAUTH_ATTEMPT_TTL_MS + 1;
+
+    expect(
+      await redeemNativeOAuthGrant(HANDOFF_GRANT, APPROVE_ACCOUNT, nativeInvoke(calls))
+    ).toBeNull();
+    expect(calls).toHaveLength(1);
+    expect(readPendingNativeOAuthAttempt()).toBeNull();
+  });
+
+  test("aborting a redemption that subsequently fails remains a silent cancellation", async () => {
+    const calls: InvokeCall[] = [];
+    await beginNativeOAuthAttempt(API_URL, {}, now, nativeInvoke(calls));
+    const response = deferred<unknown>();
+    const controller = new AbortController();
+    const confirmAccount = mock(async () => true);
+    const completion = redeemNativeOAuthGrant(
+      HANDOFF_GRANT,
+      { confirmAccount, signal: controller.signal },
+      () => response.promise
+    );
+    controller.abort();
+    response.reject(new Error("Native request failed"));
+
+    expect(await completion).toBeNull();
+    expect(confirmAccount).not.toHaveBeenCalled();
+    expect(installCalls).toHaveLength(0);
+    expect(readPendingNativeOAuthAttempt()).toBeNull();
+  });
+
+  test("the remaining attempt lifetime bounds an unanswered confirmation", async () => {
+    const calls: InvokeCall[] = [];
+    await beginNativeOAuthAttempt(API_URL, {}, now, nativeInvoke(calls));
+    now += PENDING_NATIVE_OAUTH_ATTEMPT_TTL_MS - 20;
+    const decision = deferred<boolean>();
+    const confirmAccount = mock(() => decision.promise);
+
+    expect(
+      await redeemNativeOAuthGrant(HANDOFF_GRANT, { confirmAccount }, nativeInvoke(calls))
+    ).toBeNull();
+    expect(confirmAccount).toHaveBeenCalledTimes(1);
+    expect(installCalls).toHaveLength(0);
+    expect(readPendingNativeOAuthAttempt()).toBeNull();
+    decision.resolve(true);
+  });
+
+  test("a confirmation failure discards the result and does not retry", async () => {
+    const calls: InvokeCall[] = [];
+    await beginNativeOAuthAttempt(API_URL, {}, now, nativeInvoke(calls));
+
+    await expect(
+      redeemNativeOAuthGrant(
+        HANDOFF_GRANT,
+        {
+          confirmAccount: async () => {
+            throw new Error("Confirmation unavailable");
+          }
+        },
+        nativeInvoke(calls)
+      )
+    ).rejects.toThrow("Confirmation unavailable");
+    expect(installCalls).toHaveLength(0);
+    expect(readPendingNativeOAuthAttempt()).toBeNull();
+    expect(calls.filter((call) => call.command === "native_oauth_redeem")).toHaveLength(1);
+  });
+
+  test("a missing native account identity fails before confirmation", async () => {
+    const calls: InvokeCall[] = [];
+    await beginNativeOAuthAttempt(API_URL, {}, now, nativeInvoke(calls));
+    const confirmAccount = mock(async () => true);
+
+    await expect(
+      redeemNativeOAuthGrant(HANDOFF_GRANT, { confirmAccount }, async () => ({
+        userId: USER_ID,
+        accessToken: "access-token",
+        refreshToken: "refresh-token"
+      }))
+    ).rejects.toThrow("invalid account");
+    expect(confirmAccount).not.toHaveBeenCalled();
+    expect(installCalls).toHaveLength(0);
+  });
+
+  test("an account without an email is confirmed using its verified user ID", async () => {
+    const calls: InvokeCall[] = [];
+    await beginNativeOAuthAttempt(API_URL, {}, now, nativeInvoke(calls));
+    const confirmAccount = mock(async () => true);
+    await redeemNativeOAuthGrant(
+      HANDOFF_GRANT,
+      { confirmAccount },
+      nativeInvoke(calls, {
+        redeem: {
+          userId: USER_ID,
+          email: null,
+          accessToken: "access-token",
+          refreshToken: "refresh-token"
+        }
+      })
+    );
+
+    expect(confirmAccount).toHaveBeenCalledWith({ userId: USER_ID, email: null });
     expect(installCalls).toHaveLength(1);
   });
 
@@ -348,10 +667,14 @@ describe("native OAuth Transport V2 handoff", () => {
     });
     expect(readPendingNativeOAuthAttempt()?.next).toBeUndefined();
 
-    const completed = await redeemNativeOAuthGrant(HANDOFF_GRANT, nativeInvoke(calls));
-    expect(completed.next).toBeUndefined();
-    expect(completed.selectedPlan).toBe("team");
-    expect(completed.redemptionCode).toBe("kept-locally");
+    const completed = await redeemNativeOAuthGrant(
+      HANDOFF_GRANT,
+      APPROVE_ACCOUNT,
+      nativeInvoke(calls)
+    );
+    expect(completed?.next).toBeUndefined();
+    expect(completed?.selectedPlan).toBe("team");
+    expect(completed?.redemptionCode).toBe("kept-locally");
   });
 
   test("an older cancellation cannot remove a newer pending attempt", async () => {

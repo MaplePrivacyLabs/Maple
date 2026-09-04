@@ -1,13 +1,16 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { useOpenSecret } from "@mapleai/sdk";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Loader2 } from "lucide-react";
 import { AppleAuthProvider } from "@/components/AppleAuthProvider";
 import {
   claimTransportV2DesktopOAuthInitiation,
+  isCurrentDesktopOAuthTarget,
+  readTransportV2DesktopOAuth,
   isTransportV2PublicId,
   markTransportV2DesktopOAuth,
+  type TransportV2DesktopOAuthState,
   type DesktopOAuthProvider
 } from "@/services/desktopOAuthTransport";
 
@@ -51,9 +54,14 @@ function DesktopAuth() {
   const { provider, native_session_id, native_request_id } = search;
   const navigate = useNavigate();
   const os = useOpenSecret();
+  const currentOs = useRef(os);
+  const active = useRef(true);
+  currentOs.current = os;
 
   useEffect(() => {
+    active.current = true;
     const initiateAuth = async () => {
+      let target: TransportV2DesktopOAuthState | null = null;
       try {
         const handoffTarget = {
           provider,
@@ -65,6 +73,7 @@ function DesktopAuth() {
         // provider redirect; no native-local attempt or navigation state is
         // sent to the hosted application.
         markTransportV2DesktopOAuth(handoffTarget);
+        target = readTransportV2DesktopOAuth(provider);
 
         // For Apple, we don't need to do anything here - the AppleAuthProvider
         // component will handle the authentication flow with popup
@@ -72,7 +81,7 @@ function DesktopAuth() {
           return;
         }
 
-        // React StrictMode and context replacement can rerun this effect. A
+        // React StrictMode can reconnect this effect. A
         // particular prepared native request gets one hosted OAuth initiation;
         // retrying starts a fresh request in Maple.
         if (!claimTransportV2DesktopOAuthInitiation(handoffTarget)) {
@@ -82,18 +91,21 @@ function DesktopAuth() {
         // Initiate appropriate OAuth flow for GitHub and Google
         let auth_url;
         if (provider === "github") {
-          const result = await os.initiateGitHubAuth("");
+          const result = await currentOs.current.initiateGitHubAuth("");
           auth_url = result.auth_url;
         } else if (provider === "google") {
-          const result = await os.initiateGoogleAuth("");
+          const result = await currentOs.current.initiateGoogleAuth("");
           auth_url = result.auth_url;
         } else {
           throw new Error("Unsupported provider");
         }
 
-        // Redirect to the OAuth provider
-        window.location.href = auth_url;
+        // Late provider initiation cannot redirect a replaced or unmounted flow.
+        if (active.current && target && isCurrentDesktopOAuthTarget(target)) {
+          window.location.href = auth_url;
+        }
       } catch (error) {
+        if (!active.current || (target && !isCurrentDesktopOAuthTarget(target))) return;
         console.error(`Failed to initiate ${provider} login:`, error);
         // Redirect to login page on error
         navigate({ to: "/login" });
@@ -101,7 +113,10 @@ function DesktopAuth() {
     };
 
     initiateAuth();
-  }, [os, provider, native_session_id, native_request_id, navigate]);
+    return () => {
+      active.current = false;
+    };
+  }, [provider, native_session_id, native_request_id, navigate]);
 
   // Special handling for Apple OAuth - use popup instead of redirect
   if (provider === "apple") {

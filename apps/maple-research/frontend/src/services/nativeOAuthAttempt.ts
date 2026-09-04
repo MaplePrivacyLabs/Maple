@@ -18,10 +18,19 @@ export interface NativeOAuthBeginResponse {
   requestId: string;
 }
 
-interface NativeOAuthRedeemResponse {
+export interface NativeOAuthAccount {
   userId: string;
+  email: string | null;
+}
+
+interface NativeOAuthRedeemResponse extends NativeOAuthAccount {
   accessToken: string;
   refreshToken: string;
+}
+
+interface NativeOAuthConfirmationOptions {
+  confirmAccount: (account: NativeOAuthAccount) => Promise<boolean>;
+  signal?: AbortSignal;
 }
 
 export interface NativeOAuthNavigation {
@@ -218,45 +227,97 @@ export async function cancelNativeOAuthAttempt(
 
 export async function redeemNativeOAuthGrant(
   handoffGrant: string,
+  options: NativeOAuthConfirmationOptions,
   invokeCommand: InvokeCommand = invoke
-): Promise<PendingNativeOAuthAttempt> {
+): Promise<PendingNativeOAuthAttempt | null> {
   const pending = readPendingNativeOAuthAttempt();
   if (!pending) throw new Error("Native authentication is not pending; restart sign-in");
 
-  let response: NativeOAuthRedeemResponse;
+  const stillPending = () =>
+    !options.signal?.aborted &&
+    readPendingNativeOAuthAttempt()?.attemptId === pending.attemptId &&
+    isNativeOAuthAttemptCurrent(pending);
+  let response: NativeOAuthRedeemResponse | undefined;
   try {
+    if (!stillPending()) return null;
     response = (await invokeCommand("native_oauth_redeem", {
       request: { handoffGrant }
     })) as NativeOAuthRedeemResponse;
+
+    // Redemption is one-use. Only this function holds its credentials while
+    // the user checks the verified account; the dialog receives no tokens.
+    if (!stillPending()) return null;
+    if (
+      !response ||
+      typeof response.userId !== "string" ||
+      response.userId.length === 0 ||
+      (response.email !== null && typeof response.email !== "string") ||
+      typeof response.accessToken !== "string" ||
+      response.accessToken.length === 0 ||
+      typeof response.refreshToken !== "string" ||
+      response.refreshToken.length === 0
+    ) {
+      throw new Error("Native authentication returned an invalid account");
+    }
+    const approved = await confirmNativeOAuthAccount(
+      { userId: response.userId, email: response.email },
+      options,
+      pending.startedAt + PENDING_NATIVE_OAUTH_ATTEMPT_TTL_MS - Date.now()
+    );
+    if (!approved || !stillPending()) return null;
+
+    // The existing synchronous installer rechecks the original anonymous
+    // auth generation. A login/logout during confirmation cannot be replaced
+    // by this older result, even if the UI has not observed that change yet.
+    const installed = installNativeOAuthHandoffCredentials(
+      pending.apiUrl,
+      { accessToken: response.accessToken, refreshToken: response.refreshToken },
+      pending.expectedAuth,
+      response.userId
+    );
+    if (!installed.principalId) {
+      throw new Error("Native authentication did not establish an account");
+    }
+    return pending;
   } catch (error) {
-    // Invocation may have reached the enclave. Never reuse this prepared
-    // request after an ambiguous failure.
-    removePendingNativeOAuthAttempt(pending.attemptId);
+    if (options.signal?.aborted) return null;
     throw error;
-  }
-
-  // A new attempt can begin while the native redemption is in flight. Do not
-  // let the older result authenticate the browser or erase the newer local
-  // navigation state.
-  if (readPendingNativeOAuthAttempt()?.attemptId !== pending.attemptId) {
-    throw new Error("Native authentication state changed while the request was in flight");
-  }
-
-  const installed = installNativeOAuthHandoffCredentials(
-    pending.apiUrl,
-    { accessToken: response.accessToken, refreshToken: response.refreshToken },
-    pending.expectedAuth,
-    response.userId
-  );
-  if (!installed.principalId) {
+  } finally {
+    // Drop our references on approval, cancellation, expiry, or failure. JS
+    // strings cannot be reliably zeroized; nothing is persisted before approval.
+    response = undefined;
+    // An ambiguous native failure also consumes the local attempt. Never
+    // resend it, and never erase a newer attempt's navigation state.
     removePendingNativeOAuthAttempt(pending.attemptId);
-    throw new Error("Native authentication did not establish an account");
   }
-  // Credential installation and local-state removal are synchronous, so no
-  // second browser task can interleave here. A storage failure leaves a stale,
-  // non-secret marker that is ignored once the user is authenticated.
-  removePendingNativeOAuthAttempt(pending.attemptId);
-  return pending;
+}
+
+function isNativeOAuthAttemptCurrent(attempt: PendingNativeOAuthAttempt, now = Date.now()) {
+  const age = now - attempt.startedAt;
+  return Number.isSafeInteger(now) && age >= 0 && age <= PENDING_NATIVE_OAUTH_ATTEMPT_TTL_MS;
+}
+
+async function confirmNativeOAuthAccount(
+  account: NativeOAuthAccount,
+  options: NativeOAuthConfirmationOptions,
+  remainingMs: number
+): Promise<boolean> {
+  if (options.signal?.aborted || remainingMs <= 0) return false;
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  let onAbort: (() => void) | undefined;
+  try {
+    return await new Promise<boolean>((resolve, reject) => {
+      onAbort = () => resolve(false);
+      options.signal?.addEventListener("abort", onAbort, { once: true });
+      timeout = setTimeout(() => resolve(false), remainingMs);
+      Promise.resolve()
+        .then(() => (options.signal?.aborted ? false : options.confirmAccount(account)))
+        .then(resolve, reject);
+    });
+  } finally {
+    if (timeout !== undefined) clearTimeout(timeout);
+    if (onAbort) options.signal?.removeEventListener("abort", onAbort);
+  }
 }
 
 export function authorizeNativeOAuthCallback(
@@ -267,8 +328,7 @@ export function authorizeNativeOAuthCallback(
   const attempt = readPendingNativeOAuthAttempt();
   if (!attempt) return "missing_or_expired_attempt";
 
-  const age = now - attempt.startedAt;
-  if (!Number.isSafeInteger(now) || age < 0 || age > PENDING_NATIVE_OAUTH_ATTEMPT_TTL_MS) {
+  if (!isNativeOAuthAttemptCurrent(attempt, now)) {
     removePendingNativeOAuthAttempt(attempt.attemptId);
     return "missing_or_expired_attempt";
   }

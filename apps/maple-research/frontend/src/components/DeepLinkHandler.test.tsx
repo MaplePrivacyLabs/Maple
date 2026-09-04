@@ -113,6 +113,7 @@ type PendingNativeOAuthAttempt = import("@/services/nativeOAuthAttempt").Pending
 const { beginNativeOAuthAttempt, readPendingNativeOAuthAttempt } =
   await import("@/services/nativeOAuthAttempt");
 const { DeepLinkHandler } = await import("./DeepLinkHandler");
+const { NativeOAuthAccountConfirmation } = await import("./NativeOAuthAccountConfirmation");
 
 class MemoryStorage implements Storage {
   private readonly values = new Map<string, string>();
@@ -188,6 +189,7 @@ describe("DeepLinkHandler native auth callbacks", () => {
       if (command === "native_oauth_redeem") {
         return {
           userId: USER_ID,
+          email: "verified@example.com",
           accessToken: "incoming-access",
           refreshToken: "incoming-refresh"
         };
@@ -259,10 +261,45 @@ describe("DeepLinkHandler native auth callbacks", () => {
     return pending;
   }
 
-  test("redeems an exact grant-only callback and uses locally retained navigation", async () => {
+  async function startDeepLink(payload: string): Promise<{ completion: Promise<void> }> {
+    let completion: Promise<void> = Promise.resolve();
+    await act(async () => {
+      completion = Promise.resolve(deepLinkListener?.({ payload }));
+      await Promise.resolve();
+    });
+    return { completion };
+  }
+
+  async function decideAccount(approved: boolean, completion: Promise<void>): Promise<void> {
+    await act(async () => {
+      renderer?.root.findByType(NativeOAuthAccountConfirmation).props.onDecision(approved);
+      await completion;
+    });
+  }
+
+  async function approveDeepLink(payload: string): Promise<void> {
+    const { completion } = await startDeepLink(payload);
+    await decideAccount(true, completion);
+  }
+
+  test("shows the verified account and waits for approval before installation and navigation", async () => {
     await prepareAttempt({ next: "/settings/security" });
 
+    const { completion } = await startDeepLink(
+      `cloud.opensecret.maple://auth?handoff_grant=${VALID_GRANT}`
+    );
+
+    expect(renderer?.root.findByType(NativeOAuthAccountConfirmation).props.account).toEqual({
+      userId: USER_ID,
+      email: "verified@example.com"
+    });
+    expect(sharedState().installCalls).toHaveLength(0);
+    expect(location.href).toBe("tauri://localhost/");
+    expect(JSON.stringify(readPendingNativeOAuthAttempt())).not.toContain("incoming-access");
     await flushDeepLink(`cloud.opensecret.maple://auth?handoff_grant=${VALID_GRANT}`);
+    expect(nativeCalls).toHaveLength(1);
+
+    await decideAccount(true, completion);
 
     expect(nativeCalls).toEqual([
       {
@@ -273,6 +310,54 @@ describe("DeepLinkHandler native auth callbacks", () => {
     expect(sharedState().installCalls).toHaveLength(1);
     expect(readPendingNativeOAuthAttempt()).toBeNull();
     expect(location.href).toBe("/settings/security");
+  });
+
+  test("cancelling the account confirmation discards the result without signing in", async () => {
+    await prepareAttempt();
+    const payload = `cloud.opensecret.maple://auth?handoff_grant=${VALID_GRANT}`;
+    const { completion } = await startDeepLink(payload);
+    await decideAccount(false, completion);
+
+    expect(sharedState().installCalls).toHaveLength(0);
+    expect(readPendingNativeOAuthAttempt()).toBeNull();
+    expect(renderer?.root.findAllByType(NativeOAuthAccountConfirmation)).toHaveLength(0);
+    expect(location.href).toBe("tauri://localhost/");
+    await flushDeepLink(payload);
+    expect(nativeCalls).toHaveLength(1);
+  });
+
+  test("unmounting while confirmation is open discards the result", async () => {
+    await prepareAttempt();
+    const { completion } = await startDeepLink(
+      `cloud.opensecret.maple://auth?handoff_grant=${VALID_GRANT}`
+    );
+    await act(async () => {
+      renderer?.unmount();
+      renderer = null;
+      await completion;
+    });
+    expect(sharedState().installCalls).toHaveLength(0);
+    expect(readPendingNativeOAuthAttempt()).toBeNull();
+    expect(location.href).toBe("tauri://localhost/");
+  });
+
+  test("another sign-in while confirmation is open cancels the pending approval", async () => {
+    await prepareAttempt();
+    const { completion } = await startDeepLink(
+      `cloud.opensecret.maple://auth?handoff_grant=${VALID_GRANT}`
+    );
+    sharedState().currentUser = { id: "another-account" };
+    await act(async () => {
+      renderer?.update(
+        <NotificationProvider>
+          <DeepLinkHandler tauri />
+        </NotificationProvider>
+      );
+    });
+    await act(async () => await completion);
+    expect(sharedState().installCalls).toHaveLength(0);
+    expect(renderer?.root.findAllByType(NativeOAuthAccountConfirmation)).toHaveLength(0);
+    expect(location.href).toBe("tauri://localhost/");
   });
 
   test("rejects legacy credentials, extra state, and malformed auth envelopes without consuming pending state", async () => {
@@ -334,12 +419,16 @@ describe("DeepLinkHandler native auth callbacks", () => {
     expect(nativeCalls).toHaveLength(1);
     releaseRedemption?.({
       userId: USER_ID,
+      email: "verified@example.com",
       accessToken: "incoming-access",
       refreshToken: "incoming-refresh"
     });
     await act(async () => {
-      await Promise.all([first, duplicate]);
+      await duplicate;
+      await Promise.resolve();
     });
+
+    await decideAccount(true, Promise.resolve(first));
 
     expect(nativeCalls).toHaveLength(1);
     expect(location.href).toBe("/settings");
@@ -349,7 +438,7 @@ describe("DeepLinkHandler native auth callbacks", () => {
     await prepareAttempt({ next: "/settings" });
     sharedState().installFailure = new Error("Transport V2 authority changed");
 
-    await flushDeepLink(`cloud.opensecret.maple://auth?handoff_grant=${VALID_GRANT}`);
+    await approveDeepLink(`cloud.opensecret.maple://auth?handoff_grant=${VALID_GRANT}`);
 
     expect(nativeCalls).toHaveLength(1);
     expect(sharedState().installCalls).toHaveLength(1);
@@ -384,6 +473,7 @@ describe("DeepLinkHandler native auth callbacks", () => {
     );
     releaseRedemption?.({
       userId: USER_ID,
+      email: "verified@example.com",
       accessToken: "stale-access",
       refreshToken: "stale-refresh"
     });
@@ -394,7 +484,7 @@ describe("DeepLinkHandler native auth callbacks", () => {
 
     expect(sharedState().installCalls).toHaveLength(0);
     expect(location.href).toBe("tauri://localhost/");
-    expect(JSON.stringify(renderer?.toJSON())).toContain("Sign-in could not be completed");
+    expect(renderer?.root.findAllByType(NativeOAuthAccountConfirmation)).toHaveLength(0);
   });
 
   test("keeps plan and redemption navigation out of the callback", async () => {
@@ -403,7 +493,7 @@ describe("DeepLinkHandler native auth callbacks", () => {
     expect(callback).not.toContain("team");
     expect(callback).not.toContain("local%20code");
 
-    await flushDeepLink(callback);
+    await approveDeepLink(callback);
 
     expect(location.href).toBe("/pricing?selected_plan=team%20annual");
   });
