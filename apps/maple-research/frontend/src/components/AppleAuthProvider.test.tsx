@@ -5,6 +5,7 @@ import {
   createMemoryHistory,
   createRootRoute,
   createRouter,
+  Outlet,
   RouterProvider
 } from "@tanstack/react-router";
 
@@ -102,6 +103,7 @@ mock.module("@mapleai/sdk", () => ({
 
 const { initBillingService } = await import("@/billing/billingService");
 const { AppleAuthProvider } = await import("./AppleAuthProvider");
+const { RootRuntimeLayout } = await import("./RootRuntimeLayout");
 const { Route: callbackRoute } = await import("@/routes/auth.$provider.callback");
 const { Route: desktopRoute } = await import("@/routes/desktop-auth");
 
@@ -542,55 +544,97 @@ describe("AppleAuthProvider", () => {
     });
   }
 
-  test("Apple desktop page does not recreate a cancelled target on SDK context updates", async () => {
-    const { readTransportV2DesktopOAuth } = await import("@/services/desktopOAuthTransport");
-    let publish!: (value: Record<string, unknown>) => void;
-    function SdkProvider({ children }: { children: ReactNode }) {
-      const [value, setValue] = useState(currentOpenSecret);
-      publish = setValue;
-      return (
-        <TestOpenSecretContext.Provider value={value}>{children}</TestOpenSecretContext.Provider>
-      );
-    }
-    const rootRoute = createRootRoute();
-    const route = desktopRoute.update({
-      getParentRoute: () => rootRoute,
-      path: "/desktop-auth"
-    } as never);
-    const router = createRouter({
-      routeTree: rootRoute.addChildren([route]),
-      history: createMemoryHistory({
-        initialEntries: [
-          `/desktop-auth?provider=apple&transport=v2&native_session_id=${"01".repeat(16)}&native_request_id=${"ab".repeat(16)}`
-        ]
-      })
-    });
-    await router.load();
-    await act(async () => {
-      renderer = create(
-        <SdkProvider>
-          <RouterProvider router={router} />
-        </SdkProvider>
-      );
-    });
-    const attempt = await startAttempt();
-    await act(async () => {
-      attempt.control.resolve({ authorization: { code: "native-code", state: "state-one" } });
-      await attempt.completion;
-    });
-    await act(async () => {
-      renderer!.root
+  for (const decision of ["approve", "cancel"] as const) {
+    test(`Apple desktop confirmation survives authentication through the root layout and can ${decision}`, async () => {
+      const { readTransportV2DesktopOAuth } = await import("@/services/desktopOAuthTransport");
+      const confirmedAuth = currentOpenSecret.auth;
+      currentOpenSecret.auth = { user: undefined };
+      let publish!: (value: Record<string, unknown>) => void;
+      handleAppleCallback.mockImplementation(async () => {
+        await Promise.resolve();
+        publish({ ...currentOpenSecret, auth: confirmedAuth });
+      });
+      function SdkProvider({ children }: { children: ReactNode }) {
+        const [value, setValue] = useState(currentOpenSecret);
+        publish = setValue;
+        return (
+          <TestOpenSecretContext.Provider value={value}>{children}</TestOpenSecretContext.Provider>
+        );
+      }
+      function AuthRoot() {
+        const value = useContext(TestOpenSecretContext)!;
+        const auth = value.auth as { user?: { user: { id: string } } };
+        return (
+          <RootRuntimeLayout
+            userId={auth.user?.user.id ?? null}
+            pathname="/desktop-auth"
+            authenticatedHome={null}
+            accountScopedUi={null}
+            routeContent={<Outlet />}
+          />
+        );
+      }
+      const rootRoute = createRootRoute({ component: AuthRoot });
+      const route = desktopRoute.update({
+        getParentRoute: () => rootRoute,
+        path: "/desktop-auth"
+      } as never);
+      const router = createRouter({
+        routeTree: rootRoute.addChildren([route]),
+        history: createMemoryHistory({
+          initialEntries: [
+            `/desktop-auth?provider=apple&transport=v2&native_session_id=${"01".repeat(16)}&native_request_id=${"ab".repeat(16)}`
+          ]
+        })
+      });
+      await router.load();
+      await act(async () => {
+        renderer = create(
+          <SdkProvider>
+            <RouterProvider router={router} />
+          </SdkProvider>
+        );
+      });
+      const attempt = await startAttempt();
+      await act(async () => {
+        attempt.control.resolve({ authorization: { code: "native-code", state: "state-one" } });
+        await attempt.completion;
+      });
+      expect(handleAppleCallback).toHaveBeenCalledTimes(1);
+      expect(JSON.stringify(renderer?.toJSON())).toContain("alice@example.com");
+      expect(readTransportV2DesktopOAuth()).not.toBeNull();
+      expect(mintNativeHandoffGrant).not.toHaveBeenCalled();
+      const approve = renderer!.root
         .findAllByType("button")
-        .find((button) => button.props.children === "Cancel")!
-        .props.onClick();
+        .find((button) => button.props.children === "Continue to Maple")!.props.onClick;
+      await act(async () => {
+        if (decision === "approve") {
+          await approve();
+        } else {
+          renderer!.root
+            .findAllByType("button")
+            .find((button) => button.props.children === "Cancel")!
+            .props.onClick();
+        }
+        await approve();
+      });
+      expect(readTransportV2DesktopOAuth()).toBeNull();
+      await act(async () => {
+        publish({ ...currentOpenSecret, auth: confirmedAuth });
+      });
+      expect(readTransportV2DesktopOAuth()).toBeNull();
+      if (decision === "approve") {
+        expect(mintNativeHandoffGrant).toHaveBeenCalledTimes(1);
+        expect(mintNativeHandoffGrant).toHaveBeenCalledWith("01".repeat(16), "ab".repeat(16));
+        expect(window.location.href).toBe(
+          "cloud.opensecret.maple://auth?handoff_grant=aaa.bbb.ccc"
+        );
+      } else {
+        expect(mintNativeHandoffGrant).not.toHaveBeenCalled();
+        expect(window.location.href).toBe("https://trymaple.ai/login");
+      }
     });
-    expect(readTransportV2DesktopOAuth()).toBeNull();
-    await act(async () => {
-      publish({ ...currentOpenSecret });
-    });
-    expect(readTransportV2DesktopOAuth()).toBeNull();
-    expect(mintNativeHandoffGrant).not.toHaveBeenCalled();
-  });
+  }
 
   for (const outcome of ["resolve", "reject"] as const) {
     test(`ignores a replaced desktop initiation's late ${outcome}`, async () => {

@@ -309,18 +309,24 @@ function readState(apiOrigin: string): PersistedState {
   return parseState(raw, apiOrigin);
 }
 
-function commitState(state: PersistedState, requirePersistentWrite = false): void {
+function commitState(
+  state: PersistedState,
+  persistence: "best-effort" | "cleanup" | "native" = "best-effort"
+): void {
   const encoded = JSON.stringify(state);
   if (new TextEncoder().encode(encoded).byteLength > MAX_STORED_STATE_BYTES) {
     throw new Error("Transport v2 authentication state exceeds its storage limit.");
   }
   const key = storageKey(state.api_origin);
-  if (!requirePersistentWrite) {
+  if (persistence === "best-effort") {
     writeBlob(key, encoded);
     return;
   }
 
   const persistent = persistentStorageResult();
+  if (persistence === "native" && persistent.kind !== "available") {
+    throw new Error("Transport v2 native credential installation requires persistent storage.");
+  }
   if (persistent.kind === "access_error") {
     throw new Error("Transport v2 credential cleanup could not access persistent storage.");
   }
@@ -333,10 +339,13 @@ function commitState(state: PersistedState, requirePersistentWrite = false): voi
   const storage = persistent.storage;
   flushPendingRemovals(storage);
   try {
-    // A destructive clear must not report success while an older credential
-    // remains durable and can reappear after restart.
+    // Required commits must reach durable storage before publishing process
+    // memory or notifying authentication listeners.
     storage.setItem(key, encoded);
   } catch {
+    if (persistence === "native") {
+      throw new Error("Transport v2 native credential installation could not be persisted.");
+    }
     throw new Error("Transport v2 credential cleanup could not be persisted.");
   }
   memoryBlobs.set(key, encoded);
@@ -560,11 +569,46 @@ export function installTransportV2Credentials(
   refreshToken: string,
   expected?: TransportV2AuthSnapshot
 ): StoredTransportV2Credentials {
+  return installCredentials(apiUrl, kind, accessToken, refreshToken, expected);
+}
+
+/** @internal Native handoffs must persist credentials together with their validated root. */
+export function installPersistedTransportV2Credentials(
+  apiUrl: string,
+  kind: TransportV2AuthKind,
+  accessToken: string,
+  refreshToken: string,
+  expected: TransportV2AuthSnapshot,
+  cacheNamespaceRootBase64: string
+): StoredTransportV2Credentials {
+  const root = decodeCanonicalBase64(cacheNamespaceRootBase64, CACHE_ROOT_BYTES);
+  root.fill(0);
+  return installCredentials(
+    apiUrl,
+    kind,
+    accessToken,
+    refreshToken,
+    expected,
+    cacheNamespaceRootBase64
+  );
+}
+
+function installCredentials(
+  apiUrl: string,
+  kind: TransportV2AuthKind,
+  accessToken: string,
+  refreshToken: string,
+  expected?: TransportV2AuthSnapshot,
+  persistentCacheRoot?: string
+): StoredTransportV2Credentials {
   const apiOrigin = canonicalizeTransportV2ApiOrigin(apiUrl);
   const hints = validatedCredentials(kind, accessToken, refreshToken);
   const state = readState(apiOrigin);
   if (expected && !snapshotMatchesState(expected, state)) {
     throw new TransportV2AuthorityChangedError();
+  }
+  if (persistentCacheRoot !== undefined && state.cache_namespace_root !== persistentCacheRoot) {
+    throw new Error("Transport v2 native cache root changed before credential installation.");
   }
   const previousPrincipal = credentialsFromSlot(apiOrigin, kind, state[kind])?.principalId ?? null;
   const revision = nextRevision(state[kind].revision);
@@ -572,7 +616,7 @@ export function installTransportV2Credentials(
     revision,
     credentials: { access_token: accessToken, refresh_token: refreshToken }
   };
-  commitState(state);
+  commitState(state, persistentCacheRoot === undefined ? "best-effort" : "native");
   clearLegacyCredentials();
   if (previousPrincipal !== hints.access.principalId) notifyInvalidated(apiOrigin, kind);
   return {
@@ -601,7 +645,7 @@ export function clearTransportV2CredentialsIfCurrent(expected: TransportV2AuthSn
     revision: nextRevision(state[expected.kind].revision),
     credentials: null
   };
-  commitState(state, true);
+  commitState(state, "cleanup");
   clearLegacyCredentials();
   if (hadCredentials) notifyInvalidated(apiOrigin, expected.kind);
   return true;
@@ -629,7 +673,7 @@ export function clearTransportV2Credentials(apiUrl: string, kind?: TransportV2Au
       credentials: null
     };
   }
-  commitState(state, true);
+  commitState(state, "cleanup");
   clearLegacyCredentials();
   if (corrupted) {
     notifyInvalidated(apiOrigin, "user");
