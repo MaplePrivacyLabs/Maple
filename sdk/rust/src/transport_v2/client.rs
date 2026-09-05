@@ -237,6 +237,7 @@ impl TransportV2Client {
 
     /// Allocate a one-time request ID and synchronously seal one logical
     /// request. No network work or other await point occurs here.
+    #[cfg(test)]
     pub(crate) fn seal(
         &self,
         session: &TransportV2Session,
@@ -252,6 +253,29 @@ impl TransportV2Client {
         prepared: PreparedRequestId,
         request: LogicalRequest,
     ) -> Result<SealedRequest> {
+        let plaintext = request.encode()?;
+        drop(request);
+        self.seal_encoded_with_id(session, prepared, &plaintext)
+    }
+
+    /// Seal captured logical bytes under a fresh one-use request ID. Keeping
+    /// the encoded request permits bounded recovery without re-reading input
+    /// bodies, credentials, headers, or the cache namespace root.
+    pub(crate) fn seal_encoded(
+        &self,
+        session: &TransportV2Session,
+        plaintext: &[u8],
+    ) -> Result<SealedRequest> {
+        let prepared = session.prepare_request_id()?;
+        self.seal_encoded_with_id(session, prepared, plaintext)
+    }
+
+    fn seal_encoded_with_id(
+        &self,
+        session: &TransportV2Session,
+        prepared: PreparedRequestId,
+        plaintext: &[u8],
+    ) -> Result<SealedRequest> {
         if session.is_expired() {
             return Err(TransportV2Error::SessionExpired);
         }
@@ -259,10 +283,7 @@ impl TransportV2Client {
             return Err(TransportV2Error::InvalidRequest);
         }
         let request_id = prepared.request_id;
-        let plaintext = request.encode()?;
-        drop(request);
-        let encrypted = session.secrets.encrypt_request(request_id, &plaintext)?;
-        drop(plaintext);
+        let encrypted = session.secrets.encrypt_request(request_id, plaintext)?;
         let response_opener = session.secrets.response_opener(request_id)?;
         debug_assert!(encrypted.len() >= MIN_REQUEST_RECORD_BYTES);
 
@@ -287,6 +308,9 @@ impl TransportV2Client {
             .send()
             .await
             .map_err(TransportV2Error::Http)?;
+        if let Some(hint) = session_recovery_hint(response.status(), response.headers()) {
+            return Err(TransportV2Error::SessionRecoveryHint(hint));
+        }
         if response.status() != reqwest::StatusCode::OK
             || exact_content_type(response.headers()) != Some(REQUEST_CONTENT_TYPE)
         {
@@ -347,6 +371,36 @@ fn validate_attested_transcript(
         .ok_or(TransportV2Error::AttestationRejected)?
         .try_into()
         .map_err(|_| TransportV2Error::AttestationRejected)
+}
+
+const ERROR_CONTRACT_HEADER: &str = "x-opensecret-error-contract";
+const ERROR_CODE_HEADER: &str = "x-opensecret-error-code";
+
+fn session_recovery_hint(
+    status: reqwest::StatusCode,
+    headers: &reqwest::header::HeaderMap,
+) -> Option<super::SessionRecoveryHint> {
+    use super::SessionRecoveryHint;
+
+    if status != reqwest::StatusCode::BAD_REQUEST
+        || exact_header(headers, ERROR_CONTRACT_HEADER) != Some("1")
+    {
+        return None;
+    }
+    match exact_header(headers, ERROR_CODE_HEADER)? {
+        "session_not_found" => Some(SessionRecoveryHint::SessionNotFound),
+        "request_decryption_failed" => Some(SessionRecoveryHint::RequestDecryptionFailed),
+        _ => None,
+    }
+}
+
+fn exact_header<'a>(headers: &'a reqwest::header::HeaderMap, name: &str) -> Option<&'a str> {
+    let mut values = headers.get_all(name).iter();
+    let value = values.next()?.to_str().ok()?;
+    if values.next().is_some() {
+        return None;
+    }
+    Some(value)
 }
 
 fn exact_content_type(headers: &reqwest::header::HeaderMap) -> Option<&str> {
@@ -505,6 +559,7 @@ mod tests {
         requests: Arc<StdMutex<Vec<serde_json::Value>>>,
         request_ids: Arc<StdMutex<Vec<String>>>,
         request_bodies: Arc<StdMutex<Vec<Bytes>>>,
+        request_plaintexts: Arc<StdMutex<Vec<Bytes>>>,
     }
 
     struct TestLogicalResponse {
@@ -522,6 +577,7 @@ mod tests {
                 requests: Arc::new(StdMutex::new(Vec::new())),
                 request_ids: Arc::new(StdMutex::new(Vec::new())),
                 request_bodies: Arc::new(StdMutex::new(Vec::new())),
+                request_plaintexts: Arc::new(StdMutex::new(Vec::new())),
             }
         }
 
@@ -574,9 +630,24 @@ mod tests {
             self.request_bodies.lock().unwrap().clone()
         }
 
+        pub(crate) fn captured_request_plaintexts(&self) -> Vec<Bytes> {
+            self.request_plaintexts.lock().unwrap().clone()
+        }
+
         pub(crate) fn request_responder(&self) -> RequestResponder {
             RequestResponder {
                 state: self.clone(),
+                transform: None,
+            }
+        }
+
+        pub(crate) fn request_responder_with_wire_transform(
+            &self,
+            transform: fn(Vec<u8>) -> Vec<u8>,
+        ) -> RequestResponder {
+            RequestResponder {
+                state: self.clone(),
+                transform: Some(transform),
             }
         }
     }
@@ -589,6 +660,7 @@ mod tests {
 
     pub(crate) struct RequestResponder {
         state: TestV2ServerState,
+        transform: Option<fn(Vec<u8>) -> Vec<u8>>,
     }
 
     impl Respond for SessionResponder {
@@ -658,6 +730,11 @@ mod tests {
                 .clone()
                 .expect("test session was established before its request");
             let (request_id, plaintext) = open_request_for_test(&secrets, &request.body);
+            self.state
+                .request_plaintexts
+                .lock()
+                .unwrap()
+                .push(Bytes::copy_from_slice(&plaintext));
             let metadata_length = u32::from_be_bytes(
                 plaintext[..4]
                     .try_into()
@@ -707,12 +784,75 @@ mod tests {
                 sequence,
                 &[3],
             ));
+            if let Some(transform) = self.transform {
+                wire = transform(wire);
+            }
             let response_template = ResponseTemplate::new(200)
                 .insert_header("content-type", REQUEST_CONTENT_TYPE)
                 .set_body_bytes(wire);
             match response.delay {
                 Some(delay) => response_template.set_delay(delay),
                 None => response_template,
+            }
+        }
+    }
+
+    #[test]
+    fn recovery_hint_requires_exact_single_contract_and_code_headers() {
+        use super::super::SessionRecoveryHint;
+        let mut headers = header::HeaderMap::new();
+        for (code, expected) in [
+            ("session_not_found", SessionRecoveryHint::SessionNotFound),
+            (
+                "request_decryption_failed",
+                SessionRecoveryHint::RequestDecryptionFailed,
+            ),
+        ] {
+            headers.insert(ERROR_CONTRACT_HEADER, "1".parse().unwrap());
+            headers.insert(ERROR_CODE_HEADER, code.parse().unwrap());
+            assert_eq!(
+                session_recovery_hint(reqwest::StatusCode::BAD_REQUEST, &headers),
+                Some(expected)
+            );
+            for status in [200, 401, 403, 404, 409, 429, 500, 503] {
+                assert_eq!(
+                    session_recovery_hint(reqwest::StatusCode::from_u16(status).unwrap(), &headers),
+                    None
+                );
+            }
+            for name in [ERROR_CONTRACT_HEADER, ERROR_CODE_HEADER] {
+                let valid = headers[name].clone();
+                for invalid in [
+                    "",
+                    " ",
+                    "1, 1",
+                    "session_not_found,session_not_found",
+                    "SESSION_NOT_FOUND",
+                    "request_authentication_failed",
+                ] {
+                    headers.insert(name, invalid.parse().unwrap());
+                    assert_eq!(
+                        session_recovery_hint(reqwest::StatusCode::BAD_REQUEST, &headers),
+                        None
+                    );
+                }
+                headers.insert(name, header::HeaderValue::from_bytes(&[0xff]).unwrap());
+                assert_eq!(
+                    session_recovery_hint(reqwest::StatusCode::BAD_REQUEST, &headers),
+                    None
+                );
+                headers.remove(name);
+                assert_eq!(
+                    session_recovery_hint(reqwest::StatusCode::BAD_REQUEST, &headers),
+                    None
+                );
+                headers.insert(name, valid.clone());
+                headers.append(name, valid.clone());
+                assert_eq!(
+                    session_recovery_hint(reqwest::StatusCode::BAD_REQUEST, &headers),
+                    None
+                );
+                headers.insert(name, valid);
             }
         }
     }

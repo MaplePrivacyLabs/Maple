@@ -54,6 +54,30 @@ The SDKs use operating-system or Web Crypto randomness for keys, nonces, and
 session material. Never substitute deterministic or convenience randomness in
 production paths.
 
+### Transport V2 session recovery
+
+Managed SDK requests can resend the original logical operation once after a
+fresh, verified attestation handshake, only on outer HTTP `400` with exactly
+`x-opensecret-error-contract: 1` and `x-opensecret-error-code` equal to
+`session_not_found` or `request_decryption_failed`. The backend marks only an
+actually missing/expired session or failed AEAD authentication of the incoming
+request, before application dispatch. The resend uses a new session and request
+ID and applies to mutations and inference as well as reads.
+
+These outer hints are unauthenticated. As with V1's best-effort recovery, an
+intermediary can forge one after the original operation executed and cause a
+duplicate under the new session. Per-session replay protection does not
+guarantee cross-session at-most-once execution; use application-level
+idempotency when needed.
+
+Response decryption/framing failures, network failures, timeouts, partial
+streams, redirects, generic `400`/`503`, and ordinary application errors do not
+trigger automatic resend. Prepared native-handoff redemption and session-bound
+OAuth callbacks require restarting their flows. There is no V1 fallback, and
+credentials remain inside encrypted requests. Token refresh remains proactive
+and coalesced; an authenticated expired-access response may refresh credentials
+for future operations without resending the failed operation.
+
 ## TypeScript/React SDK
 
 Install the package:

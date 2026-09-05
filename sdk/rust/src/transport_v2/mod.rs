@@ -12,6 +12,14 @@ use thiserror::Error;
 
 pub(crate) const ROUTING_KEY_HEADER: &str = "x-opensecret-routing-key";
 
+/// An unauthenticated outer hint that permits one managed-client recovery.
+/// It is not proof that the original request was never dispatched.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SessionRecoveryHint {
+    SessionNotFound,
+    RequestDecryptionFailed,
+}
+
 /// Stable, redacted failures from the private transport engine.
 #[derive(Debug, Error)]
 pub(crate) enum TransportV2Error {
@@ -37,6 +45,8 @@ pub(crate) enum TransportV2Error {
     Authentication,
     #[error("transport-v2 outer response is untrusted")]
     UntrustedOuterResponse,
+    #[error("transport-v2 outer response requested session recovery: {0:?}")]
+    SessionRecoveryHint(SessionRecoveryHint),
     #[error("transport-v2 HTTP exchange failed: {0}")]
     Http(#[source] reqwest::Error),
     #[error("transport-v2 response frame is invalid")]

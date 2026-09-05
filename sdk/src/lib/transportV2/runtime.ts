@@ -5,14 +5,26 @@ import {
   type TransportV2ClientOptions
 } from "./client";
 import {
+  MAX_REQUEST_BODY_BYTES,
   TransportV2ProtocolError,
   encodeCanonicalBase64,
+  encodeRequestEnvelope,
   utf8,
   type TransportV2Request
 } from "./protocol";
-import type { SerializedTransportV2Session, TransportV2LogicalResponse } from "./session";
+import {
+  TransportV2UntrustedRecoveryHint,
+  type SerializedTransportV2Session,
+  type TransportV2LogicalResponse
+} from "./session";
 
 const OAUTH_CONTINUATION_PREFIX = "opensecret:transport-v2:oauth-session:v1:";
+const NON_REPLAYABLE_AUTH_TARGETS = new Set([
+  "/auth/github/callback",
+  "/auth/google/callback",
+  "/auth/apple/callback",
+  "/auth/native-handoff/redeem"
+]);
 
 export type TransportV2OAuthProvider = "github" | "google" | "apple";
 
@@ -242,6 +254,25 @@ function defaultDependencies(): TransportV2RuntimeDependencies {
   };
 }
 
+function snapshotRequest(request: TransportV2Request): TransportV2Request {
+  if (request.body && request.body.byteLength > MAX_REQUEST_BODY_BYTES) {
+    throw new TransportV2ProtocolError("Transport v2 request body is too large.");
+  }
+  // Reuse the envelope's metadata bounds before cloning, without allocating
+  // a second body-sized buffer just for validation.
+  encodeRequestEnvelope({ ...request, body: undefined }).fill(0);
+  return {
+    method: request.method,
+    target: request.target,
+    credential: request.credential ? { ...request.credential } : undefined,
+    cacheNamespaceRoot: request.cacheNamespaceRoot
+      ? new Uint8Array(request.cacheNamespaceRoot)
+      : undefined,
+    headers: request.headers?.map(({ name, value }) => ({ name, value })),
+    body: request.body === undefined ? undefined : new Uint8Array(request.body)
+  };
+}
+
 /**
  * Process-local owner of attested cryptographic sessions. Authentication is
  * deliberately not session state: each credential remains inside its own
@@ -423,38 +454,64 @@ export class TransportV2Runtime {
 
   async request(input: TransportV2RuntimeRequest): Promise<TransportV2RuntimeResponse> {
     const identity = this.#identity(input.apiUrl, input.pcrConfig);
-    let client: TransportV2Client;
-    if (input.oauthCallback) {
-      client = this.#takeOAuth(
-        identity.apiUrl,
-        identity.serializedPolicy,
-        input.oauthCallback.provider,
-        input.oauthCallback.state
-      );
-      this.#invalidateScope(identity.scope);
-      this.#clients.set(identity.scope, client);
-    } else {
-      client = await this.#clientFor(identity.apiUrl, identity.policy, input.signal);
-    }
-
-    this.#retain(client);
-    let logical: TransportV2LogicalResponse;
+    // Freeze every logical value and authority callback before establishment
+    // or a compatibility repair can await. Only transport keys and IDs change.
+    const request = snapshotRequest(input.request);
+    const { signal, beforeSend } = input;
+    const oauthCallback = input.oauthCallback ? { ...input.oauthCallback } : undefined;
+    const sessionBound =
+      oauthCallback !== undefined ||
+      NON_REPLAYABLE_AUTH_TARGETS.has(request.target.split("?", 1)[0]);
     try {
-      logical = await client.request(input.request, input.signal, input.beforeSend);
-    } catch (error) {
-      this.#retire(identity.scope, client);
-      // A failed or ambiguous send is never replayed. The next independent
-      // operation may establish a fresh session.
-      throw error;
+      signal?.throwIfAborted();
+      let client: TransportV2Client;
+      if (oauthCallback) {
+        client = this.#takeOAuth(
+          identity.apiUrl,
+          identity.serializedPolicy,
+          oauthCallback.provider,
+          oauthCallback.state
+        );
+        this.#invalidateScope(identity.scope);
+        this.#clients.set(identity.scope, client);
+      } else {
+        client = await this.#clientFor(identity.apiUrl, identity.policy, signal);
+      }
+
+      let logical: TransportV2LogicalResponse;
+      for (let attempt = 0; ; attempt += 1) {
+        this.#retain(client);
+        try {
+          logical = await client.request(request, signal, beforeSend);
+          break;
+        } catch (error) {
+          this.#retire(identity.scope, client);
+          if (
+            attempt !== 0 ||
+            sessionBound ||
+            !(error instanceof TransportV2UntrustedRecoveryHint)
+          ) {
+            throw error;
+          }
+          // One V1-compatible repair is allowed for an exact outer hint. The
+          // hint is untrusted: this trades duplicate-execution risk for recovery.
+          // Network, response authentication, and stream failures never enter it.
+        } finally {
+          this.#release(client);
+        }
+        signal?.throwIfAborted();
+        client = await this.#clientFor(identity.apiUrl, identity.policy, signal);
+      }
+      const response = await toFetchResponse(logical);
+      return {
+        response,
+        rememberOAuthContinuation: (provider, state) =>
+          this.#rememberOAuth(client, identity.apiUrl, identity.serializedPolicy, provider, state)
+      };
     } finally {
-      this.#release(client);
+      request.body?.fill(0);
+      request.cacheNamespaceRoot?.fill(0);
     }
-    const response = await toFetchResponse(logical);
-    return {
-      response,
-      rememberOAuthContinuation: (provider, state) =>
-        this.#rememberOAuth(client, identity.apiUrl, identity.serializedPolicy, provider, state)
-    };
   }
 
   async sessionInfo(apiUrl: string, pcrConfig?: PcrConfig): Promise<TransportV2SessionInfo> {

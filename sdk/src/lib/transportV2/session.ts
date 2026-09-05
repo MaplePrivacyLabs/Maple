@@ -22,6 +22,33 @@ import {
 const OUTER_CONTENT_TYPE = "application/octet-stream";
 const SESSION_EXPIRY_SKEW_MS = 30_000;
 
+export type TransportV2RecoveryCode = "session_not_found" | "request_decryption_failed";
+
+/** An unauthenticated compatibility hint, never proof that an operation did not execute. */
+export class TransportV2UntrustedRecoveryHint extends TransportV2ProtocolError {
+  constructor(readonly code: TransportV2RecoveryCode) {
+    super(`Transport v2 returned an unauthenticated ${code} recovery hint.`);
+    this.name = "TransportV2UntrustedRecoveryHint";
+  }
+}
+
+function untrustedRecoveryHint(response: Response): TransportV2UntrustedRecoveryHint | undefined {
+  if (
+    response.status !== 400 ||
+    response.redirected ||
+    response.headers.get("x-opensecret-error-contract") !== "1"
+  ) {
+    return undefined;
+  }
+  // Fetch combines duplicate header fields with commas, which exact matching
+  // rejects along with missing, future, and status-mismatched error codes.
+  const code = response.headers.get("x-opensecret-error-code");
+  if (code === "session_not_found" || code === "request_decryption_failed") {
+    return new TransportV2UntrustedRecoveryHint(code);
+  }
+  return undefined;
+}
+
 export interface SerializedTransportV2Session {
   version: 2;
   session_id: string;
@@ -370,7 +397,9 @@ export class TransportV2Session {
       response.headers.get("content-type") !== OUTER_CONTENT_TYPE ||
       !response.body
     ) {
+      const recoveryHint = untrustedRecoveryHint(response);
       await response.body?.cancel("unauthenticated transport-v2 outer response").catch(() => {});
+      if (recoveryHint) throw recoveryHint;
       throw new TransportV2ProtocolError(
         "Transport v2 returned an unauthenticated outer response."
       );

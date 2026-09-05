@@ -247,7 +247,7 @@ async function authorityFor(
 /**
  * Creates an attested Transport V2 fetch adapter for OpenAI-compatible calls.
  * Set the OpenAI client to `maxRetries: 0`; this adapter additionally refuses
- * a nonzero Stainless retry before a second enclave request can be sent.
+ * a nonzero Stainless retry before another SDK operation can be sent.
  */
 export function createCustomFetch(
   options?: CustomFetchOptions
