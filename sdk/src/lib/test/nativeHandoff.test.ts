@@ -3,7 +3,10 @@ import { mintNativeHandoffGrantWithCall, parseNativeHandoffGrantResponse, setApi
 import {
   TransportV2AuthorityChangedError,
   installTransportV2Credentials,
-  readTransportV2Credentials
+  isTransportV2AuthSnapshotCurrent,
+  readTransportV2Credentials,
+  snapshotTransportV2Auth,
+  subscribeTransportV2AuthInvalidation
 } from "../transportV2/auth";
 import {
   installNativeOAuthHandoffCredentials,
@@ -122,6 +125,118 @@ describe("native Transport V2 authentication bridge", () => {
     expect(readNativeUserAuth(API_URL)).toMatchObject({
       principalId: "newer-user",
       credentials: newer
+    });
+  });
+
+  test("a failed native credential write leaves anonymous authority intact after storage recovers", () => {
+    const prepared = prepareNativeOAuthHandoff(API_URL);
+    const before = readNativeUserAuth(API_URL);
+    const snapshot = snapshotTransportV2Auth(API_URL, "user");
+    const originalStorage = globalThis.localStorage;
+    const credentials = userCredentials("uncommitted-user");
+    let invalidations = 0;
+    const unsubscribe = subscribeTransportV2AuthInvalidation(API_URL, "user", () => {
+      invalidations += 1;
+    });
+    Object.defineProperty(globalThis, "localStorage", {
+      configurable: true,
+      value: {
+        getItem: (key: string) => originalStorage.getItem(key),
+        removeItem: (key: string) => originalStorage.removeItem(key),
+        setItem(): never {
+          throw new Error("fixture storage quota exceeded");
+        }
+      } as Storage
+    });
+    try {
+      expect(() =>
+        installNativeOAuthHandoffCredentials(
+          API_URL,
+          credentials,
+          prepared.expectedAuth,
+          "uncommitted-user"
+        )
+      ).toThrow("native credential installation could not be persisted");
+      expect(readTransportV2Credentials(API_URL, "user")).toBeNull();
+      expect(isTransportV2AuthSnapshotCurrent(snapshot)).toBe(true);
+      expect(readNativeUserAuth(API_URL)).toEqual(before);
+      expect(invalidations).toBe(0);
+    } finally {
+      Object.defineProperty(globalThis, "localStorage", {
+        configurable: true,
+        value: originalStorage
+      });
+      unsubscribe();
+    }
+
+    // Reads after storage recovery must not flush a rejected credential pair.
+    expect(readTransportV2Credentials(API_URL, "user")).toBeNull();
+    expect(snapshotTransportV2Auth(API_URL, "user")).toEqual(snapshot);
+    expect(readNativeUserAuth(API_URL)).toEqual(before);
+    expect(prepareNativeOAuthHandoff(API_URL)).toEqual(prepared);
+  });
+
+  test("publishes a native install only after persistence without a fallible post-commit read", () => {
+    const prepared = prepareNativeOAuthHandoff(API_URL);
+    const originalStorage = globalThis.localStorage;
+    const credentials = userCredentials("committed-user");
+    let writtenState: Record<string, unknown> | undefined;
+    let invalidations = 0;
+    const unsubscribe = subscribeTransportV2AuthInvalidation(API_URL, "user", () => {
+      expect(writtenState).toMatchObject({
+        cache_namespace_root: prepared.cacheNamespaceRootBase64,
+        user: {
+          revision: 1,
+          credentials: {
+            access_token: credentials.accessToken,
+            refresh_token: credentials.refreshToken
+          }
+        }
+      });
+      invalidations += 1;
+    });
+    Object.defineProperty(globalThis, "localStorage", {
+      configurable: true,
+      value: {
+        getItem(key: string): string | null {
+          if (writtenState) throw new Error("fixture read failure after commit");
+          return originalStorage.getItem(key);
+        },
+        removeItem: (key: string) => originalStorage.removeItem(key),
+        setItem(key: string, value: string) {
+          originalStorage.setItem(key, value);
+          writtenState = JSON.parse(value);
+        }
+      } as Storage
+    });
+    try {
+      expect(
+        installNativeOAuthHandoffCredentials(
+          API_URL,
+          credentials,
+          prepared.expectedAuth,
+          "committed-user"
+        )
+      ).toEqual({
+        apiOrigin: "https://api.example.test",
+        revision: 1,
+        principalId: "committed-user",
+        credentials,
+        cacheNamespaceRootBase64: prepared.cacheNamespaceRootBase64
+      });
+      expect(invalidations).toBe(1);
+    } finally {
+      Object.defineProperty(globalThis, "localStorage", {
+        configurable: true,
+        value: originalStorage
+      });
+      unsubscribe();
+    }
+
+    expect(readNativeUserAuth(API_URL)).toMatchObject({
+      principalId: "committed-user",
+      credentials,
+      cacheNamespaceRootBase64: prepared.cacheNamespaceRootBase64
     });
   });
 

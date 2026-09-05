@@ -3,7 +3,7 @@ import {
   TransportV2AuthorityChangedError,
   canonicalizeTransportV2ApiOrigin,
   getOrCreatePersistedTransportV2CacheRoot,
-  installTransportV2Credentials,
+  installPersistedTransportV2Credentials,
   readTransportV2Credentials,
   snapshotTransportV2Auth,
   transportV2CredentialPrincipalHint,
@@ -190,12 +190,25 @@ export function installNativeOAuthHandoffCredentials(
   if (apiOrigin !== expected.apiOrigin) {
     throw new TransportV2AuthorityChangedError();
   }
-  installTransportV2Credentials(
+  const cacheNamespaceRootBase64 = canonicalCacheRoot(apiOrigin);
+  const installed = installPersistedTransportV2Credentials(
     apiOrigin,
     "user",
     credentials.accessToken,
     credentials.refreshToken,
-    expected
+    expected,
+    cacheNamespaceRootBase64
   );
-  return readNativeUserAuth(apiOrigin);
+  // All fallible storage reads precede the commit. Returning its snapshot
+  // cannot turn a published authority into a reported installation failure.
+  return {
+    apiOrigin,
+    revision: installed.revision,
+    principalId: installed.principalId,
+    credentials: {
+      accessToken: installed.accessToken,
+      refreshToken: installed.refreshToken
+    },
+    cacheNamespaceRootBase64
+  };
 }
