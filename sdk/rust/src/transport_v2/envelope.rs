@@ -188,7 +188,7 @@ impl LogicalRequest {
         Ok(())
     }
 
-    pub(super) fn encode(&self) -> Result<Zeroizing<Vec<u8>>> {
+    pub(crate) fn encode(&self) -> Result<Zeroizing<Vec<u8>>> {
         self.validate()?;
         let metadata = RequestMetadata {
             version: VERSION,

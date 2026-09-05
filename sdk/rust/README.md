@@ -12,7 +12,7 @@ Maple Rust SDK for the OpenSecret backend: secure AI APIs, encrypted sessions, a
 - 🔐 **Nitro Attestation**: Verify server identity through AWS Nitro Enclaves
 - 🔑 **End-to-End Encryption**: All API calls encrypted with session keys
 - 👤 **Authentication**: Support for both email-based and guest users
-- 🔄 **Token Management**: Proactive, coalesced refresh without request replay
+- 🔄 **Token Management**: Proactive, coalesced refresh
 - ↔️ **Lossless Inference Transport**: Provider-specific request and response fields pass through as raw bytes
 - 🛡️ **Secure by Default**: No plaintext data transmission
 
@@ -103,8 +103,8 @@ must use HTTPS.
 `send_inference_request` is the lossless inference API. The caller owns the
 HTTP method, route, query, headers, body bytes, and response parsing; the SDK
 owns attestation, authentication, encryption, and response decryption. It does
-not parse or rewrite inference parameters such as `stream`, and it never
-automatically resends an original request:
+not parse or rewrite inference parameters such as `stream`. Its only automatic
+resend is the bounded session recovery described below:
 
 ```rust
 use bytes::Bytes;
@@ -144,6 +144,28 @@ including multipart boundaries.
 API keys can also be supplied per request with
 `send_inference_request_with_api_key`. The key is encrypted inside that one
 logical request and is not installed as mutable client state.
+
+### Session recovery and retry limits
+
+Managed requests, including inference and mutations, permit one resend after a
+fresh, verified attestation handshake only on outer HTTP `400` with exactly
+`x-opensecret-error-contract: 1` and `x-opensecret-error-code` equal to
+`session_not_found` or `request_decryption_failed`. The server marks only an
+actually missing/expired session or incoming-request AEAD authentication
+failure before dispatch. The resend uses a new session and request ID.
+
+This is V1-equivalent best-effort recovery: an intermediary can forge these
+unauthenticated hints after the original operation executed. The new session's
+replay set cannot prevent duplicate execution across sessions; operations that
+need at-most-once execution require application-level idempotency.
+
+Client-side response decryption/framing failures, network failures, timeouts,
+partial streams, redirects, generic `400`/`503`, and application errors are not
+automatically retried. Prepared native handoffs and session-bound OAuth
+callbacks require a new flow instead of recovery under a new session. There is
+no V1 fallback or plaintext credential resend. Proactive token refresh is
+separate; an expired-access response can refresh future credentials without
+resending the failed operation.
 
 ## Provider cache continuity
 
@@ -263,8 +285,11 @@ uses the token's untrusted `exp` claim only as a timing hint and coalesces a
 refresh when it is within 30 seconds of expiry. A refresh failure prevents that
 new call from being sent. Transient, outer-transport, or AEAD failures preserve
 stored credentials; only an authenticated 401 or 403 from the refresh request
-clears them. A request that was already sent is never replayed after refresh,
-reattestation, or any other recovery attempt.
+clears them. Token refresh does not resend an operation that was already sent,
+and ambiguous network or response-authentication failures do not trigger a
+resend. The sole exception is the one fresh-session resend on an exact marked
+outer `400` described in [Session recovery and retry limits](#session-recovery-and-retry-limits);
+reattestation alone is not permission to replay a request.
 
 ## Error Handling
 

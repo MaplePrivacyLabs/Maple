@@ -87,6 +87,19 @@ A timeout before response headers returns HTTP 504. After headers have been
 forwarded, a timeout terminates the response body with an error. Timed-out
 requests are not automatically retried.
 
+The underlying Rust SDK permits one session-recovery resend, including for
+inference, after a fresh verified handshake only on outer HTTP `400` with
+exactly `x-opensecret-error-contract: 1` and `x-opensecret-error-code` equal to
+`session_not_found` or `request_decryption_failed`. The backend marks only a
+missing/expired session or incoming-request AEAD authentication failure before
+dispatch. These hints are unauthenticated: an intermediary can forge one after
+execution and cause a duplicate in the new session. This V1-equivalent
+best-effort behavior does not guarantee cross-session at-most-once execution.
+Response decryption/framing failures, network failures, timeouts, partial
+streams, generic `400`/`503`, redirects, and application errors do not trigger
+resends. There is no V1 fallback or plaintext credential resend. See the
+[Rust SDK retry limits](../sdk/rust/README.md#session-recovery-and-retry-limits).
+
 `MAPLE_CACHE_NAMESPACE_ROOT` is a client-side secret used to keep Tinfoil
 provider-cache entries stable across proxy restarts. Generate it once with
 `openssl rand -base64 32`, store the canonical padded base64 output in your

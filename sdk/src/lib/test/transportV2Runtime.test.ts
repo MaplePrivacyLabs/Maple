@@ -338,7 +338,7 @@ describe("Transport V2 runtime", () => {
     });
   });
 
-  test("never resends a failed or ambiguous operation and replaces its session only later", async () => {
+  test("never resends an ambiguous connection failure and replaces its session only later", async () => {
     let applicationSends = 0;
     let firstDisposed = false;
     const first = fakeClient("11111111111111111111111111111111", async () => {

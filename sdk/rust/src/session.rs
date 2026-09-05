@@ -20,6 +20,7 @@ pub(crate) struct CredentialSnapshot {
 /// copy. The comparison is made while holding the credential read lock, and
 /// the admission closure runs under that same lock.
 pub(crate) enum CredentialFence<'a> {
+    Generation { generation: u64 },
     AccessToken { generation: u64, value: &'a str },
     ApiKey { generation: u64, value: &'a str },
     RefreshToken { generation: u64, value: &'a str },
@@ -192,6 +193,13 @@ impl SessionManager {
         })
     }
 
+    pub(crate) fn credential_generation(&self) -> Result<u64> {
+        self.credentials
+            .read()
+            .map(|credentials| credentials.generation)
+            .map_err(|_| Error::Authentication("Credential state is unavailable".to_string()))
+    }
+
     pub(crate) fn anonymous_generation(&self) -> Result<u64> {
         let credentials = self.credentials.read().map_err(|e| {
             Error::Authentication(format!("Failed to acquire credentials read lock: {}", e))
@@ -223,6 +231,7 @@ impl SessionManager {
             Error::Authentication(format!("Failed to acquire credentials read lock: {}", e))
         })?;
         let is_current = match fence {
+            CredentialFence::Generation { generation } => credentials.generation == generation,
             CredentialFence::AccessToken { generation, value } => {
                 credentials.token_generation == generation
                     && credentials
