@@ -14,7 +14,7 @@ use axum::{
 use std::sync::Arc;
 use tower::ServiceBuilder;
 use tower_http::{
-    cors::{Any, CorsLayer},
+    cors::{AllowHeaders, Any, CorsLayer},
     trace::{DefaultMakeSpan, DefaultOnResponse, TraceLayer},
 };
 use tracing::Level;
@@ -53,7 +53,9 @@ pub(crate) fn create_app_with_state(config: Config, state: Arc<ProxyState>) -> R
             CorsLayer::new()
                 .allow_origin(Any)
                 .allow_methods([Method::GET, Method::POST, Method::OPTIONS])
-                .allow_headers(Any),
+                // Fetch requires Authorization to be allowed explicitly;
+                // a wildcard does not admit the caller key required in CORS mode.
+                .allow_headers(AllowHeaders::mirror_request()),
         );
     }
 

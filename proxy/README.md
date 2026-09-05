@@ -79,6 +79,14 @@ export MAPLE_REQUEST_TIMEOUT_SECS=300          # Backend request timeout
 export MAPLE_STREAM_IDLE_TIMEOUT_SECS=300      # Streaming idle timeout between chunks
 ```
 
+Both timeout defaults are five minutes. `MAPLE_REQUEST_TIMEOUT_SECS` covers
+sending a request through completion of a non-streaming response body. For SSE,
+it covers response setup; once the stream starts, `MAPLE_STREAM_IDLE_TIMEOUT_SECS`
+limits the wait for each next chunk without imposing a total stream duration.
+A timeout before response headers returns HTTP 504. After headers have been
+forwarded, a timeout terminates the response body with an error. Timed-out
+requests are not automatically retried.
+
 `MAPLE_CACHE_NAMESPACE_ROOT` is a client-side secret used to keep Tinfoil
 provider-cache entries stable across proxy restarts. Generate it once with
 `openssl rand -base64 32`, store the canonical padded base64 output in your
