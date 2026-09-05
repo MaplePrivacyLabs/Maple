@@ -12,7 +12,7 @@ use maple_sdk::{
     TransportV2CacheNamespaceRoot,
 };
 use std::{collections::HashSet, io, pin::Pin, sync::Arc, time::Duration};
-use tokio::sync::OnceCell;
+use tokio::{sync::OnceCell, time::Instant};
 use tracing::{debug, error, warn};
 
 type ProxyError = (StatusCode, Json<OpenAIError>);
@@ -188,8 +188,9 @@ pub(crate) async fn proxy_openai_request(
     let transport = state.transport().await?;
     let request = build_upstream_request(method, uri, &headers, body);
     let request_timeout = state.config.request_timeout();
-    let response = tokio::time::timeout(
-        request_timeout,
+    let request_deadline = tokio::time::sleep(request_timeout).deadline();
+    let response = tokio::time::timeout_at(
+        request_deadline,
         transport.send_inference_request_with_api_key(request, api_key),
     )
     .await
@@ -199,6 +200,7 @@ pub(crate) async fn proxy_openai_request(
     Ok(build_downstream_response(
         response,
         state.config.stream_idle_timeout(),
+        request_deadline,
     ))
 }
 
@@ -277,15 +279,28 @@ fn transport_error_response(operation: &str, error: &impl std::fmt::Display) -> 
 fn build_downstream_response(
     response: http::Response<OpenSecretResponseBody>,
     stream_idle_timeout: Duration,
+    request_deadline: Instant,
 ) -> Response {
     let (parts, body) = response.into_parts();
-    let mut response = Response::new(Body::from_stream(stream_with_idle_timeout(
+    // V2 returns at authenticated Start, before the body completes. Ordinary
+    // responses retain the original request deadline; SSE uses only idle time.
+    let request_deadline = (!is_event_stream(&parts.headers)).then_some(request_deadline);
+    let mut response = Response::new(Body::from_stream(stream_with_timeouts(
         body,
         stream_idle_timeout,
+        request_deadline,
     )));
     *response.status_mut() = parts.status;
     copy_safe_response_headers(&parts.headers, response.headers_mut());
     response
+}
+
+fn is_event_stream(headers: &HeaderMap) -> bool {
+    headers
+        .get(header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.split(';').next())
+        .is_some_and(|value| value.trim().eq_ignore_ascii_case("text/event-stream"))
 }
 
 fn copy_safe_response_headers(source: &HeaderMap, destination: &mut HeaderMap) {
@@ -317,26 +332,36 @@ fn is_unsafe_response_header(name: &HeaderName) -> bool {
     )
 }
 
-fn stream_with_idle_timeout(
+fn stream_with_timeouts(
     mut stream: OpenSecretResponseBody,
     stream_idle_timeout: Duration,
+    request_deadline: Option<Instant>,
 ) -> Pin<Box<dyn Stream<Item = Result<Bytes, io::Error>> + Send>> {
     Box::pin(async_stream::stream! {
         loop {
-            let chunk_result = match tokio::time::timeout(stream_idle_timeout, stream.next()).await {
-                Ok(Some(chunk_result)) => chunk_result,
-                Ok(None) => break,
-                Err(_) => {
-                    error!(
-                        "OpenSecret response stream idle timed out after {} seconds",
-                        stream_idle_timeout.as_secs()
-                    );
+            let idle_deadline = tokio::time::sleep(stream_idle_timeout).deadline();
+            let (deadline, message) = match request_deadline {
+                Some(deadline) if deadline <= idle_deadline =>
+                    (deadline, "Maple backend request timed out"),
+                _ => (idle_deadline, "Maple backend response stream timed out"),
+            };
+            let chunk_result = tokio::select! {
+                // An expired total deadline wins even if buffered body data is
+                // ready, including when the downstream consumer resumes late.
+                biased;
+                _ = tokio::time::sleep_until(deadline) => {
+                    error!("{message}");
+                    drop(stream);
                     yield Err(io::Error::new(
                         io::ErrorKind::TimedOut,
-                        "Maple backend response stream timed out",
+                        message,
                     ));
                     break;
-                }
+                },
+                chunk = stream.next() => match chunk {
+                    Some(chunk_result) => chunk_result,
+                    None => break,
+                },
             };
 
             match chunk_result {
@@ -358,7 +383,13 @@ mod tests {
         body::to_bytes,
         http::{HeaderValue, Request as AxumRequest},
     };
-    use std::{collections::VecDeque, sync::Mutex};
+    use std::{
+        collections::VecDeque,
+        sync::{
+            atomic::{AtomicBool, Ordering},
+            Mutex,
+        },
+    };
     use tower::ServiceExt;
 
     fn test_config() -> Config {
@@ -379,6 +410,7 @@ mod tests {
     struct MockTransport {
         requests: Mutex<Vec<(String, Request<Bytes>)>>,
         responses: Mutex<VecDeque<OpenSecretResult<http::Response<OpenSecretResponseBody>>>>,
+        start_delay: Duration,
     }
 
     impl MockTransport {
@@ -386,6 +418,7 @@ mod tests {
             Self {
                 requests: Mutex::new(Vec::new()),
                 responses: Mutex::new(responses.into()),
+                start_delay: Duration::ZERO,
             }
         }
 
@@ -407,7 +440,12 @@ mod tests {
                 .unwrap()
                 .pop_front()
                 .expect("a mock response for every request");
-            Box::pin(async move { response })
+            Box::pin(async move {
+                if !self.start_delay.is_zero() {
+                    tokio::time::sleep(self.start_delay).await;
+                }
+                response
+            })
         }
     }
 
@@ -627,7 +665,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn response_start_timeout_is_gateway_timeout() {
         let mut config = test_config();
         config.default_api_key = Some("default-key".to_string());
@@ -648,6 +686,174 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::GATEWAY_TIMEOUT);
+    }
+
+    struct DropMarker(Arc<AtomicBool>);
+
+    impl Drop for DropMarker {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::SeqCst);
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn very_large_configured_timeouts_preserve_ready_responses() {
+        let transport = Arc::new(MockTransport::new(vec![Ok(raw_response(
+            StatusCode::OK,
+            &[("content-type", "application/json")],
+            vec![Bytes::from_static(b"{}")],
+        ))]));
+        let config = test_config()
+            .with_api_key("fixture-key".into())
+            .with_request_timeout_secs(u64::MAX)
+            .with_stream_idle_timeout_secs(u64::MAX);
+        let state = Arc::new(ProxyState::with_transport(config.clone(), transport));
+        let response = crate::create_app_with_state(config, state)
+            .oneshot(
+                AxumRequest::builder()
+                    .uri("/v1/models")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(to_bytes(response.into_body(), 1024).await.unwrap(), "{}");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn non_streaming_body_uses_original_request_deadline_and_drops_without_retry() {
+        let dropped = Arc::new(AtomicBool::new(false));
+        let guard = DropMarker(Arc::clone(&dropped));
+        let body: OpenSecretResponseBody = Box::pin(async_stream::stream! {
+            let _guard = guard;
+            tokio::time::sleep(Duration::from_millis(600)).await;
+            yield Ok(Bytes::from_static(b"{}"));
+        });
+        let mut upstream = http::Response::new(body);
+        upstream
+            .headers_mut()
+            .insert(header::CONTENT_TYPE, "application/json".parse().unwrap());
+        let mut transport = MockTransport::new(vec![Ok(upstream)]);
+        transport.start_delay = Duration::from_millis(600);
+        let transport = Arc::new(transport);
+        // Short test-only durations on a paused clock; production defaults stay 300s.
+        let config = test_config()
+            .with_api_key("fixture-key".into())
+            .with_request_timeout_secs(1)
+            .with_stream_idle_timeout_secs(5);
+        let state = Arc::new(ProxyState::with_transport(
+            config.clone(),
+            transport.clone(),
+        ));
+        let started = Instant::now();
+        let response = crate::create_app_with_state(config, state)
+            .oneshot(
+                AxumRequest::builder()
+                    .uri("/v1/models")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(started.elapsed() >= Duration::from_millis(600));
+        assert!(to_bytes(response.into_body(), 1024).await.is_err());
+        assert!(started.elapsed() >= Duration::from_secs(1));
+        assert!(started.elapsed() < Duration::from_millis(1200));
+        assert!(dropped.load(Ordering::SeqCst));
+        assert_eq!(transport.take_requests().len(), 1);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn timely_non_streaming_chunks_do_not_extend_the_total_deadline() {
+        let dropped = Arc::new(AtomicBool::new(false));
+        let guard = DropMarker(Arc::clone(&dropped));
+        let body: OpenSecretResponseBody = Box::pin(async_stream::stream! {
+            let _guard = guard;
+            loop {
+                tokio::time::sleep(Duration::from_millis(300)).await;
+                yield Ok(Bytes::from_static(b"chunk"));
+            }
+        });
+        let mut stream = stream_with_timeouts(
+            body,
+            Duration::from_secs(5),
+            Some(Instant::now() + Duration::from_secs(1)),
+        );
+        for _ in 0..3 {
+            assert_eq!(stream.next().await.unwrap().unwrap(), "chunk");
+        }
+        let error = stream.next().await.unwrap().unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+        // Upstream is released before yielding the error, even if the caller stops polling.
+        assert!(dropped.load(Ordering::SeqCst));
+        assert!(stream.next().await.is_none());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn expired_deadline_rejects_ready_body_when_consumer_resumes() {
+        let body: OpenSecretResponseBody =
+            Box::pin(futures::stream::iter([Ok(Bytes::from_static(b"ready"))]));
+        let mut stream = stream_with_timeouts(
+            body,
+            Duration::from_secs(5),
+            Some(Instant::now() + Duration::from_secs(1)),
+        );
+        tokio::time::advance(Duration::from_secs(2)).await;
+        assert_eq!(
+            stream.next().await.unwrap().unwrap_err().kind(),
+            io::ErrorKind::TimedOut
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn sse_remains_incremental_beyond_request_deadline() {
+        let body: OpenSecretResponseBody = Box::pin(async_stream::stream! {
+            for chunk in [b"data: first\n\n".as_slice(), b"data: second\n\n", b"data: [DONE]\n\n"] {
+                tokio::time::sleep(Duration::from_millis(600)).await;
+                yield Ok(Bytes::from_static(chunk));
+            }
+        });
+        let mut upstream = http::Response::new(body);
+        upstream.headers_mut().insert(
+            header::CONTENT_TYPE,
+            "Text/Event-Stream ; charset=utf-8".parse().unwrap(),
+        );
+        let started = Instant::now();
+        let response = build_downstream_response(
+            upstream,
+            Duration::from_secs(1),
+            started + Duration::from_secs(1),
+        );
+        let mut stream = response.into_body().into_data_stream();
+        assert_eq!(stream.next().await.unwrap().unwrap(), "data: first\n\n");
+        assert!(started.elapsed() < Duration::from_secs(1));
+        assert_eq!(stream.next().await.unwrap().unwrap(), "data: second\n\n");
+        assert_eq!(stream.next().await.unwrap().unwrap(), "data: [DONE]\n\n");
+        assert!(started.elapsed() > Duration::from_secs(1));
+        assert!(stream.next().await.is_none());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn dropping_downstream_body_releases_pending_upstream() {
+        let dropped = Arc::new(AtomicBool::new(false));
+        let guard = DropMarker(Arc::clone(&dropped));
+        let body: OpenSecretResponseBody = Box::pin(async_stream::stream! {
+            let _guard = guard;
+            yield Ok(Bytes::from_static(b"first"));
+            std::future::pending::<()>().await;
+        });
+        let response = build_downstream_response(
+            http::Response::new(body),
+            Duration::from_secs(300),
+            Instant::now() + Duration::from_secs(300),
+        );
+        let mut body = response.into_body().into_data_stream();
+        assert_eq!(body.next().await.unwrap().unwrap(), "first");
+        drop(body);
+        assert!(dropped.load(Ordering::SeqCst));
     }
 
     #[tokio::test]
@@ -746,7 +952,7 @@ mod tests {
     async fn response_stream_reports_idle_timeout() {
         let backend_stream: OpenSecretResponseBody =
             Box::pin(futures::stream::pending::<OpenSecretResult<Bytes>>());
-        let mut stream = stream_with_idle_timeout(backend_stream, Duration::from_millis(1));
+        let mut stream = stream_with_timeouts(backend_stream, Duration::from_millis(1), None);
 
         let error = tokio::time::timeout(Duration::from_secs(1), stream.next())
             .await
