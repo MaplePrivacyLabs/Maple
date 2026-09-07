@@ -746,6 +746,20 @@ pub trait DBConnection {
 
     // Delete operation for user messages
     fn delete_user_message(&self, id: Uuid, user_id: Uuid) -> Result<(), DBError>;
+
+    // Recovery wrap helpers
+    fn get_recovery_wrap(&self, user_id: Uuid) -> Result<Option<UserSeedWrapping>, DBError>;
+    fn insert_recovery_wrap_if_absent(
+        &self,
+        new_wrapping: NewUserSeedWrapping,
+    ) -> Result<UserSeedWrapping, DBError>;
+    fn replace_recovery_wrap_if_unchanged(
+        &self,
+        old_wrapping: &UserSeedWrapping,
+        new_wrapping: NewUserSeedWrapping,
+    ) -> Result<UserSeedWrapping, DBError>;
+    fn delete_recovery_wrap_for_user(&self, user_id: Uuid) -> Result<usize, DBError>;
+    fn recovery_wrap_exists(&self, user_id: Uuid) -> Result<bool, DBError>;
 }
 
 pub(crate) struct PostgresConnection {
@@ -2981,6 +2995,92 @@ impl DBConnection for PostgresConnection {
         // First get the message by UUID to find its ID
         let msg = UserMessage::get_by_uuid_and_user(conn, id, user_id)?;
         UserMessage::delete_by_id_and_user(conn, msg.id, user_id).map_err(DBError::from)
+    }
+
+    // Recovery wrap helpers
+    fn get_recovery_wrap(&self, user_id: Uuid) -> Result<Option<UserSeedWrapping>, DBError> {
+        let conn = &mut self.db.get().map_err(|_| DBError::ConnectionError)?;
+        let wraps = UserSeedWrapping::get_for_user_and_kind(conn, user_id, CredentialKind::Recovery.as_str())
+            .map_err(DBError::from)?;
+        Ok(wraps.into_iter().next())
+    }
+
+    fn insert_recovery_wrap_if_absent(
+        &self,
+        new_wrapping: NewUserSeedWrapping,
+    ) -> Result<UserSeedWrapping, DBError> {
+        let conn = &mut self.db.get().map_err(|_| DBError::ConnectionError)?;
+        conn.transaction::<_, DBError, _>(|conn| {
+            let existing = UserSeedWrapping::get_for_user_and_kind(
+                conn,
+                new_wrapping.user_id,
+                CredentialKind::Recovery.as_str(),
+            )
+            .map_err(DBError::from)?;
+            if existing.into_iter().next().is_some() {
+                return Err(DBError::StaleCredentialState);
+            }
+            new_wrapping.insert(conn).map_err(|e| match e {
+                UserSeedWrappingError::DatabaseError(diesel::result::Error::DatabaseError(
+                    diesel::result::DatabaseErrorKind::UniqueViolation,
+                    _,
+                )) => DBError::StaleCredentialState,
+                other => DBError::from(other),
+            })
+        })
+    }
+
+    fn replace_recovery_wrap_if_unchanged(
+        &self,
+        old_wrapping: &UserSeedWrapping,
+        new_wrapping: NewUserSeedWrapping,
+    ) -> Result<UserSeedWrapping, DBError> {
+        let conn = &mut self.db.get().map_err(|_| DBError::ConnectionError)?;
+        conn.transaction::<_, DBError, _>(|conn| {
+            let current = UserSeedWrapping::get_for_user_and_kind(
+                conn,
+                old_wrapping.user_id,
+                CredentialKind::Recovery.as_str(),
+            )
+            .map_err(DBError::from)?;
+
+            let current = current.into_iter().next();
+            match current {
+                Some(existing) if existing.id == old_wrapping.id => {
+                    // The `id` check above is a soft guard; the conditional DELETE below is the
+                    // actual CAS -- it only removes the exact row we think we’re replacing. If
+                    // another transaction already replaced or deleted it, the count will be 0
+                    // and we return StaleCredentialState instead of clobbering a newer wrap.
+                    use crate::models::schema::user_seed_wrappings;
+                    let deleted = diesel::delete(
+                        user_seed_wrappings::table
+                            .filter(user_seed_wrappings::user_id.eq(old_wrapping.user_id))
+                            .filter(user_seed_wrappings::id.eq(old_wrapping.id))
+                            .filter(
+                                user_seed_wrappings::credential_kind
+                                    .eq(CredentialKind::Recovery.as_str()),
+                            ),
+                    )
+                    .execute(conn)
+                    .map_err(DBError::from)?;
+                    if deleted != 1 {
+                        return Err(DBError::StaleCredentialState);
+                    }
+                    new_wrapping.insert(conn).map_err(DBError::from)
+                }
+                _ => Err(DBError::StaleCredentialState),
+            }
+        })
+    }
+
+    fn delete_recovery_wrap_for_user(&self, user_id: Uuid) -> Result<usize, DBError> {
+        let conn = &mut self.db.get().map_err(|_| DBError::ConnectionError)?;
+        UserSeedWrapping::delete_for_user_and_kind(conn, user_id, CredentialKind::Recovery.as_str())
+            .map_err(DBError::from)
+    }
+
+    fn recovery_wrap_exists(&self, user_id: Uuid) -> Result<bool, DBError> {
+        self.get_recovery_wrap(user_id).map(|wrap| wrap.is_some())
     }
 
     // Maintenance

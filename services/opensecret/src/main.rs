@@ -135,6 +135,8 @@ mod web;
 
 #[cfg(test)]
 mod aead_db_tamper_tests;
+#[cfg(test)]
+mod recovery_db_tests;
 
 use apple_signin::AppleJwtVerifier;
 use inference_planning::ProviderPreference;
