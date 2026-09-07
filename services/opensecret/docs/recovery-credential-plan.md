@@ -25,6 +25,7 @@ V1 adds a recovery credential kind to `user_seed_wrappings`. It does not otherwi
 - Current reset-request creation semantics remain unchanged: multiple unexpired reset requests may coexist until one reset succeeds.
 - Password reset without a recovery code remains destructive exactly as today and leaves recovery disabled afterward.
 - V1 does not add broad OAuth or API-key revocation beyond current behavior.
+- All recovery endpoints (management and v2 reset) require a **v2 transport session**. V1 callers are rejected before any application logic runs.
 - Complete, internally consistent database rollback remains outside the v1 threat model.
 
 ## Data Model
@@ -222,16 +223,50 @@ struct CompletePasswordResetV2Response {
 Proposed routes:
 
 ```text
-GET  /protected/recovery-code
-POST /protected/recovery-code/enroll
-POST /protected/recovery-code/rotate
-DELETE /protected/recovery-code
+GET  /protected/recovery-code            (v2 transport only)
+POST /protected/recovery-code/enroll      (v2 transport only)
+POST /protected/recovery-code/rotate      (v2 transport only)
+DELETE /protected/recovery-code          (v2 transport only)
 
-POST /password-reset/v2/options
-POST /password-reset/v2/complete
+POST /password-reset/v2/options           (v2 transport only)
+POST /password-reset/v2/complete          (v2 transport only)
 ```
 
-Protected recovery management requires a user JWT and encrypted session. API keys cannot enroll or rotate recovery.
+Protected recovery management requires a user JWT and an encrypted **v2 transport session**. API keys cannot enroll or rotate recovery.
+
+### Transport Requirement
+
+Recovery endpoints are reachable through the v2 gateway only. The handler layer can enforce this without duplicating the check in every function by adding a `require_transport_v2` middleware to the recovery sub-router:
+
+```rust
+fn require_transport_v2(
+    req: Request<Body>,
+    next: Next,
+) -> Result<Response, ApiError> {
+    if !req
+        .extensions()
+        .get::<TransportSession>()
+        .is_some_and(TransportSession::is_v2)
+    {
+        return Err(ApiError::BadRequest);
+    }
+    Ok(next.run(req).await)
+}
+```
+
+Applied as a route layer:
+
+```rust
+let recovery = Router::new()
+    .route("/recovery-code", get(recovery_status))
+    .route("/recovery-code/enroll", post(enroll_recovery))
+    .route("/recovery-code/rotate", post(rotate_recovery))
+    .route("/recovery-code", delete(disable_recovery))
+    .route_layer(from_fn(require_transport_v2))
+    .route_layer(from_fn_with_state(app_state.clone(), validate_jwt));
+```
+
+The v2 reset endpoints are similarly layered under the unauthenticated reset router. Individual handlers still inspect `TransportSession::is_v2()` for defense-in-depth, but the middleware guarantees that legacy v1 sessions cannot reach recovery logic.
 
 ## Enrollment
 
@@ -257,10 +292,14 @@ Rust-like flow:
 
 ```rust
 async fn enroll_recovery(
+    Extension(session): Extension<TransportSession>,
     user: User,
     auth_context: AuthContext,
     current_password: String,
 ) -> Result<RecoveryCode, ApiError> {
+    if !session.is_v2() {
+        return Err(ApiError::BadRequest);
+    }
     require_email_password_user(&user)?;
     reauthenticate_password(&user, current_password).await?;
 
@@ -294,10 +333,14 @@ flowchart LR
 
 ```rust
 async fn rotate_recovery(
+    Extension(session): Extension<TransportSession>,
     user: User,
     auth_context: AuthContext,
     current_password: String,
 ) -> Result<RecoveryCode, ApiError> {
+    if !session.is_v2() {
+        return Err(ApiError::BadRequest);
+    }
     require_email_password_user(&user)?;
     reauthenticate_password(&user, current_password).await?;
 
@@ -328,10 +371,14 @@ flowchart LR
 
 ```rust
 async fn disable_recovery(
+    Extension(session): Extension<TransportSession>,
     user: User,
     auth_context: AuthContext,
     current_password: String,
 ) -> Result<(), ApiError> {
+    if !session.is_v2() {
+        return Err(ApiError::BadRequest);
+    }
     require_email_password_user(&user)?;
     reauthenticate_password(&user, current_password).await?;
     verify_seed_wrap_for_auth_context(&user, &auth_context)?;
@@ -367,8 +414,12 @@ sequenceDiagram
 
 ```rust
 async fn password_reset_v2_options(
+    Extension(session): Extension<TransportSession>,
     request: PasswordResetV2OptionsRequest,
 ) -> Result<PasswordResetV2OptionsResponse, ApiError> {
+    if !session.is_v2() {
+        return Err(ApiError::BadRequest);
+    }
     let (user, _reset_request) = verify_existing_reset_proof(
         request.proof.email,
         request.proof.alphanumeric_code,
@@ -431,10 +482,14 @@ sequenceDiagram
 
 ```rust
 async fn complete_preserving_password_reset_v2(
+    Extension(session): Extension<TransportSession>,
     reset_proof: PasswordResetV2Proof,
     recovery_code_input: String,
     new_password: String,
 ) -> Result<AuthResponse, ApiError> {
+    if !session.is_v2() {
+        return Err(ApiError::BadRequest);
+    }
     let (user, reset_request) = verify_existing_reset_proof(
         reset_proof.email,
         reset_proof.alphanumeric_code,
@@ -513,10 +568,14 @@ Public errors must not disclose account identity, database state, or whether the
 
 ```rust
 async fn complete_destructive_password_reset_v2(
+    Extension(session): Extension<TransportSession>,
     reset_proof: PasswordResetV2Proof,
     new_password: String,
     acknowledge_data_loss: bool,
 ) -> Result<CompletePasswordResetV2Response, ApiError> {
+    if !session.is_v2() {
+        return Err(ApiError::BadRequest);
+    }
     if !acknowledge_data_loss {
         return Err(ApiError::BadRequest);
     }
@@ -607,6 +666,7 @@ The guard runs before project, user, reset-request, or recovery lookup. Existing
 ### Encrypted API
 
 - Recovery management rejects API-key and unauthenticated contexts.
+- Recovery management rejects v1 transport sessions at both the middleware and handler boundary.
 - Guest and OAuth-only users cannot enroll or recover in v1.
 - Success responses are encrypted and errors are sanitized.
 - Recovery codes, seeds, verifiers, decrypted payloads, and ciphertext do not enter logs.
