@@ -122,6 +122,7 @@ mod provider_client;
 mod provider_registry;
 mod provider_routing;
 mod proxy_config;
+mod recovery_code;
 mod secret_cache_maintenance;
 #[cfg(test)]
 mod security_invariants;

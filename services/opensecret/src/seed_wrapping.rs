@@ -28,7 +28,6 @@ pub const SEED_WRAP_VERSION_V1: i16 = 1;
 pub enum CredentialKind {
     Password,
     OAuth,
-    Recovery,
 }
 
 impl CredentialKind {
@@ -36,7 +35,6 @@ impl CredentialKind {
         match self {
             CredentialKind::Password => "password",
             CredentialKind::OAuth => "oauth",
-            CredentialKind::Recovery => "recovery",
         }
     }
 }
