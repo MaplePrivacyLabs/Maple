@@ -213,7 +213,11 @@ enum TransportSessionKind {
 }
 
 impl TransportSession {
-    fn v1(session_id: Uuid) -> Self {
+    // Widened `pub(crate)` only so sibling test modules can fabricate v1
+    // markers for the recovery transport-gate tests. It remains an in-process
+    // capability: HTTP callers cannot create request extensions, and every
+    // recovery route rejects v1 markers at route-layer and handler level.
+    pub(crate) fn v1(session_id: Uuid) -> Self {
         Self {
             kind: TransportSessionKind::V1 { session_id },
         }
@@ -300,6 +304,25 @@ fn skips_encrypted_body<T: 'static>(method: &Method) -> bool {
     method == Method::GET
         || method == Method::DELETE
         || std::any::TypeId::of::<T>() == std::any::TypeId::of::<()>()
+}
+
+/// Rejects a v1 transport session before the handler can run.
+///
+/// Applied as a route layer on sub-routers whose routes are reachable only
+/// through the v2 gateway. A missing `TransportSession` also fails: a request
+/// that bypassed both transports never established transport security.
+pub async fn require_transport_v2(
+    request: Request<Body>,
+    next: Next,
+) -> Result<Response, ApiError> {
+    if !request
+        .extensions()
+        .get::<TransportSession>()
+        .is_some_and(TransportSession::is_v2)
+    {
+        return Err(ApiError::BadRequest);
+    }
+    Ok(next.run(request).await)
 }
 
 fn parse_session_id(headers: &HeaderMap) -> Result<Uuid, ApiError> {

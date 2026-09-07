@@ -137,6 +137,8 @@ mod web;
 mod aead_db_tamper_tests;
 #[cfg(test)]
 mod recovery_db_tests;
+#[cfg(test)]
+mod recovery_route_tests;
 
 use apple_signin::AppleJwtVerifier;
 use inference_planning::ProviderPreference;
@@ -3832,6 +3834,7 @@ async fn retrieve_kagi_api_key(
 fn application_routes(app_state: Arc<AppState>) -> Router<()> {
     protected_routes(app_state.clone())
         .route_layer(from_fn_with_state(app_state.clone(), validate_jwt))
+        .merge(protected_routes::recovery_router(app_state.clone()))
         .merge(login_routes(app_state.clone()))
         .merge(
             openai_routes(app_state.clone())

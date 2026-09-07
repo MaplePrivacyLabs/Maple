@@ -3000,8 +3000,12 @@ impl DBConnection for PostgresConnection {
     // Recovery wrap helpers
     fn get_recovery_wrap(&self, user_id: Uuid) -> Result<Option<UserSeedWrapping>, DBError> {
         let conn = &mut self.db.get().map_err(|_| DBError::ConnectionError)?;
-        let wraps = UserSeedWrapping::get_for_user_and_kind(conn, user_id, CredentialKind::Recovery.as_str())
-            .map_err(DBError::from)?;
+        let wraps = UserSeedWrapping::get_for_user_and_kind(
+            conn,
+            user_id,
+            CredentialKind::Recovery.as_str(),
+        )
+        .map_err(DBError::from)?;
         Ok(wraps.into_iter().next())
     }
 

@@ -3,7 +3,14 @@ use syn::visit::{self, Visit};
 
 const REQUEST_TIME_SCAN_ROOTS: &[&str] = &["src/main.rs", "src/web"];
 
-const SENSITIVE_LOG_IDENTIFIERS: &[&str] = &["session_key", "refresh_token", "alphanumeric_code"];
+const SENSITIVE_LOG_IDENTIFIERS: &[&str] = &[
+    "session_key",
+    "refresh_token",
+    "alphanumeric_code",
+    "recovery_code",
+    "current_password",
+    "plaintext_seed",
+];
 
 const SENSITIVE_LOG_MESSAGES: &[&str] = &[
     "session key:",
@@ -1155,4 +1162,192 @@ fn assert_patterns_in_order(source: &str, patterns: &[&str]) {
             .unwrap_or_else(|| panic!("expected `{pattern}` after offset {search_offset}"));
         search_offset += relative_index + pattern.len();
     }
+}
+
+const RECOVERY_MANAGEMENT_HANDLERS: &[&str] = &[
+    "recovery_status",
+    "enroll_recovery",
+    "rotate_recovery",
+    "disable_recovery",
+];
+
+#[test]
+fn recovery_management_routes_require_jwt_and_v2_transport() {
+    let protected_routes =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("src/web/protected_routes.rs");
+    let contents =
+        fs::read_to_string(&protected_routes).expect("protected routes source should be readable");
+
+    let router_body = extract_function_body(&contents, "pub fn recovery_router");
+
+    for (path, layer) in [
+        ("/protected/recovery-code", "decrypt_request::<()>"),
+        (
+            "/protected/recovery-code/enroll",
+            "decrypt_request::<EnrollRecoveryRequest>",
+        ),
+        (
+            "/protected/recovery-code/rotate",
+            "decrypt_request::<RotateRecoveryRequest>",
+        ),
+        (
+            "/protected/recovery-code",
+            "decrypt_request::<DisableRecoveryRequest>",
+        ),
+    ] {
+        assert!(
+            router_body.contains(&format!("\"{path}\"")) && router_body.contains(layer),
+            "recovery route `{path}` must carry its encrypted-request layer (`{layer}`)"
+        );
+    }
+
+    for route in [
+        "recovery_status",
+        "enroll_recovery",
+        "rotate_recovery",
+        "disable_recovery",
+    ] {
+        assert!(
+            router_body.contains(route),
+            "recovery sub-router must wire `{route}`"
+        );
+    }
+
+    // The v2-transport gate is part of the recovery sub-router itself, so v1
+    // sessions are rejected before user JWT validation touches the database.
+    assert!(
+        router_body.contains("from_fn(require_transport_v2)"),
+        "the recovery sub-router must apply the v2-transport gate"
+    );
+    assert!(
+        router_body.contains("from_fn_with_state(app_state.clone(), validate_jwt)"),
+        "the recovery sub-router must apply the user-JWT middleware"
+    );
+
+    // The application router merges the recovery router outside the shared
+    // protected-routes JWT layer, so the JWT middleware is not stacked twice.
+    let main_contents =
+        fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/main.rs"))
+            .expect("main source should be readable");
+    assert!(
+        main_contents.contains("protected_routes::recovery_router(app_state.clone())"),
+        "application routes must merge the dedicated recovery sub-router"
+    );
+}
+
+#[test]
+fn recovery_handlers_enforce_transport_and_user_guards_before_any_logic() {
+    let protected_routes =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("src/web/protected_routes.rs");
+    let contents =
+        fs::read_to_string(&protected_routes).expect("protected routes source should be readable");
+
+    for handler in RECOVERY_MANAGEMENT_HANDLERS {
+        let signature = format!("pub async fn {handler}(");
+        let body = extract_function_body(&contents, &signature);
+
+        let do_recovery_work =
+            body.contains("encrypt_response") || body.contains("db.get_recovery_wrap");
+        if !do_recovery_work {
+            continue;
+        }
+
+        let guard_index = body
+            .find("require_v2_transport_session(&transport_session)?;")
+            .unwrap_or_else(|| panic!("{handler} must call the v2-transport guard first"));
+        let logic_index = body
+            .find("db.")
+            .unwrap_or_else(|| body.rfind("await").expect("handler should await work"));
+        assert!(
+            guard_index < logic_index,
+            "{handler} must reject non-v2 transports before opening or writing recovery state"
+        );
+    }
+}
+
+#[test]
+fn recovery_stepup_gates_before_seed_open_and_insert() {
+    let protected_routes =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("src/web/protected_routes.rs");
+    let contents =
+        fs::read_to_string(&protected_routes).expect("protected routes source should be readable");
+
+    let enroll_body = extract_function_body(&contents, "pub async fn enroll_recovery(");
+    let rotate_body = extract_function_body(&contents, "pub async fn rotate_recovery(");
+    let disable_body = extract_function_body(&contents, "pub async fn disable_recovery(");
+
+    for (name, body) in [
+        ("enroll", enroll_body),
+        ("rotate", rotate_body),
+        ("disable", disable_body),
+    ] {
+        let user_guard = body
+            .find("require_email_password_user(&user)?;")
+            .expect("{name} must reject guest and OAuth-only users first");
+        let password_guard = body
+            .find("require_current_password(&data, &user, request.current_password)")
+            .expect("{name} must verify the current password before any seed or recovery work");
+        assert!(
+            user_guard < password_guard,
+            "{name} must gate eligibility before password step-up"
+        );
+    }
+
+    // The step-up must complete before any seed material is opened, and the
+    // wrap must be sealed and verified before any database write.
+    let enroll_password_guard = enroll_body
+        .find("require_current_password(&data, &user, request.current_password)")
+        .expect("enroll must verify the current password");
+    let enroll_seed_open = enroll_body
+        .find("seed_for_recovery_management(&data, &user, &auth_context)")
+        .expect("enroll must open the enrolled seed through the signed auth context");
+    let enroll_seal = enroll_body
+        .find("new_recovery_seed_wrapping(")
+        .expect("enroll must seal a recovery wrap");
+    let enroll_insert = enroll_body
+        .find("insert_recovery_wrap_if_absent")
+        .expect("enroll must insert the recovery wrap");
+    assert!(
+        enroll_password_guard < enroll_seed_open,
+        "enroll must verify the password before opening the seed"
+    );
+    assert!(
+        enroll_seed_open < enroll_seal,
+        "enroll must open the seed before sealing the recovery wrap"
+    );
+    assert!(
+        enroll_seal < enroll_insert,
+        "enroll must seal and verify the wrap before any database work"
+    );
+
+    let rotate_password_guard = rotate_body
+        .find("require_current_password(&data, &user, request.current_password)")
+        .expect("rotate must verify the current password");
+    let rotate_seed_open = rotate_body
+        .find("seed_for_recovery_management(&data, &user, &auth_context)")
+        .expect("rotate must open the enrolled seed through the signed auth context");
+    let rotate_seal = rotate_body
+        .find("new_recovery_seed_wrapping(")
+        .expect("rotate must seal a replacement wrap");
+    let rotate_cas = rotate_body
+        .find("replace_recovery_wrap_if_unchanged")
+        .expect("rotate must CAS the replacement wrap");
+    assert!(
+        rotate_password_guard < rotate_seed_open,
+        "rotate must verify the password before opening the seed"
+    );
+    assert!(
+        rotate_seed_open < rotate_seal,
+        "rotate must open the seed before sealing the replacement wrap"
+    );
+    assert!(
+        rotate_seal < rotate_cas,
+        "rotate must seal and verify the replacement before any database work"
+    );
+
+    // Disablement deletes through the idempotent helper only.
+    assert!(
+        disable_body.contains("delete_recovery_wrap_for_user(user.uuid)"),
+        "disable must delete the wrap through the idempotent helper"
+    );
 }

@@ -25,8 +25,11 @@ const OAUTH_AUTH_BINDING_DOMAIN: &str = "os.oauth-auth-binding.v1";
 const OAUTH_LOOKUP_DOMAIN: &str = "os.oauth-lookup.v1";
 const SEED_WRAP_DOMAIN: &str = "os.seed-wrap.v1";
 
+#[allow(dead_code)] // Consumed with `recovery_wrap_key` by the recovery reset flow.
 const RECOVERY_WRAP_ROOT_INFO: &[u8] = b"os.recovery-wrap-root.v1";
+#[allow(dead_code)] // Consumed with `recovery_wrap_key` by the recovery reset flow.
 const RECOVERY_WRAP_KEY_INFO: &[u8] = b"os.recovery-wrap-aead-key.v1";
+#[allow(dead_code)] // Consumed with `recovery_wrap_aad` by the recovery reset flow.
 const RECOVERY_WRAP_DOMAIN: &str = "os.recovery-wrap.v1";
 const RECOVERY_LOOKUP_DOMAIN: &str = "os.recovery-lookup.v1";
 const RECOVERY_AUTH_BINDING_DOMAIN: &str = "os.recovery-auth-binding.v1";
@@ -225,6 +228,9 @@ pub fn recovery_credential_lookup_hash(
     )?))
 }
 
+/// Derives the recovery-wrap AEAD key from the enclave root and the recovery
+/// secret. Consumed when the recovery reset flow opens the wrap directly.
+#[allow(dead_code)]
 pub fn recovery_wrap_key(
     enclave_root: &[u8],
     recovery_secret: &[u8; 32],
@@ -233,11 +239,17 @@ pub fn recovery_wrap_key(
     derive_key_with_salt(&root, recovery_secret, RECOVERY_WRAP_KEY_INFO)
 }
 
-pub fn recovery_wrap_aad(
-    user_id: Uuid,
-    project_id: i32,
-    wrapping_version: i16,
-) -> Vec<u8> {
+// NOTE: recovery wraps are sealed and opened through the generic seed-wrap
+// path (`encrypt_seed_v1` / `decrypt_seed_v1` with `CredentialKind::Recovery`
+// and a recovery-specific `AuthBinding` that incorporates the recovery
+// secret). The `recovery_wrap_key` / `recovery_wrap_aad` helpers below use
+// their own domain constants and therefore do NOT match the stored envelope
+// representation; they are kept for the Phase 5/6 design review of the
+// recovery reset flow, which should open wraps with `decrypt_seed_v1`.
+
+/// Canonical recovery-wrap AAD facts.
+#[allow(dead_code)] // Pending Phase 5/6 review; see the NOTE above.
+pub fn recovery_wrap_aad(user_id: Uuid, project_id: i32, wrapping_version: i16) -> Vec<u8> {
     let mut aad = CanonicalBytes::new(RECOVERY_WRAP_DOMAIN);
     aad.append_uuid(user_id)
         .append_i32(project_id)
@@ -252,12 +264,8 @@ pub fn new_recovery_seed_wrapping(
     code: &RecoveryCode,
     seed: &[u8],
 ) -> Result<NewUserSeedWrapping, EncryptError> {
-    let auth_binding = compute_recovery_auth_binding(
-        root_key,
-        user.project_id,
-        user.uuid,
-        code.secret_bytes(),
-    )?;
+    let auth_binding =
+        compute_recovery_auth_binding(root_key, user.project_id, user.uuid, code.secret_bytes())?;
 
     let seed_enc = encrypt_seed_v1(
         root_key,
@@ -290,12 +298,8 @@ pub fn verify_recovery_seed_wrapping(
     seed: &[u8],
     wrapping: &NewUserSeedWrapping,
 ) -> Result<(), EncryptError> {
-    let auth_binding = compute_recovery_auth_binding(
-        root_key,
-        user.project_id,
-        user.uuid,
-        code.secret_bytes(),
-    )?;
+    let auth_binding =
+        compute_recovery_auth_binding(root_key, user.project_id, user.uuid, code.secret_bytes())?;
     let decrypted_seed = decrypt_seed_v1(
         root_key,
         &wrapping.seed_enc,
@@ -872,13 +876,9 @@ mod tests {
     #[test]
     fn recovery_wrap_round_trip() {
         let code = recovery_code_fixture([0xABu8; 32]);
-        let auth_binding = compute_recovery_auth_binding(
-            &ROOT_KEY,
-            PROJECT_ID,
-            USER_UUID,
-            code.secret_bytes(),
-        )
-        .unwrap();
+        let auth_binding =
+            compute_recovery_auth_binding(&ROOT_KEY, PROJECT_ID, USER_UUID, code.secret_bytes())
+                .unwrap();
         let seed = b"recovery test seed bytes";
 
         let encrypted = encrypt_seed_v1(
@@ -948,13 +948,9 @@ mod tests {
     #[test]
     fn recovery_wrap_rejects_wrong_root_key() {
         let code = recovery_code_fixture([0xABu8; 32]);
-        let binding = compute_recovery_auth_binding(
-            &ROOT_KEY,
-            PROJECT_ID,
-            USER_UUID,
-            code.secret_bytes(),
-        )
-        .unwrap();
+        let binding =
+            compute_recovery_auth_binding(&ROOT_KEY, PROJECT_ID, USER_UUID, code.secret_bytes())
+                .unwrap();
         let seed = b"recovery test seed";
 
         let encrypted = encrypt_seed_v1(
@@ -982,13 +978,9 @@ mod tests {
     #[test]
     fn recovery_wrap_rejects_wrong_user() {
         let code = recovery_code_fixture([0xABu8; 32]);
-        let binding = compute_recovery_auth_binding(
-            &ROOT_KEY,
-            PROJECT_ID,
-            USER_UUID,
-            code.secret_bytes(),
-        )
-        .unwrap();
+        let binding =
+            compute_recovery_auth_binding(&ROOT_KEY, PROJECT_ID, USER_UUID, code.secret_bytes())
+                .unwrap();
         let seed = b"recovery test seed";
 
         let encrypted = encrypt_seed_v1(
@@ -1015,13 +1007,9 @@ mod tests {
     #[test]
     fn recovery_wrap_rejects_wrong_project() {
         let code = recovery_code_fixture([0xABu8; 32]);
-        let binding = compute_recovery_auth_binding(
-            &ROOT_KEY,
-            PROJECT_ID,
-            USER_UUID,
-            code.secret_bytes(),
-        )
-        .unwrap();
+        let binding =
+            compute_recovery_auth_binding(&ROOT_KEY, PROJECT_ID, USER_UUID, code.secret_bytes())
+                .unwrap();
         let seed = b"recovery test seed";
 
         let encrypted = encrypt_seed_v1(
@@ -1048,13 +1036,9 @@ mod tests {
     #[test]
     fn recovery_wrap_rejects_wrong_credential_kind() {
         let code = recovery_code_fixture([0xABu8; 32]);
-        let recovery_binding = compute_recovery_auth_binding(
-            &ROOT_KEY,
-            PROJECT_ID,
-            USER_UUID,
-            code.secret_bytes(),
-        )
-        .unwrap();
+        let recovery_binding =
+            compute_recovery_auth_binding(&ROOT_KEY, PROJECT_ID, USER_UUID, code.secret_bytes())
+                .unwrap();
         let password_binding = compute_password_auth_binding(
             &ROOT_KEY,
             PROJECT_ID,
@@ -1090,13 +1074,9 @@ mod tests {
     #[test]
     fn recovery_wrap_rejects_tampered_nonce() {
         let code = recovery_code_fixture([0xABu8; 32]);
-        let binding = compute_recovery_auth_binding(
-            &ROOT_KEY,
-            PROJECT_ID,
-            USER_UUID,
-            code.secret_bytes(),
-        )
-        .unwrap();
+        let binding =
+            compute_recovery_auth_binding(&ROOT_KEY, PROJECT_ID, USER_UUID, code.secret_bytes())
+                .unwrap();
         let seed = b"recovery test seed";
 
         let mut encrypted = encrypt_seed_v1(
@@ -1124,13 +1104,9 @@ mod tests {
     #[test]
     fn recovery_wrap_rejects_tampered_ciphertext() {
         let code = recovery_code_fixture([0xABu8; 32]);
-        let binding = compute_recovery_auth_binding(
-            &ROOT_KEY,
-            PROJECT_ID,
-            USER_UUID,
-            code.secret_bytes(),
-        )
-        .unwrap();
+        let binding =
+            compute_recovery_auth_binding(&ROOT_KEY, PROJECT_ID, USER_UUID, code.secret_bytes())
+                .unwrap();
         let seed = b"recovery test seed";
 
         let mut encrypted = encrypt_seed_v1(
@@ -1158,13 +1134,9 @@ mod tests {
     #[test]
     fn recovery_wrap_rejects_tampered_tag() {
         let code = recovery_code_fixture([0xABu8; 32]);
-        let binding = compute_recovery_auth_binding(
-            &ROOT_KEY,
-            PROJECT_ID,
-            USER_UUID,
-            code.secret_bytes(),
-        )
-        .unwrap();
+        let binding =
+            compute_recovery_auth_binding(&ROOT_KEY, PROJECT_ID, USER_UUID, code.secret_bytes())
+                .unwrap();
         let seed = b"recovery test seed";
 
         let mut encrypted = encrypt_seed_v1(
@@ -1193,13 +1165,9 @@ mod tests {
     #[test]
     fn recovery_wrap_rejects_wrong_aad_version() {
         let code = recovery_code_fixture([0xABu8; 32]);
-        let binding = compute_recovery_auth_binding(
-            &ROOT_KEY,
-            PROJECT_ID,
-            USER_UUID,
-            code.secret_bytes(),
-        )
-        .unwrap();
+        let binding =
+            compute_recovery_auth_binding(&ROOT_KEY, PROJECT_ID, USER_UUID, code.secret_bytes())
+                .unwrap();
         let seed = b"recovery test seed";
 
         let aead_key = derive_seed_wrap_aead_key(&ROOT_KEY, &binding).unwrap();
@@ -1222,13 +1190,9 @@ mod tests {
     #[test]
     fn recovery_wrap_rejects_oversized_envelope() {
         let code = recovery_code_fixture([0xABu8; 32]);
-        let binding = compute_recovery_auth_binding(
-            &ROOT_KEY,
-            PROJECT_ID,
-            USER_UUID,
-            code.secret_bytes(),
-        )
-        .unwrap();
+        let binding =
+            compute_recovery_auth_binding(&ROOT_KEY, PROJECT_ID, USER_UUID, code.secret_bytes())
+                .unwrap();
         let seed = b"recovery test seed";
 
         let mut encrypted = encrypt_seed_v1(
@@ -1256,13 +1220,9 @@ mod tests {
     #[test]
     fn recovery_wrap_rejects_undersized_envelope() {
         let code = recovery_code_fixture([0xABu8; 32]);
-        let binding = compute_recovery_auth_binding(
-            &ROOT_KEY,
-            PROJECT_ID,
-            USER_UUID,
-            code.secret_bytes(),
-        )
-        .unwrap();
+        let binding =
+            compute_recovery_auth_binding(&ROOT_KEY, PROJECT_ID, USER_UUID, code.secret_bytes())
+                .unwrap();
         let seed = b"recovery test seed";
 
         let encrypted = encrypt_seed_v1(
@@ -1336,13 +1296,9 @@ mod tests {
     #[test]
     fn recovery_password_oauth_domain_separation() {
         let code = recovery_code_fixture([0xABu8; 32]);
-        let recovery_binding = compute_recovery_auth_binding(
-            &ROOT_KEY,
-            PROJECT_ID,
-            USER_UUID,
-            code.secret_bytes(),
-        )
-        .unwrap();
+        let recovery_binding =
+            compute_recovery_auth_binding(&ROOT_KEY, PROJECT_ID, USER_UUID, code.secret_bytes())
+                .unwrap();
         let password_binding = compute_password_auth_binding(
             &ROOT_KEY,
             PROJECT_ID,

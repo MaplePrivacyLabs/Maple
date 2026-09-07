@@ -40,16 +40,16 @@ fn first_active_project(db: &Arc<dyn DBConnection + Send + Sync>) -> OrgProject 
         .expect("test database should contain at least one active project")
 }
 
-fn create_test_user(db: &Arc<dyn DBConnection + Send + Sync>, project_id: i32, email: String) -> User {
+fn create_test_user(
+    db: &Arc<dyn DBConnection + Send + Sync>,
+    project_id: i32,
+    email: String,
+) -> User {
     db.create_user(NewUser::new(Some(email), None, project_id))
         .expect("test user should insert")
 }
 
-fn make_recovery_wrapping(
-    user: &User,
-    secret: [u8; 32],
-    seed: &[u8],
-) -> NewUserSeedWrapping {
+fn make_recovery_wrapping(user: &User, secret: [u8; 32], seed: &[u8]) -> NewUserSeedWrapping {
     let code = recovery_code_fixture(secret);
     new_recovery_seed_wrapping(&TEST_ROOT_KEY, user, &code, seed)
         .expect("recovery wrapping should compute")
@@ -246,12 +246,18 @@ async fn recovery_disablement_is_idempotent() {
     let deleted_count_1 = db
         .delete_recovery_wrap_for_user(user.uuid)
         .expect("disablement should succeed");
-    assert_eq!(deleted_count_1, 1, "first disablement should delete exactly one row");
+    assert_eq!(
+        deleted_count_1, 1,
+        "first disablement should delete exactly one row"
+    );
 
     let deleted_count_2 = db
         .delete_recovery_wrap_for_user(user.uuid)
         .expect("second disablement should also succeed");
-    assert_eq!(deleted_count_2, 0, "second disablement should be idempotent");
+    assert_eq!(
+        deleted_count_2, 0,
+        "second disablement should be idempotent"
+    );
 
     assert!(
         !db.recovery_wrap_exists(user.uuid).unwrap(),
@@ -359,7 +365,10 @@ async fn recovery_get_wrap_returns_none_when_absent() {
 
     let user = create_test_user(&db, project.id, email);
     let wrap = db.get_recovery_wrap(user.uuid).unwrap();
-    assert!(wrap.is_none(), "get_recovery_wrap should return None for user without recovery");
+    assert!(
+        wrap.is_none(),
+        "get_recovery_wrap should return None for user without recovery"
+    );
 
     // Cleanup
     let _ = db.delete_user(&user);

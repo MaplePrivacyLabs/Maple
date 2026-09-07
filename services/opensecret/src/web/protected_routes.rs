@@ -1,11 +1,13 @@
 use crate::encrypt;
-use crate::jwt::{AuthContext, NewToken, TokenType};
+use crate::jwt::{validate_jwt, AuthContext, NewToken, TokenType};
 use crate::message_signing::SigningAlgorithm;
 use crate::private_key::{
     derive_bip85_mnemonic_from_root, plaintext_user_seed_to_mnemonic, VALID_BIP39_WORD_COUNTS,
 };
+use crate::recovery_code::RecoveryCode;
+use crate::seed_wrapping::new_recovery_seed_wrapping;
 use crate::web::encryption_middleware::{
-    decrypt_request, encrypt_response, Decrypted, TransportSession,
+    decrypt_request, encrypt_response, require_transport_v2, Decrypted, TransportSession,
 };
 use crate::Error;
 use crate::{
@@ -16,6 +18,7 @@ use crate::{
 // BIP-85 constants
 const BIP85_PURPOSE: u32 = 83696968; // BIP-85 purpose value
 const BIP85_APPLICATION_BIP39: u32 = 39; // Application number for BIP-39 mnemonics
+use axum::middleware::from_fn;
 use axum::middleware::from_fn_with_state;
 use axum::Extension;
 use axum::{
@@ -98,6 +101,32 @@ pub struct InitiateAccountDeletionRequest {
 pub struct ConfirmAccountDeletionRequest {
     pub confirmation_code: String,
     pub plaintext_secret: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct EnrollRecoveryRequest {
+    pub current_password: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct RotateRecoveryRequest {
+    pub current_password: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct DisableRecoveryRequest {
+    pub current_password: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct RecoveryStatusResponse {
+    pub enrolled: bool,
+    pub enrolled_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct RecoveryCodeResponse {
+    pub recovery_code: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -1387,6 +1416,280 @@ pub async fn delete_api_key(
     encrypt_response(&data, &session_id, &response).await
 }
 
+/// Recovery-code management branch.
+///
+/// Carries its own `validate_jwt` layer so it can be merged outside the
+/// shared `protected_routes` JWT scope (which would otherwise validate the
+/// same JWT twice), plus the v2-transport gate that rejects legacy v1
+/// sessions before any recovery logic runs.
+pub fn recovery_router(app_state: Arc<AppState>) -> Router<()> {
+    Router::new()
+        .route(
+            "/protected/recovery-code",
+            get(recovery_status)
+                .layer(from_fn_with_state(app_state.clone(), decrypt_request::<()>)),
+        )
+        .route(
+            "/protected/recovery-code/enroll",
+            post(enroll_recovery).layer(from_fn_with_state(
+                app_state.clone(),
+                decrypt_request::<EnrollRecoveryRequest>,
+            )),
+        )
+        .route(
+            "/protected/recovery-code/rotate",
+            post(rotate_recovery).layer(from_fn_with_state(
+                app_state.clone(),
+                decrypt_request::<RotateRecoveryRequest>,
+            )),
+        )
+        .route(
+            "/protected/recovery-code",
+            delete(disable_recovery).layer(from_fn_with_state(
+                app_state.clone(),
+                decrypt_request::<DisableRecoveryRequest>,
+            )),
+        )
+        .route_layer(from_fn_with_state(app_state.clone(), validate_jwt))
+        .route_layer(from_fn(require_transport_v2))
+        .with_state(app_state)
+}
+
+/// Handler-level defense-in-depth: the middleware gate rejects v1 sessions
+/// before the handler, and this guard rejects them again inside the handler.
+fn require_v2_transport_session(session: &TransportSession) -> Result<(), ApiError> {
+    if !session.is_v2() {
+        return Err(ApiError::BadRequest);
+    }
+    Ok(())
+}
+
+/// Recovery management is limited to email-backed password users in V1.
+/// Guest and OAuth-only accounts cannot enroll, rotate, or disable recovery.
+fn require_email_password_user(user: &User) -> Result<(), ApiError> {
+    if user.is_guest() || user.password_enc.is_none() {
+        return Err(ApiError::BadRequest);
+    }
+    Ok(())
+}
+
+/// Password step-up: verifies the submitted current password against the
+/// stored verifier and confirms the password credential still opens an
+/// active seed wrap before returning.
+async fn require_current_password(
+    data: &AppState,
+    user: &User,
+    current_password: String,
+) -> Result<(), ApiError> {
+    let email = user.get_email().map(|e| e.to_string());
+    let reauthenticated = match data
+        .authenticate_user(email, Some(user.uuid), current_password, user.project_id)
+        .await
+        .map_err(|e| {
+            error!("Recovery password step-up failed: {:?}", e);
+            ApiError::InternalServerError
+        })? {
+        Some(reauthenticated) if reauthenticated.user.uuid == user.uuid => reauthenticated,
+        _ => return Err(ApiError::InvalidUsernameOrPassword),
+    };
+    debug_assert_eq!(reauthenticated.user.uuid, user.uuid);
+    Ok(())
+}
+
+/// Opens the currently enrolled seed through the JWT's signed auth context.
+/// Recovery must be bound to the exact seed the user's other credentials
+/// still unwrap, not to a fresh or substituted seed.
+async fn seed_for_recovery_management(
+    data: &AppState,
+    user: &User,
+    auth_context: &AuthContext,
+) -> Result<Vec<u8>, ApiError> {
+    data.decrypt_seed_for_auth_context(user, auth_context)
+        .map_err(|e| {
+            error!(
+                "Recovery management could not open the authenticated seed: {:?}",
+                e
+            );
+            ApiError::Unauthorized
+        })
+}
+
+pub async fn recovery_status(
+    State(data): State<Arc<AppState>>,
+    Extension(user): Extension<User>,
+    Extension(transport_session): Extension<TransportSession>,
+) -> Result<Response, ApiError> {
+    require_v2_transport_session(&transport_session)?;
+    let status = data.db.get_recovery_wrap(user.uuid).map_err(|e| {
+        error!("Failed to load recovery status: {:?}", e);
+        ApiError::InternalServerError
+    })?;
+    let response = RecoveryStatusResponse {
+        enrolled: status.is_some(),
+        enrolled_at: status.map(|wrap| wrap.created_at),
+    };
+    encrypt_response(&data, &transport_session, &response).await
+}
+
+pub async fn enroll_recovery(
+    State(data): State<Arc<AppState>>,
+    Extension(user): Extension<User>,
+    Extension(auth_context): Extension<AuthContext>,
+    Extension(transport_session): Extension<TransportSession>,
+    Decrypted(request): Decrypted<EnrollRecoveryRequest>,
+) -> Result<Response, ApiError> {
+    require_v2_transport_session(&transport_session)?;
+    require_email_password_user(&user)?;
+    require_current_password(&data, &user, request.current_password).await?;
+
+    let plaintext_seed = seed_for_recovery_management(&data, &user, &auth_context).await?;
+
+    if data
+        .db
+        .get_recovery_wrap(user.uuid)
+        .map(|existing| existing.is_some())
+        .map_err(|e| {
+            error!(
+                "Failed to check recovery enrollment for user {}: {:?}",
+                user.uuid, e
+            );
+            ApiError::InternalServerError
+        })?
+    {
+        return Err(ApiError::Conflict);
+    }
+
+    let code = RecoveryCode::generate(Some(data.aws_credential_manager.clone()))
+        .await
+        .map_err(|e| {
+            error!("Failed to generate recovery code: {:?}", e);
+            ApiError::InternalServerError
+        })?;
+
+    // Seals the wrap over the enrolled seed and verifies it byte-for-byte
+    // before any database work. A sealing failure is an enclave-internal
+    // fault, not a client-visible 400.
+    let wrapping = new_recovery_seed_wrapping(&data.enclave_key, &user, &code, &plaintext_seed)
+        .map_err(|e| {
+            error!("Failed to create recovery seed wrapping: {:?}", e);
+            ApiError::InternalServerError
+        })?;
+
+    data.db
+        .insert_recovery_wrap_if_absent(wrapping)
+        .map_err(|e| {
+            debug!("Recovery enrollment insert rejected: {:?}", e);
+            match e {
+                DBError::StaleCredentialState => ApiError::Conflict,
+                _ => ApiError::InternalServerError,
+            }
+        })?;
+
+    info!("Recovery code enrolled for user {}", user.uuid);
+    let response = RecoveryCodeResponse {
+        // Shown to the user exactly once in the encrypted response; never
+        // logged, stored in a path, or included in any other channel. The
+        // intermediate copy inside the serialized response body is not
+        // separately zeroized; it lives only until `encrypt_response` seals
+        // it into the encrypted transport frame.
+        recovery_code: code.display().to_string(),
+    };
+    encrypt_response(&data, &transport_session, &response).await
+}
+
+pub async fn rotate_recovery(
+    State(data): State<Arc<AppState>>,
+    Extension(user): Extension<User>,
+    Extension(auth_context): Extension<AuthContext>,
+    Extension(transport_session): Extension<TransportSession>,
+    Decrypted(request): Decrypted<RotateRecoveryRequest>,
+) -> Result<Response, ApiError> {
+    require_v2_transport_session(&transport_session)?;
+    require_email_password_user(&user)?;
+    require_current_password(&data, &user, request.current_password).await?;
+
+    let plaintext_seed = seed_for_recovery_management(&data, &user, &auth_context).await?;
+
+    let old_wrap = data
+        .db
+        .get_recovery_wrap(user.uuid)
+        .map_err(|e| {
+            error!("Failed to load recovery wrap before rotation: {:?}", e);
+            ApiError::InternalServerError
+        })?
+        .ok_or(ApiError::BadRequest)?;
+
+    let code = RecoveryCode::generate(Some(data.aws_credential_manager.clone()))
+        .await
+        .map_err(|e| {
+            error!("Failed to generate replacement recovery code: {:?}", e);
+            ApiError::InternalServerError
+        })?;
+
+    // Seals and verifies the replacement wrap byte-for-byte before any
+    // database work.
+    let replacement = new_recovery_seed_wrapping(&data.enclave_key, &user, &code, &plaintext_seed)
+        .map_err(|e| {
+            error!(
+                "Failed to create replacement recovery seed wrapping: {:?}",
+                e
+            );
+            ApiError::EncryptionError
+        })?;
+
+    data.db
+        .replace_recovery_wrap_if_unchanged(&old_wrap, replacement)
+        .map_err(|e| {
+            debug!("Recovery rotation CAS rejected: {:?}", e);
+            match e {
+                DBError::StaleCredentialState => ApiError::Conflict,
+                _ => ApiError::InternalServerError,
+            }
+        })?;
+
+    info!("Recovery code rotated for user {}", user.uuid);
+    let response = RecoveryCodeResponse {
+        recovery_code: code.display().to_string(),
+    };
+    encrypt_response(&data, &transport_session, &response).await
+}
+
+pub async fn disable_recovery(
+    State(data): State<Arc<AppState>>,
+    Extension(user): Extension<User>,
+    Extension(auth_context): Extension<AuthContext>,
+    Extension(transport_session): Extension<TransportSession>,
+    Decrypted(request): Decrypted<DisableRecoveryRequest>,
+) -> Result<Response, ApiError> {
+    require_v2_transport_session(&transport_session)?;
+    require_email_password_user(&user)?;
+    require_current_password(&data, &user, request.current_password).await?;
+
+    // Confirm the password credential still opens an active seed wrap before
+    // deleting recovery state. Disablement does not require the recovery code.
+    data.verify_seed_wrap_for_auth_context(&user, &auth_context)
+        .map_err(|e| {
+            error!(
+                "Recovery disablement could not verify the active seed wrap: {:?}",
+                e
+            );
+            ApiError::Unauthorized
+        })?;
+
+    // Idempotent at the API boundary: deleting an absent wrap is a no-op, so
+    // a concurrent rotation or disabling race cannot make this fail.
+    data.db
+        .delete_recovery_wrap_for_user(user.uuid)
+        .map_err(|e| {
+            error!("Failed to delete recovery wrap: {:?}", e);
+            ApiError::InternalServerError
+        })?;
+
+    info!("Recovery disabled for user {}", user.uuid);
+    let response = json!({ "message": "Recovery disabled successfully" });
+    encrypt_response(&data, &transport_session, &response).await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1824,6 +2127,7 @@ mod api_key_validation_tests {
 
         // XSS attempts
         assert!(validate_api_key_name("<script>alert(1)</script>").is_err());
+        assert!(validate_api_key_name("javascript:alert(1)</script>").is_err());
         assert!(validate_api_key_name("javascript:alert(1)").is_err());
 
         // Command injection attempts
@@ -1832,5 +2136,128 @@ mod api_key_validation_tests {
         assert!(validate_api_key_name("key$(whoami)").is_err());
         assert!(validate_api_key_name("key&&whoami").is_err());
         assert!(validate_api_key_name("key||whoami").is_err());
+    }
+}
+
+#[cfg(test)]
+mod recovery_guard_tests {
+    use super::*;
+    use crate::transport_v2::crypto::SessionId;
+    use axum::body::Body;
+    use axum::http::{Request, Request as HttpRequest, StatusCode};
+    use axum::routing::get;
+    use serde_json::json;
+    use tower::ServiceExt;
+
+    fn user_fixture(email: Option<&str>, password_enc: Option<Vec<u8>>) -> User {
+        serde_json::from_value(json!({
+            "id": 1,
+            "uuid": Uuid::new_v4(),
+            "name": None::<String>,
+            "email": email,
+            "password_enc": password_enc,
+            "created_at": "2024-01-01T00:00:00Z",
+            "updated_at": "2024-01-01T00:00:00Z",
+            "project_id": 1,
+        }))
+        .expect("user fixture should deserialize")
+    }
+
+    #[test]
+    fn v1_session_is_rejected_at_handler_boundary() {
+        let session = TransportSession::v1(Uuid::new_v4());
+        assert!(
+            require_v2_transport_session(&session).is_err(),
+            "a v1 transport session must not reach recovery handler logic"
+        );
+    }
+
+    #[test]
+    fn v2_session_passes_handler_boundary_guard() {
+        let session = TransportSession::v2(SessionId::from_bytes([0x22; 16]));
+        assert!(require_v2_transport_session(&session).is_ok());
+    }
+
+    #[test]
+    fn guests_cannot_manage_recovery() {
+        let guest = user_fixture(None, None);
+        assert!(require_email_password_user(&guest).is_err());
+    }
+
+    #[test]
+    fn oauth_only_users_cannot_manage_recovery() {
+        let oauth_only = user_fixture(Some("oauth@example.com"), None);
+        assert!(require_email_password_user(&oauth_only).is_err());
+    }
+
+    #[test]
+    fn email_password_users_can_manage_recovery() {
+        let password_user = user_fixture(Some("user@example.com"), Some(vec![1, 2, 3]));
+        assert!(require_email_password_user(&password_user).is_ok());
+    }
+
+    #[tokio::test]
+    async fn recovery_router_rejects_v1_transport_session() {
+        let router = recovery_test_router();
+        let request = HttpRequest::builder()
+            .uri("/protected/recovery-code")
+            .body(Body::empty())
+            .unwrap();
+        // In production the v1 gateway inserts this extension; the test
+        // reproduces an authenticated-but-v1 transport reaching the router.
+        let extension = TransportSession::v1(Uuid::new_v4());
+        let request = attach_transport(request, extension);
+        let response = router.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn recovery_router_rejects_missing_transport_session() {
+        let router = recovery_test_router();
+        let request = HttpRequest::builder()
+            .uri("/protected/recovery-code")
+            .body(Body::empty())
+            .unwrap();
+        let response = router.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn recovery_router_accepts_v2_transport_session() {
+        let router = recovery_test_router();
+        let request = HttpRequest::builder()
+            .uri("/protected/recovery-code")
+            .body(Body::empty())
+            .unwrap();
+        let extension = TransportSession::v2(SessionId::from_bytes([0x22; 16]));
+        let request = attach_transport(request, extension);
+        let response = router.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    fn attach_transport(request: Request<Body>, session: TransportSession) -> Request<Body> {
+        let (mut parts, body) = request.into_parts();
+        parts.extensions.insert(session);
+        Request::from_parts(parts, body)
+    }
+
+    fn recovery_test_router() -> Router<()> {
+        Router::new()
+            .route(
+                "/protected/recovery-code",
+                get(
+                    |Extension(session): Extension<TransportSession>| async move {
+                        // This handler would perform recovery status work; the
+                        // test handler only reports whether the transport gate
+                        // let it run.
+                        if session.is_v2() {
+                            StatusCode::OK
+                        } else {
+                            StatusCode::CONFLICT
+                        }
+                    },
+                ),
+            )
+            .layer(from_fn(require_transport_v2))
     }
 }
