@@ -7,13 +7,15 @@
 set -u
 . "${MAPLE_HOOK_REPO_ROOT:?}/.githooks/lib/common.sh"
 hook_require cargo
+hook_require just
 
 if [ "${MAPLE_HOOK_FULL:-0}" = "1" ]; then
-    hook_require just
     hook_run just ci
     exit 0
 fi
 
 hook_run cargo fmt --all -- --check
 hook_run cargo clippy --workspace --all-targets --locked -- -D warnings
+# Native worker tests use the bundled runtime on a fresh checkout too.
+hook_run just python-prepare
 hook_run cargo test --workspace --locked
