@@ -25,12 +25,6 @@ const OAUTH_AUTH_BINDING_DOMAIN: &str = "os.oauth-auth-binding.v1";
 const OAUTH_LOOKUP_DOMAIN: &str = "os.oauth-lookup.v1";
 const SEED_WRAP_DOMAIN: &str = "os.seed-wrap.v1";
 
-#[allow(dead_code)] // Consumed with `recovery_wrap_key` by the recovery reset flow.
-const RECOVERY_WRAP_ROOT_INFO: &[u8] = b"os.recovery-wrap-root.v1";
-#[allow(dead_code)] // Consumed with `recovery_wrap_key` by the recovery reset flow.
-const RECOVERY_WRAP_KEY_INFO: &[u8] = b"os.recovery-wrap-aead-key.v1";
-#[allow(dead_code)] // Consumed with `recovery_wrap_aad` by the recovery reset flow.
-const RECOVERY_WRAP_DOMAIN: &str = "os.recovery-wrap.v1";
 const RECOVERY_LOOKUP_DOMAIN: &str = "os.recovery-lookup.v1";
 const RECOVERY_AUTH_BINDING_DOMAIN: &str = "os.recovery-auth-binding.v1";
 
@@ -228,35 +222,12 @@ pub fn recovery_credential_lookup_hash(
     )?))
 }
 
-/// Derives the recovery-wrap AEAD key from the enclave root and the recovery
-/// secret. Consumed when the recovery reset flow opens the wrap directly.
-#[allow(dead_code)]
-pub fn recovery_wrap_key(
-    enclave_root: &[u8],
-    recovery_secret: &[u8; 32],
-) -> Result<AeadKey, EncryptError> {
-    let root = derive_key(enclave_root, RECOVERY_WRAP_ROOT_INFO)?;
-    derive_key_with_salt(&root, recovery_secret, RECOVERY_WRAP_KEY_INFO)
-}
-
 // NOTE: recovery wraps are sealed and opened through the generic seed-wrap
 // path (`encrypt_seed_v1` / `decrypt_seed_v1` with `CredentialKind::Recovery`
 // and a recovery-specific `AuthBinding` that incorporates the recovery
-// secret). The `recovery_wrap_key` / `recovery_wrap_aad` helpers below use
-// their own domain constants and therefore do NOT match the stored envelope
-// representation; they are kept for the Phase 5/6 design review of the
-// recovery reset flow, which should open wraps with `decrypt_seed_v1`.
-
-/// Canonical recovery-wrap AAD facts.
-#[allow(dead_code)] // Pending Phase 5/6 review; see the NOTE above.
-pub fn recovery_wrap_aad(user_id: Uuid, project_id: i32, wrapping_version: i16) -> Vec<u8> {
-    let mut aad = CanonicalBytes::new(RECOVERY_WRAP_DOMAIN);
-    aad.append_uuid(user_id)
-        .append_i32(project_id)
-        .append_str(CredentialKind::Recovery.as_str())
-        .append_i16(wrapping_version);
-    aad.into_bytes()
-}
+// secret). The recovery reset flow (Phase 5/6) must open wraps with
+// `decrypt_seed_v1` and a `RecoveryCode`-derived `AuthBinding`, not with any
+// separately derived recovery-wrap key.
 
 pub fn new_recovery_seed_wrapping(
     root_key: &[u8],
@@ -1272,25 +1243,6 @@ mod tests {
         let changed_secret =
             compute_recovery_auth_binding(&ROOT_KEY, PROJECT_ID, USER_UUID, &[0xCDu8; 32]).unwrap();
         assert_ne!(base, changed_secret);
-    }
-
-    #[test]
-    fn recovery_wrap_key_is_deterministic() {
-        let code = recovery_code_fixture([0xABu8; 32]);
-        let key1 = recovery_wrap_key(&ROOT_KEY, code.secret_bytes()).unwrap();
-        let key2 = recovery_wrap_key(&ROOT_KEY, code.secret_bytes()).unwrap();
-        assert_eq!(key1, key2);
-    }
-
-    #[test]
-    fn recovery_wrap_key_changes_with_root_or_secret() {
-        let code1 = recovery_code_fixture([0xABu8; 32]);
-        let code2 = recovery_code_fixture([0xCDu8; 32]);
-        let base = recovery_wrap_key(&ROOT_KEY, code1.secret_bytes()).unwrap();
-        let changed_secret = recovery_wrap_key(&ROOT_KEY, code2.secret_bytes()).unwrap();
-        let changed_root = recovery_wrap_key(&[0xFFu8; 32], code1.secret_bytes()).unwrap();
-        assert_ne!(base, changed_secret);
-        assert_ne!(base, changed_root);
     }
 
     #[test]
