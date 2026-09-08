@@ -1559,7 +1559,12 @@ pub async fn enroll_recovery(
         return Err(ApiError::Conflict);
     }
 
-    let code = RecoveryCode::generate(Some(data.aws_credential_manager.clone())).await;
+    let code = RecoveryCode::generate(Some(data.aws_credential_manager.clone()))
+        .await
+        .map_err(|e| {
+            error!("Failed to generate recovery code: {:?}", e);
+            ApiError::InternalServerError
+        })?;
 
     // Seals the wrap over the enrolled seed and verifies it byte-for-byte
     // before any database work. A sealing failure is an enclave-internal
@@ -1614,7 +1619,12 @@ pub async fn rotate_recovery(
         })?
         .ok_or(ApiError::BadRequest)?;
 
-    let code = RecoveryCode::generate(Some(data.aws_credential_manager.clone())).await;
+    let code = RecoveryCode::generate(Some(data.aws_credential_manager.clone()))
+        .await
+        .map_err(|e| {
+            error!("Failed to generate replacement recovery code: {:?}", e);
+            ApiError::InternalServerError
+        })?;
 
     // Seals and verifies the replacement wrap byte-for-byte before any
     // database work.
