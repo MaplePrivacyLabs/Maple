@@ -17,6 +17,14 @@ Use awaitable APIs instead of `asyncio.run()` inside this loop. Synchronous call
 such as `time.sleep()` or `subprocess.run()` pause background asyncio work until
 they return.
 
+Python calls submitted together execute one at a time in submission order, after
+those Python calls' permissions are resolved. Denied calls do not hold a place in the
+queue. At most 32 approved Python calls are admitted per batch, including the
+active call; excess calls return a tool error without running. Reset is part of
+that order, so later cells see the new namespace. Stop discards waiting calls.
+Use `asyncio.gather` inside a cell for concurrent async work. Other tools remain
+concurrent and provide no ordering guarantee relative to Python.
+
 The bundle provides the standard library. Project modules can be explicitly
 imported from the task root; compatible dependency directories can be explicitly
 added to `sys.path`. A shell-created virtual environment does not change the
@@ -78,6 +86,13 @@ bounded output, process supervision and capacity. Maple binds it to existing
 account/task/context authority. Reconstructed developer clients share that task
 binding. Goose-created subagents construct their own clients and have no Python
 capability in this feature.
+
+An opt-in scheduler in the pinned Goose fork orders the supported `python_code`
+and `developer__python_code` names together. It schedules cold tool streams after
+permission decisions in both Goose loop implementations; waiting calls do not
+prepare Python, resolve PATH or start workers. This is a bounded batch scheduler,
+not a durable job queue or an RLM child scheduler. Direct adapter calls and
+unsupported recovered tool-name spellings retain the runtime's busy guard.
 
 Package resolution and the existing bounded login-PATH probe run only for an
 approved first execution, outside Maple lifecycle locks. Every admission rechecks

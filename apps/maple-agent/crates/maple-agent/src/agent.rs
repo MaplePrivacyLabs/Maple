@@ -2577,7 +2577,14 @@ async fn start_runtime_for_user(
         true,
         GoosePlatform::GooseDesktop,
     )
-    .with_use_login_shell_path(true);
+    .with_use_login_shell_path(true)
+    .with_ordered_tool_calls(
+        [
+            "python_code".to_string(),
+            "developer__python_code".to_string(),
+        ],
+        code_mode::MAX_PYTHON_BATCH_CALLS,
+    );
     let agent_manager = Arc::new(
         AgentManager::new(goose_config, None)
             .await

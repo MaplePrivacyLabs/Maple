@@ -3,6 +3,9 @@
 //! A binding is installed before asynchronous agent preparation. Retirement
 //! closes this capability immediately, even if its first call is still repairing
 //! PATH and has not created a runtime handle yet.
+#[cfg(test)]
+mod ordered_tests;
+
 use super::image_mediation::prioritized_text;
 use super::tool_context::{AgentToolContextSnapshot, SENSITIVE_BRIDGE_ENV, SharedAgentToolContext};
 use goose::agents::ToolCallContext;
@@ -17,12 +20,14 @@ use std::collections::BTreeMap;
 use std::ffi::{OsStr, OsString};
 use std::fmt::Write;
 use std::future::Future;
+use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use tokio_util::sync::CancellationToken;
 
 pub(super) const PYTHON_TOOL_NAME: &str = "python_code";
+pub(super) const MAX_PYTHON_BATCH_CALLS: NonZeroUsize = NonZeroUsize::new(32).unwrap();
 const RESULT_VERSION: u8 = 1;
 const MAX_ERROR_BYTES: usize = 8 * 1024;
 const RESET_REASON: &str =
@@ -60,6 +65,8 @@ pub(super) fn python_tool() -> Tool {
     Tool::new(
         PYTHON_TOOL_NAME.to_string(),
         r#"Execute Python in this task's persistent bundled CPython scratchpad. Variables, functions, imports, and background asyncio work survive calls and model turns. A non-None final expression is displayed and retained in _. Use top-level await; a final expression that merely returns an awaitable is not automatically awaited. asyncio.run() and synchronous wrappers that start another loop cannot run here; use their awaitable APIs or a separate script through the existing execution tools.
+
+Python calls in one tool batch execute one at a time in the order submitted, after those Python calls' permissions are resolved. Up to 32 approved calls are admitted per batch; excess calls fail without execution. Denied calls are skipped. Use asyncio.gather within a cell for concurrent async work. Other tools can run concurrently with Python; do not rely on them finishing before a Python cell.
 
 The bundle guarantees the Python standard library, not project packages or a writable shared installation. The task root is available for explicit project imports. Inspect sys.executable and explicitly add a known compatible dependency directory to sys.path when needed. Creating or activating a venv in a shell does not retarget this retained worker. There is no Maple Python SDK yet.
 

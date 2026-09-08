@@ -47,7 +47,8 @@ remove Tauri:
 
 Goose is pinned to a fork revision based on upstream v1.53.0 in this
 component’s Cargo manifests and lockfile. The fork forwards subagent approvals
-to the parent and supports ephemeral native clients for embedded CUA. Research
+to the parent and supports ephemeral native clients for embedded CUA and opt-in ordered tool
+scheduling. Research
 has an independent dependency graph.
 
 ## Features
