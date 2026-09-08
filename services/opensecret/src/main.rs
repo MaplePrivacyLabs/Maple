@@ -24,7 +24,7 @@ use crate::web::platform_login_routes;
 use crate::web::{
     conversation_projects_routes, conversations_routes, health_routes, instructions_routes,
     login_routes, native_handoff_routes, oauth_routes, openai_models_routes, openai_routes,
-    protected_routes, responses_routes, web_routes,
+    protected_routes, recovery_router, responses_routes, web_routes,
 };
 use crate::{attestation_routes::SessionState, web::platform_routes};
 use bounded_ttl_cache::BoundedTtlCache;
@@ -3834,7 +3834,7 @@ async fn retrieve_kagi_api_key(
 fn application_routes(app_state: Arc<AppState>) -> Router<()> {
     protected_routes(app_state.clone())
         .route_layer(from_fn_with_state(app_state.clone(), validate_jwt))
-        .merge(protected_routes::recovery_router(app_state.clone()))
+        .merge(recovery_router(app_state.clone()))
         .merge(login_routes(app_state.clone()))
         .merge(
             openai_routes(app_state.clone())

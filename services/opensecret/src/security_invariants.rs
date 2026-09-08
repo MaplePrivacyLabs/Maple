@@ -1230,7 +1230,7 @@ fn recovery_management_routes_require_jwt_and_v2_transport() {
         fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/main.rs"))
             .expect("main source should be readable");
     assert!(
-        main_contents.contains("protected_routes::recovery_router(app_state.clone())"),
+        main_contents.contains("recovery_router(app_state.clone())"),
         "application routes must merge the dedicated recovery sub-router"
     );
 }
