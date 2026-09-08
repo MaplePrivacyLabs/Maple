@@ -3927,6 +3927,31 @@ mod state_tests {
         );
     }
 
+    #[gpui::test]
+    fn test_retained_python_is_resettable_on_a_settled_task(cx: &mut TestAppContext) {
+        let screen = screen(cx);
+        screen.update(cx, |this, cx| {
+            this.sessions = vec![summary("s1", "Retained scratchpad")];
+            this.sessions[0].state = AgentTaskState::Settled;
+            this.sync_sidebar(cx);
+            assert_eq!(this.sidebar_settled(cx), vec![0]);
+            this.sidebar.update(cx, |sidebar, cx| {
+                sidebar.open_task_menu_for_test("s1", cx);
+                assert!(
+                    !sidebar
+                        .task_menu_labels_for_test("s1")
+                        .contains(&"Reset Python")
+                );
+                sidebar.set_python_resettable_for_test(true);
+                assert!(
+                    sidebar
+                        .task_menu_labels_for_test("s1")
+                        .contains(&"Reset Python")
+                );
+            });
+        });
+    }
+
     /// Choosing any task-menu item closes the menu: a ladder move and a
     /// pin toggle alike.
     #[gpui::test]

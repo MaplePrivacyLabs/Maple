@@ -103,6 +103,7 @@ class AgentWorkflowBoundaryTests(unittest.TestCase):
             self.assertIn(command, commands)
         archive = next(step for step in steps if step.get("name") == "Stage complete Linux CI archive")
         self.assertIn("scripts/prepare-python.py", archive["run"])
+        self.assertIn("--binary target/release/maple-agent ", archive["run"])
         self.assertIn("--runtime target/release/runtime/python", archive["run"])
         self.assertIn("--output-dir target/ci-dist", archive["run"])
         upload = next(step for step in steps if "upload-artifact@" in step.get("uses", ""))
@@ -110,6 +111,7 @@ class AgentWorkflowBoundaryTests(unittest.TestCase):
         nix = config["jobs"]["nix-python"]
         self.assertEqual(nix["runs-on"], "ubuntu-24.04-arm")
         commands = "\n".join(step.get("run", "") for step in nix["steps"])
+        self.assertIn("/share/maple-agent/python/runtime.json", commands)
         for command in ("nix build --no-update-lock-file .#default",
                         "export MAPLE_CODE_MODE_RUNTIME_MANIFEST=", "just python-test",
                         "cargo test -p maple-code-mode --locked", "just code-mode-smoke",

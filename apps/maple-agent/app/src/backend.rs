@@ -20,7 +20,7 @@ use std::sync::Arc;
 use maple_agent::agent::{
     AgentCreateSessionRequest, AgentDesktopQueueSnapshot, AgentEventSink, AgentIntegration,
     AgentIntegrationPermissionKind, AgentIntegrationPermissions, AgentProjectRootRegistration,
-    AgentProjectTrustStatus, AgentQueueControlRequest, AgentRenameSessionRequest,
+    AgentProjectTrustStatus, AgentPythonStatus, AgentQueueControlRequest, AgentRenameSessionRequest,
     AgentRuntimeStatus, AgentSendMessageRequest, AgentServiceEvent, AgentSessionDetail,
     AgentSessionSummary, AgentSetIntegrationEnabledRequest, AgentSetupIntegrationRequest,
     AgentSlashCommand, AgentStartRequest, AgentSubagent, AgentTaskState, MapleAgentHostResources,
@@ -50,8 +50,8 @@ pub struct PendingPermission {
     pub request_id: String,
     pub tool_name: String,
     pub prompt: Option<String>,
-    /// Pretty-printed tool arguments, formatted once when the request
-    /// arrives instead of on every frame.
+    /// Prepared tool arguments, including literal multiline Python source,
+    /// formatted once when the request arrives instead of on every frame.
     pub arguments: Arc<str>,
 }
 
@@ -1943,6 +1943,28 @@ impl AgentBackend {
             .handle_for_user(user_id)
             .await?
             .compact_session(session_id.to_string())
+            .await
+    }
+
+    /// Read the current task's reset availability without starting Python.
+    pub async fn python_status(
+        &self,
+        user_id: &str,
+        session_id: &str,
+    ) -> Result<AgentPythonStatus, String> {
+        self.service
+            .handle_for_user(user_id)
+            .await?
+            .python_status(session_id.to_string())
+            .await
+    }
+
+    /// Reset the currently retained task state; success means cleanup completed.
+    pub async fn reset_python(&self, user_id: &str, session_id: &str) -> Result<(), String> {
+        self.service
+            .handle_for_user(user_id)
+            .await?
+            .reset_python(session_id.to_string())
             .await
     }
 

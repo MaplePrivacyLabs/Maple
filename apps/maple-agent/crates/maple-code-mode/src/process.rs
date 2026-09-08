@@ -68,7 +68,7 @@ impl ProcessControl {
     }
 
     /// Only complete platform cleanup is an exit snapshot.
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     pub(crate) fn exited(&self) -> Option<ProcessExit> {
         match &*self.cleanup.borrow() {
             Cleanup::Complete(exit) => Some(exit.clone()),
