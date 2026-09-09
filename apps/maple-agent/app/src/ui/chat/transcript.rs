@@ -826,6 +826,7 @@ fn render_tool_with_diff(
 pub(super) fn tool_label_title(title: &str) -> &str {
     const LABELS: &[&str] = &[
         "Terminal",
+        "Python",
         "Subagent",
         "Load",
         "Editor",
@@ -935,8 +936,8 @@ fn render_tool(
     let derived = transcript.derived.get(item, revision);
     // A click anywhere on the card, payload included, toggles it.
     let mut payload = div().flex().flex_col().gap_1();
-    // Expanded: the call arguments and, until a summary exists, the raw
-    // output.
+    // Python retains its result details after summarization: the namespace,
+    // traceback, and output-loss notices remain inspectable.
     if let Some(input) = &derived.input_line {
         payload = payload.child(
             div()
@@ -947,7 +948,9 @@ fn render_tool(
                 .child(input.clone()),
         );
     }
-    if !has_summary && let Some(output) = &derived.output_text {
+    if tool_output_visible(item, has_summary)
+        && let Some(output) = &derived.output_text
+    {
         payload = payload.child(
             div()
                 .mt_1()
@@ -963,6 +966,43 @@ fn render_tool(
         );
     }
     div().child(card.child(payload))
+}
+
+fn tool_output_visible(item: &AgentTimelineItem, has_summary: bool) -> bool {
+    !has_summary
+        || item
+            .output
+            .as_ref()
+            .and_then(|output| output.pointer("/structuredContent/maple_python/version"))
+            .and_then(serde_json::Value::as_u64)
+            == Some(1)
+}
+
+/// Approval has no result marker yet. Match the Maple tool identity rather
+/// than recognizing arbitrary extensions whose names happen to end in Python.
+fn is_python_tool(tool_name: &str) -> bool {
+    matches!(tool_name, "python_code" | "developer__python_code")
+}
+
+/// Prepare arguments on request arrival. Python source is literal multiline
+/// text, including the final line; the scrollable card never substitutes an
+/// abbreviated excerpt for the code being approved.
+pub(super) fn permission_arguments(tool_name: &str, arguments: &serde_json::Value) -> Arc<str> {
+    if arguments.is_null() {
+        return "".into();
+    }
+    if is_python_tool(tool_name) {
+        let formatted = format_tool_input(arguments);
+        if arguments.get("reset").is_none() {
+            format!("reset: false\n{formatted}").into()
+        } else {
+            formatted.into()
+        }
+    } else {
+        serde_json::to_string_pretty(arguments)
+            .unwrap_or_default()
+            .into()
+    }
 }
 
 /// Readable form of the call arguments: one `key: value` line per
@@ -1345,15 +1385,22 @@ pub(super) fn render_permission_card(
                 .child(description),
         );
     if !arguments.is_empty() {
-        card = card.child(
-            div()
-                .text_xs()
-                .text_color(gpui::rgb(theme::text_muted()))
-                .font_family(crate::assets::FONT_MONO)
-                .max_h(gpui::px(120.))
-                .overflow_hidden()
-                .child(arguments),
-        );
+        let payload = div()
+            .text_xs()
+            .text_color(gpui::rgb(theme::text_muted()))
+            .font_family(crate::assets::FONT_MONO)
+            .max_h(gpui::px(120.))
+            .child(arguments);
+        card = if is_python_tool(&permission.tool_name) {
+            card.child(
+                payload
+                    .id(SharedString::from(permission.request_id.clone()))
+                    .overflow_scroll()
+                    .whitespace_nowrap(),
+            )
+        } else {
+            card.child(payload.overflow_hidden())
+        };
     }
     let mut buttons = div().flex().gap_2();
     for (index, (id, label, allow, color)) in [
@@ -1406,4 +1453,77 @@ pub(super) fn render_permission_card(
         );
     }
     card.child(buttons)
+}
+
+#[cfg(test)]
+mod python_presentation_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn approval_preserves_multiline_source_and_explicit_reset() {
+        let source = format!("{}\nprint('final Ω line')", "value = 1\n".repeat(12_000));
+        for name in ["python_code", "developer__python_code"] {
+            let arguments = permission_arguments(name, &json!({"code": source, "reset": true}));
+            assert!(arguments.contains(&source));
+            assert!(arguments.contains("reset: true"));
+            assert!(!arguments.contains("\\n"));
+            assert!(arguments.contains("print('final Ω line')"));
+        }
+        let defaults = permission_arguments("python_code", &json!({"code": "40 + 2"}));
+        assert!(defaults.contains("reset: false"));
+        assert!(defaults.contains("code: 40 + 2"));
+    }
+
+    #[test]
+    fn approval_formatting_is_specific_to_maples_python_tool() {
+        let arguments = json!({"code": "first\nsecond", "reset": false});
+        for name in ["shell", "other__python_code", "python_code_extra"] {
+            assert_eq!(
+                permission_arguments(name, &arguments).as_ref(),
+                serde_json::to_string_pretty(&arguments).unwrap()
+            );
+        }
+        // A malformed reset value stays inspectable rather than appearing
+        // to be the valid default that the user did not submit.
+        assert!(
+            permission_arguments("python_code", &json!({"code": "42", "reset": "invalid"}))
+                .contains("reset: invalid")
+        );
+    }
+
+    #[test]
+    fn python_results_remain_inspectable_after_summary_without_changing_other_tools() {
+        let mut item = AgentTimelineItem {
+            id: "call".into(),
+            item_type: "tool".into(),
+            role: None,
+            title: Some("Python: print('hello')".into()),
+            text: None,
+            status: Some("completed".into()),
+            input: Some(json!({"code": "print('hello')", "reset": false})),
+            output: None,
+            created_ms: 0,
+            merge: "replace".into(),
+        };
+        assert_eq!(tool_label_title(item.title.as_deref().unwrap()), "Python");
+        assert!(tool_output_visible(&item, false));
+        assert!(!tool_output_visible(&item, true));
+        for kind in ["execution", "reset", "error"] {
+            item.output = Some(json!({
+                "text": "Traceback\nValueError: invalid\nOutput truncated; Python state was lost.",
+                "structuredContent": {"maple_python": {"version": 1, "kind": kind}}
+            }));
+            assert!(tool_output_visible(&item, true));
+            assert!(
+                tool_output_markdown(&item)
+                    .unwrap()
+                    .contains("Python state was lost.")
+            );
+        }
+        item.output = Some(json!({"structuredContent": {"maple_python": {"version": 2}}}));
+        assert!(!tool_output_visible(&item, true));
+        item.output = Some(json!({"text": "maple_python version 1"}));
+        assert!(!tool_output_visible(&item, true));
+    }
 }

@@ -83,7 +83,15 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest-8-cores, macos-26, windows-latest]
+        include:
+          - os: ubuntu-latest-8-cores
+            focused: false
+          - os: macos-26
+            focused: false
+          - os: windows-latest
+            focused: false
+          - os: macos-15-intel
+            focused: true
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
@@ -101,6 +109,12 @@ jobs:
         with:
           # Matches the component's frozen rust-overlay input.
           toolchain: 1.98.0
+
+      - name: Install Windows build Python
+        if: runner.os == 'Windows'
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.13'
 
       - name: Cache Agent Rust dependencies
         uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
@@ -122,20 +136,39 @@ jobs:
           fi
           python3 ../../scripts/ci/verify-agent-rust-deps.py "$metadata"
 
+      # Linux runs these same worker and packaging suites through just ci.
+      - name: Prepare pinned Python and test worker packaging
+        if: runner.os != 'Linux'
+        run: |
+          if [ "$RUNNER_OS" = Windows ]; then
+            python scripts/prepare-python.py
+            python scripts/test-python-worker.py
+            python -m unittest discover -s scripts/tests
+          else
+            nix develop --no-update-lock-file . -c just python-test
+            nix develop --no-update-lock-file . -c python3 -m unittest discover -s scripts/tests
+          fi
+
       - name: Format, lint, build, and test Linux feature matrix
         if: runner.os == 'Linux'
         run: nix develop --no-update-lock-file . -c just ci
 
       - name: Build macOS workspace and test targets
-        if: runner.os == 'macOS'
+        if: runner.os == 'macOS' && !matrix.focused
         run: nix develop --no-update-lock-file . -c cargo build --workspace --all-targets --locked
 
+      - name: Build and test focused Intel macOS worker
+        if: matrix.focused
+        run: |
+          nix develop --no-update-lock-file . -c cargo build -p maple-code-mode --all-targets --locked
+          nix develop --no-update-lock-file . -c cargo test -p maple-code-mode --locked
+
       - name: Package and smoke macOS debug app
-        if: runner.os == 'macOS'
+        if: runner.os == 'macOS' && !matrix.focused
         run: nix develop --no-update-lock-file . -c ./scripts/macos-debug-app.sh
 
       - name: Test macOS workspace
-        if: runner.os == 'macOS'
+        if: runner.os == 'macOS' && !matrix.focused
         run: nix develop --no-update-lock-file . -c cargo test --workspace --locked
 
       - name: Build and test Windows workspace
@@ -144,16 +177,72 @@ jobs:
           cargo build --workspace --all-targets --locked
           cargo test --workspace --locked
 
+      - name: CodeMode debug smoke and relocated package without Python on PATH
+        run: |
+          if [ "$RUNNER_OS" = Windows ]; then
+            cargo run -p maple-code-mode --bin code-mode-smoke --locked
+            python scripts/check-python-package.py --smoke target/debug/code-mode-smoke.exe
+          else
+            nix develop --no-update-lock-file . -c just code-mode-smoke
+            nix develop --no-update-lock-file . -c python3 scripts/check-python-package.py --smoke target/debug/code-mode-smoke
+          fi
+
       - name: Build Linux release binary
         if: runner.os == 'Linux'
         run: nix develop --no-update-lock-file . -c just release
 
+      - name: Stage complete Linux CI archive
+        if: runner.os == 'Linux'
+        run: |
+          nix develop --no-update-lock-file . -c python3 scripts/prepare-python.py \
+            --distribution pbs --destination target/release/runtime/python
+          nix develop --no-update-lock-file . -c python3 scripts/package-archive.py \
+            --binary target/release/maple-gpui --runtime target/release/runtime/python \
+            --name "maple-agent-linux-x86_64-ci-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" \
+            --output-dir target/ci-dist
+
       # This is an unsigned CI build, never a GitHub Release or an updater feed.
-      - name: Upload Linux CI binary
+      - name: Upload complete Linux CI archive
         if: runner.os == 'Linux'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: maple-agent-linux-x86_64-ci-${{ github.run_id }}-${{ github.run_attempt }}
-          path: apps/maple-agent/target/release/maple-gpui
+          path: apps/maple-agent/target/ci-dist/*
           if-no-files-found: error
           retention-days: 5
+
+  nix-python:
+    name: Agent Nix runtime and package (Linux ARM64)
+    needs: changes
+    if: ${{ always() && !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.agent != 'false') }}
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+
+      - name: Install pinned Nix environment
+        uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
+        with:
+          github-token: ""
+
+      - name: Build package with its retained interpreter
+        run: nix build --no-update-lock-file .#default
+
+      - name: Verify installed closure and native worker
+        run: |
+          manifest="$(readlink -f result)/share/maple-gpui/python/runtime.json"
+          export MAPLE_CODE_MODE_DISTRIBUTION=nix
+          export MAPLE_CODE_MODE_RUNTIME_MANIFEST="$manifest"
+          nix develop --no-update-lock-file . -c just python-test
+          nix develop --no-update-lock-file . -c cargo test -p maple-code-mode --locked
+          nix develop --no-update-lock-file . -c just code-mode-smoke
+          nix path-info --recursive ./result > closure.txt
+          nix develop --no-update-lock-file . -c python3 - "$manifest" <<'PYTHON'
+          import json, pathlib, subprocess, sys
+          manifest = json.loads(pathlib.Path(sys.argv[1]).read_text())
+          interpreter = pathlib.Path(manifest['executable'])
+          assert str(interpreter.parents[1]) in pathlib.Path('closure.txt').read_text().splitlines()
+          subprocess.run([str(interpreter), '-I', '-B', '-c', 'import ssl, sqlite3, ctypes, zlib, bz2, lzma'], check=True, env={})
+          PYTHON

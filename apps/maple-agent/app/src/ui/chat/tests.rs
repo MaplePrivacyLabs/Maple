@@ -1958,6 +1958,31 @@ mod state_tests {
         });
     }
 
+    #[gpui::test]
+    fn test_retained_python_is_resettable_on_a_settled_task(cx: &mut TestAppContext) {
+        let screen = screen(cx);
+        screen.update(cx, |this, cx| {
+            this.sessions = vec![summary("s1", "Retained scratchpad")];
+            this.sync_sidebar(cx);
+            this.sidebar.update(cx, |sidebar, cx| {
+                sidebar.settle_task("s1", cx);
+                assert!(sidebar.settled_tasks().contains("s1"));
+                sidebar.open_task_menu_for_test("s1", cx);
+                assert!(
+                    !sidebar
+                        .task_menu_labels_for_test("s1")
+                        .contains(&"Reset Python")
+                );
+                sidebar.set_python_resettable_for_test(true);
+                assert!(
+                    sidebar
+                        .task_menu_labels_for_test("s1")
+                        .contains(&"Reset Python")
+                );
+            });
+        });
+    }
+
     /// Application Vim drives the switcher popup: a count prefix reaches
     /// a project row and Enter scopes the sidebar to it.
     #[gpui::test]

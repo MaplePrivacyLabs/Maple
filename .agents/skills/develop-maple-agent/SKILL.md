@@ -33,6 +33,14 @@ build and performance evidence. Root `just agent-check`, `agent-build`, and
 --no-update-lock-file` additionally validates workflow selection and security
 contracts when CI, Nix, or routing changes.
 
+`just test` and `just ci` prepare the pinned bundled CPython fixture and run its
+worker and packaging suites. `just code-mode-smoke` exercises the actual worker;
+direct Cargo worker tests require `just python-prepare` first. These commands
+run from `apps/maple-agent/`. Runtime execution never downloads Python or falls
+back to the system interpreter. Linux Nix packages retain their separately
+declared CPython runtime closure; portable debug/archive layouts use the pinned
+Python standalone distribution.
+
 Agent has its own Cargo and Nix lockfiles. Shared Rust SDK/proxy runtime
 changes must select Agent as well as the Research consumer; component-only
 changes must not unnecessarily select Research packaging. Maintain the root

@@ -8,6 +8,12 @@
 
 use super::*;
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentPythonStatus {
+    pub resettable: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentConfig {
@@ -865,7 +871,7 @@ pub(super) async fn release_tool_context_lease(
         (removed, Arc::clone(&current.agent_manager))
     };
     if let Some(installed) = removed {
-        installed.context.revoke();
+        installed.revoke("Python task ownership ended");
         // Dropping the cached Agent is the fail-closed way to remove every
         // transient MCP client (and any secret-bearing HTTP headers) without
         // mutating the persisted extension set. A later Desktop or ACP use
@@ -918,7 +924,7 @@ pub(super) async fn cleanup_provisional_created_session(
                     access.installation_id,
                     &access.context,
                 ) {
-                    installed.context.revoke();
+                    installed.revoke("Python task ownership ended");
                 }
                 Some(Arc::clone(&current.permission_modes))
             }

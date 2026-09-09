@@ -11,6 +11,7 @@ default = ["acp"]
 acp = ["dep:agent-client-protocol"]
 
 [dependencies]
+maple-code-mode = { path = "../maple-code-mode" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 log = { workspace = true }
@@ -23,8 +24,8 @@ once_cell = { workspace = true }
 http = { workspace = true }
 reqwest = { workspace = true }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
-goose = { git = "https://github.com/AnthonyRonning/goose.git", rev = "785d655d110746147117d23690e09cc7023aa9dc", package = "goose", default-features = false }
-goose-providers = { git = "https://github.com/AnthonyRonning/goose.git", rev = "785d655d110746147117d23690e09cc7023aa9dc", package = "goose-providers", default-features = false }
+goose = { git = "https://github.com/AnthonyRonning/goose.git", rev = "bf62027fd499ad3133af35db9f0f566de6a5cc4c", package = "goose", default-features = false }
+goose-providers = { git = "https://github.com/AnthonyRonning/goose.git", rev = "bf62027fd499ad3133af35db9f0f566de6a5cc4c", package = "goose-providers", default-features = false }
 maple-sdk = { workspace = true }
 maple-proxy = { workspace = true }
 rand = "0.8.6"

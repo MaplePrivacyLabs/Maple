@@ -48,8 +48,8 @@ use self::navigation::ApplicationVimState;
 use self::sidebar::SessionActivity;
 use self::sidebar::{Sidebar, SidebarEvent, root_display_name, session_summary_eq};
 use self::transcript::{
-    ActiveSubagent, PlanEntry, PlanStatus, plan_entries, render_permission_card,
-    render_question_card, render_waiting_indicator,
+    ActiveSubagent, PlanEntry, PlanStatus, permission_arguments, plan_entries,
+    render_permission_card, render_question_card, render_waiting_indicator,
 };
 
 gpui::actions!(
@@ -4101,13 +4101,7 @@ impl ChatScreen {
                     self.apply_timeline_item(session_id, item);
                 }
                 let arguments = serde_json::Value::Object(request.arguments);
-                let arguments: std::sync::Arc<str> = if arguments.is_null() {
-                    "".into()
-                } else {
-                    serde_json::to_string_pretty(&arguments)
-                        .unwrap_or_default()
-                        .into()
-                };
+                let arguments = permission_arguments(&request.tool_name, &arguments);
                 let prompt = request
                     .prompt
                     .clone()

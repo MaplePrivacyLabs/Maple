@@ -1,4 +1,7 @@
 use super::attachments::{AgentAttachmentStore, attachment_id_from_source};
+use super::code_mode::{
+    PYTHON_TOOL_NAME, PythonParams, PythonTaskBinding, python_error, python_tool,
+};
 use super::web_tools::{
     OPEN_URL_TOOL_NAME, OpenUrlParams, WEB_SEARCH_TOOL_NAME, WebSearchParams, WebToolState,
     bound_open_url_tool_error, bound_web_search_tool_error, execute_open_url, execute_web_search,
@@ -145,6 +148,7 @@ pub(crate) struct MapleDeveloperClient {
     web_transport: Arc<dyn MapleWebTransport>,
     web_state: Arc<WebToolState>,
     tool_context: SharedAgentToolContext,
+    python_binding: Option<Arc<PythonTaskBinding>>,
     contextual_image_context: Option<PlatformExtensionContext>,
     attachment_store: Option<Arc<AgentAttachmentStore>>,
     /// When false the web tools are left out of the catalog entirely, so
@@ -185,6 +189,7 @@ impl MapleDeveloperClient {
             web_transport,
             web_state,
             tool_context,
+            python_binding: None,
             contextual_image_context,
             attachment_store: None,
             web_enabled: true,
@@ -198,6 +203,11 @@ impl MapleDeveloperClient {
 
     pub(super) fn with_attachment_store(mut self, store: Arc<AgentAttachmentStore>) -> Self {
         self.attachment_store = Some(store);
+        self
+    }
+
+    pub(super) fn with_python_binding(mut self, binding: Arc<PythonTaskBinding>) -> Self {
+        self.python_binding = Some(binding);
         self
     }
 
@@ -589,6 +599,7 @@ impl McpClientTrait for MapleDeveloperClient {
             .any(|tool| !seen_names.insert(tool.name.to_string()))
             || seen_names.contains(WEB_SEARCH_TOOL_NAME)
             || seen_names.contains(OPEN_URL_TOOL_NAME)
+            || seen_names.contains(PYTHON_TOOL_NAME)
         {
             log::error!("Goose developer tools contained a duplicate Maple-owned tool name");
             return Err(Error::UnexpectedResponse);
@@ -619,6 +630,9 @@ impl McpClientTrait for MapleDeveloperClient {
             tools.push(web_search_tool());
             tools.push(open_url_tool());
         }
+        if self.python_binding.is_some() {
+            tools.push(python_tool());
+        }
 
         if let Some(router) = self.tool_context.transient_mcp() {
             if tools
@@ -648,6 +662,22 @@ impl McpClientTrait for MapleDeveloperClient {
     ) -> Result<CallToolResult, Error> {
         let working_dir = ctx.working_dir.as_deref();
         let result = match name {
+            PYTHON_TOOL_NAME => {
+                let Some(binding) = &self.python_binding else {
+                    return Ok(python_error(
+                        "Python is unavailable in this agent's tool context",
+                    ));
+                };
+                let params = match Self::parse_args::<PythonParams>(arguments) {
+                    Ok(params) => params,
+                    Err(error) => return Ok(python_error(error)),
+                };
+                #[cfg(not(windows))]
+                let login_path = self.login_path();
+                #[cfg(windows)]
+                let login_path = std::future::ready(None);
+                return Ok(binding.call(params, ctx, login_path, cancel_token).await);
+            }
             "read" => match Self::parse_args::<ReadParams>(arguments) {
                 Ok(params) => read_file(params, working_dir, cancel_token).await,
                 Err(error) => error_result(error),
@@ -2931,6 +2961,144 @@ mod tests {
                 .unwrap()
                 .contains(&serde_json::json!("purpose"))
         );
+    }
+
+    #[tokio::test]
+    async fn python_catalog_requires_the_injected_task_capability_and_never_probes() {
+        let temp = TestDir::new();
+        let client = test_client(temp.path().join("sessions"), true);
+        let denied = client
+            .call_tool(
+                &ToolCallContext::new("session".into(), None, None),
+                PYTHON_TOOL_NAME,
+                Some(object!({ "code": "", "reset": true })),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert!(denied.is_error.unwrap());
+
+        let runtime = maple_code_mode::Runtime::default();
+        let binding = Arc::new(PythonTaskBinding::new(
+            runtime.clone(),
+            "catalog-task".into(),
+            "session".into(),
+            temp.path().to_path_buf(),
+            client.tool_context.clone(),
+        ));
+        let client = client.with_python_binding(binding);
+        let catalog = client
+            .list_tools("session", None, CancellationToken::new())
+            .await
+            .unwrap();
+        let python = catalog
+            .tools
+            .iter()
+            .find(|tool| tool.name == PYTHON_TOOL_NAME)
+            .unwrap();
+        let python = serde_json::to_value(python).unwrap();
+        assert_eq!(
+            python["inputSchema"]["required"],
+            serde_json::json!(["code"])
+        );
+        assert_eq!(
+            python["inputSchema"]["properties"]["reset"]["default"],
+            false
+        );
+        assert_eq!(python["annotations"]["readOnlyHint"], false);
+        assert_eq!(python["annotations"]["title"], "Python");
+        let reset = client
+            .call_tool(
+                &ToolCallContext::new("session".into(), None, None),
+                PYTHON_TOOL_NAME,
+                Some(object!({ "code": "", "reset": true })),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert!(!reset.is_error.unwrap_or(false));
+        assert_eq!(
+            reset.structured_content.unwrap()["maple_python"]["kind"],
+            "reset"
+        );
+        #[cfg(not(windows))]
+        assert!(client.login_path.get().is_none());
+        assert!(runtime.snapshot().holders.is_empty());
+        runtime.shutdown("catalog test complete").await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn reconstructed_python_clients_share_native_task_state() {
+        let temp = TestDir::new();
+        let root = fs::canonicalize(temp.path()).unwrap();
+        let runtime = maple_code_mode::Runtime::default();
+        let client = test_client(temp.path().join("sessions"), true);
+        let manifest = std::env::var_os("MAPLE_CODE_MODE_RUNTIME_MANIFEST")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| {
+                Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../target/debug/runtime/python/runtime.json")
+            });
+        let package = maple_code_mode::PackagedPython::from_manifest(manifest)
+            .expect("prepare the bundled Python fixture with `nix develop -c just python-prepare`");
+        let binding = Arc::new(
+            PythonTaskBinding::new(
+                runtime.clone(),
+                "reconstructed-client-task".into(),
+                "session".into(),
+                root.clone(),
+                client.tool_context.clone(),
+            )
+            .with_packaged_python(package),
+        );
+        let client = client.with_python_binding(binding.clone());
+        // Native tests consume the prepared fixture; they do not need a real
+        // interactive shell or mutate this process's environment to repair PATH.
+        #[cfg(not(windows))]
+        client.login_path.set(std::env::var("PATH").ok()).unwrap();
+        let ctx = ToolCallContext::new("session".into(), Some(root), None);
+        let first = client
+            .call_tool(
+                &ctx,
+                PYTHON_TOOL_NAME,
+                Some(object!({ "code": "answer = 40\nanswer" })),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert!(!first.is_error.unwrap_or(false), "{first:?}");
+        let context = client.tool_context.clone();
+        drop(client);
+        let reconstructed = MapleDeveloperClient::new(
+            test_context(temp.path().join("sessions")),
+            true,
+            Arc::new(TestWebTransport),
+            Arc::new(WebToolState::default()),
+            context,
+        )
+        .unwrap()
+        .with_python_binding(binding.clone());
+        let second = reconstructed
+            .call_tool(
+                &ctx,
+                PYTHON_TOOL_NAME,
+                Some(object!({ "code": "answer + 2" })),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert!(!second.is_error.unwrap_or(false), "{second:?}");
+        let first = first.structured_content.unwrap();
+        let second = second.structured_content.unwrap();
+        assert_eq!(second["maple_python"]["value"], "42");
+        assert_eq!(
+            first["maple_python"]["generation"],
+            second["maple_python"]["generation"]
+        );
+        #[cfg(not(windows))]
+        assert!(reconstructed.login_path.get().is_none());
+        binding.retire("test complete").await.unwrap();
+        runtime.shutdown("test complete").await.unwrap();
     }
 
     #[tokio::test]

@@ -6,6 +6,7 @@
 mod attachments;
 #[cfg(target_os = "macos")]
 mod bounded_process;
+mod code_mode;
 #[cfg(embedded_cua)]
 mod cua;
 mod developer_tools;
@@ -33,6 +34,7 @@ mod web_tools;
 use crate::maple_api::{MapleApiSession, account_scope};
 pub use attachments::AgentImageUpload;
 use attachments::{AgentAttachmentStore, AgentImageAttachment, PreparedAgentImage};
+use code_mode::PythonTaskBinding;
 #[cfg(test)]
 use developer_tools::EXTERNAL_MCP_TOOL_NAME;
 use developer_tools::MapleDeveloperClient;
@@ -121,9 +123,10 @@ pub fn begin_integration_setup(
     }
 }
 #[cfg(test)]
-const MAPLE_DEVELOPER_TOOLS: [&str; 10] = [
+const MAPLE_DEVELOPER_TOOLS: [&str; 11] = [
     "read",
     "shell",
+    "python_code",
     "edit",
     "write",
     "read_image",
@@ -160,6 +163,7 @@ const MAPLE_GOOSE_PERMISSION_CONFIG: &str = r#"user:
   - delegate
   - read
   - shell
+  - python_code
   - edit
   - write
   - read_image
@@ -367,6 +371,28 @@ struct InstalledAgentToolContext {
     installation_id: u64,
     context: SharedAgentToolContext,
     owner: AgentToolContextOwner,
+    python: Option<Arc<PythonTaskBinding>>,
+}
+
+impl InstalledAgentToolContext {
+    /// Close admission synchronously; observing cleanup never holds Maple's locks.
+    fn retire_python(&self, reason: &str) {
+        if let Some(binding) = &self.python {
+            let cleanup = binding.retire(reason.to_string());
+            if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+                runtime.spawn(async move {
+                    if let Err(error) = cleanup.await {
+                        log::warn!("Python worker cleanup remains pending: {error}");
+                    }
+                });
+            }
+        }
+    }
+
+    fn revoke(&self, reason: &str) {
+        self.context.revoke();
+        self.retire_python(reason);
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -629,9 +655,188 @@ fn resolve_session_tool_context(
             installation_id: next_tool_context_installation_id(),
             context: context.clone(),
             owner: AgentToolContextOwner::Maple,
+            python: None,
         },
     );
     Ok(context)
+}
+
+fn python_task_key(account_scope: &str, session_id: &str) -> String {
+    // The existing context installation fences authority. A stable task key also
+    // keeps replacement owners behind this task's exact process cleanup barrier.
+    format!("{account_scope}:{session_id}")
+}
+
+fn resolve_session_python(
+    service: &MapleAgentService,
+    runtime: &mut AgentRuntime,
+    session: &Session,
+    context: &SharedAgentToolContext,
+    routing: AgentPermissionRouting,
+) -> Result<Arc<PythonTaskBinding>, String> {
+    let installed = runtime
+        .session_tool_contexts
+        .get_mut(&session.id)
+        .filter(|installed| installed.context.ptr_eq(context) && !context.is_revoked())
+        .ok_or_else(|| AGENT_TOOL_CONTEXT_INACTIVE_ERROR.to_string())?;
+    if let Some(binding) = &installed.python {
+        if !binding.matches_root(&session.working_dir) {
+            return Err("Python task root does not match the persisted Agent task".to_string());
+        }
+        if !binding.is_closed() {
+            return Ok(Arc::clone(binding));
+        }
+    }
+    let state_loss_reason = installed
+        .python
+        .as_ref()
+        .and_then(|binding| binding.status().state_loss_reason)
+        .or_else(|| {
+            (session.message_count > 0).then(|| {
+                "This Python owner starts fresh. Any previous scratchpad state is not restored after ownership changes or Maple restarts.".to_string()
+            })
+        });
+    let diagnostics = python_capacity_diagnostics(
+        Arc::downgrade(&service.inner),
+        runtime.account_scope.clone(),
+        session.id.clone(),
+        installed.installation_id,
+        context.clone(),
+        runtime.lifetime.clone(),
+        Arc::clone(&runtime.session_manager),
+        routing,
+    );
+    let binding = Arc::new(
+        PythonTaskBinding::new(
+            service.python_runtime.clone(),
+            python_task_key(&runtime.account_scope, &session.id),
+            session.id.clone(),
+            session.working_dir.clone(),
+            context.clone(),
+        )
+        .with_capacity_diagnostics(diagnostics)
+        .with_state_loss_reason(state_loss_reason),
+    );
+    installed.python = Some(Arc::clone(&binding));
+    Ok(binding)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn python_capacity_diagnostics(
+    runtime: Weak<Mutex<Option<AgentRuntime>>>,
+    account_scope: String,
+    session_id: String,
+    installation_id: u64,
+    context: SharedAgentToolContext,
+    lifetime: CancellationToken,
+    session_manager: Arc<SessionManager>,
+    routing: AgentPermissionRouting,
+) -> code_mode::CapacityDiagnostics {
+    Arc::new(move |holders| {
+        let runtime = runtime.clone();
+        let account_scope = account_scope.clone();
+        let session_id = session_id.clone();
+        let context = context.clone();
+        let lifetime = lifetime.clone();
+        let session_manager = Arc::clone(&session_manager);
+        Box::pin(async move {
+            let mut accessible = HashMap::new();
+            if !context.is_revoked()
+                && !lifetime.is_cancelled()
+                && let Some(runtime) = runtime.upgrade()
+            {
+                let guard = runtime.lock().await;
+                if let Some(current) = guard.as_ref()
+                    && current.account_scope == account_scope
+                    && Arc::ptr_eq(&current.session_manager, &session_manager)
+                    && current
+                        .session_tool_contexts
+                        .get(&session_id)
+                        .is_some_and(|installed| {
+                            installed.installation_id == installation_id
+                                && installed.context.ptr_eq(&context)
+                        })
+                {
+                    for (id, installed) in &current.session_tool_contexts {
+                        // ACP exposes an exact task capability, not authority to
+                        // inspect another connection's tasks in the same account.
+                        if routing == AgentPermissionRouting::CallingSurface && id != &session_id {
+                            continue;
+                        }
+                        if let Some(binding) = &installed.python {
+                            accessible
+                                .insert(binding.key().to_string(), (id.clone(), installed.owner));
+                        }
+                    }
+                }
+            }
+            let mut named = Vec::new();
+            for holder in holders.iter().take(maple_code_mode::MAX_WORKERS) {
+                if let Some((id, owner)) = accessible.get(&holder.key)
+                    && let Ok(session) = session_manager.get_session(id, false).await
+                {
+                    named.push((session.name, *owner, holder.phase.clone()));
+                }
+            }
+            // Metadata I/O ran outside lifecycle locks; revoked owners must not
+            // receive names from the account that just stopped or changed.
+            if context.is_revoked() || lifetime.is_cancelled() {
+                named.clear();
+            }
+            format_python_capacity(holders.len(), named, routing)
+        })
+    })
+}
+
+fn format_python_capacity(
+    count: usize,
+    named: Vec<(String, AgentToolContextOwner, maple_code_mode::WorkerPhase)>,
+    routing: AgentPermissionRouting,
+) -> String {
+    let inaccessible = count.saturating_sub(named.len());
+    let mut message = format!(
+        "All {} Python worker slots are occupied.",
+        maple_code_mode::MAX_WORKERS
+    );
+    for (title, owner, phase) in named {
+        let title = title
+            .chars()
+            .take(MAX_AGENT_SESSION_TITLE_CHARS)
+            .map(|character| {
+                if character.is_control() {
+                    ' '
+                } else {
+                    character
+                }
+            })
+            .collect::<String>();
+        let phase = match phase {
+            maple_code_mode::WorkerPhase::Empty => "empty",
+            maple_code_mode::WorkerPhase::Starting => "starting",
+            maple_code_mode::WorkerPhase::Idle => "idle",
+            maple_code_mode::WorkerPhase::Executing => "executing",
+            maple_code_mode::WorkerPhase::Retiring => "retiring",
+            maple_code_mode::WorkerPhase::CleanupPending => "cleanup pending",
+        };
+        let remedy = if owner == AgentToolContextOwner::Leased {
+            "its owning client can close the session or connection"
+        } else {
+            "finish or Stop its active run, then use Reset Python"
+        };
+        message.push_str(&format!("\n- {title}: {phase}; {remedy}."));
+    }
+    if inaccessible > 0 {
+        message.push_str(&format!("\n{inaccessible} slot(s) belong to other or retired owners; their task details are unavailable."));
+    }
+    if routing == AgentPermissionRouting::CallingSurface {
+        message.push_str("\nIn a session that owns a worker, call python_code with {\"code\":\"\",\"reset\":true}, or have its caller use session/close or close the connection. Idle session/cancel does not free a worker.");
+    } else {
+        message.push_str(
+            "\nUse Reset Python on an idle task, or close the owning external session/connection.",
+        );
+    }
+    message.push_str(" Slots become available only after cleanup completes. No task was evicted.");
+    message
 }
 
 impl AgentRuntime {
@@ -797,6 +1002,8 @@ pub struct MapleAgentService {
     /// Routes ask_user questions to the UI and answers back.
     host: MapleAgentHostResources,
     inner: Arc<Mutex<Option<AgentRuntime>>>,
+    /// Process owners and permits survive replacement of the account runtime.
+    python_runtime: maple_code_mode::Runtime,
     runtime_lifecycle: Arc<Mutex<()>>,
     #[cfg(target_os = "macos")]
     login_shell_search_paths: Arc<tokio::sync::OnceCell<Vec<String>>>,
@@ -890,6 +1097,7 @@ impl MapleAgentService {
             host,
             questions,
             inner: Arc::new(Mutex::new(None)),
+            python_runtime: maple_code_mode::Runtime::new(Default::default()),
             runtime_lifecycle: Arc::new(Mutex::new(())),
             #[cfg(target_os = "macos")]
             login_shell_search_paths: Arc::new(tokio::sync::OnceCell::new()),
@@ -2019,7 +2227,7 @@ async fn stop_runtime_inner(
     };
 
     for installed in tool_contexts.into_values() {
-        installed.context.revoke();
+        installed.revoke("Python task ownership ended");
     }
     {
         let mut queues = state.desktop_queues.lock().await;
@@ -2248,7 +2456,14 @@ async fn start_runtime_for_user(
         true,
         GoosePlatform::GooseDesktop,
     )
-    .with_use_login_shell_path(true);
+    .with_use_login_shell_path(true)
+    .with_ordered_tool_calls(
+        [
+            "python_code".to_string(),
+            "developer__python_code".to_string(),
+        ],
+        code_mode::MAX_PYTHON_BATCH_CALLS,
+    );
     let agent_manager = Arc::new(
         AgentManager::new(goose_config, None)
             .await
@@ -2543,6 +2758,18 @@ impl AgentRuntimeHandle {
         let mut config = load_agent_config_inner(&state.host.paths, &self.user_id)
             .map_err(|error| error.to_string())?;
         apply_project_root_removal(&mut config, &path, fallback_path.as_deref())?;
+        {
+            let runtime = state.inner.lock().await;
+            if let Some(current) = runtime.as_ref() {
+                for (session_id, installed) in &current.session_tool_contexts {
+                    if session_roots.get(session_id) == Some(&path) {
+                        installed.retire_python(
+                            "Python state was retired when this project was removed",
+                        );
+                    }
+                }
+            }
+        }
         // The tombstone is the only persistent removal state. Saving the fallback
         // into roaming config would let this device's removal alter another
         // device. Runtime/UI use the fallback immediately; startup filters the
@@ -2904,6 +3131,7 @@ impl AgentRuntimeHandle {
                                 installation_id,
                                 context: tool_context.clone(),
                                 owner: AgentToolContextOwner::Leased,
+                                python: None,
                             });
                             None
                         }
@@ -3003,6 +3231,7 @@ impl AgentRuntimeHandle {
                             mode: &mode,
                             primary_model_supports_vision: false,
                             tool_context: &tool_context,
+                            python_binding: None,
                             allow_embedded_cua: !has_external_tool_context,
                         },
                     )
@@ -3284,9 +3513,10 @@ impl AgentRuntimeHandle {
                     installation_id,
                     context: tool_context.clone(),
                     owner: AgentToolContextOwner::Leased,
+                    python: None,
                 },
             ) {
-                replaced.context.revoke();
+                replaced.revoke("Python task ownership changed");
             }
         }
         tool_context_installation.arm_lease_cleanup(state.clone(), tool_context_access.clone());
@@ -3380,6 +3610,7 @@ impl AgentRuntimeHandle {
                         mode: &mode,
                         primary_model_supports_vision: false,
                         tool_context: &tool_context,
+                        python_binding: None,
                         allow_embedded_cua: false,
                     },
                 )
@@ -3874,6 +4105,110 @@ impl AgentRuntimeHandle {
         Ok(summary)
     }
 
+    /// A small asynchronous snapshot for the existing task menu. Execution and
+    /// cleanup remain task-owned; polling this never resolves or starts Python.
+    pub async fn python_status(&self, session_id: String) -> Result<AgentPythonStatus, String> {
+        let state = &self.service;
+        let _runtime_lifecycle = state.runtime_lifecycle.lock().await;
+        self.verify_generation().await?;
+        let _session_lifecycle = state.session_lifecycle.lock().await;
+        let (session_manager, resettable) = {
+            let runtime = state.inner.lock().await;
+            match runtime.as_ref() {
+                Some(current) => {
+                    ensure_runtime_account(current, &self.account_scope)?;
+                    let resettable = current
+                        .session_tool_contexts
+                        .get(&session_id)
+                        .filter(|installed| installed.owner == AgentToolContextOwner::Maple)
+                        .and_then(|installed| installed.python.as_ref())
+                        .is_some_and(|binding| binding.status().generation.is_some());
+                    (Arc::clone(&current.session_manager), resettable)
+                }
+                None => (
+                    account_session_manager(&state.host.paths, &self.user_id)?,
+                    false,
+                ),
+            }
+        };
+        session_manager
+            .get_session(&session_id, false)
+            .await
+            .map_err(|error| format!("Failed to find Agent task: {error}"))?;
+        Ok(AgentPythonStatus { resettable })
+    }
+
+    /// Reset the task's current Python state, not a menu-time generation.
+    /// Success confirms cleanup; all process waits happen outside lifecycle locks.
+    pub async fn reset_python(&self, session_id: String) -> Result<(), String> {
+        let cleanup = {
+            let state = &self.service;
+            let _runtime_lifecycle = state.runtime_lifecycle.lock().await;
+            self.verify_generation().await?;
+            self.ensure_accepting_new_work()?;
+            let _session_lifecycle = state.session_lifecycle.lock().await;
+            let (session_manager, agent_manager) = {
+                let runtime = state.inner.lock().await;
+                match runtime.as_ref() {
+                    Some(current) => {
+                        ensure_runtime_account(current, &self.account_scope)?;
+                        if has_active_session_run(&current.active_runs, &session_id) {
+                            return Err(
+                                "Stop the running agent before resetting Python".to_string()
+                            );
+                        }
+                        if current
+                            .session_tool_contexts
+                            .get(&session_id)
+                            .is_some_and(|installed| {
+                                installed.owner == AgentToolContextOwner::Leased
+                            })
+                        {
+                            return Err("This task is controlled by another Agent surface; close its session or reset Python through that surface".to_string());
+                        }
+                        (
+                            Arc::clone(&current.session_manager),
+                            Some(Arc::clone(&current.agent_manager)),
+                        )
+                    }
+                    None => (
+                        account_session_manager(&state.host.paths, &self.user_id)?,
+                        None,
+                    ),
+                }
+            };
+            session_manager
+                .get_session(&session_id, false)
+                .await
+                .map_err(|error| format!("Failed to find Agent task: {error}"))?;
+            // Goose claims this token before Maple releases its locks for MCP
+            // preparation, earlier than insertion into current.active_runs.
+            if let Some(manager) = agent_manager
+                && manager.is_session_busy(&session_id).await
+            {
+                return Err(
+                    "Stop or finish the preparing agent run before resetting Python".to_string(),
+                );
+            }
+            let runtime = state.inner.lock().await;
+            runtime
+                .as_ref()
+                .and_then(|current| current.session_tool_contexts.get(&session_id))
+                .and_then(|installed| installed.python.as_ref())
+                .map(|binding| {
+                    if binding.is_closed() {
+                        binding.retire("Python was reset by the user")
+                    } else {
+                        binding.reset("Python was reset by the user")
+                    }
+                })
+        };
+        if let Some(cleanup) = cleanup {
+            cleanup.await.map_err(|error| error.to_string())?;
+        }
+        Ok(())
+    }
+
     /// Archive or restore a task. Archived tasks keep their history and
     /// stay listed with `archived` set, so the UI can show them apart.
     pub async fn set_session_archived(
@@ -3909,6 +4244,18 @@ impl AgentRuntimeHandle {
             .get_session(&session_id, false)
             .await
             .map_err(|error| format!("Failed to load Agent task before archiving: {error}"))?;
+        if archived {
+            let runtime = state.inner.lock().await;
+            if let Some(installed) = runtime
+                .as_ref()
+                .and_then(|current| current.session_tool_contexts.get(&session_id))
+            {
+                // Preparation releases these lifecycle locks before becoming
+                // an active run. Retire its captured Python capability now,
+                // even if the following metadata write fails or is cancelled.
+                installed.retire_python("Python state was retired when this task was archived");
+            }
+        }
         if current_session.archived_at.is_some() == archived {
             return Ok(session_summary(&current_session));
         }
@@ -4240,6 +4587,10 @@ impl AgentRuntimeHandle {
                                 .to_string(),
                         );
                     }
+                    if let Some(installed) = current.session_tool_contexts.get(&session_id) {
+                        installed
+                            .retire_python("Python state was retired when this task was deleted");
+                    }
                     (
                         Some(Arc::clone(&current.agent_manager)),
                         Arc::clone(&current.session_manager),
@@ -4301,7 +4652,7 @@ impl AgentRuntimeHandle {
             }
         };
         if let Some(installed) = removed_tool_context {
-            installed.context.revoke();
+            installed.revoke("Python task ownership ended");
         }
 
         Ok(())
@@ -5000,6 +5351,14 @@ impl AgentRuntimeHandle {
                     )?
                 }
             };
+            let python_binding = {
+                let mut runtime = state.inner.lock().await;
+                let current = runtime
+                    .as_mut()
+                    .ok_or_else(|| "Agent runtime is not running".to_string())?;
+                ensure_runtime_account(current, account_scope)?;
+                resolve_session_python(state, current, &session, &tool_context, permission_routing)?
+            };
             let should_name_from_prompt = should_name_session_from_prompt(&session);
             if should_name_from_prompt {
                 session_manager
@@ -5067,6 +5426,9 @@ impl AgentRuntimeHandle {
             if cancel_token.is_cancelled() {
                 return Err(MCP_STARTUP_CANCELLED_ERROR.to_string());
             }
+            if python_binding.is_closed() || tool_context.is_revoked() {
+                return Err("Agent task ownership changed while preparing Python tools".to_string());
+            }
             let (agent, mcp_errors) = finish_session_agent(
                 prepared,
                 AgentSkillsScope {
@@ -5083,6 +5445,7 @@ impl AgentRuntimeHandle {
                     mode: &effective_mode,
                     primary_model_supports_vision: request.vision_capable,
                     tool_context: &tool_context,
+                    python_binding: Some(&python_binding),
                     allow_embedded_cua: permission_routing == AgentPermissionRouting::Desktop,
                 },
             )
@@ -7822,15 +8185,10 @@ fn maple_skills_extension_config() -> ExtensionConfig {
 /// subagent it starts inherits this task's provider and its enabled MCP
 /// servers.
 ///
-/// KNOWN ISSUE: a subagent does not inherit the task's permission mode.
-/// Goose hard-codes `GooseMode::Auto` for every subagent (summon.rs:
-/// an approval mode would hang on the subagent's `confirmation_rx`,
-/// because subagent `ActionRequired` messages are not forwarded to the
-/// parent). So a subagent runs every tool without approval, even when
-/// the task is in Read only mode. Fixing this needs the aaif-goose fork
-/// to forward subagent approvals; until then `delegate` sits in
-/// `ask_before` in `MAPLE_GOOSE_PERMISSION_CONFIG`, so Read only mode
-/// prompts before each hand-off.
+/// The pinned Goose fork forwards child ActionRequired messages and inherits
+/// the parent's permission mode. Child tools are constructed by Goose's own
+/// factory; the parent's injected Maple developer client and its task-bound
+/// Python capability are not copied. Delegation remains ask-before in Maple.
 fn maple_subagent_extension_config() -> ExtensionConfig {
     ExtensionConfig::Platform {
         name: SUMMON_EXTENSION_NAME.to_string(),
@@ -7965,6 +8323,7 @@ struct SessionAgentConfiguration<'a> {
     mode: &'a str,
     primary_model_supports_vision: bool,
     tool_context: &'a SharedAgentToolContext,
+    python_binding: Option<&'a Arc<PythonTaskBinding>>,
     /// True only while a task is being driven by Maple's desktop surface.
     /// A cached User session may later be leased by ACP, so SessionType alone
     /// is not a sufficient host-process capability check.
@@ -8318,6 +8677,7 @@ async fn finish_session_agent(
         mode,
         primary_model_supports_vision,
         tool_context,
+        python_binding,
         allow_embedded_cua,
     } = configuration;
     let PreparedSessionAgent {
@@ -8355,7 +8715,7 @@ async fn finish_session_agent(
         skills_scope.paths,
         skills_scope.user_id,
     )?);
-    let developer_client = MapleDeveloperClient::new(
+    let mut developer_client = MapleDeveloperClient::new(
         developer_context,
         primary_model_supports_vision,
         web_transport,
@@ -8366,6 +8726,9 @@ async fn finish_session_agent(
     .with_attachment_store(attachment_store)
     .with_web_enabled(session_web_enabled(session))
     .with_desktop_ui_tools(session.session_type != SessionType::Acp);
+    if let Some(binding) = python_binding {
+        developer_client = developer_client.with_python_binding(Arc::clone(binding));
+    }
     agent
         .extension_manager
         .add_client(
@@ -10691,6 +11054,350 @@ mod tests {
         fields.remove("user_set_name");
         fields.remove("updated_at");
         value
+    }
+
+    async fn python_lifecycle_fixture(
+        label: &str,
+    ) -> (
+        PathBuf,
+        AgentRuntimeHandle,
+        Session,
+        SharedAgentToolContext,
+        Arc<PythonTaskBinding>,
+    ) {
+        let (root, service, manager, project_root, scope) =
+            tool_context_cleanup_test_context(label).await;
+        let session = manager
+            .create_session(
+                project_root,
+                "Python lifecycle".to_string(),
+                SessionType::User,
+                GooseMode::SmartApprove,
+            )
+            .await
+            .unwrap();
+        let (context, binding) = {
+            let mut guard = service.inner.lock().await;
+            let runtime = guard.as_mut().unwrap();
+            let context = resolve_session_tool_context(
+                &mut runtime.session_tool_contexts,
+                &scope,
+                &session.id,
+                None,
+                &AgentToolContextSpec::default(),
+            )
+            .unwrap();
+            let binding = resolve_session_python(
+                &service,
+                runtime,
+                &session,
+                &context,
+                AgentPermissionRouting::Desktop,
+            )
+            .unwrap();
+            (context, binding)
+        };
+        let handle = service
+            .handle_for_user(&format!("{label}-user"))
+            .await
+            .unwrap();
+        (root, handle, session, context, binding)
+    }
+
+    #[tokio::test]
+    async fn python_binding_is_retained_across_runs_and_rejects_root_changes() {
+        let (root, handle, session, context, original) =
+            python_lifecycle_fixture("python-reuse").await;
+        {
+            let mut guard = handle.service.inner.lock().await;
+            let runtime = guard.as_mut().unwrap();
+            let second = resolve_session_python(
+                &handle.service,
+                runtime,
+                &session,
+                &context,
+                AgentPermissionRouting::Desktop,
+            )
+            .unwrap();
+            assert!(Arc::ptr_eq(&original, &second));
+            let mut changed = session.clone();
+            changed.working_dir = root.join("another-root");
+            assert!(
+                resolve_session_python(
+                    &handle.service,
+                    runtime,
+                    &changed,
+                    &context,
+                    AgentPermissionRouting::Desktop,
+                )
+                .is_err()
+            );
+        }
+        assert!(!context.is_revoked());
+        assert!(handle.service.python_runtime.snapshot().holders.is_empty());
+        assert!(
+            !handle
+                .python_status(session.id.clone())
+                .await
+                .unwrap()
+                .resettable
+        );
+        handle.reset_python(session.id).await.unwrap();
+        assert!(
+            !original.is_closed(),
+            "empty reset preserves the logical task binding"
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn python_archive_fences_prepared_binding_and_allows_later_fresh_use() {
+        let (root, handle, session, context, original) =
+            python_lifecycle_fixture("python-archive").await;
+        let summary = handle
+            .set_session_archived(session.id.clone(), true)
+            .await
+            .unwrap();
+        assert!(summary.archived);
+        assert!(original.is_closed());
+        assert!(
+            !context.is_revoked(),
+            "archive must preserve the surrounding tool context"
+        );
+        let replacement = {
+            let mut guard = handle.service.inner.lock().await;
+            resolve_session_python(
+                &handle.service,
+                guard.as_mut().unwrap(),
+                &session,
+                &context,
+                AgentPermissionRouting::Desktop,
+            )
+            .unwrap()
+        };
+        assert!(!Arc::ptr_eq(&original, &replacement));
+        assert!(!replacement.is_closed());
+        assert_eq!(original.key(), replacement.key());
+        assert!(
+            replacement
+                .status()
+                .state_loss_reason
+                .unwrap()
+                .contains("archived")
+        );
+        assert!(handle.service.python_runtime.snapshot().holders.is_empty());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn python_reset_rejects_preparing_run_and_external_lease() {
+        let (root, handle, session, _context, original) =
+            python_lifecycle_fixture("python-reset-authority").await;
+        let manager = Arc::clone(
+            &handle
+                .service
+                .inner
+                .lock()
+                .await
+                .as_ref()
+                .unwrap()
+                .agent_manager,
+        );
+        manager
+            .try_register_cancel_token(&session.id, CancellationToken::new())
+            .await
+            .unwrap();
+        let error = handle.reset_python(session.id.clone()).await.unwrap_err();
+        assert!(error.contains("preparing"));
+        assert!(!original.is_closed());
+        manager.unregister_cancel_token(&session.id).await;
+        {
+            let mut guard = handle.service.inner.lock().await;
+            guard
+                .as_mut()
+                .unwrap()
+                .session_tool_contexts
+                .get_mut(&session.id)
+                .unwrap()
+                .owner = AgentToolContextOwner::Leased;
+        }
+        let error = handle.reset_python(session.id.clone()).await.unwrap_err();
+        assert!(error.contains("another Agent surface"));
+        assert!(!handle.python_status(session.id).await.unwrap().resettable);
+        assert!(handle.service.python_runtime.snapshot().holders.is_empty());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn python_project_removal_fences_only_affected_prepared_bindings() {
+        let (root, handle, session, context, original) =
+            python_lifecycle_fixture("python-project-removal").await;
+        handle
+            .remove_project_root(path_string(&session.working_dir), None)
+            .await
+            .unwrap();
+        assert!(original.is_closed());
+        assert!(!context.is_revoked());
+        assert!(
+            original
+                .status()
+                .state_loss_reason
+                .unwrap()
+                .contains("project")
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn python_menu_reset_confirms_native_cleanup_and_completed_run_stop_preserves_state() {
+        let (root, handle, session, context, _original) =
+            python_lifecycle_fixture("python-native-menu").await;
+        let manifest = std::env::var_os("MAPLE_CODE_MODE_RUNTIME_MANIFEST")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| {
+                PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../target/debug/runtime/python/runtime.json")
+            });
+        let package = maple_code_mode::PackagedPython::from_manifest(manifest)
+            .expect("run `just python-prepare` before native Python tests");
+        let binding = Arc::new(
+            PythonTaskBinding::new(
+                handle.service.python_runtime.clone(),
+                python_task_key(&handle.account_scope, &session.id),
+                session.id.clone(),
+                session.working_dir.clone(),
+                context.clone(),
+            )
+            .with_packaged_python(package),
+        );
+        handle
+            .service
+            .inner
+            .lock()
+            .await
+            .as_mut()
+            .unwrap()
+            .session_tool_contexts
+            .get_mut(&session.id)
+            .unwrap()
+            .python = Some(Arc::clone(&binding));
+        let call =
+            ToolCallContext::new(session.id.clone(), Some(session.working_dir.clone()), None);
+        let run = CancellationToken::new();
+        let first = binding
+            .call(
+                code_mode::PythonParams {
+                    code: "answer = 42\nanswer".into(),
+                    reset: false,
+                },
+                &call,
+                async { None },
+                run.clone(),
+            )
+            .await;
+        assert_ne!(first.is_error, Some(true), "{first:?}");
+        assert!(
+            handle
+                .python_status(session.id.clone())
+                .await
+                .unwrap()
+                .resettable
+        );
+        context.cancel_run(&run);
+        let second = binding
+            .call(
+                code_mode::PythonParams {
+                    code: "answer".into(),
+                    reset: false,
+                },
+                &call,
+                async { panic!("retained worker must not probe PATH") },
+                CancellationToken::new(),
+            )
+            .await;
+        assert_ne!(second.is_error, Some(true), "{second:?}");
+        assert_eq!(
+            second.structured_content.unwrap()["maple_python"]["value"],
+            "42"
+        );
+        handle.reset_python(session.id.clone()).await.unwrap();
+        assert!(!handle.python_status(session.id).await.unwrap().resettable);
+        assert!(
+            handle.service.python_runtime.snapshot().holders.is_empty(),
+            "menu success requires released capacity"
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn python_capacity_callback_hides_foreign_and_revoked_task_metadata() {
+        let (root, handle, session, context, binding) =
+            python_lifecycle_fixture("python-capacity-auth").await;
+        let diagnostics = {
+            let guard = handle.service.inner.lock().await;
+            let current = guard.as_ref().unwrap();
+            python_capacity_diagnostics(
+                Arc::downgrade(&handle.service.inner),
+                handle.account_scope.to_string(),
+                session.id.clone(),
+                current.session_tool_contexts[&session.id].installation_id,
+                context.clone(),
+                current.lifetime.clone(),
+                Arc::clone(&current.session_manager),
+                AgentPermissionRouting::Desktop,
+            )
+        };
+        let holders = vec![
+            maple_code_mode::Holder {
+                key: binding.key().into(),
+                generation: 1,
+                phase: maple_code_mode::WorkerPhase::Idle,
+            },
+            maple_code_mode::Holder {
+                key: "foreign-account:private-title".into(),
+                generation: 2,
+                phase: maple_code_mode::WorkerPhase::CleanupPending,
+            },
+        ];
+        let visible = diagnostics(holders.clone()).await;
+        assert!(visible.contains("Python lifecycle: idle"));
+        assert!(!visible.contains("private-title"));
+        assert!(visible.contains("1 slot(s)"));
+        context.revoke();
+        let revoked = diagnostics(holders).await;
+        assert!(!revoked.contains("Python lifecycle"));
+        assert!(!revoked.contains("private-title"));
+        assert!(revoked.contains("2 slot(s)"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn python_capacity_guidance_names_authorized_holders_and_counts_the_rest() {
+        let message = format_python_capacity(
+            4,
+            vec![
+                (
+                    "Desktop task".into(),
+                    AgentToolContextOwner::Maple,
+                    maple_code_mode::WorkerPhase::Idle,
+                ),
+                (
+                    "ACP task".into(),
+                    AgentToolContextOwner::Leased,
+                    maple_code_mode::WorkerPhase::CleanupPending,
+                ),
+            ],
+            AgentPermissionRouting::Desktop,
+        );
+        assert!(message.contains("Desktop task: idle"));
+        assert!(message.contains("Reset Python"));
+        assert!(message.contains("ACP task: cleanup pending"));
+        assert!(message.contains("owning client can close"));
+        assert!(message.contains("2 slot(s) belong to other or retired owners"));
+        let acp = format_python_capacity(4, Vec::new(), AgentPermissionRouting::CallingSurface);
+        assert!(!acp.contains("Desktop task"));
+        assert!(acp.contains("session/close"));
+        assert!(acp.contains("\"reset\":true"));
     }
 
     fn test_project_path(label: &str) -> String {
@@ -14127,12 +14834,8 @@ mod tests {
             Some(goose::config::permission::PermissionLevel::AlwaysAllow)
         );
         for tool in MAPLE_SUBAGENT_TOOLS {
-            // KNOWN ISSUE: a subagent runs with every tool approved,
-            // whatever the task's mode (see the note on
-            // maple_subagent_extension_config). Until the fork forwards
-            // subagent approvals, the hand-off itself is the only approval
-            // boundary: `delegate` prompts before the subagent runs, while
-            // `load` only collects a finished result.
+            // Delegation is an explicit admission boundary; load only
+            // collects a result. The pinned fork forwards child approvals.
             let expected = if tool == "delegate" {
                 goose::config::permission::PermissionLevel::AskBefore
             } else {
@@ -16326,6 +17029,7 @@ mod tests {
                 installation_id: 2,
                 context: replacement.clone(),
                 owner: AgentToolContextOwner::Leased,
+                python: None,
             },
         )]);
 
@@ -16357,6 +17061,7 @@ mod tests {
                 installation_id: 7,
                 context: leased.clone(),
                 owner: AgentToolContextOwner::Leased,
+                python: None,
             },
         )]);
         let access = AgentToolContextAccess {
@@ -16506,6 +17211,7 @@ mod tests {
                     installation_id,
                     context: context.clone(),
                     owner: AgentToolContextOwner::Leased,
+                    python: None,
                 },
             );
         let lease = AgentToolContextLease {
@@ -16602,6 +17308,7 @@ mod tests {
                     installation_id,
                     context: context.clone(),
                     owner: AgentToolContextOwner::Leased,
+                    python: None,
                 },
             );
         let mut pending = PendingAgentToolContextInstallation::new(context.clone());
@@ -16710,6 +17417,7 @@ mod tests {
                     installation_id: untouched_installation_id,
                     context: untouched_context.clone(),
                     owner: AgentToolContextOwner::Leased,
+                    python: None,
                 },
             );
             contexts.insert(
@@ -16718,6 +17426,7 @@ mod tests {
                     installation_id: modified_installation_id,
                     context: modified_context.clone(),
                     owner: AgentToolContextOwner::Leased,
+                    python: None,
                 },
             );
         }
@@ -16833,6 +17542,7 @@ mod tests {
                     installation_id,
                     context: context.clone(),
                     owner: AgentToolContextOwner::Leased,
+                    python: None,
                 },
             );
         let mut pending = PendingAgentToolContextInstallation::new(context.clone());

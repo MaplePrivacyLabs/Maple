@@ -22,6 +22,12 @@ class AgentChangeDetectionTests(unittest.TestCase):
             "apps/maple-agent/rust-toolchain.toml",
             "apps/maple-agent/justfile",
             "apps/maple-agent/scripts/macos-debug-app.sh",
+            "apps/maple-agent/crates/maple-code-mode/python/worker.py",
+            "apps/maple-agent/scripts/python-runtime.json",
+            "apps/maple-agent/scripts/python-licenses/LICENSE",
+            "apps/maple-agent/scripts/prepare-python.py",
+            "apps/maple-agent/scripts/package-archive.py",
+            "apps/maple-agent/.gitattributes",
             "apps/maple-agent/new-build-input",
         ):
             with self.subTest(path=path):

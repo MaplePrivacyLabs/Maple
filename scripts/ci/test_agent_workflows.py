@@ -75,12 +75,46 @@ class AgentWorkflowBoundaryTests(unittest.TestCase):
                 self.assertTrue(step["with"]["path"].startswith("apps/maple-agent/target/"))
         self.assertFalse(any((ROOT / "apps/maple-agent/.github/workflows").glob("*.yml")))
 
-    def test_failed_or_missing_selection_cannot_skip_the_desktop_matrix(self):
-        condition = workflow("agent-ci.yml")["jobs"]["desktop"]["if"]
-        self.assertIn("always() && !cancelled()", condition)
-        self.assertIn("needs.changes.result != 'success'", condition)
-        self.assertIn("needs.changes.outputs.agent != 'false'", condition)
-        self.assertNotIn("head.repo", condition)
+    def test_failed_or_missing_selection_cannot_skip_agent_validation(self):
+        jobs = workflow("agent-ci.yml")["jobs"]
+        for name in ("desktop", "nix-python"):
+            with self.subTest(job=name):
+                self.assertEqual(jobs[name]["needs"], "changes")
+                condition = jobs[name]["if"]
+                self.assertIn("always() && !cancelled()", condition)
+                self.assertIn("needs.changes.result != 'success'", condition)
+                self.assertIn("needs.changes.outputs.agent != 'false'", condition)
+                self.assertNotIn("head.repo", condition)
+
+    def test_python_packaging_retains_portable_and_nix_validation(self):
+        config = workflow("agent-ci.yml")
+        self.assertEqual(config["defaults"]["run"]["working-directory"], "apps/maple-agent")
+        desktop = config["jobs"]["desktop"]
+        self.assertIn({"os": "macos-15-intel", "focused": True},
+                      desktop["strategy"]["matrix"]["include"])
+        steps = desktop["steps"]
+        commands = "\n".join(step.get("run", "") for step in steps)
+        for command in ("just ci", "just python-test", "scripts/test-python-worker.py",
+                        "-m unittest discover -s scripts/tests",
+                        "cargo test -p maple-code-mode --locked",
+                        "scripts/macos-debug-app.sh", "just code-mode-smoke",
+                        "scripts/check-python-package.py --smoke target/debug/code-mode-smoke.exe",
+                        "scripts/check-python-package.py --smoke target/debug/code-mode-smoke"):
+            self.assertIn(command, commands)
+        archive = next(step for step in steps if step.get("name") == "Stage complete Linux CI archive")
+        self.assertIn("scripts/prepare-python.py", archive["run"])
+        self.assertIn("--runtime target/release/runtime/python", archive["run"])
+        self.assertIn("--output-dir target/ci-dist", archive["run"])
+        upload = next(step for step in steps if "upload-artifact@" in step.get("uses", ""))
+        self.assertEqual(upload["with"]["path"], "apps/maple-agent/target/ci-dist/*")
+        nix = config["jobs"]["nix-python"]
+        self.assertEqual(nix["runs-on"], "ubuntu-24.04-arm")
+        commands = "\n".join(step.get("run", "") for step in nix["steps"])
+        for command in ("nix build --no-update-lock-file .#default",
+                        "export MAPLE_CODE_MODE_RUNTIME_MANIFEST=", "just python-test",
+                        "cargo test -p maple-code-mode --locked", "just code-mode-smoke",
+                        "nix path-info --recursive ./result", "interpreter.parents[1]"):
+            self.assertIn(command, commands)
 
     def test_namespaced_agent_releases_do_not_enter_research_jobs(self):
         release = workflow("release.yml")

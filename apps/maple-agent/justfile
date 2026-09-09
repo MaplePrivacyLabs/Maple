@@ -35,18 +35,31 @@ clippy:
     cargo clippy -p maple-gpui --locked --no-default-features --features proxy -- -D warnings
 
 # Build and run the tests for the workspace and for the headless build.
-test:
+test: python-test
+    python3 -m unittest discover -s scripts/tests
     RUSTFLAGS="-D warnings" cargo build --workspace --all-targets --locked
     RUSTFLAGS="-D warnings" cargo test --workspace --locked
     RUSTFLAGS="-D warnings" cargo test -p maple-gpui --locked {{headless}}
 
+# Prepare the selected pinned runtime; ordinary debug builds use PBS even in Nix.
+python-prepare:
+    python3 scripts/prepare-python.py
+
+# Run the focused Python protocol/language suite on the selected interpreter.
+python-test: python-prepare
+    python3 scripts/test-python-worker.py
+
+# Exercise the debug worker using the same package resolver as the app.
+code-mode-smoke: python-prepare
+    cargo run -p maple-code-mode --bin code-mode-smoke --locked
+
 # Build the debug binary.
-build:
+build: python-prepare
     cargo build -p maple-gpui
 
 # Stage the debug binary in a stable macOS app bundle. A stable bundle identity
 # is required for honest Accessibility and Screen Recording permission tests.
-debug-app: build
+debug-app: build code-mode-smoke
     ./scripts/macos-debug-app.sh
 
 # Build the release binary.
@@ -66,7 +79,7 @@ headless:
 run *ARGS: build
     RUST_LOG=warn,maple_gpui=debug ./target/debug/maple-gpui {{ARGS}}
 
-# Build the release binary and copy it to dist/ with a version, commit, and SHA-256.
+# Archive the release binary and Python in dist/ with version, commit, and SHA-256.
 dist: release
     #!/usr/bin/env bash
     set -euo pipefail
@@ -82,8 +95,9 @@ dist: release
     esac
     name="maple-gpui-${version}-${rev}${dirty}-${target}"
     mkdir -p dist
-    cp target/release/maple-gpui "dist/${name}"
-    (cd dist && shasum -a 256 "${name}" | tee "${name}.sha256")
+    python3 scripts/prepare-python.py --distribution pbs --destination target/release/runtime/python
+    python3 scripts/package-archive.py --binary target/release/maple-gpui \
+        --runtime target/release/runtime/python --name "$name"
 
 # Remove this checkout's target/ without wiping the shared Cargo cache.
 clean-local:
