@@ -677,6 +677,20 @@ The guard runs before project, user, reset-request, or recovery lookup. Existing
 
 Maple exposes recovery enrollment through a feature-flagged Security settings UI. OpenSecret does not need a backend feature flag; the additive endpoints remain unused by clients that do not expose the feature.
 
+## Pending v1 Decisions
+
+Decisions opened by the Phase 4 implementation that stay open until their
+binding milestone. An item is binding ("no later than") at the point where
+the next step cannot be considered correct or complete without resolving it;
+nothing below blocks Phases 5-7.
+
+| Decision | Opened by | Binding milestone | Notes |
+|----------|-----------|-------------------|-------|
+| Client-facing management status codes: re-enroll → `409 Conflict`; rotate with no wrap → `400`; idempotent disable → `200`; wrong step-up password → `401 InvalidUsernameOrPassword` | P4 handlers | Before client consumption (Maple Security settings UI / SDK mocks) or Phase 8 encrypted smoke test | Consumers will encode these; freeze before any client encodes them |
+| `recovery_status` eligibility for OAuth-only users (currently reachable; returns `enrolled: false`; guests fail JWT validation) | P4 handler + P4.6 wording | Same milestone as status codes | Decide with Maple settings-UI topology; response carries no oracle value |
+| Plan § "Recovery Seed Wrap" sketches a `recovery_wrap_key`/`recovery_wrap_aad` envelope that the shipped implementation does not use; `RecoveryCode::parse` and those helpers currently have no production consumer (`#[allow(dead_code)]` markers carry the gap) | P2 helpers vs P4 sealing path | Phase 6 implementation (P6.2 "Open recovery wrap") | Opening must go through `decrypt_seed_v1` with a recovery `AuthBinding`; either delete the dead helpers or reconcile this section. Failure mode is fail-closed (AEAD tag rejection) regardless |
+| v2 carrier encryption + runtime log-capture evidence for recovery routes | P4 route tests scope | Phase 8 validation via `$validate-opensecret` | Route tests cover inner-router behavior only; gateway sealing is source-confirmed, log hygiene is statically scanned (`security_invariants`) |
+
 ## Deferred Work
 
 - Protective recovery that rejects destructive reset without the recovery code.
