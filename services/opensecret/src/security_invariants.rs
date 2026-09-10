@@ -607,6 +607,7 @@ fn user_password_reset_uses_mac_lookup_and_destructive_reseed() {
     let contents = fs::read_to_string(&main_source).expect("main source should be readable");
     let create_body = extract_function_body(&contents, "async fn create_password_reset_request");
     let confirm_body = extract_function_body(&contents, "async fn confirm_password_reset");
+    let proof_body = extract_function_body(&contents, "fn verify_password_reset_proof");
 
     for required_pattern in [
         "user.password_enc.is_some()",
@@ -620,10 +621,23 @@ fn user_password_reset_uses_mac_lookup_and_destructive_reseed() {
         );
     }
 
+    // The proof itself is a read-only check shared with the v2 options route:
+    // MAC lookup, password-backed eligibility, expiration, and the client
+    // secret comparison all live in `verify_password_reset_proof`.
     for required_pattern in [
+        "user.get_email().is_none()",
         "user.password_enc.is_none()",
         "password_reset_code_mac(",
         "get_password_reset_request_by_user_id_and_code(user.uuid, reset_code_mac.to_vec())",
+    ] {
+        assert!(
+            proof_body.contains(required_pattern),
+            "the shared reset proof must contain `{required_pattern}`"
+        );
+    }
+
+    for required_pattern in [
+        "self.verify_password_reset_proof(",
         "generate_twelve_word_seed",
         "verify_new_password_seed_wrapping_for_user(",
         "complete_destructive_password_reset(",
@@ -1349,5 +1363,107 @@ fn recovery_stepup_gates_before_seed_open_and_insert() {
     assert!(
         disable_body.contains("delete_recovery_wrap_for_user(user.uuid)"),
         "disable must delete the wrap through the idempotent helper"
+    );
+}
+
+#[test]
+fn password_reset_v2_options_requires_v2_transport_and_shared_readonly_proof() {
+    let login_routes = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/web/login_routes.rs");
+    let contents =
+        fs::read_to_string(&login_routes).expect("login route source should be readable");
+
+    let router_body = extract_function_body(&contents, "pub fn router");
+    assert!(
+        router_body.contains(".merge(password_reset_v2_router("),
+        "the login router must merge the v2 options sub-router"
+    );
+    // The sub-router keeps its typed state; only the login router erases it.
+    assert_patterns_in_order(
+        router_body,
+        &[
+            ".merge(password_reset_v2_router(app_state.clone()))",
+            ".with_state(app_state)",
+        ],
+    );
+
+    let sub_router_body = extract_function_body(&contents, "fn password_reset_v2_router");
+    assert!(
+        sub_router_body.contains("\"/password-reset/v2/options\"")
+            && sub_router_body.contains("decrypt_request::<PasswordResetV2OptionsRequest>"),
+        "the options sub-router must wire the route with its encrypted-request layer"
+    );
+    assert!(
+        !sub_router_body.contains(".with_state("),
+        "the options sub-router must keep its typed state until the login router erases it"
+    );
+    // The v2-transport gate must be the outermost layer on the sub-router:
+    // the route is declared with its encrypted-request layer, and the
+    // v2-transport gate is applied after it, so a v1 session is rejected
+    // before any request body is decrypted or proof is verified.
+    assert!(
+        sub_router_body.contains("from_fn(require_transport_v2)"),
+        "the options sub-router must apply the v2-transport gate"
+    );
+    assert_patterns_in_order(
+        sub_router_body,
+        &[
+            "post(password_reset_v2_options)",
+            "decrypt_request::<PasswordResetV2OptionsRequest>",
+            ".route_layer(from_fn(require_transport_v2))",
+        ],
+    );
+
+    let handler_body = extract_function_body(&contents, "pub async fn password_reset_v2_options");
+    let guard_index = handler_body
+        .find("require_v2_transport_session(&transport_session)?;")
+        .expect("the v2 options handler must call the v2-transport guard first");
+    let proof_index = handler_body
+        .find("verify_password_reset_proof(")
+        .expect("the v2 options handler must reuse the shared proof verification");
+    let reveal_index = handler_body
+        .find("recovery_wrap_exists")
+        .expect("the v2 options handler must reveal recovery enrollment");
+    assert!(
+        guard_index < proof_index,
+        "the v2 options handler must reject non-v2 transports before proof verification"
+    );
+    assert!(
+        proof_index < reveal_index,
+        "the v2 options handler must reveal recovery enrollment only after the proof"
+    );
+
+    // The options route is read-only: no reset consumption, no destructive
+    // work, and no recovery mutation. It may only disclose after verification.
+    for forbidden_pattern in [
+        "mark_as_reset",
+        "is_reset",
+        "complete_destructive_password_reset",
+        "complete_preserving_password_reset",
+        "delete_recovery_wrap_for_user",
+        "insert_recovery_wrap_if_absent",
+        "replace_recovery_wrap_if_unchanged",
+        "create_password_reset_request",
+        "diesel::update",
+    ] {
+        assert!(
+            !handler_body.contains(forbidden_pattern),
+            "the v2 options route is read-only and must not mutate reset or recovery state via `{forbidden_pattern}`"
+        );
+    }
+
+    // Proof logic is shared with the legacy confirm route so the two reset
+    // flows cannot drift apart, and the application router must merge the
+    // login router that carries the v2 options route.
+    let main_contents =
+        fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/main.rs"))
+            .expect("main source should be readable");
+    let confirm_body = extract_function_body(&main_contents, "async fn confirm_password_reset");
+    assert!(
+        confirm_body.contains("self.verify_password_reset_proof("),
+        "the legacy confirm route must reuse the shared proof verification"
+    );
+    assert!(
+        main_contents.contains(".merge(login_routes(app_state.clone()))"),
+        "application routes must merge the login router"
     );
 }

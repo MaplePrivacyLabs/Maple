@@ -325,6 +325,15 @@ pub async fn require_transport_v2(
     Ok(next.run(request).await)
 }
 
+/// Handler-level defense-in-depth: the middleware gate rejects v1 sessions
+/// before the handler, and this guard rejects them again inside the handler.
+pub(crate) fn require_v2_transport_session(session: &TransportSession) -> Result<(), ApiError> {
+    if !session.is_v2() {
+        return Err(ApiError::BadRequest);
+    }
+    Ok(())
+}
+
 fn parse_session_id(headers: &HeaderMap) -> Result<Uuid, ApiError> {
     headers
         .get("x-session-id")

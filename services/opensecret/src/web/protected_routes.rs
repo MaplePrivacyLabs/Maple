@@ -7,7 +7,8 @@ use crate::private_key::{
 use crate::recovery_code::RecoveryCode;
 use crate::seed_wrapping::new_recovery_seed_wrapping;
 use crate::web::encryption_middleware::{
-    decrypt_request, encrypt_response, require_transport_v2, Decrypted, TransportSession,
+    decrypt_request, encrypt_response, require_transport_v2, require_v2_transport_session,
+    Decrypted, TransportSession,
 };
 use crate::Error;
 use crate::{
@@ -1453,15 +1454,6 @@ pub fn recovery_router(app_state: Arc<AppState>) -> Router<()> {
         .route_layer(from_fn_with_state(app_state.clone(), validate_jwt))
         .route_layer(from_fn(require_transport_v2))
         .with_state(app_state)
-}
-
-/// Handler-level defense-in-depth: the middleware gate rejects v1 sessions
-/// before the handler, and this guard rejects them again inside the handler.
-fn require_v2_transport_session(session: &TransportSession) -> Result<(), ApiError> {
-    if !session.is_v2() {
-        return Err(ApiError::BadRequest);
-    }
-    Ok(())
 }
 
 /// Recovery management is limited to email-backed password users in V1.

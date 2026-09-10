@@ -1,16 +1,27 @@
 use crate::{
     db::setup_db,
+    generate_reset_hash,
     jwt::{AuthContext, AuthMethod, NewToken, TokenType},
     login_routes::RegisterCredentials,
     models::{
-        oauth::NewUserOAuthConnection, org_projects::OrgProject,
-        user_seed_wrappings::NewUserSeedWrapping, users::NewUser,
+        oauth::NewUserOAuthConnection,
+        org_projects::{NewOrgProject, OrgProject},
+        password_reset::{NewPasswordResetRequest, PasswordResetRequest},
+        schema::password_reset_requests,
+        user_seed_wrappings::NewUserSeedWrapping,
+        users::NewUser,
     },
     private_key::generate_twelve_word_seed,
     recovery_code::RecoveryCode,
-    seed_wrapping::{verify_recovery_seed_wrapping, CredentialKind},
+    seed_wrapping::{
+        new_recovery_seed_wrapping, password_reset_code_mac, verify_recovery_seed_wrapping,
+        CredentialKind,
+    },
     transport_v2::{crypto::SessionId, envelope::Credential},
-    web::{encryption_middleware::TransportSession, protected_routes::recovery_router},
+    web::{
+        encryption_middleware::TransportSession, login_routes::router as login_router,
+        protected_routes::recovery_router,
+    },
     AppMode, AppState, AppStateBuilder,
 };
 use axum::body::Body;
@@ -21,6 +32,7 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use tower::ServiceExt;
 use uuid::Uuid;
+use zeroize::Zeroizing;
 
 const TEST_ROOT_KEY: [u8; 32] = [42u8; 32];
 
@@ -769,6 +781,523 @@ async fn recovery_error_responses_are_sanitized() {
             object.len() == 2 && object.contains_key("status") && object.contains_key("message")
         }),
         "unauthorized error responses must stay generic"
+    );
+
+    let _ = app_state.db.delete_user(&fixture.user);
+}
+
+// ---------------------------------------------------------------------------
+// Phase 5: transport-v2 password reset options
+// ---------------------------------------------------------------------------
+
+/// A proof fixture for the options route: email coordinates, the emailed
+/// alphanumeric code, the client reset secret, and the project client id.
+struct ResetProofFixture {
+    email: String,
+    code: String,
+    secret: String,
+    client_id: Uuid,
+}
+
+impl ResetProofFixture {
+    fn request_body(&self) -> Value {
+        json!({
+            "proof": {
+                "email": self.email,
+                "alphanumeric_code": self.code,
+                "plaintext_secret": self.secret,
+                "client_id": self.client_id,
+            }
+        })
+    }
+}
+
+fn proof_fixture(email: &str, code: &str, secret: &str, client_id: Uuid) -> ResetProofFixture {
+    ResetProofFixture {
+        email: email.to_string(),
+        code: code.to_string(),
+        secret: secret.to_string(),
+        client_id,
+    }
+}
+
+/// Inserts an active password reset request with a known code/secret pair,
+/// bypassing the email delivery path. `expiration_hours` may be negative to
+/// place the request in the past.
+fn insert_reset_request_fixture(
+    app_state: &AppState,
+    project: &OrgProject,
+    user: &crate::models::users::User,
+    code: &str,
+    secret: &str,
+    expiration_hours: i64,
+) -> PasswordResetRequest {
+    let reset_code_mac =
+        password_reset_code_mac(&app_state.enclave_key, project.id, user.uuid, code)
+            .expect("reset code mac should compute");
+    app_state
+        .db
+        .create_password_reset_request(NewPasswordResetRequest::new(
+            user.uuid,
+            generate_reset_hash(secret.to_string()),
+            reset_code_mac.to_vec(),
+            expiration_hours,
+        ))
+        .expect("reset request should insert")
+}
+
+fn reset_request_by_id(app_state: &AppState, id: i32) -> PasswordResetRequest {
+    let conn = &mut app_state
+        .db
+        .get_pool()
+        .get()
+        .expect("test database connection should be available");
+    password_reset_requests::table
+        .filter(password_reset_requests::id.eq(id))
+        .first::<PasswordResetRequest>(conn)
+        .expect("reset request row should load")
+}
+
+/// Inserts one enrollment-state wrap directly through the Phase 2/3 helpers,
+/// the same way the DB lifecycle tests create recovery state.
+fn insert_enrolled_recovery_wrap(app_state: &AppState, user: &crate::models::users::User) {
+    let code = RecoveryCode {
+        secret: Zeroizing::new([0x9Au8; 32]),
+    };
+    let seed = format!("recovery-options-fixture-seed-{}", user.uuid).into_bytes();
+    let wrapping = new_recovery_seed_wrapping(&TEST_ROOT_KEY, user, &code, &seed)
+        .expect("the options fixture wrap should seal");
+    app_state
+        .db
+        .insert_recovery_wrap_if_absent(wrapping)
+        .expect("the options fixture wrap should insert");
+}
+
+async fn register_password_user(
+    app_state: &AppState,
+    project: &OrgProject,
+    email: String,
+    label: &str,
+) -> crate::models::users::User {
+    app_state
+        .register_user(RegisterCredentials {
+            name: Some("Recovery Options Test".to_string()),
+            email: Some(email),
+            password: test_credential(label).to_string(),
+            client_id: project.client_id,
+        })
+        .await
+        .expect("test password user should register")
+}
+
+fn create_active_project(app_state: &AppState, org_id: i32) -> OrgProject {
+    let conn = &mut app_state
+        .db
+        .get_pool()
+        .get()
+        .expect("test database connection should be available");
+    NewOrgProject::new(org_id, format!("recovery-options-{}", Uuid::new_v4()))
+        .insert(conn)
+        .expect("test project should insert")
+}
+
+fn delete_test_project(app_state: &AppState, project: &OrgProject) {
+    let conn = &mut app_state
+        .db
+        .get_pool()
+        .get()
+        .expect("test database connection should be available");
+    project.delete(conn).expect("test project should delete");
+}
+
+async fn assert_generic_bad_request(response: axum::http::Response<Body>) {
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    assert_eq!(
+        serde_json::from_slice::<Value>(&bytes).unwrap(),
+        json!({ "status": 400, "message": "Bad Request" }),
+        "probe rejections must stay generic"
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires RECOVERY_TEST_DATABASE_URL (or AEAD_TAMPER_TEST_DATABASE_URL) pointing at disposable migrated local Postgres"]
+async fn password_reset_v2_options_reveals_status_after_proof_without_consuming_the_request() {
+    let fixture = authenticated_password_fixture("v2-options").await;
+    let app_state = &fixture.app_state;
+    let project = first_active_project(app_state);
+    let app = login_router(app_state.clone());
+
+    let proof = proof_fixture(
+        &fixture.email,
+        "OABCDE12",
+        "recovery-options-correct-secret",
+        project.client_id,
+    );
+    insert_enrolled_recovery_wrap(app_state, &fixture.user);
+    let active = insert_reset_request_fixture(
+        app_state,
+        &project,
+        &fixture.user,
+        "OABCDE12",
+        &proof.secret,
+        24,
+    );
+
+    // A wrong client secret reveals nothing and stays generic.
+    let wrong_secret = proof_fixture(
+        &fixture.email,
+        "OABCDE12",
+        "not-the-secret",
+        project.client_id,
+    );
+    let wrong = send(
+        app.clone(),
+        v2_request(
+            "POST",
+            "/password-reset/v2/options",
+            Some(wrong_secret.request_body()),
+            None,
+        ),
+    )
+    .await;
+    assert_generic_bad_request(wrong).await;
+
+    // After the full proof succeeds, the enrolled status is revealed.
+    let revealed = send(
+        app.clone(),
+        v2_request(
+            "POST",
+            "/password-reset/v2/options",
+            Some(proof.request_body()),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(revealed.status(), StatusCode::OK);
+    assert_eq!(
+        response_json(revealed).await,
+        json!({ "recovery_enrolled": true, "destructive_reset_available": true })
+    );
+
+    // Repeating the same proof is safe and changes nothing: the route is
+    // read-only until the request expires or a completion consumes it.
+    let repeat = send(
+        app.clone(),
+        v2_request(
+            "POST",
+            "/password-reset/v2/options",
+            Some(proof.request_body()),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(repeat.status(), StatusCode::OK);
+
+    let reloaded = reset_request_by_id(app_state, active.id);
+    assert_eq!(reloaded.user_id, active.user_id);
+    assert_eq!(reloaded.hashed_secret, active.hashed_secret);
+    assert_eq!(reloaded.encrypted_code, active.encrypted_code);
+    assert_eq!(reloaded.expiration_time, active.expiration_time);
+    assert!(
+        !reloaded.is_reset,
+        "the options route must never consume the reset request"
+    );
+
+    let _ = app_state.db.delete_user(&fixture.user);
+}
+
+#[tokio::test]
+#[ignore = "requires RECOVERY_TEST_DATABASE_URL (or AEAD_TAMPER_TEST_DATABASE_URL) pointing at disposable migrated local Postgres"]
+async fn password_reset_v2_options_rejects_copied_reset_rows_across_users_and_projects() {
+    let fixture = authenticated_password_fixture("v2-copy").await;
+    let app_state = &fixture.app_state;
+    let project = first_active_project(app_state);
+    let app = login_router(app_state.clone());
+
+    // A second registered account with its own reset request shares the
+    // project with the enrolled account.
+    let email_b = format!("recovery-route-v2-copy-b-{}@example.com", Uuid::new_v4());
+    let user_b = register_password_user(app_state, &project, email_b.clone(), "v2-copy-b").await;
+
+    // A second project under the same org holds another password account, so
+    // copying can be attempted across project boundaries in both directions.
+    let project_extra = create_active_project(app_state, project.org_id);
+    let email_c = format!("recovery-route-v2-copy-c-{}@example.com", Uuid::new_v4());
+    let user_c =
+        register_password_user(app_state, &project_extra, email_c.clone(), "v2-copy-c").await;
+
+    insert_enrolled_recovery_wrap(app_state, &fixture.user);
+    let secret = "recovery-options-correct-secret";
+    let active_a =
+        insert_reset_request_fixture(app_state, &project, &fixture.user, "OABCDE12", secret, 24);
+    let active_b = insert_reset_request_fixture(
+        app_state,
+        &project,
+        &user_b,
+        "OF111111",
+        "recovery-options-b-secret",
+        24,
+    );
+
+    // B's own proof succeeds and reports B's un-enrolled status.
+    let own_b = proof_fixture(
+        &email_b,
+        "OF111111",
+        "recovery-options-b-secret",
+        project.client_id,
+    );
+    let own_response = send(
+        app.clone(),
+        v2_request(
+            "POST",
+            "/password-reset/v2/options",
+            Some(own_b.request_body()),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(own_response.status(), StatusCode::OK);
+    assert_eq!(
+        response_json(own_response).await,
+        json!({ "recovery_enrolled": false, "destructive_reset_available": true }),
+        "each account learns only its own enrollment state"
+    );
+
+    // A's code and secret copied onto B's email must not reveal A's status.
+    let copied_user = proof_fixture(&email_b, "OABCDE12", secret, project.client_id);
+    let copied_user_response = send(
+        app.clone(),
+        v2_request(
+            "POST",
+            "/password-reset/v2/options",
+            Some(copied_user.request_body()),
+            None,
+        ),
+    )
+    .await;
+    assert_generic_bad_request(copied_user_response).await;
+
+    // The full proof copied onto a foreign project scope also fails.
+    let copied_project = proof_fixture(&fixture.email, "OABCDE12", secret, project_extra.client_id);
+    let copied_project_response = send(
+        app.clone(),
+        v2_request(
+            "POST",
+            "/password-reset/v2/options",
+            Some(copied_project.request_body()),
+            None,
+        ),
+    )
+    .await;
+    assert_generic_bad_request(copied_project_response).await;
+
+    // A wrong client secret fails even with the right code coordinates.
+    let wrong_secret = proof_fixture(&email_b, "OF111111", secret, project.client_id);
+    let wrong_secret_response = send(
+        app.clone(),
+        v2_request(
+            "POST",
+            "/password-reset/v2/options",
+            Some(wrong_secret.request_body()),
+            None,
+        ),
+    )
+    .await;
+    assert_generic_bad_request(wrong_secret_response).await;
+
+    // No attempted copy may have consumed or re-bound either reset row, and
+    // no attempt may have changed recovery state.
+    for active in [&active_a, &active_b] {
+        let reloaded = reset_request_by_id(app_state, active.id);
+        assert_eq!(
+            reloaded.hashed_secret, active.hashed_secret,
+            "copied proofs must not re-bind a reset request to a new secret"
+        );
+        assert!(
+            !reloaded.is_reset,
+            "copied proofs must not consume a reset request"
+        );
+    }
+    assert!(app_state
+        .db
+        .recovery_wrap_exists(fixture.user.uuid)
+        .unwrap());
+    assert!(
+        !app_state.db.recovery_wrap_exists(user_b.uuid).unwrap(),
+        "no probe may create recovery state for user B"
+    );
+    assert!(
+        !app_state.db.recovery_wrap_exists(user_c.uuid).unwrap(),
+        "copied proofs must not create recovery state on other accounts"
+    );
+
+    let _ = app_state.db.delete_user(&fixture.user);
+    let _ = app_state.db.delete_user(&user_b);
+    let _ = app_state.db.delete_user(&user_c);
+    delete_test_project(app_state, &project_extra);
+}
+
+#[tokio::test]
+#[ignore = "requires RECOVERY_TEST_DATABASE_URL (or AEAD_TAMPER_TEST_DATABASE_URL) pointing at disposable migrated local Postgres"]
+async fn password_reset_v2_options_rejects_v1_and_missing_transport_sessions() {
+    let fixture = authenticated_password_fixture("v2-gate").await;
+    let app_state = &fixture.app_state;
+    let project = first_active_project(app_state);
+    let app = login_router(app_state.clone());
+
+    let secret = "recovery-options-gate-secret";
+    let active =
+        insert_reset_request_fixture(app_state, &project, &fixture.user, "OFFFFF12", secret, 24);
+    let proof = proof_fixture(&fixture.email, "OFFFFF12", secret, project.client_id);
+
+    // A v1 transport session presenting the entire valid proof is rejected
+    // before the handler can verify anything or reveal status.
+    let request_value = Request::builder()
+        .method("POST")
+        .uri("/password-reset/v2/options")
+        .body(Body::from(proof.request_body().to_string()))
+        .unwrap();
+    let (mut v1_parts, v1_body) = request_value.into_parts();
+    v1_parts
+        .extensions
+        .insert(TransportSession::v1(Uuid::new_v4()));
+    let v1_response = send(app.clone(), Request::from_parts(v1_parts, v1_body)).await;
+    assert_generic_bad_request(v1_response).await;
+
+    // A request that carries no transport session never established
+    // transport security and must not reach the handler either.
+    let sessionless = Request::builder()
+        .method("POST")
+        .uri("/password-reset/v2/options")
+        .body(Body::from(proof.request_body().to_string()))
+        .unwrap();
+    let sessionless_response = send(app, sessionless).await;
+    assert_generic_bad_request(sessionless_response).await;
+
+    let reloaded = reset_request_by_id(app_state, active.id);
+    assert!(
+        !reloaded.is_reset,
+        "rejected transports must not consume state"
+    );
+    assert!(
+        !app_state
+            .db
+            .recovery_wrap_exists(fixture.user.uuid)
+            .unwrap(),
+        "rejected transports must not create recovery state"
+    );
+
+    let _ = app_state.db.delete_user(&fixture.user);
+}
+
+#[tokio::test]
+#[ignore = "requires RECOVERY_TEST_DATABASE_URL (or AEAD_TAMPER_TEST_DATABASE_URL) pointing at disposable migrated local Postgres"]
+async fn password_reset_v2_options_probe_outcomes_stay_generic_and_safe() {
+    let fixture = authenticated_password_fixture("v2-oracle").await;
+    let app_state = &fixture.app_state;
+    let project = first_active_project(app_state);
+    let app = login_router(app_state.clone());
+
+    let secret = "recovery-options-oracle-secret";
+    let active =
+        insert_reset_request_fixture(app_state, &project, &fixture.user, "OAAAAA11", secret, 24);
+
+    // Unknown account coordinates: an email with no reset request, and an
+    // unknown project client id, must be indistinguishable from a wrong code.
+    let unknown_email = proof_fixture(
+        &format!("recovery-route-v2-oracle-{}@example.com", Uuid::new_v4()),
+        "OAAAAA11",
+        secret,
+        project.client_id,
+    );
+    let unknown_email_response = send(
+        app.clone(),
+        v2_request(
+            "POST",
+            "/password-reset/v2/options",
+            Some(unknown_email.request_body()),
+            None,
+        ),
+    )
+    .await;
+    assert_generic_bad_request(unknown_email_response).await;
+
+    let unknown_client = proof_fixture(&fixture.email, "OAAAAA11", secret, Uuid::new_v4());
+    let unknown_client_response = send(
+        app.clone(),
+        v2_request(
+            "POST",
+            "/password-reset/v2/options",
+            Some(unknown_client.request_body()),
+            None,
+        ),
+    )
+    .await;
+    assert_generic_bad_request(unknown_client_response).await;
+
+    let wrong_code = proof_fixture(&fixture.email, "OBBBBB22", secret, project.client_id);
+    let wrong_code_response = send(
+        app.clone(),
+        v2_request(
+            "POST",
+            "/password-reset/v2/options",
+            Some(wrong_code.request_body()),
+            None,
+        ),
+    )
+    .await;
+    assert_generic_bad_request(wrong_code_response).await;
+
+    // An expired request rejects the otherwise-valid proof with the same
+    // generic body.
+    let expired =
+        insert_reset_request_fixture(app_state, &project, &fixture.user, "OCCCCCC3", secret, -1);
+    let expired_proof = proof_fixture(&fixture.email, "OCCCCCC3", secret, project.client_id);
+    let expired_response = send(
+        app.clone(),
+        v2_request(
+            "POST",
+            "/password-reset/v2/options",
+            Some(expired_proof.request_body()),
+            None,
+        ),
+    )
+    .await;
+    assert_generic_bad_request(expired_response).await;
+    assert!(
+        !reset_request_by_id(app_state, expired.id).is_reset,
+        "an expired probe must not consume any request"
+    );
+
+    // Once the request is consumed — the way a completed reset would consume
+    // it — the same proof is rejected with the same generic body.
+    let conn = &mut app_state
+        .db
+        .get_pool()
+        .get()
+        .expect("test database connection should be available");
+    active
+        .mark_as_reset(conn)
+        .expect("simulated consumption should mark the request");
+    let consumed_response = send(
+        app,
+        v2_request(
+            "POST",
+            "/password-reset/v2/options",
+            Some(
+                proof_fixture(&fixture.email, "OAAAAA11", secret, project.client_id).request_body(),
+            ),
+            None,
+        ),
+    )
+    .await;
+    assert_generic_bad_request(consumed_response).await;
+    assert!(
+        reset_request_by_id(app_state, active.id).is_reset,
+        "options must not resurrect a consumed request"
     );
 
     let _ = app_state.db.delete_user(&fixture.user);

@@ -15,7 +15,7 @@ use crate::model_config::{ModelAliasTargets, ModelPlan, PaidModelAliasOverrides}
 use crate::models::account_deletion::{AccountDeletionError, NewAccountDeletionRequest};
 use crate::models::email_verification::{EmailVerificationError, NewEmailVerification};
 use crate::models::oauth::{NewUserOAuthConnection, OAuthError};
-use crate::models::password_reset::NewPasswordResetRequest;
+use crate::models::password_reset::{NewPasswordResetRequest, PasswordResetRequest};
 use crate::models::platform_password_reset::NewPlatformPasswordResetRequest;
 use crate::models::platform_users::PlatformUser;
 use crate::sqs::SqsEventPublisher;
@@ -2458,17 +2458,24 @@ impl AppState {
         Ok(alphanumeric_code)
     }
 
-    async fn confirm_password_reset(
+    /// Verifies an existing password reset proof without consuming it.
+    ///
+    /// The same proof check shared by the legacy destructive confirm route and
+    /// the v2 options route: the alphanumeric code must MAC to an active,
+    /// unexpired reset request for the addressed user, and the client reset
+    /// secret must match the stored hash. Read-only by contract — callers own
+    /// every mutation, so repeated proof submission stays safe until the
+    /// request expires or is consumed by a completion.
+    fn verify_password_reset_proof(
         &self,
         email: String,
         alphanumeric_code: String,
         plaintext_secret: String,
-        new_password: String,
         project_id: i32,
-    ) -> Result<(), Error> {
-        let user = self.db.get_user_by_email(email.clone(), project_id)?;
+    ) -> Result<(User, PasswordResetRequest), Error> {
+        let user = self.db.get_user_by_email(email, project_id)?;
 
-        // Verify user has an email
+        // Only password-backed email users enter the reset proof flow.
         if user.get_email().is_none() || user.password_enc.is_none() {
             return Err(Error::UserNotFound);
         }
@@ -2480,74 +2487,88 @@ impl AppState {
 
         let reset_request = self
             .db
-            .get_password_reset_request_by_user_id_and_code(user.uuid, reset_code_mac.to_vec())?;
+            .get_password_reset_request_by_user_id_and_code(user.uuid, reset_code_mac.to_vec())?
+            .ok_or(Error::InvalidPasswordResetRequest)?;
 
-        if let Some(reset_request) = reset_request {
-            if reset_request.is_expired() {
-                warn!("Password reset expired for user: {}", user.uuid);
-                return Err(Error::PasswordResetExpired);
-            }
-
-            // Hash the plaintext secret again for comparison
-            let hashed_plaintext = generate_reset_hash(plaintext_secret.clone());
-
-            // Compare the hashed values using constant-time comparison
-            if hashed_plaintext
-                .as_bytes()
-                .ct_eq(reset_request.hashed_secret.as_bytes())
-                .into()
-            {
-                let user_seed_words =
-                    generate_twelve_word_seed(self.aws_credential_manager.clone())
-                        .await?
-                        .to_string();
-                let (password_hash, encrypted_password) =
-                    self.encrypt_user_password_verifier(new_password).await?;
-                let new_wrapping = self.new_password_seed_wrapping_for_user(
-                    &user,
-                    &password_hash,
-                    user_seed_words.as_bytes(),
-                )?;
-                self.verify_new_password_seed_wrapping_for_user(
-                    &user,
-                    &password_hash,
-                    user_seed_words.as_bytes(),
-                    &new_wrapping,
-                )?;
-
-                self.db.complete_destructive_password_reset(
-                    &user,
-                    &reset_request,
-                    encrypted_password,
-                    new_wrapping,
-                )?;
-
-                // Send confirmation email in the background
-                let app_state = self.clone();
-                let user_email = user.email.clone();
-                tokio::spawn(async move {
-                    if let Err(e) = send_password_reset_confirmation_email(
-                        &app_state,
-                        project_id,
-                        user_email.expect("We checked email had to exist above"),
-                    )
-                    .await
-                    {
-                        error!("Failed to send password reset confirmation email: {:?}", e);
-                    }
-                });
-
-                Ok(())
-            } else {
-                warn!(
-                    "Password verification failed for user {}. Hashes do not match.",
-                    user.uuid
-                );
-                Err(Error::InvalidPasswordResetSecret)
-            }
-        } else {
-            Err(Error::InvalidPasswordResetRequest)
+        if reset_request.is_expired() {
+            warn!("Password reset expired for user: {}", user.uuid);
+            return Err(Error::PasswordResetExpired);
         }
+
+        // Hash the plaintext secret again for comparison
+        let hashed_plaintext = generate_reset_hash(plaintext_secret);
+
+        // Compare the hashed values using constant-time comparison
+        if hashed_plaintext
+            .as_bytes()
+            .ct_eq(reset_request.hashed_secret.as_bytes())
+            .into()
+        {
+            Ok((user, reset_request))
+        } else {
+            warn!(
+                "Password verification failed for user {}. Hashes do not match.",
+                user.uuid
+            );
+            Err(Error::InvalidPasswordResetSecret)
+        }
+    }
+
+    async fn confirm_password_reset(
+        &self,
+        email: String,
+        alphanumeric_code: String,
+        plaintext_secret: String,
+        new_password: String,
+        project_id: i32,
+    ) -> Result<(), Error> {
+        let (user, reset_request) = self.verify_password_reset_proof(
+            email,
+            alphanumeric_code,
+            plaintext_secret,
+            project_id,
+        )?;
+
+        let user_seed_words = generate_twelve_word_seed(self.aws_credential_manager.clone())
+            .await?
+            .to_string();
+        let (password_hash, encrypted_password) =
+            self.encrypt_user_password_verifier(new_password).await?;
+        let new_wrapping = self.new_password_seed_wrapping_for_user(
+            &user,
+            &password_hash,
+            user_seed_words.as_bytes(),
+        )?;
+        self.verify_new_password_seed_wrapping_for_user(
+            &user,
+            &password_hash,
+            user_seed_words.as_bytes(),
+            &new_wrapping,
+        )?;
+
+        self.db.complete_destructive_password_reset(
+            &user,
+            &reset_request,
+            encrypted_password,
+            new_wrapping,
+        )?;
+
+        // Send confirmation email in the background
+        let app_state = self.clone();
+        let user_email = user.email.clone();
+        tokio::spawn(async move {
+            if let Err(e) = send_password_reset_confirmation_email(
+                &app_state,
+                project_id,
+                user_email.expect("We checked email had to exist above"),
+            )
+            .await
+            {
+                error!("Failed to send password reset confirmation email: {:?}", e);
+            }
+        });
+
+        Ok(())
     }
 
     fn generate_alphanumeric_code(&self) -> String {

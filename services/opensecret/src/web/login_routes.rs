@@ -8,7 +8,10 @@ use crate::{
 };
 use crate::{jwt::USER_REFRESH, web::encryption_middleware::TransportSession};
 use crate::{
-    web::encryption_middleware::{decrypt_request, encrypt_response, Decrypted},
+    web::encryption_middleware::{
+        decrypt_request, encrypt_response, require_transport_v2, require_v2_transport_session,
+        Decrypted,
+    },
     Error,
 };
 use crate::{ApiError, AppState};
@@ -16,7 +19,7 @@ use axum::{
     body::{Body, HttpBody},
     extract::{Path, State},
     http::Request,
-    middleware::{from_fn_with_state, Next},
+    middleware::{from_fn, from_fn_with_state, Next},
     response::Response,
     routing::{get, post},
     Extension, Router,
@@ -42,6 +45,29 @@ pub struct PasswordResetConfirmPayload {
     plaintext_secret: String,
     new_password: String,
     client_id: Uuid,
+}
+
+/// The existing email reset proof for v2 reset routes: the emailed
+/// alphanumeric code, the client reset secret established at reset-request
+/// time, and the coordinates (email, client_id) that scope the account.
+/// Reused unchanged by the read-only options route and the completion route.
+#[derive(Clone, Deserialize)]
+pub struct PasswordResetV2Proof {
+    pub email: String,
+    pub alphanumeric_code: String,
+    pub plaintext_secret: String,
+    pub client_id: Uuid,
+}
+
+#[derive(Deserialize, Clone)]
+pub struct PasswordResetV2OptionsRequest {
+    pub proof: PasswordResetV2Proof,
+}
+
+#[derive(Serialize)]
+pub struct PasswordResetV2OptionsResponse {
+    pub recovery_enrolled: bool,
+    pub destructive_reset_available: bool,
 }
 
 #[derive(Deserialize, Clone)]
@@ -108,7 +134,28 @@ pub fn router(app_state: Arc<AppState>) -> Router<()> {
                 decrypt_request::<PasswordResetConfirmPayload>,
             )),
         )
+        // The v2 options sub-router keeps its own v2-transport gate, merged in
+        // after the legacy defenses so only v2 reset routes require it.
+        .merge(password_reset_v2_router(app_state.clone()))
         .with_state(app_state)
+}
+
+/// The transport-v2 password-reset options sub-router.
+///
+/// Layer ordering within this sub-router places `require_transport_v2`
+/// outermost, so legacy v1 transport sessions are rejected before any request
+/// body is decrypted or reset proof is verified. The state is intentionally
+/// kept so `router()` erases it once with `.with_state`.
+fn password_reset_v2_router(app_state: Arc<AppState>) -> Router<Arc<AppState>> {
+    Router::new()
+        .route(
+            "/password-reset/v2/options",
+            post(password_reset_v2_options).layer(from_fn_with_state(
+                app_state.clone(),
+                decrypt_request::<PasswordResetV2OptionsRequest>,
+            )),
+        )
+        .route_layer(from_fn(require_transport_v2))
 }
 
 #[derive(Serialize)]
@@ -560,4 +607,65 @@ pub async fn password_reset_confirm(
     });
     let result = encrypt_response(&data, &session_id, &response).await;
     result
+}
+
+/// Maps reset-proof rejections to one sanitized status so the options route
+/// cannot distinguish unknown accounts from wrong codes or wrong secrets.
+/// Only proof rejections stay generic: infrastructure failures remain
+/// internal-server errors and never leak into a successful response.
+fn map_reset_proof_error(e: Error) -> ApiError {
+    match e {
+        Error::UserNotFound
+        | Error::PasswordResetExpired
+        | Error::InvalidPasswordResetSecret
+        | Error::InvalidPasswordResetRequest
+        | Error::DatabaseError(DBError::UserNotFound) => ApiError::BadRequest,
+        _ => ApiError::InternalServerError,
+    }
+}
+
+/// Transport-v2 password reset options.
+///
+/// Verifies the existing email reset proof — the same proof legacy
+/// `/password-reset/confirm` verifies, mapped onto one sanitized error — and
+/// only after it succeeds reveals whether recovery is enrolled. The check is
+/// read-only: the reset request is neither consumed nor modified, so
+/// repeated calls stay safe until the request expires or is consumed by a
+/// completion. An unauthenticated caller learns nothing about account state.
+pub async fn password_reset_v2_options(
+    State(data): State<Arc<AppState>>,
+    Extension(transport_session): Extension<TransportSession>,
+    Decrypted(request): Decrypted<PasswordResetV2OptionsRequest>,
+) -> Result<Response, ApiError> {
+    // Defense-in-depth: the sub-router middleware already rejected non-v2
+    // transports before decryption; this guard keeps the handler
+    // self-sufficient if it is ever reachable from a mis-wired router.
+    require_v2_transport_session(&transport_session)?;
+
+    // The project client id scopes the email to exactly one account space.
+    let project = data
+        .db
+        .get_org_project_by_client_id(request.proof.client_id)
+        .map_err(|_| ApiError::BadRequest)?;
+
+    let (user, _active_request) = data
+        .verify_password_reset_proof(
+            request.proof.email,
+            request.proof.alphanumeric_code,
+            request.proof.plaintext_secret,
+            project.id,
+        )
+        .map_err(map_reset_proof_error)?;
+
+    // Read-only reveal, after the proof succeeded.
+    let recovery_enrolled = data
+        .db
+        .recovery_wrap_exists(user.uuid)
+        .map_err(|_| ApiError::InternalServerError)?;
+
+    let response = PasswordResetV2OptionsResponse {
+        recovery_enrolled,
+        destructive_reset_available: true,
+    };
+    encrypt_response(&data, &transport_session, &response).await
 }
