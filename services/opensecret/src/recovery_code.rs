@@ -12,8 +12,6 @@ const RECOVERY_CODE_GROUP_SIZE: usize = 4;
 #[derive(Debug, thiserror::Error)]
 // `Invalid*` names keep every rejection reason self-describing for callers.
 #[allow(clippy::enum_variant_names)]
-// Parsing is consumed by the recovery reset completion flow.
-#[allow(dead_code)]
 pub enum RecoveryCodeError {
     #[error("Invalid format")]
     InvalidFormat,
@@ -48,7 +46,6 @@ impl RecoveryCode {
 
     /// Parses a user-submitted code, rejecting malformed input before any
     /// database work. Consumed by the recovery reset completion flow.
-    #[allow(dead_code)]
     pub fn parse(input: &str) -> Result<Self, RecoveryCodeError> {
         let normalized: String = input.chars().filter(|c| *c != ' ' && *c != '-').collect();
 
@@ -126,7 +123,6 @@ fn compute_checksum(secret: &[u8; 32]) -> [u8; 5] {
     checksum
 }
 
-#[allow(dead_code)] // Crockford helpers back `RecoveryCode::parse`.
 mod crockford {
     const ALPHABET: &[u8] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
 

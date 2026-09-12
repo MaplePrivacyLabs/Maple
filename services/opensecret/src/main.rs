@@ -33,15 +33,19 @@ use lease_aware_cache::{CacheLease, InsertError as SessionInsertError, LeaseAwar
 use crate::jwt::{AuthContext, AuthMethod};
 use crate::models::user_seed_wrappings::{NewUserSeedWrapping, UserSeedWrappingError};
 use crate::seed_wrapping::{
-    compute_oauth_auth_binding, compute_password_auth_binding, decrypt_seed_v1, encrypt_seed_v1,
-    normalize_email_login_identifier, normalize_guest_login_identifier,
-    oauth_credential_lookup_hash, password_credential_lookup_hash, password_reset_code_mac,
-    AuthBinding, CredentialKind, PasswordLoginIdentifierKind, SEED_WRAP_VERSION_V1,
+    compute_oauth_auth_binding, compute_password_auth_binding, compute_recovery_auth_binding,
+    decrypt_seed_v1, encrypt_seed_v1, normalize_email_login_identifier,
+    normalize_guest_login_identifier, oauth_credential_lookup_hash,
+    password_credential_lookup_hash, password_reset_code_mac, AuthBinding, CredentialKind,
+    PasswordLoginIdentifierKind, SEED_WRAP_VERSION_V1,
 };
 use crate::{
     aws_credentials::AwsCredentialError,
     models::enclave_secrets::NewEnclaveSecret,
-    private_key::{generate_twelve_word_seed, plaintext_user_seed_to_key},
+    private_key::{
+        generate_twelve_word_seed, plaintext_user_seed_to_key, plaintext_user_seed_to_mnemonic,
+    },
+    recovery_code::RecoveryCode,
 };
 use crate::{
     billing::{BillingClient, ChatBillingAccess},
@@ -298,6 +302,12 @@ pub enum Error {
 
     #[error("Invalid password reset request")]
     InvalidPasswordResetRequest,
+
+    #[error("Invalid recovery code")]
+    InvalidRecoveryCode,
+
+    #[error("Recovery is not enrolled")]
+    RecoveryNotEnrolled,
 
     #[error("Account deletion request expired")]
     AccountDeletionExpired,
@@ -2521,7 +2531,7 @@ impl AppState {
         plaintext_secret: String,
         new_password: String,
         project_id: i32,
-    ) -> Result<(), Error> {
+    ) -> Result<AuthContext, Error> {
         let (user, reset_request) = self.verify_password_reset_proof(
             email,
             alphanumeric_code,
@@ -2546,6 +2556,8 @@ impl AppState {
             &new_wrapping,
         )?;
 
+        let new_auth_context = self.password_auth_context_for_user(&user, &password_hash)?;
+
         self.db.complete_destructive_password_reset(
             &user,
             &reset_request,
@@ -2568,7 +2580,120 @@ impl AppState {
             }
         });
 
-        Ok(())
+        Ok(new_auth_context)
+    }
+
+    /// Seed-preserving recovery reset completion (V2): opens the enrolled seed
+    /// with the submitted recovery code and installs a new password credential
+    /// over that same seed, consuming the selected reset request without
+    /// touching the recovery wrap or any seed-key-encrypted data.
+    ///
+    /// Failure contract:
+    /// - A malformed or checksum-invalid code is rejected before any database
+    ///   work; the reset request stays usable.
+    /// - A well-formed code that fails to open the wrap consumes exactly the
+    ///   selected reset request (one recovery-code guess per emailed code)
+    ///   and fails closed; nothing else changes.
+    /// - A commit-time race (concurrent completion, password change,
+    ///   disablement, or rotation) fails the whole completion without writing
+    ///   anything.
+    async fn complete_preserving_password_reset_v2(
+        &self,
+        user: &User,
+        reset_request: &PasswordResetRequest,
+        recovery_code_input: &str,
+        new_password: String,
+    ) -> Result<AuthContext, Error> {
+        // Reject malformed input before any database work; the reset request
+        // remains usable for a corrected or destructive attempt.
+        let recovery_code = RecoveryCode::parse(recovery_code_input).map_err(|e| {
+            debug!("Recovery code rejected as malformed: {}", e);
+            Error::InvalidRecoveryCode
+        })?;
+
+        let recovery_wrap = self
+            .db
+            .get_recovery_wrap(user.uuid)
+            .map_err(Error::from)?
+            .ok_or(Error::RecoveryNotEnrolled)?;
+
+        if recovery_wrap.wrapping_version != SEED_WRAP_VERSION_V1 {
+            return Err(Error::RecoveryNotEnrolled);
+        }
+
+        // Open the stored wrap with a recovery-secret auth binding through
+        // the same `decrypt_seed_v1` envelope path that sealed it. The AEAD
+        // tag is the only correctness check for the submitted code.
+        let recovery_auth_binding = compute_recovery_auth_binding(
+            &self.enclave_key,
+            user.project_id,
+            user.uuid,
+            recovery_code.secret_bytes(),
+        )
+        .map_err(|e| Error::EncryptionError(e.to_string()))?;
+        let plaintext_seed = match decrypt_seed_v1(
+            &self.enclave_key,
+            &recovery_wrap.seed_enc,
+            user.uuid,
+            user.project_id,
+            CredentialKind::Recovery,
+            &recovery_auth_binding,
+        ) {
+            Ok(seed) => seed,
+            Err(_) => {
+                // Anti-brute-force: a well-formed code that fails AEAD burns
+                // only the selected reset request. Nothing else changes.
+                self.db
+                    .consume_selected_password_reset_request(user, reset_request)
+                    .map_err(Error::from)?;
+                return Err(Error::AuthenticationError);
+            }
+        };
+
+        // The opened seed must be a valid mnemonic before any mutation: an
+        // inconsistent wrap must not fall through to a reseed.
+        plaintext_user_seed_to_mnemonic(&plaintext_seed).map_err(|e| {
+            error!("Recovery wrap opened to an invalid seed: {:?}", e);
+            Error::EncryptionError("Recovery wrap did not contain a valid seed".to_string())
+        })?;
+
+        // Seal and verify the new password wrap over the exact opened seed
+        // before entering the transaction.
+        let (password_hash, encrypted_password) =
+            self.encrypt_user_password_verifier(new_password).await?;
+        let new_wrapping =
+            self.new_password_seed_wrapping_for_user(user, &password_hash, &plaintext_seed)?;
+        let new_auth_context = self.password_auth_context_for_user(user, &password_hash)?;
+
+        self.db
+            .complete_preserving_password_reset(
+                user,
+                reset_request,
+                &recovery_wrap,
+                encrypted_password,
+                new_wrapping,
+            )
+            .map_err(Error::from)?;
+
+        self.verify_seed_wrap_for_auth_context(user, &new_auth_context)?;
+
+        // Send confirmation email in the background
+        let app_state = self.clone();
+        let project_id = user.project_id;
+        let user_email = user.email.clone();
+        tokio::spawn(async move {
+            if let Err(e) = send_password_reset_confirmation_email(
+                &app_state,
+                project_id,
+                user_email.expect("Preserving reset proof verified the email exists"),
+            )
+            .await
+            {
+                error!("Failed to send password reset confirmation email: {:?}", e);
+            }
+        });
+
+        Ok(new_auth_context)
     }
 
     fn generate_alphanumeric_code(&self) -> String {

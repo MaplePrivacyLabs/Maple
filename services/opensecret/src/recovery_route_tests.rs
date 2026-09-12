@@ -1,21 +1,22 @@
 use crate::{
     db::setup_db,
     generate_reset_hash,
-    jwt::{AuthContext, AuthMethod, NewToken, TokenType},
+    jwt::{validate_token, AuthContext, AuthMethod, NewToken, TokenType, TRANSPORT_V2_USER_ACCESS},
     login_routes::RegisterCredentials,
     models::{
         oauth::NewUserOAuthConnection,
         org_projects::{NewOrgProject, OrgProject},
         password_reset::{NewPasswordResetRequest, PasswordResetRequest},
         schema::password_reset_requests,
-        user_seed_wrappings::NewUserSeedWrapping,
+        user_kv::{NewUserKV, UserKV},
+        user_seed_wrappings::{NewUserSeedWrapping, UserSeedWrapping},
         users::NewUser,
     },
     private_key::generate_twelve_word_seed,
     recovery_code::RecoveryCode,
     seed_wrapping::{
-        new_recovery_seed_wrapping, password_reset_code_mac, verify_recovery_seed_wrapping,
-        CredentialKind,
+        compute_recovery_auth_binding, decrypt_seed_v1, new_recovery_seed_wrapping,
+        password_reset_code_mac, verify_recovery_seed_wrapping, CredentialKind,
     },
     transport_v2::{crypto::SessionId, envelope::Credential},
     web::{
@@ -1299,6 +1300,963 @@ async fn password_reset_v2_options_probe_outcomes_stay_generic_and_safe() {
         reset_request_by_id(app_state, active.id).is_reset,
         "options must not resurrect a consumed request"
     );
+
+    let _ = app_state.db.delete_user(&fixture.user);
+}
+
+// ---------------------------------------------------------------------------
+// Phase 6: transport-v2 password reset completion
+// ---------------------------------------------------------------------------
+
+fn preserve_mode(recovery_code: &str) -> Value {
+    json!({ "preserve": { "recovery_code": recovery_code } })
+}
+
+fn destructive_mode(acknowledge_data_loss: bool) -> Value {
+    json!({
+        "destructive": { "acknowledge_data_loss": acknowledge_data_loss }
+    })
+}
+
+fn complete_body(proof: &ResetProofFixture, new_password: &str, mode: Value) -> Value {
+    json!({
+        "proof": {
+            "email": proof.email,
+            "alphanumeric_code": proof.code,
+            "plaintext_secret": proof.secret,
+            "client_id": proof.client_id,
+        },
+        "new_password": new_password,
+        "mode": mode,
+    })
+}
+
+async fn complete_request(app: axum::Router, body: Value) -> axum::http::Response<Body> {
+    send(
+        app,
+        v2_request("POST", "/password-reset/v2/complete", Some(body), None),
+    )
+    .await
+}
+
+/// Enrolls recovery over the user's authenticated seed through the Phase 2/3
+/// helpers — the same seed the enroll route wraps — and returns the displayed
+/// one-time code that opens the stored wrap.
+async fn enroll_recovery_over_authenticated_seed(
+    app_state: &AppState,
+    user: &crate::models::users::User,
+    auth_context: &AuthContext,
+) -> String {
+    let seed = app_state
+        .decrypt_seed_for_auth_context(user, auth_context)
+        .expect("authenticated seed should open before enrollment");
+    let code = RecoveryCode::generate(None)
+        .await
+        .expect("recovery code should generate");
+    let wrapping = new_recovery_seed_wrapping(&TEST_ROOT_KEY, user, &code, &seed)
+        .expect("enrollment wrap should seal");
+    app_state
+        .db
+        .insert_recovery_wrap_if_absent(wrapping)
+        .expect("enrollment wrap should insert");
+    code.display().to_string()
+}
+
+/// A user-private data row that the destructive reset deletes and the
+/// preserving reset must leave untouched.
+fn insert_kv_marker(app_state: &AppState, user: &crate::models::users::User) -> UserKV {
+    let conn = &mut app_state
+        .db
+        .get_pool()
+        .get()
+        .expect("test database connection should be available");
+    NewUserKV::new(
+        user.uuid,
+        b"recovery-preserve-marker".to_vec(),
+        b"preserve-marker-value".to_vec(),
+    )
+    .insert(conn)
+    .expect("marker row should insert")
+}
+
+fn kv_marker_exists(app_state: &AppState, user_id: Uuid, key_enc: &Vec<u8>) -> bool {
+    let conn = &mut app_state
+        .db
+        .get_pool()
+        .get()
+        .expect("test database connection should be available");
+    UserKV::get_by_user_and_key(conn, user_id, key_enc)
+        .expect("marker lookup should work")
+        .is_some()
+}
+
+fn wrap_rows_identical(a: &UserSeedWrapping, b: &UserSeedWrapping) -> bool {
+    a.id == b.id
+        && a.user_id == b.user_id
+        && a.credential_kind == b.credential_kind
+        && a.credential_lookup_hash == b.credential_lookup_hash
+        && a.wrapping_version == b.wrapping_version
+        && a.seed_enc == b.seed_enc
+        && a.created_at == b.created_at
+        && a.updated_at == b.updated_at
+}
+
+fn assert_recovery_wrap_unchanged(app_state: &AppState, user_id: Uuid, before: &UserSeedWrapping) {
+    let after = app_state
+        .db
+        .get_recovery_wrap(user_id)
+        .expect("wrap should load")
+        .expect("wrap should still exist");
+    assert!(
+        wrap_rows_identical(before, &after),
+        "the recovery wrap must remain byte-for-byte unchanged"
+    );
+}
+
+fn open_recovery_wrap_with_code(
+    user: &crate::models::users::User,
+    wrap: &UserSeedWrapping,
+    code: &RecoveryCode,
+) -> Vec<u8> {
+    let binding = compute_recovery_auth_binding(
+        &TEST_ROOT_KEY,
+        user.project_id,
+        user.uuid,
+        code.secret_bytes(),
+    )
+    .expect("recovery auth binding should compute");
+    decrypt_seed_v1(
+        &TEST_ROOT_KEY,
+        &wrap.seed_enc,
+        user.uuid,
+        user.project_id,
+        CredentialKind::Recovery,
+        &binding,
+    )
+    .expect("wrap should open with the recovery code")
+}
+
+#[tokio::test]
+#[ignore = "requires RECOVERY_TEST_DATABASE_URL (or AEAD_TAMPER_TEST_DATABASE_URL) pointing at disposable migrated local Postgres"]
+async fn password_reset_v2_preserving_completion_preserves_seed_wrap_and_encrypted_data() {
+    let fixture = authenticated_password_fixture("v2-complete").await;
+    let app_state = &fixture.app_state;
+    let project = first_active_project(app_state);
+    let app = login_router(app_state.clone());
+
+    let seed_before = app_state
+        .decrypt_seed_for_auth_context(&fixture.user, &fixture.auth_context)
+        .expect("authenticated seed should open before the reset");
+    let marker = insert_kv_marker(app_state, &fixture.user);
+    let code_display =
+        enroll_recovery_over_authenticated_seed(app_state, &fixture.user, &fixture.auth_context)
+            .await;
+    let wrap_before = app_state
+        .db
+        .get_recovery_wrap(fixture.user.uuid)
+        .expect("wrap should load")
+        .expect("wrap should exist after enrollment");
+
+    let secret = "recovery-complete-correct-secret";
+    let selected =
+        insert_reset_request_fixture(app_state, &project, &fixture.user, "PQRSTUV1", secret, 24);
+    let other =
+        insert_reset_request_fixture(app_state, &project, &fixture.user, "PWWWWWW2", secret, 24);
+    let proof = proof_fixture(&fixture.email, "PQRSTUV1", secret, project.client_id);
+    let new_password = "recovery-preserve-new-password";
+
+    let response = complete_request(
+        app,
+        complete_body(&proof, new_password, preserve_mode(&code_display)),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    assert!(body["message"].as_str().is_some());
+    assert!(body["access_token"].as_str().is_some_and(|t| !t.is_empty()));
+    assert!(body["refresh_token"]
+        .as_str()
+        .is_some_and(|t| !t.is_empty()));
+
+    // The issued access token carries the new password credential's signed
+    // auth context and opens the exact same seed.
+    let claims = validate_token(
+        body["access_token"].as_str().expect("access token"),
+        app_state,
+        TRANSPORT_V2_USER_ACCESS,
+    )
+    .expect("the issued access token should validate");
+    let token_auth_context =
+        AuthContext::from_claims(&claims).expect("claims should carry an auth context");
+    app_state
+        .verify_seed_wrap_for_auth_context(&fixture.user, &token_auth_context)
+        .expect("the issued token must open the seed through the new credential");
+    assert_eq!(
+        app_state
+            .decrypt_seed_for_auth_context(&fixture.user, &token_auth_context)
+            .expect("token auth context should open the seed"),
+        seed_before,
+        "preserving reset must keep the seed unchanged"
+    );
+
+    // The recovery wrap survives byte-for-byte.
+    assert_recovery_wrap_unchanged(app_state, fixture.user.uuid, &wrap_before);
+
+    // The old password stops authenticating; the new one authenticates and
+    // opens the same seed.
+    let old_login = app_state
+        .authenticate_user(
+            Some(fixture.email.clone()),
+            None,
+            fixture.password.to_string(),
+            fixture.user.project_id,
+        )
+        .await
+        .expect("authentication check should run");
+    assert!(old_login.is_none(), "the old password must stop working");
+    let new_login = app_state
+        .authenticate_user(
+            Some(fixture.email.clone()),
+            None,
+            new_password.to_string(),
+            fixture.user.project_id,
+        )
+        .await
+        .expect("authentication check should run")
+        .expect("the new password must authenticate");
+    assert_eq!(
+        app_state
+            .decrypt_seed_for_auth_context(&new_login.user, &new_login.auth_context)
+            .expect("the new credential should open the seed"),
+        seed_before
+    );
+
+    // Existing seed-key-encrypted data is untouched by a preserving reset.
+    assert!(
+        kv_marker_exists(app_state, fixture.user.uuid, &marker.key_enc),
+        "preserving reset must not delete user-private data"
+    );
+
+    // Matching the current reset behavior, every active request is consumed.
+    assert!(reset_request_by_id(app_state, selected.id).is_reset);
+    assert!(reset_request_by_id(app_state, other.id).is_reset);
+
+    let _ = app_state.db.delete_user(&fixture.user);
+}
+
+#[tokio::test]
+#[ignore = "requires RECOVERY_TEST_DATABASE_URL (or AEAD_TAMPER_TEST_DATABASE_URL) pointing at disposable migrated local Postgres"]
+async fn password_reset_v2_preserving_rejects_invalid_recovery_codes_without_consuming_the_request()
+{
+    let fixture = authenticated_password_fixture("v2-badcode").await;
+    let app_state = &fixture.app_state;
+    let project = first_active_project(app_state);
+    let app = login_router(app_state.clone());
+
+    let code_display =
+        enroll_recovery_over_authenticated_seed(app_state, &fixture.user, &fixture.auth_context)
+            .await;
+    let wrap_before = app_state
+        .db
+        .get_recovery_wrap(fixture.user.uuid)
+        .expect("wrap should load")
+        .expect("wrap should exist");
+
+    let secret = "recovery-badcode-secret";
+    let selected =
+        insert_reset_request_fixture(app_state, &project, &fixture.user, "PAAAAAA1", secret, 24);
+    let other =
+        insert_reset_request_fixture(app_state, &project, &fixture.user, "PBBBBBB2", secret, 24);
+    let proof = proof_fixture(&fixture.email, "PAAAAAA1", secret, project.client_id);
+    let new_password = "recovery-badcode-new-password";
+
+    // Malformed input is rejected before any database work.
+    let malformed = complete_request(
+        app.clone(),
+        complete_body(&proof, new_password, preserve_mode("not-a-code")),
+    )
+    .await;
+    assert_generic_bad_request(malformed).await;
+    assert!(
+        !reset_request_by_id(app_state, selected.id).is_reset,
+        "a malformed code must leave the selected request active"
+    );
+    assert_recovery_wrap_unchanged(app_state, fixture.user.uuid, &wrap_before);
+
+    // A checksum-invalid code of the right shape is rejected the same way.
+    let mut tampered = code_display.clone();
+    let last = tampered.pop().expect("displayed code has a last char");
+    tampered.push(if last == '0' { '1' } else { '0' });
+    let checksum_invalid = complete_request(
+        app.clone(),
+        complete_body(&proof, new_password, preserve_mode(&tampered)),
+    )
+    .await;
+    assert_generic_bad_request(checksum_invalid).await;
+    assert!(
+        !reset_request_by_id(app_state, selected.id).is_reset,
+        "a checksum-invalid code must leave the selected request active"
+    );
+    assert_recovery_wrap_unchanged(app_state, fixture.user.uuid, &wrap_before);
+    assert!(!reset_request_by_id(app_state, other.id).is_reset);
+
+    // The still-active request completes with the correct code.
+    let success = complete_request(
+        app,
+        complete_body(&proof, new_password, preserve_mode(&code_display)),
+    )
+    .await;
+    assert_eq!(success.status(), StatusCode::OK);
+
+    let _ = app_state.db.delete_user(&fixture.user);
+}
+
+#[tokio::test]
+#[ignore = "requires RECOVERY_TEST_DATABASE_URL (or AEAD_TAMPER_TEST_DATABASE_URL) pointing at disposable migrated local Postgres"]
+async fn password_reset_v2_well_formed_wrong_code_consumes_only_the_selected_request() {
+    let fixture = authenticated_password_fixture("v2-wrongcode").await;
+    let app_state = &fixture.app_state;
+    let project = first_active_project(app_state);
+    let app = login_router(app_state.clone());
+
+    enroll_recovery_over_authenticated_seed(app_state, &fixture.user, &fixture.auth_context).await;
+    let wrap_before = app_state
+        .db
+        .get_recovery_wrap(fixture.user.uuid)
+        .expect("wrap should load")
+        .expect("wrap should exist");
+
+    let secret = "recovery-wrongcode-secret";
+    let selected =
+        insert_reset_request_fixture(app_state, &project, &fixture.user, "PCCCCCC1", secret, 24);
+    let other =
+        insert_reset_request_fixture(app_state, &project, &fixture.user, "PDDDDDD2", secret, 24);
+    let proof = proof_fixture(&fixture.email, "PCCCCCC1", secret, project.client_id);
+    let new_password = "recovery-wrongcode-new-password";
+
+    // A well-formed code with a valid checksum that is simply wrong fails
+    // AEAD and consumes exactly the selected request.
+    let wrong_code = RecoveryCode::generate(None)
+        .await
+        .expect("a well-formed but wrong code should generate")
+        .display()
+        .to_string();
+    let wrong = complete_request(
+        app,
+        complete_body(&proof, new_password, preserve_mode(&wrong_code)),
+    )
+    .await;
+    assert_generic_bad_request(wrong).await;
+
+    assert!(
+        reset_request_by_id(app_state, selected.id).is_reset,
+        "a well-formed wrong code must consume the selected request"
+    );
+    assert!(
+        !reset_request_by_id(app_state, other.id).is_reset,
+        "only the selected request may be consumed"
+    );
+    assert_recovery_wrap_unchanged(app_state, fixture.user.uuid, &wrap_before);
+
+    // Nothing else changed: the old password still authenticates.
+    let old_login = app_state
+        .authenticate_user(
+            Some(fixture.email.clone()),
+            None,
+            fixture.password.to_string(),
+            fixture.user.project_id,
+        )
+        .await
+        .expect("authentication check should run");
+    assert!(
+        old_login.is_some(),
+        "a failed attempt must not change the password"
+    );
+
+    let _ = app_state.db.delete_user(&fixture.user);
+}
+
+#[tokio::test]
+#[ignore = "requires RECOVERY_TEST_DATABASE_URL (or AEAD_TAMPER_TEST_DATABASE_URL) pointing at disposable migrated local Postgres"]
+async fn password_reset_v2_correct_completion_racing_a_failed_attempt_has_one_winner() {
+    let fixture = authenticated_password_fixture("v2-race-attempt").await;
+    let app_state = &fixture.app_state;
+    let project = first_active_project(app_state);
+    let app = login_router(app_state.clone());
+
+    let code_display =
+        enroll_recovery_over_authenticated_seed(app_state, &fixture.user, &fixture.auth_context)
+            .await;
+    let wrap_before = app_state
+        .db
+        .get_recovery_wrap(fixture.user.uuid)
+        .expect("wrap should load")
+        .expect("wrap should exist");
+
+    let secret = "recovery-race-attempt-secret";
+    let selected =
+        insert_reset_request_fixture(app_state, &project, &fixture.user, "PEEEEEE1", secret, 24);
+    let proof = proof_fixture(&fixture.email, "PEEEEEE1", secret, project.client_id);
+    let new_password = "recovery-race-attempt-password";
+
+    let wrong_code = RecoveryCode::generate(None)
+        .await
+        .expect("a well-formed but wrong code should generate")
+        .display()
+        .to_string();
+    let (correct, wrong) = tokio::join!(
+        complete_request(
+            app.clone(),
+            complete_body(&proof, new_password, preserve_mode(&code_display))
+        ),
+        complete_request(
+            app,
+            complete_body(&proof, new_password, preserve_mode(&wrong_code))
+        ),
+    );
+
+    assert_eq!(
+        wrong.status(),
+        StatusCode::BAD_REQUEST,
+        "the wrong-code attempt must never succeed"
+    );
+    let correct_won = correct.status() == StatusCode::OK;
+
+    // Exactly one operation consumed the selected request; the loser either
+    // failed AEAD or lost the guarded consume, and nothing is left half-done.
+    assert!(
+        reset_request_by_id(app_state, selected.id).is_reset,
+        "the selected request must be consumed by the single winner"
+    );
+    assert_recovery_wrap_unchanged(app_state, fixture.user.uuid, &wrap_before);
+
+    let new_password_works = app_state
+        .authenticate_user(
+            Some(fixture.email.clone()),
+            None,
+            new_password.to_string(),
+            fixture.user.project_id,
+        )
+        .await
+        .expect("authentication check should run")
+        .is_some();
+    assert_eq!(
+        new_password_works, correct_won,
+        "the password must change exactly when the correct completion wins"
+    );
+
+    let _ = app_state.db.delete_user(&fixture.user);
+}
+
+#[tokio::test]
+#[ignore = "requires RECOVERY_TEST_DATABASE_URL (or AEAD_TAMPER_TEST_DATABASE_URL) pointing at disposable migrated local Postgres"]
+async fn password_reset_v2_destructive_completion_reuses_destructive_behavior_without_recovery() {
+    let fixture = authenticated_password_fixture("v2-destructive").await;
+    let app_state = &fixture.app_state;
+    let project = first_active_project(app_state);
+    let app = login_router(app_state.clone());
+
+    let seed_before = app_state
+        .decrypt_seed_for_auth_context(&fixture.user, &fixture.auth_context)
+        .expect("authenticated seed should open before the reset");
+    let marker = insert_kv_marker(app_state, &fixture.user);
+    // Recovery is enrolled, so destructive completion must remove it and
+    // create no replacement.
+    enroll_recovery_over_authenticated_seed(app_state, &fixture.user, &fixture.auth_context).await;
+
+    let secret = "recovery-destructive-secret";
+    let selected =
+        insert_reset_request_fixture(app_state, &project, &fixture.user, "PFFFFFF1", secret, 24);
+    let other =
+        insert_reset_request_fixture(app_state, &project, &fixture.user, "PGGGGGG2", secret, 24);
+    let proof = proof_fixture(&fixture.email, "PFFFFFF1", secret, project.client_id);
+    let new_password = "recovery-destructive-new-password";
+
+    // An unacknowledged destructive request is rejected before any proof or
+    // account lookup.
+    let unacknowledged_proof = proof_fixture(&fixture.email, "PHHHHHH3", secret, project.client_id);
+    let unacknowledged_request =
+        insert_reset_request_fixture(app_state, &project, &fixture.user, "PHHHHHH3", secret, 24);
+    let unacknowledged = complete_request(
+        app.clone(),
+        complete_body(&unacknowledged_proof, new_password, destructive_mode(false)),
+    )
+    .await;
+    assert_generic_bad_request(unacknowledged).await;
+    assert!(
+        !reset_request_by_id(app_state, unacknowledged_request.id).is_reset,
+        "an unacknowledged request must not consume anything"
+    );
+
+    let response = complete_request(
+        app,
+        complete_body(&proof, new_password, destructive_mode(true)),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    assert!(body["access_token"].as_str().is_some_and(|t| !t.is_empty()));
+    assert!(body["refresh_token"]
+        .as_str()
+        .is_some_and(|t| !t.is_empty()));
+
+    // The old password stops working; the new one authenticates and opens a
+    // fresh seed, not the preserved one.
+    let old_login = app_state
+        .authenticate_user(
+            Some(fixture.email.clone()),
+            None,
+            fixture.password.to_string(),
+            fixture.user.project_id,
+        )
+        .await
+        .expect("authentication check should run");
+    assert!(old_login.is_none());
+    let new_login = app_state
+        .authenticate_user(
+            Some(fixture.email.clone()),
+            None,
+            new_password.to_string(),
+            fixture.user.project_id,
+        )
+        .await
+        .expect("authentication check should run")
+        .expect("the new password must authenticate");
+    let seed_after = app_state
+        .decrypt_seed_for_auth_context(&new_login.user, &new_login.auth_context)
+        .expect("the new credential should open the new seed");
+    assert_ne!(
+        seed_after, seed_before,
+        "destructive reset must generate a fresh seed"
+    );
+
+    // Destructive cleanup ran: no recovery wrap (was enrolled), user-private
+    // data deleted, and no recovery wrap created.
+    assert!(
+        app_state
+            .db
+            .get_recovery_wrap(fixture.user.uuid)
+            .expect("wrap lookup should work")
+            .is_none(),
+        "destructive reset must delete the enrolled recovery wrap"
+    );
+    assert!(
+        !kv_marker_exists(app_state, fixture.user.uuid, &marker.key_enc),
+        "destructive reset must delete user-private data"
+    );
+    assert!(reset_request_by_id(app_state, selected.id).is_reset);
+    assert!(reset_request_by_id(app_state, other.id).is_reset);
+
+    let _ = app_state.db.delete_user(&fixture.user);
+}
+
+#[tokio::test]
+#[ignore = "requires RECOVERY_TEST_DATABASE_URL (or AEAD_TAMPER_TEST_DATABASE_URL) pointing at disposable migrated local Postgres"]
+async fn password_reset_v2_concurrent_destructive_completions_have_exactly_one_winner() {
+    let fixture = authenticated_password_fixture("v2-destructive-race").await;
+    let app_state = &fixture.app_state;
+    let project = first_active_project(app_state);
+    let app = login_router(app_state.clone());
+
+    let secret = "recovery-destructive-race-secret";
+    let selected =
+        insert_reset_request_fixture(app_state, &project, &fixture.user, "PIIIIII1", secret, 24);
+    let proof = proof_fixture(&fixture.email, "PIIIIII1", secret, project.client_id);
+    let new_password = "recovery-destructive-race-password";
+
+    let (first, second) = tokio::join!(
+        complete_request(
+            app.clone(),
+            complete_body(&proof, new_password, destructive_mode(true))
+        ),
+        complete_request(
+            app,
+            complete_body(&proof, new_password, destructive_mode(true))
+        ),
+    );
+
+    let winners = [first.status(), second.status()]
+        .into_iter()
+        .filter(|status| *status == StatusCode::OK)
+        .count();
+    assert_eq!(
+        winners, 1,
+        "exactly one concurrent destructive completion may win"
+    );
+
+    let new_password_works = app_state
+        .authenticate_user(
+            Some(fixture.email.clone()),
+            None,
+            new_password.to_string(),
+            fixture.user.project_id,
+        )
+        .await
+        .expect("authentication check should run")
+        .is_some();
+    assert!(new_password_works, "the winning password must authenticate");
+    assert!(
+        reset_request_by_id(app_state, selected.id).is_reset,
+        "the selected request must be consumed exactly once"
+    );
+
+    let _ = app_state.db.delete_user(&fixture.user);
+}
+
+#[tokio::test]
+#[ignore = "requires RECOVERY_TEST_DATABASE_URL (or AEAD_TAMPER_TEST_DATABASE_URL) pointing at disposable migrated local Postgres"]
+async fn password_reset_v2_completion_rejects_v1_and_missing_transport_sessions() {
+    let fixture = authenticated_password_fixture("v2-complete-gate").await;
+    let app_state = &fixture.app_state;
+    let project = first_active_project(app_state);
+    let app = login_router(app_state.clone());
+
+    let secret = "recovery-complete-gate-secret";
+    let active =
+        insert_reset_request_fixture(app_state, &project, &fixture.user, "PJJJJJJ1", secret, 24);
+    let proof = proof_fixture(&fixture.email, "PJJJJJJ1", secret, project.client_id);
+    let body = complete_body(&proof, "recovery-gate-password", preserve_mode("MPLRC1"));
+
+    // A v1 transport session presenting the entire valid proof is rejected
+    // before the handler can verify anything or consume state.
+    let request_value = Request::builder()
+        .method("POST")
+        .uri("/password-reset/v2/complete")
+        .body(Body::from(body.to_string()))
+        .unwrap();
+    let (mut v1_parts, v1_body) = request_value.into_parts();
+    v1_parts
+        .extensions
+        .insert(TransportSession::v1(Uuid::new_v4()));
+    let v1_response = send(app.clone(), Request::from_parts(v1_parts, v1_body)).await;
+    assert_generic_bad_request(v1_response).await;
+
+    // A request that carries no transport session never established
+    // transport security and must not reach the handler either.
+    let sessionless = Request::builder()
+        .method("POST")
+        .uri("/password-reset/v2/complete")
+        .body(Body::from(body.to_string()))
+        .unwrap();
+    let sessionless_response = send(app, sessionless).await;
+    assert_generic_bad_request(sessionless_response).await;
+
+    let reloaded = reset_request_by_id(app_state, active.id);
+    assert!(
+        !reloaded.is_reset,
+        "rejected transports must not consume state"
+    );
+    assert!(
+        !app_state
+            .db
+            .recovery_wrap_exists(fixture.user.uuid)
+            .expect("wrap lookup should work"),
+        "rejected transports must not create recovery state"
+    );
+
+    let _ = app_state.db.delete_user(&fixture.user);
+}
+
+#[tokio::test]
+#[ignore = "requires RECOVERY_TEST_DATABASE_URL (or AEAD_TAMPER_TEST_DATABASE_URL) pointing at disposable migrated local Postgres"]
+async fn password_reset_v2_preserving_reset_races_safely_with_password_change() {
+    let fixture = authenticated_password_fixture("v2-race-change").await;
+    let app_state = &fixture.app_state;
+    let project = first_active_project(app_state);
+    let app = login_router(app_state.clone());
+
+    let seed_before = app_state
+        .decrypt_seed_for_auth_context(&fixture.user, &fixture.auth_context)
+        .expect("authenticated seed should open before the race");
+    let code_display =
+        enroll_recovery_over_authenticated_seed(app_state, &fixture.user, &fixture.auth_context)
+            .await;
+    let wrap_before = app_state
+        .db
+        .get_recovery_wrap(fixture.user.uuid)
+        .expect("wrap should load")
+        .expect("wrap should exist");
+
+    let secret = "recovery-race-change-secret";
+    let selected =
+        insert_reset_request_fixture(app_state, &project, &fixture.user, "PKKKKKK1", secret, 24);
+    let proof = proof_fixture(&fixture.email, "PKKKKKK1", secret, project.client_id);
+    let new_password = "recovery-race-change-password";
+
+    let (complete_res, change_res) = tokio::join!(
+        complete_request(
+            app,
+            complete_body(&proof, new_password, preserve_mode(&code_display))
+        ),
+        app_state.update_user_password_and_seed_wrap(
+            &fixture.user,
+            &fixture.auth_context,
+            "recovery-race-concurrent-change".to_string(),
+        ),
+    );
+
+    assert_eq!(
+        complete_res.status(),
+        StatusCode::OK,
+        "the preserving reset must not lose to a password change: neither touches the reset request or the recovery wrap"
+    );
+    match change_res {
+        Ok(_) => {}
+        // The password change lost its expected-verifier CAS to the reset's
+        // user-row lock; that is the defined loser outcome.
+        Err(crate::Error::AuthenticationError) => {}
+        Err(e) => panic!("password change failed unexpectedly: {e:?}"),
+    }
+
+    // The final password is the preserving-reset password in either
+    // interleaving, the seed is unchanged, and the recovery wrap is
+    // byte-for-byte unchanged.
+    let new_login = app_state
+        .authenticate_user(
+            Some(fixture.email.clone()),
+            None,
+            new_password.to_string(),
+            fixture.user.project_id,
+        )
+        .await
+        .expect("authentication check should run")
+        .expect("the preserving password must authenticate");
+    assert_eq!(
+        app_state
+            .decrypt_seed_for_auth_context(&new_login.user, &new_login.auth_context)
+            .expect("the new credential should open the seed"),
+        seed_before
+    );
+    assert!(
+        app_state
+            .authenticate_user(
+                Some(fixture.email.clone()),
+                None,
+                fixture.password.to_string(),
+                fixture.user.project_id
+            )
+            .await
+            .expect("authentication check should run")
+            .is_none(),
+        "the old password must stop working"
+    );
+    assert!(
+        app_state
+            .authenticate_user(
+                Some(fixture.email.clone()),
+                None,
+                "recovery-race-concurrent-change".to_string(),
+                fixture.user.project_id
+            )
+            .await
+            .expect("authentication check should run")
+            .is_none(),
+        "a password change that lost the race must not authenticate"
+    );
+    assert_recovery_wrap_unchanged(app_state, fixture.user.uuid, &wrap_before);
+    assert!(
+        reset_request_by_id(app_state, selected.id).is_reset,
+        "the preserving reset consumed the selected request"
+    );
+
+    let _ = app_state.db.delete_user(&fixture.user);
+}
+
+#[tokio::test]
+#[ignore = "requires RECOVERY_TEST_DATABASE_URL (or AEAD_TAMPER_TEST_DATABASE_URL) pointing at disposable migrated local Postgres"]
+async fn password_reset_v2_preserving_reset_races_safely_with_rotation() {
+    let fixture = authenticated_password_fixture("v2-race-rotate").await;
+    let app_state = &fixture.app_state;
+    let project = first_active_project(app_state);
+    let app = login_router(app_state.clone());
+    let recovery_app = recovery_router(app_state.clone());
+
+    let seed_before = app_state
+        .decrypt_seed_for_auth_context(&fixture.user, &fixture.auth_context)
+        .expect("authenticated seed should open before the race");
+    let code_display =
+        enroll_recovery_over_authenticated_seed(app_state, &fixture.user, &fixture.auth_context)
+            .await;
+    let wrap_before = app_state
+        .db
+        .get_recovery_wrap(fixture.user.uuid)
+        .expect("wrap should load")
+        .expect("wrap should exist");
+    let token = v2_access_token(app_state, &fixture.user, &fixture.auth_context);
+
+    let secret = "recovery-race-rotate-secret";
+    let selected =
+        insert_reset_request_fixture(app_state, &project, &fixture.user, "PLLLLLL1", secret, 24);
+    let proof = proof_fixture(&fixture.email, "PLLLLLL1", secret, project.client_id);
+    let new_password = "recovery-race-rotate-password";
+
+    let (complete_res, rotate_res) = tokio::join!(
+        complete_request(
+            app,
+            complete_body(&proof, new_password, preserve_mode(&code_display))
+        ),
+        send(
+            recovery_app,
+            v2_request(
+                "POST",
+                "/protected/recovery-code/rotate",
+                Some(json!({ "current_password": fixture.password })),
+                Some(token),
+            ),
+        ),
+    );
+
+    let preserving_ok = complete_res.status() == StatusCode::OK;
+    let rotate_ok = rotate_res.status() == StatusCode::OK;
+    assert!(
+        preserving_ok || rotate_ok,
+        "at least one of the two operations must win: statuses {:?} / {:?}",
+        complete_res.status(),
+        rotate_res.status()
+    );
+
+    // The final recovery wrap opens over the same seed with whichever code
+    // the last committed state carries.
+    let final_wrap = app_state
+        .db
+        .get_recovery_wrap(fixture.user.uuid)
+        .expect("wrap should load")
+        .expect("a recovery wrap must exist after the race");
+    let opening_code = if rotate_ok {
+        let rotated_display = response_json(rotate_res).await["recovery_code"]
+            .as_str()
+            .expect("rotation returns a one-time code")
+            .to_string();
+        RecoveryCode::parse(&rotated_display).expect("the rotated code must parse")
+    } else {
+        // Rotation lost its seed credential to the preserving commit; the
+        // originally enrolled wrap is untouched.
+        assert_eq!(final_wrap.id, wrap_before.id, "the enrolled wrap survives");
+        RecoveryCode::parse(&code_display).expect("the enrolled code must parse")
+    };
+    assert_eq!(
+        open_recovery_wrap_with_code(&fixture.user, &final_wrap, &opening_code),
+        seed_before,
+        "rotation must preserve the seed in every interleaving"
+    );
+
+    // The password changed exactly when the preserving reset won.
+    let new_password_works = app_state
+        .authenticate_user(
+            Some(fixture.email.clone()),
+            None,
+            new_password.to_string(),
+            fixture.user.project_id,
+        )
+        .await
+        .expect("authentication check should run")
+        .is_some();
+    assert_eq!(new_password_works, preserving_ok);
+    assert_eq!(
+        reset_request_by_id(app_state, selected.id).is_reset,
+        preserving_ok,
+        "the preserving reset consumed the selected request only when it won"
+    );
+
+    let _ = app_state.db.delete_user(&fixture.user);
+}
+
+#[tokio::test]
+#[ignore = "requires RECOVERY_TEST_DATABASE_URL (or AEAD_TAMPER_TEST_DATABASE_URL) pointing at disposable migrated local Postgres"]
+async fn password_reset_v2_preserving_reset_races_safely_with_disablement() {
+    let fixture = authenticated_password_fixture("v2-race-disable").await;
+    let app_state = &fixture.app_state;
+    let project = first_active_project(app_state);
+    let app = login_router(app_state.clone());
+    let recovery_app = recovery_router(app_state.clone());
+
+    let seed_before = app_state
+        .decrypt_seed_for_auth_context(&fixture.user, &fixture.auth_context)
+        .expect("authenticated seed should open before the race");
+    let code_display =
+        enroll_recovery_over_authenticated_seed(app_state, &fixture.user, &fixture.auth_context)
+            .await;
+    let wrap_before = app_state
+        .db
+        .get_recovery_wrap(fixture.user.uuid)
+        .expect("wrap should load")
+        .expect("wrap should exist");
+    let token = v2_access_token(app_state, &fixture.user, &fixture.auth_context);
+
+    let secret = "recovery-race-disable-secret";
+    let selected =
+        insert_reset_request_fixture(app_state, &project, &fixture.user, "PMMMMMM1", secret, 24);
+    let proof = proof_fixture(&fixture.email, "PMMMMMM1", secret, project.client_id);
+    let new_password = "recovery-race-disable-password";
+
+    let (complete_res, disable_res) = tokio::join!(
+        complete_request(
+            app,
+            complete_body(&proof, new_password, preserve_mode(&code_display))
+        ),
+        send(
+            recovery_app,
+            v2_request(
+                "DELETE",
+                "/protected/recovery-code",
+                Some(json!({ "current_password": fixture.password })),
+                Some(token),
+            ),
+        ),
+    );
+
+    let preserving_ok = complete_res.status() == StatusCode::OK;
+    let disable_status = disable_res.status();
+    assert!(
+        disable_status == StatusCode::OK || disable_status == StatusCode::UNAUTHORIZED,
+        "disablement either runs with its live credential or loses it to the preserving commit: got {disable_status:?}"
+    );
+
+    // The password changed exactly when the preserving reset won.
+    let new_password_works = app_state
+        .authenticate_user(
+            Some(fixture.email.clone()),
+            None,
+            new_password.to_string(),
+            fixture.user.project_id,
+        )
+        .await
+        .expect("authentication check should run")
+        .is_some();
+    assert_eq!(new_password_works, preserving_ok);
+    assert_eq!(
+        reset_request_by_id(app_state, selected.id).is_reset,
+        preserving_ok,
+        "a losing preserving reset must leave the selected request active for a destructive retry"
+    );
+
+    // Disablement with a live credential always removes the wrap; a
+    // disablement that lost its credential to the preserving commit leaves
+    // the wrap byte-for-byte unchanged.
+    let final_wrap = app_state
+        .db
+        .get_recovery_wrap(fixture.user.uuid)
+        .expect("wrap lookup should work");
+    if disable_status == StatusCode::OK {
+        assert!(
+            final_wrap.is_none(),
+            "a disablement that ran must remove the wrap"
+        );
+    } else {
+        let wrap = final_wrap.expect("the enrolled wrap must survive a losing disablement");
+        assert!(
+            wrap_rows_identical(&wrap_before, &wrap),
+            "the enrolled wrap must remain byte-for-byte unchanged"
+        );
+        assert_eq!(
+            open_recovery_wrap_with_code(
+                &fixture.user,
+                &wrap,
+                &RecoveryCode::parse(&code_display).expect("enrolled code parses"),
+            ),
+            seed_before
+        );
+    }
 
     let _ = app_state.db.delete_user(&fixture.user);
 }

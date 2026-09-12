@@ -1467,3 +1467,203 @@ fn password_reset_v2_options_requires_v2_transport_and_shared_readonly_proof() {
         "application routes must merge the login router"
     );
 }
+
+#[test]
+fn password_reset_v2_complete_requires_v2_transport_and_guarded_completion() {
+    let login_routes = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/web/login_routes.rs");
+    let contents =
+        fs::read_to_string(&login_routes).expect("login route source should be readable");
+
+    let router_body = extract_function_body(&contents, "pub fn router");
+    assert!(
+        router_body.contains(".merge(password_reset_v2_router("),
+        "the login router must merge the v2 reset sub-router carrying the completion route"
+    );
+
+    let sub_router_body = extract_function_body(&contents, "fn password_reset_v2_router");
+    assert!(
+        sub_router_body.contains("\"/password-reset/v2/complete\"")
+            && sub_router_body.contains("decrypt_request::<CompletePasswordResetV2Request>"),
+        "the completion sub-router must wire the route with its encrypted-request layer"
+    );
+    // The v2-transport gate must be the outermost layer on the sub-router so
+    // a v1 session is rejected before any request body is decrypted or proof
+    // is verified.
+    assert_patterns_in_order(
+        sub_router_body,
+        &[
+            "post(password_reset_v2_complete)",
+            "decrypt_request::<CompletePasswordResetV2Request>",
+            ".route_layer(from_fn(require_transport_v2))",
+        ],
+    );
+
+    let handler_body = extract_function_body(&contents, "pub async fn password_reset_v2_complete");
+    let guard_index = handler_body
+        .find("require_v2_transport_session(&transport_session)?;")
+        .expect("the completion handler must call the v2-transport guard first");
+    let acknowledge_index = handler_body
+        .find("acknowledge_data_loss")
+        .expect("the completion handler must gate destructive reset on an explicit acknowledgment");
+    let project_index = handler_body
+        .find("get_org_project_by_client_id")
+        .expect("the completion handler must scope the proof to a project");
+    let proof_index = handler_body
+        .find("verify_password_reset_proof(")
+        .expect("the completion handler must reuse the shared proof verification");
+    assert!(
+        guard_index < acknowledge_index,
+        "the completion handler must reject non-v2 transports before mode dispatch"
+    );
+    assert!(
+        acknowledge_index < project_index,
+        "the completion handler must require the destructive acknowledgment before any account lookup"
+    );
+    assert!(
+        project_index < proof_index,
+        "the completion handler must verify the reset proof before any completion work"
+    );
+
+    // Destructive completion reuses the legacy destructive reset path
+    // unchanged; preserving completion flows through the dedicated
+    // seed-preserving orchestration. Tokens are issued only after either
+    // path succeeds.
+    let destructive_index = handler_body
+        .find("data.confirm_password_reset(")
+        .expect("destructive completion must reuse the legacy destructive reset path");
+    let preserving_index = handler_body
+        .find("complete_preserving_password_reset_v2(")
+        .expect("preserving completion must use the seed-preserving orchestration");
+    assert!(
+        proof_index < destructive_index && proof_index < preserving_index,
+        "both completion modes must run after the shared proof verification"
+    );
+    let tokens_index = handler_body
+        .find("NewToken::new_with_auth_context")
+        .expect("the completion handler must issue tokens after completion");
+    assert!(
+        destructive_index < tokens_index && preserving_index < tokens_index,
+        "tokens must be issued only after a completion mode succeeds"
+    );
+
+    // Seed-preserving orchestration order: parse before any database work,
+    // open through the shared seed-wrap envelope, consume only on AEAD
+    // failure, validate the seed, seal and verify the replacement password
+    // wrap before the transaction, and verify after commit.
+    let main_contents =
+        fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/main.rs"))
+            .expect("main source should be readable");
+    let preserving_body = extract_function_body(
+        &main_contents,
+        "async fn complete_preserving_password_reset_v2",
+    );
+    let parse_index = preserving_body
+        .find("RecoveryCode::parse(")
+        .expect("preserving completion must parse the recovery code");
+    let wrap_index = preserving_body
+        .find("get_recovery_wrap(user.uuid)")
+        .expect("preserving completion must load the enrolled wrap");
+    let binding_index = preserving_body
+        .find("compute_recovery_auth_binding(")
+        .expect("preserving completion must derive the recovery auth binding");
+    let open_index = preserving_body
+        .find("decrypt_seed_v1(")
+        .expect("preserving completion must open the wrap through decrypt_seed_v1");
+    let consume_index = preserving_body
+        .find("consume_selected_password_reset_request")
+        .expect("a well-formed code that fails AEAD must consume the selected request");
+    let mnemonic_index = preserving_body
+        .find("plaintext_user_seed_to_mnemonic(")
+        .expect("preserving completion must validate the opened seed");
+    let seal_index = preserving_body
+        .find("new_password_seed_wrapping_for_user(")
+        .expect("preserving completion must seal the replacement password wrap");
+    let commit_index = preserving_body
+        .find("complete_preserving_password_reset(")
+        .expect("preserving completion must run the guarded transaction");
+    let post_verify_index = preserving_body
+        .find("verify_seed_wrap_for_auth_context")
+        .expect("preserving completion must verify the new credential after commit");
+    assert!(
+        parse_index < wrap_index,
+        "a malformed code must be rejected before any database work"
+    );
+    assert!(wrap_index < binding_index && binding_index < open_index);
+    assert!(
+        open_index < consume_index,
+        "only an opened wrap that fails AEAD may consume the selected request"
+    );
+    assert!(
+        open_index < mnemonic_index,
+        "the opened seed must be validated before any mutation"
+    );
+    assert!(
+        mnemonic_index < seal_index && seal_index < commit_index,
+        "the replacement wrap must be sealed and verified before the transaction"
+    );
+    assert!(
+        commit_index < post_verify_index,
+        "the new credential must be verified after the transaction commits"
+    );
+
+    // The preserving transaction locks the user row first, rechecks the
+    // unchanged predicates, and only then mutates credentials.
+    let db_contents = fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/db.rs"))
+        .expect("DB source should be readable");
+    let implementation_start = db_contents
+        .rfind("fn complete_preserving_password_reset")
+        .expect("preserving reset implementation signature should exist");
+    let db_body = extract_function_body(
+        &db_contents[implementation_start..],
+        "fn complete_preserving_password_reset",
+    );
+    assert_patterns_in_order(
+        db_body,
+        &[
+            "users::table",
+            "for_update()",
+            "password_reset_requests::id.eq(reset_request.id)",
+            "password_reset_requests::hashed_secret",
+            "password_reset_requests::is_reset.eq(false)",
+            "password_reset_requests::expiration_time.gt(diesel::dsl::now)",
+            "if consumed_reset_count != 1",
+            "DBError::PasswordResetRequestNotFound",
+            "password_reset_requests::id.ne(reset_request.id)",
+            "CredentialKind::Recovery.as_str()",
+            "current.id == recovery_wrap.id",
+            "current.seed_enc == recovery_wrap.seed_enc",
+            "DBError::StaleCredentialState",
+            "users::password_enc.eq(Some(new_password_enc))",
+            "CredentialKind::Password.as_str()",
+            "new_wrapping.insert(conn)",
+        ],
+    );
+    assert!(
+        !db_body.contains("diesel::delete(user_seed_wrappings::table"),
+        "preserving reset must not delete every seed wrap; only the password credential is replaced"
+    );
+
+    // The standalone consume helper keeps the same guarded predicate so the
+    // AEAD-failure path cannot consume a request that already moved on.
+    let consume_start = db_contents
+        .rfind("fn consume_selected_password_reset_request")
+        .expect("guarded consume implementation signature should exist");
+    let consume_body = extract_function_body(
+        &db_contents[consume_start..],
+        "fn consume_selected_password_reset_request",
+    );
+    for required_pattern in [
+        "password_reset_requests::id.eq(request.id)",
+        "password_reset_requests::user_id.eq(user.uuid)",
+        "password_reset_requests::hashed_secret",
+        "password_reset_requests::is_reset.eq(false)",
+        "password_reset_requests::expiration_time.gt(diesel::dsl::now)",
+        "if consumed_count != 1",
+        "DBError::PasswordResetRequestNotFound",
+    ] {
+        assert!(
+            consume_body.contains(required_pattern),
+            "the guarded consume helper must contain `{required_pattern}`"
+        );
+    }
+}

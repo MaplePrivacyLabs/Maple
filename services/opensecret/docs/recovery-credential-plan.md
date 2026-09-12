@@ -112,7 +112,23 @@ MPLRC1-XXXX-XXXX-XXXX-XXXX-XXXX-XXXX-XXXX-XXXX-XXXX-XXXX-XXXX-XXXX-XXXX-CCCC-CCC
 
 ## Recovery Seed Wrap
 
-Use recovery-specific domains while retaining the existing AEAD representation:
+> **Implemented shape (reconciled at Phase 6):** recovery wraps reuse the
+> existing seed-wrap envelope representation — `encrypt_seed_v1` /
+> `decrypt_seed_v1` with `CredentialKind::Recovery` and a recovery-specific
+> `AuthBinding` from `compute_recovery_auth_binding` (domain
+> `os.recovery-auth-binding.v1`), which HMACs the user, project, and the
+> SHA-256 of the recovery secret into the binding. There is no separate
+> recovery-wrap key/AAD envelope representation; the `recovery_wrap_key` /
+> `recovery_wrap_aad` sketch below was never shipped and was deleted at
+> Phase 6. The AEAD tag remains the only correctness check for a submitted
+> code, so opening stays fail-closed.
+>
+> Every newly created recovery wrap must still be opened and compared
+> byte-for-byte with the intended seed before persistence
+> (`verify_recovery_seed_wrapping`), and the reset completion validates the
+> opened seed as a mnemonic before any mutation.
+
+Original sketch, retained for history:
 
 ```text
 12-byte nonce || ciphertext || 16-byte GCM tag
@@ -688,7 +704,7 @@ nothing below blocks Phases 5-7.
 |----------|-----------|-------------------|-------|
 | Client-facing management status codes: re-enroll → `409 Conflict`; rotate with no wrap → `400`; idempotent disable → `200`; wrong step-up password → `401 InvalidUsernameOrPassword` | P4 handlers | Before client consumption (Maple Security settings UI / SDK mocks) or Phase 8 encrypted smoke test | Consumers will encode these; freeze before any client encodes them |
 | `recovery_status` eligibility for OAuth-only users (currently reachable; returns `enrolled: false`; guests fail JWT validation) | P4 handler + P4.6 wording | Same milestone as status codes | Decide with Maple settings-UI topology; response carries no oracle value |
-| Plan § "Recovery Seed Wrap" sketches a `recovery_wrap_key`/`recovery_wrap_aad` envelope that the shipped implementation does not use; `RecoveryCode::parse` and those helpers currently have no production consumer (`#[allow(dead_code)]` markers carry the gap) | P2 helpers vs P4 sealing path | Phase 6 implementation (P6.2 "Open recovery wrap") | Opening must go through `decrypt_seed_v1` with a recovery `AuthBinding`; either delete the dead helpers or reconcile this section. Failure mode is fail-closed (AEAD tag rejection) regardless |
+| Plan § "Recovery Seed Wrap" sketches a `recovery_wrap_key`/`recovery_wrap_aad` envelope that the shipped implementation does not use; `RecoveryCode::parse` and those helpers currently have no production consumer (`#[allow(dead_code)]` markers carry the gap) | P2 helpers vs P4 sealing path | Phase 6 implementation (P6.2 "Open recovery wrap") | **Resolved at Phase 6:** the reset completion opens wraps through `decrypt_seed_v1` with a recovery `AuthBinding` as required; the dead `recovery_wrap_key`/`recovery_wrap_aad` helpers were deleted and the plan section above was reconciled. `RecoveryCode::parse` now has its production consumer and its markers were removed |
 | v2 carrier encryption + runtime log-capture evidence for recovery routes | P4 route tests scope | Phase 8 validation via `$validate-opensecret` | Route tests cover inner-router behavior only; gateway sealing is source-confirmed, log hygiene is statically scanned (`security_invariants`) |
 
 ## Deferred Work
