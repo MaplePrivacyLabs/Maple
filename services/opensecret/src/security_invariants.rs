@@ -1667,3 +1667,67 @@ fn password_reset_v2_complete_requires_v2_transport_and_guarded_completion() {
         );
     }
 }
+
+#[test]
+fn legacy_password_reset_confirm_rejects_recovery_code_before_any_lookup() {
+    let login_routes = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/web/login_routes.rs");
+    let contents =
+        fs::read_to_string(&login_routes).expect("login route source should be readable");
+
+    // The legacy confirm payload carries a presence-aware `recovery_code`
+    // marker: the old-client shape (field absent) keeps deserializing, and
+    // every present form — a value, an empty string, or an explicit `null` —
+    // stays observable for the handler guard.
+    let payload_body = extract_function_body(&contents, "pub struct PasswordResetConfirmPayload");
+    assert!(
+        payload_body.contains(
+            "#[serde(default, deserialize_with = \"deserialize_recovery_code_presence\")]"
+        ) && payload_body.contains("recovery_code: Option<Option<String>>"),
+        "the legacy confirm payload must carry the presence-aware recovery_code field"
+    );
+    let deserializer_body =
+        extract_function_body(&contents, "fn deserialize_recovery_code_presence");
+    assert!(
+        deserializer_body.contains("Option::<String>::deserialize(deserializer).map(Some)"),
+        "the recovery_code deserializer must preserve field presence, including an explicit null"
+    );
+
+    // The guard must be the first statement of the legacy confirm handler:
+    // recovery material is rejected before project, user, reset-request, or
+    // recovery lookup.
+    let handler_body = extract_function_body(&contents, "pub async fn password_reset_confirm");
+    let guard_index = handler_body
+        .find("if payload.recovery_code.is_some()")
+        .expect("the legacy confirm handler must reject any recovery_code presence");
+    let db_index = handler_body
+        .find("data.db")
+        .expect("the legacy confirm handler must reach the database only after the guard");
+    assert!(
+        guard_index < db_index,
+        "the legacy confirm handler must reject recovery_code before any database lookup"
+    );
+
+    // The legacy endpoint stays purely destructive: it must not parse,
+    // inspect, or mutate recovery state, and it must keep reusing the
+    // unchanged destructive completion.
+    for forbidden_pattern in [
+        "RecoveryCode::",
+        "get_recovery_wrap",
+        "recovery_wrap_exists",
+        "compute_recovery_auth_binding",
+        "decrypt_seed_v1",
+        "complete_preserving_password_reset",
+        "insert_recovery_wrap_if_absent",
+        "replace_recovery_wrap_if_unchanged",
+        "delete_recovery_wrap_for_user",
+    ] {
+        assert!(
+            !handler_body.contains(forbidden_pattern),
+            "the legacy destructive reset must not touch recovery material via `{forbidden_pattern}`"
+        );
+    }
+    assert!(
+        handler_body.contains("data.confirm_password_reset("),
+        "the legacy confirm handler must keep routing through the unchanged destructive completion"
+    );
+}

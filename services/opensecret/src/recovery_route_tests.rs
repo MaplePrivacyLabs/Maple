@@ -2260,3 +2260,229 @@ async fn password_reset_v2_preserving_reset_races_safely_with_disablement() {
 
     let _ = app_state.db.delete_user(&fixture.user);
 }
+
+// ---------------------------------------------------------------------------
+// Phase 7: legacy destructive reset endpoint guard
+// ---------------------------------------------------------------------------
+
+/// The legacy one-shot destructive reset body. Old clients submit exactly
+/// this shape; `recovery_code` must never appear on it.
+fn legacy_confirm_body(
+    email: &str,
+    code: &str,
+    secret: &str,
+    client_id: Uuid,
+    new_password: &str,
+) -> Value {
+    json!({
+        "email": email,
+        "alphanumeric_code": code,
+        "plaintext_secret": secret,
+        "new_password": new_password,
+        "client_id": client_id,
+    })
+}
+
+fn legacy_confirm_body_with_recovery_code(mut body: Value, recovery_code: Value) -> Value {
+    body["recovery_code"] = recovery_code;
+    body
+}
+
+async fn legacy_confirm_request(app: axum::Router, body: Value) -> axum::http::Response<Body> {
+    send(
+        app,
+        v2_request("POST", "/password-reset/confirm", Some(body), None),
+    )
+    .await
+}
+
+#[tokio::test]
+#[ignore = "requires RECOVERY_TEST_DATABASE_URL (or AEAD_TAMPER_TEST_DATABASE_URL) pointing at disposable migrated local Postgres"]
+async fn legacy_password_reset_confirm_retains_destructive_contract_without_recovery() {
+    let fixture = authenticated_password_fixture("legacy-confirm").await;
+    let app_state = &fixture.app_state;
+    let project = first_active_project(app_state);
+    let app = login_router(app_state.clone());
+
+    let seed_before = app_state
+        .decrypt_seed_for_auth_context(&fixture.user, &fixture.auth_context)
+        .expect("authenticated seed should open before the reset");
+    let marker = insert_kv_marker(app_state, &fixture.user);
+    // Recovery is enrolled, so the destructive reset must remove it and
+    // create no replacement.
+    enroll_recovery_over_authenticated_seed(app_state, &fixture.user, &fixture.auth_context).await;
+
+    let secret = "legacy-confirm-correct-secret";
+    let selected =
+        insert_reset_request_fixture(app_state, &project, &fixture.user, "QABCDE12", secret, 24);
+    let other =
+        insert_reset_request_fixture(app_state, &project, &fixture.user, "QWWWWWW2", secret, 24);
+
+    // The old-client payload shape: no recovery_code field at all.
+    let response = legacy_confirm_request(
+        app,
+        legacy_confirm_body(
+            &fixture.email,
+            "QABCDE12",
+            secret,
+            project.client_id,
+            "legacy-confirm-new-password",
+        ),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response_json(response).await,
+        json!({
+            "message": "Password reset successful. You can now log in with your new password."
+        }),
+        "old clients must keep the exact one-shot destructive reset response"
+    );
+
+    // Credential behavior matches the current destructive reset: the old
+    // password stops working, the new one authenticates over a fresh seed.
+    let old_login = app_state
+        .authenticate_user(
+            Some(fixture.email.clone()),
+            None,
+            fixture.password.to_string(),
+            fixture.user.project_id,
+        )
+        .await
+        .expect("authentication check should run");
+    assert!(old_login.is_none());
+    let new_login = app_state
+        .authenticate_user(
+            Some(fixture.email.clone()),
+            None,
+            "legacy-confirm-new-password".to_string(),
+            fixture.user.project_id,
+        )
+        .await
+        .expect("authentication check should run")
+        .expect("the new password must authenticate");
+    let seed_after = app_state
+        .decrypt_seed_for_auth_context(&new_login.user, &new_login.auth_context)
+        .expect("the new credential should open the new seed");
+    assert_ne!(
+        seed_after, seed_before,
+        "legacy destructive reset must generate a fresh seed"
+    );
+
+    // Deletion behavior matches the current destructive reset: no recovery
+    // wrap remains or is created, and seed-key-encrypted data is deleted.
+    assert!(
+        app_state
+            .db
+            .get_recovery_wrap(fixture.user.uuid)
+            .expect("wrap lookup should work")
+            .is_none(),
+        "destructive reset must delete the enrolled recovery wrap"
+    );
+    assert!(
+        !kv_marker_exists(app_state, fixture.user.uuid, &marker.key_enc),
+        "destructive reset must delete user-private data"
+    );
+    assert!(
+        !app_state
+            .db
+            .recovery_wrap_exists(fixture.user.uuid)
+            .expect("wrap lookup should work"),
+        "the legacy endpoint must never create recovery state"
+    );
+
+    // Request behavior matches the current destructive reset: the selected
+    // and every other active request are consumed together.
+    assert!(reset_request_by_id(app_state, selected.id).is_reset);
+    assert!(reset_request_by_id(app_state, other.id).is_reset);
+
+    let _ = app_state.db.delete_user(&fixture.user);
+}
+
+#[tokio::test]
+#[ignore = "requires RECOVERY_TEST_DATABASE_URL (or AEAD_TAMPER_TEST_DATABASE_URL) pointing at disposable migrated local Postgres"]
+async fn legacy_password_reset_confirm_rejects_any_recovery_code_before_mutation() {
+    let fixture = authenticated_password_fixture("legacy-guard").await;
+    let app_state = &fixture.app_state;
+    let project = first_active_project(app_state);
+    let app = login_router(app_state.clone());
+
+    let code_display =
+        enroll_recovery_over_authenticated_seed(app_state, &fixture.user, &fixture.auth_context)
+            .await;
+    let wrap_before = app_state
+        .db
+        .get_recovery_wrap(fixture.user.uuid)
+        .expect("wrap should load")
+        .expect("wrap should exist");
+
+    let secret = "legacy-guard-correct-secret";
+    let active =
+        insert_reset_request_fixture(app_state, &project, &fixture.user, "QCCCCCC1", secret, 24);
+
+    // Every present value — the actually enrolled code, a garbage string, an
+    // empty string, and an explicit null — must be rejected with the same
+    // generic 400 before the request could have been verified or consumed.
+    for value in [
+        json!(code_display),
+        json!("not-a-code"),
+        json!(""),
+        json!(null),
+    ] {
+        let body = legacy_confirm_body_with_recovery_code(
+            legacy_confirm_body(
+                &fixture.email,
+                "QCCCCCC1",
+                secret,
+                project.client_id,
+                "legacy-guard-new-password",
+            ),
+            value,
+        );
+        let rejected = legacy_confirm_request(app.clone(), body).await;
+        assert_generic_bad_request(rejected).await;
+    }
+
+    // A recovery_code presented with unknown account coordinates is also
+    // rejected with 400 — not the 401 the unknown-email path alone would
+    // return — proving the guard runs before the user lookup.
+    let unknown_email = legacy_confirm_body_with_recovery_code(
+        legacy_confirm_body(
+            &format!("recovery-route-legacy-guard-{}@example.com", Uuid::new_v4()),
+            "QCCCCCC1",
+            secret,
+            project.client_id,
+            "legacy-guard-new-password",
+        ),
+        json!("not-a-code"),
+    );
+    let unknown_email_response = legacy_confirm_request(app, unknown_email).await;
+    assert_eq!(
+        unknown_email_response.status(),
+        StatusCode::BAD_REQUEST,
+        "the guard must reject recovery_code before any user lookup"
+    );
+
+    // Nothing mutated: the valid reset request stays active, the password is
+    // unchanged, and the recovery wrap is byte-for-byte unchanged.
+    assert!(
+        !reset_request_by_id(app_state, active.id).is_reset,
+        "a rejected legacy reset must not consume the reset request"
+    );
+    let still_authenticates = app_state
+        .authenticate_user(
+            Some(fixture.email.clone()),
+            None,
+            fixture.password.to_string(),
+            fixture.user.project_id,
+        )
+        .await
+        .expect("authentication check should run");
+    assert!(
+        still_authenticates.is_some(),
+        "a rejected legacy reset must not change the password"
+    );
+    assert_recovery_wrap_unchanged(app_state, fixture.user.uuid, &wrap_before);
+
+    let _ = app_state.db.delete_user(&fixture.user);
+}

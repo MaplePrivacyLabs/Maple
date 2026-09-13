@@ -45,6 +45,27 @@ pub struct PasswordResetConfirmPayload {
     plaintext_secret: String,
     new_password: String,
     client_id: Uuid,
+    /// Presence marker for recovery material on the legacy destructive
+    /// endpoint. Absent (the old-client shape) deserializes to `None`; the
+    /// handler rejects any presence — a value or an explicit `null` — before
+    /// any database work, so recovery resets can never reach the one-shot
+    /// destructive flow.
+    #[serde(default, deserialize_with = "deserialize_recovery_code_presence")]
+    recovery_code: Option<Option<String>>,
+}
+
+/// Distinguishes an absent field from a present one while deserializing the
+/// legacy confirm `recovery_code`: absent → `None`, an explicit `null` →
+/// `Some(None)`, a value → `Some(Some(value))`. The handler rejects every
+/// present form, so a confused client cannot submit recovery material and
+/// silently receive a destructive reset.
+fn deserialize_recovery_code_presence<'de, D>(
+    deserializer: D,
+) -> Result<Option<Option<String>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Option::<String>::deserialize(deserializer).map(Some)
 }
 
 /// The existing email reset proof for v2 reset routes: the emailed
@@ -593,6 +614,14 @@ pub async fn password_reset_confirm(
     Decrypted(payload): Decrypted<PasswordResetConfirmPayload>,
     Extension(session_id): Extension<TransportSession>,
 ) -> Result<Response, ApiError> {
+    // The legacy endpoint is one-shot and destructive: any payload that
+    // carries recovery material — even an explicit `null` — is rejected
+    // before project, user, reset-request, or recovery lookup. Old clients
+    // omit the field and are unaffected.
+    if payload.recovery_code.is_some() {
+        return Err(ApiError::BadRequest);
+    }
+
     // Get project by client_id
     let project = data
         .db
@@ -831,4 +860,50 @@ pub async fn password_reset_v2_complete(
         refresh_token: refresh_token.token,
     };
     encrypt_response(&data, &transport_session, &response).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::Value;
+
+    fn legacy_confirm_body() -> Value {
+        json!({
+            "email": "user@example.com",
+            "alphanumeric_code": "OABCDE12",
+            "plaintext_secret": "reset-secret",
+            "new_password": "new-password",
+            "client_id": Uuid::new_v4(),
+        })
+    }
+
+    /// The old-client payload shape omits `recovery_code` entirely and must
+    /// keep deserializing unchanged.
+    #[test]
+    fn legacy_confirm_payload_without_recovery_code_deserializes_unchanged() {
+        let payload: PasswordResetConfirmPayload = serde_json::from_value(legacy_confirm_body())
+            .expect("the old-client payload shape must keep deserializing");
+        assert!(payload.recovery_code.is_none());
+    }
+
+    /// Any present `recovery_code` — a value, an empty string, or an explicit
+    /// `null` — must stay observable so the handler can reject it before any
+    /// database work.
+    #[test]
+    fn legacy_confirm_payload_preserves_recovery_code_presence() {
+        for value in [
+            json!("MPLRC1-AAAAA-AAAAA-AAAAA-AAAAA-AAAAA-AAAAA-AAAAA"),
+            json!(""),
+            json!(null),
+        ] {
+            let mut body = legacy_confirm_body();
+            body["recovery_code"] = value.clone();
+            let payload: PasswordResetConfirmPayload =
+                serde_json::from_value(body).expect("the payload must deserialize");
+            assert!(
+                payload.recovery_code.is_some(),
+                "`recovery_code` present as {value} must stay observable"
+            );
+        }
+    }
 }

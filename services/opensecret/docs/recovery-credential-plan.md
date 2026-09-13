@@ -610,6 +610,15 @@ The transaction consumes the selected and all other active reset requests, then 
 
 ## Legacy Destructive Password Reset
 
+> **Implemented shape (reconciled at Phase 7):** the guard field is
+> presence-aware — `recovery_code: Option<Option<String>>` with a custom
+> `deserialize_with` in `PasswordResetConfirmPayload` — so the handler rejects
+> every present form of the field, including an explicit `null`, where the
+> `Option<String>` sketch below would have treated `null` as absent and let
+> the payload through to the destructive reset. The old-client shape (field
+> absent) deserializes unchanged and proceeds with the destructive reset, and
+> the endpoint still never parses, inspects, or mutates recovery state.
+
 The existing `/password-reset/confirm` flow remains one-shot and destructive. It continues to generate a new seed, delete old wraps and seed-key-encrypted state, disconnect OAuth, preserve API keys, and install a new password wrap exactly as today. It does not inspect recovery enrollment and does not create a recovery wrap.
 
 Add only an early guard so recovery material cannot be accidentally sent to the destructive endpoint:
