@@ -1,0 +1,15 @@
+# One existing key signs both histories. This is not local runtime or deployment.
+[project]
+name = "opensecret-pcr-signing"
+revision = "1.0"
+
+# Laptop-only. The signing machine token lives in the OS keyring
+# (just --no-dotenv pcr-signing-login); no environment fallback is declared.
+[providers]
+opensecret_pcr_signing = { uri = "bws://2305d292-179b-477e-b6a8-b4c4007eac20", credentials = { access_token = "keyring" } }
+
+[profiles.default]
+SIGNING_PRIVATE_KEY = { description = "Existing SDK-trusted P-384 key, base64 PKCS#8 DER; never generate a replacement", required = true, providers = ["opensecret_pcr_signing"], ref = { item = "signing_private_key" } }
+
+[scopes.signing]
+secrets = ["SIGNING_PRIVATE_KEY"]

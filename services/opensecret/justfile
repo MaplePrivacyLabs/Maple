@@ -4,9 +4,21 @@ set dotenv-load
 # Set the container runtime (docker or podman)
 container := "podman"
 
-# Keep inherited BWS bootstrap/config out of local services. SecretSpec owns
-# provider resolution, required-key checks and scope filtering; CLI flags pin routing.
-local_secrets := "env -u BWS_ACCESS_TOKEN -u BWS_CONFIG_FILE -u BWS_PROFILE -u BWS_SERVER_URL -u SECRETSPEC_BWS_CLI_PATH BRAVE_API_KEY= OPENAI_API_KEY= secretspec --file secretspec.toml --reason 'OpenSecret local development'"
+# Keep inherited BWS server/config overrides out of local services. BWS_ACCESS_TOKEN
+# and SECRETSPEC_PROVIDER pass through so headless VMs and containers can select the
+# credential-free opensecret_local_headless alias; the manifest pins the keyring alias
+# otherwise. SecretSpec owns provider resolution, required-key checks and scope filtering.
+local_secrets := "env -u BWS_CONFIG_FILE -u BWS_PROFILE -u BWS_SERVER_URL -u SECRETSPEC_BWS_CLI_PATH BRAVE_API_KEY= OPENAI_API_KEY= secretspec --file secretspec.toml --reason 'OpenSecret local development'"
+
+# Operator commands must be invoked with just --no-dotenv. Start from an empty
+# environment and pass through only tool, locale, terminal and keyring
+# configuration, never ambient runtime/cloud secrets. Unset variables stay unset.
+operator_env := 'env -i PATH="$PATH" HOME="$HOME" XDG_CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}" ${USER:+USER="$USER"} ${TERM:+TERM="$TERM"} ${LANG:+LANG="$LANG"} ${LC_ALL:+LC_ALL="$LC_ALL"} ${TMPDIR:+TMPDIR="$TMPDIR"} ${XDG_RUNTIME_DIR:+XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR"} ${DBUS_SESSION_BUS_ADDRESS:+DBUS_SESSION_BUS_ADDRESS="$DBUS_SESSION_BUS_ADDRESS"}'
+pcr_secrets := operator_env + " secretspec --file secretspec/pcr-signing.toml --reason 'Authorized OpenSecret PCR signing'"
+# The signer resolves the key around node only. The reviewer-gated release
+# workflow overrides this with `--set pcr_signer 'node pcr_sign.js sign-pcr0'`
+# after placing SIGNING_PRIVATE_KEY in the environment; laptops never do.
+pcr_signer := pcr_secrets + " run --provider opensecret_pcr_signing --profile default --scope signing -- node pcr_sign.js sign-pcr0"
 
 # Set the default recipe to list all available commands
 default:
@@ -155,15 +167,15 @@ diesel-migration-run-local:
 
 # Run migrations on development
 diesel-migration-run-dev:
-    diesel migration run --database-url $DEV_DATABASE_URL
+    DATABASE_URL="$DEV_DATABASE_URL" diesel migration run
 
 # Run migrations on production
 diesel-migration-run-prod:
-    diesel migration run --database-url $PROD_DATABASE_URL
+    DATABASE_URL="$PROD_DATABASE_URL" diesel migration run
 
 # Run migrations on preview
 diesel-migration-run-preview:
-    diesel migration run --database-url $PREVIEW_DATABASE_URL
+    DATABASE_URL="$PREVIEW_DATABASE_URL" diesel migration run
 
 
 ### Continuum Proxy Commands ###
@@ -195,8 +207,8 @@ update-continuum-proxy version="v1.39.1":
 build-local-proxies-macos: build-continuum-proxy-macos
 
 # Build a macOS-native Continuum proxy without replacing the checked-in Linux binary.
+[script("bash")]
 build-continuum-proxy-macos:
-    #!/usr/bin/env bash
     set -euo pipefail
     mkdir -p .local/bin
     version="$(sed -n 's/.*version = "\([^"]*\)".*/\1/p' privatemode-public/version.nix)"
@@ -214,19 +226,21 @@ build-continuum-proxy-macos:
 
 # BWS resolution is explicit; shell entry and builds never retrieve credentials.
 local-secrets-check scope="local":
-    @{{local_secrets}} check --provider opensecret_local --profile default --scope {{quote(scope)}} --no-prompt
+    @{{local_secrets}} check --profile default --scope {{quote(scope)}} --no-prompt
 
 local-secrets-login:
     @{{local_secrets}} config provider login opensecret_local
 
 # Resolve only the Continuum credential before launching the local proxy.
 run-continuum-proxy-macos:
-    @{{local_secrets}} run --provider opensecret_local --profile default --scope continuum -- just --no-dotenv _run-continuum-proxy-macos
+    @{{local_secrets}} run --profile default --scope continuum -- just --no-dotenv _run-continuum-proxy-macos
 
 [private]
+[script("bash")]
 _run-continuum-proxy-macos:
-    #!/usr/bin/env bash
     set -euo pipefail
+    # Headless machines pass the BWS bootstrap token in the environment; the service never needs it.
+    unset BWS_ACCESS_TOKEN
     bin=".local/bin/continuum-proxy-darwin"
     if [ ! -x "$bin" ]; then
         echo "Run just build-continuum-proxy-macos first" >&2
@@ -239,12 +253,14 @@ _run-continuum-proxy-macos:
 
 # Resolve Tinfoil and Kagi for the backend; no provider-key dotenv/file fallback.
 run-local-backend-macos:
-    @{{local_secrets}} run --provider opensecret_local --profile default --scope backend -- just --no-dotenv _run-local-backend-macos
+    @{{local_secrets}} run --profile default --scope backend -- just --no-dotenv _run-local-backend-macos
 
 [private]
+[script("bash")]
 _run-local-backend-macos:
-    #!/usr/bin/env bash
     set -euo pipefail
+    # Headless machines pass the BWS bootstrap token in the environment; the service never needs it.
+    unset BWS_ACCESS_TOKEN
     : "${TINFOIL_API_KEY:?Run just run-local-backend-macos to resolve local secrets}"
     : "${KAGI_API_KEY:?Run just run-local-backend-macos to resolve local secrets}"
     APP_MODE="${APP_MODE:-local}" \
@@ -257,7 +273,7 @@ _run-local-backend-macos:
 # Skips p11ne (ACM/TLS enclave) - only terminates non-p11ne enclaves
 # Does not fail if no enclave is running
 terminate-enclave-dev:
-    ssh -i $DEV_SSH_KEY $DEV_SERVER 'bash -c "\
+    ssh -i "$DEV_SSH_KEY" "$DEV_SERVER" 'bash -c "\
     ENCLAVE_ID=\$(nitro-cli describe-enclaves | jq -r \".[] | select(.EnclaveName != \\\"p11ne\\\") | .EnclaveID\" | head -1) && \
     if [ ! -z \"\$ENCLAVE_ID\" ] && [ \"\$ENCLAVE_ID\" != \"null\" ]; then \
         echo \"Terminating enclave with ID: \$ENCLAVE_ID\" && \
@@ -270,7 +286,7 @@ terminate-enclave-dev:
 # Skips p11ne (ACM/TLS enclave) - only terminates non-p11ne enclaves
 # Does not fail if no enclave is running
 terminate-enclave-prod:
-    ssh -i $PROD_SSH_KEY $PROD_SERVER 'bash -c "\
+    ssh -i "$PROD_SSH_KEY" "$PROD_SERVER" 'bash -c "\
     ENCLAVE_ID=\$(nitro-cli describe-enclaves | jq -r \".[] | select(.EnclaveName != \\\"p11ne\\\") | .EnclaveID\" | head -1) && \
     if [ ! -z \"\$ENCLAVE_ID\" ] && [ \"\$ENCLAVE_ID\" != \"null\" ]; then \
         echo \"Terminating enclave with ID: \$ENCLAVE_ID\" && \
@@ -283,7 +299,7 @@ terminate-enclave-prod:
 # Skips p11ne (ACM/TLS enclave) - only terminates non-p11ne enclaves
 # Does not fail if no enclave is running
 terminate-enclave-preview:
-    ssh -i $PREVIEW_SSH_KEY $PREVIEW_SERVER 'bash -c "\
+    ssh -i "$PREVIEW_SSH_KEY" "$PREVIEW_SERVER" 'bash -c "\
     ENCLAVE_ID=\$(nitro-cli describe-enclaves | jq -r \".[] | select(.EnclaveName != \\\"p11ne\\\") | .EnclaveID\" | head -1) && \
     if [ ! -z \"\$ENCLAVE_ID\" ] && [ \"\$ENCLAVE_ID\" != \"null\" ]; then \
         echo \"Terminating enclave with ID: \$ENCLAVE_ID\" && \
@@ -294,15 +310,15 @@ terminate-enclave-preview:
 
 # Restart socat-proxy service (dev)
 restart-socat-dev:
-    ssh -i $DEV_SSH_KEY $DEV_SERVER "sudo systemctl restart socat-proxy.service"
+    ssh -i "$DEV_SSH_KEY" "$DEV_SERVER" "sudo systemctl restart socat-proxy.service"
 
 # Restart socat-proxy service (prod)
 restart-socat-prod:
-    ssh -i $PROD_SSH_KEY $PROD_SERVER "sudo systemctl restart socat-proxy.service"
+    ssh -i "$PROD_SSH_KEY" "$PROD_SERVER" "sudo systemctl restart socat-proxy.service"
 #
 # Restart socat-proxy service (preview)
 restart-socat-preview:
-    ssh -i $PREVIEW_SSH_KEY $PREVIEW_SERVER "sudo systemctl restart socat-proxy.service"
+    ssh -i "$PREVIEW_SSH_KEY" "$PREVIEW_SERVER" "sudo systemctl restart socat-proxy.service"
 
 # Run the staged dev environment
 run-stage-dev: terminate-enclave-dev run-eif-dev restart-socat-dev
@@ -317,292 +333,77 @@ run-stage-preview: terminate-enclave-preview run-eif-preview restart-socat-previ
 
 # Build EIF for development environment
 build-eif-dev:
-    nix build --no-update-lock-file '.?submodules=1#eif-dev'
+    {{operator_env}} nix build --no-update-lock-file '.?submodules=1#eif-dev'
     echo "EIF build completed. PCR:"
     cat result/pcr.json
 
 # Build EIF for production environment
 build-eif-prod:
-    nix build --no-update-lock-file '.?submodules=1#eif-prod'
+    {{operator_env}} nix build --no-update-lock-file '.?submodules=1#eif-prod'
     echo "EIF build completed. PCR:"
     cat result/pcr.json
 
 # Build EIF for preview environment
 build-eif-preview:
-    nix build --no-update-lock-file '.?submodules=1#eif-preview'
+    {{operator_env}} nix build --no-update-lock-file '.?submodules=1#eif-preview'
     echo "EIF build completed. PCR:"
     cat result/pcr.json
 
-# Build EIF for development environment
-copy-pcr-dev:
-    nix build --no-update-lock-file '.?submodules=1#eif-dev'
-    echo "EIF build completed. PCR:"
-    cat result/pcr.json
+# Build the dev EIF and copy its measurements into the dev snapshot
+copy-pcr-dev: build-eif-dev
     cp -f result/pcr.json ./pcrDev.json
 
-# Build EIF for production environment
-copy-pcr-prod:
-    nix build --no-update-lock-file '.?submodules=1#eif-prod'
-    echo "EIF build completed. PCR:"
-    cat result/pcr.json
+# Build the prod EIF and copy its measurements into the prod snapshot
+copy-pcr-prod: build-eif-prod
     cp -f result/pcr.json ./pcrProd.json
 
 # Sign and append PCR measurements for dev environment
-append-pcr-dev:
-    #!/usr/bin/env bash
-    set -e
-    
-    # Check for required environment variable
-    if [ -z "${SIGNING_PRIVATE_KEY}" ]; then
-        echo "❌ Error: SIGNING_PRIVATE_KEY environment variable is not set"
-        echo "Please generate keys with: ./pcr_sign.js generate-keys"
-        echo "Then set the environment variables with:"
-        echo "export SIGNING_PRIVATE_KEY='...'"
-        echo "export SIGNING_PUBLIC_KEY='...'"
-        exit 1
-    fi
-    
-    # Check if the Node.js script exists and is executable
-    if [ ! -x "./pcr_sign.js" ]; then
-        chmod +x ./pcr_sign.js
-    fi
-    
-    # Initialize empty history file if it doesn't exist
-    if [ ! -f "./pcrDevHistory.json" ]; then
-        echo "[]" > ./pcrDevHistory.json
-    fi
-    
-    # Get current PCR values
-    PCR_CONTENT=$(cat ./pcrDev.json)
-    CURRENT_PCR0=$(echo $PCR_CONTENT | jq -r '.PCR0')
-    CURRENT_PCR1=$(echo $PCR_CONTENT | jq -r '.PCR1')
-    CURRENT_PCR2=$(echo $PCR_CONTENT | jq -r '.PCR2')
-    
-    # Check if this PCR0 already exists in the history
-    HISTORY=$(cat ./pcrDevHistory.json)
-    PCR0_EXISTS=$(echo $HISTORY | jq --arg pcr0 "$CURRENT_PCR0" 'map(select(.PCR0 == $pcr0)) | length')
-    
-    if [ "$PCR0_EXISTS" -gt "0" ]; then
-        echo "⚠️  PCR0 value already exists in pcrDevHistory.json"
-        echo "    Skipping append operation to avoid duplicates."
-        exit 0
-    fi
-    
-    # Generate a timestamp
-    TIMESTAMP=$(date +%s)
-    
-    # Sign just the PCR0 value
-    echo "Signing PCR0: $CURRENT_PCR0"
-    SIGNATURE=$(./pcr_sign.js sign-pcr0 "$CURRENT_PCR0")
-    
-    if [ -z "$SIGNATURE" ]; then
-        echo "❌ Error: Failed to create signature"
-        exit 1
-    fi
-    
-    # Create a new history entry
-    NEW_ENTRY=$(jq -n \
-      --arg pcr0 "$CURRENT_PCR0" \
-      --arg pcr1 "$CURRENT_PCR1" \
-      --arg pcr2 "$CURRENT_PCR2" \
-      --arg sig "$SIGNATURE" \
-      --arg ts "$TIMESTAMP" \
-      '{
-        "PCR0": $pcr0, 
-        "PCR1": $pcr1, 
-        "PCR2": $pcr2, 
-        "timestamp": ($ts | tonumber),
-        "signature": $sig
-      }')
-    
-    # Append to history file
-    echo $HISTORY | jq --argjson entry "$NEW_ENTRY" '. + [$entry]' > ./pcrDevHistory.json
-    
-    echo "✅ Successfully appended signed PCR entry to pcrDevHistory.json"
-    echo "   PCR0: $CURRENT_PCR0"
-    echo "   Timestamp: $TIMESTAMP"
+append-pcr-dev: (_append-pcr-file "pcrDev.json" "pcrDevHistory.json")
 
 # Sign and append PCR measurements for prod environment
-append-pcr-prod:
-    #!/usr/bin/env bash
-    set -e
-    
-    # Check for required environment variable
-    if [ -z "${SIGNING_PRIVATE_KEY}" ]; then
-        echo "❌ Error: SIGNING_PRIVATE_KEY environment variable is not set"
-        echo "Please generate keys with: ./pcr_sign.js generate-keys"
-        echo "Then set the environment variables with:"
-        echo "export SIGNING_PRIVATE_KEY='...'"
-        echo "export SIGNING_PUBLIC_KEY='...'"
-        exit 1
-    fi
-    
-    # Check if the Node.js script exists and is executable
-    if [ ! -x "./pcr_sign.js" ]; then
-        chmod +x ./pcr_sign.js
-    fi
-    
-    # Initialize empty history file if it doesn't exist
-    if [ ! -f "./pcrProdHistory.json" ]; then
-        echo "[]" > ./pcrProdHistory.json
-    fi
-    
-    # Get current PCR values
-    PCR_CONTENT=$(cat ./pcrProd.json)
-    CURRENT_PCR0=$(echo $PCR_CONTENT | jq -r '.PCR0')
-    CURRENT_PCR1=$(echo $PCR_CONTENT | jq -r '.PCR1')
-    CURRENT_PCR2=$(echo $PCR_CONTENT | jq -r '.PCR2')
-    
-    # Check if this PCR0 already exists in the history
-    HISTORY=$(cat ./pcrProdHistory.json)
-    PCR0_EXISTS=$(echo $HISTORY | jq --arg pcr0 "$CURRENT_PCR0" 'map(select(.PCR0 == $pcr0)) | length')
-    
-    if [ "$PCR0_EXISTS" -gt "0" ]; then
-        echo "⚠️  PCR0 value already exists in pcrProdHistory.json"
-        echo "    Skipping append operation to avoid duplicates."
-        exit 0
-    fi
-    
-    # Generate a timestamp
-    TIMESTAMP=$(date +%s)
-    
-    # Sign just the PCR0 value
-    echo "Signing PCR0: $CURRENT_PCR0"
-    SIGNATURE=$(./pcr_sign.js sign-pcr0 "$CURRENT_PCR0")
-    
-    if [ -z "$SIGNATURE" ]; then
-        echo "❌ Error: Failed to create signature"
-        exit 1
-    fi
-    
-    # Create a new history entry
-    NEW_ENTRY=$(jq -n \
-      --arg pcr0 "$CURRENT_PCR0" \
-      --arg pcr1 "$CURRENT_PCR1" \
-      --arg pcr2 "$CURRENT_PCR2" \
-      --arg sig "$SIGNATURE" \
-      --arg ts "$TIMESTAMP" \
-      '{
-        "PCR0": $pcr0, 
-        "PCR1": $pcr1, 
-        "PCR2": $pcr2, 
-        "timestamp": ($ts | tonumber),
-        "signature": $sig
-      }')
-    
-    # Append to history file
-    echo $HISTORY | jq --argjson entry "$NEW_ENTRY" '. + [$entry]' > ./pcrProdHistory.json
-    
-    echo "✅ Successfully appended signed PCR entry to pcrProdHistory.json"
-    echo "   PCR0: $CURRENT_PCR0"
-    echo "   Timestamp: $TIMESTAMP"
+append-pcr-prod: (_append-pcr-file "pcrProd.json" "pcrProdHistory.json")
+
+# Check that the existing signing key resolves, without printing or creating it
+pcr-signing-check:
+    @{{pcr_secrets}} check --provider opensecret_pcr_signing --profile default --scope signing --no-prompt
+
+# Store the signing project's BWS machine token in the keyring (hidden prompt)
+pcr-signing-login:
+    @{{pcr_secrets}} config provider login opensecret_pcr_signing
 
 # Sign and append PCR measurements from a specific PCR file into a history file.
-_append-pcr-file pcr_file history_file label:
-    #!/usr/bin/env bash
-    set -e
-
-    PCR_FILE="./{{pcr_file}}"
-    HISTORY_FILE="./{{history_file}}"
-
-    # Check for required environment variable
-    if [ -z "${SIGNING_PRIVATE_KEY}" ]; then
-        echo "❌ Error: SIGNING_PRIVATE_KEY environment variable is not set"
-        echo "Please generate keys with: ./pcr_sign.js generate-keys"
-        echo "Then set the environment variables with:"
-        echo "export SIGNING_PRIVATE_KEY='...'"
-        echo "export SIGNING_PUBLIC_KEY='...'"
-        exit 1
-    fi
-
-    # Check if the Node.js script exists and is executable
-    if [ ! -x "./pcr_sign.js" ]; then
-        chmod +x ./pcr_sign.js
-    fi
-
-    if [ ! -f "$PCR_FILE" ]; then
-        echo "❌ Error: $PCR_FILE does not exist"
-        exit 1
-    fi
-
-    # Initialize empty history file if it doesn't exist
-    if [ ! -f "$HISTORY_FILE" ]; then
-        echo "[]" > "$HISTORY_FILE"
-    fi
-
-    # Get current PCR values
-    PCR_CONTENT=$(cat "$PCR_FILE")
-    CURRENT_PCR0=$(echo "$PCR_CONTENT" | jq -r '.PCR0')
-    CURRENT_PCR1=$(echo "$PCR_CONTENT" | jq -r '.PCR1')
-    CURRENT_PCR2=$(echo "$PCR_CONTENT" | jq -r '.PCR2')
-
-    # Check if this PCR0 already exists in the history
-    HISTORY=$(cat "$HISTORY_FILE")
-    PCR0_EXISTS=$(echo "$HISTORY" | jq --arg pcr0 "$CURRENT_PCR0" 'map(select(.PCR0 == $pcr0)) | length')
-
-    if [ "$PCR0_EXISTS" -gt "0" ]; then
-        echo "⚠️  PCR0 value already exists in {{history_file}} for {{label}}"
-        echo "    Skipping append operation to avoid duplicates."
+[script("bash")]
+_append-pcr-file pcr_file history_file:
+    set -euo pipefail
+    # The key is resolved only inside the signer child; keep it out of core dumps.
+    ulimit -c 0
+    PCR_FILE={{quote(pcr_file)}}
+    HISTORY_FILE={{quote(history_file)}}
+    needed=$({{operator_env}} python3 scripts/pcr_compatibility.py append-signature "$PCR_FILE" "$HISTORY_FILE" --check)
+    if [ "$(printf '%s' "$needed" | jq -r .append_needed)" = false ]; then
+        echo "Measurements already approved; no key lookup or signing."
         exit 0
     fi
-
-    # Generate a timestamp
-    TIMESTAMP=$(date +%s)
-
-    # Sign just the PCR0 value
-    echo "Signing {{label}} PCR0: $CURRENT_PCR0"
-    SIGNATURE=$(./pcr_sign.js sign-pcr0 "$CURRENT_PCR0")
-
-    if [ -z "$SIGNATURE" ]; then
-        echo "❌ Error: Failed to create signature"
-        exit 1
-    fi
-
-    # Create a new history entry. Keep the existing history schema stable.
-    NEW_ENTRY=$(jq -n \
-      --arg pcr0 "$CURRENT_PCR0" \
-      --arg pcr1 "$CURRENT_PCR1" \
-      --arg pcr2 "$CURRENT_PCR2" \
-      --arg sig "$SIGNATURE" \
-      --arg ts "$TIMESTAMP" \
-      '{
-        "PCR0": $pcr0,
-        "PCR1": $pcr1,
-        "PCR2": $pcr2,
-        "timestamp": ($ts | tonumber),
-        "signature": $sig
-      }')
-
-    # Append to history file
-    echo "$HISTORY" | jq --argjson entry "$NEW_ENTRY" '. + [$entry]' > "$HISTORY_FILE"
-
-    echo "✅ Successfully appended signed PCR entry to {{history_file}}"
-    echo "   Label: {{label}}"
-    echo "   PCR0: $CURRENT_PCR0"
-    echo "   Timestamp: $TIMESTAMP"
+    CURRENT_PCR0=$(jq -er .PCR0 "$PCR_FILE")
+    SIGNATURE=$({{pcr_signer}} "$CURRENT_PCR0")
+    printf '%s' "$SIGNATURE" | {{operator_env}} python3 scripts/pcr_compatibility.py append-signature "$PCR_FILE" "$HISTORY_FILE"
 
 # Update PCR dev with signature and append to history
-update-pcr-dev:
-    just copy-pcr-dev
-    just append-pcr-dev
+update-pcr-dev: copy-pcr-dev append-pcr-dev
     echo "✅ PCR dev values updated and history appended"
 
 # Update PCR prod with signature and append to history
-update-pcr-prod:
-    just copy-pcr-prod
-    just append-pcr-prod
+update-pcr-prod: copy-pcr-prod append-pcr-prod
     echo "✅ PCR prod values updated and history appended"
 
 # Update all PCR values for both dev and prod environments
-update-pcr-all:
-    just update-pcr-dev
-    just update-pcr-prod
+update-pcr-all: update-pcr-dev update-pcr-prod
     echo "✅ All PCR values updated and history appended for dev and prod"
 
 
 # Generate a key pair for PCR signing and output to terminal (no files created)
+[script("bash")]
 generate-pcr-keys:
-    #!/usr/bin/env bash
     set -e
     
     # Check if the Node.js script exists and is executable
@@ -619,8 +420,8 @@ check-pcr-compatibility:
     python3 scripts/pcr_compatibility.py check .
 
 # Verify signatures in a PCR history file using the SIGNING_PUBLIC_KEY environment variable
+[script("bash")]
 verify-pcr-history env:
-    #!/usr/bin/env bash
     set -e
     
     # Check if the Node.js script exists and is executable
@@ -646,8 +447,8 @@ verify-pcr-history env:
     ./pcr_verify.js {{env}}
 
 # Internal function for PCR verification
+[script("bash")]
 _verify-pcr-internal env pcr_file:
-    #!/usr/bin/env bash
     if [ ! -f "./{{pcr_file}}" ]; then
         echo "No {{pcr_file}} found. Building {{env}} EIF first..."
         just build-eif-{{env}}
@@ -683,19 +484,19 @@ verify-pcr-preview:
     just _verify-pcr-internal preview pcrPreview.json
 
 # SCP the Nix-built EIF to AWS parent instance (dev)
-scp-eif-to-aws-dev:
-    ssh -i $DEV_SSH_KEY $DEV_SERVER "rm -f ~/opensecret.eif"
-    scp -i $DEV_SSH_KEY result/image.eif $DEV_SERVER:~/opensecret.eif
+scp-eif-to-aws-dev eif="result/image.eif":
+    ssh -i "$DEV_SSH_KEY" "$DEV_SERVER" "rm -f ~/opensecret.eif"
+    scp -i "$DEV_SSH_KEY" {{quote(eif)}} "$DEV_SERVER:~/opensecret.eif"
 
 # SCP the Nix-built EIF to AWS parent instance (prod)
-scp-eif-to-aws-prod:
-    ssh -i $PROD_SSH_KEY $PROD_SERVER "rm -f ~/opensecret.eif"
-    scp -i $PROD_SSH_KEY result/image.eif $PROD_SERVER:~/opensecret.eif
+scp-eif-to-aws-prod eif="result/image.eif":
+    ssh -i "$PROD_SSH_KEY" "$PROD_SERVER" "rm -f ~/opensecret.eif"
+    scp -i "$PROD_SSH_KEY" {{quote(eif)}} "$PROD_SERVER:~/opensecret.eif"
 
 # SCP the Nix-built EIF to AWS parent instance (preview)
-scp-eif-to-aws-preview:
-    ssh -i $PREVIEW_SSH_KEY $PREVIEW_SERVER "rm -f ~/opensecret.eif"
-    scp -i $PREVIEW_SSH_KEY result/image.eif $PREVIEW_SERVER:~/opensecret.eif
+scp-eif-to-aws-preview eif="result/image.eif":
+    ssh -i "$PREVIEW_SSH_KEY" "$PREVIEW_SERVER" "rm -f ~/opensecret.eif"
+    scp -i "$PREVIEW_SSH_KEY" {{quote(eif)}} "$PREVIEW_SERVER:~/opensecret.eif"
 
 # Stage to dev environment without debug mode (using Nix-built EIF)
 stage-dev-nix: build-eif-dev scp-eif-to-aws-dev
@@ -708,19 +509,19 @@ stage-preview-nix: build-eif-preview scp-eif-to-aws-preview
 
 # Run EIF file on AWS (dev)
 run-eif-dev:
-    ssh -i $DEV_SSH_KEY $DEV_SERVER "nitro-cli run-enclave --eif-path opensecret.eif --memory 16384 --cpu-count 4"
+    ssh -i "$DEV_SSH_KEY" "$DEV_SERVER" "nitro-cli run-enclave --eif-path opensecret.eif --memory 16384 --cpu-count 4"
 
 # Run EIF file on AWS (prod)
 run-eif-prod:
-    ssh -i $PROD_SSH_KEY $PROD_SERVER "nitro-cli run-enclave --eif-path opensecret.eif --memory 16384 --cpu-count 4"
+    ssh -i "$PROD_SSH_KEY" "$PROD_SERVER" "nitro-cli run-enclave --eif-path opensecret.eif --memory 16384 --cpu-count 4"
 
 # Run EIF file on AWS (preview)
 run-eif-preview:
-    ssh -i $PREVIEW_SSH_KEY $PREVIEW_SERVER "nitro-cli run-enclave --eif-path opensecret.eif --memory 16384 --cpu-count 4"
+    ssh -i "$PREVIEW_SSH_KEY" "$PREVIEW_SERVER" "nitro-cli run-enclave --eif-path opensecret.eif --memory 16384 --cpu-count 4"
 
 # Run EIF file in debug mode (preview)
 run-eif-debug-preview:
-    ssh -i $PREVIEW_SSH_KEY $PREVIEW_SERVER "nitro-cli run-enclave --eif-path opensecret.eif --memory 16384 --cpu-count 4 --debug-mode"
+    ssh -i "$PREVIEW_SSH_KEY" "$PREVIEW_SERVER" "nitro-cli run-enclave --eif-path opensecret.eif --memory 16384 --cpu-count 4 --debug-mode"
 
 # Run EIF file in debug mode (dev)
 run-eif-debug-dev:

@@ -2,7 +2,8 @@
 """Validate existing signed PCR files and prepare an offline legacy mirror copy.
 
 Uses only the public verification key. Never signs, stages, commits, fetches,
-pushes, or changes PCR values; --apply copies the four verified source blobs.
+or pushes. --apply copies verified source blobs; append-signature accepts a
+public signature and verifies it before changing a history.
 """
 
 import argparse
@@ -13,7 +14,9 @@ import os
 from pathlib import Path
 import re
 import subprocess
+import sys
 import tempfile
+import time
 
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import hashes, serialization
@@ -24,6 +27,7 @@ FILES = ("pcrDev.json", "pcrProd.json", "pcrDevHistory.json", "pcrProdHistory.js
 MAX_BYTES = 1024 * 1024
 MAX_ENTRIES = 2048
 MAX_SAFE_INTEGER = 2**53 - 1
+NIX_STORE = Path("/nix/store")
 PUBLIC_KEY_B64 = (
     "MHYwEAYHKoZIzj0CAQYFK4EEACIDYgAEHiUY9kFWK1GqBGzczohhwEwElXzgWLDZa9R6wBx3"
     "JOBocgSt9+UIzZlJbPDjYeGBfDUXh7Z62BG2vVsh2NgclLB5S7A2ucBBtb1wd8vSQHP8jpdP"
@@ -229,6 +233,33 @@ def atomic_write(path, data):
             os.unlink(temporary)
 
 
+def append_signature(pcr_file, history_file, signature=None):
+    """Accept a public signature, never a private key or provider credential."""
+    for path in (pcr_file, history_file):
+        require(path.is_file() and not path.is_symlink(), "Expected existing regular PCR files")
+        require(path.stat().st_size <= MAX_BYTES, "PCR input exceeds size limit")
+    current_data = pcr_file.read_bytes()
+    previous = history_file.read_bytes()
+    current = parse_json(current_data, "snapshot")
+    require(isinstance(current, dict) and set(current) == PCR_FIELDS | {"HashAlgorithm"}, "Invalid snapshot fields")
+    require(current["HashAlgorithm"] == "Sha384 { ... }", "Unexpected hash algorithm")
+    validate_pcrs(current, "snapshot")
+    history = validate_history(previous, "history")
+    for entry in history:
+        if entry["PCR0"] == current["PCR0"]:
+            require(all(entry[field] == current[field] for field in PCR_FIELDS), "Existing PCR0 has different measurements")
+            return False
+    if signature is None:
+        return True
+    entry = {field: current[field] for field in PCR_FIELDS}
+    entry.update(timestamp=int(time.time()), signature=signature)
+    updated = (json.dumps(history + [entry], indent=2) + "\n").encode("utf-8")
+    validate_history(updated, "updated history")
+    require(pcr_file.read_bytes() == current_data and history_file.read_bytes() == previous, "PCR inputs changed")
+    atomic_write(history_file, updated)
+    return True
+
+
 def copy_prepared(legacy_root, source, baseline):
     require(read_directory(legacy_root) == baseline, "Legacy PCR files changed after validation")
     written = []
@@ -257,12 +288,53 @@ def describe(blobs, histories, baseline=None):
     }
 
 
+def check_artifact(source_dir, source_ref, artifact_dir, sha256, environment):
+    """Verify an operator-reviewed immutable handoff, without building/signing."""
+    source = source_dir.resolve(strict=True)
+    require(source.parent.name == "services" and source.name == "opensecret", "Provide the services/opensecret component directory")
+    repo = source.parents[1]
+    check_repository(repo, "MaplePrivacyLabs/Maple")
+    check_full_ref(repo, source_ref)
+    require(git_text(repo, "rev-parse", "HEAD") == source_ref, "Checkout differs from reviewed source ref")
+    require(
+        not git_text(repo, "status", "--porcelain", "--untracked-files=all", "--", "services/opensecret"),
+        "Backend worktree must be clean",
+    )
+    blobs = read_commit(repo, source_ref, "services/opensecret/")
+    require(read_directory(source) == blobs, "PCR working files differ from reviewed source ref")
+    validate_bundle(blobs)
+    artifact = artifact_dir.resolve(strict=True)
+    require(artifact.parent == NIX_STORE, "Artifact must be an immutable Nix store output")
+    require(re.fullmatch(r"[0-9a-f]{64}", sha256) is not None, "Provide reviewed EIF SHA-256")
+    snapshot = artifact / "pcr.json"
+    image = artifact / "image.eif"
+    require(not snapshot.is_symlink() and snapshot.is_file(), "Expected regular artifact measurements")
+    require(not image.is_symlink() and image.is_file(), "Expected regular EIF")
+    require(snapshot.stat().st_size <= MAX_BYTES, "Artifact measurements exceed size limit")
+    current = parse_json(blobs[f"pcr{environment.title()}.json"], "approved snapshot")
+    require(parse_json(snapshot.read_bytes(), "artifact") == current, "Artifact measurements differ from approval")
+    with image.open("rb") as stream:
+        actual = hashlib.file_digest(stream, "sha256").hexdigest()
+    require(actual == sha256, "EIF SHA-256 differs from reviewed handoff")
+    return {"source_ref": source_ref, "artifact": str(artifact), "sha256": actual, "environment": environment}
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
     check = commands.add_parser("check", help="Validate working files offline, optionally against a baseline directory")
     check.add_argument("source_dir", type=Path)
     check.add_argument("--baseline-dir", type=Path)
+    append = commands.add_parser("append-signature", help="Validate and append a public signature from stdin")
+    append.add_argument("pcr_file", type=Path)
+    append.add_argument("history_file", type=Path)
+    append.add_argument("--check", action="store_true", help="Validate inputs only; do not read stdin or write")
+    artifact = commands.add_parser("artifact", help="Verify an immutable, approved EIF handoff; never build")
+    artifact.add_argument("--source-dir", type=Path, required=True)
+    artifact.add_argument("--source-ref", required=True)
+    artifact.add_argument("--artifact-dir", type=Path, required=True)
+    artifact.add_argument("--sha256", required=True)
+    artifact.add_argument("--environment", choices=("dev", "prod"), required=True)
     plan = commands.add_parser("prepare", help="Validate immutable commits and preview a legacy copy offline")
     for argument in ("source-repo", "source-ref", "legacy-repo", "legacy-ref"):
         plan.add_argument("--" + argument, required=True)
@@ -274,6 +346,12 @@ def main(argv=None):
             baseline = read_directory(args.baseline_dir) if args.baseline_dir else None
             histories = validate_extension(blobs, baseline) if baseline else validate_bundle(blobs)
             result = describe(blobs, histories, baseline)
+        elif args.command == "append-signature":
+            signature = None if args.check else sys.stdin.read(130).strip()
+            changed = append_signature(args.pcr_file, args.history_file, signature)
+            result = {"append_needed": changed} if args.check else {"appended": changed}
+        elif args.command == "artifact":
+            result = check_artifact(args.source_dir, args.source_ref, args.artifact_dir, args.sha256, args.environment)
         else:
             blobs, baseline, histories = prepare(args.source_repo, args.source_ref, args.legacy_repo, args.legacy_ref)
             result = describe(blobs, histories, baseline)

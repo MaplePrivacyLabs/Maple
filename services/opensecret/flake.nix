@@ -83,9 +83,9 @@
           pkgs.clang
           pkgs.jq
           pkgs.just
+          pkgs.nodejs
           pkgs.postgresql
           pkgs.diesel-cli
-          pkgs.python3
           (pkgs.python3.withPackages (ps: with ps; [
             cryptography
           ]))
@@ -543,12 +543,36 @@
         checks = {
           entrypoint-entropy-preflight = entrypointEntropyPreflight;
           kernel-source-pin = kernelSourcePin;
+          operator-boundaries = pkgs.runCommand "opensecret-operator-boundaries" {
+            nativeBuildInputs = [
+              pkgs.bash pkgs.coreutils pkgs.git pkgs.jq pkgs.just pkgs.nodejs
+              secretsPkgs.secretspec
+              (pkgs.python3.withPackages (ps: [ ps.cryptography ]))
+            ];
+            src = ./.;
+          } ''
+            export HOME="$TMPDIR/home"
+            mkdir -p "$HOME"
+            cd "$src"
+            python3 -B -m unittest discover -s scripts -p test_operator_boundaries.py -v
+            touch "$out"
+          '';
         } // pkgs.lib.optionalAttrs pkgs.stdenv.isLinux {
           kernel-security-invariants = kernelSecurityInvariants;
           nitro-helper = nitro-bins;
         };
 
-        devShell = pkgs.mkShell {
+        # Minimal shell for the reviewer-gated CI signing step: the operator
+        # signing recipe's tools without the Rust toolchain, database,
+        # containers, or shell hooks.
+        devShells.signing = pkgs.mkShell {
+          packages = [
+            pkgs.bash pkgs.coreutils pkgs.git pkgs.jq pkgs.just pkgs.nodejs
+            (pkgs.python3.withPackages (ps: [ ps.cryptography ]))
+          ];
+        };
+
+        devShells.default = pkgs.mkShell {
           packages = inputs ++ [ secretsPkgs.secretspec secretsPkgs.bws ];
           shellHook = ''
             export PGDATA="''${PGDATA:-$PWD/.pgdata}"

@@ -710,7 +710,7 @@
           '';
 
           opensecret-workflows = pkgs.runCommand "maple-opensecret-workflow-check" {
-            nativeBuildInputs = with pkgs; [ bash git python3 yq-go ];
+            nativeBuildInputs = with pkgs; [ bash git jq python3 yq-go ];
             src = ./.;
           } ''
             cd "$src"
