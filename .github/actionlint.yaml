@@ -1,0 +1,4 @@
+# Custom labels also cover organization-configured GitHub-hosted larger runners.
+self-hosted-runner:
+  labels:
+    - ubuntu-24.04-arm64-8core

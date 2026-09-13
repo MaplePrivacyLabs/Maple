@@ -186,10 +186,12 @@ offline signed-history validation and manual legacy-publication procedure.
 
 For EIF cache/workflow changes, follow
 `docs/nitro-deploy.md#binary-caches-and-cold-run-validation`: preserve
-master-only FlakeHub OIDC and the unprivileged GitHub cache path. Verify actual
-custom-kernel substitution and timing on a fresh hosted ARM64 runner, then
-unprivileged reuse of the warmed GitHub cache. Local store hits and skipped
-PR jobs cannot establish hosted cache performance or cross-organization access.
+FlakeHub OIDC for master and same-repository PRs, with forks and other manual
+refs on the unprivileged GitHub cache path. Verify actual authentication,
+custom-kernel substitution, and timing on fresh hosted ARM64 master and
+same-repository PR runs, then fork reuse of the GitHub cache warmed by master.
+Local store hits and skipped PR jobs cannot establish hosted cache performance
+or cross-organization access.
 
 Immediately before an authorized dev or prod publish/deployment, use the
 supported Linux/ARM64 release builder and the operator runbook in

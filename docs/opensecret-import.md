@@ -41,23 +41,26 @@ shortcuts are `just opensecret-check` and `just opensecret-pcr-check`.
 ## CI and local development
 
 Root workflows replace the backend's inactive nested workflows. Backend CI
-checks Rust, the ordinary Nix package/checks, dependency policy, and signed-PCR
-compatibility. The SDK integration lane starts the backend from this same
-checkout against a disposable database; it no longer fetches an external
-backend revision. This advances that lane from the former pinned commit
+checks Rust, the ordinary Nix package/checks, and dependency policy.
+The SDK integration lane starts the backend from this same checkout against
+a disposable database; it no longer fetches an external backend revision.
+This advances that lane from the former pinned commit
 `d26eb6bd54d50cc8e6b2967f647a94c61da913da` to the imported source.
 
-PR jobs have read-only repository permission and use hosted runners, without
-OIDC or signing/deployment credentials. Ordinary backend CI has no EIF
-publisher or deployment step. PCR
-file changes retain their signature-validation lane. A separate ARM64 EIF
-workflow compares dev/prod measurements on PRs explicitly editing approved PCR
-JSON, relevant backend/TEE or approval changes to master, and manual runs.
+PR jobs have read-only repository contents permission and use hosted runners,
+without signing/deployment credentials. Ordinary backend CI has no EIF
+publisher or deployment step. Signed-PCR validation remains available through
+the lightweight monorepo-root `pcr-compatibility` Nix check and the manual
+publication procedure, not a standalone backend dev-shell job. A separate
+ARM64 EIF workflow compares dev/prod measurements on PRs explicitly editing
+approved PCR JSON, relevant backend/TEE or approval changes to master, and manual runs.
 Ordinary backend PRs do not fail merely because approvals have not been
 updated; master mismatches are an intentional deployment-approval signal.
-Only the master EIF job receives OIDC for FlakeHub Cache and also warms
-GitHub's branch-scoped Nix cache for unprivileged PR/manual runs. Legacy
-cross-organization cache access does not transfer automatically; follow the
+Master and same-repository PR EIF checks receive OIDC for FlakeHub Cache and
+also populate GitHub's branch-scoped Nix cache. Fork PRs and non-master manual
+runs have no OIDC and use only GitHub caching; master runs warm the
+default-branch cache for forks. Legacy cross-organization cache access does not
+transfer automatically; follow the
 [cache validation policy](../services/opensecret/docs/nitro-deploy.md#binary-caches-and-cold-run-validation).
 Backend-only changes do not select Research or Agent application packaging.
 

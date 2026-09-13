@@ -136,10 +136,12 @@ scope. Root backend CI validates Rust, Nix checks/default binary, and SDK
 compatibility. A separate ARM64 workflow compares dev/prod EIF
 measurements on explicit approved-PCR JSON edits in PRs, relevant master
 changes, and manual runs. Do not require ordinary backend PRs to update
-approvals, and do not suppress meaningful master mismatches. Only its trusted
-master push/manual job receives OIDC for FlakeHub caching; PRs and non-master
-manual refs use GitHub's branch-scoped cache without OIDC. Review both event
-and ref guards, cache provenance, and default-branch versus PR cache scope.
+approvals, and do not suppress meaningful master mismatches. Master push/manual
+runs and same-repository PR comparisons receive OIDC for FlakeHub caching;
+fork PRs and non-master manual refs use GitHub's branch-scoped cache without
+OIDC. Review event/ref guards and the PR head-repository equality check,
+including missing metadata, cache provenance, and default-branch versus PR
+cache scope. Same-repository PR code is intentionally trusted to write FlakeHub.
 Cache writes never authorize approval changes, signing, EIF releases, or
 deployment. A passing comparison is not live
 deployment evidence or proof that both public PCR locations are synchronized.
