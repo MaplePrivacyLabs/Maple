@@ -55,6 +55,13 @@ OpenAI-compatible wire endpoint. Use an OpenSecret SDK or Maple for
 protected-route integration tests; plain `curl` is suitable only for public
 health probes.
 
+`GET /health-check` returns HTTP 200 with `{"status":"pass","version":"v1"}`
+when the server can respond. `/health-check-extended` remains an alias with the
+same response for existing monitors. These endpoints do not contact Tinfoil,
+other providers, or PostgreSQL; provider outages must not remove responsive
+enclaves from load-balancer rotation. Monitor provider availability separately
+from origin liveness.
+
 Contributor and coding-agent standards live in [`AGENTS.md`](AGENTS.md).
 Task-specific development, API, provider, security, and validation workflows
 live under the monorepo-root [`.agents/skills/`](../../.agents/skills/).

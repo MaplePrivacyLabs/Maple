@@ -13,7 +13,7 @@ pub mod responses;
 pub mod web_routes;
 pub(crate) mod web_safety;
 
-pub use health_routes::router_with_state as health_routes_with_state;
+pub use health_routes::router as health_routes;
 pub use login_routes::router as login_routes;
 pub(crate) use native_handoff_routes::router as native_handoff_routes;
 pub use oauth_routes::router as oauth_routes;
