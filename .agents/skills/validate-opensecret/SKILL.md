@@ -127,14 +127,13 @@ Health probes are preliminary only:
 
 ```sh
 curl --fail --silent --show-error http://127.0.0.1:3000/health-check
-curl --fail --silent --show-error http://127.0.0.1:3000/health-check-extended
 ```
 
-Both URLs report process liveness with the same `status` and `version` JSON;
-the extended URL is a compatibility alias. Neither calls a provider or probes
-PostgreSQL. They do not prove provider availability, auth, encryption,
-persistence, routing, billing, flags, or a user flow. Provider availability
-checks belong to separate diagnostics, not load-balancer origin health.
+This reports process liveness with `status` and `version` JSON. It does not call
+a provider or probe PostgreSQL, and does not prove provider availability, auth,
+encryption, persistence, routing, billing, flags, or a user flow. Provider
+availability checks belong to separate diagnostics, not load-balancer origin
+health.
 
 Exercise protected routes through the monorepo-root `sdk/` directory or through
 the corresponding Maple application client:

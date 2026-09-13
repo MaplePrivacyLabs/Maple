@@ -4,11 +4,9 @@ use serde::Serialize;
 const API_VERSION: &str = "v1";
 
 /// Process liveness only: an upstream outage must not remove a healthy enclave
-/// from the load balancer. Keep the extended URL for existing monitors.
+/// from the load balancer.
 pub fn router() -> Router {
-    Router::new()
-        .route("/health-check", get(health_check))
-        .route("/health-check-extended", get(health_check))
+    Router::new().route("/health-check", get(health_check))
 }
 
 #[derive(Serialize)]
@@ -32,7 +30,7 @@ mod tests {
     use std::time::Duration;
 
     #[tokio::test]
-    async fn both_health_urls_serve_liveness_without_application_dependencies() {
+    async fn health_is_dependency_free_and_extended_health_is_removed() {
         // Deliberately construct only the production health router: no
         // AppState, database, provider client, credentials, or model service.
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -46,20 +44,25 @@ mod tests {
             .build()
             .unwrap();
 
-        for path in ["/health-check", "/health-check-extended"] {
-            let response = client
-                .get(format!("http://{address}{path}"))
-                .send()
-                .await
-                .unwrap();
-            assert_eq!(response.status(), StatusCode::OK, "{path}");
-            assert_eq!(response.headers()[header::CONTENT_TYPE], "application/json");
-            assert_eq!(
-                response.json::<serde_json::Value>().await.unwrap(),
-                json!({"status": "pass", "version": "v1"}),
-                "{path} must not claim outbound connectivity or model health"
-            );
-        }
+        let response = client
+            .get(format!("http://{address}/health-check"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers()[header::CONTENT_TYPE], "application/json");
+        assert_eq!(
+            response.json::<serde_json::Value>().await.unwrap(),
+            json!({"status": "pass", "version": "v1"}),
+            "liveness must not claim outbound connectivity or model health"
+        );
+
+        let removed = client
+            .get(format!("http://{address}/health-check-extended"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(removed.status(), StatusCode::NOT_FOUND);
 
         server.abort();
         assert!(server.await.unwrap_err().is_cancelled());
