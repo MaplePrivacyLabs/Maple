@@ -4,6 +4,10 @@ set dotenv-load
 # Set the container runtime (docker or podman)
 container := "podman"
 
+# Keep inherited BWS bootstrap/config out of local services. SecretSpec owns
+# provider resolution, required-key checks and scope filtering; CLI flags pin routing.
+local_secrets := "env -u BWS_ACCESS_TOKEN -u BWS_CONFIG_FILE -u BWS_PROFILE -u BWS_SERVER_URL -u SECRETSPEC_BWS_CLI_PATH BRAVE_API_KEY= OPENAI_API_KEY= secretspec --file secretspec.toml --reason 'OpenSecret local development'"
+
 # Set the default recipe to list all available commands
 default:
     @just --list
@@ -208,47 +212,43 @@ build-continuum-proxy-macos:
         ./privatemode-proxy
     ../.local/bin/continuum-proxy-darwin --version
 
-# Run the macOS-native Continuum proxy on CONTINUUM_PROXY_PORT, default 8092.
-# The API key is read from CONTINUUM_API_KEY or .local/secrets/continuum_api_key.
+# BWS resolution is explicit; shell entry and builds never retrieve credentials.
+local-secrets-check scope="local":
+    @{{local_secrets}} check --provider opensecret_local --profile default --scope {{quote(scope)}} --no-prompt
+
+local-secrets-login:
+    @{{local_secrets}} config provider login opensecret_local
+
+# Resolve only the Continuum credential before launching the local proxy.
 run-continuum-proxy-macos:
+    @{{local_secrets}} run --provider opensecret_local --profile default --scope continuum -- just --no-dotenv _run-continuum-proxy-macos
+
+[private]
+_run-continuum-proxy-macos:
     #!/usr/bin/env bash
     set -euo pipefail
     bin=".local/bin/continuum-proxy-darwin"
-    key_file=".local/secrets/continuum_api_key"
-    port="${CONTINUUM_PROXY_PORT:-8092}"
-    workspace="${CONTINUUM_PROXY_WORKSPACE:-.local/continuum}"
     if [ ! -x "$bin" ]; then
-        echo "$bin is missing. Run: nix develop --no-update-lock-file -c just build-continuum-proxy-macos" >&2
+        echo "Run just build-continuum-proxy-macos first" >&2
         exit 1
     fi
-    api_key="${CONTINUUM_API_KEY:-}"
-    if [ -z "$api_key" ] && [ -f "$key_file" ]; then
-        api_key="$(tr -d '\r\n' < "$key_file")"
-    fi
-    if [ -z "$api_key" ]; then
-        echo "Set CONTINUUM_API_KEY or write the key to $key_file" >&2
-        exit 1
-    fi
+    : "${CONTINUUM_API_KEY:?Run just run-continuum-proxy-macos to resolve local secrets}"
+    workspace="${CONTINUUM_PROXY_WORKSPACE:-.local/continuum}"
     mkdir -p "$workspace"
-    exec "$bin" --port "$port" --workspace "$workspace" --apiKey "$api_key" --sharedPromptCache
+    exec "$bin" --port "${CONTINUUM_PROXY_PORT:-8092}" --workspace "$workspace" --apiKey "$CONTINUUM_API_KEY" --sharedPromptCache
 
-# Run the local OpenSecret backend with Continuum's local proxy and the
-# in-process Tinfoil SDK. Requires Postgres and a populated .env.
+# Resolve Tinfoil and Kagi for the backend; no provider-key dotenv/file fallback.
 run-local-backend-macos:
+    @{{local_secrets}} run --provider opensecret_local --profile default --scope backend -- just --no-dotenv _run-local-backend-macos
+
+[private]
+_run-local-backend-macos:
     #!/usr/bin/env bash
     set -euo pipefail
-    key_file=".local/secrets/tinfoil_api_key"
-    tinfoil_api_key="${TINFOIL_API_KEY:-}"
-    if [ -z "$tinfoil_api_key" ] && [ -f "$key_file" ]; then
-        tinfoil_api_key="$(tr -d '\r\n' < "$key_file")"
-    fi
-    if [ -z "$tinfoil_api_key" ]; then
-        echo "Set TINFOIL_API_KEY or write the key to $key_file" >&2
-        exit 1
-    fi
+    : "${TINFOIL_API_KEY:?Run just run-local-backend-macos to resolve local secrets}"
+    : "${KAGI_API_KEY:?Run just run-local-backend-macos to resolve local secrets}"
     APP_MODE="${APP_MODE:-local}" \
         OPENAI_API_BASE="${OPENAI_API_BASE:-http://127.0.0.1:8092}" \
-        TINFOIL_API_KEY="$tinfoil_api_key" \
         exec cargo run --locked
 
 ### Enclave Management ###

@@ -18,13 +18,15 @@
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-26.05";
     # Keep dev security tools current without moving the application or Nitro build pin.
     security-tools-nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-26.05-darwin";
+    # Pin SecretSpec 0.20 / BWS independently of application and enclave dependencies.
+    secrets-nixpkgs.url = "github:NixOS/nixpkgs/e5ead30d0824debba629dcf0720abeddee57b7d6";
     nitro-util = {
       url = "github:monzo/aws-nitro-util/7d755578b0b0b9850c0d7c4738a6c8daf3ff55c0";
       inputs.nixpkgs.follows = "nixpkgs";
     };
   };
 
-  outputs = { self, nixpkgs, security-tools-nixpkgs, flake-utils, rust-overlay, nitro-rust-overlay, nitro-util }:
+  outputs = { self, nixpkgs, secrets-nixpkgs, security-tools-nixpkgs, flake-utils, rust-overlay, nitro-rust-overlay, nitro-util }:
     flake-utils.lib.eachDefaultSystem (system:
       let
         # Nixpkgs 26.05 still packages the libtpms v0.10.2 tag, which predates
@@ -50,6 +52,10 @@
           overlays = [ nitro-rust-overlay.overlays.default ];
         };
         securityToolsPkgs = import security-tools-nixpkgs { inherit system; };
+        secretsPkgs = import secrets-nixpkgs {
+          inherit system;
+          config.allowUnfreePredicate = pkg: nixpkgs.lib.getName pkg == "bws";
+        };
         rust = pkgs.rust-bin.fromRustupToolchainFile ./rust-toolchain.toml;
         nitro = nitro-util.lib.${system};
         kernelUpstream = import ./nix/kernel-upstream.nix;
@@ -543,7 +549,7 @@
         };
 
         devShell = pkgs.mkShell {
-          packages = inputs;
+          packages = inputs ++ [ secretsPkgs.secretspec secretsPkgs.bws ];
           shellHook = ''
             export PGDATA="''${PGDATA:-$PWD/.pgdata}"
             export PGPORT="''${PGPORT:-5432}"
