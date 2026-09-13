@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Offline operator fixtures. No trusted signing key, BWS login, or EIF build."""
 
+import base64
 import json
 import os
 from pathlib import Path
@@ -94,7 +95,6 @@ class OperatorBoundaryTests(unittest.TestCase):
 
     def test_wrong_key_signature_never_changes_history(self):
         # Synthetic test key only, unrelated to the SDK-trusted identity.
-        import base64
         key = ec.generate_private_key(ec.SECP384R1())
         encoded = base64.b64encode(key.private_bytes(
             serialization.Encoding.DER, serialization.PrivateFormat.PKCS8,

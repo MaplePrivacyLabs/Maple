@@ -8,9 +8,10 @@ container := "podman"
 # provider resolution, required-key checks and scope filtering; CLI flags pin routing.
 local_secrets := "env -u BWS_ACCESS_TOKEN -u BWS_CONFIG_FILE -u BWS_PROFILE -u BWS_SERVER_URL -u SECRETSPEC_BWS_CLI_PATH BRAVE_API_KEY= OPENAI_API_KEY= secretspec --file secretspec.toml --reason 'OpenSecret local development'"
 
-# Operator commands must be invoked with just --no-dotenv. Allow only tool and
-# keyring configuration through to SecretSpec, not ambient runtime/cloud secrets.
-operator_env := 'env -i PATH="$PATH" HOME="$HOME" USER="${USER:-}" XDG_CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}" XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-}" DBUS_SESSION_BUS_ADDRESS="${DBUS_SESSION_BUS_ADDRESS:-}"'
+# Operator commands must be invoked with just --no-dotenv. Start from an empty
+# environment and pass through only tool, locale, terminal and keyring
+# configuration, never ambient runtime/cloud secrets. Unset variables stay unset.
+operator_env := 'env -i PATH="$PATH" HOME="$HOME" XDG_CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}" ${USER:+USER="$USER"} ${TERM:+TERM="$TERM"} ${LANG:+LANG="$LANG"} ${LC_ALL:+LC_ALL="$LC_ALL"} ${TMPDIR:+TMPDIR="$TMPDIR"} ${XDG_RUNTIME_DIR:+XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR"} ${DBUS_SESSION_BUS_ADDRESS:+DBUS_SESSION_BUS_ADDRESS="$DBUS_SESSION_BUS_ADDRESS"}'
 pcr_secrets := operator_env + " secretspec --file secretspec/pcr-signing.toml --reason 'Authorized OpenSecret PCR signing'"
 
 # Set the default recipe to list all available commands
@@ -168,7 +169,7 @@ diesel-migration-run-prod:
 
 # Run migrations on preview
 diesel-migration-run-preview:
-    diesel migration run --database-url $PREVIEW_DATABASE_URL
+    DATABASE_URL="$PREVIEW_DATABASE_URL" diesel migration run
 
 
 ### Continuum Proxy Commands ###
@@ -288,7 +289,7 @@ terminate-enclave-prod:
 # Skips p11ne (ACM/TLS enclave) - only terminates non-p11ne enclaves
 # Does not fail if no enclave is running
 terminate-enclave-preview:
-    ssh -i $PREVIEW_SSH_KEY $PREVIEW_SERVER 'bash -c "\
+    ssh -i "$PREVIEW_SSH_KEY" "$PREVIEW_SERVER" 'bash -c "\
     ENCLAVE_ID=\$(nitro-cli describe-enclaves | jq -r \".[] | select(.EnclaveName != \\\"p11ne\\\") | .EnclaveID\" | head -1) && \
     if [ ! -z \"\$ENCLAVE_ID\" ] && [ \"\$ENCLAVE_ID\" != \"null\" ]; then \
         echo \"Terminating enclave with ID: \$ENCLAVE_ID\" && \
@@ -307,7 +308,7 @@ restart-socat-prod:
 #
 # Restart socat-proxy service (preview)
 restart-socat-preview:
-    ssh -i $PREVIEW_SSH_KEY $PREVIEW_SERVER "sudo systemctl restart socat-proxy.service"
+    ssh -i "$PREVIEW_SSH_KEY" "$PREVIEW_SERVER" "sudo systemctl restart socat-proxy.service"
 
 # Run the staged dev environment
 run-stage-dev: terminate-enclave-dev run-eif-dev restart-socat-dev
@@ -338,41 +339,34 @@ build-eif-preview:
     echo "EIF build completed. PCR:"
     cat result/pcr.json
 
-# Build EIF for development environment
-copy-pcr-dev:
-    just --no-dotenv build-eif-dev
-    echo "EIF build completed. PCR:"
-    cat result/pcr.json
+# Build the dev EIF and copy its measurements into the dev snapshot
+copy-pcr-dev: build-eif-dev
     cp -f result/pcr.json ./pcrDev.json
 
-# Build EIF for production environment
-copy-pcr-prod:
-    just --no-dotenv build-eif-prod
-    echo "EIF build completed. PCR:"
-    cat result/pcr.json
+# Build the prod EIF and copy its measurements into the prod snapshot
+copy-pcr-prod: build-eif-prod
     cp -f result/pcr.json ./pcrProd.json
 
 # Sign and append PCR measurements for dev environment
-append-pcr-dev:
-    @just --no-dotenv _append-pcr-file pcrDev.json pcrDevHistory.json dev
+append-pcr-dev: (_append-pcr-file "pcrDev.json" "pcrDevHistory.json")
 
 # Sign and append PCR measurements for prod environment
-append-pcr-prod:
-    @just --no-dotenv _append-pcr-file pcrProd.json pcrProdHistory.json prod
+append-pcr-prod: (_append-pcr-file "pcrProd.json" "pcrProdHistory.json")
 
+# Check that the existing signing key resolves, without printing or creating it
 pcr-signing-check:
     @{{pcr_secrets}} check --provider opensecret_pcr_signing --profile default --scope signing --no-prompt
 
+# Store the signing project's BWS machine token in the keyring (hidden prompt)
 pcr-signing-login:
     @{{pcr_secrets}} config provider login opensecret_pcr_signing
 
 # Sign and append PCR measurements from a specific PCR file into a history file.
 [script("bash")]
-_append-pcr-file pcr_file history_file label:
+_append-pcr-file pcr_file history_file:
     set -euo pipefail
-    set +x
+    # The key is resolved only inside the signer child; keep it out of core dumps.
     ulimit -c 0
-    unset SIGNING_PRIVATE_KEY
     PCR_FILE={{quote(pcr_file)}}
     HISTORY_FILE={{quote(history_file)}}
     needed=$({{operator_env}} python3 scripts/pcr_compatibility.py append-signature "$PCR_FILE" "$HISTORY_FILE" --check)
@@ -381,26 +375,19 @@ _append-pcr-file pcr_file history_file label:
         exit 0
     fi
     CURRENT_PCR0=$(jq -er .PCR0 "$PCR_FILE")
-    {{pcr_secrets}} check --provider opensecret_pcr_signing --profile default --scope signing --no-prompt >&2
     SIGNATURE=$({{pcr_secrets}} run --provider opensecret_pcr_signing --profile default --scope signing -- node pcr_sign.js sign-pcr0 "$CURRENT_PCR0")
     printf '%s' "$SIGNATURE" | {{operator_env}} python3 scripts/pcr_compatibility.py append-signature "$PCR_FILE" "$HISTORY_FILE"
 
 # Update PCR dev with signature and append to history
-update-pcr-dev:
-    just --no-dotenv copy-pcr-dev
-    just --no-dotenv append-pcr-dev
+update-pcr-dev: copy-pcr-dev append-pcr-dev
     echo "✅ PCR dev values updated and history appended"
 
 # Update PCR prod with signature and append to history
-update-pcr-prod:
-    just --no-dotenv copy-pcr-prod
-    just --no-dotenv append-pcr-prod
+update-pcr-prod: copy-pcr-prod append-pcr-prod
     echo "✅ PCR prod values updated and history appended"
 
 # Update all PCR values for both dev and prod environments
-update-pcr-all:
-    just --no-dotenv update-pcr-dev
-    just --no-dotenv update-pcr-prod
+update-pcr-all: update-pcr-dev update-pcr-prod
     echo "✅ All PCR values updated and history appended for dev and prod"
 
 
@@ -497,9 +484,9 @@ scp-eif-to-aws-prod eif="result/image.eif":
     scp -i "$PROD_SSH_KEY" {{quote(eif)}} "$PROD_SERVER:~/opensecret.eif"
 
 # SCP the Nix-built EIF to AWS parent instance (preview)
-scp-eif-to-aws-preview:
-    ssh -i $PREVIEW_SSH_KEY $PREVIEW_SERVER "rm -f ~/opensecret.eif"
-    scp -i $PREVIEW_SSH_KEY result/image.eif $PREVIEW_SERVER:~/opensecret.eif
+scp-eif-to-aws-preview eif="result/image.eif":
+    ssh -i "$PREVIEW_SSH_KEY" "$PREVIEW_SERVER" "rm -f ~/opensecret.eif"
+    scp -i "$PREVIEW_SSH_KEY" {{quote(eif)}} "$PREVIEW_SERVER:~/opensecret.eif"
 
 # Stage to dev environment without debug mode (using Nix-built EIF)
 stage-dev-nix: build-eif-dev scp-eif-to-aws-dev
@@ -520,11 +507,11 @@ run-eif-prod:
 
 # Run EIF file on AWS (preview)
 run-eif-preview:
-    ssh -i $PREVIEW_SSH_KEY $PREVIEW_SERVER "nitro-cli run-enclave --eif-path opensecret.eif --memory 16384 --cpu-count 4"
+    ssh -i "$PREVIEW_SSH_KEY" "$PREVIEW_SERVER" "nitro-cli run-enclave --eif-path opensecret.eif --memory 16384 --cpu-count 4"
 
 # Run EIF file in debug mode (preview)
 run-eif-debug-preview:
-    ssh -i $PREVIEW_SSH_KEY $PREVIEW_SERVER "nitro-cli run-enclave --eif-path opensecret.eif --memory 16384 --cpu-count 4 --debug-mode"
+    ssh -i "$PREVIEW_SSH_KEY" "$PREVIEW_SERVER" "nitro-cli run-enclave --eif-path opensecret.eif --memory 16384 --cpu-count 4 --debug-mode"
 
 # Run EIF file in debug mode (dev)
 run-eif-debug-dev:

@@ -42,9 +42,16 @@ env -i HOME="$HOME" PATH="$PATH" \
   nix develop --no-update-lock-file '.?submodules=1'
 ```
 
+On Linux, also pass `XDG_RUNTIME_DIR` and `DBUS_SESSION_BUS_ADDRESS` through
+`env -i` so the keyring's secret-service bus stays reachable.
+
 Use `just --no-dotenv` for **every operator recipe**, including builds.
 The older global dotenv setting remains only for compatibility with local
-development. Inner operator Just calls also disable dotenv loading.
+development. Operator recipes chain through Just dependencies, so one
+`--no-dotenv` covers the whole operation, and every command that builds or
+touches credentials runs under `env -i` with a tool and keyring allowlist.
+Those commands take `python3` from `PATH`; use the pinned shell, whose
+interpreter includes `cryptography`.
 
 1. Build with `just --no-dotenv build-eif-dev` (or `build-eif-prod`).
 2. Record the full source commit, immutable `result` output, EIF SHA-256 and

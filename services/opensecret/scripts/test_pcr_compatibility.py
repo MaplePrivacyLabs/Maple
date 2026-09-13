@@ -190,7 +190,7 @@ class PreparationTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory(prefix="pcr-compatibility-test-")
         self.addCleanup(self.temporary.cleanup)
-        root = Path(self.temporary.name)
+        root = Path(self.temporary.name).resolve()
         self.source = root / "maple"
         self.legacy = root / "opensecret"
         self.new_blobs = fixture(2)

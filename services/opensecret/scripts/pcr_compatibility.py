@@ -291,6 +291,7 @@ def describe(blobs, histories, baseline=None):
 def check_artifact(source_dir, source_ref, artifact_dir, sha256, environment):
     """Verify an operator-reviewed immutable handoff, without building/signing."""
     source = source_dir.resolve(strict=True)
+    require(source.parent.name == "services" and source.name == "opensecret", "Provide the services/opensecret component directory")
     repo = source.parents[1]
     check_repository(repo, "MaplePrivacyLabs/Maple")
     check_full_ref(repo, source_ref)
