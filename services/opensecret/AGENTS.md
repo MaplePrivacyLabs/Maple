@@ -30,6 +30,14 @@ This component is one Rust package and binary, not a Cargo workspace. Run its
 Cargo, Nix, and `just` commands from `services/opensecret/`, using its own
 `flake.nix`, `flake.lock`, and `rust-toolchain.toml`.
 
+Local provider credentials are declared in `secretspec.toml` and resolved by
+`scripts/local_secrets.py` through the explicit `just local-secrets-check` and
+run recipes. Reuse the existing Keychain bootstrap login; never retrieve
+credentials in shell hooks or copy them into generated `.env` files. Continuum
+receives its own key; the backend receives Tinfoil and Kagi. A workspace manager
+owns ports, databases and generated local authentication, not these provider
+values. Follow `docs/local-macos-stack.md` for setup and verification.
+
 ## Ownership
 
 - `src/main.rs`: configuration, shared state, middleware, and router assembly.

@@ -102,7 +102,8 @@
         "nitro-util": "nitro-util",
         "nixpkgs": "nixpkgs",
         "rust-overlay": "rust-overlay",
-        "security-tools-nixpkgs": "security-tools-nixpkgs"
+        "security-tools-nixpkgs": "security-tools-nixpkgs",
+        "secrets-nixpkgs": "secrets-nixpkgs"
       }
     },
     "rust-overlay": {
@@ -169,6 +170,22 @@
       "original": {
         "owner": "nix-systems",
         "repo": "default",
+        "type": "github"
+      }
+    },
+    "secrets-nixpkgs": {
+      "locked": {
+        "lastModified": 1788490200,
+        "narHash": "sha256-wX7GJ/pe7147AKZPfmVGIqFnEdlrnAJRhlhciaeKzWs=",
+        "owner": "NixOS",
+        "repo": "nixpkgs",
+        "rev": "e5ead30d0824debba629dcf0720abeddee57b7d6",
+        "type": "github"
+      },
+      "original": {
+        "owner": "NixOS",
+        "repo": "nixpkgs",
+        "rev": "e5ead30d0824debba629dcf0720abeddee57b7d6",
         "type": "github"
       }
     }

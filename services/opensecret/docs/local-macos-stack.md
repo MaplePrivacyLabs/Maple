@@ -19,15 +19,39 @@ OpenSecret process; there is no local Tinfoil sidecar or port.
 
 ```sh
 git -C ../.. submodule update --init --recursive -- services/opensecret/nitro-toolkit services/opensecret/privatemode-public
-install -d -m 700 .local/secrets
-touch .local/secrets/tinfoil_api_key .local/secrets/continuum_api_key
-chmod 600 .local/secrets/tinfoil_api_key .local/secrets/continuum_api_key
 OPENSECRET_DEV_POSTGRES=0 OPENSECRET_DEV_ENV=0 OPENSECRET_DEV_CONTAINERS=0 \
   nix develop --no-write-lock-file '.?submodules=1' -c just build-local-proxies-macos
 ```
 
-Populate the credential files without printing their contents. The generated
-proxy binary and secret directory are gitignored local state.
+The component's `secretspec.toml` owns the local provider contract. Its `opensecret-local-dev` BWS
+project stores `continuum_api_key`, `tinfoil_api_key`, and `kagi_api_key`.
+The manifest maps those native names to the uppercase environment variables
+used by the processes. BWS project IDs survive display-name changes.
+
+The pinned shell includes SecretSpec 0.20 and BWS. On this VM the manifest
+reuses the existing bootstrap token at Keychain service
+`secretspec/opensecret-dev-observability/_provider/access_token`; it does not
+copy the token, and the token is not injected into either service. On a new
+machine, run `just local-secrets-login` in an interactive Nix shell and enter
+a BWS machine token with read access to the selected project at the hidden
+prompt. Do not repeat login on an already configured machine unless replacing
+the token. macOS may request Keychain access for a new SecretSpec executable.
+
+Check access without displaying values or prompting to create missing secrets:
+
+```sh
+OPENSECRET_DEV_POSTGRES=0 OPENSECRET_DEV_ENV=0 OPENSECRET_DEV_CONTAINERS=0 \
+  nix develop --no-update-lock-file '.?submodules=1' -c just local-secrets-check
+```
+
+Secret retrieval happens only in these explicit commands and the run recipes;
+entering the shell and building never retrieve credentials. Values are not
+written to `.env` or `.local/secrets`. Workspace-generated JWT/enclave secrets,
+database configuration and inter-service authentication remain workspace-owned.
+Brave is not part of this local contract.
+
+`just local-secrets-test` runs offline helper tests; `nix flake check` also
+runs them without BWS access. The generated proxy binary is gitignored.
 
 Enter `nix develop` once to prepare the local PostgreSQL state and create `.env`
 when absent. Review an existing `.env` rather than replacing it, then run:
@@ -56,8 +80,12 @@ nix develop --no-update-lock-file '.?submodules=1' -c just run-local-backend-mac
 Local backend logs are line-buffered on stdout. Follow that terminal, or the
 capturing process's log file (workspace-managed starts use `logs/opensecret.log`).
 
-The backend recipe selects the loopback Continuum base and reads the Tinfoil
-credential. Any other custom provider base is a credential boundary; derive
+The proxy recipe resolves only Continuum; the backend recipe resolves only
+Tinfoil and Kagi. Both select the committed manifest, provider, profile and
+scope explicitly. Ambient BWS/SecretSpec routing and provider keys are cleared;
+missing BWS values fail rather than falling back to old files or shell keys.
+The backend recipe selects the loopback Continuum base. Any other custom
+provider base is a credential boundary; derive
 URL and header behavior from current source before supplying credentials.
 
 In Maple, set `apps/maple-research/frontend/.env.local` (relative to the

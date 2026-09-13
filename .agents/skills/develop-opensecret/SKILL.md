@@ -65,8 +65,10 @@ and ignored database-test proof.
 
 Derive supported configuration from `.env.sample` and startup source. Tinfoil
 is an in-process provider dependency; the macOS stack can also run the native
-Continuum proxy. Follow `docs/local-macos-stack.md` for protected credential
-files, process topology, and Maple wiring. Do not start a Tinfoil sidecar.
+Continuum proxy. Follow `docs/local-macos-stack.md` for the service-owned
+SecretSpec/BWS manifest, explicit credential checks, process topology, and Maple
+wiring. Local run recipes resolve provider credentials from BWS at invocation;
+reuse the existing Keychain login and keep values out of `.env`/secret files. Do not start a Tinfoil sidecar.
 
 Billing and feature flags are optional external HTTP API boundaries. Configure
 their URLs and backend-only credentials only when the task exercises their
