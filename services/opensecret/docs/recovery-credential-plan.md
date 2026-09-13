@@ -6,6 +6,41 @@ OpenSecret already supports credential-bound seed wraps for password and OAuth a
 
 V1 adds a recovery credential kind to `user_seed_wrappings`. It does not otherwise redesign authentication, password-reset request handling, destructive-reset cleanup, OAuth, API keys, or token revocation.
 
+## Implementation Status
+
+Phases 0–8 are complete on branch `docs/recovery-credential-architecture`. The
+implementation is backend-only and backwards compatible, and it rolls out
+**silently**: the additive endpoints are unused by clients that do not expose
+the feature, so nothing about existing client behavior changes. Recovery SDK
+bindings and the Maple Security settings UI are the later client-rollout
+milestone (see Frontend Rollout).
+
+Validation evidence (Phase 8 integration gate; local Nix dev shell, disposable
+loopback Postgres created and removed by the validation helper):
+
+- `cargo fmt --all -- --check`, `cargo check --locked --all-features`, and the
+  exact CI gate `cargo clippy --locked --all-targets --all-features --
+  -D warnings` (with `RUSTFLAGS='-D warnings'`) → clean.
+- `cargo test --locked --all-features` → 683 passed / 0 failed / 54 ignored.
+- Disposable fresh-database run (isolated cluster, identity + empty-schema
+  checks, full migration chain, down/up redo of
+  `2026-09-03-000000_recovery_credential_kind`, all DB-backed ignored suites
+  serially) → 20 AEAD-tamper + 2 OAuth + 31 recovery = 53 passed / 0 failed /
+  0 skipped; temporary cluster removed.
+- `security_invariants` focused run → 27 passed / 0 failed.
+- Component `nix flake check --no-update-lock-file` → all checks passed;
+  `nix build --no-link --no-update-lock-file '.?submodules=1#default'` → success.
+- Owned dev database: `just diesel-migration-run-local` → no pending migrations.
+
+Deliberately not exercised: an encrypted-v2-carrier SDK smoke test and runtime
+log capture. The transport carrier is pre-existing, separately tested shared
+code, route wiring is pinned by `security_invariants`, and log hygiene is
+statically scanned (`security_invariants`) plus source-audited: the recovery
+crypto and database modules contain no log macros, `RecoveryCode` cannot be
+formatted, and every recovery log site carries only generic failure messages
+or user UUIDs. The encrypted client smoke becomes part of the client-rollout
+gate when SDK/GUI consumption starts.
+
 ## V1 Decisions
 
 - One active recovery code per user.
@@ -656,7 +691,37 @@ The guard runs before project, user, reset-request, or recovery lookup. Existing
 - New wraps are verified before entering the transaction.
 - No unwrap failure generates a seed or falls through to destructive reset.
 
+## Implemented Surface
+
+File map of the shipped implementation (design sections above; tests below):
+
+| Concern | Location |
+| --- | --- |
+| Recovery code crypto: `RecoveryCode` (generate/parse/display), fieldless `RecoveryCodeError` | `src/recovery_code.rs` |
+| Recovery `AuthBinding`, lookup hash, seal/verify helpers | `src/seed_wrapping.rs` (`compute_recovery_auth_binding`, `recovery_credential_lookup_hash`, `new_recovery_seed_wrapping`, `verify_recovery_seed_wrapping`) |
+| Wrap CRUD + preserving-reset transaction | `src/db.rs` (`get_recovery_wrap`, `insert_recovery_wrap_if_absent`, `replace_recovery_wrap_if_unchanged`, `delete_recovery_wrap_for_user`, `recovery_wrap_exists`, `consume_selected_password_reset_request`, `complete_preserving_password_reset`) |
+| Management routes + guards | `src/web/protected_routes.rs` (`recovery_router`, `recovery_status`, `enroll_recovery`, `rotate_recovery`, `disable_recovery`, `require_email_password_user`, `require_current_password`, `seed_for_recovery_management`) |
+| V2 reset routes + error maps | `src/web/login_routes.rs` (`password_reset_v2_router`, `password_reset_v2_options`, `password_reset_v2_complete`, `map_reset_proof_error`, `map_preserving_completion_error`) |
+| Preserving completion orchestration + `InvalidRecoveryCode` / `RecoveryNotEnrolled` | `src/main.rs` (`complete_preserving_password_reset_v2`) |
+| Transport gate | `src/web/encryption_middleware.rs` (`require_transport_v2`, `require_v2_transport_session`) |
+| Legacy guard | `src/web/login_routes.rs` (`password_reset_confirm`, `deserialize_recovery_code_presence`) |
+| DB lifecycle tests (8, ignored) | `src/recovery_db_tests.rs` |
+| Route tests (23, ignored): 7 management + 4 v2 options + 10 v2 completion + 2 legacy guard | `src/recovery_route_tests.rs` |
+| Static pins + sensitive-log scanner | `src/security_invariants.rs` |
+
+Router layer order on `recovery_router` and the v2 reset sub-router: per-route
+`decrypt_request`, then `validate_jwt` (management only), with
+`require_transport_v2` outermost at runtime, so v1/missing sessions are
+rejected before JWT validation touches the database; handlers re-check
+`require_v2_transport_session` as defense-in-depth. The v2 completion mode
+enum is externally tagged snake_case:
+`{"preserve":{"recovery_code":"…"}}` /
+`{"destructive":{"acknowledge_data_loss":true}}`.
+
 ## Focused Tests
+
+All of the following are implemented and passing as of the Phase 8 gate (see
+Implementation Status).
 
 ### Cryptography
 
@@ -700,21 +765,26 @@ The guard runs before project, user, reset-request, or recovery lookup. Existing
 
 ## Frontend Rollout
 
-Maple exposes recovery enrollment through a feature-flagged Security settings UI. OpenSecret does not need a backend feature flag; the additive endpoints remain unused by clients that do not expose the feature.
+Rollout is silent and backend-first: the additive endpoints ship behind no
+backend feature flag and remain unused by clients that do not expose the
+feature, so existing client behavior is unchanged. When client work starts,
+Maple exposes recovery enrollment through a feature-flagged Security settings
+UI, and the SDKs gain recovery bindings at that point. The client-rollout gate
+then also carries the encrypted-v2-carrier smoke test and runtime log-capture
+evidence deferred from the Phase 8 backend gate (see Pending v1 Decisions).
 
 ## Pending v1 Decisions
 
-Decisions opened by the Phase 4 implementation that stay open until their
-binding milestone. An item is binding ("no later than") at the point where
-the next step cannot be considered correct or complete without resolving it;
-nothing below blocks Phases 5-7.
+All decisions opened by the implementation are now resolved. Two were
+confirmed by the product owner at the Phase 8 close-out; none remain open.
+Nothing below blocks the silent backend rollout.
 
 | Decision | Opened by | Binding milestone | Notes |
 |----------|-----------|-------------------|-------|
-| Client-facing management status codes: re-enroll → `409 Conflict`; rotate with no wrap → `400`; idempotent disable → `200`; wrong step-up password → `401 InvalidUsernameOrPassword` | P4 handlers | Before client consumption (Maple Security settings UI / SDK mocks) or Phase 8 encrypted smoke test | Consumers will encode these; freeze before any client encodes them |
-| `recovery_status` eligibility for OAuth-only users (currently reachable; returns `enrolled: false`; guests fail JWT validation) | P4 handler + P4.6 wording | Same milestone as status codes | Decide with Maple settings-UI topology; response carries no oracle value |
+| Client-facing management status codes: re-enroll → `409 Conflict`; rotate with no wrap → `400`; idempotent disable → `200`; wrong step-up password → `401 InvalidUsernameOrPassword` | P4 handlers | **Resolved:** confirmed as implemented | Exercised by route tests; consumers must match these codes when they add recovery support (SDK mocks, Security settings UI) |
+| `recovery_status` eligibility for OAuth-only users (reachable; returns `enrolled: false`; guests fail JWT validation) | P4 handler + P4.6 wording | **Resolved:** kept reachable | Any validated JWT user may call the route; OAuth-only accounts observe `enrolled: false`; guests fail JWT validation. Response carries no oracle value |
 | Plan § "Recovery Seed Wrap" sketches a `recovery_wrap_key`/`recovery_wrap_aad` envelope that the shipped implementation does not use; `RecoveryCode::parse` and those helpers currently have no production consumer (`#[allow(dead_code)]` markers carry the gap) | P2 helpers vs P4 sealing path | Phase 6 implementation (P6.2 "Open recovery wrap") | **Resolved at Phase 6:** the reset completion opens wraps through `decrypt_seed_v1` with a recovery `AuthBinding` as required; the dead `recovery_wrap_key`/`recovery_wrap_aad` helpers were deleted and the plan section above was reconciled. `RecoveryCode::parse` now has its production consumer and its markers were removed |
-| v2 carrier encryption + runtime log-capture evidence for recovery routes | P4 route tests scope | Phase 8 validation via `$validate-opensecret` | Route tests cover inner-router behavior only; gateway sealing is source-confirmed, log hygiene is statically scanned (`security_invariants`) |
+| v2 carrier encryption + runtime log-capture evidence for recovery routes | P4 route tests scope | **Resolved:** closed at Phase 8 by product decision | Rollout is silent and no client consumes recovery yet. Gateway sealing is source-confirmed (pre-existing shared transport code, separately tested, route wiring pinned by `security_invariants`); log hygiene is statically scanned plus source-audited. The encrypted SDK smoke test and runtime log capture move to the client-rollout gate (Frontend Rollout) |
 
 ## Deferred Work
 
