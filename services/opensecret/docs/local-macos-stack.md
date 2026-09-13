@@ -28,38 +28,31 @@ It maps `continuum_api_key`, `tinfoil_api_key`, and `kagi_api_key` to the upperc
 environment variables used by the processes. Native SecretSpec commands in
 Just handle resolution; no custom runtime helper is needed.
 
-The pinned shell includes SecretSpec 0.20 and BWS. Configure the
-`opensecret_local` alias once in your user-level SecretSpec configuration,
-substituting your local-development BWS project ID:
+The pinned shell includes SecretSpec 0.20 and BWS. The manifest commits the
+`opensecret_local` alias with the local-development BWS project ID. The ID is
+an identifier, not a credential; authentication and BWS permissions control
+access. Store your own machine-account token once per machine:
 
 ```sh
-secretspec config global provider add opensecret_local 'bws://YOUR_PROJECT_UUID' \
-  --credential access_token=keyring
 just local-secrets-login
 ```
 
-The login command uses SecretSpec's hidden prompt to store the BWS machine
-token in Keychain. Give the machine account read access to the intended project.
-The project ID is an identifier, not a credential; authentication and BWS
-permissions control access. Keep your provider URI and bootstrap binding in
-user configuration so other contributors can use their own account or provider.
+The login command uses SecretSpec's hidden prompt to store the token in
+Keychain (or the Linux Secret Service). Use a machine account with read access
+to only the local-development project. macOS may request Keychain access for a
+new SecretSpec executable.
 
-If this machine already has a BWS login, configure the alias's
-`credentials.access_token` with a native Keychain reference instead of logging
-in again. This reuses the token without copying it:
+Headless VMs and containers have no keyring. Export the token and select the
+credential-free twin alias instead; nothing else changes:
 
-```toml
-# ~/.config/secretspec/config.toml
-[defaults.providers.opensecret_local]
-uri = "bws://YOUR_PROJECT_UUID"
-credentials = { access_token = { provider = "keyring", ref = { item = "EXISTING_KEYCHAIN_SERVICE" } } }
+```sh
+export BWS_ACCESS_TOKEN=... SECRETSPEC_PROVIDER=opensecret_local_headless
 ```
 
-Preserve other aliases when editing this file. Do not replace a working token
-unless deliberately rotating it; a shared reference also affects other tools
-using that login. macOS may request Keychain access for a new SecretSpec
-executable. See the official [provider alias](https://secretspec.dev/reference/cli/#config-global-provider-add)
-and [BWS](https://secretspec.dev/providers/bws/) documentation.
+The recipes pass both variables through to SecretSpec and remove the token
+before starting the services. See the official
+[provider](https://secretspec.dev/concepts/providers/) and
+[BWS](https://secretspec.dev/providers/bws/) documentation.
 
 Check access without displaying values or prompting to create missing secrets:
 
@@ -104,8 +97,8 @@ Local backend logs are line-buffered on stdout. Follow that terminal, or the
 capturing process's log file (workspace-managed starts use `logs/opensecret.log`).
 
 The proxy receives only Continuum; the backend receives Tinfoil and Kagi.
-Both select the committed manifest, user-level provider alias, profile and scope
-explicitly. The recipes remove inherited BWS bootstrap/config overrides and
+Both select the committed manifest, profile and scope explicitly and let the
+manifest pin the provider alias. The recipes remove inherited BWS server/config overrides and
 use the pinned shell's `bws`; SecretSpec performs key resolution and scope
 filtering. The inner Just invocation disables dotenv loading so it cannot
 restore excluded keys. Missing provider values fail rather than falling back

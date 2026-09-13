@@ -5,6 +5,7 @@ import base64
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -30,13 +31,16 @@ class OperatorBoundaryTests(unittest.TestCase):
         for relative in ("justfile", "pcr_sign.js", "scripts/pcr_compatibility.py", "secretspec/pcr-signing.toml"):
             shutil.copyfile(SOURCE / relative, self.backend / relative)
         self.home = self.root / "home"
-        config = self.home / ".config/secretspec"
-        config.mkdir(parents=True)
+        (self.home / ".config/secretspec").mkdir(parents=True)
         self.values = self.root / "fixture.values"
         self.values.write_text("signing_private_key=fixture_signing_only\n")
-        (config / "config.toml").write_text(
-            f'[defaults.providers.opensecret_pcr_signing]\nuri = "dotenv:{self.values}"\n'
-        )
+        # Point the copied manifest's committed alias at a dummy provider; the
+        # recipes and BWS item names are exercised unchanged.
+        manifest = self.backend / "secretspec/pcr-signing.toml"
+        patched, count = re.subn(r"(?m)^opensecret_pcr_signing = .*$",
+                                 f'opensecret_pcr_signing = "dotenv:{self.values}"', manifest.read_text())
+        self.assertEqual(count, 1)
+        manifest.write_text(patched)
         self.env = {
             "PATH": os.environ["PATH"], "HOME": str(self.home),
             "XDG_CONFIG_HOME": str(self.home / ".config"),
@@ -133,6 +137,12 @@ class OperatorBoundaryTests(unittest.TestCase):
         self.assertEqual(signing["project"]["name"], "opensecret-pcr-signing")
         self.assertEqual(set(signing["profiles"]["default"]), {"SIGNING_PRIVATE_KEY"})
         self.assertNotIn("SIGNING_PRIVATE_KEY", local["profiles"]["default"])
+        # Committed project IDs: distinct projects, keyring-only credential for signing.
+        self.assertEqual(signing["providers"], {"opensecret_pcr_signing": {
+            "uri": "bws://2305d292-179b-477e-b6a8-b4c4007eac20", "credentials": {"access_token": "keyring"}}})
+        self.assertEqual(local["providers"]["opensecret_local"],
+                         {"uri": "bws://9a8c5b99-b00c-4403-beb1-b4c400050810", "credentials": {"access_token": "keyring"}})
+        self.assertEqual(local["providers"]["opensecret_local_headless"], "bws://9a8c5b99-b00c-4403-beb1-b4c400050810")
 
 
 if __name__ == "__main__":

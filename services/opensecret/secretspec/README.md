@@ -18,18 +18,18 @@ Do not generate, rotate, print, or copy it into dotenv files. Do not use
 `secretspec set`/bulk import for this migration: the current CLI-backed BWS
 write path can place values in process arguments.
 
-Preserve existing aliases when adding this user-level alias:
+The manifest commits the `opensecret_pcr_signing` alias with the signing
+project ID. Store the signing machine token once per operator machine:
 
 ```sh
-secretspec config global provider add opensecret_pcr_signing \
-  'bws://SIGNING_PROJECT_UUID' --credential access_token=keyring
 just --no-dotenv pcr-signing-login
 just --no-dotenv pcr-signing-check
 ```
 
-Login uses a hidden prompt and a separate keyring credential binding. Do not
-reuse a local-runtime or deployment machine token. Project UUID and keyring
-bindings stay in user configuration, not this repository. `check --no-prompt`
+Login uses a hidden prompt and stores the token in the OS keyring under this
+alias. Do not reuse a local-runtime or deployment machine token, and do not
+export `BWS_ACCESS_TOKEN` for signing: the signing recipes start from an empty
+environment and the alias declares no environment fallback. `check --no-prompt`
 does not create missing secrets. No shell hook resolves the signing key.
 
 ## Authorized signing

@@ -32,15 +32,17 @@ Cargo, Nix, and `just` commands from `services/opensecret/`, using its own
 
 Local provider credentials are declared in `secretspec.toml` and resolved by
 native SecretSpec commands in the explicit `just local-secrets-check` and
-run recipes. The `opensecret_local` provider alias belongs in user-level
-SecretSpec configuration; keep BWS project IDs and Keychain addresses there. Reuse the existing Keychain bootstrap login; never retrieve
-credentials in shell hooks or copy them into generated `.env` files. Continuum
+run recipes. The `opensecret_local` alias and its BWS project ID are committed
+in the manifest; each machine stores its own machine token with
+`just local-secrets-login`, or exports `BWS_ACCESS_TOKEN` with
+`SECRETSPEC_PROVIDER=opensecret_local_headless` when it has no keyring. Never
+retrieve credentials in shell hooks or copy them into generated `.env` files. Continuum
 receives its own key; the backend receives Tinfoil and Kagi. A workspace manager
 owns ports, databases and generated local authentication, not these provider
 values. Follow `docs/local-macos-stack.md` for setup and verification.
 
 Privileged signing uses the separate `secretspec/pcr-signing.toml` manifest,
-`opensecret_pcr_signing` user alias, and existing Just/JS/Python tools. Use
+`opensecret_pcr_signing` committed alias, and existing Just/JS/Python tools. Use
 `just --no-dotenv` for operator recipes. Never resolve signing credentials in
 builds or local-runtime commands. Follow `secretspec/README.md`; the separate
 private deployment automation owns deployment credentials/config/state and
