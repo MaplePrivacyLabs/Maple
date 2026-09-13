@@ -56,8 +56,9 @@ Build first without credentials, review measurements, then resolve only the
 existing signing key around the signer. Deployment consumes the resulting
 reviewed immutable artifact; it must not rebuild or sign implicitly.
 
-After reviewing an authorized EIF and running the existing operator PCR update
-and signing steps, run the following from `services/opensecret/`:
+After the `OpenSecret EIF release` workflow's approval branch has merged, or
+after running the operator `update-pcr-*` recipes locally, run the following
+from `services/opensecret/`:
 
 ```sh
 OPENSECRET_DEV_POSTGRES=0 OPENSECRET_DEV_ENV=0 OPENSECRET_DEV_CONTAINERS=0 \
@@ -166,9 +167,10 @@ this repository work; these checks do not prove its live EIF or KMS policy.
 
 Before deploying an authorized new measurement, both histories must be
 published and verified so clients using either location can approve it. Keep
-the existing release process and its deployment gates. No GitHub-managed EIF
-deployment, automatic legacy backpublisher, signing-key migration, or Sigstore
-change is part of this compatibility path.
+the existing release process and its deployment gates. The GitHub-managed
+release workflow produces canonical approvals only; there is still no automatic
+legacy backpublisher, GitHub-managed EIF deployment, signing-key migration, or
+Sigstore change in this compatibility path.
 
 ## Regression checks
 

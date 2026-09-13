@@ -562,7 +562,17 @@
           nitro-helper = nitro-bins;
         };
 
-        devShell = pkgs.mkShell {
+        # Minimal shell for the reviewer-gated CI signing step: the operator
+        # signing recipe's tools without the Rust toolchain, database,
+        # containers, or shell hooks.
+        devShells.signing = pkgs.mkShell {
+          packages = [
+            pkgs.bash pkgs.coreutils pkgs.git pkgs.jq pkgs.just pkgs.nodejs
+            (pkgs.python3.withPackages (ps: [ ps.cryptography ]))
+          ];
+        };
+
+        devShells.default = pkgs.mkShell {
           packages = inputs ++ [ secretsPkgs.secretspec secretsPkgs.bws ];
           shellHook = ''
             export PGDATA="''${PGDATA:-$PWD/.pgdata}"

@@ -15,6 +15,10 @@ local_secrets := "env -u BWS_CONFIG_FILE -u BWS_PROFILE -u BWS_SERVER_URL -u SEC
 # configuration, never ambient runtime/cloud secrets. Unset variables stay unset.
 operator_env := 'env -i PATH="$PATH" HOME="$HOME" XDG_CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}" ${USER:+USER="$USER"} ${TERM:+TERM="$TERM"} ${LANG:+LANG="$LANG"} ${LC_ALL:+LC_ALL="$LC_ALL"} ${TMPDIR:+TMPDIR="$TMPDIR"} ${XDG_RUNTIME_DIR:+XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR"} ${DBUS_SESSION_BUS_ADDRESS:+DBUS_SESSION_BUS_ADDRESS="$DBUS_SESSION_BUS_ADDRESS"}'
 pcr_secrets := operator_env + " secretspec --file secretspec/pcr-signing.toml --reason 'Authorized OpenSecret PCR signing'"
+# The signer resolves the key around node only. The reviewer-gated release
+# workflow overrides this with `--set pcr_signer 'node pcr_sign.js sign-pcr0'`
+# after placing SIGNING_PRIVATE_KEY in the environment; laptops never do.
+pcr_signer := pcr_secrets + " run --provider opensecret_pcr_signing --profile default --scope signing -- node pcr_sign.js sign-pcr0"
 
 # Set the default recipe to list all available commands
 default:
@@ -381,7 +385,7 @@ _append-pcr-file pcr_file history_file:
         exit 0
     fi
     CURRENT_PCR0=$(jq -er .PCR0 "$PCR_FILE")
-    SIGNATURE=$({{pcr_secrets}} run --provider opensecret_pcr_signing --profile default --scope signing -- node pcr_sign.js sign-pcr0 "$CURRENT_PCR0")
+    SIGNATURE=$({{pcr_signer}} "$CURRENT_PCR0")
     printf '%s' "$SIGNATURE" | {{operator_env}} python3 scripts/pcr_compatibility.py append-signature "$PCR_FILE" "$HISTORY_FILE"
 
 # Update PCR dev with signature and append to history

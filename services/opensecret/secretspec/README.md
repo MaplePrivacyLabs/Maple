@@ -78,6 +78,27 @@ Build recipes clear the process environment and never resolve signing secrets.
 This is environment hygiene, not a sandbox: a process under the same OS user
 may still access that user's keyring and credential files.
 
+## CI signing
+
+The `OpenSecret EIF release` workflow signs with the same key and recipe behind
+the protected `pcr-signing` GitHub environment (required reviewer, `master`
+only). Its one-time setup, performed by an owner:
+
+- A `pcr-signing-ci` BWS machine account with read access to only the signing
+  project, and an access token with an expiry date.
+- Environment secret `OPENSECRET_PCR_SIGNING_BWS_ACCESS_TOKEN` holding that
+  token. GitHub never holds the key itself: a leaked token is revoked in
+  Bitwarden, while a leaked key could not be rotated without a client update.
+- Environment variable `OPENSECRET_PCR_SIGNING_KEY_ID`, the UUID of the
+  `signing_private_key` item. It is an identifier, not a credential.
+
+Bitwarden's Secrets Manager action resolves the key as a masked step output
+that only the signing step receives. `scripts/ci_sign_pcr.sh` then runs the
+`append-pcr-*` recipe with `--set pcr_signer 'node pcr_sign.js sign-pcr0'`, so
+the key still reaches only the node signer and the verification and atomic
+append are unchanged. Laptops keep the keyring alias; never use that override
+locally. See [the Nitro runbook](../docs/nitro-deploy.md#eif-release-workflow).
+
 ## Deployment handoff
 
 After approved PCR publication, hand the deployment operators the reviewed

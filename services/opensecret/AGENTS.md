@@ -44,7 +44,9 @@ values. Follow `docs/local-macos-stack.md` for setup and verification.
 Privileged signing uses the separate `secretspec/pcr-signing.toml` manifest,
 `opensecret_pcr_signing` committed alias, and existing Just/JS/Python tools. Use
 `just --no-dotenv` for operator recipes. Never resolve signing credentials in
-builds or local-runtime commands. Follow `secretspec/README.md`; the separate
+builds or local-runtime commands. CI signs only in the reviewer-gated
+`OpenSecret EIF release` workflow, which pushes an approval branch and never
+creates a GitHub Release or tag. Follow `secretspec/README.md`; the separate
 private deployment automation owns deployment credentials/config/state and
 consumes an immutable approved artifact.
 

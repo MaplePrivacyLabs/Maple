@@ -177,6 +177,20 @@ if rg -n --glob '*.yml' --glob '*.yaml' \
 fi
 pass "repository workflows preserve one Maple GitHub Release object"
 
+eif_release="${repo_root}/.github/workflows/opensecret-eif-release.yml"
+[ "$(yq -o=json -I=0 '.on | keys' "${eif_release}")" = '["workflow_dispatch"]' ] || \
+  fail "OpenSecret EIF release must be manual dispatch only"
+if rg -n 'refs/tags|git[[:space:]]+tag|gh[[:space:]]+release|latest\.json' "${eif_release}"; then
+  fail "OpenSecret EIF release must never create a tag or Release or touch updater metadata"
+fi
+for workflow in "${repo_root}"/.github/workflows/*.yml; do
+  [ "$(basename "${workflow}")" = release.yml ] && continue
+  if [ "$(yq '.on | has("release")' "${workflow}")" = "true" ]; then
+    fail "only release.yml may run on GitHub Release events: ${workflow}"
+  fi
+done
+pass "OpenSecret EIF release cannot move /releases/latest or updater metadata"
+
 [ -x "${repo_root}/scripts/ci/inspect-proxy-container-manifest.sh" ] || \
   fail "proxy container inspector must be executable"
 if rg -n 'ghcr-(push|build-push|login)' "${repo_root}/proxy/justfile"; then

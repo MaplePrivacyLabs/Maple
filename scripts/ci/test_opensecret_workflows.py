@@ -1,10 +1,12 @@
 """Exercise backend diff selection and enforce scoped CI cache boundaries."""
 
 import functools
+import hashlib
 import itertools
 import json
 import os
 from pathlib import Path
+import re
 import shlex
 import shutil
 import subprocess
@@ -312,6 +314,326 @@ class OpenSecretWorkflowBoundaryTests(unittest.TestCase):
                 self.assertIn("always() && !cancelled()", condition)
                 self.assertIn("needs.changes.result != 'success'", condition)
                 self.assertIn(f"needs.changes.outputs.{output} != 'false'", condition)
+
+
+class EifReleaseWorkflowTests(unittest.TestCase):
+    NAME = "opensecret-eif-release.yml"
+    CHECKOUT = "actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5"
+    INSTALLER = "DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25"
+
+    def test_release_is_manual_and_never_creates_a_release_or_tag(self):
+        config = workflow(self.NAME)
+        self.assertEqual(set(config["on"]), {"workflow_dispatch"})
+        inputs = config["on"]["workflow_dispatch"]["inputs"]
+        self.assertEqual(set(inputs), {"environment", "dry_run"})
+        self.assertEqual(inputs["environment"]["options"], ["dev", "prod"])
+        self.assertIs(inputs["dry_run"]["default"], True)
+        self.assertEqual(config["permissions"], {"contents": "read"})
+        self.assertEqual(config["concurrency"], {
+            "group": "opensecret-eif-release-${{ inputs.environment }}", "cancel-in-progress": False,
+        })
+        self.assertEqual(config["env"]["EIF_MODE"], "${{ inputs.environment }}")
+        for key in ("OPENSECRET_DEV_POSTGRES", "OPENSECRET_DEV_ENV", "OPENSECRET_DEV_CONTAINERS"):
+            self.assertEqual(config["env"][key], "0")
+        # /releases/latest and updater metadata belong to the Maple desktop app.
+        for value in strings(config):
+            self.assertNotRegex(value, r"gh release|git tag|refs/tags|releases/|latest\.json")
+            self.assertNotRegex(value, r"pull_request_target|workflow_run|deploy-|stage-|scp-|update-pcr")
+        self.assertEqual(list(config["jobs"]), ["build", "sign"])
+        for job in config["jobs"].values():
+            for step in job["steps"]:
+                self.assertNotIn("${{", step.get("run", ""))
+                action = step.get("uses", "")
+                if action:
+                    self.assertRegex(action, r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+@[0-9a-f]{40}$")
+                if action.startswith("actions/checkout@"):
+                    self.assertEqual(step["with"], {
+                        "persist-credentials": False, "submodules": "recursive", "fetch-depth": 0,
+                    })
+                if action.startswith("DeterminateSystems/nix-installer-action@"):
+                    self.assertEqual(step["with"]["github-token"], "")
+
+    def test_build_job_is_the_trusted_read_only_builder(self):
+        job = workflow(self.NAME)["jobs"]["build"]
+        self.assertEqual(job["if"], "github.ref == 'refs/heads/master'")
+        self.assertEqual(job["runs-on"], "ubuntu-24.04-arm64-8core")
+        self.assertEqual(job["timeout-minutes"], 180)
+        self.assertEqual(job["permissions"], {"contents": "read", "id-token": "write", "attestations": "write"})
+        self.assertNotIn("environment", job)
+        for value in strings(job):
+            self.assertNotRegex(value, r"\bsecrets\b|github\.token|\bGH_TOKEN\b")
+        self.assertEqual(set(job["outputs"]), {"approval_needed", "pcr0", "eif_sha256", "artifact"})
+        steps = job["steps"]
+        self.assertEqual([step.get("uses", "run") for step in steps], [
+            self.CHECKOUT, self.INSTALLER,
+            "DeterminateSystems/flakehub-cache-action@1f9a51a2959d3e26c7838c6f3bf9f48acae525ea",
+            "run",
+            "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02",
+            "actions/attest@281a49d4cbb0a72c9575a50d18f6deb515a11deb",
+        ])
+        self.assertEqual(steps[1]["with"], {"determinate": True, "github-token": ""})
+        self.assertEqual(steps[2]["with"], {"use-gha-cache": "enabled", "diff-store": True})
+        self.assertEqual(steps[3]["run"], 'bash scripts/ci/build_opensecret_eif.sh "$EIF_MODE" eif-artifact')
+        self.assertEqual(steps[4]["with"]["path"], "eif-artifact")
+        self.assertEqual(steps[4]["with"]["if-no-files-found"], "error")
+        self.assertEqual(steps[5]["with"], {"subject-checksums": "eif-artifact/SHA256SUMS"})
+        self.assertNotIn("continue-on-error", steps[5])
+
+    def test_sign_job_is_reviewer_gated_and_exposes_the_key_to_one_step(self):
+        job = workflow(self.NAME)["jobs"]["sign"]
+        self.assertEqual(job["needs"], "build")
+        self.assertEqual(job["if"], "inputs.dry_run == false && needs.build.outputs.approval_needed == 'true'")
+        self.assertEqual(job["environment"], "pcr-signing")
+        self.assertEqual(job["permissions"], {"contents": "write"})
+        self.assertEqual(job["runs-on"], "ubuntu-latest")
+        self.assertFalse(any("id-token" in value or "flakehub-cache" in value for value in strings(job)))
+        steps = job["steps"]
+        self.assertEqual([step.get("uses", "run") for step in steps], [
+            self.CHECKOUT, self.INSTALLER,
+            "actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093",
+            "bitwarden/sm-action@1238aae8fc64b212641190a9227c8a734ab1a793",
+            "run", "run",
+        ])
+        self.assertEqual(steps[1]["with"], {"determinate": False, "github-token": ""})
+        self.assertEqual(steps[2]["with"], {"name": "${{ env.APPROVAL_ARTIFACT }}", "path": "eif-artifact"})
+        bitwarden = steps[3]
+        self.assertEqual(bitwarden["id"], "signing-key")
+        self.assertEqual(bitwarden["with"]["access_token"],
+                         "${{ secrets.OPENSECRET_PCR_SIGNING_BWS_ACCESS_TOKEN }}")
+        self.assertEqual(bitwarden["with"]["secrets"].strip(),
+                         "${{ vars.OPENSECRET_PCR_SIGNING_KEY_ID }} > SIGNING_PRIVATE_KEY")
+        self.assertIs(bitwarden["with"]["set_env"], False)
+        sign = steps[4]
+        self.assertEqual(sign["env"], {"SIGNING_PRIVATE_KEY": "${{ steps.signing-key.outputs.SIGNING_PRIVATE_KEY }}"})
+        self.assertEqual(sign["run"], "nix develop --no-update-lock-file './services/opensecret?submodules=1#signing'"
+                                      ' -c bash services/opensecret/scripts/ci_sign_pcr.sh "$EIF_MODE" eif-artifact')
+        publish = steps[5]
+        self.assertEqual(publish["env"], {"GITHUB_TOKEN": "${{ secrets.GITHUB_TOKEN }}"})
+        self.assertEqual(publish["run"], 'bash scripts/ci/publish_opensecret_approval.sh "$EIF_MODE" eif-artifact')
+        references = [value for value in strings(job) if "outputs.SIGNING_PRIVATE_KEY" in value]
+        self.assertEqual(references, [sign["env"]["SIGNING_PRIVATE_KEY"]])
+        secrets = sorted({name for value in strings(job) for name in re.findall(r"secrets\.([A-Za-z0-9_]+)", value)})
+        self.assertEqual(secrets, ["GITHUB_TOKEN", "OPENSECRET_PCR_SIGNING_BWS_ACCESS_TOKEN"])
+
+
+VALID_MEASUREMENTS = {"HashAlgorithm": "Sha384 { ... }", "PCR0": "a" * 96, "PCR1": "b" * 96, "PCR2": "c" * 96}
+
+
+class EifReleaseBuildCommandTests(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name).resolve()
+        self.repo = self.root / "repo"
+        self.component = self.repo / "services/opensecret"
+        self.component.mkdir(parents=True)
+        scripts = self.repo / "scripts/ci"
+        scripts.mkdir(parents=True)
+        self.script = scripts / "build_opensecret_eif.sh"
+        shutil.copyfile(ROOT / "scripts/ci/build_opensecret_eif.sh", self.script)
+        self.binaries = self.root / "bin"
+        self.binaries.mkdir()
+        self.scratch = self.root / "scratch"
+        self.scratch.mkdir()
+        for tool in ("dirname", "mktemp", "rm", "ls", "mkdir", "cp", "chmod", "jq", "sha256sum", "cut", "cmp"):
+            (self.binaries / tool).symlink_to(shutil.which(tool))
+        uname = self.binaries / "uname"
+        uname.write_text(
+            f"#!{sys.executable}\n"
+            "import os, sys\n"
+            "print('Linux' if sys.argv[1] == '-s' else os.environ.get('TEST_ARCH', 'aarch64'))\n"
+        )
+        uname.chmod(0o755)
+        nix = self.binaries / "nix"
+        nix.write_text(
+            f"#!{sys.executable}\n"
+            "import json, os, sys\n"
+            "from pathlib import Path\n"
+            "args = sys.argv[1:]\n"
+            "Path(os.environ['TEST_TRACE']).write_text(json.dumps({'args': args, 'cwd': os.getcwd()}))\n"
+            "output = Path(args[args.index('--out-link') + 1])\n"
+            "output.mkdir()\n"
+            "(output / 'image.eif').write_bytes(b'fixture EIF, not a real image')\n"
+            "(output / 'pcr.json').write_text(os.environ['TEST_MEASUREMENTS'])\n"
+        )
+        nix.chmod(0o755)
+        self.measurements = json.dumps(VALID_MEASUREMENTS) + "\n"
+        (self.component / "pcrDev.json").write_text(json.dumps({**VALID_MEASUREMENTS, "PCR0": "d" * 96}) + "\n")
+        (self.component / "pcrProd.json").write_text(self.measurements)
+        for name in ("pcrDevHistory.json", "pcrProdHistory.json"):
+            (self.component / name).write_text("untouched history fixture\n")
+        self.existing_result = self.component / "result"
+        self.existing_result.symlink_to(self.root / "operator-owned-output")
+        self.sentinel = self.root / "dotenv-was-loaded"
+        (self.component / ".env").write_text(f"touch '{self.sentinel}'\n")
+        self.before_files = {p.name: p.read_bytes() for p in self.component.iterdir() if p.is_file()}
+        self.github_output = self.root / "github-output"
+
+    def run_build(self, mode="dev", output="candidate", **extra_env):
+        env = {
+            "PATH": str(self.binaries), "HOME": str(self.root), "TMPDIR": str(self.scratch),
+            "TEST_TRACE": str(self.root / "trace"), "TEST_MEASUREMENTS": self.measurements,
+            "GITHUB_SHA": "1" * 40, "GITHUB_OUTPUT": str(self.github_output), **extra_env,
+        }
+        result = subprocess.run(
+            [shutil.which("bash"), "--noprofile", "--norc", str(self.script), mode, output],
+            cwd=self.root, env=env, capture_output=True, text=True,
+        )
+        self.assertFalse(self.sentinel.exists())
+        self.assertEqual(os.readlink(self.existing_result), str(self.root / "operator-owned-output"))
+        self.assertEqual({p.name: p.read_bytes() for p in self.component.iterdir() if p.is_file()},
+                         self.before_files)
+        self.assertEqual(list(self.scratch.iterdir()), [])
+        return result
+
+    def outputs(self):
+        return dict(line.split("=", 1) for line in self.github_output.read_text().splitlines())
+
+    def test_new_measurements_produce_an_attestable_candidate_and_request_approval(self):
+        result = self.run_build()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        candidate = self.root / "candidate"
+        self.assertEqual(sorted(p.name for p in candidate.iterdir()),
+                         ["SHA256SUMS", "handoff.json", "image.eif", "pcr.json"])
+        for name in ("image.eif", "pcr.json"):
+            self.assertFalse((candidate / name).is_symlink())
+            self.assertEqual((candidate / name).stat().st_mode & 0o777, 0o644)
+        digest = hashlib.sha256(b"fixture EIF, not a real image").hexdigest()
+        self.assertEqual((candidate / "SHA256SUMS").read_text().splitlines()[0], f"{digest}  image.eif")
+        handoff = json.loads((candidate / "handoff.json").read_text())
+        self.assertEqual(handoff, {
+            "environment": "dev", "source_sha": "1" * 40, "measurements": VALID_MEASUREMENTS,
+            "eif_sha256": digest, "approval_needed": True,
+        })
+        self.assertEqual(self.outputs(), {
+            "approval_needed": "true", "pcr0": "a" * 96, "eif_sha256": digest,
+            "artifact": "opensecret-eif-dev-111111111111",
+        })
+        trace = json.loads((self.root / "trace").read_text())
+        self.assertIn(".?submodules=1#eif-dev", trace["args"])
+        self.assertEqual(trace["cwd"], str(self.component))
+
+    def test_already_approved_measurements_need_no_signing(self):
+        result = self.run_build("prod")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.outputs()["approval_needed"], "false")
+        self.assertEqual(self.outputs()["artifact"], "opensecret-eif-prod-111111111111")
+
+    def test_malformed_measurements_and_unsupported_hosts_fail_before_output(self):
+        bad = json.dumps({**VALID_MEASUREMENTS, "PCR0": "0" * 96})
+        result = self.run_build(TEST_MEASUREMENTS=bad)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse((self.root / "candidate/SHA256SUMS").exists())
+        self.assertFalse((self.root / "candidate/handoff.json").exists())
+        self.assertFalse(self.github_output.exists())
+        (self.root / "trace").unlink()
+        result = self.run_build(output="candidate-x86", TEST_ARCH="x86_64")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse((self.root / "trace").exists())
+
+    def test_refuses_a_nonempty_output_directory(self):
+        (self.root / "candidate").mkdir()
+        (self.root / "candidate/stale").write_text("")
+        result = self.run_build()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse((self.root / "trace").exists())
+
+
+class ApprovalPublishCommandTests(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name).resolve()
+        self.origin = self.root / "origin.git"
+        self.git("init", "-q", "--bare", "--initial-branch=master", str(self.origin))
+        self.repo = self.root / "repo"
+        self.git("clone", "-q", str(self.origin), str(self.repo))
+        component = self.repo / "services/opensecret"
+        component.mkdir(parents=True)
+        for name in ("pcrDev.json", "pcrProd.json", "pcrDevHistory.json", "pcrProdHistory.json"):
+            (component / name).write_text(f"{name} fixture\n")
+        (component / "other.rs").write_text("fn main() {}\n")
+        scripts = self.repo / "scripts/ci"
+        scripts.mkdir(parents=True)
+        shutil.copyfile(ROOT / "scripts/ci/publish_opensecret_approval.sh", scripts / "publish_opensecret_approval.sh")
+        self.git("-C", str(self.repo), "add", "-A")
+        self.git("-C", str(self.repo), "commit", "-q", "-m", "fixture")
+        self.git("-C", str(self.repo), "push", "-q", "origin", "HEAD:refs/heads/master")
+        self.source_sha = self.git("-C", str(self.repo), "rev-parse", "HEAD")
+        self.artifact = self.root / "artifact"
+        self.artifact.mkdir()
+        self.write_handoff()
+        self.summary = self.root / "summary.md"
+
+    def git(self, *arguments):
+        return subprocess.run(
+            ["git", "-c", "user.name=fixture", "-c", "user.email=fixture@example.invalid",
+             "-c", "commit.gpgsign=false", *arguments],
+            check=True, capture_output=True, text=True,
+        ).stdout.strip()
+
+    def write_handoff(self, **overrides):
+        handoff = {"environment": "dev", "source_sha": self.source_sha,
+                   "measurements": VALID_MEASUREMENTS, "eif_sha256": "f" * 64, **overrides}
+        (self.artifact / "handoff.json").write_text(json.dumps(handoff))
+
+    def change_approvals(self):
+        for name in ("pcrDev.json", "pcrDevHistory.json"):
+            (self.repo / "services/opensecret" / name).write_text(f"{name} approved\n")
+
+    def run_publish(self, mode="dev"):
+        env = {"PATH": os.environ["PATH"], "HOME": str(self.root), "GITHUB_TOKEN": "fixture-token",
+               "GITHUB_REPOSITORY": "fixture/repo", "GITHUB_RUN_ID": "7", "GITHUB_STEP_SUMMARY": str(self.summary)}
+        return subprocess.run(
+            [shutil.which("bash"), "--noprofile", "--norc",
+             str(self.repo / "scripts/ci/publish_opensecret_approval.sh"), mode, str(self.artifact)],
+            cwd=self.repo, env=env, capture_output=True, text=True,
+        )
+
+    def origin_branches(self):
+        return self.git("-C", str(self.origin), "for-each-ref", "--format=%(refname:short)", "refs/heads")
+
+    def test_pushes_only_the_approval_files_to_a_review_branch(self):
+        self.change_approvals()
+        result = self.run_publish()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        branch = f"opensecret/pcr-approval-dev-{self.source_sha[:12]}"
+        self.assertEqual(sorted(self.origin_branches().split()), sorted(["master", branch]))
+        self.assertEqual(self.git("-C", str(self.origin), "rev-parse", "master"), self.source_sha)
+        changed = self.git("-C", str(self.origin), "diff", "--name-only", "master", branch)
+        self.assertEqual(changed.split(), ["services/opensecret/pcrDev.json", "services/opensecret/pcrDevHistory.json"])
+        message = self.git("-C", str(self.origin), "log", "-1", "--format=%an%n%B", branch)
+        self.assertIn("github-actions[bot]", message)
+        self.assertIn(self.source_sha, message)
+        self.assertIn("a" * 96, message)
+        self.assertIn(f"compare/master...{branch}", self.summary.read_text())
+        self.assertNotIn("fixture-token", (self.repo / ".git/config").read_text())
+        self.assertNotIn("fixture-token", result.stdout + result.stderr)
+
+    def test_refuses_unexpected_changes_and_existing_branches(self):
+        self.change_approvals()
+        (self.repo / "services/opensecret/other.rs").write_text("fn main() { changed }\n")
+        result = self.run_publish()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(self.origin_branches(), "master")
+        self.git("-C", str(self.repo), "checkout", "-q", "--", "services/opensecret/other.rs")
+        self.assertEqual(self.run_publish().returncode, 0)
+        self.git("-C", str(self.repo), "reset", "-q", "--hard", self.source_sha)
+        self.change_approvals()
+        result = self.run_publish()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("already exists", result.stderr)
+
+    def test_nothing_to_publish_and_handoff_mismatches(self):
+        result = self.run_publish()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.origin_branches(), "master")
+        self.change_approvals()
+        self.write_handoff(source_sha="0" * 40)
+        self.assertNotEqual(self.run_publish().returncode, 0)
+        self.write_handoff(environment="prod")
+        self.assertNotEqual(self.run_publish().returncode, 0)
+        self.assertEqual(self.origin_branches(), "master")
 
 
 class SdkWorkflowFailurePropagationTests(unittest.TestCase):

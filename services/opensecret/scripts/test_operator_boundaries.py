@@ -2,6 +2,7 @@
 """Offline operator fixtures. No trusted signing key, BWS login, or EIF build."""
 
 import base64
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -28,7 +29,8 @@ class OperatorBoundaryTests(unittest.TestCase):
         self.backend.mkdir()
         (self.backend / "scripts").mkdir()
         (self.backend / "secretspec").mkdir()
-        for relative in ("justfile", "pcr_sign.js", "scripts/pcr_compatibility.py", "secretspec/pcr-signing.toml"):
+        for relative in ("justfile", "pcr_sign.js", "scripts/pcr_compatibility.py", "scripts/ci_sign_pcr.sh",
+                         "secretspec/pcr-signing.toml"):
             shutil.copyfile(SOURCE / relative, self.backend / relative)
         self.home = self.root / "home"
         (self.home / ".config/secretspec").mkdir(parents=True)
@@ -111,6 +113,61 @@ class OperatorBoundaryTests(unittest.TestCase):
         self.assertIn("signature is invalid", result.stderr)
         self.assertEqual((self.backend / "pcrDevHistory.json").read_bytes(), before)
         self.assertNotIn(encoded, result.stdout + result.stderr)
+
+    def ci_artifact(self):
+        artifact = self.root / "artifact"
+        artifact.mkdir()
+        (artifact / "pcr.json").write_bytes(fixture(2)["pcrDev.json"])
+        (artifact / "image.eif").write_bytes(b"public synthetic EIF fixture")
+        (artifact / "SHA256SUMS").write_text("".join(
+            f"{hashlib.sha256((artifact / name).read_bytes()).hexdigest()}  {name}\n"
+            for name in ("image.eif", "pcr.json")))
+        (artifact / "handoff.json").write_text(json.dumps({"environment": "dev", "source_sha": "0" * 40}))
+        return artifact
+
+    def run_ci_signing(self, artifact, **env):
+        return subprocess.run(
+            ["bash", str(self.backend / "scripts/ci_sign_pcr.sh"), "dev", str(artifact)],
+            cwd=self.root, env={**self.env, **env}, text=True, capture_output=True, timeout=60,
+        )
+
+    def test_ci_signing_entrypoint_hands_the_gated_key_to_the_signer_only(self):
+        # The gated workflow step supplies the key; the recipe still verifies the
+        # public signature before the history changes. Replay a public signature.
+        entry = json.loads(fixture(2)["pcrDevHistory.json"])[1]
+        (self.backend / "pcr_sign.js").write_text(
+            "const assert = require('node:assert/strict');\n"
+            "assert.equal(process.env.SIGNING_PRIVATE_KEY, 'fixture_ci_key');\n"
+            f"assert.equal(process.argv[3], {json.dumps(entry['PCR0'])});\n"
+            f"console.log({json.dumps(entry['signature'])});\n"
+        )
+        # A prod snapshot that the prod history already covers keeps the final
+        # four-file check meaningful.
+        (self.backend / "pcrProd.json").write_bytes(fixture(1)["pcrProd.json"])
+        artifact = self.ci_artifact()
+        before = (self.backend / "pcrDevHistory.json").read_bytes()
+        result = self.run_ci_signing(artifact)
+        self.assertNotEqual(result.returncode, 0)  # the ambient poison key is not accepted
+        self.assertEqual((self.backend / "pcrDevHistory.json").read_bytes(), before)
+        result = self.run_ci_signing(artifact, SIGNING_PRIVATE_KEY="fixture_ci_key")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual((self.backend / "pcrDev.json").read_bytes(), fixture(2)["pcrDev.json"])
+        history = json.loads((self.backend / "pcrDevHistory.json").read_bytes())
+        self.assertEqual(len(history), 2)
+        self.assertEqual(history[1]["signature"], entry["signature"])
+        self.assertNotIn("fixture_ci_key", result.stdout + result.stderr)
+
+    def test_ci_signing_entrypoint_rejects_tampered_or_mismatched_candidates(self):
+        artifact = self.ci_artifact()
+        before = {name: (self.backend / name).read_bytes() for name in ("pcrDev.json", "pcrDevHistory.json")}
+        (artifact / "image.eif").write_bytes(b"tampered after attestation")
+        result = self.run_ci_signing(artifact, SIGNING_PRIVATE_KEY="fixture_ci_key")
+        self.assertNotEqual(result.returncode, 0)
+        (artifact / "image.eif").write_bytes(b"public synthetic EIF fixture")
+        (artifact / "handoff.json").write_text(json.dumps({"environment": "prod", "source_sha": "0" * 40}))
+        result = self.run_ci_signing(artifact, SIGNING_PRIVATE_KEY="fixture_ci_key")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual({name: (self.backend / name).read_bytes() for name in before}, before)
 
     def test_build_does_not_receive_any_operator_credentials(self):
         binary = self.root / "bin"

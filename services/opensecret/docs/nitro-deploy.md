@@ -3,9 +3,10 @@
 This operator runbook remains manual. Run repository-local build and `just`
 commands from `services/opensecret/` in the Maple monorepo using its pinned Nix
 flake. The root EIF approval workflow builds dev/prod and compares measurements
-without updating approvals; binary caching is separate from signing, release
-publication, and deployment. For authorized signed-PCR updates and legacy client
-compatibility, follow [the PCR publication procedure](pcr-compatibility.md).
+without updating approvals. The reviewer-gated
+[EIF release workflow](#eif-release-workflow) is the only CI path that signs.
+For legacy client compatibility, follow
+[the PCR publication procedure](pcr-compatibility.md).
 
 ## Current operator entrypoints
 
@@ -16,6 +17,56 @@ blue/green and provision EIF paths accept a reviewed source commit, immutable
 Nix output and SHA-256; they do not build or sign. Older low-level infrastructure
 examples below are reference material, not a substitute for these approval,
 credential-isolation and publication gates.
+
+## EIF release workflow
+
+`opensecret-eif-release.yml` (`OpenSecret EIF release`) produces a signed
+approval from CI. It is manual only: dispatch it on `master` with the
+environment (`dev` or `prod`), and leave `dry_run` checked to build, attest and
+compare without signing.
+
+1. The `build` job runs on the trusted ARM64 runner with FlakeHub cache, builds
+   the EIF, copies `image.eif` and `pcr.json` into a workflow artifact named
+   `opensecret-eif-<env>-<commit>` together with `SHA256SUMS` and
+   `handoff.json`, attests the artifact, and reports whether the approved
+   snapshot already covers the measurements.
+2. With `dry_run` unchecked and new measurements, the `sign` job waits for
+   approval of the protected `pcr-signing` environment. It downloads the
+   attested artifact, resolves the existing signing key through Bitwarden's
+   Secrets Manager action using that environment's read-only machine token, and
+   runs the same `append-pcr-<env>` recipe operators use. The key reaches only
+   the `node pcr_sign.js` child; the verifier checks the signature against the
+   pinned public key before the history is rewritten atomically. Setup is in
+   [`secretspec/README.md`](../secretspec/README.md).
+3. The job commits the two changed approval files to
+   `opensecret/pcr-approval-<env>-<commit>` and prints the compare link. Open
+   the pull request yourself; the approval checks then rebuild and compare on
+   that PR, and the root `pcr-compatibility` check verifies every signature.
+   After merging, mirror the four files to the legacy repository with the
+   manual [compatibility procedure](pcr-compatibility.md) and verify both
+   public locations.
+
+The workflow never creates a GitHub Release or tag: `/releases/latest` and the
+updater `latest.json` belong to the Maple desktop application. It does not
+deploy.
+
+### Deployment handoff from a release run
+
+Deployment verifies an immutable Nix store artifact. Download the run's
+artifact, verify its provenance, add it to the store, and pass the merged
+approval commit:
+
+```sh
+gh run download RUN_ID --name opensecret-eif-prod-COMMIT12 --dir eif-candidate
+gh attestation verify eif-candidate/image.eif --repo MaplePrivacyLabs/Maple
+eif_dir="$(nix store add-path --name opensecret-eif-prod eif-candidate)"
+export OPENSECRET_SOURCE_REF=MERGED_APPROVAL_COMMIT_SHA \
+  OPENSECRET_EIF_DIR="$eif_dir" \
+  OPENSECRET_EIF_SHA256="$(grep ' image.eif$' eif-candidate/SHA256SUMS | cut -d' ' -f1)"
+```
+
+The source ref must be the merged commit whose `pcr<Env>.json` matches the
+artifact's `pcr.json`; the deployment verifier rejects anything else.
 
 ## CI approval checks
 
@@ -38,7 +89,9 @@ There is no standalone backend dev-shell job for it. Neither a matching EIF nor
 green CI verifies both public publication locations, live KMS policy, or the
 running enclave, and neither authorizes deployment. Builds use normal Nix
 cache semantics; this is measurement parity, not a forced independent rebuild.
-CI never updates references or handles signing keys.
+The approval checks never update references or handle signing keys; only the
+reviewer-gated release workflow above does, and it publishes a review branch
+rather than writing to `master`.
 
 ### Binary caches and cold-run validation
 
