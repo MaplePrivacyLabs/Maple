@@ -2,6 +2,7 @@
 """Offline regression tests using existing public signed-history entries."""
 
 import copy
+import hashlib
 import importlib.util
 import json
 from pathlib import Path
@@ -48,6 +49,50 @@ class ValidationTests(unittest.TestCase):
     def test_append_preserves_prefix(self):
         histories = pcr.validate_extension(fixture(2), fixture(1))
         self.assertEqual(len(histories["pcrDevHistory.json"]), 2)
+
+    def test_append_existing_public_signature_atomically(self):
+        with tempfile.TemporaryDirectory() as root:
+            snapshot, history = Path(root) / "pcr.json", Path(root) / "history.json"
+            entries = json.loads(fixture(2)["pcrDevHistory.json"])
+            snapshot.write_bytes(fixture(2)["pcrDev.json"])
+            history.write_bytes(encode(entries[:1]))
+            self.assertTrue(pcr.append_signature(snapshot, history))
+            pcr.append_signature(snapshot, history, entries[1]["signature"])
+            result = pcr.validate_history(history.read_bytes(), "result")
+            self.assertEqual(result[:1], entries[:1])
+            self.assertEqual(result[1]["signature"], entries[1]["signature"])
+            unchanged = history.read_bytes()
+            self.assertFalse(pcr.append_signature(snapshot, history, "unused"))
+            self.assertEqual(history.read_bytes(), unchanged)
+
+    def test_append_rejects_invalid_signature_without_writing(self):
+        with tempfile.TemporaryDirectory() as root:
+            snapshot, history = Path(root) / "pcr.json", Path(root) / "history.json"
+            snapshot.write_bytes(fixture(2)["pcrDev.json"])
+            previous = fixture(1)["pcrDevHistory.json"]
+            history.write_bytes(previous)
+            with self.assertRaises(pcr.ValidationError):
+                pcr.append_signature(snapshot, history, "A" * 128)
+            self.assertEqual(history.read_bytes(), previous)
+            history.unlink()
+            with self.assertRaises(pcr.ValidationError):
+                pcr.append_signature(snapshot, history)
+            self.assertFalse(history.exists())
+
+    def test_append_rejects_symlinks_and_conflicting_measurements(self):
+        with tempfile.TemporaryDirectory() as root:
+            snapshot, history = Path(root) / "pcr.json", Path(root) / "history.json"
+            snapshot.write_bytes(fixture(1)["pcrDev.json"])
+            history.write_bytes(fixture(1)["pcrDevHistory.json"])
+            alias = Path(root) / "alias.json"
+            alias.symlink_to(history)
+            with self.assertRaises(pcr.ValidationError):
+                pcr.append_signature(snapshot, alias)
+            current = json.loads(snapshot.read_bytes())
+            current["PCR1"] = "1" * 96
+            snapshot.write_bytes(encode(current))
+            with self.assertRaisesRegex(pcr.ValidationError, "different measurements"):
+                pcr.append_signature(snapshot, history)
 
     def test_current_can_reference_earlier_signed_entry_for_rollback(self):
         pcr.validate_bundle(fixture(2, current_index=0))
@@ -177,6 +222,50 @@ class PreparationTests(unittest.TestCase):
 
     def prepare(self):
         return pcr.prepare(self.source, self.source_ref, self.legacy, self.legacy_ref)
+
+    def artifact_fixture(self):
+        store = self.source.parent / "fixture-store"
+        output = store / "fixture-eif"
+        output.mkdir(parents=True)
+        (output / "image.eif").write_bytes(b"public synthetic EIF fixture")
+        (output / "pcr.json").write_bytes(self.new_blobs["pcrDev.json"])
+        digest = hashlib.sha256((output / "image.eif").read_bytes()).hexdigest()
+        return store, output, digest
+
+    def test_artifact_handoff_checks_hash_environment_and_measurements(self):
+        store, output, digest = self.artifact_fixture()
+        component = self.source / "services/opensecret"
+        with mock.patch.object(pcr, "NIX_STORE", store):
+            result = pcr.check_artifact(component, self.source_ref, output, digest, "dev")
+            self.assertEqual(result["sha256"], digest)
+            with self.assertRaisesRegex(pcr.ValidationError, "SHA-256"):
+                pcr.check_artifact(component, self.source_ref, output, "0" * 64, "dev")
+            with self.assertRaisesRegex(pcr.ValidationError, "measurements differ"):
+                pcr.check_artifact(component, self.source_ref, output, digest, "prod")
+            (output / "pcr.json").write_bytes(self.old_blobs["pcrDev.json"])
+            with self.assertRaisesRegex(pcr.ValidationError, "measurements differ"):
+                pcr.check_artifact(component, self.source_ref, output, digest, "dev")
+
+    def test_artifact_handoff_rejects_mutable_output_and_dirty_source(self):
+        store, output, digest = self.artifact_fixture()
+        component = self.source / "services/opensecret"
+        with self.assertRaisesRegex(pcr.ValidationError, "immutable Nix store"):
+            pcr.check_artifact(component, self.source_ref, output, digest, "dev")
+        with mock.patch.object(pcr, "NIX_STORE", store):
+            with self.assertRaisesRegex(pcr.ValidationError, "full 40-character"):
+                pcr.check_artifact(component, "master", output, digest, "dev")
+            (component / "unreviewed.txt").write_text("unreviewed source")
+            with self.assertRaisesRegex(pcr.ValidationError, "must be clean"):
+                pcr.check_artifact(component, self.source_ref, output, digest, "dev")
+
+    def test_artifact_handoff_rejects_symlinked_eif(self):
+        store, output, digest = self.artifact_fixture()
+        component = self.source / "services/opensecret"
+        (output / "image.eif").unlink()
+        (output / "image.eif").symlink_to(output / "pcr.json")
+        with mock.patch.object(pcr, "NIX_STORE", store):
+            with self.assertRaisesRegex(pcr.ValidationError, "regular EIF"):
+                pcr.check_artifact(component, self.source_ref, output, digest, "dev")
 
     def test_dry_run_then_exact_unstaged_copy(self):
         source, baseline, _ = self.prepare()

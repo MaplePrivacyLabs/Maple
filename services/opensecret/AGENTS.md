@@ -39,6 +39,13 @@ receives its own key; the backend receives Tinfoil and Kagi. A workspace manager
 owns ports, databases and generated local authentication, not these provider
 values. Follow `docs/local-macos-stack.md` for setup and verification.
 
+Privileged signing uses the separate `secretspec/pcr-signing.toml` manifest,
+`opensecret_pcr_signing` user alias, and existing Just/JS/Python tools. Use
+`just --no-dotenv` for operator recipes. Never resolve signing credentials in
+builds or local-runtime commands. Follow `secretspec/README.md`; the separate
+private deployment automation owns deployment credentials/config/state and
+consumes an immutable approved artifact.
+
 ## Ownership
 
 - `src/main.rs`: configuration, shared state, middleware, and router assembly.

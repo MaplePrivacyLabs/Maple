@@ -49,6 +49,13 @@ decision.
 
 ## Validate an authorized measurement update
 
+Signing setup and credential isolation are documented in
+[`secretspec/README.md`](../secretspec/README.md). Use the dedicated
+`opensecret_pcr_signing` alias and `just --no-dotenv` operator commands.
+Build first without credentials, review measurements, then resolve only the
+existing signing key around the signer. Deployment consumes the resulting
+reviewed immutable artifact; it must not rebuild or sign implicitly.
+
 After reviewing an authorized EIF and running the existing operator PCR update
 and signing steps, run the following from `services/opensecret/`:
 
@@ -59,9 +66,8 @@ OPENSECRET_DEV_POSTGRES=0 OPENSECRET_DEV_ENV=0 OPENSECRET_DEV_CONTAINERS=0 \
   --baseline-dir /absolute/path/to/a/fresh/legacy/worktree
 ```
 
-The existing `update-pcr-dev` and `update-pcr-prod` recipes copy measurements and
-append a signature; successful recipe execution is not signature-verification
-evidence. This additional check verifies all four files, every PCR0 signature
+The `update-pcr-dev` and `update-pcr-prod` recipes copy measurements and
+append a verified signature. This additional check verifies all four files, every PCR0 signature
 against the SDK's existing public key, snapshot membership in the appropriate
 history, and preservation of every prior legacy entry. Snapshot membership may
 refer to an earlier entry to permit a deliberate rollback.

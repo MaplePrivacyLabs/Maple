@@ -1,0 +1,10 @@
+# One existing key signs both histories. This is not local runtime or deployment.
+[project]
+name = "opensecret-pcr-signing"
+revision = "1.0"
+
+[profiles.default]
+SIGNING_PRIVATE_KEY = { description = "Existing SDK-trusted P-384 key, base64 PKCS#8 DER; never generate a replacement", required = true, providers = ["opensecret_pcr_signing"], ref = { item = "signing_private_key" } }
+
+[scopes.signing]
+secrets = ["SIGNING_PRIVATE_KEY"]

@@ -1,0 +1,139 @@
+#!/usr/bin/env python3
+"""Offline operator fixtures. No trusted signing key, BWS login, or EIF build."""
+
+import json
+import os
+from pathlib import Path
+import shutil
+import subprocess
+import sys
+import tempfile
+import tomllib
+import unittest
+
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import ec
+
+from test_pcr_compatibility import SOURCE, fixture
+
+
+class OperatorBoundaryTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(prefix="pcr-operator-")
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.backend = self.root / "backend"
+        self.backend.mkdir()
+        (self.backend / "scripts").mkdir()
+        (self.backend / "secretspec").mkdir()
+        for relative in ("justfile", "pcr_sign.js", "scripts/pcr_compatibility.py", "secretspec/pcr-signing.toml"):
+            shutil.copyfile(SOURCE / relative, self.backend / relative)
+        self.home = self.root / "home"
+        config = self.home / ".config/secretspec"
+        config.mkdir(parents=True)
+        self.values = self.root / "fixture.values"
+        self.values.write_text("signing_private_key=fixture_signing_only\n")
+        (config / "config.toml").write_text(
+            f'[defaults.providers.opensecret_pcr_signing]\nuri = "dotenv:{self.values}"\n'
+        )
+        self.env = {
+            "PATH": os.environ["PATH"], "HOME": str(self.home),
+            "XDG_CONFIG_HOME": str(self.home / ".config"),
+        }
+        for name in ("SIGNING_PRIVATE_KEY", "BWS_ACCESS_TOKEN", "SECRETSPEC_FILE",
+                     "SECRETSPEC_PROVIDER", "BWS_CONFIG_FILE", "AWS_SECRET_ACCESS_KEY",
+                     "TINFOIL_API_KEY", "CLOUDFLARE_API_TOKEN", "NODE_OPTIONS"):
+            self.env[name] = "fixture_ambient_poison"
+        (self.backend / ".env").write_text("INVALID DOTENV CONTENT MUST NOT BE PARSED\n")
+        blobs = fixture(2)
+        for name, data in blobs.items():
+            (self.backend / name).write_bytes(data)
+        for environment in ("Dev", "Prod"):
+            (self.backend / f"pcr{environment}History.json").write_bytes(fixture(1)[f"pcr{environment}History.json"])
+
+    def run_recipe(self, *args):
+        return subprocess.run(
+            ["just", "--no-dotenv", "--justfile", str(self.backend / "justfile"), *args],
+            cwd=self.backend, env=self.env, text=True, capture_output=True, timeout=30,
+        )
+
+    def test_native_signing_resolution_and_verified_public_append(self):
+        # Replay an existing PUBLIC signature, never access the trusted key.
+        # Real Node checks the native SecretSpec child boundary before replaying it.
+        entry = json.loads(fixture(2)["pcrDevHistory.json"])[1]
+        (self.backend / "pcr_sign.js").write_text(
+            "const assert = require('node:assert/strict');\n"
+            "assert.equal(process.env.SIGNING_PRIVATE_KEY, 'fixture_signing_only');\n"
+            "for (const key of ['BWS_ACCESS_TOKEN', 'AWS_SECRET_ACCESS_KEY', "
+            "'TINFOIL_API_KEY', 'CLOUDFLARE_API_TOKEN', 'NODE_OPTIONS']) "
+            "assert.equal(process.env[key], undefined);\n"
+            f"assert.equal(process.argv[3], {json.dumps(entry['PCR0'])});\n"
+            f"console.log({json.dumps(entry['signature'])});\n"
+        )
+        result = self.run_recipe("append-pcr-dev")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        history = json.loads((self.backend / "pcrDevHistory.json").read_bytes())
+        self.assertEqual(len(history), 2)
+        self.assertEqual(history[0], json.loads(fixture(1)["pcrDevHistory.json"])[0])
+        self.assertEqual(history[1]["signature"], entry["signature"])
+        self.assertNotIn("fixture_signing_only", result.stdout + result.stderr)
+        # No provider lookup when the measurements are already approved.
+        self.values.unlink()
+        result = self.run_recipe("append-pcr-dev")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("no key lookup", result.stdout)
+
+    def test_missing_key_is_not_replaced_by_ambient_or_dotenv(self):
+        self.values.write_text("")
+        before = (self.backend / "pcrDevHistory.json").read_bytes()
+        result = self.run_recipe("append-pcr-dev")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual((self.backend / "pcrDevHistory.json").read_bytes(), before)
+        self.assertNotIn("fixture_ambient_poison", result.stdout + result.stderr)
+        self.assertNotIn("generate-keys", result.stdout + result.stderr)
+
+    def test_wrong_key_signature_never_changes_history(self):
+        # Synthetic test key only, unrelated to the SDK-trusted identity.
+        import base64
+        key = ec.generate_private_key(ec.SECP384R1())
+        encoded = base64.b64encode(key.private_bytes(
+            serialization.Encoding.DER, serialization.PrivateFormat.PKCS8,
+            serialization.NoEncryption(),
+        )).decode()
+        self.values.write_text(f"signing_private_key={encoded}\n")
+        before = (self.backend / "pcrDevHistory.json").read_bytes()
+        result = self.run_recipe("append-pcr-dev")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("signature is invalid", result.stderr)
+        self.assertEqual((self.backend / "pcrDevHistory.json").read_bytes(), before)
+        self.assertNotIn(encoded, result.stdout + result.stderr)
+
+    def test_build_does_not_receive_any_operator_credentials(self):
+        binary = self.root / "bin"
+        binary.mkdir()
+        (self.backend / "result").mkdir()
+        (self.backend / "result/pcr.json").write_text("{}\n")
+        mock = binary / "nix"
+        mock.write_text(
+            # Absolute interpreter so the fixture also runs in a Nix sandbox.
+            f"#!{sys.executable}\nimport os\n"
+            "assert not any(key in os.environ for key in "
+            "['SIGNING_PRIVATE_KEY','BWS_ACCESS_TOKEN','AWS_SECRET_ACCESS_KEY',"
+            "'TINFOIL_API_KEY','CLOUDFLARE_API_TOKEN'])\n"
+        )
+        mock.chmod(0o755)
+        self.env["PATH"] = str(binary) + ":" + self.env["PATH"]
+        for environment in ("dev", "prod", "preview"):
+            result = self.run_recipe(f"build-eif-{environment}")
+            self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_manifest_is_separate_from_local_runtime(self):
+        signing = tomllib.loads((SOURCE / "secretspec/pcr-signing.toml").read_text())
+        local = tomllib.loads((SOURCE / "secretspec.toml").read_text())
+        self.assertEqual(signing["project"]["name"], "opensecret-pcr-signing")
+        self.assertEqual(set(signing["profiles"]["default"]), {"SIGNING_PRIVATE_KEY"})
+        self.assertNotIn("SIGNING_PRIVATE_KEY", local["profiles"]["default"])
+
+
+if __name__ == "__main__":
+    unittest.main()

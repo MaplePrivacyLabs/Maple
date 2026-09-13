@@ -95,7 +95,7 @@ function signData(privateKeyData, dataToSign) {
 
     return signature.toString('base64');
   } catch (error) {
-    console.error("Error during signing:", error.message);
+    console.error("Error during signing: invalid key or signing input");
     throw error;
   }
 }
@@ -152,17 +152,18 @@ function main() {
   else if (command === "sign-pcr0") {
     // Get PCR0 value from argument or environment
     const pcr0 = process.argv[3];
-    if (!pcr0) {
-      console.error("Error: PCR0 value is required");
+    if (!pcr0 || !/^[0-9a-f]{96}$/.test(pcr0) || /^0+$/.test(pcr0)) {
+      console.error("Error: PCR0 must be nonzero lowercase SHA-384 hexadecimal");
       console.log("Usage: pcr_sign.js sign-pcr0 <pcr0-value>");
       process.exit(1);
     }
 
     // Get private key from environment
     const privateKeyBase64 = process.env.SIGNING_PRIVATE_KEY;
+    delete process.env.SIGNING_PRIVATE_KEY;
     if (!privateKeyBase64) {
       console.error("Error: SIGNING_PRIVATE_KEY environment variable is not set");
-      console.log("Set it with: export SIGNING_PRIVATE_KEY='your-base64-private-key'");
+      console.error("Use the explicit SecretSpec signing recipe with the existing key.");
       process.exit(1);
     }
 
@@ -173,7 +174,7 @@ function main() {
       // Output only the signature (no comments or extra text)
       console.log(signature);
     } catch (error) {
-      console.error("Error signing PCR0:", error.message);
+      console.error("Error signing PCR0; check the existing signing-key configuration.");
       process.exit(1);
     }
   }

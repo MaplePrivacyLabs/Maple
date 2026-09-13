@@ -7,6 +7,16 @@ without updating approvals; binary caching is separate from signing, release
 publication, and deployment. For authorized signed-PCR updates and legacy client
 compatibility, follow [the PCR publication procedure](pcr-compatibility.md).
 
+## Current operator entrypoints
+
+Use [isolated signing](../secretspec/README.md) for the existing SDK-trusted key.
+The private deployment automation provides native SecretSpec deployment
+entrypoints, per-environment JSON config and separate rollout state. Current
+blue/green and provision EIF paths accept a reviewed source commit, immutable
+Nix output and SHA-256; they do not build or sign. Older low-level infrastructure
+examples below are reference material, not a substitute for these approval,
+credential-isolation and publication gates.
+
 ## CI approval checks
 
 `opensecret-eif.yml` compares generated measurements with the approved JSON
