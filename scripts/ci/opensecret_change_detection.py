@@ -8,7 +8,7 @@ from collections.abc import Iterable
 import sys
 
 
-CHECK_OUTPUTS = ("rust", "nix", "integration", "audit", "pcr", "eif")
+CHECK_OUTPUTS = ("rust", "nix", "integration", "audit", "eif")
 OUTPUTS = (*CHECK_OUTPUTS, "pcr_approvals")
 ALL_CHECKS = frozenset(CHECK_OUTPUTS)
 BACKEND_PREFIX = "services/opensecret/"
@@ -59,7 +59,7 @@ def classify_path(path: str) -> frozenset[str]:
     if path in EIF_CI_INPUTS:
         return frozenset({"eif"})
     if path == ".github/workflows/opensecret-ci.yml":
-        return frozenset({"rust", "nix", "audit", "pcr", "eif"})
+        return frozenset({"rust", "nix", "audit", "eif"})
     if path in SDK_INTEGRATION_FILES or path.startswith(("sdk/src/", "sdk/rust/", "sdk/test/")):
         return frozenset({"integration"})
     if path.startswith(BACKEND_PREFIX):
@@ -67,9 +67,10 @@ def classify_path(path: str) -> frozenset[str]:
         if relative in BACKEND_INERT_FILES or relative.startswith(BACKEND_INERT_PREFIXES):
             return frozenset()
         if relative in APPROVED_PCR_FILES:
-            return frozenset({"pcr", "eif", "pcr_approvals"})
+            return frozenset({"eif", "pcr_approvals"})
         if relative in PCR_INPUTS:
-            return frozenset({"pcr"})
+            # Offline PCR tooling does not require backend builds or a dev shell.
+            return frozenset()
         if relative == "deny.toml":
             return frozenset({"audit"})
         if relative in {"Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "flake.nix", "flake.lock"}:

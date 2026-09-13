@@ -22,7 +22,9 @@ documentation changes skip it. Manual dispatch checks both environments.
 If a PR's changed files cannot be determined, routing fails explicitly instead
 of treating missing information as an approval edit.
 
-Existing signed-history validation is separate. Neither a matching EIF nor
+Signed-history validation remains available through the lightweight
+monorepo-root `pcr-compatibility` Nix check and the manual publication procedure.
+There is no standalone backend dev-shell job for it. Neither a matching EIF nor
 green CI verifies both public publication locations, live KMS policy, or the
 running enclave, and neither authorizes deployment. Builds use normal Nix
 cache semantics; this is measurement parity, not a forced independent rebuild.
@@ -36,6 +38,12 @@ job, which installs Determinate Nix and uses FlakeHub Cache with job-scoped
 equals `github.repository` and the successful selector reports an approval
 JSON edit. This intentionally trusts same-repository PR code to write the
 FlakeHub cache; it does not grant signing or deployment authority.
+Trusted jobs use the organization-configured GitHub-hosted runner
+`ubuntu-24.04-arm64-8core` (Ubuntu 24.04 ARM64, 8 CPU, 32 GB RAM) and allow
+180 minutes for cold kernel builds. Its runner group must allow the public
+Maple repository, with capacity for both dev/prod jobs. The existing
+`ubuntu-latest-8-cores` runner is x86-64, not a substitute. Unprivileged jobs
+retain the standard `ubuntu-24.04-arm` runner and their 90-minute limit.
 
 The trusted job also explicitly enables the GitHub cache and `diff-store: true`,
 so paths fetched from FlakeHub, not just locally built paths, populate that
@@ -63,8 +71,9 @@ custom kernel store path, build duration, and the eventual measurement compariso
 Then verify that an unprivileged fork run can reuse the GitHub cache warmed by
 master. A warm local store, a skipped PR EIF job, or passing workflow unit tests
 does not prove this.
-Diagnose missing cache access separately from PCR mismatch; do not conceal
-it by increasing the timeout or changing measured kernel/build inputs.
+Diagnose missing cache access separately from PCR mismatch. A longer timeout
+provides cold-build headroom, not proof of working cache access or reuse.
+Preserve measured kernel/build inputs when fixing cache availability.
 
 ## Log into AWS CLI 
 

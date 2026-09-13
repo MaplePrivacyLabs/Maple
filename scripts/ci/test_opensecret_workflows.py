@@ -43,7 +43,7 @@ class OpenSecretWorkflowBoundaryTests(unittest.TestCase):
         # checkout's fetch-depth applies to submodule update too. Nix's Git
         # fetcher cannot calculate revCount for a shallow recursive input.
         for workflow_name, job_names in (
-            ("opensecret-ci.yml", ("rust", "nix", "pcr")),
+            ("opensecret-ci.yml", ("rust", "nix")),
             ("opensecret-eif.yml", ("eif", "eif-trusted")),
             ("sdk-integration.yml", ("sdk-integration",)),
         ):
@@ -78,7 +78,12 @@ class OpenSecretWorkflowBoundaryTests(unittest.TestCase):
                         self.assertEqual(job["uses"], "./.github/workflows/opensecret-change-detection.yml")
                         self.assertNotIn("secrets", job)
                         continue
-                    expected_runner = "ubuntu-24.04-arm" if name == "opensecret-eif.yml" else "ubuntu-latest"
+                    expected_runner = "ubuntu-latest"
+                    if name == "opensecret-eif.yml":
+                        expected_runner = {
+                            "eif": "ubuntu-24.04-arm",
+                            "eif-trusted": "ubuntu-24.04-arm64-8core",
+                        }[job_name]
                     self.assertEqual(job["runs-on"], expected_runner)
                     for step in job["steps"]:
                         self.assertNotIn("${{", step.get("run", ""))
@@ -91,6 +96,15 @@ class OpenSecretWorkflowBoundaryTests(unittest.TestCase):
                             self.assertNotIn("ref", step["with"])
                         if action.startswith("DeterminateSystems/nix-installer-action@"):
                             self.assertEqual(step["with"]["github-token"], "")
+
+    def test_custom_hosted_runner_is_registered_for_workflow_lint(self):
+        result = subprocess.run(
+            ["yq", "-o=json", ".", str(ROOT / ".github/actionlint.yaml")],
+            check=True, capture_output=True, text=True,
+        )
+        self.assertEqual(json.loads(result.stdout), {
+            "self-hosted-runner": {"labels": ["ubuntu-24.04-arm64-8core"]},
+        })
 
     def test_ordinary_backend_ci_does_not_publish_or_build_eifs(self):
         config = workflow("opensecret-ci.yml")
@@ -122,7 +136,7 @@ class OpenSecretWorkflowBoundaryTests(unittest.TestCase):
             self.assertEqual(job["strategy"]["matrix"], {"mode": ["dev", "prod"]})
             self.assertIs(job["strategy"]["fail-fast"], False)
             self.assertEqual(job["env"]["EIF_MODE"], "${{ matrix.mode }}")
-            self.assertEqual(job["timeout-minutes"], 90)
+            self.assertEqual(job["timeout-minutes"], 180 if job_name == "eif-trusted" else 90)
             for key in ("OPENSECRET_DEV_POSTGRES", "OPENSECRET_DEV_ENV", "OPENSECRET_DEV_CONTAINERS"):
                 self.assertEqual(job["env"][key], "0")
             commands = [step["run"] for step in job["steps"] if "run" in step]
@@ -252,13 +266,18 @@ class OpenSecretWorkflowBoundaryTests(unittest.TestCase):
         self.assertEqual(audit["command"], "check advisories bans")
         self.assertEqual(audit["arguments"], "--config services/opensecret/deny.toml --all-features --locked")
 
-    def test_pcr_job_only_checks_existing_signed_inputs(self):
-        commands = [step["run"] for step in workflow("opensecret-ci.yml")["jobs"]["pcr"]["steps"]
-                    if "run" in step]
-        self.assertEqual(commands, [
-            "nix develop --no-update-lock-file '.?submodules=1' -c python3 scripts/test_pcr_compatibility.py\n"
-            "nix develop --no-update-lock-file '.?submodules=1' -c python3 scripts/pcr_compatibility.py check .\n"
-        ])
+    def test_backend_ci_has_no_standalone_signed_pcr_job(self):
+        jobs = workflow("opensecret-ci.yml")["jobs"]
+        self.assertEqual(set(jobs), {"changes", "rust", "nix", "audit"})
+        for value in strings(jobs):
+            self.assertNotIn("pcr_compatibility.py", value)
+
+    def test_selector_exports_only_active_checks_and_the_approval_signal(self):
+        expected = {"rust", "nix", "integration", "audit", "eif", "pcr_approvals"}
+        config = workflow("opensecret-change-detection.yml")
+        self.assertEqual(set(OUTPUTS), expected)
+        self.assertEqual(set(config["on"]["workflow_call"]["outputs"]), expected)
+        self.assertEqual(set(config["jobs"]["detect"]["outputs"]), expected)
 
     def test_sdk_integration_uses_checked_out_backend_and_disposable_services(self):
         config = workflow("sdk-integration.yml")
@@ -283,7 +302,7 @@ class OpenSecretWorkflowBoundaryTests(unittest.TestCase):
         self.assertEqual(job["services"]["postgres"]["env"]["POSTGRES_DB"], "opensecret")
 
     def test_selector_failures_or_missing_outputs_cannot_skip_validation(self):
-        for workflow_name, lanes in (("opensecret-ci.yml", {name: name for name in ("rust", "nix", "audit", "pcr")}),
+        for workflow_name, lanes in (("opensecret-ci.yml", {name: name for name in ("rust", "nix", "audit")}),
                                      ("sdk-integration.yml", {"sdk-integration": "integration"})):
             config = workflow(workflow_name)
             self.assertNotIn("paths", config["on"]["pull_request"])
@@ -551,7 +570,7 @@ class OpenSecretDiffSelectionTests(unittest.TestCase):
         runtime = self.commit_file("services/opensecret/src/main.rs", "fn main() {}\n")
         self.assertEqual(self.select("push", docs, runtime), self.expected("rust", "nix", "integration", "eif"))
         pcr = self.commit_file("services/opensecret/pcrDevHistory.json", "[]\n")
-        self.assertEqual(self.select("push", runtime, pcr), self.expected("pcr", "eif", "pcr_approvals"))
+        self.assertEqual(self.select("push", runtime, pcr), self.expected("eif", "pcr_approvals"))
 
     def test_pull_request_uses_merge_base_instead_of_unrelated_base_changes(self):
         master = self.commit_file("services/opensecret/src/main.rs", "fn main() {}\n")
@@ -570,9 +589,9 @@ class OpenSecretDiffSelectionTests(unittest.TestCase):
         runtime = self.commit_file("services/opensecret/src/main.rs", "fn main() {}\n")
         approvals = self.commit_file("services/opensecret/pcrProdHistory.json", "[]\n")
         self.assertEqual(self.select("pull_request", self.base, approvals),
-                         self.expected("rust", "nix", "integration", "pcr", "eif", "pcr_approvals"))
+                         self.expected("rust", "nix", "integration", "eif", "pcr_approvals"))
         self.assertEqual(self.select("pull_request", runtime, approvals),
-                         self.expected("pcr", "eif", "pcr_approvals"))
+                         self.expected("eif", "pcr_approvals"))
 
     def test_deletion_or_rename_out_of_backend_still_selects_contract_checks(self):
         runtime = self.commit_file("services/opensecret/src/main.rs", "fn main() {}\n")
@@ -592,7 +611,7 @@ class OpenSecretDiffSelectionTests(unittest.TestCase):
                     self.git("rm", "services/opensecret/pcrProd.json")
                 self.git("commit", "-qam", "remove approval fixture")
                 self.assertEqual(self.select("pull_request", before, self.git("rev-parse", "HEAD")),
-                                 self.expected("pcr", "eif", "pcr_approvals"))
+                                 self.expected("eif", "pcr_approvals"))
 
     def test_missing_history_manual_event_classifier_failure_and_partial_output_fail_safe(self):
         for event, base, head in (("push", "0" * 40, self.base), ("push", "a" * 40, self.base),

@@ -49,16 +49,16 @@ class OpenSecretChangeDetectionTests(unittest.TestCase):
         for relative in ("pcrDev.json", "pcrDevHistory.json", "pcrProd.json", "pcrProdHistory.json"):
             path = "services/opensecret/" + relative
             with self.subTest(path=path):
-                self.assert_routes([path], "pcr", "eif", "pcr_approvals")
+                self.assert_routes([path], "eif", "pcr_approvals")
                 self.assertEqual(research_routes(path), frozenset())
                 self.assertFalse(affects_agent(path))
 
-    def test_pcr_tooling_and_other_pcr_names_do_not_claim_an_approval_edit(self):
+    def test_pcr_tooling_and_other_pcr_names_do_not_select_backend_jobs(self):
         for relative in ("pcrPreview.json", "pcrPreviewHistory.json", "pcr_sign.js", "pcr_verify.js",
                          "scripts/pcr_compatibility.py", "scripts/test_pcr_compatibility.py"):
             path = "services/opensecret/" + relative
             with self.subTest(path=path):
-                self.assert_routes([path], "pcr")
+                self.assert_routes([path])
                 self.assertEqual(research_routes(path), frozenset())
                 self.assertFalse(affects_agent(path))
 
@@ -87,7 +87,7 @@ class OpenSecretChangeDetectionTests(unittest.TestCase):
             self.assert_routes([path], *CHECK_OUTPUTS)
         self.assertFalse(affects_agent(".gitmodules"))
         self.assertEqual(research_routes(".gitmodules"), frozenset())
-        self.assert_routes([".github/workflows/opensecret-ci.yml"], "rust", "nix", "audit", "pcr", "eif")
+        self.assert_routes([".github/workflows/opensecret-ci.yml"], "rust", "nix", "audit", "eif")
         self.assert_routes([".github/workflows/sdk-integration.yml"], "integration")
 
     def test_eif_workflow_and_comparison_helper_select_only_master_eif_checks(self):
@@ -99,11 +99,11 @@ class OpenSecretChangeDetectionTests(unittest.TestCase):
     def test_mixed_backend_and_approval_changes_retain_both_signals(self):
         self.assert_routes(
             ["services/opensecret/src/main.rs", "services/opensecret/pcrProd.json"],
-            "rust", "nix", "integration", "pcr", "eif", "pcr_approvals",
+            "rust", "nix", "integration", "eif", "pcr_approvals",
         )
         self.assert_routes(
             ["sdk/src/lib/client.ts", "services/opensecret/pcrDevHistory.json"],
-            "integration", "pcr", "eif", "pcr_approvals",
+            "integration", "eif", "pcr_approvals",
         )
 
     def test_unknown_inputs_invalid_paths_and_empty_diff(self):
