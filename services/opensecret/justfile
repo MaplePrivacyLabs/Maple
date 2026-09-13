@@ -4,6 +4,10 @@ set dotenv-load
 # Set the container runtime (docker or podman)
 container := "podman"
 
+# Keep inherited BWS bootstrap/config out of local services. SecretSpec owns
+# provider resolution, required-key checks and scope filtering; CLI flags pin routing.
+local_secrets := "env -u BWS_ACCESS_TOKEN -u BWS_CONFIG_FILE -u BWS_PROFILE -u BWS_SERVER_URL -u SECRETSPEC_BWS_CLI_PATH BRAVE_API_KEY= OPENAI_API_KEY= secretspec --file secretspec.toml --reason 'OpenSecret local development'"
+
 # Set the default recipe to list all available commands
 default:
     @just --list
@@ -210,17 +214,14 @@ build-continuum-proxy-macos:
 
 # BWS resolution is explicit; shell entry and builds never retrieve credentials.
 local-secrets-check scope="local":
-    @python3 scripts/local_secrets.py check {{scope}}
+    @{{local_secrets}} check --provider opensecret_local --profile default --scope {{quote(scope)}} --no-prompt
 
 local-secrets-login:
-    @python3 scripts/local_secrets.py login
-
-local-secrets-test:
-    python3 -m unittest discover -s scripts -p 'test_local_secrets.py' -v
+    @{{local_secrets}} config provider login opensecret_local
 
 # Resolve only the Continuum credential before launching the local proxy.
 run-continuum-proxy-macos:
-    @python3 scripts/local_secrets.py run continuum -- just _run-continuum-proxy-macos
+    @{{local_secrets}} run --provider opensecret_local --profile default --scope continuum -- just --no-dotenv _run-continuum-proxy-macos
 
 [private]
 _run-continuum-proxy-macos:
@@ -238,7 +239,7 @@ _run-continuum-proxy-macos:
 
 # Resolve Tinfoil and Kagi for the backend; no provider-key dotenv/file fallback.
 run-local-backend-macos:
-    @python3 scripts/local_secrets.py run backend -- just _run-local-backend-macos
+    @{{local_secrets}} run --provider opensecret_local --profile default --scope backend -- just --no-dotenv _run-local-backend-macos
 
 [private]
 _run-local-backend-macos:

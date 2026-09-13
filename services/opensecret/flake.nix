@@ -543,15 +543,6 @@
         checks = {
           entrypoint-entropy-preflight = entrypointEntropyPreflight;
           kernel-source-pin = kernelSourcePin;
-          local-secrets = pkgs.runCommand "opensecret-local-secrets-tests" {
-            nativeBuildInputs = [ pkgs.python3 ];
-          } ''
-            cp ${./scripts/local_secrets.py} local_secrets.py
-            cp ${./scripts/test_local_secrets.py} test_local_secrets.py
-            cp ${./secretspec.toml} secretspec.toml
-            python3 -m unittest -v test_local_secrets
-            touch $out
-          '';
         } // pkgs.lib.optionalAttrs pkgs.stdenv.isLinux {
           kernel-security-invariants = kernelSecurityInvariants;
           nitro-helper = nitro-bins;
