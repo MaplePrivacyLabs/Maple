@@ -448,6 +448,106 @@ describe("Transport V2 protocol engine", () => {
     client.dispose();
   });
 
+  test.each([
+    ["establish", "global"],
+    ["restore", "global"],
+    ["establish", "injected"],
+    ["restore", "injected"]
+  ] as const)("preserves the fetch receiver for %s with %s fetch", async (mode, fetchSource) => {
+    const challenge = new Uint8Array(32).fill(0x81);
+    const clientKeyPair = nacl.box.keyPair.fromSecretKey(new Uint8Array(32).fill(0x22));
+    const serverSecret = new Uint8Array(32).fill(0x33);
+    const serverPublicKey = nacl.scalarMult.base(serverSecret);
+    const keys = await deriveTransportV2SessionKeys(
+      nacl.scalarMult(serverSecret, clientKeyPair.publicKey),
+      { challenge, clientPublicKey: clientKeyPair.publicKey, serverPublicKey }
+    );
+    const originalFetch = globalThis.fetch;
+    const injectedReceiver = {};
+    const controller = new AbortController();
+    const requests: string[] = [];
+    const fetchImplementation = mock(async function (
+      this: unknown,
+      input: string | URL | Request,
+      init?: RequestInit
+    ) {
+      // Native browser fetch accepts a detached/global call, but rejects a
+      // client object as its receiver. Arrow-function mocks cannot detect this.
+      if (fetchSource === "global" && this !== undefined && this !== globalThis) {
+        throw new TypeError("Can only call Window.fetch on instances of Window");
+      }
+      if (fetchSource === "injected") expect(this).toBe(injectedReceiver);
+      const url = input.toString();
+      requests.push(url);
+      expect(init?.credentials).toBe("omit");
+      expect(init?.redirect).toBe("error");
+      if (url.endsWith("/v2/session")) {
+        expect(init?.signal).toBeInstanceOf(AbortSignal);
+        return Response.json({
+          version: 2,
+          session_id: keys.sessionId,
+          attestation_document: "verified-by-test-boundary",
+          expires_in_seconds: SESSION_LIFETIME_SECONDS
+        });
+      }
+      expect(url).toBe("https://enclave.example.test/v2/request");
+      expect(init?.signal).toBe(controller.signal);
+      return framedResponse(keys, new Uint8Array(init?.body as Uint8Array).slice(0, 16), [
+        responsePlaintext("start"),
+        responsePlaintext("chunk", utf8("receiver preserved")),
+        responsePlaintext("end")
+      ]);
+    });
+    let client: TransportV2Client | undefined;
+    try {
+      globalThis.fetch = (
+        fetchSource === "global"
+          ? fetchImplementation
+          : () => {
+              throw new Error("global fetch must not replace an injected implementation");
+            }
+      ) as typeof fetch;
+      const options = {
+        apiUrl: "https://enclave.example.test",
+        ...(fetchSource === "injected"
+          ? { fetch: fetchImplementation.bind(injectedReceiver) as typeof fetch }
+          : {})
+      };
+      client =
+        mode === "establish"
+          ? await TransportV2Client.establish(options, {
+              randomBytes: () => new Uint8Array(challenge),
+              generateKeyPair: () => ({
+                publicKey: new Uint8Array(clientKeyPair.publicKey),
+                secretKey: new Uint8Array(clientKeyPair.secretKey)
+              }),
+              verifyDocument: async () => new Uint8Array(serverPublicKey)
+            })
+          : TransportV2Client.restore(options, {
+              version: 2,
+              session_id: keys.sessionId,
+              routing_key: encodeCanonicalBase64(challenge),
+              request_key: encodeCanonicalBase64(keys.requestKey),
+              response_key: encodeCanonicalBase64(keys.responseKey),
+              expires_at_ms: Date.now() + 60_000
+            });
+
+      const response = await client.request(
+        { method: "GET", target: "/protected/user" },
+        controller.signal
+      );
+      expect(await consume(response.body)).toBe("receiver preserved");
+      expect(requests).toEqual(
+        (mode === "establish" ? ["/v2/session", "/v2/request"] : ["/v2/request"]).map(
+          (path) => `https://enclave.example.test${path}`
+        )
+      );
+    } finally {
+      globalThis.fetch = originalFetch;
+      client?.dispose();
+    }
+  });
+
   test("runs Nitro authentication and the configured PCR gate before returning a server key", async () => {
     const challenge = new Uint8Array(32).fill(0x82);
     const clientPublicKey = new Uint8Array(32).fill(0x83);

@@ -241,7 +241,7 @@ export class TransportV2Client {
   ): Promise<TransportV2Client> {
     const establishmentStartedAtMs = Date.now();
     const apiUrl = canonicalizeTransportV2ApiUrl(options.apiUrl);
-    const fetchImplementation = options.fetch ?? globalThis.fetch;
+    const fetchImplementation = options.fetch ?? globalThis.fetch.bind(globalThis);
     const policy = snapshotPcrConfig(options.pcrConfig);
     const challenge = dependencies.randomBytes(CHALLENGE_BYTES);
     if (challenge.byteLength !== CHALLENGE_BYTES) {
@@ -355,7 +355,7 @@ export class TransportV2Client {
   ): TransportV2Client {
     return new TransportV2Client(
       canonicalizeTransportV2ApiUrl(options.apiUrl),
-      options.fetch ?? globalThis.fetch,
+      options.fetch ?? globalThis.fetch.bind(globalThis),
       TransportV2Session.restore(state, nowMs)
     );
   }
