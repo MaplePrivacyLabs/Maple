@@ -28,8 +28,8 @@ name = "maple-proxy"
 path = "src/main.rs"
 
 [dependencies]
-# Exercise the in-tree Transport V2 SDK until its independent publication.
-maple-sdk = { version = "4.0.0", path = "../sdk/rust" }
+# Keep the SDK requirement compatible with the embedding application's pin.
+maple-sdk = "4.0.0"
 
 # Web server
 axum = { version = "0.8.4", features = ["http2", "macros"] }

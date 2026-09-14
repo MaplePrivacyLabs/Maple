@@ -1442,6 +1442,8 @@ dependencies = [
 [[package]]
 name = "maple-sdk"
 version = "4.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f6a039e679ce7e2217d8485aa051b0070d85e57d7af3a6e39136eab4c5b7ccad"
 dependencies = [
  "aes-gcm",
  "anyhow",

@@ -52,7 +52,7 @@ reqwest = { version = "0.13", features = ["stream"] }
 futures-util = "0.3"
 sha2 = "0.10"
 rand = "0.8.6"
-maple-sdk = { version = "=4.0.0", path = "../../../../sdk/rust" }
+maple-sdk = "=4.0.0"
 
 [target.'cfg(any(target_os = "macos", target_os = "windows", target_os = "linux", target_os = "android"))'.dependencies]
 # PDF OCR uses Maple's explicitly packaged ONNX Runtime. The loader policy
