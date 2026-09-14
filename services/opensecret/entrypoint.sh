@@ -913,7 +913,7 @@ if [ "$APP_MODE" != "local" ]; then
 
     log "Continuum Proxy API key retrieved, decrypted, and decoded successfully"
 
-    log "Starting continuum-proxy on port 8092 with request-scoped prompt caching"
+    log "Starting continuum-proxy on port 8092 with user-scoped salts and per-request fallback"
     run_forever continuum_proxy /app/continuum-proxy --port 8092 --apiKey "$continuum_proxy_api_key" &
 
     # Wait for the proxy to start

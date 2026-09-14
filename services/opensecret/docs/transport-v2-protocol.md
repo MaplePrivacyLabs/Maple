@@ -294,6 +294,10 @@ salt gets the proxy's fresh random salt instead of a shared fallback. Salting
 partitions cached KV prefixes, not complete generated responses, and does not
 guarantee cache residency or retention.
 
+Privatemode's cache-affinity shard header includes a stable hash prefix of the
+salt, allowing its API gateway to correlate requests while that namespace is
+unchanged. Cache isolation therefore does not provide request unlinkability.
+
 Legacy V1 clients do not supply a cache root. OpenSecret derives their Continuum
 salts with the Continuum label and verified user UUID, keyed by a random
 32-byte secret held only in the backend process. Those salts remain stable
