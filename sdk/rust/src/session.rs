@@ -2,6 +2,7 @@ use crate::error::{Error, Result};
 use crate::types::{SessionState, TokenPair};
 use std::sync::{Arc, RwLock};
 use uuid::Uuid;
+use zeroize::Zeroizing;
 
 #[derive(Debug, Clone)]
 pub(crate) struct CredentialSnapshot {
@@ -10,6 +11,19 @@ pub(crate) struct CredentialSnapshot {
     pub(crate) generation: u64,
     pub(crate) token_generation: u64,
     pub(crate) api_key_generation: u64,
+}
+
+/// A caller-selected credential that must still be the exact credential held
+/// by this manager when a Transport V2 request is admitted.
+///
+/// Values are borrowed so this type never creates another long-lived secret
+/// copy. The comparison is made while holding the credential read lock, and
+/// the admission closure runs under that same lock.
+pub(crate) enum CredentialFence<'a> {
+    Generation { generation: u64 },
+    AccessToken { generation: u64, value: &'a str },
+    ApiKey { generation: u64, value: &'a str },
+    RefreshToken { generation: u64, value: &'a str },
 }
 
 #[derive(Debug, Default)]
@@ -147,6 +161,24 @@ impl SessionManager {
         Ok(true)
     }
 
+    pub(crate) fn clear_tokens_if_generation(
+        &self,
+        expected_token_generation: u64,
+    ) -> Result<bool> {
+        let mut credentials = self.credentials.write().map_err(|e| {
+            Error::Authentication(format!("Failed to acquire credentials write lock: {}", e))
+        })?;
+
+        if credentials.token_generation != expected_token_generation {
+            return Ok(false);
+        }
+
+        credentials.tokens = None;
+        credentials.generation = credentials.generation.wrapping_add(1);
+        credentials.token_generation = credentials.token_generation.wrapping_add(1);
+        Ok(true)
+    }
+
     pub(crate) fn get_credential_snapshot(&self) -> Result<CredentialSnapshot> {
         let credentials = self.credentials.read().map_err(|e| {
             Error::Authentication(format!("Failed to acquire credentials read lock: {}", e))
@@ -159,6 +191,123 @@ impl SessionManager {
             token_generation: credentials.token_generation,
             api_key_generation: credentials.api_key_generation,
         })
+    }
+
+    pub(crate) fn credential_generation(&self) -> Result<u64> {
+        self.credentials
+            .read()
+            .map(|credentials| credentials.generation)
+            .map_err(|_| Error::Authentication("Credential state is unavailable".to_string()))
+    }
+
+    pub(crate) fn anonymous_generation(&self) -> Result<u64> {
+        let credentials = self.credentials.read().map_err(|e| {
+            Error::Authentication(format!("Failed to acquire credentials read lock: {}", e))
+        })?;
+        if credentials.tokens.is_some() || credentials.api_key.is_some() {
+            return Err(Error::Authentication(
+                "Native OAuth handoff requires an anonymous client".to_string(),
+            ));
+        }
+        Ok(credentials.generation)
+    }
+
+    /// Linearize one request admission against synchronous credential changes.
+    ///
+    /// The closure must be synchronous and must not call back into this
+    /// manager. Transport V2 uses it only to allocate a one-time request ID and
+    /// seal the request. Once the closure returns successfully, the request is
+    /// considered admitted: a later credential change does not cancel work
+    /// already sealed for transmission.
+    pub(crate) fn admit_if_credential_is_current<T>(
+        &self,
+        fence: Option<CredentialFence<'_>>,
+        admit: impl FnOnce() -> Result<T>,
+    ) -> Result<T> {
+        let Some(fence) = fence else {
+            return admit();
+        };
+        let credentials = self.credentials.read().map_err(|e| {
+            Error::Authentication(format!("Failed to acquire credentials read lock: {}", e))
+        })?;
+        let is_current = match fence {
+            CredentialFence::Generation { generation } => credentials.generation == generation,
+            CredentialFence::AccessToken { generation, value } => {
+                credentials.token_generation == generation
+                    && credentials
+                        .tokens
+                        .as_ref()
+                        .is_some_and(|tokens| tokens.access_token == value)
+            }
+            CredentialFence::ApiKey { generation, value } => {
+                credentials.api_key_generation == generation
+                    && credentials.api_key.as_deref() == Some(value)
+            }
+            CredentialFence::RefreshToken { generation, value } => {
+                credentials.token_generation == generation
+                    && credentials
+                        .tokens
+                        .as_ref()
+                        .and_then(|tokens| tokens.refresh_token.as_deref())
+                        == Some(value)
+            }
+        };
+        if !is_current {
+            return Err(Error::Authentication(
+                "Credential changed before Transport V2 request admission".to_string(),
+            ));
+        }
+        admit()
+    }
+
+    /// Linearize an anonymous-only operation against every credential change.
+    ///
+    /// Native OAuth handoff prepares a request identifier before the hosted
+    /// browser flow begins. The exact same anonymous authority must still be
+    /// current when that identifier is later sealed for redemption.
+    pub(crate) fn admit_if_anonymous_generation_is_current<T>(
+        &self,
+        expected_generation: u64,
+        admit: impl FnOnce() -> Result<T>,
+    ) -> Result<T> {
+        let credentials = self.credentials.read().map_err(|e| {
+            Error::Authentication(format!("Failed to acquire credentials read lock: {}", e))
+        })?;
+        if credentials.generation != expected_generation
+            || credentials.tokens.is_some()
+            || credentials.api_key.is_some()
+        {
+            return Err(Error::Authentication(
+                "Authentication changed during native OAuth handoff".to_string(),
+            ));
+        }
+        admit()
+    }
+
+    pub(crate) fn set_tokens_if_anonymous_generation(
+        &self,
+        expected_generation: u64,
+        access_token: String,
+        refresh_token: String,
+    ) -> Result<bool> {
+        let mut access_token = Zeroizing::new(access_token);
+        let mut refresh_token = Zeroizing::new(refresh_token);
+        let mut credentials = self.credentials.write().map_err(|e| {
+            Error::Authentication(format!("Failed to acquire credentials write lock: {}", e))
+        })?;
+        if credentials.generation != expected_generation
+            || credentials.tokens.is_some()
+            || credentials.api_key.is_some()
+        {
+            return Ok(false);
+        }
+        credentials.tokens = Some(TokenPair {
+            access_token: std::mem::take(&mut *access_token),
+            refresh_token: Some(std::mem::take(&mut *refresh_token)),
+        });
+        credentials.generation = credentials.generation.wrapping_add(1);
+        credentials.token_generation = credentials.token_generation.wrapping_add(1);
+        Ok(true)
     }
 
     pub fn get_tokens(&self) -> Result<Option<TokenPair>> {
@@ -311,5 +460,99 @@ mod tests {
         // Clear tokens
         manager.clear_tokens().unwrap();
         assert!(manager.get_tokens().unwrap().is_none());
+    }
+
+    #[test]
+    fn conditional_token_clear_never_removes_newer_credentials() {
+        let manager = SessionManager::new();
+        manager
+            .set_tokens("old-access".to_string(), Some("old-refresh".to_string()))
+            .unwrap();
+        let old_generation = manager.get_credential_snapshot().unwrap().token_generation;
+
+        manager
+            .set_tokens("new-access".to_string(), Some("new-refresh".to_string()))
+            .unwrap();
+
+        assert!(!manager.clear_tokens_if_generation(old_generation).unwrap());
+        assert_eq!(
+            manager.get_access_token().unwrap().as_deref(),
+            Some("new-access")
+        );
+        let current_generation = manager.get_credential_snapshot().unwrap().token_generation;
+        assert!(manager
+            .clear_tokens_if_generation(current_generation)
+            .unwrap());
+        assert!(manager.get_tokens().unwrap().is_none());
+    }
+
+    #[test]
+    fn conditional_full_clear_never_removes_newer_credentials() {
+        let manager = SessionManager::new_with_api_key("old-key".to_string());
+        manager
+            .set_tokens("old-access".to_string(), Some("old-refresh".to_string()))
+            .unwrap();
+        let old_generation = manager.get_credential_snapshot().unwrap().generation;
+
+        manager.set_api_key("new-key".to_string()).unwrap();
+        manager
+            .set_tokens("new-access".to_string(), Some("new-refresh".to_string()))
+            .unwrap();
+
+        assert!(!manager.clear_all_if_generation(old_generation).unwrap());
+        assert_eq!(
+            manager.get_access_token().unwrap().as_deref(),
+            Some("new-access")
+        );
+        assert_eq!(manager.get_api_key().unwrap().as_deref(), Some("new-key"));
+    }
+
+    #[test]
+    fn native_handoff_tokens_install_only_into_the_same_anonymous_generation() {
+        let manager = SessionManager::new();
+        let anonymous_generation = manager.get_credential_snapshot().unwrap().generation;
+
+        assert!(manager
+            .set_tokens_if_anonymous_generation(
+                anonymous_generation,
+                "handoff-access".to_string(),
+                "handoff-refresh".to_string(),
+            )
+            .unwrap());
+        let tokens = manager.get_tokens().unwrap().unwrap();
+        assert_eq!(tokens.access_token, "handoff-access");
+        assert_eq!(tokens.refresh_token.as_deref(), Some("handoff-refresh"));
+
+        assert!(!manager
+            .set_tokens_if_anonymous_generation(
+                anonymous_generation,
+                "stale-access".to_string(),
+                "stale-refresh".to_string(),
+            )
+            .unwrap());
+        assert_eq!(
+            manager.get_access_token().unwrap().as_deref(),
+            Some("handoff-access")
+        );
+    }
+
+    #[test]
+    fn native_handoff_tokens_do_not_replace_newer_api_key_state() {
+        let manager = SessionManager::new();
+        let anonymous_generation = manager.get_credential_snapshot().unwrap().generation;
+        manager.set_api_key("new-api-key".to_string()).unwrap();
+
+        assert!(!manager
+            .set_tokens_if_anonymous_generation(
+                anonymous_generation,
+                "stale-access".to_string(),
+                "stale-refresh".to_string(),
+            )
+            .unwrap());
+        assert!(manager.get_tokens().unwrap().is_none());
+        assert_eq!(
+            manager.get_api_key().unwrap().as_deref(),
+            Some("new-api-key")
+        );
     }
 }

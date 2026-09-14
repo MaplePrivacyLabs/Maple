@@ -1,6 +1,5 @@
 import { afterEach, beforeEach, expect, mock, test } from "bun:test";
-import { decryptMessage, encryptMessage } from "../../encryption";
-import { cacheAttestationSessionForTesting } from "../../getAttestation";
+import { encodeURLSafe } from "@stablelib/base64";
 import type { PcrConfig } from "../../pcr";
 import {
   getPlatformApiUrl,
@@ -10,40 +9,60 @@ import {
   updatePushSettings,
   type PushSettings
 } from "../../platformApi";
+import { clearTransportV2Credentials, installTransportV2Credentials } from "../../transportV2/auth";
+import {
+  transportV2Runtime,
+  type TransportV2RuntimeRequest,
+  type TransportV2RuntimeResponse
+} from "../../transportV2/runtime";
 
-const sessionKey = new Uint8Array(32).fill(7);
-const sessionId = "push-settings-session-id";
-const accessToken = "push-settings-access-token";
 const platformApiUrl = "https://platform.example.com";
-const verifiedPcr0 =
-  "eeddbb58f57c38894d6d5af5e575fbe791c5bf3bbcfb5df8da8cfcf0c2e1da1913108e6a762112444740b88c163d7f4b";
-const pcrConfig: PcrConfig = { pcr0Values: [verifiedPcr0], remoteAttestation: false };
-
-const originalFetch = globalThis.fetch;
+const pcrConfig: PcrConfig = { environment: "development", remoteAttestation: false };
 const originalPlatformApiUrl = getPlatformApiUrl();
 const originalPlatformPcrConfig = getPlatformPcrConfig();
+const originalRuntimeRequest = transportV2Runtime.request;
 
-beforeEach(async () => {
-  window.localStorage.clear();
-  window.sessionStorage.clear();
-  window.localStorage.setItem("access_token", accessToken);
+function segment(value: unknown): string {
+  return encodeURLSafe(new TextEncoder().encode(JSON.stringify(value))).replace(/=+$/u, "");
+}
+
+function token(audience: string): string {
+  return `${segment({ alg: "ES256K", typ: "JWT" })}.${segment({
+    aud: audience,
+    sub: "platform-developer",
+    exp: 4_000_000_000,
+    tf: 2
+  })}.${segment("signature")}`;
+}
+
+function exchange(response: Response): TransportV2RuntimeResponse {
+  return { response, rememberOAuthContinuation: () => {} };
+}
+
+beforeEach(() => {
+  globalThis.localStorage.clear();
+  globalThis.sessionStorage.clear();
+  clearTransportV2Credentials(platformApiUrl);
+  transportV2Runtime.clear();
   setPlatformApiUrl(platformApiUrl, pcrConfig);
-  await cacheAttestationSessionForTesting(
+  installTransportV2Credentials(
     platformApiUrl,
-    pcrConfig,
-    { sessionKey, sessionId },
-    verifiedPcr0
+    "platform",
+    token("urn:opensecret:internal:transport-v2:platform:access-token"),
+    token("urn:opensecret:internal:transport-v2:platform:refresh-token")
   );
 });
 
 afterEach(() => {
-  globalThis.fetch = originalFetch;
+  transportV2Runtime.request = originalRuntimeRequest;
+  transportV2Runtime.clear();
+  clearTransportV2Credentials(platformApiUrl);
   setPlatformApiUrl(originalPlatformApiUrl, originalPlatformPcrConfig);
-  window.localStorage.clear();
-  window.sessionStorage.clear();
+  globalThis.localStorage.clear();
+  globalThis.sessionStorage.clear();
 });
 
-test("getPushSettings calls the project push settings endpoint", async () => {
+test("getPushSettings calls the project push settings endpoint through V2", async () => {
   const responseSettings: PushSettings = {
     encrypted_preview_enabled: true,
     ios: {
@@ -59,34 +78,22 @@ test("getPushSettings calls the project push settings endpoint", async () => {
       package_name: "ai.trymaple.android"
     }
   };
+  let seen: TransportV2RuntimeRequest | undefined;
+  transportV2Runtime.request = mock(async (input) => {
+    seen = input;
+    return exchange(Response.json(responseSettings));
+  });
 
-  globalThis.fetch = mock(async (input: string | URL | Request, init?: RequestInit) => {
-    expect(input.toString()).toBe(
-      `${platformApiUrl}/platform/orgs/org-123/projects/project-456/settings/push`
-    );
-    expect(init?.method).toBe("GET");
-    expect(init?.headers).toMatchObject({
-      Authorization: `Bearer ${accessToken}`,
-      "x-session-id": sessionId
-    });
-
-    return new Response(
-      JSON.stringify({
-        encrypted: encryptMessage(sessionKey, JSON.stringify(responseSettings))
-      }),
-      {
-        status: 200,
-        headers: { "Content-Type": "application/json" }
-      }
-    );
-  }) as typeof fetch;
-
-  const settings = await getPushSettings("org-123", "project-456");
-
-  expect(settings).toEqual(responseSettings);
+  await expect(getPushSettings("org-123", "project-456")).resolves.toEqual(responseSettings);
+  expect(seen?.request).toMatchObject({
+    method: "GET",
+    target: "/platform/orgs/org-123/projects/project-456/settings/push",
+    body: undefined,
+    credential: { kind: "bearer" }
+  });
 });
 
-test("updatePushSettings sends encrypted push settings to the project endpoint", async () => {
+test("updatePushSettings puts JSON bytes inside the authenticated V2 request", async () => {
   const requestSettings: PushSettings = {
     encrypted_preview_enabled: true,
     ios: {
@@ -102,35 +109,22 @@ test("updatePushSettings sends encrypted push settings to the project endpoint",
       package_name: "ai.trymaple.android"
     }
   };
+  let seenBody: Uint8Array | undefined;
+  let seen: TransportV2RuntimeRequest | undefined;
+  transportV2Runtime.request = mock(async (input) => {
+    seen = input;
+    seenBody = input.request.body ? new Uint8Array(input.request.body) : undefined;
+    return exchange(Response.json(requestSettings));
+  });
 
-  globalThis.fetch = mock(async (input: string | URL | Request, init?: RequestInit) => {
-    expect(input.toString()).toBe(
-      `${platformApiUrl}/platform/orgs/org-123/projects/project-456/settings/push`
-    );
-    expect(init?.method).toBe("PUT");
-    expect(init?.headers).toMatchObject({
-      Authorization: `Bearer ${accessToken}`,
-      "x-session-id": sessionId
-    });
-
-    const requestBody = JSON.parse(String(init?.body)) as { encrypted: string };
-    const decryptedRequest = JSON.parse(
-      decryptMessage(sessionKey, requestBody.encrypted)
-    ) as PushSettings;
-    expect(decryptedRequest).toEqual(requestSettings);
-
-    return new Response(
-      JSON.stringify({
-        encrypted: encryptMessage(sessionKey, JSON.stringify(requestSettings))
-      }),
-      {
-        status: 200,
-        headers: { "Content-Type": "application/json" }
-      }
-    );
-  }) as typeof fetch;
-
-  const settings = await updatePushSettings("org-123", "project-456", requestSettings);
-
-  expect(settings).toEqual(requestSettings);
+  await expect(updatePushSettings("org-123", "project-456", requestSettings)).resolves.toEqual(
+    requestSettings
+  );
+  expect(seen?.request).toMatchObject({
+    method: "PUT",
+    target: "/platform/orgs/org-123/projects/project-456/settings/push",
+    headers: [{ name: "content-type", value: "application/json" }],
+    credential: { kind: "bearer" }
+  });
+  expect(JSON.parse(new TextDecoder().decode(seenBody))).toEqual(requestSettings);
 });

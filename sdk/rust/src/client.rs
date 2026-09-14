@@ -1,38 +1,43 @@
 use crate::{
-    attestation::{AttestationDocument, AttestationVerifier},
-    cbor::{self, Value as CborValue},
-    crypto::{self},
     error::{Error, Result},
     pcr::{Pcr0Environment, Pcr0TrustPolicy},
-    session::SessionManager,
+    session::{CredentialFence, SessionManager},
+    transport_v2::{
+        client::{ResponseEventStream, TransportV2Client, TransportV2Session},
+        envelope::{CacheNamespaceRoot, Credential, CredentialKind, LogicalHeader, LogicalRequest},
+        framing::ResponseEvent,
+        TransportV2Error, ROUTING_KEY_HEADER,
+    },
     types::*,
 };
-use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
+use base64::{
+    engine::general_purpose::{STANDARD as BASE64, URL_SAFE_NO_PAD},
+    Engine,
+};
 use bytes::{Bytes, BytesMut};
 use futures::{Stream, StreamExt};
 use http::{header, HeaderMap as HttpHeaderMap, Request as HttpRequest, Response as HttpResponse};
+use p256::elliptic_curve::rand_core::{OsRng, RngCore};
 use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
-use reqwest::{
-    header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE},
-    Client,
-};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::{
-    net::IpAddr,
+    fmt,
     pin::Pin,
     sync::{
         atomic::{AtomicUsize, Ordering},
-        Arc,
+        Arc, RwLock,
     },
+    time::{SystemTime, UNIX_EPOCH},
 };
 use tokio::sync::Mutex;
 use uuid::Uuid;
+use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
 /// A decrypted response body returned by [`OpenSecretClient::send_inference_request`].
 ///
-/// Ordinary responses contain one chunk. Server-sent event responses remain a
-/// stream, with each encrypted `data:` field decrypted without interpreting its
-/// payload as JSON.
+/// Ordinary responses contain one or more raw chunks. Server-sent event
+/// responses remain incremental and are forwarded without interpreting their
+/// payloads as JSON.
 pub type OpenSecretResponseBody = Pin<Box<dyn Stream<Item = Result<Bytes>> + Send + 'static>>;
 
 /// A caller-owned request to an allowed OpenSecret inference endpoint.
@@ -79,29 +84,240 @@ impl InferenceSendBudget {
     }
 }
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct EncryptedBody {
-    encrypted: String,
+struct LogicalRequestOptions<'a> {
+    include_cache_namespace: bool,
+    inference_send_budget: Option<&'a InferenceSendBudget>,
 }
 
-const MAX_INFERENCE_SSE_LINE_BYTES: usize = 16 * 1024 * 1024;
+type TransportSessionSlot = Arc<RwLock<Option<Arc<TransportV2Session>>>>;
+type SessionRetirement = (TransportSessionSlot, Arc<TransportV2Session>);
+
+const MAX_NATIVE_OAUTH_HANDOFF_GRANT_BYTES: usize = 4 * 1024;
+
+/// One exact Transport V2 request reserved for native OAuth redemption.
+///
+/// This handle is intentionally opaque and non-Clone. Its advertised IDs are
+/// public routing values; session keys and the prepared request capability
+/// never leave the SDK.
+pub struct PreparedNativeOAuthHandoff {
+    session: Arc<TransportV2Session>,
+    prepared_request: crate::transport_v2::client::PreparedRequestId,
+    session_id: String,
+    request_id: String,
+    credential_generation: u64,
+}
+
+impl PreparedNativeOAuthHandoff {
+    pub fn session_id(&self) -> &str {
+        &self.session_id
+    }
+
+    pub fn request_id(&self) -> &str {
+        &self.request_id
+    }
+
+    /// Compares the unverified routing hints carried by a handoff grant with
+    /// this prepared request.
+    ///
+    /// This is only a local denial-of-service filter. The enclave remains the
+    /// authority for the grant signature, expiry, principal, and target
+    /// binding before it authenticates the session.
+    pub fn matches_untrusted_grant_target(&self, grant: &NativeOAuthHandoffGrant) -> bool {
+        grant.untrusted_target().is_some_and(|target| {
+            target.session_id == self.session_id && target.request_id == self.request_id
+        })
+    }
+}
+
+impl fmt::Debug for PreparedNativeOAuthHandoff {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("PreparedNativeOAuthHandoff")
+            .field("session_id", &self.session_id)
+            .field("request_id", &self.request_id)
+            .finish_non_exhaustive()
+    }
+}
+
+/// A short-lived signed grant minted by the authenticated hosted browser.
+pub struct NativeOAuthHandoffGrant(Zeroizing<String>);
+
+#[derive(Deserialize)]
+struct UntrustedNativeOAuthHandoffTarget {
+    #[serde(rename = "sid")]
+    session_id: String,
+    #[serde(rename = "rid")]
+    request_id: String,
+}
+
+impl NativeOAuthHandoffGrant {
+    pub fn new(value: impl Into<String>) -> Result<Self> {
+        let value = value.into();
+        if value.is_empty() || value.len() > MAX_NATIVE_OAUTH_HANDOFF_GRANT_BYTES {
+            return Err(Error::Authentication(
+                "Native OAuth handoff grant is invalid".to_string(),
+            ));
+        }
+        let segments = value.split('.').collect::<Vec<_>>();
+        if segments.len() != 3
+            || segments.iter().any(|segment| {
+                segment.is_empty()
+                    || URL_SAFE_NO_PAD
+                        .decode(segment)
+                        .ok()
+                        .is_none_or(|decoded| URL_SAFE_NO_PAD.encode(decoded) != *segment)
+            })
+        {
+            return Err(Error::Authentication(
+                "Native OAuth handoff grant is invalid".to_string(),
+            ));
+        }
+        Ok(Self(Zeroizing::new(value)))
+    }
+
+    fn as_str(&self) -> &str {
+        self.0.as_str()
+    }
+
+    fn untrusted_target(&self) -> Option<UntrustedNativeOAuthHandoffTarget> {
+        let payload = self.0.split('.').nth(1)?;
+        let decoded = Zeroizing::new(URL_SAFE_NO_PAD.decode(payload).ok()?);
+        let target: UntrustedNativeOAuthHandoffTarget =
+            serde_json::from_slice(decoded.as_slice()).ok()?;
+        if !is_canonical_transport_id(&target.session_id)
+            || !is_canonical_transport_id(&target.request_id)
+        {
+            return None;
+        }
+        Some(target)
+    }
+}
+
+fn is_canonical_transport_id(value: &str) -> bool {
+    value.len() == 32
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
+}
+
+impl fmt::Debug for NativeOAuthHandoffGrant {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("NativeOAuthHandoffGrant([REDACTED])")
+    }
+}
+
+#[derive(Serialize)]
+struct NativeOAuthHandoffRedeemRequest<'a> {
+    grant: &'a str,
+}
+
+/// Caller-persistable provider-cache namespace root for Transport V2.
+///
+/// Applications that need cache hits across restarts should generate this
+/// once, persist it as a secret, and restore it when constructing the client.
+#[derive(Clone, Eq, PartialEq, Zeroize, ZeroizeOnDrop)]
+pub struct TransportV2CacheNamespaceRoot([u8; 32]);
+
+impl TransportV2CacheNamespaceRoot {
+    pub fn generate() -> Result<Self> {
+        let mut bytes = [0_u8; 32];
+        OsRng
+            .try_fill_bytes(&mut bytes)
+            .map_err(|_| Error::Encryption("Secure randomness was unavailable".to_string()))?;
+        Ok(Self(bytes))
+    }
+
+    pub const fn from_bytes(bytes: [u8; 32]) -> Self {
+        Self(bytes)
+    }
+
+    pub fn from_base64(encoded: &str) -> Result<Self> {
+        let decoded = Zeroizing::new(BASE64.decode(encoded)?);
+        if decoded.len() != 32 || BASE64.encode(decoded.as_slice()) != encoded {
+            return Err(Error::Configuration(
+                "Transport V2 cache namespace root must be canonical padded base64 for exactly 32 bytes"
+                    .to_string(),
+            ));
+        }
+        let mut bytes = [0_u8; 32];
+        bytes.copy_from_slice(decoded.as_slice());
+        Ok(Self(bytes))
+    }
+
+    pub fn to_base64(&self) -> String {
+        BASE64.encode(self.0)
+    }
+
+    fn expose_bytes(&self) -> [u8; 32] {
+        self.0
+    }
+}
+
+impl std::fmt::Debug for TransportV2CacheNamespaceRoot {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("TransportV2CacheNamespaceRoot([REDACTED])")
+    }
+}
 
 pub struct OpenSecretClient {
-    client: Client,
-    inference_client: Client,
-    base_url: String,
     session_manager: SessionManager,
     refresh_lock: Mutex<()>,
-    use_mock_attestation: bool,
-    pcr0_trust_policy: Pcr0TrustPolicy,
+    session_gate: Mutex<()>,
+    transport_session: TransportSessionSlot,
+    transport_v2: TransportV2Client,
+    cache_namespace_root: TransportV2CacheNamespaceRoot,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ResolvedAuth {
     token: Option<String>,
-    using_api_key: bool,
-    generation: u64,
+    source: CredentialSource,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CredentialSource {
+    Anonymous,
+    StoredAccessToken { generation: u64 },
+    StoredApiKey { generation: u64 },
+    StoredRefreshToken { generation: u64 },
+    ExplicitApiKey,
+}
+
+impl Drop for ResolvedAuth {
+    fn drop(&mut self) {
+        if let Some(token) = &mut self.token {
+            token.zeroize();
+        }
+    }
+}
+
+impl ResolvedAuth {
+    fn credential_kind(&self) -> Option<CredentialKind> {
+        match self.source {
+            CredentialSource::Anonymous => None,
+            CredentialSource::StoredAccessToken { .. } => Some(CredentialKind::Bearer),
+            CredentialSource::StoredApiKey { .. } | CredentialSource::ExplicitApiKey => {
+                Some(CredentialKind::ApiKey)
+            }
+            CredentialSource::StoredRefreshToken { .. } => Some(CredentialKind::Resumption),
+        }
+    }
+
+    fn fence(&self) -> Option<CredentialFence<'_>> {
+        let value = self.token.as_deref()?;
+        match self.source {
+            CredentialSource::Anonymous | CredentialSource::ExplicitApiKey => None,
+            CredentialSource::StoredAccessToken { generation } => {
+                Some(CredentialFence::AccessToken { generation, value })
+            }
+            CredentialSource::StoredApiKey { generation } => {
+                Some(CredentialFence::ApiKey { generation, value })
+            }
+            CredentialSource::StoredRefreshToken { generation } => {
+                Some(CredentialFence::RefreshToken { generation, value })
+            }
+        }
+    }
 }
 
 fn append_query_param(query: &mut Vec<String>, key: &str, value: impl ToString) {
@@ -229,52 +445,6 @@ enum AuthHeaderMode {
     ApiKeyOrJwt,
 }
 
-const ERROR_CONTRACT_HEADER: &str = "x-opensecret-error-contract";
-const ERROR_CODE_HEADER: &str = "x-opensecret-error-code";
-const ERROR_CONTRACT_VERSION: &[u8] = b"1";
-const SESSION_NOT_FOUND_ERROR_CODE: &[u8] = b"session_not_found";
-const ACCESS_TOKEN_EXPIRED_ERROR_CODE: &[u8] = b"access_token_expired";
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum RecoveryAction {
-    Reattest,
-    RefreshAccessToken,
-}
-
-fn classify_response_recovery(
-    status: reqwest::StatusCode,
-    headers: &HeaderMap,
-) -> Option<RecoveryAction> {
-    let mut contract_values = headers.get_all(ERROR_CONTRACT_HEADER).iter();
-    let Some(contract_version) = contract_values.next() else {
-        return match status {
-            reqwest::StatusCode::BAD_REQUEST => Some(RecoveryAction::Reattest),
-            reqwest::StatusCode::UNAUTHORIZED => Some(RecoveryAction::RefreshAccessToken),
-            _ => None,
-        };
-    };
-
-    if contract_values.next().is_some() || contract_version.as_bytes() != ERROR_CONTRACT_VERSION {
-        return None;
-    }
-
-    let mut code_values = headers.get_all(ERROR_CODE_HEADER).iter();
-    let code = code_values.next()?;
-    if code_values.next().is_some() {
-        return None;
-    }
-
-    match (status, code.as_bytes()) {
-        (reqwest::StatusCode::BAD_REQUEST, SESSION_NOT_FOUND_ERROR_CODE) => {
-            Some(RecoveryAction::Reattest)
-        }
-        (reqwest::StatusCode::UNAUTHORIZED, ACCESS_TOKEN_EXPIRED_ERROR_CODE) => {
-            Some(RecoveryAction::RefreshAccessToken)
-        }
-        _ => None,
-    }
-}
-
 fn is_allowed_inference_endpoint(method: &http::Method, path: &str) -> bool {
     matches!(
         (method.as_str(), path),
@@ -312,23 +482,31 @@ fn sanitize_inference_request_headers(headers: &HttpHeaderMap) -> HttpHeaderMap 
         .filter_map(|value| http::HeaderName::from_bytes(value.as_bytes()).ok())
         .collect::<Vec<_>>();
 
-    headers
-        .iter()
-        .filter(|(name, _)| {
-            !is_hop_by_hop_header(name)
-                && !connection_headers.contains(name)
-                && *name != header::HOST
-                && *name != header::AUTHORIZATION
-                && name.as_str() != "x-session-id"
-                && *name != header::CONTENT_LENGTH
-                && *name != header::CONTENT_TYPE
-                && *name != header::CONTENT_ENCODING
-                && *name != header::ACCEPT_ENCODING
-                && name.as_str() != "content-md5"
-                && name.as_str() != "digest"
-        })
-        .map(|(name, value)| (name.clone(), value.clone()))
-        .collect()
+    let mut sanitized = HttpHeaderMap::new();
+    for (name, value) in headers {
+        if !is_hop_by_hop_header(name)
+            && !connection_headers.contains(name)
+            && *name != header::HOST
+            && *name != header::AUTHORIZATION
+            && *name != header::COOKIE
+            && *name != header::SET_COOKIE
+            && name.as_str() != "x-session-id"
+            && name.as_str() != ROUTING_KEY_HEADER
+            && name.as_str() != "forwarded"
+            && name.as_str() != "via"
+            && name.as_str() != "x-forwarded-for"
+            && name.as_str() != "x-forwarded-host"
+            && name.as_str() != "x-forwarded-proto"
+            && *name != header::CONTENT_LENGTH
+            && *name != header::CONTENT_ENCODING
+            && *name != header::ACCEPT_ENCODING
+            && name.as_str() != "content-md5"
+            && name.as_str() != "digest"
+        {
+            sanitized.append(name.clone(), value.clone());
+        }
+    }
+    sanitized
 }
 
 fn sanitize_inference_response_headers(headers: &HttpHeaderMap) -> HttpHeaderMap {
@@ -342,124 +520,30 @@ fn sanitize_inference_response_headers(headers: &HttpHeaderMap) -> HttpHeaderMap
         .filter_map(|value| http::HeaderName::from_bytes(value.as_bytes()).ok())
         .collect::<Vec<_>>();
 
-    headers
-        .iter()
-        .filter(|(name, _)| {
-            !is_hop_by_hop_header(name)
-                && !connection_headers.contains(name)
-                && *name != header::CONTENT_LENGTH
-                && *name != header::CONTENT_ENCODING
-                && name.as_str() != "content-md5"
-                && name.as_str() != "digest"
-                && *name != header::ETAG
-        })
-        .map(|(name, value)| (name.clone(), value.clone()))
-        .collect()
-}
-
-fn is_event_stream(headers: &HttpHeaderMap) -> bool {
-    headers
-        .get(header::CONTENT_TYPE)
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.split(';').next())
-        .is_some_and(|media_type| media_type.trim().eq_ignore_ascii_case("text/event-stream"))
-}
-
-fn transform_sse_line(line: Bytes, session_key: &[u8; 32]) -> Result<Bytes> {
-    let (content, line_ending) = if line.ends_with(b"\r\n") {
-        (&line[..line.len() - 2], &b"\r\n"[..])
-    } else if line.ends_with(b"\n") {
-        (&line[..line.len() - 1], &b"\n"[..])
-    } else {
-        (&line[..], &b""[..])
-    };
-
-    let Some(mut payload) = content.strip_prefix(b"data:") else {
-        return Ok(line);
-    };
-    let prefix_len = if payload.starts_with(b" ") {
-        payload = &payload[1..];
-        6
-    } else {
-        5
-    };
-
-    if payload == b"[DONE]" {
-        return Ok(line);
-    }
-
-    if payload.is_empty() {
-        return Ok(line);
-    }
-
-    // OpenSecret encrypts every normal data event. Plaintext, malformed, or
-    // unauthenticated data is corrupt transport data and must never be passed
-    // through as trusted inference output.
-    let encrypted = BASE64.decode(payload).map_err(|_| {
-        Error::InvalidResponse("Inference SSE data was not valid encrypted payload".to_string())
-    })?;
-    if encrypted.len() < 28 {
-        return Err(Error::InvalidResponse(
-            "Inference SSE data was shorter than the encrypted payload minimum".to_string(),
-        ));
-    }
-    let decrypted = crypto::decrypt_data(session_key, &encrypted)
-        .map_err(|error| Error::Decryption(format!("Failed to decrypt SSE data: {error}")))?;
-
-    let mut transformed = BytesMut::with_capacity(prefix_len + decrypted.len() + line_ending.len());
-    transformed.extend_from_slice(&content[..prefix_len]);
-    transformed.extend_from_slice(&decrypted);
-    transformed.extend_from_slice(line_ending);
-    Ok(transformed.freeze())
-}
-
-fn decrypt_sse_stream(
-    source: OpenSecretResponseBody,
-    session_key: [u8; 32],
-) -> OpenSecretResponseBody {
-    decrypt_sse_stream_with_line_limit(source, session_key, MAX_INFERENCE_SSE_LINE_BYTES)
-}
-
-fn decrypt_sse_stream_with_line_limit(
-    mut source: OpenSecretResponseBody,
-    session_key: [u8; 32],
-    max_line_bytes: usize,
-) -> OpenSecretResponseBody {
-    let stream = async_stream::try_stream! {
-        let mut buffered = BytesMut::new();
-
-        while let Some(chunk) = source.next().await {
-            buffered.extend_from_slice(&chunk?);
-            while let Some(line_end) = buffered.iter().position(|byte| *byte == b'\n') {
-                let line_len = line_end + 1;
-                if line_len > max_line_bytes {
-                    Err(Error::InvalidResponse(format!(
-                        "Inference SSE line exceeds {max_line_bytes}-byte limit"
-                    )))?;
-                }
-                let line = buffered.split_to(line_len).freeze();
-                yield transform_sse_line(line, &session_key)?;
-            }
-            if buffered.len() > max_line_bytes {
-                Err(Error::InvalidResponse(format!(
-                    "Inference SSE line exceeds {max_line_bytes}-byte limit"
-                )))?;
-            }
+    let mut sanitized = HttpHeaderMap::new();
+    for (name, value) in headers {
+        if !is_hop_by_hop_header(name)
+            && !connection_headers.contains(name)
+            && *name != header::CONTENT_LENGTH
+            && *name != header::CONTENT_ENCODING
+            && name.as_str() != "content-md5"
+            && name.as_str() != "digest"
+            && *name != header::ETAG
+        {
+            sanitized.append(name.clone(), value.clone());
         }
-
-        if !buffered.is_empty() {
-            yield transform_sse_line(buffered.freeze(), &session_key)?;
-        }
-    };
-
-    Box::pin(stream)
+    }
+    sanitized
 }
 
-fn decrypt_sse_body(response: reqwest::Response, session_key: [u8; 32]) -> OpenSecretResponseBody {
-    let source = response
-        .bytes_stream()
-        .map(|chunk| chunk.map_err(Error::Http));
-    decrypt_sse_stream(Box::pin(source), session_key)
+fn permits_session_recovery(target: &str) -> bool {
+    !matches!(
+        target.split('?').next().unwrap_or(target),
+        "/auth/github/callback"
+            | "/auth/google/callback"
+            | "/auth/apple/callback"
+            | "/auth/native-handoff/redeem"
+    )
 }
 
 async fn collect_response_body(mut body: OpenSecretResponseBody) -> Result<Bytes> {
@@ -470,49 +554,199 @@ async fn collect_response_body(mut body: OpenSecretResponseBody) -> Result<Bytes
     Ok(collected.freeze())
 }
 
-fn uses_mock_attestation(base_url: &str) -> Result<bool> {
-    let parsed = reqwest::Url::parse(base_url)
-        .map_err(|error| Error::Configuration(format!("Invalid base URL: {error}")))?;
-    if !matches!(parsed.scheme(), "http" | "https") {
-        return Err(Error::Configuration(
-            "Base URL must use HTTP or HTTPS".to_string(),
-        ));
+fn transport_error(error: TransportV2Error) -> Error {
+    match error {
+        TransportV2Error::InvalidConfiguration => {
+            Error::Configuration("Transport V2 configuration is invalid".to_string())
+        }
+        TransportV2Error::AttestationRejected => Error::AttestationVerificationFailed(
+            "Transport V2 attestation or PCR policy was rejected".to_string(),
+        ),
+        TransportV2Error::SessionExpired => {
+            Error::Session("Transport V2 session expired".to_string())
+        }
+        TransportV2Error::Http(error) => Error::Http(error),
+        TransportV2Error::UntrustedOuterResponse | TransportV2Error::SessionRecoveryHint(_) => {
+            Error::InvalidResponse(
+                "Transport V2 returned an unauthenticated outer response".to_string(),
+            )
+        }
+        TransportV2Error::Authentication
+        | TransportV2Error::InvalidFrame
+        | TransportV2Error::InvalidRecord
+        | TransportV2Error::InvalidSequence
+        | TransportV2Error::TruncatedResponse
+        | TransportV2Error::PostTerminalData => Error::InvalidResponse(
+            "Transport V2 response authentication or framing failed".to_string(),
+        ),
+        _ => Error::Encryption(error.to_string()),
     }
-    if !parsed.username().is_empty() || parsed.password().is_some() {
-        return Err(Error::Configuration(
-            "Base URL must not contain credentials".to_string(),
-        ));
-    }
-    if parsed.query().is_some() || parsed.fragment().is_some() {
-        return Err(Error::Configuration(
-            "Base URL must not contain a query or fragment".to_string(),
-        ));
-    }
-    let host = parsed
-        .host_str()
-        .ok_or_else(|| Error::Configuration("Base URL must include a host".to_string()))?;
-    let host = host.trim_end_matches('.');
+}
 
-    let is_mock_host = if host.eq_ignore_ascii_case("localhost") {
-        true
-    } else {
-        let address_host = host
-            .strip_prefix('[')
-            .and_then(|host| host.strip_suffix(']'))
-            .unwrap_or(host);
-        address_host.parse::<IpAddr>().is_ok_and(|address| {
-            address.is_loopback()
-                || address.is_unspecified()
-                || (cfg!(target_os = "android") && address == IpAddr::from([10, 0, 2, 2]))
-        })
+fn should_retire_transport_session(error: &TransportV2Error) -> bool {
+    matches!(
+        error,
+        TransportV2Error::SessionExpired
+            | TransportV2Error::Authentication
+            | TransportV2Error::UntrustedOuterResponse
+            | TransportV2Error::SessionRecoveryHint(_)
+            | TransportV2Error::InvalidFrame
+            | TransportV2Error::InvalidRecord
+            | TransportV2Error::InvalidSequence
+            | TransportV2Error::TruncatedResponse
+            | TransportV2Error::PostTerminalData
+    )
+}
+
+fn retire_transport_session_after_stream_failure(retirement: &Option<SessionRetirement>) {
+    let Some((slot, expected)) = retirement else {
+        return;
     };
-
-    if parsed.scheme() != "https" && !is_mock_host {
-        return Err(Error::Configuration(
-            "Non-local base URLs must use HTTPS".to_string(),
-        ));
+    let Ok(mut current) = slot.write() else {
+        return;
+    };
+    if current
+        .as_ref()
+        .is_some_and(|session| Arc::ptr_eq(session, expected))
+    {
+        *current = None;
     }
-    Ok(is_mock_host)
+}
+
+fn response_body_from_events(
+    mut events: ResponseEventStream,
+    retirement: Option<SessionRetirement>,
+) -> OpenSecretResponseBody {
+    Box::pin(async_stream::try_stream! {
+        while let Some(event) = events.next().await {
+            let event = match event {
+                Ok(event) => event,
+                Err(error) => {
+                    if should_retire_transport_session(&error) {
+                        retire_transport_session_after_stream_failure(&retirement);
+                    }
+                    Err(transport_error(error))?
+                }
+            };
+            match event {
+                ResponseEvent::Chunk(bytes) => yield bytes,
+                ResponseEvent::End => return,
+                ResponseEvent::Error { code } => {
+                    Err(Error::InvalidResponse(format!(
+                        "Transport V2 response stream failed ({code})"
+                    )))?;
+                }
+                ResponseEvent::Start { .. } => {
+                    retire_transport_session_after_stream_failure(&retirement);
+                    Err(Error::InvalidResponse(
+                        "Transport V2 response contained more than one start record".to_string(),
+                    ))?;
+                }
+            }
+        }
+        retire_transport_session_after_stream_failure(&retirement);
+        Err(Error::InvalidResponse(
+            "Transport V2 response ended without authenticated finality".to_string(),
+        ))?;
+    })
+}
+
+async fn response_from_events(
+    mut events: ResponseEventStream,
+    retirement: Option<SessionRetirement>,
+) -> Result<InferenceResponse> {
+    let Some(start) = events.next().await else {
+        retire_transport_session_after_stream_failure(&retirement);
+        return Err(Error::InvalidResponse(
+            "Transport V2 response ended before its start record".to_string(),
+        ));
+    };
+    let start = match start {
+        Ok(start) => start,
+        Err(error) => {
+            if should_retire_transport_session(&error) {
+                retire_transport_session_after_stream_failure(&retirement);
+            }
+            return Err(transport_error(error));
+        }
+    };
+    let ResponseEvent::Start { status, headers } = start else {
+        retire_transport_session_after_stream_failure(&retirement);
+        return Err(Error::InvalidResponse(
+            "Transport V2 response did not begin with a start record".to_string(),
+        ));
+    };
+    let status = http::StatusCode::from_u16(status)
+        .map_err(|_| Error::InvalidResponse("Transport V2 status was invalid".to_string()))?;
+    let mut response_headers = HttpHeaderMap::new();
+    for logical in headers {
+        let name = http::HeaderName::from_bytes(logical.name().as_bytes()).map_err(|_| {
+            Error::InvalidResponse("Transport V2 header name was invalid".to_string())
+        })?;
+        let value = http::HeaderValue::from_str(logical.value()).map_err(|_| {
+            Error::InvalidResponse("Transport V2 header value was invalid".to_string())
+        })?;
+        response_headers.append(name, value);
+    }
+    let mut response = HttpResponse::new(response_body_from_events(events, retirement));
+    *response.status_mut() = status;
+    *response.headers_mut() = response_headers;
+    Ok(response)
+}
+
+#[derive(Deserialize)]
+struct JwtTimingClaims {
+    exp: u64,
+}
+
+fn access_token_needs_refresh(token: &str, now: u64) -> bool {
+    let mut segments = token.split('.');
+    let (Some(_header), Some(payload), Some(_signature), None) = (
+        segments.next(),
+        segments.next(),
+        segments.next(),
+        segments.next(),
+    ) else {
+        return false;
+    };
+    URL_SAFE_NO_PAD
+        .decode(payload)
+        .ok()
+        .and_then(|payload| serde_json::from_slice::<JwtTimingClaims>(&payload).ok())
+        .is_some_and(|claims| claims.exp <= now.saturating_add(30))
+}
+
+fn build_chat_completion_stream_request(
+    mut request: ChatCompletionRequest,
+) -> Result<InferenceRequest> {
+    request.stream = Some(true);
+    request.stream_options = Some(StreamOptions {
+        include_usage: true,
+    });
+    HttpRequest::builder()
+        .method(http::Method::POST)
+        .uri("/v1/chat/completions")
+        .header(header::ACCEPT, "text/event-stream")
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Bytes::from(serde_json::to_vec(&request)?))
+        .map_err(|error| {
+            Error::Configuration(format!("Failed to build inference request: {error}"))
+        })
+}
+
+fn parse_agent_sse_event(event_type: &str, data: &str) -> Option<Result<AgentSseEvent>> {
+    let parsed = match event_type {
+        "agent.message" => serde_json::from_str(data).map(AgentSseEvent::Message),
+        "agent.reaction" => serde_json::from_str(data).map(AgentSseEvent::Reaction),
+        "agent.typing" => serde_json::from_str(data).map(AgentSseEvent::Typing),
+        "agent.done" => serde_json::from_str(data).map(AgentSseEvent::Done),
+        "agent.error" => serde_json::from_str(data).map(AgentSseEvent::Error),
+        _ => return None,
+    };
+    Some(parsed.map_err(|error| Error::Api {
+        status: 0,
+        message: format!("Failed to parse {event_type}: {error}"),
+    }))
 }
 
 impl OpenSecretClient {
@@ -534,20 +768,15 @@ impl OpenSecretClient {
         base_url: impl Into<String>,
         pcr0_trust_policy: Pcr0TrustPolicy,
     ) -> Result<Self> {
-        let base_url = base_url.into();
-        let use_mock = uses_mock_attestation(&base_url)?;
-
+        let transport_v2 =
+            TransportV2Client::new(base_url.into(), pcr0_trust_policy).map_err(transport_error)?;
         Ok(Self {
-            client: Client::new(),
-            inference_client: Client::builder()
-                .redirect(reqwest::redirect::Policy::none())
-                .retry(reqwest::retry::never())
-                .build()?,
-            base_url: base_url.trim_end_matches('/').to_string(),
             session_manager: SessionManager::new(),
             refresh_lock: Mutex::new(()),
-            use_mock_attestation: use_mock,
-            pcr0_trust_policy,
+            session_gate: Mutex::new(()),
+            transport_session: Arc::new(RwLock::new(None)),
+            transport_v2,
+            cache_namespace_root: TransportV2CacheNamespaceRoot::generate()?,
         })
     }
 
@@ -575,21 +804,26 @@ impl OpenSecretClient {
         api_key: String,
         pcr0_trust_policy: Pcr0TrustPolicy,
     ) -> Result<Self> {
-        let base_url = base_url.into();
-        let use_mock = uses_mock_attestation(&base_url)?;
-
+        let transport_v2 =
+            TransportV2Client::new(base_url.into(), pcr0_trust_policy).map_err(transport_error)?;
         Ok(Self {
-            client: Client::new(),
-            inference_client: Client::builder()
-                .redirect(reqwest::redirect::Policy::none())
-                .retry(reqwest::retry::never())
-                .build()?,
-            base_url: base_url.trim_end_matches('/').to_string(),
             session_manager: SessionManager::new_with_api_key(api_key),
             refresh_lock: Mutex::new(()),
-            use_mock_attestation: use_mock,
-            pcr0_trust_policy,
+            session_gate: Mutex::new(()),
+            transport_session: Arc::new(RwLock::new(None)),
+            transport_v2,
+            cache_namespace_root: TransportV2CacheNamespaceRoot::generate()?,
         })
+    }
+
+    /// Replace the random per-client provider-cache namespace root.
+    ///
+    /// The root must be generated independently from account identifiers and
+    /// credentials. Persist it when cache continuity across restarts matters.
+    #[must_use]
+    pub fn with_cache_namespace_root(mut self, root: TransportV2CacheNamespaceRoot) -> Self {
+        self.cache_namespace_root = root;
+        self
     }
 
     pub fn set_api_key(&self, api_key: String) -> Result<()> {
@@ -601,236 +835,266 @@ impl OpenSecretClient {
     }
 
     pub async fn perform_attestation_handshake(&self) -> Result<()> {
-        // Generate a nonce
-        let nonce = Uuid::new_v4().to_string();
-
-        // Step 1: Get attestation document
-        let attestation_doc = self.get_attestation_document(&nonce).await?;
-
-        // Step 2: Parse and verify attestation document
-        if !self.use_mock_attestation {
-            let verifier = AttestationVerifier::new();
-            let doc = verifier
-                .verify_attestation_document(&attestation_doc.attestation_document, &nonce)?;
-            self.establish_session_from_verified_attestation(&nonce, doc)
+        let _gate = self.session_gate.lock().await;
+        let session = Arc::new(
+            self.transport_v2
+                .establish_session()
                 .await
-        } else {
-            // For mock mode, extract without full verification
-            let doc = self.parse_mock_attestation(&attestation_doc.attestation_document)?;
-            self.establish_session_from_document(&nonce, doc).await
-        }
-    }
-
-    /// Establish a session from a Nitro-authenticated document.
-    ///
-    /// Keeping PCR0 enforcement in the same path as key exchange makes the
-    /// fail-before-key-exchange ordering explicit and independently testable.
-    async fn establish_session_from_verified_attestation(
-        &self,
-        nonce: &str,
-        doc: AttestationDocument,
-    ) -> Result<()> {
-        let pcr0 = doc.pcrs.get(&0).ok_or_else(|| {
-            Error::AttestationVerificationFailed("Missing PCR0 in attestation document".to_string())
-        })?;
-        self.pcr0_trust_policy.verify_pcr0(pcr0).await?;
-        self.establish_session_from_document(nonce, doc).await
-    }
-
-    async fn establish_session_from_document(
-        &self,
-        nonce: &str,
-        doc: AttestationDocument,
-    ) -> Result<()> {
-        let server_public_key = doc.public_key.ok_or_else(|| {
-            Error::AttestationVerificationFailed(
-                "No public key in attestation document".to_string(),
-            )
-        })?;
-
-        // Step 3: Perform key exchange
-        self.perform_key_exchange(nonce, &server_public_key).await?;
-
+                .map_err(transport_error)?,
+        );
+        let mut current = self
+            .transport_session
+            .write()
+            .map_err(|_| Error::Session("Transport V2 session state is unavailable".to_string()))?;
+        *current = Some(session);
         Ok(())
     }
 
-    async fn get_attestation_document(&self, nonce: &str) -> Result<AttestationResponse> {
-        let url = format!("{}/attestation/{}", self.base_url, nonce);
-
-        let response = self.client.get(&url).send().await?;
-
-        if !response.status().is_success() {
-            let status = response.status().as_u16();
-            let text = response
-                .text()
-                .await
-                .unwrap_or_else(|_| "Unknown error".to_string());
-            return Err(Error::Api {
-                status,
-                message: text,
-            });
-        }
-
-        response.json().await.map_err(Into::into)
+    /// Reserve one exact anonymous request for a hosted native OAuth handoff.
+    ///
+    /// The returned IDs may be sent to the hosted browser so the enclave can
+    /// bind its signed grant to this request. The handle itself must remain in
+    /// the native process and is consumed exactly once by redemption.
+    pub async fn prepare_native_oauth_handoff(&self) -> Result<PreparedNativeOAuthHandoff> {
+        let credential_generation = self.session_manager.anonymous_generation()?;
+        let session = self.ensure_transport_session().await?;
+        let prepared_request = {
+            let current = self.transport_session.read().map_err(|_| {
+                Error::Session("Transport V2 session state is unavailable".to_string())
+            })?;
+            if !current
+                .as_ref()
+                .is_some_and(|current| Arc::ptr_eq(current, &session))
+            {
+                return Err(Error::Session(
+                    "Native OAuth transport session is no longer current".to_string(),
+                ));
+            }
+            self.session_manager
+                .admit_if_anonymous_generation_is_current(credential_generation, || {
+                    session.prepare_request_id().map_err(transport_error)
+                })?
+        };
+        let session_id = session.encoded_id();
+        let request_id = prepared_request.encoded();
+        Ok(PreparedNativeOAuthHandoff {
+            session,
+            prepared_request,
+            session_id,
+            request_id,
+            credential_generation,
+        })
     }
 
-    async fn perform_key_exchange(&self, nonce: &str, server_public_key: &[u8]) -> Result<()> {
-        // Generate ephemeral keypair
-        let (secret, public_key) = crypto::generate_static_keypair();
-        let public_key_bytes = public_key.as_bytes();
-        let public_key_b64 = BASE64.encode(public_key_bytes);
-
-        // Send key exchange request
-        let url = format!("{}/key_exchange", self.base_url);
-        let body = KeyExchangeRequest {
-            client_public_key: public_key_b64,
-            nonce: nonce.to_string(),
+    /// Redeem a hosted handoff grant through the exact request prepared above.
+    ///
+    /// No credential or cache namespace root is attached. This method sends at
+    /// most once and never allocates a replacement request ID.
+    pub async fn redeem_native_oauth_handoff(
+        &self,
+        prepared: PreparedNativeOAuthHandoff,
+        grant: NativeOAuthHandoffGrant,
+    ) -> Result<LoginResponse> {
+        // Hold the current-session read lock through sealing, and the
+        // credential read lock inside it. A concurrent session replacement or
+        // authentication change must linearize wholly before or after this
+        // exact request becomes eligible for transmission.
+        let sealed = {
+            let current = self.transport_session.read().map_err(|_| {
+                Error::Session("Transport V2 session state is unavailable".to_string())
+            })?;
+            let current = current.as_ref().ok_or_else(|| {
+                Error::Session("Native OAuth transport session is no longer current".to_string())
+            })?;
+            if current.is_expired() || !Arc::ptr_eq(current, &prepared.session) {
+                return Err(Error::Session(
+                    "Native OAuth transport session is no longer current".to_string(),
+                ));
+            }
+            self.session_manager
+                .admit_if_anonymous_generation_is_current(prepared.credential_generation, || {
+                    let body = Bytes::from(serde_json::to_vec(&NativeOAuthHandoffRedeemRequest {
+                        grant: grant.as_str(),
+                    })?);
+                    let request = LogicalRequest::new(
+                        None,
+                        None,
+                        http::Method::POST,
+                        "/auth/native-handoff/redeem".to_string(),
+                        vec![LogicalHeader::new(
+                            header::CONTENT_TYPE.as_str().to_string(),
+                            "application/json".to_string(),
+                        )
+                        .map_err(transport_error)?],
+                        Some(body),
+                    )
+                    .map_err(transport_error)?;
+                    self.transport_v2
+                        .seal_with_id(&prepared.session, prepared.prepared_request, request)
+                        .map_err(transport_error)
+                })?
         };
+        drop(grant);
 
-        let mut headers = HeaderMap::new();
-        headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
-
-        let response = self
-            .client
-            .post(&url)
-            .headers(headers)
-            .json(&body)
-            .send()
-            .await?;
-
-        if !response.status().is_success() {
-            let status = response.status().as_u16();
-            let text = response
-                .text()
-                .await
-                .unwrap_or_else(|_| "Unknown error".to_string());
+        let events = match self.transport_v2.send_sealed(sealed).await {
+            Ok(events) => events,
+            Err(error) => {
+                // Delivery may have happened even when no authenticated
+                // response arrived. The enclave may therefore have bound the
+                // session while this client still appears anonymous.
+                self.clear_transport_session_if(&prepared.session)?;
+                return Err(transport_error(error));
+            }
+        };
+        let response = match response_from_events(
+            events,
+            Some((
+                Arc::clone(&self.transport_session),
+                Arc::clone(&prepared.session),
+            )),
+        )
+        .await
+        {
+            Ok(response) => response,
+            Err(error) => {
+                self.clear_transport_session_if(&prepared.session)?;
+                return Err(error);
+            }
+        };
+        let status = response.status();
+        let body = match collect_response_body(response.into_body()).await {
+            Ok(body) => body,
+            Err(error) => {
+                self.clear_transport_session_if(&prepared.session)?;
+                return Err(error);
+            }
+        };
+        if !status.is_success() {
+            self.clear_transport_session_if(&prepared.session)?;
             return Err(Error::Api {
-                status,
-                message: text,
+                status: status.as_u16(),
+                message: String::from_utf8_lossy(&body).into_owned(),
             });
         }
+        let mut response: LoginResponse = match serde_json::from_slice(&body) {
+            Ok(response) => response,
+            Err(error) => {
+                self.clear_transport_session_if(&prepared.session)?;
+                return Err(error.into());
+            }
+        };
+        let installed = {
+            // The response belongs to the retained session. Do not install it
+            // into a client whose session was replaced while redemption was
+            // in flight, even if its credential generation is still anonymous.
+            let current = self.transport_session.read().map_err(|_| {
+                Error::Session("Transport V2 session state is unavailable".to_string())
+            })?;
+            current
+                .as_ref()
+                .is_some_and(|current| Arc::ptr_eq(current, &prepared.session))
+                && self.session_manager.set_tokens_if_anonymous_generation(
+                    prepared.credential_generation,
+                    response.access_token.clone(),
+                    response.refresh_token.clone(),
+                )?
+        };
+        if !installed {
+            response.access_token.zeroize();
+            response.refresh_token.zeroize();
+            self.clear_transport_session_if(&prepared.session)?;
+            return Err(Error::Authentication(
+                "Authentication changed during native OAuth handoff".to_string(),
+            ));
+        }
+        Ok(response)
+    }
 
-        let key_exchange_response: KeyExchangeResponse = response.json().await?;
+    async fn ensure_transport_session(&self) -> Result<Arc<TransportV2Session>> {
+        if let Some(session) = self.current_transport_session()? {
+            if !session.is_expired() {
+                return Ok(session);
+            }
+            self.clear_transport_session_if(&session)?;
+        }
 
-        // Convert server's public key bytes to x25519 PublicKey
-        let server_public_key = x25519_dalek::PublicKey::from(
-            <[u8; 32]>::try_from(server_public_key)
-                .map_err(|_| Error::KeyExchange("Invalid server public key length".to_string()))?,
+        let _gate = self.session_gate.lock().await;
+        if let Some(session) = self.current_transport_session()? {
+            if !session.is_expired() {
+                return Ok(session);
+            }
+            self.clear_transport_session_if(&session)?;
+        }
+
+        let session = Arc::new(
+            self.transport_v2
+                .establish_session()
+                .await
+                .map_err(transport_error)?,
         );
+        let mut current = self
+            .transport_session
+            .write()
+            .map_err(|_| Error::Session("Transport V2 session state is unavailable".to_string()))?;
+        *current = Some(Arc::clone(&session));
+        Ok(session)
+    }
 
-        // Perform ECDH to get shared secret
-        let shared_secret = crypto::perform_static_key_exchange(&secret, &server_public_key);
+    fn current_transport_session(&self) -> Result<Option<Arc<TransportV2Session>>> {
+        self.transport_session
+            .read()
+            .map(|session| session.clone())
+            .map_err(|_| Error::Session("Transport V2 session state is unavailable".to_string()))
+    }
 
-        // Decrypt the session key
-        let session_key = crypto::decrypt_session_key(
-            &shared_secret,
-            &key_exchange_response.encrypted_session_key,
-        )?;
-
-        // Parse session_id as UUID
-        let session_id = Uuid::parse_str(&key_exchange_response.session_id)
-            .map_err(|e| Error::Session(format!("Invalid session ID format: {}", e)))?;
-
-        self.session_manager.set_session(session_id, session_key)?;
-
+    fn clear_transport_session_if(&self, expected: &Arc<TransportV2Session>) -> Result<()> {
+        let mut current = self
+            .transport_session
+            .write()
+            .map_err(|_| Error::Session("Transport V2 session state is unavailable".to_string()))?;
+        if current
+            .as_ref()
+            .is_some_and(|session| Arc::ptr_eq(session, expected))
+        {
+            *current = None;
+        }
         Ok(())
     }
 
     pub fn get_session_id(&self) -> Result<Option<Uuid>> {
-        Ok(self.session_manager.get_session()?.map(|s| s.session_id))
-    }
-
-    fn parse_mock_attestation(&self, document_b64: &str) -> Result<AttestationDocument> {
-        // For mock/dev mode, just extract the essential fields without full verification
-        let document_bytes = BASE64.decode(document_b64)?;
-        let cbor_value: CborValue = cbor::from_slice(&document_bytes)?;
-
-        // Parse COSE_Sign1 structure
-        let cose_sign1 = match &cbor_value {
-            CborValue::Array(arr) if arr.len() == 4 => arr,
-            _ => {
-                return Err(Error::AttestationVerificationFailed(
-                    "Invalid COSE_Sign1 structure".to_string(),
-                ))
-            }
+        let Some(session) = self.current_transport_session()? else {
+            return Ok(None);
         };
-
-        // Extract payload
-        let payload = match &cose_sign1[2] {
-            CborValue::Bytes(b) => b,
-            _ => {
-                return Err(Error::AttestationVerificationFailed(
-                    "Invalid payload".to_string(),
-                ))
-            }
-        };
-
-        // Parse attestation document from payload
-        let doc_cbor: CborValue = cbor::from_slice(payload)?;
-        let map = match &doc_cbor {
-            CborValue::Map(m) => m,
-            _ => {
-                return Err(Error::AttestationVerificationFailed(
-                    "Invalid attestation document format".to_string(),
-                ))
-            }
-        };
-
-        // Extract public key (required for key exchange)
-        let mut public_key = None;
-        let mut nonce = None;
-
-        for (key, value) in map {
-            if let CborValue::Text(key_str) = key {
-                match key_str.as_str() {
-                    "public_key" => {
-                        public_key = match value {
-                            CborValue::Bytes(b) => Some(b.clone()),
-                            _ => None,
-                        };
-                    }
-                    "nonce" => {
-                        nonce = match value {
-                            CborValue::Bytes(b) => Some(b.clone()),
-                            _ => None,
-                        };
-                    }
-                    _ => {}
-                }
-            }
+        if session.is_expired() {
+            self.clear_transport_session_if(&session)?;
+            return Ok(None);
         }
-
-        // Return a minimal AttestationDocument with just what we need
-        Ok(AttestationDocument {
-            module_id: "mock-module".to_string(),
-            timestamp: 0,
-            digest: "SHA384".to_string(),
-            pcrs: std::collections::HashMap::new(),
-            certificate: vec![],
-            cabundle: vec![],
-            public_key,
-            user_data: None,
-            nonce,
-        })
+        Ok(Some(Uuid::from_bytes(session.id_bytes())))
     }
 
     pub async fn test_connection(&self) -> Result<String> {
-        let url = format!("{}/health-check", self.base_url);
-        let response = self.client.get(&url).send().await?;
-
-        if !response.status().is_success() {
-            let status = response.status().as_u16();
-            let text = response
-                .text()
-                .await
-                .unwrap_or_else(|_| "Unknown error".to_string());
+        let response = self
+            .send_logical_request(
+                http::Method::GET,
+                "/health-check".to_string(),
+                Vec::new(),
+                None,
+                ResolvedAuth {
+                    token: None,
+                    source: CredentialSource::Anonymous,
+                },
+                false,
+            )
+            .await?;
+        let status = response.status();
+        let body = collect_response_body(response.into_body()).await?;
+        if !status.is_success() {
             return Err(Error::Api {
-                status,
-                message: text,
+                status: status.as_u16(),
+                message: String::from_utf8_lossy(&body).into_owned(),
             });
         }
-
-        response.text().await.map_err(Into::into)
+        String::from_utf8(body.to_vec()).map_err(Into::into)
     }
 
     async fn encrypted_api_call<T: Serialize, U: DeserializeOwned>(
@@ -839,8 +1103,8 @@ impl OpenSecretClient {
         method: &str,
         data: Option<T>,
     ) -> Result<U> {
-        self.retry_encrypted_json_call_without_refresh(endpoint, method, data)
-            .await
+        let auth = self.resolve_auth(AuthHeaderMode::None)?;
+        self.json_request(endpoint, method, data, auth).await
     }
 
     async fn authenticated_api_call<T: Serialize, U: DeserializeOwned>(
@@ -849,147 +1113,230 @@ impl OpenSecretClient {
         method: &str,
         data: Option<T>,
     ) -> Result<U> {
-        self.retry_encrypted_json_call(endpoint, method, data, AuthHeaderMode::Jwt, true)
-            .await
+        let auth = self
+            .resolve_auth_after_preflight(AuthHeaderMode::Jwt)
+            .await?;
+        self.json_request(endpoint, method, data, auth).await
     }
 
-    async fn retry_encrypted_json_call_without_refresh<T: Serialize, U: DeserializeOwned>(
+    async fn json_request<T: Serialize, U: DeserializeOwned>(
         &self,
         endpoint: &str,
         method: &str,
         data: Option<T>,
+        auth: ResolvedAuth,
     ) -> Result<U> {
-        let plaintext = data
+        let method = http::Method::from_bytes(method.as_bytes()).map_err(|error| {
+            Error::Configuration(format!("Invalid logical HTTP method: {error}"))
+        })?;
+        let body = data
             .map(|data| serde_json::to_vec(&data).map(Bytes::from))
             .transpose()?;
-        let mut replayed = false;
-        let mut recovered_missing_session = false;
-
-        let (response, session_key) = loop {
-            let auth = self.resolve_auth(AuthHeaderMode::None)?;
-            match self
-                .send_encrypted_request(endpoint, method, plaintext.as_deref(), &auth, false)
-                .await
-            {
-                Ok((response, session_key)) if response.status().is_success() => {
-                    break (response, session_key)
-                }
-                Ok((response, _session_key)) => {
-                    let recovery =
-                        classify_response_recovery(response.status(), response.headers());
-                    if replayed || recovery != Some(RecoveryAction::Reattest) {
-                        return Err(Self::api_error_from_response(response).await);
-                    }
-
-                    self.perform_attestation_handshake().await?;
-                    replayed = true;
-                }
-                Err(Error::Session(_)) if !recovered_missing_session => {
-                    self.perform_attestation_handshake().await?;
-                    recovered_missing_session = true;
-                }
-                Err(error) => return Err(error),
-            }
+        let headers = if body.is_some() {
+            vec![LogicalHeader::new(
+                header::CONTENT_TYPE.as_str().to_string(),
+                "application/json".to_string(),
+            )
+            .map_err(transport_error)?]
+        } else {
+            Vec::new()
         };
-
-        Self::decrypt_json_response(response, session_key).await
+        let response = self
+            .send_logical_request(method, endpoint.to_string(), headers, body, auth, false)
+            .await?;
+        let status = response.status();
+        let body = collect_response_body(response.into_body()).await?;
+        if !status.is_success() {
+            return Err(Error::Api {
+                status: status.as_u16(),
+                message: String::from_utf8_lossy(&body).into_owned(),
+            });
+        }
+        Ok(serde_json::from_slice(&body)?)
     }
 
-    async fn retry_encrypted_json_call<T: Serialize, U: DeserializeOwned>(
+    async fn send_logical_request(
+        &self,
+        method: http::Method,
+        target: String,
+        headers: Vec<LogicalHeader>,
+        body: Option<Bytes>,
+        auth: ResolvedAuth,
+        include_cache_namespace: bool,
+    ) -> Result<InferenceResponse> {
+        self.send_logical_request_with_options(
+            method,
+            target,
+            headers,
+            body,
+            auth,
+            LogicalRequestOptions {
+                include_cache_namespace,
+                inference_send_budget: None,
+            },
+        )
+        .await
+    }
+
+    async fn send_logical_request_with_options(
+        &self,
+        method: http::Method,
+        target: String,
+        headers: Vec<LogicalHeader>,
+        body: Option<Bytes>,
+        auth: ResolvedAuth,
+        options: LogicalRequestOptions<'_>,
+    ) -> Result<InferenceResponse> {
+        let permits_recovery = permits_session_recovery(&target);
+        let anonymous_generation = matches!(auth.source, CredentialSource::Anonymous)
+            .then(|| self.session_manager.credential_generation())
+            .transpose()?;
+        let credential = auth
+            .credential_kind()
+            .zip(auth.token.as_ref())
+            .map(|(kind, token)| Credential::new(kind, token.clone()))
+            .transpose()
+            .map_err(transport_error)?;
+        let cache_namespace_root = (options.include_cache_namespace && credential.is_some())
+            .then(|| CacheNamespaceRoot::from_bytes(self.cache_namespace_root.expose_bytes()));
+        let request = LogicalRequest::new(
+            credential,
+            cache_namespace_root,
+            method,
+            target,
+            headers,
+            body,
+        )
+        .map_err(transport_error)?;
+
+        // Capture once: public inference bodies are owned Bytes, and typed
+        // request bodies have already been serialized. A recovery must not
+        // select a new credential or reconstruct any part of the request.
+        let plaintext = request.encode().map_err(transport_error)?;
+        drop(request);
+        let mut recovery_used = false;
+        loop {
+            let session = self.ensure_transport_session().await?;
+            // Fence each admission after session/attestation awaits, then seal
+            // under the same credential read lock. Explicit per-request API
+            // keys are immutable and independent of managed defaults.
+            let sealed = self.session_manager.admit_if_credential_is_current(
+                auth.fence().or_else(|| {
+                    anonymous_generation
+                        .map(|generation| CredentialFence::Generation { generation })
+                }),
+                || {
+                    self.transport_v2
+                        .seal_encoded(&session, &plaintext)
+                        .map_err(transport_error)
+                },
+            )?;
+            // Reserve only an actual inference HTTP send. Session recovery
+            // must share this ceiling with the caller's outer retry layer.
+            if let Some(send_budget) = options.inference_send_budget {
+                if !send_budget.try_reserve_send() {
+                    return Err(Error::Other(
+                        "Inference request send budget exhausted".to_string(),
+                    ));
+                }
+            }
+            match self.transport_v2.send_sealed(sealed).await {
+                Ok(events) => {
+                    drop(auth);
+                    drop(plaintext);
+                    // Once encrypted response processing begins, neither
+                    // authentication/framing errors nor partial bodies replay.
+                    return response_from_events(
+                        events,
+                        Some((Arc::clone(&self.transport_session), session)),
+                    )
+                    .await;
+                }
+                Err(error) => {
+                    if should_retire_transport_session(&error) {
+                        self.clear_transport_session_if(&session)?;
+                    }
+                    if permits_recovery
+                        && !recovery_used
+                        && options
+                            .inference_send_budget
+                            .is_none_or(|send_budget| send_budget.remaining() > 0)
+                        && matches!(error, TransportV2Error::SessionRecoveryHint(_))
+                    {
+                        recovery_used = true;
+                        continue;
+                    }
+                    return Err(transport_error(error));
+                }
+            }
+        }
+    }
+
+    async fn send_resumption_request(
         &self,
         endpoint: &str,
-        method: &str,
-        data: Option<T>,
+        auth: ResolvedAuth,
+        body: Option<Bytes>,
+    ) -> Result<InferenceResponse> {
+        let headers = if body.is_some() {
+            vec![LogicalHeader::new(
+                header::CONTENT_TYPE.as_str().to_string(),
+                "application/json".to_string(),
+            )
+            .map_err(transport_error)?]
+        } else {
+            Vec::new()
+        };
+        self.send_logical_request(
+            http::Method::POST,
+            endpoint.to_string(),
+            headers,
+            body,
+            auth,
+            true,
+        )
+        .await
+    }
+
+    async fn resolve_auth_after_preflight(
+        &self,
         auth_mode: AuthHeaderMode,
-        allow_refresh: bool,
-    ) -> Result<U> {
-        let plaintext = data
-            .map(|data| serde_json::to_vec(&data).map(Bytes::from))
-            .transpose()?;
-        let mut replayed = false;
-        let mut recovered_missing_session = false;
+    ) -> Result<ResolvedAuth> {
+        let initial = self.resolve_auth(auth_mode)?;
+        if matches!(
+            initial.source,
+            CredentialSource::StoredApiKey { .. } | CredentialSource::ExplicitApiKey
+        ) || !self.auth_needs_preflight_refresh(&initial)?
+        {
+            return Ok(initial);
+        }
 
-        let (response, session_key) = loop {
-            let auth = self.resolve_auth(auth_mode)?;
-            match self
-                .send_encrypted_request(endpoint, method, plaintext.as_deref(), &auth, false)
-                .await
-            {
-                Ok((response, session_key)) if response.status().is_success() => {
-                    break (response, session_key)
-                }
-                Ok((response, _session_key)) => {
-                    let recovery =
-                        classify_response_recovery(response.status(), response.headers());
-                    if replayed {
-                        return Err(Self::api_error_from_response(response).await);
-                    }
+        let _refresh_guard = self.refresh_lock.lock().await;
+        let current = self.resolve_auth(auth_mode)?;
+        if current == initial && self.auth_needs_preflight_refresh(&current)? {
+            self.refresh_token_inner().await?;
+        }
+        self.resolve_auth(auth_mode)
+    }
 
-                    match recovery {
-                        Some(RecoveryAction::Reattest) => {
-                            self.perform_attestation_handshake().await?;
-                            replayed = true;
-                        }
-                        Some(RecoveryAction::RefreshAccessToken)
-                            if allow_refresh
-                                && self
-                                    .recover_auth_after_unauthorized(auth_mode, &auth)
-                                    .await? =>
-                        {
-                            replayed = true;
-                        }
-                        _ => return Err(Self::api_error_from_response(response).await),
-                    }
-                }
-                Err(Error::Session(_)) if !recovered_missing_session => {
-                    self.perform_attestation_handshake().await?;
-                    recovered_missing_session = true;
-                }
-                Err(error) => return Err(error),
-            }
+    fn auth_needs_preflight_refresh(&self, auth: &ResolvedAuth) -> Result<bool> {
+        let Some(token) = auth.token.as_deref() else {
+            return Ok(false);
         };
-
-        Self::decrypt_json_response(response, session_key).await
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|_| Error::Authentication("System clock is before Unix epoch".to_string()))?
+            .as_secs();
+        Ok(access_token_needs_refresh(token, now))
     }
 
-    async fn decrypt_json_response<U: DeserializeOwned>(
-        response: reqwest::Response,
-        session_key: [u8; 32],
-    ) -> Result<U> {
-        let encrypted_response: EncryptedResponse<U> = response.json().await?;
-        let decrypted =
-            crypto::decrypt_data(&session_key, &BASE64.decode(&encrypted_response.encrypted)?)?;
-        Ok(serde_json::from_slice(&decrypted)?)
-    }
-
-    async fn api_error_from_response(response: reqwest::Response) -> Error {
-        let status = response.status().as_u16();
-        let message = response
-            .text()
-            .await
-            .unwrap_or_else(|_| "Unknown error".to_string());
-        Error::Api { status, message }
-    }
-
-    /// Sends a lossless encrypted request to an OpenSecret inference endpoint.
+    /// Sends a lossless request to an allowed OpenSecret inference endpoint.
     ///
-    /// The request URI must be relative and target one of the SDK's explicitly
-    /// allowed inference routes. Its method, query string, headers, and body
-    /// bytes are otherwise caller-owned. The SDK does not parse the request as
-    /// JSON and never adds or changes inference parameters such as `stream`.
-    ///
-    /// OpenSecret authentication, attestation sessions, and the encrypted
-    /// envelope remain SDK-owned. Caller-provided `Host`, `Authorization`,
-    /// `x-session-id`, `Content-Length`, `Content-Type`, `Content-Encoding`,
-    /// `Accept-Encoding`, `Content-MD5`, `Digest`, and hop-by-hop headers
-    /// (including fields named by `Connection`) are therefore not forwarded.
-    /// Other headers are preserved.
-    ///
-    /// The returned HTTP response preserves the final OpenSecret status and
-    /// safe response headers. Its body is decrypted raw bytes. SSE framing is
-    /// preserved while encrypted `data:` fields are decrypted without parsing
-    /// their contents as completion JSON. Individual SSE lines are limited to
-    /// 16 MiB.
+    /// The complete logical request, including its selected credential, is
+    /// authenticated inside one Transport V2 envelope. No outer credential is
+    /// emitted. One marked outer session-recovery error may re-establish the
+    /// attested session and resend the captured request with a fresh request
+    /// ID. No other failure triggers replay, and there is no V1 downgrade.
     pub async fn send_inference_request(
         &self,
         request: InferenceRequest,
@@ -1000,13 +1347,43 @@ impl OpenSecretClient {
 
     /// Sends an inference request while sharing a caller-owned send budget.
     ///
-    /// This is equivalent to [`Self::send_inference_request`], except the SDK's
-    /// safe authentication or session repair replays consume the same budget as
-    /// any outer caller retry. The budget is request-local and may be cloned
-    /// across those nested layers.
+    /// Only inference HTTP sends consume this request-local budget. Attestation
+    /// and proactive token refresh do not consume it, and callers can share it
+    /// across their own retry layers.
     pub async fn send_inference_request_with_budget(
         &self,
         request: InferenceRequest,
+        send_budget: InferenceSendBudget,
+    ) -> Result<InferenceResponse> {
+        let auth = self
+            .resolve_auth_after_preflight(AuthHeaderMode::ApiKeyOrJwt)
+            .await?;
+        self.send_inference_request_with_auth(request, auth, send_budget)
+            .await
+    }
+
+    /// Sends one inference request with an explicit per-request API key.
+    ///
+    /// This is intended for multiplexing callers such as maple-proxy. The key
+    /// is placed only inside the encrypted request and is not retained by the
+    /// client or installed as its default credential.
+    pub async fn send_inference_request_with_api_key(
+        &self,
+        request: InferenceRequest,
+        api_key: String,
+    ) -> Result<InferenceResponse> {
+        let credential = ResolvedAuth {
+            token: Some(api_key),
+            source: CredentialSource::ExplicitApiKey,
+        };
+        self.send_inference_request_with_auth(request, credential, InferenceSendBudget::new(2)?)
+            .await
+    }
+
+    async fn send_inference_request_with_auth(
+        &self,
+        request: InferenceRequest,
+        auth: ResolvedAuth,
         send_budget: InferenceSendBudget,
     ) -> Result<InferenceResponse> {
         let (parts, body) = request.into_parts();
@@ -1022,173 +1399,43 @@ impl OpenSecretClient {
                 parts.uri.path()
             )));
         }
-
-        let path_and_query = parts
+        let target = parts
             .uri
             .path_and_query()
             .ok_or_else(|| Error::Configuration("Inference request URI has no path".to_string()))?
             .as_str()
             .to_string();
-        let headers = sanitize_inference_request_headers(&parts.headers);
-        let mut replayed = false;
-        let mut recovered_missing_session = false;
-
-        loop {
-            let auth = self.resolve_auth(AuthHeaderMode::ApiKeyOrJwt)?;
-            let result = self
-                .send_inference_request_once(
-                    &parts.method,
-                    &path_and_query,
-                    &headers,
-                    body.clone(),
-                    &auth,
-                    &send_budget,
-                )
-                .await;
-
-            match result {
-                Ok((response, session_key)) if response.status().is_success() => {
-                    return self.finish_inference_response(response, session_key).await
-                }
-                Ok((response, session_key)) => {
-                    let recovery =
-                        classify_response_recovery(response.status(), response.headers());
-                    if replayed {
-                        return self.finish_inference_response(response, session_key).await;
-                    }
-
-                    match recovery {
-                        Some(RecoveryAction::Reattest) => {
-                            self.perform_attestation_handshake().await?;
-                            if send_budget.remaining() == 0 {
-                                return self.finish_inference_response(response, session_key).await;
-                            }
-                            replayed = true;
-                        }
-                        Some(RecoveryAction::RefreshAccessToken) => {
-                            if matches!(
-                                self.recover_auth_after_unauthorized(
-                                    AuthHeaderMode::ApiKeyOrJwt,
-                                    &auth,
-                                )
-                                .await,
-                                Ok(true)
-                            ) {
-                                if send_budget.remaining() == 0 {
-                                    return self
-                                        .finish_inference_response(response, session_key)
-                                        .await;
-                                }
-                                replayed = true;
-                            } else {
-                                return self.finish_inference_response(response, session_key).await;
-                            }
-                        }
-                        None => return self.finish_inference_response(response, session_key).await,
-                    }
-                }
-                Err(Error::Session(_)) if !recovered_missing_session => {
-                    self.perform_attestation_handshake().await?;
-                    recovered_missing_session = true;
-                }
-                Err(error) => return Err(error),
-            }
-        }
-    }
-
-    async fn send_inference_request_once(
-        &self,
-        method: &http::Method,
-        path_and_query: &str,
-        caller_headers: &HttpHeaderMap,
-        body: Bytes,
-        auth: &ResolvedAuth,
-        send_budget: &InferenceSendBudget,
-    ) -> Result<(reqwest::Response, [u8; 32])> {
-        let session = self.session_manager.get_session()?.ok_or_else(|| {
-            Error::Session(
-                "No active session. Call perform_attestation_handshake first".to_string(),
-            )
-        })?;
-        let url = format!("{}{}", self.base_url, path_and_query);
-        let mut headers = caller_headers.clone();
-        headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
-        headers.insert(
-            "x-session-id",
-            HeaderValue::from_str(&session.session_id.to_string())
-                .map_err(|error| Error::Session(format!("Invalid session ID: {error}")))?,
-        );
-        if let Some(token) = &auth.token {
-            headers.insert(
-                AUTHORIZATION,
-                HeaderValue::from_str(&format!("Bearer {token}")).map_err(|error| {
-                    Error::Authentication(format!(
-                        "Invalid authorization credential format: {error}"
-                    ))
-                })?,
-            );
-        }
-
-        let encrypted_body = if body.is_empty() {
+        let headers = sanitize_inference_request_headers(&parts.headers)
+            .iter()
+            .map(|(name, value)| {
+                let value = value.to_str().map_err(|_| {
+                    Error::Configuration("Inference header value was not textual".to_string())
+                })?;
+                LogicalHeader::new(name.as_str().to_string(), value.to_string())
+                    .map_err(transport_error)
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let body = if parts.method == http::Method::GET && body.is_empty() {
             None
         } else {
-            let encrypted = crypto::encrypt_data(&session.session_key, &body)?;
-            Some(EncryptedRequest {
-                encrypted: BASE64.encode(encrypted),
-            })
+            Some(body)
         };
-        let request = self
-            .inference_client
-            .request(method.clone(), url)
-            .headers(headers);
-        if !send_budget.try_reserve_send() {
-            return Err(Error::Other(
-                "Inference request send budget exhausted".to_string(),
-            ));
-        }
-        let response = match encrypted_body {
-            Some(encrypted_body) => request.json(&encrypted_body).send().await?,
-            None => request.send().await?,
-        };
-
-        Ok((response, session.session_key))
-    }
-
-    async fn finish_inference_response(
-        &self,
-        response: reqwest::Response,
-        session_key: [u8; 32],
-    ) -> Result<HttpResponse<OpenSecretResponseBody>> {
-        let status = response.status();
-        let headers = sanitize_inference_response_headers(response.headers());
-        let body: OpenSecretResponseBody = if is_event_stream(&headers) {
-            decrypt_sse_body(response, session_key)
-        } else {
-            let raw_body = response.bytes().await?;
-            let decrypted_body = match serde_json::from_slice::<EncryptedBody>(&raw_body) {
-                Ok(encrypted_body) => {
-                    let encrypted = BASE64.decode(encrypted_body.encrypted)?;
-                    Bytes::from(crypto::decrypt_data(&session_key, &encrypted)?)
-                }
-                Err(_) if status.is_success() && !raw_body.is_empty() => {
-                    return Err(Error::InvalidResponse(
-                        "Successful inference response did not contain an encrypted body"
-                            .to_string(),
-                    ));
-                }
-                Err(_) => raw_body,
-            };
-            Box::pin(futures::stream::once(async move { Ok(decrypted_body) }))
-        };
-
-        let mut result = HttpResponse::builder()
-            .status(status)
-            .body(body)
-            .map_err(|error| {
-                Error::InvalidResponse(format!("Failed to construct inference response: {error}"))
-            })?;
-        *result.headers_mut() = headers;
-        Ok(result)
+        let response = self
+            .send_logical_request_with_options(
+                parts.method,
+                target,
+                headers,
+                body,
+                auth,
+                LogicalRequestOptions {
+                    include_cache_namespace: true,
+                    inference_send_budget: Some(&send_budget),
+                },
+            )
+            .await?;
+        let (mut parts, body) = response.into_parts();
+        parts.headers = sanitize_inference_response_headers(&parts.headers);
+        Ok(HttpResponse::from_parts(parts, body))
     }
 
     /// Typed compatibility wrapper over the lossless inference transport.
@@ -1205,160 +1452,55 @@ impl OpenSecretClient {
             Some(data) => Bytes::from(serde_json::to_vec(&data)?),
             None => Bytes::new(),
         };
-        let request = HttpRequest::builder()
-            .method(method)
-            .uri(endpoint)
-            .body(body)
-            .map_err(|error| {
-                Error::Configuration(format!("Failed to build inference request: {error}"))
-            })?;
+        let mut builder = HttpRequest::builder().method(method).uri(endpoint);
+        if !body.is_empty() {
+            builder = builder.header(header::CONTENT_TYPE, "application/json");
+        }
+        let request = builder.body(body).map_err(|error| {
+            Error::Configuration(format!("Failed to build inference request: {error}"))
+        })?;
         let response = self.send_inference_request(request).await?;
         let status = response.status();
         let body = collect_response_body(response.into_body()).await?;
-
         if !status.is_success() {
             return Err(Error::Api {
                 status: status.as_u16(),
                 message: String::from_utf8_lossy(&body).into_owned(),
             });
         }
-
         Ok(serde_json::from_slice(&body)?)
     }
 
-    async fn retry_encrypted_stream_call<T: Serialize>(
+    async fn encrypted_stream_call<T: Serialize>(
         &self,
         endpoint: &str,
         method: &str,
         data: Option<T>,
         auth_mode: AuthHeaderMode,
-        allow_refresh: bool,
-    ) -> Result<(reqwest::Response, [u8; 32])> {
-        let plaintext = data
+    ) -> Result<InferenceResponse> {
+        let method = http::Method::from_bytes(method.as_bytes()).map_err(|error| {
+            Error::Configuration(format!("Invalid streaming HTTP method: {error}"))
+        })?;
+        let body = data
             .map(|data| serde_json::to_vec(&data).map(Bytes::from))
             .transpose()?;
-        let mut replayed = false;
-        let mut recovered_missing_session = false;
-
-        loop {
-            let auth = self.resolve_auth(auth_mode)?;
-            match self
-                .send_encrypted_request(endpoint, method, plaintext.as_deref(), &auth, true)
-                .await
-            {
-                Ok((response, session_key)) if response.status().is_success() => {
-                    return Ok((response, session_key))
-                }
-                Ok((response, _session_key)) => {
-                    let recovery =
-                        classify_response_recovery(response.status(), response.headers());
-                    if replayed {
-                        return Err(Self::api_error_from_response(response).await);
-                    }
-
-                    match recovery {
-                        Some(RecoveryAction::Reattest) => {
-                            self.perform_attestation_handshake().await?;
-                            replayed = true;
-                        }
-                        Some(RecoveryAction::RefreshAccessToken)
-                            if allow_refresh
-                                && self
-                                    .recover_auth_after_unauthorized(auth_mode, &auth)
-                                    .await? =>
-                        {
-                            replayed = true;
-                        }
-                        _ => return Err(Self::api_error_from_response(response).await),
-                    }
-                }
-                Err(Error::Session(_)) if !recovered_missing_session => {
-                    self.perform_attestation_handshake().await?;
-                    recovered_missing_session = true;
-                }
-                Err(error) => return Err(error),
-            }
-        }
-    }
-
-    async fn send_encrypted_request(
-        &self,
-        endpoint: &str,
-        method: &str,
-        plaintext: Option<&[u8]>,
-        auth: &ResolvedAuth,
-        accept_sse: bool,
-    ) -> Result<(reqwest::Response, [u8; 32])> {
-        let session = self.session_manager.get_session()?.ok_or_else(|| {
-            Error::Session(
-                "No active session. Call perform_attestation_handshake first".to_string(),
-            )
-        })?;
-
-        let url = format!("{}{}", self.base_url, endpoint);
-
-        let encrypted_body = if let Some(plaintext) = plaintext {
-            let encrypted = crypto::encrypt_data(&session.session_key, plaintext)?;
-            Some(EncryptedRequest {
-                encrypted: BASE64.encode(&encrypted),
-            })
-        } else {
-            None
-        };
-
-        let headers = self.build_encrypted_headers(&session, auth, accept_sse)?;
-        let request_builder = match method {
-            "GET" => self.client.get(&url),
-            "POST" => self.client.post(&url),
-            "PUT" => self.client.put(&url),
-            "DELETE" => self.client.delete(&url),
-            _ => {
-                return Err(Error::Api {
-                    status: 0,
-                    message: format!("Unsupported HTTP method: {}", method),
-                })
-            }
-        };
-
-        let request_builder = request_builder.headers(headers);
-        let response = if let Some(body) = encrypted_body {
-            request_builder.json(&body).send().await?
-        } else {
-            request_builder.send().await?
-        };
-
-        Ok((response, session.session_key))
-    }
-
-    fn build_encrypted_headers(
-        &self,
-        session: &crate::types::SessionState,
-        auth: &ResolvedAuth,
-        accept_sse: bool,
-    ) -> Result<HeaderMap> {
-        let mut headers = HeaderMap::new();
-        headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
-
-        if accept_sse {
-            headers.insert("accept", HeaderValue::from_static("text/event-stream"));
-        }
-
-        headers.insert(
-            "x-session-id",
-            HeaderValue::from_str(&session.session_id.to_string())
-                .map_err(|e| Error::Session(format!("Invalid session ID: {}", e)))?,
-        );
-
-        if let Some(token) = &auth.token {
-            headers.insert(
-                AUTHORIZATION,
-                HeaderValue::from_str(&format!("Bearer {}", token)).map_err(|e| {
-                    Error::Authentication(format!("Invalid authorization credential format: {}", e))
-                })?,
+        let mut headers = vec![LogicalHeader::new(
+            header::ACCEPT.as_str().to_string(),
+            "text/event-stream".to_string(),
+        )
+        .map_err(transport_error)?];
+        if body.is_some() {
+            headers.push(
+                LogicalHeader::new(
+                    header::CONTENT_TYPE.as_str().to_string(),
+                    "application/json".to_string(),
+                )
+                .map_err(transport_error)?,
             );
         }
-
-        Ok(headers)
+        let auth = self.resolve_auth_after_preflight(auth_mode).await?;
+        self.send_logical_request(method, endpoint.to_string(), headers, body, auth, false)
+            .await
     }
 
     fn resolve_auth(&self, auth_mode: AuthHeaderMode) -> Result<ResolvedAuth> {
@@ -1366,29 +1508,31 @@ impl OpenSecretClient {
         match auth_mode {
             AuthHeaderMode::None => Ok(ResolvedAuth {
                 token: None,
-                using_api_key: false,
-                generation: 0,
+                source: CredentialSource::Anonymous,
             }),
             AuthHeaderMode::Jwt => Ok(ResolvedAuth {
                 token: credentials
                     .tokens
                     .as_ref()
                     .map(|tokens| tokens.access_token.clone()),
-                using_api_key: false,
-                generation: credentials.token_generation,
+                source: CredentialSource::StoredAccessToken {
+                    generation: credentials.token_generation,
+                },
             }),
             AuthHeaderMode::ApiKeyOrJwt => {
                 if let Some(api_key) = credentials.api_key {
                     Ok(ResolvedAuth {
                         token: Some(api_key),
-                        using_api_key: true,
-                        generation: credentials.api_key_generation,
+                        source: CredentialSource::StoredApiKey {
+                            generation: credentials.api_key_generation,
+                        },
                     })
                 } else {
                     Ok(ResolvedAuth {
                         token: credentials.tokens.map(|tokens| tokens.access_token),
-                        using_api_key: false,
-                        generation: credentials.token_generation,
+                        source: CredentialSource::StoredAccessToken {
+                            generation: credentials.token_generation,
+                        },
                     })
                 }
             }
@@ -1652,46 +1796,49 @@ impl OpenSecretClient {
             .and_then(|tokens| tokens.refresh_token.clone())
             .ok_or_else(|| Error::Authentication("No refresh token available".to_string()))?;
 
-        let request = RefreshRequest { refresh_token };
+        // Refresh is authorized by the resumption credential inside the
+        // encrypted envelope. Its logical body is deliberately absent.
+        let token_generation = credentials.token_generation;
+        let auth = ResolvedAuth {
+            token: Some(refresh_token),
+            source: CredentialSource::StoredRefreshToken {
+                generation: token_generation,
+            },
+        };
+        let response = self.send_resumption_request("/refresh", auth, None).await?;
+        let status = response.status();
+        let body = collect_response_body(response.into_body()).await?;
+        self.apply_authenticated_refresh_response(token_generation, status, &body)
+    }
 
-        let response: RefreshResponse = self
-            .encrypted_api_call("/refresh", "POST", Some(request))
-            .await?;
+    fn apply_authenticated_refresh_response(
+        &self,
+        expected_token_generation: u64,
+        status: http::StatusCode,
+        body: &[u8],
+    ) -> Result<()> {
+        if !status.is_success() {
+            if matches!(status.as_u16(), 401 | 403) {
+                self.session_manager
+                    .clear_tokens_if_generation(expected_token_generation)?;
+            }
+            return Err(Error::Api {
+                status: status.as_u16(),
+                message: String::from_utf8_lossy(body).into_owned(),
+            });
+        }
+        let response: RefreshResponse = serde_json::from_slice(body)?;
 
         // A synchronous set_tokens or a logout/clear may have replaced these
         // credentials while the HTTP refresh was in flight. Drop this stale
         // response instead of reinstalling credentials the caller superseded.
         self.session_manager.set_tokens_if_generation(
-            credentials.token_generation,
+            expected_token_generation,
             response.access_token,
             Some(response.refresh_token),
         )?;
 
         Ok(())
-    }
-
-    async fn recover_auth_after_unauthorized(
-        &self,
-        auth_mode: AuthHeaderMode,
-        failed_auth: &ResolvedAuth,
-    ) -> Result<bool> {
-        let _refresh_guard = self.refresh_lock.lock().await;
-
-        // Another request or the application may already have replaced the
-        // exact credential source while this request was in flight or waiting
-        // for the refresh lock. Retry with that replacement, including an API
-        // key/JWT source switch, rather than refreshing the wrong credential.
-        let current_auth = self.resolve_auth(auth_mode)?;
-        if current_auth != *failed_auth {
-            return Ok(true);
-        }
-
-        if current_auth.using_api_key {
-            return Ok(false);
-        }
-
-        self.refresh_token_inner().await?;
-        Ok(true)
     }
 
     pub async fn refresh_token(&self) -> Result<()> {
@@ -1712,13 +1859,27 @@ impl OpenSecretClient {
             .ok_or_else(|| Error::Authentication("No refresh token available".to_string()))?;
 
         let request = LogoutRequest {
-            refresh_token,
+            refresh_token: refresh_token.clone(),
             push_device_id,
         };
-
-        let _: serde_json::Value = self
-            .encrypted_api_call("/logout", "POST", Some(request))
+        let body = Bytes::from(serde_json::to_vec(&request)?);
+        let auth = ResolvedAuth {
+            token: Some(refresh_token),
+            source: CredentialSource::StoredRefreshToken {
+                generation: credentials.token_generation,
+            },
+        };
+        let response = self
+            .send_resumption_request("/logout", auth, Some(body))
             .await?;
+        let status = response.status();
+        let body = collect_response_body(response.into_body()).await?;
+        if !status.is_success() {
+            return Err(Error::Api {
+                status: status.as_u16(),
+                message: String::from_utf8_lossy(&body).into_owned(),
+            });
+        }
 
         // Do not clear credentials installed by the application while the
         // logout request was in flight (for example, a rapid account switch).
@@ -1754,7 +1915,6 @@ impl OpenSecretClient {
     }
 
     pub fn set_tokens(&self, access_token: String, refresh_token: Option<String>) -> Result<()> {
-        self.session_manager.clear_session()?;
         self.session_manager.set_tokens(access_token, refresh_token)
     }
 
@@ -2057,9 +2217,8 @@ impl OpenSecretClient {
 
     /// Requests a new email verification code
     pub async fn request_new_verification_code(&self) -> Result<()> {
-        let request = RequestVerificationCodeRequest {};
         let _: serde_json::Value = self
-            .authenticated_api_call("/protected/request_verification", "POST", Some(request))
+            .authenticated_api_call("/protected/request_verification", "POST", None::<()>)
             .await?;
         Ok(())
     }
@@ -2317,24 +2476,13 @@ impl OpenSecretClient {
     /// Creates a streaming chat completion
     pub async fn create_chat_completion_stream(
         &self,
-        mut request: ChatCompletionRequest,
+        request: ChatCompletionRequest,
     ) -> Result<std::pin::Pin<Box<dyn futures::Stream<Item = Result<ChatCompletionChunk>> + Send>>>
     {
-        request.stream = Some(true);
-        request.stream_options = Some(StreamOptions {
-            include_usage: true,
-        });
         use eventsource_stream::Eventsource;
         use futures::StreamExt;
 
-        let request = HttpRequest::builder()
-            .method(http::Method::POST)
-            .uri("/v1/chat/completions")
-            .header(header::ACCEPT, "text/event-stream")
-            .body(Bytes::from(serde_json::to_vec(&request)?))
-            .map_err(|error| {
-                Error::Configuration(format!("Failed to build inference request: {error}"))
-            })?;
+        let request = build_chat_completion_stream_request(request)?;
         let response = self.send_inference_request(request).await?;
         let status = response.status();
         if !status.is_success() {
@@ -2403,131 +2551,37 @@ impl OpenSecretClient {
             input: input.to_string(),
         };
 
-        let (response, session_key) = self
-            .retry_encrypted_stream_call(
-                &endpoint,
-                "POST",
-                Some(request),
-                AuthHeaderMode::Jwt,
-                true,
-            )
+        let response = self
+            .encrypted_stream_call(&endpoint, "POST", Some(request), AuthHeaderMode::Jwt)
             .await?;
+        let status = response.status();
+        if !status.is_success() {
+            let body = collect_response_body(response.into_body()).await?;
+            return Err(Error::Api {
+                status: status.as_u16(),
+                message: String::from_utf8_lossy(&body).into_owned(),
+            });
+        }
 
         let stream = response
-            .bytes_stream()
+            .into_body()
             .map(|result| result.map_err(std::io::Error::other));
 
-        let event_stream = stream.eventsource().filter_map(move |event| {
-            let session_key = session_key;
-            async move {
-                match event {
-                    Ok(event) => {
-                        if event.data == "[DONE]" {
-                            return None;
-                        }
-
-                        // Skip non-base64 events (heartbeats, retries, etc.)
-                        let encrypted_bytes = match BASE64.decode(&event.data) {
-                            Ok(bytes) => bytes,
-                            Err(_) => return None,
-                        };
-                        match crypto::decrypt_data(&session_key, &encrypted_bytes) {
-                            Ok(decrypted) => match String::from_utf8(decrypted) {
-                                Ok(json_str) => {
-                                    let event_type = event.event.as_str();
-                                    match event_type {
-                                        "agent.message" => {
-                                            match serde_json::from_str::<AgentMessageEvent>(
-                                                &json_str,
-                                            ) {
-                                                Ok(msg) => Some(Ok(AgentSseEvent::Message(msg))),
-                                                Err(e) => Some(Err(Error::Api {
-                                                    status: 0,
-                                                    message: format!(
-                                                        "Failed to parse agent message: {}",
-                                                        e
-                                                    ),
-                                                })),
-                                            }
-                                        }
-                                        "agent.reaction" => {
-                                            match serde_json::from_str::<AgentReactionEvent>(
-                                                &json_str,
-                                            ) {
-                                                Ok(reaction) => {
-                                                    Some(Ok(AgentSseEvent::Reaction(reaction)))
-                                                }
-                                                Err(e) => Some(Err(Error::Api {
-                                                    status: 0,
-                                                    message: format!(
-                                                        "Failed to parse agent reaction: {}",
-                                                        e
-                                                    ),
-                                                })),
-                                            }
-                                        }
-                                        "agent.typing" => {
-                                            match serde_json::from_str::<AgentTypingEvent>(
-                                                &json_str,
-                                            ) {
-                                                Ok(typing) => {
-                                                    Some(Ok(AgentSseEvent::Typing(typing)))
-                                                }
-                                                Err(e) => Some(Err(Error::Api {
-                                                    status: 0,
-                                                    message: format!(
-                                                        "Failed to parse agent typing: {}",
-                                                        e
-                                                    ),
-                                                })),
-                                            }
-                                        }
-                                        "agent.done" => {
-                                            match serde_json::from_str::<AgentDoneEvent>(&json_str)
-                                            {
-                                                Ok(done) => Some(Ok(AgentSseEvent::Done(done))),
-                                                Err(e) => Some(Err(Error::Api {
-                                                    status: 0,
-                                                    message: format!(
-                                                        "Failed to parse agent done: {}",
-                                                        e
-                                                    ),
-                                                })),
-                                            }
-                                        }
-                                        "agent.error" => {
-                                            match serde_json::from_str::<AgentErrorEvent>(&json_str)
-                                            {
-                                                Ok(err) => Some(Ok(AgentSseEvent::Error(err))),
-                                                Err(e) => Some(Err(Error::Api {
-                                                    status: 0,
-                                                    message: format!(
-                                                        "Failed to parse agent error: {}",
-                                                        e
-                                                    ),
-                                                })),
-                                            }
-                                        }
-                                        _ => None,
-                                    }
-                                }
-                                Err(e) => Some(Err(Error::Api {
-                                    status: 0,
-                                    message: format!("Invalid UTF-8 in decrypted data: {}", e),
-                                })),
-                            },
-                            Err(e) => Some(Err(Error::Decryption(format!(
-                                "Failed to decrypt agent event: {}",
-                                e
-                            )))),
-                        }
-                    }
-                    Err(e) => Some(Err(Error::Api {
+        let event_stream = stream.eventsource().filter_map(|event| async move {
+            let event = match event {
+                Ok(event) => event,
+                Err(error) => {
+                    return Some(Err(Error::Api {
                         status: 0,
-                        message: format!("SSE error: {}", e),
-                    })),
+                        message: format!("SSE error: {error}"),
+                    }));
                 }
+            };
+            if event.data == "[DONE]" {
+                return None;
             }
+
+            parse_agent_sse_event(&event.event, &event.data)
         });
 
         Ok(Box::pin(event_stream))
@@ -2707,3581 +2761,1171 @@ impl OpenSecretClient {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::PushNotificationKeyPair;
-    use futures::StreamExt;
-    use serde_json::json;
-    use std::{
-        collections::HashMap,
-        sync::{
-            atomic::{AtomicUsize, Ordering},
-            Arc, Mutex as StdMutex,
-        },
-        time::Duration,
-    };
+    use crate::transport_v2::client::{SessionResponder, TestV2ServerState};
+    use futures::stream;
     use wiremock::{
-        matchers::{header, method, path, query_param},
-        Match, Mock, MockServer, Request, Respond, ResponseTemplate,
+        matchers::{method, path},
+        Mock, MockServer, ResponseTemplate,
     };
 
-    const DEVELOPMENT_PCR0: &str =
-        "62c0407056217a4c10764ed9045694c29fa93255d3cc04c2f989cdd9a1f8050c8b169714c71f1118ebce2fcc9951d1a9";
-
-    #[test]
-    fn response_recovery_classifier_is_versioned_and_fail_closed() {
-        fn headers(contract: Option<&str>, code: Option<&str>) -> HeaderMap {
-            let mut headers = HeaderMap::new();
-            if let Some(contract) = contract {
-                headers.insert(
-                    ERROR_CONTRACT_HEADER,
-                    HeaderValue::from_str(contract).unwrap(),
-                );
-            }
-            if let Some(code) = code {
-                headers.insert(ERROR_CODE_HEADER, HeaderValue::from_str(code).unwrap());
-            }
-            headers
-        }
-
-        for (status, expected) in [
-            (
-                reqwest::StatusCode::BAD_REQUEST,
-                Some(RecoveryAction::Reattest),
-            ),
-            (
-                reqwest::StatusCode::UNAUTHORIZED,
-                Some(RecoveryAction::RefreshAccessToken),
-            ),
-            (reqwest::StatusCode::UNPROCESSABLE_ENTITY, None),
-        ] {
-            assert_eq!(
-                classify_response_recovery(status, &HeaderMap::new()),
-                expected
-            );
-        }
-
-        assert_eq!(
-            classify_response_recovery(
-                reqwest::StatusCode::BAD_REQUEST,
-                &headers(Some("1"), Some("session_not_found")),
-            ),
-            Some(RecoveryAction::Reattest)
-        );
-        assert_eq!(
-            classify_response_recovery(
-                reqwest::StatusCode::UNAUTHORIZED,
-                &headers(Some("1"), Some("access_token_expired")),
-            ),
-            Some(RecoveryAction::RefreshAccessToken)
-        );
-
-        for (status, contract, code) in [
-            (reqwest::StatusCode::BAD_REQUEST, Some("1"), None),
-            (reqwest::StatusCode::BAD_REQUEST, Some("1"), Some("unknown")),
-            (
-                reqwest::StatusCode::BAD_REQUEST,
-                Some("1"),
-                Some("access_token_expired"),
-            ),
-            (
-                reqwest::StatusCode::UNAUTHORIZED,
-                Some("1"),
-                Some("session_not_found"),
-            ),
-            (
-                reqwest::StatusCode::BAD_REQUEST,
-                Some("2"),
-                Some("session_not_found"),
-            ),
-        ] {
-            assert_eq!(
-                classify_response_recovery(status, &headers(contract, code)),
-                None
-            );
-        }
-
-        // A code without the version marker is still a legacy response.
-        assert_eq!(
-            classify_response_recovery(
-                reqwest::StatusCode::BAD_REQUEST,
-                &headers(None, Some("unknown")),
-            ),
-            Some(RecoveryAction::Reattest)
-        );
-
-        let mut duplicate_contract = headers(Some("1"), Some("session_not_found"));
-        duplicate_contract.append(ERROR_CONTRACT_HEADER, HeaderValue::from_static("1"));
-        assert_eq!(
-            classify_response_recovery(reqwest::StatusCode::BAD_REQUEST, &duplicate_contract),
-            None
-        );
-
-        let mut duplicate_code = headers(Some("1"), Some("session_not_found"));
-        duplicate_code.append(
-            ERROR_CODE_HEADER,
-            HeaderValue::from_static("session_not_found"),
-        );
-        assert_eq!(
-            classify_response_recovery(reqwest::StatusCode::BAD_REQUEST, &duplicate_code),
-            None
-        );
+    fn encoded_timing_token(exp: u64) -> String {
+        let payload = URL_SAFE_NO_PAD.encode(serde_json::json!({ "exp": exp }).to_string());
+        format!("header.{payload}.signature")
     }
 
-    fn synthetic_verified_attestation(pcr0: &str) -> AttestationDocument {
-        AttestationDocument {
-            module_id: "test-module".to_string(),
-            timestamp: 1,
-            digest: "SHA384".to_string(),
-            pcrs: HashMap::from([(0, hex::decode(pcr0).expect("valid test PCR0"))]),
-            certificate: Vec::new(),
-            cabundle: Vec::new(),
-            public_key: Some(vec![7; 32]),
-            user_data: None,
-            nonce: Some(b"test-nonce".to_vec()),
-        }
+    fn untrusted_handoff_grant(session_id: &str, request_id: &str) -> NativeOAuthHandoffGrant {
+        let payload = URL_SAFE_NO_PAD
+            .encode(serde_json::json!({ "sid": session_id, "rid": request_id }).to_string());
+        NativeOAuthHandoffGrant::new(format!("e30.{payload}.c2ln")).unwrap()
     }
 
-    struct MissingHeaderMatcher(&'static str);
-
-    impl Match for MissingHeaderMatcher {
-        fn matches(&self, request: &Request) -> bool {
-            !request.headers.contains_key(self.0)
-        }
+    fn response_events(
+        events: Vec<std::result::Result<ResponseEvent, TransportV2Error>>,
+    ) -> ResponseEventStream {
+        Box::pin(stream::iter(events))
     }
 
-    struct PathPrefixMatcher(&'static str);
-
-    impl Match for PathPrefixMatcher {
-        fn matches(&self, request: &Request) -> bool {
-            request.url.path().starts_with(self.0)
-        }
-    }
-
-    #[derive(Debug)]
-    struct EncryptedJsonBodyMatcher {
-        session_key: [u8; 32],
-        expected: serde_json::Value,
-    }
-
-    impl Match for EncryptedJsonBodyMatcher {
-        fn matches(&self, request: &Request) -> bool {
-            let Ok(body) = serde_json::from_slice::<EncryptedRequest>(request.body.as_ref()) else {
-                return false;
-            };
-            let Ok(encrypted) = BASE64.decode(body.encrypted.as_bytes()) else {
-                return false;
-            };
-            let Ok(plaintext) = crypto::decrypt_data(&self.session_key, &encrypted) else {
-                return false;
-            };
-            let Ok(actual) = serde_json::from_slice::<serde_json::Value>(&plaintext) else {
-                return false;
-            };
-
-            actual == self.expected
-        }
-    }
-
-    #[derive(Debug)]
-    struct EncryptedBytesBodyMatcher {
-        session_key: [u8; 32],
-        expected: Bytes,
-    }
-
-    impl Match for EncryptedBytesBodyMatcher {
-        fn matches(&self, request: &Request) -> bool {
-            let Ok(body) = serde_json::from_slice::<EncryptedRequest>(request.body.as_ref()) else {
-                return false;
-            };
-            let Ok(encrypted) = BASE64.decode(body.encrypted.as_bytes()) else {
-                return false;
-            };
-            let Ok(actual) = crypto::decrypt_data(&self.session_key, &encrypted) else {
-                return false;
-            };
-
-            actual == self.expected
-        }
-    }
-
-    struct AttestationResponder {
-        server_public_key: [u8; 32],
-    }
-
-    impl Respond for AttestationResponder {
-        fn respond(&self, request: &Request) -> ResponseTemplate {
-            let nonce = request.url.path().rsplit('/').next().unwrap_or_default();
-            let attestation_document =
-                build_mock_attestation_document(nonce, &self.server_public_key);
-
-            ResponseTemplate::new(200)
-                .set_body_json(json!({ "attestation_document": attestation_document }))
-        }
-    }
-
-    struct KeyExchangeResponder {
-        server_secret_key: [u8; 32],
-        session_key: [u8; 32],
-        session_id: String,
-    }
-
-    impl Respond for KeyExchangeResponder {
-        fn respond(&self, request: &Request) -> ResponseTemplate {
-            let body: KeyExchangeRequest = serde_json::from_slice(request.body.as_ref()).unwrap();
-            let client_public_bytes = BASE64.decode(body.client_public_key.as_bytes()).unwrap();
-            let client_public_key = x25519_dalek::PublicKey::from(
-                <[u8; 32]>::try_from(client_public_bytes.as_slice()).unwrap(),
-            );
-            let server_secret = x25519_dalek::StaticSecret::from(self.server_secret_key);
-            let shared_secret =
-                crypto::perform_static_key_exchange(&server_secret, &client_public_key);
-            let encrypted_session_key = BASE64
-                .encode(crypto::encrypt_data(shared_secret.as_bytes(), &self.session_key).unwrap());
-
-            ResponseTemplate::new(200).set_body_json(json!({
-                "encrypted_session_key": encrypted_session_key,
-                "session_id": self.session_id,
-            }))
-        }
-    }
-
-    #[derive(Clone)]
-    struct PerNonceAttestationResponder {
-        server_secrets: Arc<StdMutex<HashMap<String, [u8; 32]>>>,
-        next_key: Arc<AtomicUsize>,
-    }
-
-    impl Respond for PerNonceAttestationResponder {
-        fn respond(&self, request: &Request) -> ResponseTemplate {
-            let nonce = request.url.path().rsplit('/').next().unwrap_or_default();
-            let key_byte = self.next_key.fetch_add(1, Ordering::SeqCst) as u8 + 1;
-            let server_secret_key = [key_byte; 32];
-            let server_public_key =
-                x25519_dalek::PublicKey::from(&x25519_dalek::StaticSecret::from(server_secret_key));
-            self.server_secrets
-                .lock()
-                .unwrap()
-                .insert(nonce.to_string(), server_secret_key);
-
-            ResponseTemplate::new(200).set_body_json(json!({
-                "attestation_document": build_mock_attestation_document(
-                    nonce,
-                    server_public_key.as_bytes(),
-                )
-            }))
-        }
-    }
-
-    #[derive(Clone)]
-    struct PerNonceKeyExchangeResponder {
-        server_secrets: Arc<StdMutex<HashMap<String, [u8; 32]>>>,
-        session_key: [u8; 32],
-    }
-
-    impl Respond for PerNonceKeyExchangeResponder {
-        fn respond(&self, request: &Request) -> ResponseTemplate {
-            let body: KeyExchangeRequest = serde_json::from_slice(request.body.as_ref()).unwrap();
-            let server_secret_key = *self
-                .server_secrets
-                .lock()
-                .unwrap()
-                .get(&body.nonce)
-                .expect("key exchange nonce must match an attestation");
-            let client_public_bytes = BASE64.decode(body.client_public_key.as_bytes()).unwrap();
-            let client_public_key = x25519_dalek::PublicKey::from(
-                <[u8; 32]>::try_from(client_public_bytes.as_slice()).unwrap(),
-            );
-            let server_secret = x25519_dalek::StaticSecret::from(server_secret_key);
-            let shared_secret =
-                crypto::perform_static_key_exchange(&server_secret, &client_public_key);
-            let encrypted_session_key = BASE64
-                .encode(crypto::encrypt_data(shared_secret.as_bytes(), &self.session_key).unwrap());
-            let session_id = Uuid::from_u128(server_secret_key[0] as u128).to_string();
-
-            // Keep both key exchanges in flight long enough for both distinct
-            // attestation results to be processed by the client.
-            ResponseTemplate::new(200)
-                .set_delay(Duration::from_millis(100))
-                .set_body_json(json!({
-                    "encrypted_session_key": encrypted_session_key,
-                    "session_id": session_id,
-                }))
-        }
-    }
-
-    fn build_mock_attestation_document(nonce: &str, server_public_key: &[u8; 32]) -> String {
-        let payload = CborValue::Map(vec![
-            (
-                CborValue::Text("public_key".to_string()),
-                CborValue::Bytes(server_public_key.to_vec()),
-            ),
-            (
-                CborValue::Text("nonce".to_string()),
-                CborValue::Bytes(nonce.as_bytes().to_vec()),
-            ),
-        ]);
-
-        let payload = cbor::to_vec(&payload).unwrap();
-        let cose_sign1 = CborValue::Array(vec![
-            CborValue::Bytes(vec![]),
-            CborValue::Map(Vec::new()),
-            CborValue::Bytes(payload),
-            CborValue::Bytes(vec![]),
-        ]);
-
-        BASE64.encode(cbor::to_vec(&cose_sign1).unwrap())
-    }
-
-    fn encrypted_response<T: Serialize>(session_key: &[u8; 32], payload: &T) -> serde_json::Value {
-        let plaintext = serde_json::to_vec(payload).unwrap();
-        let encrypted = crypto::encrypt_data(session_key, &plaintext).unwrap();
-        json!({ "encrypted": BASE64.encode(encrypted) })
-    }
-
-    fn encrypted_response_bytes(session_key: &[u8; 32], payload: &[u8]) -> serde_json::Value {
-        let encrypted = crypto::encrypt_data(session_key, payload).unwrap();
-        json!({ "encrypted": BASE64.encode(encrypted) })
-    }
-
-    fn v1_error_response(
-        status: u16,
-        code: Option<&'static str>,
-        body: &'static str,
-    ) -> ResponseTemplate {
-        let response = ResponseTemplate::new(status)
-            .insert_header(ERROR_CONTRACT_HEADER, "1")
-            .set_body_string(body);
-        match code {
-            Some(code) => response.insert_header(ERROR_CODE_HEADER, code),
-            None => response,
-        }
-    }
-
-    fn encrypted_sse_data<T: Serialize>(session_key: &[u8; 32], payload: &T) -> String {
-        let plaintext = serde_json::to_vec(payload).unwrap();
-        let encrypted = crypto::encrypt_data(session_key, &plaintext).unwrap();
-        format!("data: {}\n\n", BASE64.encode(encrypted))
-    }
-
-    fn encrypted_sse_bytes(session_key: &[u8; 32], payload: &[u8]) -> String {
-        let encrypted = crypto::encrypt_data(session_key, payload).unwrap();
-        BASE64.encode(encrypted)
-    }
-
-    fn decrypt_request_body<T: serde::de::DeserializeOwned>(
-        request: &Request,
-        session_key: &[u8; 32],
-    ) -> T {
-        let body: EncryptedRequest = serde_json::from_slice(request.body.as_ref()).unwrap();
-        let encrypted = BASE64.decode(body.encrypted.as_bytes()).unwrap();
-        let plaintext = crypto::decrypt_data(session_key, &encrypted).unwrap();
-        serde_json::from_slice(&plaintext).unwrap()
-    }
-
-    struct RegisterPushDeviceResponder {
-        session_key: [u8; 32],
-        expected_request: RegisterPushDeviceRequest,
-        response_device: PushDevice,
-    }
-
-    impl Respond for RegisterPushDeviceResponder {
-        fn respond(&self, request: &Request) -> ResponseTemplate {
-            let body: RegisterPushDeviceRequest = decrypt_request_body(request, &self.session_key);
-            assert_eq!(body, self.expected_request);
-
-            ResponseTemplate::new(200)
-                .set_body_json(encrypted_response(&self.session_key, &self.response_device))
-        }
-    }
-
-    struct LogoutWithPushDeviceResponder {
-        session_key: [u8; 32],
-        expected_push_device_id: Uuid,
-    }
-
-    impl Respond for LogoutWithPushDeviceResponder {
-        fn respond(&self, request: &Request) -> ResponseTemplate {
-            let body: LogoutRequest = decrypt_request_body(request, &self.session_key);
-            assert_eq!(body.push_device_id, Some(self.expected_push_device_id));
-
-            ResponseTemplate::new(200).set_body_json(encrypted_response(
-                &self.session_key,
-                &json!({ "ok": true }),
-            ))
-        }
-    }
-
-    #[test]
-    fn test_build_conversations_endpoint_includes_filters() {
-        let endpoint = build_conversations_endpoint(Some(&ConversationsListParams {
-            limit: Some(25),
-            after: Some(Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap()),
-            order: Some("asc".to_string()),
-            project_id: Some(Uuid::parse_str("550e8400-e29b-41d4-a716-446655440001").unwrap()),
-            unassigned_project: Some(false),
-            pinned: Some(false),
-        }));
-
-        assert_eq!(
-            endpoint,
-            "/v1/conversations?limit=25&after=550e8400%2De29b%2D41d4%2Da716%2D446655440000&order=asc&project_id=550e8400%2De29b%2D41d4%2Da716%2D446655440001&unassigned_project=false&pinned=false"
-        );
-    }
-
-    #[test]
-    fn test_build_conversations_endpoint_supports_unassigned_project_filter() {
-        let endpoint = build_conversations_endpoint(Some(&ConversationsListParams {
-            limit: None,
-            after: None,
-            order: None,
-            project_id: None,
-            unassigned_project: Some(true),
-            pinned: None,
-        }));
-
-        assert_eq!(endpoint, "/v1/conversations?unassigned_project=true");
-    }
-
-    #[test]
-    fn test_build_conversation_projects_endpoint_includes_pagination() {
-        let endpoint = build_conversation_projects_endpoint(Some(&ConversationProjectListParams {
-            limit: Some(10),
-            after: Some(Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap()),
-            order: Some("desc".to_string()),
-        }));
-
-        assert_eq!(
-            endpoint,
-            "/v1/conversation-projects?limit=10&after=550e8400%2De29b%2D41d4%2Da716%2D446655440000&order=desc"
-        );
-    }
-
-    #[tokio::test]
-    async fn test_update_conversation_rejects_empty_request_locally() {
-        let mock_server = MockServer::start().await;
-        let client = OpenSecretClient::new(mock_server.uri()).unwrap();
-
-        let error = client
-            .update_conversation(Uuid::new_v4(), ConversationUpdateRequest::default())
-            .await
-            .unwrap_err();
-
-        assert!(
-            matches!(error, Error::Configuration(message) if message.contains("at least one field"))
-        );
-    }
-
-    #[tokio::test]
-    async fn test_update_conversation_project_rejects_empty_request_locally() {
-        let mock_server = MockServer::start().await;
-        let client = OpenSecretClient::new(mock_server.uri()).unwrap();
-
-        let error = client
-            .update_conversation_project(
-                Uuid::new_v4(),
-                ConversationProjectUpdateRequest::default(),
-            )
-            .await
-            .unwrap_err();
-
-        assert!(
-            matches!(error, Error::Configuration(message) if message.contains("at least one field"))
-        );
-    }
-
-    #[tokio::test]
-    async fn test_client_creation() {
-        let client = OpenSecretClient::new("http://localhost:3000").unwrap();
-        assert_eq!(client.base_url, "http://localhost:3000");
-        assert!(client.use_mock_attestation);
-    }
-
-    #[tokio::test]
-    async fn cross_environment_pcr0_fails_before_key_exchange() {
-        let mock_server = MockServer::start().await;
+    async fn mount_delayed_session_with_no_request(server: &MockServer, server_secret: [u8; 32]) {
         Mock::given(method("POST"))
-            .and(path("/key_exchange"))
+            .and(path("/v2/session"))
+            .respond_with(SessionResponder {
+                server_secret,
+                state: None,
+                delay: Some(std::time::Duration::from_millis(500)),
+            })
+            .expect(1)
+            .mount(server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/v2/request"))
             .respond_with(ResponseTemplate::new(500))
             .expect(0)
-            .mount(&mock_server)
+            .mount(server)
             .await;
+    }
 
-        let production_policy =
-            Pcr0TrustPolicy::official_for(Pcr0Environment::Production).without_remote_history();
-        let client =
-            OpenSecretClient::new_with_pcr0_trust_policy(mock_server.uri(), production_policy)
-                .unwrap();
-        let document = synthetic_verified_attestation(DEVELOPMENT_PCR0);
-        let nonce = Uuid::new_v4().to_string();
+    async fn wait_until_session_establishment_is_in_flight(server: &MockServer) {
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                if server.received_requests().await.is_some_and(|requests| {
+                    requests
+                        .iter()
+                        .any(|request| request.url.path() == "/v2/session")
+                }) {
+                    return;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("session establishment request was not observed");
+    }
 
-        let error = client
-            .establish_session_from_verified_attestation(&nonce, document)
-            .await
-            .unwrap_err();
+    #[test]
+    fn cache_namespace_root_round_trips_without_debug_disclosure() {
+        let root = TransportV2CacheNamespaceRoot::from_bytes([42; 32]);
+        let encoded = root.to_base64();
 
-        assert!(matches!(error, Error::AttestationVerificationFailed(_)));
-        assert!(client.get_session_id().unwrap().is_none());
-        mock_server.verify().await;
+        assert_eq!(
+            TransportV2CacheNamespaceRoot::from_base64(&encoded).unwrap(),
+            root
+        );
+        assert_eq!(
+            format!("{root:?}"),
+            "TransportV2CacheNamespaceRoot([REDACTED])"
+        );
+        assert!(!format!("{root:?}").contains(&encoded));
+    }
+
+    #[test]
+    fn cache_namespace_root_rejects_noncanonical_or_wrong_length_base64() {
+        let canonical = BASE64.encode([42; 32]);
+
+        assert!(
+            TransportV2CacheNamespaceRoot::from_base64(canonical.trim_end_matches('=')).is_err()
+        );
+        assert!(TransportV2CacheNamespaceRoot::from_base64(&BASE64.encode([42; 31])).is_err());
+    }
+
+    #[test]
+    fn native_handoff_grant_is_canonical_bounded_and_redacted() {
+        let grant = NativeOAuthHandoffGrant::new("e30.e30.c2ln").unwrap();
+        assert_eq!(format!("{grant:?}"), "NativeOAuthHandoffGrant([REDACTED])");
+        for invalid in [
+            "",
+            "one.two",
+            "one.two.three.four",
+            "e30=.e30.c2ln",
+            "e30.e30.bad+alphabet",
+        ] {
+            assert!(NativeOAuthHandoffGrant::new(invalid).is_err(), "{invalid}");
+        }
+        assert!(NativeOAuthHandoffGrant::new(format!(
+            "{}.e30.c2ln",
+            "a".repeat(MAX_NATIVE_OAUTH_HANDOFF_GRANT_BYTES)
+        ))
+        .is_err());
     }
 
     #[tokio::test]
-    async fn development_environment_accepts_development_pcr0_before_key_exchange() {
-        let mock_server = MockServer::start().await;
+    async fn prepared_handoff_filters_mismatched_untrusted_grant_targets_locally() {
+        let server = MockServer::start().await;
         Mock::given(method("POST"))
-            .and(path("/key_exchange"))
-            .respond_with(ResponseTemplate::new(500))
+            .and(path("/v2/session"))
+            .respond_with(SessionResponder {
+                server_secret: [0x89; 32],
+                state: None,
+                delay: None,
+            })
             .expect(1)
-            .mount(&mock_server)
+            .mount(&server)
             .await;
 
-        let client = OpenSecretClient::new_with_pcr0_environment(
-            mock_server.uri(),
-            Pcr0Environment::Development,
-        )
-        .unwrap();
-        let document = synthetic_verified_attestation(DEVELOPMENT_PCR0);
-        let nonce = Uuid::new_v4().to_string();
+        let client = OpenSecretClient::new(server.uri()).unwrap();
+        let first = client.prepare_native_oauth_handoff().await.unwrap();
+        let second = client.prepare_native_oauth_handoff().await.unwrap();
+        let stale_first_grant = untrusted_handoff_grant(first.session_id(), first.request_id());
 
-        let error = client
-            .establish_session_from_verified_attestation(&nonce, document)
+        assert!(first.matches_untrusted_grant_target(&stale_first_grant));
+        assert!(
+            !second.matches_untrusted_grant_target(&stale_first_grant),
+            "an A callback must not consume a newer B request"
+        );
+        assert!(
+            second.matches_untrusted_grant_target(&untrusted_handoff_grant(
+                second.session_id(),
+                second.request_id()
+            ))
+        );
+        assert!(!second.matches_untrusted_grant_target(
+            &NativeOAuthHandoffGrant::new("e30.e30.c2ln").unwrap()
+        ));
+    }
+
+    #[tokio::test]
+    async fn native_handoff_redeems_the_advertised_request_once_without_outer_secrets() {
+        let server = MockServer::start().await;
+        let state = TestV2ServerState::new();
+        let user_id = Uuid::new_v4();
+        state.queue_json_response(
+            200,
+            serde_json::json!({
+                "id": user_id,
+                "email": "native@example.com",
+                "access_token": "native-access",
+                "refresh_token": "native-refresh",
+            }),
+        );
+        Mock::given(method("POST"))
+            .and(path("/v2/session"))
+            .respond_with(SessionResponder {
+                server_secret: [0x8a; 32],
+                state: Some(state.clone()),
+                delay: None,
+            })
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/v2/request"))
+            .respond_with(state.request_responder())
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = OpenSecretClient::new(server.uri()).unwrap();
+        let prepared = client.prepare_native_oauth_handoff().await.unwrap();
+        let advertised_session_id = prepared.session_id().to_string();
+        let advertised_request_id = prepared.request_id().to_string();
+        for id in [&advertised_session_id, &advertised_request_id] {
+            assert_eq!(id.len(), 32);
+            assert!(id
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f')));
+        }
+
+        let response = client
+            .redeem_native_oauth_handoff(
+                prepared,
+                NativeOAuthHandoffGrant::new("e30.e30.c2ln").unwrap(),
+            )
             .await
-            .unwrap_err();
-
-        assert!(matches!(error, Error::Api { status: 500, .. }));
-        assert!(client.get_session_id().unwrap().is_none());
-        mock_server.verify().await;
-    }
-
-    #[test]
-    fn mock_attestation_uses_the_parsed_host_not_url_substrings() {
-        for url in [
-            "https://localhost.example.com",
-            "https://example.com/localhost",
-            "https://example.com/127.0.0.1",
-        ] {
-            let client = OpenSecretClient::new(url).unwrap();
-            assert!(!client.use_mock_attestation, "unexpected mock URL: {url}");
-        }
-
-        assert!(
-            OpenSecretClient::new("http://localhost:3000")
-                .unwrap()
-                .use_mock_attestation
-        );
-        assert!(
-            OpenSecretClient::new("http://127.0.0.1:3000")
-                .unwrap()
-                .use_mock_attestation
-        );
-        assert!(
-            OpenSecretClient::new("http://[::1]:3000")
-                .unwrap()
-                .use_mock_attestation
-        );
-    }
-
-    #[test]
-    fn base_url_validation_rejects_malformed_or_ambiguous_urls() {
-        for url in [
-            "not a URL",
-            "file:///tmp/opensecret",
-            "https://localhost@example.com",
-            "https://example.com?redirect=localhost",
-            "https://example.com/#localhost",
-        ] {
-            assert!(
-                OpenSecretClient::new(url).is_err(),
-                "unexpectedly accepted base URL: {url}"
-            );
-        }
-    }
-
-    #[test]
-    fn android_emulator_alias_is_not_a_desktop_mock_bypass() {
-        let client = OpenSecretClient::new("http://10.0.2.2:3000");
-        if cfg!(target_os = "android") {
-            assert!(client.unwrap().use_mock_attestation);
-        } else {
-            assert!(client.is_err());
-            assert!(
-                !OpenSecretClient::new("https://10.0.2.2:3000")
-                    .unwrap()
-                    .use_mock_attestation
-            );
-        }
-    }
-
-    #[test]
-    fn get_tokens_returns_one_coherent_pair_snapshot() {
-        let client = OpenSecretClient::new("http://localhost:3000").unwrap();
-        client
-            .set_tokens("access".to_string(), Some("refresh".to_string()))
             .unwrap();
-
+        assert_eq!(response.id, user_id);
         let tokens = client.get_tokens().unwrap().unwrap();
-        assert_eq!(tokens.access_token, "access");
-        assert_eq!(tokens.refresh_token.as_deref(), Some("refresh"));
-    }
+        assert_eq!(tokens.access_token, "native-access");
+        assert_eq!(tokens.refresh_token.as_deref(), Some("native-refresh"));
 
-    #[tokio::test]
-    async fn concurrent_attestation_handshakes_keep_each_nonce_public_key() {
-        let mock_server = MockServer::start().await;
-        let client = OpenSecretClient::new(mock_server.uri()).unwrap();
-        let server_secrets = Arc::new(StdMutex::new(HashMap::new()));
-        let next_key = Arc::new(AtomicUsize::new(0));
-        let session_key = [42u8; 32];
-
-        Mock::given(method("GET"))
-            .and(PathPrefixMatcher("/attestation/"))
-            .respond_with(PerNonceAttestationResponder {
-                server_secrets: Arc::clone(&server_secrets),
-                next_key,
-            })
-            .expect(2)
-            .mount(&mock_server)
-            .await;
-        Mock::given(method("POST"))
-            .and(path("/key_exchange"))
-            .respond_with(PerNonceKeyExchangeResponder {
-                server_secrets: Arc::clone(&server_secrets),
-                session_key,
-            })
-            .expect(2)
-            .mount(&mock_server)
-            .await;
-
-        let (first, second) = tokio::join!(
-            client.perform_attestation_handshake(),
-            client.perform_attestation_handshake()
-        );
-
-        first.unwrap();
-        second.unwrap();
-        assert_eq!(server_secrets.lock().unwrap().len(), 2);
-        assert!(client.get_session_id().unwrap().is_some());
-    }
-
-    #[tokio::test]
-    async fn test_register_push_device_uses_v1_push_endpoint() {
-        let mock_server = MockServer::start().await;
-        let client = OpenSecretClient::new(mock_server.uri()).unwrap();
-        let session_id = Uuid::new_v4();
-        let session_key = [21u8; 32];
-        let now = chrono::DateTime::parse_from_rfc3339("2024-01-01T00:00:00Z")
-            .unwrap()
-            .with_timezone(&chrono::Utc);
-
-        client
-            .session_manager
-            .set_session(session_id, session_key)
-            .unwrap();
-        client
-            .session_manager
-            .set_tokens(
-                "access_token".to_string(),
-                Some("refresh_token".to_string()),
-            )
-            .unwrap();
-
-        let key_pair = PushNotificationKeyPair::generate();
-        let request = RegisterPushDeviceRequest::new(
-            Uuid::new_v4(),
-            PushPlatform::Ios,
-            PushEnvironment::Prod,
-            "ai.trymaple.ios",
-            "opaque-token",
-            key_pair.public_key_spki_base64().unwrap(),
-        )
-        .supports_encrypted_preview(true)
-        .supports_background_processing(true);
-
-        let response_device = PushDevice {
-            id: Uuid::new_v4(),
-            object: "push.device".to_string(),
-            installation_id: request.installation_id,
-            platform: request.platform,
-            provider: request.provider,
-            environment: request.environment,
-            app_id: request.app_id.clone(),
-            key_algorithm: request.key_algorithm,
-            supports_encrypted_preview: request.supports_encrypted_preview,
-            supports_background_processing: request.supports_background_processing,
-            last_seen_at: now,
-            created_at: now,
-            updated_at: now,
-        };
-
-        Mock::given(method("POST"))
-            .and(path("/v1/push/devices"))
-            .and(header("authorization", "Bearer access_token"))
-            .and(header("x-session-id", session_id.to_string()))
-            .respond_with(RegisterPushDeviceResponder {
-                session_key,
-                expected_request: request.clone(),
-                response_device: response_device.clone(),
-            })
-            .expect(1)
-            .mount(&mock_server)
-            .await;
-
-        let response = client.register_push_device(request).await.unwrap();
-
-        assert_eq!(response, response_device);
-    }
-
-    #[tokio::test]
-    async fn test_list_and_revoke_push_devices_use_v1_endpoints() {
-        let mock_server = MockServer::start().await;
-        let client = OpenSecretClient::new(mock_server.uri()).unwrap();
-        let session_id = Uuid::new_v4();
-        let session_key = [22u8; 32];
-        let now = chrono::DateTime::parse_from_rfc3339("2024-01-01T00:00:00Z")
-            .unwrap()
-            .with_timezone(&chrono::Utc);
-        let device_id = Uuid::new_v4();
-
-        client
-            .session_manager
-            .set_session(session_id, session_key)
-            .unwrap();
-        client
-            .session_manager
-            .set_tokens(
-                "access_token".to_string(),
-                Some("refresh_token".to_string()),
-            )
-            .unwrap();
-
-        let device = PushDevice {
-            id: device_id,
-            object: "push.device".to_string(),
-            installation_id: Uuid::new_v4(),
-            platform: PushPlatform::Android,
-            provider: PushProvider::Fcm,
-            environment: PushEnvironment::Prod,
-            app_id: "ai.trymaple.android".to_string(),
-            key_algorithm: PushKeyAlgorithm::P256EcdhV1,
-            supports_encrypted_preview: false,
-            supports_background_processing: true,
-            last_seen_at: now,
-            created_at: now,
-            updated_at: now,
-        };
-        let list_response = PushDeviceListResponse {
-            object: "list".to_string(),
-            data: vec![device.clone()],
-        };
-        let deleted_response = DeletedPushDeviceResponse {
-            id: device_id,
-            object: "push.device.deleted".to_string(),
-            deleted: true,
-        };
-
-        Mock::given(method("GET"))
-            .and(path("/v1/push/devices"))
-            .and(header("authorization", "Bearer access_token"))
-            .and(header("x-session-id", session_id.to_string()))
-            .respond_with(
-                ResponseTemplate::new(200)
-                    .set_body_json(encrypted_response(&session_key, &list_response)),
-            )
-            .expect(1)
-            .mount(&mock_server)
-            .await;
-
-        Mock::given(method("DELETE"))
-            .and(path(format!("/v1/push/devices/{}", device_id)))
-            .and(header("authorization", "Bearer access_token"))
-            .and(header("x-session-id", session_id.to_string()))
-            .respond_with(
-                ResponseTemplate::new(200)
-                    .set_body_json(encrypted_response(&session_key, &deleted_response)),
-            )
-            .expect(1)
-            .mount(&mock_server)
-            .await;
-
-        let listed = client.list_push_devices().await.unwrap();
-        let deleted = client.revoke_push_device(device_id).await.unwrap();
-
-        assert_eq!(listed, list_response);
-        assert_eq!(deleted, deleted_response);
-    }
-
-    #[tokio::test]
-    async fn test_logout_with_push_device_id_sends_cleanup_hint() {
-        let mock_server = MockServer::start().await;
-        let client = OpenSecretClient::new(mock_server.uri()).unwrap();
-        let session_id = Uuid::new_v4();
-        let session_key = [23u8; 32];
-        let push_device_id = Uuid::new_v4();
-
-        client
-            .session_manager
-            .set_session(session_id, session_key)
-            .unwrap();
-        client
-            .session_manager
-            .set_tokens(
-                "access_token".to_string(),
-                Some("refresh_token".to_string()),
-            )
-            .unwrap();
-
-        Mock::given(method("POST"))
-            .and(path("/logout"))
-            .and(MissingHeaderMatcher("authorization"))
-            .and(header("x-session-id", session_id.to_string()))
-            .respond_with(LogoutWithPushDeviceResponder {
-                session_key,
-                expected_push_device_id: push_device_id,
-            })
-            .expect(1)
-            .mount(&mock_server)
-            .await;
-
-        client
-            .logout_with_push_device_id(push_device_id)
-            .await
-            .unwrap();
-
-        assert!(client.get_session_id().unwrap().is_none());
-        assert!(client.get_access_token().unwrap().is_none());
-        assert!(client.get_refresh_token().unwrap().is_none());
-    }
-
-    #[tokio::test]
-    async fn test_change_password_preserves_refresh_token_when_response_omits_one() {
-        let mock_server = MockServer::start().await;
-        let client = OpenSecretClient::new(mock_server.uri()).unwrap();
-        let session_id = Uuid::new_v4();
-        let session_key = [24u8; 32];
-
-        client
-            .session_manager
-            .set_session(session_id, session_key)
-            .unwrap();
-        client
-            .session_manager
-            .set_tokens(
-                "old_access_token".to_string(),
-                Some("old_refresh_token".to_string()),
-            )
-            .unwrap();
-
-        Mock::given(method("POST"))
-            .and(path("/protected/change_password"))
-            .and(header("authorization", "Bearer old_access_token"))
-            .and(header("x-session-id", session_id.to_string()))
-            .respond_with(ResponseTemplate::new(200).set_body_json(encrypted_response(
-                &session_key,
-                &json!({
-                    "message": "updated",
-                    "access_token": "new_access_token"
-                }),
-            )))
-            .expect(1)
-            .mount(&mock_server)
-            .await;
-
-        client
-            .change_password("old-credential".to_string(), "new-credential".to_string())
-            .await
-            .unwrap();
-
+        let logical = state.captured_requests();
+        assert_eq!(logical.len(), 1);
+        assert_eq!(logical[0]["version"], 2);
+        assert_eq!(logical[0]["credential"], serde_json::Value::Null);
+        assert_eq!(logical[0]["cache_namespace_root"], serde_json::Value::Null);
+        assert_eq!(logical[0]["method"], "POST");
+        assert_eq!(logical[0]["target"], "/auth/native-handoff/redeem");
+        assert_eq!(logical[0]["body_present"], true);
+        assert_eq!(logical[0]["headers"].as_array().unwrap().len(), 1);
+        assert_eq!(logical[0]["headers"][0]["name"], "content-type");
+        assert_eq!(logical[0]["headers"][0]["value"], "application/json");
+        assert_eq!(state.captured_request_ids(), vec![advertised_request_id]);
+        let bodies = state.captured_request_bodies();
+        assert_eq!(bodies.len(), 1);
         assert_eq!(
-            client.get_access_token().unwrap().as_deref(),
-            Some("new_access_token")
+            serde_json::from_slice::<serde_json::Value>(&bodies[0]).unwrap(),
+            serde_json::json!({ "grant": "e30.e30.c2ln" })
         );
+
+        let outer = server.received_requests().await.unwrap();
+        assert_eq!(outer.len(), 2);
+        assert_eq!(outer[1].url.path(), "/v2/request");
         assert_eq!(
-            client.get_refresh_token().unwrap().as_deref(),
-            Some("old_refresh_token")
+            outer[1].headers.get("x-session-id").unwrap(),
+            advertised_session_id.as_str()
         );
-    }
-
-    #[tokio::test]
-    async fn test_authenticated_calls_refresh_and_retry_seamlessly() {
-        let mock_server = MockServer::start().await;
-        let client = OpenSecretClient::new(mock_server.uri()).unwrap();
-        let session_id = Uuid::new_v4();
-        let session_key = [7u8; 32];
-        let expired_access = "expired_access";
-        let new_access = "new_access";
-        let new_refresh = "new_refresh";
-        let expired_header = format!("Bearer {}", expired_access);
-        let fresh_header = format!("Bearer {}", new_access);
-
-        client
-            .session_manager
-            .set_session(session_id, session_key)
-            .unwrap();
-        client
-            .session_manager
-            .set_tokens(
-                expired_access.to_string(),
-                Some("refresh_token".to_string()),
-            )
-            .unwrap();
-
-        Mock::given(method("GET"))
-            .and(path("/protected/user"))
-            .and(header("authorization", &expired_header))
-            .and(header("x-session-id", session_id.to_string()))
-            .respond_with(
-                ResponseTemplate::new(401).set_body_json(json!({ "message": "jwt expired" })),
-            )
-            .expect(1)
-            .mount(&mock_server)
-            .await;
-
-        Mock::given(method("POST"))
-            .and(path("/refresh"))
-            .and(MissingHeaderMatcher("authorization"))
-            .and(header("x-session-id", session_id.to_string()))
-            .respond_with(ResponseTemplate::new(200).set_body_json(encrypted_response(
-                &session_key,
-                &json!({
-                    "access_token": new_access,
-                    "refresh_token": new_refresh,
-                }),
-            )))
-            .expect(1)
-            .mount(&mock_server)
-            .await;
-
-        Mock::given(method("GET"))
-            .and(path("/protected/user"))
-            .and(header("authorization", &fresh_header))
-            .and(header("x-session-id", session_id.to_string()))
-            .respond_with(ResponseTemplate::new(200).set_body_json(encrypted_response(
-                &session_key,
-                &json!({
-                    "user": {
-                        "id": Uuid::new_v4(),
-                        "name": null,
-                        "email": "sdk@test.dev",
-                        "email_verified": true,
-                        "login_method": "email",
-                        "created_at": "2024-01-01T00:00:00Z",
-                        "updated_at": "2024-01-01T00:00:00Z"
-                    }
-                }),
-            )))
-            .expect(1)
-            .mount(&mock_server)
-            .await;
-
-        let response = client.get_user().await.unwrap();
-
-        assert_eq!(response.user.email.as_deref(), Some("sdk@test.dev"));
-        assert_eq!(
-            client.get_access_token().unwrap().as_deref(),
-            Some(new_access)
-        );
-        assert_eq!(
-            client.get_refresh_token().unwrap().as_deref(),
-            Some(new_refresh)
-        );
-    }
-
-    #[tokio::test]
-    async fn concurrent_authenticated_401s_share_one_refresh() {
-        let mock_server = MockServer::start().await;
-        let client = OpenSecretClient::new(mock_server.uri()).unwrap();
-        let session_id = Uuid::new_v4();
-        let session_key = [39u8; 32];
-
-        client
-            .session_manager
-            .set_session(session_id, session_key)
-            .unwrap();
-        client
-            .session_manager
-            .set_tokens(
-                "expired_access".to_string(),
-                Some("refresh_token".to_string()),
-            )
-            .unwrap();
-
-        Mock::given(method("GET"))
-            .and(path("/protected/user"))
-            .and(header("authorization", "Bearer expired_access"))
-            .respond_with(
-                ResponseTemplate::new(401)
-                    .set_delay(Duration::from_millis(50))
-                    .set_body_json(json!({ "message": "jwt expired" })),
-            )
-            .expect(2)
-            .mount(&mock_server)
-            .await;
-
-        Mock::given(method("POST"))
-            .and(path("/refresh"))
-            .and(MissingHeaderMatcher("authorization"))
-            .respond_with(
-                ResponseTemplate::new(200)
-                    .set_delay(Duration::from_millis(100))
-                    .set_body_json(encrypted_response(
-                        &session_key,
-                        &json!({
-                            "access_token": "fresh_access",
-                            "refresh_token": "fresh_refresh",
-                        }),
-                    )),
-            )
-            .expect(1)
-            .mount(&mock_server)
-            .await;
-
-        Mock::given(method("GET"))
-            .and(path("/protected/user"))
-            .and(header("authorization", "Bearer fresh_access"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(encrypted_response(
-                &session_key,
-                &json!({
-                    "user": {
-                        "id": Uuid::new_v4(),
-                        "name": null,
-                        "email": "sdk@test.dev",
-                        "email_verified": true,
-                        "login_method": "email",
-                        "created_at": "2024-01-01T00:00:00Z",
-                        "updated_at": "2024-01-01T00:00:00Z"
-                    }
-                }),
-            )))
-            .expect(2)
-            .mount(&mock_server)
-            .await;
-
-        let (first, second) = tokio::join!(client.get_user(), client.get_user());
-        assert_eq!(first.unwrap().user.email.as_deref(), Some("sdk@test.dev"));
-        assert_eq!(second.unwrap().user.email.as_deref(), Some("sdk@test.dev"));
-        assert_eq!(
-            client.get_access_token().unwrap().as_deref(),
-            Some("fresh_access")
-        );
-        assert_eq!(
-            client.get_refresh_token().unwrap().as_deref(),
-            Some("fresh_refresh")
-        );
-        mock_server.verify().await;
-    }
-
-    #[tokio::test]
-    async fn v1_generic_400_and_401_do_not_recover() {
-        let mock_server = MockServer::start().await;
-        let client = OpenSecretClient::new(mock_server.uri()).unwrap();
-        let session_id = Uuid::new_v4();
-        let session_key = [54u8; 32];
-        client
-            .session_manager
-            .set_session(session_id, session_key)
-            .unwrap();
-        client
-            .session_manager
-            .set_tokens(
-                "access_token".to_string(),
-                Some("refresh_token".to_string()),
-            )
-            .unwrap();
-
-        for (endpoint, status) in [("/generic-400", 400), ("/generic-401", 401)] {
-            Mock::given(method("GET"))
-                .and(path(endpoint))
-                .and(header("authorization", "Bearer access_token"))
-                .and(header("x-session-id", session_id.to_string()))
-                .respond_with(v1_error_response(status, None, "generic error"))
-                .expect(1)
-                .mount(&mock_server)
-                .await;
+        assert!(!outer[1].headers.contains_key(header::AUTHORIZATION));
+        assert!(!outer[1].headers.contains_key(header::COOKIE));
+        for secret in ["e30.e30.c2ln", "native-access", "native-refresh"] {
+            assert!(!outer[1]
+                .body
+                .windows(secret.len())
+                .any(|window| window == secret.as_bytes()));
         }
-        Mock::given(method("GET"))
-            .and(PathPrefixMatcher("/attestation/"))
+    }
+
+    #[tokio::test]
+    async fn native_handoff_rejects_stale_anonymous_generation_before_network_use() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v2/session"))
+            .respond_with(SessionResponder {
+                server_secret: [0x8b; 32],
+                state: None,
+                delay: None,
+            })
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/v2/request"))
             .respond_with(ResponseTemplate::new(500))
             .expect(0)
-            .mount(&mock_server)
+            .mount(&server)
+            .await;
+
+        let client = OpenSecretClient::new(server.uri()).unwrap();
+        let prepared = client.prepare_native_oauth_handoff().await.unwrap();
+        client
+            .set_tokens("new-access".to_string(), Some("new-refresh".to_string()))
+            .unwrap();
+        assert!(matches!(
+            client
+                .redeem_native_oauth_handoff(
+                    prepared,
+                    NativeOAuthHandoffGrant::new("e30.e30.c2ln").unwrap(),
+                )
+                .await,
+            Err(Error::Authentication(message))
+                if message == "Authentication changed during native OAuth handoff"
+        ));
+        assert_eq!(server.received_requests().await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn native_handoff_rejects_a_replaced_transport_session_before_network_use() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v2/session"))
+            .respond_with(SessionResponder {
+                server_secret: [0x8c; 32],
+                state: None,
+                delay: None,
+            })
+            .expect(2)
+            .mount(&server)
             .await;
         Mock::given(method("POST"))
-            .and(path("/refresh"))
+            .and(path("/v2/request"))
             .respond_with(ResponseTemplate::new(500))
             .expect(0)
-            .mount(&mock_server)
+            .mount(&server)
             .await;
 
-        for (endpoint, expected_status) in [("/generic-400", 400), ("/generic-401", 401)] {
-            let error = client
-                .authenticated_api_call::<(), serde_json::Value>(endpoint, "GET", None)
-                .await
-                .unwrap_err();
-            assert!(matches!(
-                error,
-                Error::Api { status, .. } if status == expected_status
-            ));
-        }
-        mock_server.verify().await;
+        let client = OpenSecretClient::new(server.uri()).unwrap();
+        let prepared = client.prepare_native_oauth_handoff().await.unwrap();
+        client.perform_attestation_handshake().await.unwrap();
+        assert!(matches!(
+            client
+                .redeem_native_oauth_handoff(
+                    prepared,
+                    NativeOAuthHandoffGrant::new("e30.e30.c2ln").unwrap(),
+                )
+                .await,
+            Err(Error::Session(message))
+                if message == "Native OAuth transport session is no longer current"
+        ));
+        assert_eq!(server.received_requests().await.unwrap().len(), 2);
     }
 
     #[tokio::test]
-    async fn corrupt_successful_response_is_not_replayed() {
-        let mock_server = MockServer::start().await;
-        let client = OpenSecretClient::new(mock_server.uri()).unwrap();
-        let session_id = Uuid::new_v4();
-        let session_key = [55u8; 32];
-        client
-            .session_manager
-            .set_session(session_id, session_key)
-            .unwrap();
-        client
-            .session_manager
-            .set_tokens(
-                "access_token".to_string(),
-                Some("refresh_token".to_string()),
-            )
-            .unwrap();
-
-        Mock::given(method("GET"))
-            .and(path("/corrupt-success"))
-            .and(header("authorization", "Bearer access_token"))
-            .and(header("x-session-id", session_id.to_string()))
-            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-                "encrypted": "AAAA"
-            })))
-            .expect(1)
-            .mount(&mock_server)
-            .await;
-        Mock::given(method("GET"))
-            .and(PathPrefixMatcher("/attestation/"))
-            .respond_with(ResponseTemplate::new(500))
-            .expect(0)
-            .mount(&mock_server)
-            .await;
-
-        let error = client
-            .authenticated_api_call::<(), serde_json::Value>("/corrupt-success", "GET", None)
-            .await
-            .unwrap_err();
-        assert!(matches!(error, Error::Decryption(_)));
-        mock_server.verify().await;
-    }
-
-    #[tokio::test]
-    async fn target_replay_budget_is_shared_across_recovery_reasons() {
-        let mock_server = MockServer::start().await;
-        let client = OpenSecretClient::new(mock_server.uri()).unwrap();
-        let stale_session_id = Uuid::new_v4();
-        let stale_session_key = [56u8; 32];
-        let server_secret_key = [57u8; 32];
-        let server_public_key =
-            x25519_dalek::PublicKey::from(&x25519_dalek::StaticSecret::from(server_secret_key));
-        let fresh_session_id = Uuid::new_v4();
-        let fresh_session_key = [58u8; 32];
-        client
-            .session_manager
-            .set_session(stale_session_id, stale_session_key)
-            .unwrap();
-        client
-            .session_manager
-            .set_tokens(
-                "expired_access".to_string(),
-                Some("refresh_token".to_string()),
-            )
-            .unwrap();
-
-        Mock::given(method("GET"))
-            .and(path("/mixed-recovery"))
-            .and(header("authorization", "Bearer expired_access"))
-            .and(header("x-session-id", stale_session_id.to_string()))
-            .respond_with(v1_error_response(
-                400,
-                Some("session_not_found"),
-                "stale session",
-            ))
-            .expect(1)
-            .mount(&mock_server)
-            .await;
-        Mock::given(method("GET"))
-            .and(PathPrefixMatcher("/attestation/"))
-            .respond_with(AttestationResponder {
-                server_public_key: server_public_key.to_bytes(),
-            })
-            .expect(1)
-            .mount(&mock_server)
-            .await;
-        Mock::given(method("POST"))
-            .and(path("/key_exchange"))
-            .respond_with(KeyExchangeResponder {
-                server_secret_key,
-                session_key: fresh_session_key,
-                session_id: fresh_session_id.to_string(),
-            })
-            .expect(1)
-            .mount(&mock_server)
-            .await;
-        Mock::given(method("GET"))
-            .and(path("/mixed-recovery"))
-            .and(header("authorization", "Bearer expired_access"))
-            .and(header("x-session-id", fresh_session_id.to_string()))
-            .respond_with(v1_error_response(
-                401,
-                Some("access_token_expired"),
-                "expired access token",
-            ))
-            .expect(1)
-            .mount(&mock_server)
-            .await;
-        Mock::given(method("POST"))
-            .and(path("/refresh"))
-            .respond_with(ResponseTemplate::new(500))
-            .expect(0)
-            .mount(&mock_server)
-            .await;
-
-        let error = client
-            .authenticated_api_call::<(), serde_json::Value>("/mixed-recovery", "GET", None)
-            .await
-            .unwrap_err();
-        assert!(matches!(error, Error::Api { status: 401, .. }));
-        mock_server.verify().await;
-    }
-
-    #[tokio::test]
-    async fn expired_target_with_stale_refresh_session_repairs_each_layer_once() {
-        let mock_server = MockServer::start().await;
-        let client = OpenSecretClient::new(mock_server.uri()).unwrap();
-        let stale_session_id = Uuid::new_v4();
-        let stale_session_key = [59u8; 32];
-        let server_secret_key = [60u8; 32];
-        let server_public_key =
-            x25519_dalek::PublicKey::from(&x25519_dalek::StaticSecret::from(server_secret_key));
-        let fresh_session_id = Uuid::new_v4();
-        let fresh_session_key = [61u8; 32];
-        client
-            .session_manager
-            .set_session(stale_session_id, stale_session_key)
-            .unwrap();
-        client
-            .session_manager
-            .set_tokens(
-                "expired_access".to_string(),
-                Some("refresh_token".to_string()),
-            )
-            .unwrap();
-
-        Mock::given(method("GET"))
-            .and(path("/long-idle"))
-            .and(header("authorization", "Bearer expired_access"))
-            .and(header("x-session-id", stale_session_id.to_string()))
-            .respond_with(v1_error_response(
-                401,
-                Some("access_token_expired"),
-                "expired access token",
-            ))
-            .expect(1)
-            .mount(&mock_server)
-            .await;
-        Mock::given(method("POST"))
-            .and(path("/refresh"))
-            .and(MissingHeaderMatcher("authorization"))
-            .and(header("x-session-id", stale_session_id.to_string()))
-            .and(EncryptedJsonBodyMatcher {
-                session_key: stale_session_key,
-                expected: json!({ "refresh_token": "refresh_token" }),
-            })
-            .respond_with(v1_error_response(
-                400,
-                Some("session_not_found"),
-                "stale session",
-            ))
-            .expect(1)
-            .mount(&mock_server)
-            .await;
-        Mock::given(method("GET"))
-            .and(PathPrefixMatcher("/attestation/"))
-            .respond_with(AttestationResponder {
-                server_public_key: server_public_key.to_bytes(),
-            })
-            .expect(1)
-            .mount(&mock_server)
-            .await;
-        Mock::given(method("POST"))
-            .and(path("/key_exchange"))
-            .and(MissingHeaderMatcher("authorization"))
-            .respond_with(KeyExchangeResponder {
-                server_secret_key,
-                session_key: fresh_session_key,
-                session_id: fresh_session_id.to_string(),
-            })
-            .expect(1)
-            .mount(&mock_server)
-            .await;
-        Mock::given(method("POST"))
-            .and(path("/refresh"))
-            .and(MissingHeaderMatcher("authorization"))
-            .and(header("x-session-id", fresh_session_id.to_string()))
-            .and(EncryptedJsonBodyMatcher {
-                session_key: fresh_session_key,
-                expected: json!({ "refresh_token": "refresh_token" }),
-            })
-            .respond_with(ResponseTemplate::new(200).set_body_json(encrypted_response(
-                &fresh_session_key,
-                &json!({
-                    "access_token": "fresh_access",
-                    "refresh_token": "fresh_refresh"
-                }),
-            )))
-            .expect(1)
-            .mount(&mock_server)
-            .await;
-        Mock::given(method("GET"))
-            .and(path("/long-idle"))
-            .and(header("authorization", "Bearer fresh_access"))
-            .and(header("x-session-id", fresh_session_id.to_string()))
-            .respond_with(ResponseTemplate::new(200).set_body_json(encrypted_response(
-                &fresh_session_key,
-                &json!({ "ok": true }),
-            )))
-            .expect(1)
-            .mount(&mock_server)
-            .await;
-
-        let response = client
-            .authenticated_api_call::<(), serde_json::Value>("/long-idle", "GET", None)
-            .await
-            .unwrap();
-        assert_eq!(response, json!({ "ok": true }));
-        assert_eq!(
-            client.get_access_token().unwrap().as_deref(),
-            Some("fresh_access")
+    async fn native_handoff_response_cannot_overwrite_credentials_changed_in_flight() {
+        let server = MockServer::start().await;
+        let state = TestV2ServerState::new();
+        state.queue_delayed_json_response(
+            200,
+            serde_json::json!({
+                "id": Uuid::new_v4(),
+                "email": "stale@example.com",
+                "access_token": "stale-access",
+                "refresh_token": "stale-refresh",
+            }),
+            std::time::Duration::from_millis(500),
         );
-        assert_eq!(client.get_session_id().unwrap(), Some(fresh_session_id));
-        mock_server.verify().await;
+        Mock::given(method("POST"))
+            .and(path("/v2/session"))
+            .respond_with(SessionResponder {
+                server_secret: [0x8d; 32],
+                state: Some(state.clone()),
+                delay: None,
+            })
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/v2/request"))
+            .respond_with(state.request_responder())
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = Arc::new(OpenSecretClient::new(server.uri()).unwrap());
+        let prepared = client.prepare_native_oauth_handoff().await.unwrap();
+        let pending = {
+            let client = Arc::clone(&client);
+            tokio::spawn(async move {
+                client
+                    .redeem_native_oauth_handoff(
+                        prepared,
+                        NativeOAuthHandoffGrant::new("e30.e30.c2ln").unwrap(),
+                    )
+                    .await
+            })
+        };
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                if state.captured_requests().len() == 1 {
+                    return;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("native handoff request was not observed");
+        client
+            .set_tokens("new-access".to_string(), Some("new-refresh".to_string()))
+            .unwrap();
+
+        assert!(matches!(
+            pending.await.unwrap(),
+            Err(Error::Authentication(message))
+                if message == "Authentication changed during native OAuth handoff"
+        ));
+        let tokens = client.get_tokens().unwrap().unwrap();
+        assert_eq!(tokens.access_token, "new-access");
+        assert_eq!(tokens.refresh_token.as_deref(), Some("new-refresh"));
+        assert!(client.current_transport_session().unwrap().is_none());
+        assert_eq!(server.received_requests().await.unwrap().len(), 2);
     }
 
     #[tokio::test]
-    async fn establishing_a_missing_local_session_does_not_consume_target_replay() {
-        let mock_server = MockServer::start().await;
-        let client = OpenSecretClient::new(mock_server.uri()).unwrap();
-        let server_secret_key = [62u8; 32];
-        let server_public_key =
-            x25519_dalek::PublicKey::from(&x25519_dalek::StaticSecret::from(server_secret_key));
-        let session_id = Uuid::new_v4();
-        let session_key = [63u8; 32];
-        client
-            .session_manager
-            .set_tokens(
-                "expired_access".to_string(),
-                Some("refresh_token".to_string()),
-            )
-            .unwrap();
-
-        Mock::given(method("GET"))
-            .and(PathPrefixMatcher("/attestation/"))
-            .respond_with(AttestationResponder {
-                server_public_key: server_public_key.to_bytes(),
+    async fn failed_native_handoff_is_not_retried_and_retires_ambiguous_session() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v2/session"))
+            .respond_with(SessionResponder {
+                server_secret: [0x8e; 32],
+                state: None,
+                delay: None,
             })
             .expect(1)
-            .mount(&mock_server)
+            .mount(&server)
             .await;
         Mock::given(method("POST"))
-            .and(path("/key_exchange"))
-            .respond_with(KeyExchangeResponder {
-                server_secret_key,
-                session_key,
-                session_id: session_id.to_string(),
-            })
+            .and(path("/v2/request"))
+            .respond_with(ResponseTemplate::new(503))
             .expect(1)
-            .mount(&mock_server)
-            .await;
-        Mock::given(method("GET"))
-            .and(path("/missing-local-session"))
-            .and(header("authorization", "Bearer expired_access"))
-            .and(header("x-session-id", session_id.to_string()))
-            .respond_with(v1_error_response(
-                401,
-                Some("access_token_expired"),
-                "expired access token",
-            ))
-            .expect(1)
-            .mount(&mock_server)
-            .await;
-        Mock::given(method("POST"))
-            .and(path("/refresh"))
-            .and(MissingHeaderMatcher("authorization"))
-            .and(header("x-session-id", session_id.to_string()))
-            .and(EncryptedJsonBodyMatcher {
-                session_key,
-                expected: json!({ "refresh_token": "refresh_token" }),
-            })
-            .respond_with(ResponseTemplate::new(200).set_body_json(encrypted_response(
-                &session_key,
-                &json!({
-                    "access_token": "fresh_access",
-                    "refresh_token": "fresh_refresh"
-                }),
-            )))
-            .expect(1)
-            .mount(&mock_server)
-            .await;
-        Mock::given(method("GET"))
-            .and(path("/missing-local-session"))
-            .and(header("authorization", "Bearer fresh_access"))
-            .and(header("x-session-id", session_id.to_string()))
-            .respond_with(
-                ResponseTemplate::new(200)
-                    .set_body_json(encrypted_response(&session_key, &json!({ "ok": true }))),
-            )
-            .expect(1)
-            .mount(&mock_server)
+            .mount(&server)
             .await;
 
-        let response = client
-            .authenticated_api_call::<(), serde_json::Value>("/missing-local-session", "GET", None)
-            .await
-            .unwrap();
-        assert_eq!(response, json!({ "ok": true }));
-        mock_server.verify().await;
-    }
-
-    #[tokio::test]
-    async fn test_corrupted_access_token_recovers_via_refresh_on_next_call() {
-        let mock_server = MockServer::start().await;
-        let client = OpenSecretClient::new(mock_server.uri()).unwrap();
-        let session_id = Uuid::new_v4();
-        let session_key = [5u8; 32];
-        let original_access = "valid_access";
-        let original_refresh = "valid_refresh";
-        let corrupted_access = "malformed_access";
-        let refreshed_access = "refreshed_access";
-        let refreshed_refresh = "refreshed_refresh";
-
-        client
-            .session_manager
-            .set_session(session_id, session_key)
-            .unwrap();
-
-        Mock::given(method("POST"))
-            .and(path("/login"))
-            .and(MissingHeaderMatcher("authorization"))
-            .and(header("x-session-id", session_id.to_string()))
-            .respond_with(ResponseTemplate::new(200).set_body_json(encrypted_response(
-                &session_key,
-                &json!({
-                    "id": Uuid::new_v4(),
-                    "email": "sdk@test.dev",
-                    "access_token": original_access,
-                    "refresh_token": original_refresh,
-                }),
-            )))
-            .expect(1)
-            .mount(&mock_server)
-            .await;
-
-        Mock::given(method("GET"))
-            .and(path("/protected/user"))
-            .and(header(
-                "authorization",
-                format!("Bearer {}", original_access),
-            ))
-            .and(header("x-session-id", session_id.to_string()))
-            .respond_with(ResponseTemplate::new(200).set_body_json(encrypted_response(
-                &session_key,
-                &json!({
-                    "user": {
-                        "id": Uuid::new_v4(),
-                        "name": null,
-                        "email": "sdk@test.dev",
-                        "email_verified": true,
-                        "login_method": "email",
-                        "created_at": "2024-01-01T00:00:00Z",
-                        "updated_at": "2024-01-01T00:00:00Z"
-                    }
-                }),
-            )))
-            .expect(1)
-            .mount(&mock_server)
-            .await;
-
-        Mock::given(method("GET"))
-            .and(path("/protected/user"))
-            .and(header(
-                "authorization",
-                format!("Bearer {}", corrupted_access),
-            ))
-            .and(header("x-session-id", session_id.to_string()))
-            .respond_with(
-                ResponseTemplate::new(401).set_body_json(json!({ "message": "invalid jwt" })),
-            )
-            .expect(1)
-            .mount(&mock_server)
-            .await;
-
-        Mock::given(method("POST"))
-            .and(path("/refresh"))
-            .and(MissingHeaderMatcher("authorization"))
-            .and(header("x-session-id", session_id.to_string()))
-            .respond_with(ResponseTemplate::new(200).set_body_json(encrypted_response(
-                &session_key,
-                &json!({
-                    "access_token": refreshed_access,
-                    "refresh_token": refreshed_refresh,
-                }),
-            )))
-            .expect(1)
-            .mount(&mock_server)
-            .await;
-
-        Mock::given(method("GET"))
-            .and(path("/protected/user"))
-            .and(header(
-                "authorization",
-                format!("Bearer {}", refreshed_access),
-            ))
-            .and(header("x-session-id", session_id.to_string()))
-            .respond_with(ResponseTemplate::new(200).set_body_json(encrypted_response(
-                &session_key,
-                &json!({
-                    "user": {
-                        "id": Uuid::new_v4(),
-                        "name": null,
-                        "email": "sdk@test.dev",
-                        "email_verified": true,
-                        "login_method": "email",
-                        "created_at": "2024-01-01T00:00:00Z",
-                        "updated_at": "2024-01-01T00:00:00Z"
-                    }
-                }),
-            )))
-            .expect(1)
-            .mount(&mock_server)
-            .await;
-
-        client
-            .login(
-                "sdk@test.dev".to_string(),
-                "password".to_string(),
-                Uuid::new_v4(),
+        let client = OpenSecretClient::new(server.uri()).unwrap();
+        let prepared = client.prepare_native_oauth_handoff().await.unwrap();
+        assert!(client
+            .redeem_native_oauth_handoff(
+                prepared,
+                NativeOAuthHandoffGrant::new("e30.e30.c2ln").unwrap(),
             )
             .await
-            .unwrap();
-
-        let initial_user = client.get_user().await.unwrap();
-        assert_eq!(initial_user.user.email.as_deref(), Some("sdk@test.dev"));
-
-        client
-            .session_manager
-            .update_access_token(corrupted_access.to_string())
-            .unwrap();
-
-        let recovered_user = client.get_user().await.unwrap();
-
-        assert_eq!(recovered_user.user.email.as_deref(), Some("sdk@test.dev"));
-        assert_eq!(
-            client.get_access_token().unwrap().as_deref(),
-            Some(refreshed_access)
-        );
-        assert_eq!(
-            client.get_refresh_token().unwrap().as_deref(),
-            Some(refreshed_refresh)
-        );
+            .is_err());
+        assert!(client.current_transport_session().unwrap().is_none());
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(requests.len(), 2);
+        assert_eq!(requests[0].url.path(), "/v2/session");
+        assert_eq!(requests[1].url.path(), "/v2/request");
     }
 
     #[tokio::test]
-    async fn test_streaming_completion_preserves_reasoning_content() {
-        let mock_server = MockServer::start().await;
-        let client = OpenSecretClient::new(mock_server.uri()).unwrap();
-        let session_id = Uuid::new_v4();
-        let session_key = [13u8; 32];
+    async fn native_handoff_requires_a_dedicated_anonymous_client() {
+        let client =
+            OpenSecretClient::new_with_api_key("http://127.0.0.1:1", "api-key".to_string())
+                .unwrap();
+        assert!(matches!(
+            client.prepare_native_oauth_handoff().await,
+            Err(Error::Authentication(message))
+                if message == "Native OAuth handoff requires an anonymous client"
+        ));
+    }
 
-        client
-            .session_manager
-            .set_session(session_id, session_key)
-            .unwrap();
-        client
-            .session_manager
-            .set_tokens(
-                "access_token".to_string(),
-                Some("refresh_token".to_string()),
+    #[derive(Serialize)]
+    struct NativeHandoffGrantIntegrationRequest<'a> {
+        native_session_id: &'a str,
+        native_request_id: &'a str,
+    }
+
+    #[derive(Deserialize)]
+    struct NativeHandoffGrantIntegrationResponse {
+        grant: String,
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires the disposable OpenSecret SDK integration backend"]
+    async fn native_handoff_full_stack_round_trip() -> Result<()> {
+        let base_url = std::env::var("VITE_OPEN_SECRET_API_URL")
+            .expect("VITE_OPEN_SECRET_API_URL must identify the disposable backend");
+        let client_id = std::env::var("VITE_TEST_CLIENT_ID")
+            .ok()
+            .and_then(|value| Uuid::parse_str(&value).ok())
+            .expect("VITE_TEST_CLIENT_ID must be a UUID");
+
+        let browser = OpenSecretClient::new(base_url.clone())?;
+        let registered = browser
+            .register_guest(
+                format!("native_handoff_full_stack_{}", Uuid::new_v4()),
+                client_id,
             )
-            .unwrap();
+            .await?;
 
-        let sse_body = format!(
-            "{}data: [DONE]\n\n",
-            encrypted_sse_data(
-                &session_key,
-                &json!({
-                    "id": "chatcmpl-test",
-                    "object": "chat.completion.chunk",
-                    "created": 1,
-                    "model": "kimi-k2-5",
-                    "choices": [{
-                        "index": 0,
-                        "delta": {
-                            "reasoning_content": "2 + 2 = 4"
-                        },
-                        "finish_reason": null
-                    }]
-                })
-            )
-        );
+        let native_a = OpenSecretClient::new(base_url.clone())?;
+        let native_b = OpenSecretClient::new(base_url)?;
+        let prepared_a = native_a.prepare_native_oauth_handoff().await?;
+        let prepared_b = native_b.prepare_native_oauth_handoff().await?;
 
-        Mock::given(method("POST"))
-            .and(path("/v1/chat/completions"))
-            .and(header("authorization", "Bearer access_token"))
-            .and(header("x-session-id", session_id.to_string()))
-            .and(EncryptedJsonBodyMatcher {
-                session_key,
-                expected: json!({
-                    "model": "kimi-k2-5",
-                    "messages": [{"role": "user", "content": "What is 2+2?"}],
-                    "temperature": 0.0,
-                    "max_tokens": 100,
-                    "stream": true,
-                    "stream_options": {"include_usage": true}
+        let minted: NativeHandoffGrantIntegrationResponse = browser
+            .authenticated_api_call(
+                "/auth/native-handoff/grant",
+                "POST",
+                Some(NativeHandoffGrantIntegrationRequest {
+                    native_session_id: prepared_a.session_id(),
+                    native_request_id: prepared_a.request_id(),
                 }),
-            })
-            .respond_with(ResponseTemplate::new(200).set_body_raw(sse_body, "text/event-stream"))
-            .expect(1)
-            .mount(&mock_server)
-            .await;
+            )
+            .await?;
 
+        let transplanted = native_b
+            .redeem_native_oauth_handoff(
+                prepared_b,
+                NativeOAuthHandoffGrant::new(minted.grant.clone())?,
+            )
+            .await;
+        assert!(
+            matches!(transplanted, Err(Error::Api { status: 401, .. })),
+            "a grant must not authenticate a different native session/request: {transplanted:?}"
+        );
+        assert!(native_b.get_tokens()?.is_none());
+
+        let redeemed = native_a
+            .redeem_native_oauth_handoff(prepared_a, NativeOAuthHandoffGrant::new(minted.grant)?)
+            .await?;
+        assert_eq!(redeemed.id, registered.id);
+        let native_user = native_a.get_user().await?;
+        assert_eq!(native_user.user.id, registered.id);
+        assert!(native_a.get_tokens()?.is_some());
+
+        Ok(())
+    }
+
+    #[test]
+    fn access_token_expiry_is_only_a_conservative_timing_hint() {
+        assert!(access_token_needs_refresh(&encoded_timing_token(130), 100));
+        assert!(access_token_needs_refresh(&encoded_timing_token(129), 100));
+        assert!(!access_token_needs_refresh(&encoded_timing_token(131), 100));
+        assert!(!access_token_needs_refresh("not-a-jwt", 100));
+        assert!(!access_token_needs_refresh("a.invalid-json.c", 100));
+    }
+
+    #[test]
+    fn typed_stream_request_keeps_sse_and_json_headers_and_v2_stream_flags() {
         let request = ChatCompletionRequest {
-            model: "kimi-k2-5".to_string(),
+            model: "test-model".to_string(),
             messages: vec![ChatMessage {
                 role: "user".to_string(),
-                content: serde_json::json!("What is 2+2?"),
+                content: serde_json::json!("hello"),
                 tool_calls: None,
                 reasoning_content: None,
             }],
-            temperature: Some(0.0),
-            max_tokens: Some(100),
-            stream: Some(true),
+            temperature: None,
+            max_tokens: None,
+            stream: Some(false),
             stream_options: None,
             tools: None,
             tool_choice: None,
         };
-
-        let mut stream = client.create_chat_completion_stream(request).await.unwrap();
-        let chunk = stream.next().await.unwrap().unwrap();
-
-        assert_eq!(
-            chunk.0["choices"][0]["delta"]["reasoning_content"].as_str(),
-            Some("2 + 2 = 4")
-        );
-        assert!(stream.next().await.is_none());
+        let encoded = build_chat_completion_stream_request(request).unwrap();
+        assert_eq!(encoded.method(), http::Method::POST);
+        assert_eq!(encoded.uri(), "/v1/chat/completions");
+        assert_eq!(encoded.headers()[header::ACCEPT], "text/event-stream");
+        assert_eq!(encoded.headers()[header::CONTENT_TYPE], "application/json");
+        let body: serde_json::Value = serde_json::from_slice(encoded.body()).unwrap();
+        assert_eq!(body["stream"], true);
+        assert_eq!(body["stream_options"]["include_usage"], true);
     }
 
     #[tokio::test]
-    async fn inference_transport_preserves_raw_request_and_response_bytes() {
-        let mock_server = MockServer::start().await;
-        let client =
-            OpenSecretClient::new_with_api_key(mock_server.uri(), "real_api_key".to_string())
-                .unwrap();
-        let session_id = Uuid::new_v4();
-        let session_key = [27u8; 32];
-        client
-            .session_manager
-            .set_session(session_id, session_key)
-            .unwrap();
+    async fn transport_network_failures_preserve_the_public_http_error_class() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        drop(listener);
+        let client = OpenSecretClient::new(format!("http://{address}")).unwrap();
 
-        let request_body = Bytes::from_static(
-            br#"{ "z": 184467440737095516160000000000000, "stream":false, "a":[1, 2] }
-"#,
-        );
-        let response_body = Bytes::from_static(
-            br#"{ "provider": {"huge":184467440737095516160000000000001}, "a": 1 }
-"#,
-        );
-
-        Mock::given(method("POST"))
-            .and(path("/v1/chat/completions"))
-            .and(query_param("trace", "one two"))
-            .and(header("authorization", "Bearer real_api_key"))
-            .and(header("x-session-id", session_id.to_string()))
-            .and(header("content-type", "application/json"))
-            .and(header("x-provider-beta", "raw-v2"))
-            .and(MissingHeaderMatcher("x-remove"))
-            .and(MissingHeaderMatcher("content-encoding"))
-            .and(MissingHeaderMatcher("accept-encoding"))
-            .and(MissingHeaderMatcher("content-md5"))
-            .and(EncryptedBytesBodyMatcher {
-                session_key,
-                expected: request_body.clone(),
-            })
-            .respond_with(
-                ResponseTemplate::new(201)
-                    .insert_header("content-type", "application/json")
-                    .insert_header("x-provider-result", "kept")
-                    .insert_header("connection", "x-remove-response")
-                    .insert_header("x-remove-response", "gone")
-                    .insert_header("content-encoding", "identity")
-                    .set_body_json(encrypted_response_bytes(&session_key, &response_body)),
-            )
-            .expect(1)
-            .mount(&mock_server)
-            .await;
-
-        let request = HttpRequest::builder()
-            .method(http::Method::POST)
-            .uri("/v1/chat/completions?trace=one%20two")
-            .header(header::AUTHORIZATION, "Bearer caller_must_not_control_this")
-            .header("x-session-id", "caller_must_not_control_this")
-            .header(header::CONTENT_TYPE, "application/custom")
-            .header(header::CONTENT_ENCODING, "gzip")
-            .header(header::ACCEPT_ENCODING, "gzip, br")
-            .header("content-md5", "caller-body-digest")
-            .header(header::CONNECTION, "x-remove")
-            .header("x-remove", "gone")
-            .header("x-provider-beta", "raw-v2")
-            .body(request_body)
-            .unwrap();
-        let response = client.send_inference_request(request).await.unwrap();
-
-        assert_eq!(response.status(), http::StatusCode::CREATED);
-        assert_eq!(response.headers().get("x-provider-result").unwrap(), "kept");
-        assert!(!response.headers().contains_key(header::CONTENT_LENGTH));
-        assert!(!response.headers().contains_key(header::CONTENT_ENCODING));
-        assert!(!response.headers().contains_key(header::CONNECTION));
-        assert!(!response.headers().contains_key("x-remove-response"));
-        assert_eq!(
-            collect_response_body(response.into_body()).await.unwrap(),
-            response_body
-        );
+        assert!(matches!(
+            client.perform_attestation_handshake().await,
+            Err(Error::Http(_))
+        ));
     }
 
-    #[tokio::test]
-    async fn inference_transport_rejects_absolute_and_non_inference_routes() {
-        let client = OpenSecretClient::new("http://localhost:3000").unwrap();
-        for (method, uri) in [
-            (
-                http::Method::POST,
-                "https://example.test/v1/chat/completions",
-            ),
-            (http::Method::POST, "/v1/responses"),
-            (http::Method::GET, "/v1/chat/completions"),
-            (http::Method::POST, "/protected/user"),
-        ] {
-            let request = HttpRequest::builder()
-                .method(method)
-                .uri(uri)
-                .body(Bytes::new())
-                .unwrap();
-            assert!(matches!(
-                client.send_inference_request(request).await,
-                Err(Error::Configuration(_))
-            ));
-        }
-    }
-
-    #[tokio::test]
-    async fn inference_transport_preserves_final_plaintext_error_after_refresh() {
-        let mock_server = MockServer::start().await;
-        let client = OpenSecretClient::new(mock_server.uri()).unwrap();
-        let session_id = Uuid::new_v4();
-        let session_key = [28u8; 32];
-        let request_body = Bytes::from_static(br#"{"model":"test","messages":[]}"#);
-        let error_body =
-            Bytes::from_static(br#"{"error":{"type":"rate_limit","n":999999999999999999999}}"#);
+    #[test]
+    fn transient_or_malformed_refresh_response_preserves_credentials() {
+        let client = OpenSecretClient::new("http://127.0.0.1:1").unwrap();
         client
-            .session_manager
-            .set_session(session_id, session_key)
+            .set_tokens("access".to_string(), Some("refresh".to_string()))
             .unwrap();
-        client
+        let generation = client
             .session_manager
-            .set_tokens(
-                "expired_access".to_string(),
-                Some("refresh_token".to_string()),
+            .get_credential_snapshot()
+            .unwrap()
+            .token_generation;
+
+        assert!(client
+            .apply_authenticated_refresh_response(
+                generation,
+                http::StatusCode::SERVICE_UNAVAILABLE,
+                b"temporarily unavailable",
             )
-            .unwrap();
-
-        Mock::given(method("POST"))
-            .and(path("/v1/chat/completions"))
-            .and(header("authorization", "Bearer expired_access"))
-            .and(EncryptedBytesBodyMatcher {
-                session_key,
-                expected: request_body.clone(),
-            })
-            .respond_with(ResponseTemplate::new(401).set_body_string("jwt expired"))
-            .expect(1)
-            .mount(&mock_server)
-            .await;
-        Mock::given(method("POST"))
-            .and(path("/refresh"))
-            .and(MissingHeaderMatcher("authorization"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(encrypted_response(
-                &session_key,
-                &json!({
-                    "access_token": "fresh_access",
-                    "refresh_token": "fresh_refresh"
-                }),
-            )))
-            .expect(1)
-            .mount(&mock_server)
-            .await;
-        Mock::given(method("POST"))
-            .and(path("/v1/chat/completions"))
-            .and(header("authorization", "Bearer fresh_access"))
-            .and(EncryptedBytesBodyMatcher {
-                session_key,
-                expected: request_body.clone(),
-            })
-            .respond_with(
-                ResponseTemplate::new(429)
-                    .insert_header("x-request-id", "provider-429")
-                    .set_body_bytes(error_body.clone()),
-            )
-            .expect(1)
-            .mount(&mock_server)
-            .await;
-
-        let request = HttpRequest::builder()
-            .method(http::Method::POST)
-            .uri("/v1/chat/completions")
-            .body(request_body)
-            .unwrap();
-        let send_budget = InferenceSendBudget::new(2).unwrap();
-        let response = client
-            .send_inference_request_with_budget(request, send_budget.clone())
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), http::StatusCode::TOO_MANY_REQUESTS);
-        assert_eq!(
-            response.headers().get("x-request-id").unwrap(),
-            "provider-429"
-        );
-        assert_eq!(
-            collect_response_body(response.into_body()).await.unwrap(),
-            error_body
-        );
-        assert_eq!(send_budget.remaining(), 0);
-    }
-
-    #[tokio::test]
-    async fn exhausted_inference_budget_refreshes_auth_without_a_second_send() {
-        let mock_server = MockServer::start().await;
-        let client = OpenSecretClient::new(mock_server.uri()).unwrap();
-        let session_id = Uuid::new_v4();
-        let session_key = crypto::generate_random_bytes::<32>();
-        let request_body = Bytes::from_static(br#"{"model":"test","messages":[]}"#);
-        client
-            .session_manager
-            .set_session(session_id, session_key)
-            .unwrap();
-        client
-            .session_manager
-            .set_tokens(
-                "expired_access".to_string(),
-                Some("refresh_token".to_string()),
-            )
-            .unwrap();
-
-        Mock::given(method("POST"))
-            .and(path("/v1/chat/completions"))
-            .and(header("authorization", "Bearer expired_access"))
-            .respond_with(ResponseTemplate::new(401).set_body_string("jwt expired"))
-            .expect(1)
-            .mount(&mock_server)
-            .await;
-        Mock::given(method("POST"))
-            .and(path("/refresh"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(encrypted_response(
-                &session_key,
-                &json!({
-                    "access_token": "fresh_access",
-                    "refresh_token": "fresh_refresh"
-                }),
-            )))
-            .expect(1)
-            .mount(&mock_server)
-            .await;
-        Mock::given(method("POST"))
-            .and(path("/v1/chat/completions"))
-            .and(header("authorization", "Bearer fresh_access"))
-            .respond_with(ResponseTemplate::new(200))
-            .expect(0)
-            .mount(&mock_server)
-            .await;
-
-        let request = HttpRequest::builder()
-            .method(http::Method::POST)
-            .uri("/v1/chat/completions")
-            .body(request_body)
-            .unwrap();
-        let send_budget = InferenceSendBudget::new(1).unwrap();
-        let response = client
-            .send_inference_request_with_budget(request, send_budget.clone())
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), http::StatusCode::UNAUTHORIZED);
-        assert_eq!(send_budget.remaining(), 0);
+            .is_err());
         assert_eq!(
             client.get_access_token().unwrap().as_deref(),
-            Some("fresh_access")
+            Some("access")
         );
-        mock_server.verify().await;
+        assert!(client
+            .apply_authenticated_refresh_response(generation, http::StatusCode::OK, b"not-json",)
+            .is_err());
+        assert_eq!(
+            client.get_access_token().unwrap().as_deref(),
+            Some("access")
+        );
+    }
+
+    #[test]
+    fn authenticated_refresh_rejection_clears_only_the_rejected_generation() {
+        let client = OpenSecretClient::new("http://127.0.0.1:1").unwrap();
+        client
+            .set_tokens("old-access".to_string(), Some("old-refresh".to_string()))
+            .unwrap();
+        let old_generation = client
+            .session_manager
+            .get_credential_snapshot()
+            .unwrap()
+            .token_generation;
+        client
+            .set_tokens("new-access".to_string(), Some("new-refresh".to_string()))
+            .unwrap();
+
+        assert!(client
+            .apply_authenticated_refresh_response(
+                old_generation,
+                http::StatusCode::UNAUTHORIZED,
+                b"rejected",
+            )
+            .is_err());
+        assert_eq!(
+            client.get_access_token().unwrap().as_deref(),
+            Some("new-access")
+        );
+
+        let current_generation = client
+            .session_manager
+            .get_credential_snapshot()
+            .unwrap()
+            .token_generation;
+        assert!(client
+            .apply_authenticated_refresh_response(
+                current_generation,
+                http::StatusCode::FORBIDDEN,
+                b"rejected",
+            )
+            .is_err());
+        assert!(client.get_tokens().unwrap().is_none());
+    }
+
+    #[test]
+    fn successful_refresh_updates_only_the_generation_that_was_sent() {
+        let client = OpenSecretClient::new("http://127.0.0.1:1").unwrap();
+        client
+            .set_tokens("old-access".to_string(), Some("old-refresh".to_string()))
+            .unwrap();
+        let generation = client
+            .session_manager
+            .get_credential_snapshot()
+            .unwrap()
+            .token_generation;
+        let body = br#"{"access_token":"rotated-access","refresh_token":"rotated-refresh"}"#;
+
+        client
+            .apply_authenticated_refresh_response(generation, http::StatusCode::OK, body)
+            .unwrap();
+        let tokens = client.get_tokens().unwrap().unwrap();
+        assert_eq!(tokens.access_token, "rotated-access");
+        assert_eq!(tokens.refresh_token.as_deref(), Some("rotated-refresh"));
+    }
+
+    #[test]
+    fn inference_allowlist_is_method_and_path_exact() {
+        assert!(is_allowed_inference_endpoint(
+            &http::Method::POST,
+            "/v1/chat/completions"
+        ));
+        assert!(is_allowed_inference_endpoint(
+            &http::Method::GET,
+            "/v1/models"
+        ));
+        assert!(!is_allowed_inference_endpoint(
+            &http::Method::POST,
+            "/v1/models"
+        ));
+        assert!(!is_allowed_inference_endpoint(
+            &http::Method::GET,
+            "/protected/private_key"
+        ));
+        assert!(!is_allowed_inference_endpoint(
+            &http::Method::POST,
+            "/v1/chat/completions/extra"
+        ));
+    }
+
+    #[tokio::test]
+    async fn inference_budget_excludes_preflight_and_blocks_a_later_send() {
+        let server = MockServer::start().await;
+        let state = TestV2ServerState::new();
+        state.queue_json_response(
+            200,
+            serde_json::json!({
+                "access_token": "fresh-access",
+                "refresh_token": "fresh-refresh",
+            }),
+        );
+        state.queue_json_response(200, serde_json::json!({ "object": "list", "data": [] }));
+        Mock::given(method("POST"))
+            .and(path("/v2/session"))
+            .respond_with(SessionResponder {
+                server_secret: [0x75; 32],
+                state: Some(state.clone()),
+                delay: None,
+            })
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/v2/request"))
+            .respond_with(state.request_responder())
+            .expect(2)
+            .mount(&server)
+            .await;
+        let client = OpenSecretClient::new(server.uri()).unwrap();
+        client
+            .set_tokens(encoded_timing_token(0), Some("refresh-secret".to_string()))
+            .unwrap();
+        let send_budget = InferenceSendBudget::new(1).unwrap();
+        let request = HttpRequest::get("/v1/models").body(Bytes::new()).unwrap();
+        let response = client
+            .send_inference_request_with_budget(request, send_budget.clone())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), http::StatusCode::OK);
+        collect_response_body(response.into_body()).await.unwrap();
+        assert_eq!(send_budget.remaining(), 0);
+
+        let request = HttpRequest::get("/v1/models").body(Bytes::new()).unwrap();
+        assert!(matches!(
+            client
+                .send_inference_request_with_budget(request, send_budget)
+                .await,
+            Err(Error::Other(message)) if message == "Inference request send budget exhausted"
+        ));
+        let logical = state.captured_requests();
+        assert_eq!(logical.len(), 2);
+        assert_eq!(logical[0]["target"], "/refresh");
+        assert_eq!(logical[1]["target"], "/v1/models");
+        assert_eq!(logical[1]["credential"]["value"], "fresh-access");
+        server.verify().await;
     }
 
     #[tokio::test]
     async fn inference_transport_does_not_follow_redirects_outside_the_send_budget() {
-        let mock_server = MockServer::start().await;
-        let client =
-            OpenSecretClient::new_with_api_key(mock_server.uri(), "api_key".to_string()).unwrap();
-        client
-            .session_manager
-            .set_session(Uuid::new_v4(), [49u8; 32])
-            .unwrap();
-
+        let server = MockServer::start().await;
         Mock::given(method("POST"))
-            .and(path("/v1/chat/completions"))
-            .respond_with(ResponseTemplate::new(307).insert_header("location", "/v1/embeddings"))
+            .and(path("/v2/session"))
+            .respond_with(SessionResponder {
+                server_secret: [0x76; 32],
+                state: None,
+                delay: None,
+            })
             .expect(1)
-            .mount(&mock_server)
+            .mount(&server)
             .await;
         Mock::given(method("POST"))
-            .and(path("/v1/embeddings"))
+            .and(path("/v2/request"))
+            .respond_with(ResponseTemplate::new(307).insert_header("location", "/redirected"))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/redirected"))
             .respond_with(ResponseTemplate::new(200))
             .expect(0)
-            .mount(&mock_server)
+            .mount(&server)
             .await;
-
-        let request = HttpRequest::builder()
-            .method(http::Method::POST)
-            .uri("/v1/chat/completions")
-            .body(Bytes::from_static(br#"{"model":"test","messages":[]}"#))
-            .unwrap();
+        let client =
+            OpenSecretClient::new_with_api_key(server.uri(), "api-key".to_string()).unwrap();
         let send_budget = InferenceSendBudget::new(2).unwrap();
-        let response = client
-            .send_inference_request_with_budget(request, send_budget.clone())
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), http::StatusCode::TEMPORARY_REDIRECT);
+        let request = HttpRequest::get("/v1/models").body(Bytes::new()).unwrap();
+        assert!(matches!(
+            client
+                .send_inference_request_with_budget(request, send_budget.clone())
+                .await,
+            Err(Error::InvalidResponse(_))
+        ));
         assert_eq!(send_budget.remaining(), 1);
-        mock_server.verify().await;
+        server.verify().await;
     }
 
     #[tokio::test]
-    async fn concurrent_inference_401s_share_one_refresh() {
-        let mock_server = MockServer::start().await;
-        let client = OpenSecretClient::new(mock_server.uri()).unwrap();
-        let session_id = Uuid::new_v4();
-        let session_key = [40u8; 32];
-        let request_body = Bytes::from_static(br#"{"model":"test","messages":[]}"#);
-        let response_body = Bytes::from_static(br#"{"id":"completion-ok"}"#);
-
-        client
-            .session_manager
-            .set_session(session_id, session_key)
-            .unwrap();
-        client
-            .session_manager
-            .set_tokens(
-                "expired_access".to_string(),
-                Some("refresh_token".to_string()),
-            )
-            .unwrap();
-
+    async fn explicit_inference_api_key_is_never_installed_as_client_state() {
+        let server = MockServer::start().await;
         Mock::given(method("POST"))
-            .and(path("/v1/chat/completions"))
-            .and(header("authorization", "Bearer expired_access"))
-            .and(EncryptedBytesBodyMatcher {
-                session_key,
-                expected: request_body.clone(),
+            .and(path("/v2/session"))
+            .respond_with(SessionResponder {
+                server_secret: [0x77; 32],
+                state: None,
+                delay: None,
             })
-            .respond_with(
-                ResponseTemplate::new(401)
-                    .insert_header(ERROR_CONTRACT_HEADER, "1")
-                    .insert_header(ERROR_CODE_HEADER, "access_token_expired")
-                    .set_delay(Duration::from_millis(50))
-                    .set_body_string("jwt expired"),
-            )
-            .expect(2)
-            .mount(&mock_server)
-            .await;
-
-        Mock::given(method("POST"))
-            .and(path("/refresh"))
-            .and(MissingHeaderMatcher("authorization"))
-            .respond_with(
-                ResponseTemplate::new(200)
-                    .set_delay(Duration::from_millis(100))
-                    .set_body_json(encrypted_response(
-                        &session_key,
-                        &json!({
-                            "access_token": "fresh_access",
-                            "refresh_token": "fresh_refresh",
-                        }),
-                    )),
-            )
             .expect(1)
-            .mount(&mock_server)
+            .mount(&server)
             .await;
-
         Mock::given(method("POST"))
-            .and(path("/v1/chat/completions"))
-            .and(header("authorization", "Bearer fresh_access"))
-            .and(EncryptedBytesBodyMatcher {
-                session_key,
-                expected: request_body.clone(),
-            })
-            .respond_with(
-                ResponseTemplate::new(200)
-                    .set_body_json(encrypted_response_bytes(&session_key, &response_body)),
-            )
-            .expect(2)
-            .mount(&mock_server)
+            .and(path("/v2/request"))
+            .respond_with(ResponseTemplate::new(503))
+            .expect(1)
+            .mount(&server)
             .await;
+        let client = OpenSecretClient::new(server.uri()).unwrap();
+        let request = HttpRequest::get("/v1/models").body(Bytes::new()).unwrap();
 
-        let make_request = || {
-            HttpRequest::builder()
-                .method(http::Method::POST)
-                .uri("/v1/chat/completions")
-                .body(request_body.clone())
-                .unwrap()
+        assert!(client
+            .send_inference_request_with_api_key(request, "per-request-secret".to_string())
+            .await
+            .is_err());
+        assert!(client.session_manager.get_api_key().unwrap().is_none());
+        let received = server.received_requests().await.unwrap();
+        assert_eq!(received.len(), 2);
+        assert_eq!(received[0].url.path(), "/v2/session");
+        assert_eq!(received[1].url.path(), "/v2/request");
+        assert!(!received[1].headers.contains_key(header::AUTHORIZATION));
+        assert!(!received[1].headers.contains_key(header::COOKIE));
+        assert!(received[1].headers.contains_key("x-session-id"));
+        assert!(!received[1]
+            .body
+            .windows(b"per-request-secret".len())
+            .any(|window| window == b"per-request-secret"));
+    }
+
+    #[tokio::test]
+    async fn superseded_bearer_during_session_establishment_is_never_sent() {
+        let server = MockServer::start().await;
+        mount_delayed_session_with_no_request(&server, [0x81; 32]).await;
+        let client = Arc::new(OpenSecretClient::new(server.uri()).unwrap());
+        client
+            .set_tokens("old-access".to_string(), Some("old-refresh".to_string()))
+            .unwrap();
+
+        let pending = {
+            let client = Arc::clone(&client);
+            tokio::spawn(async move { client.get_user().await })
         };
-        let (first, second) = tokio::join!(
-            client.send_inference_request(make_request()),
-            client.send_inference_request(make_request())
-        );
-
-        let first = first.unwrap();
-        let second = second.unwrap();
-        assert_eq!(first.status(), http::StatusCode::OK);
-        assert_eq!(second.status(), http::StatusCode::OK);
-        assert_eq!(
-            collect_response_body(first.into_body()).await.unwrap(),
-            response_body
-        );
-        assert_eq!(
-            collect_response_body(second.into_body()).await.unwrap(),
-            response_body
-        );
-        assert_eq!(
-            client.get_access_token().unwrap().as_deref(),
-            Some("fresh_access")
-        );
-        assert_eq!(
-            client.get_refresh_token().unwrap().as_deref(),
-            Some("fresh_refresh")
-        );
-        mock_server.verify().await;
-    }
-
-    #[tokio::test]
-    async fn inference_401_retries_when_auth_source_changes_from_api_key_to_jwt() {
-        let mock_server = MockServer::start().await;
-        let client =
-            OpenSecretClient::new_with_api_key(mock_server.uri(), "old_api_key".to_string())
-                .unwrap();
-        let session_id = Uuid::new_v4();
-        let session_key = [46u8; 32];
-        let request_body = Bytes::from_static(br#"{"model":"test","messages":[]}"#);
-        let response_body = Bytes::from_static(br#"{"id":"jwt-completion"}"#);
+        wait_until_session_establishment_is_in_flight(&server).await;
         client
-            .session_manager
-            .set_session(session_id, session_key)
+            .set_tokens("new-access".to_string(), Some("new-refresh".to_string()))
             .unwrap();
-        client
-            .session_manager
-            .set_tokens("jwt_access".to_string(), Some("jwt_refresh".to_string()))
-            .unwrap();
-
-        Mock::given(method("POST"))
-            .and(path("/v1/chat/completions"))
-            .and(header("authorization", "Bearer old_api_key"))
-            .respond_with(
-                ResponseTemplate::new(401)
-                    .set_delay(Duration::from_millis(100))
-                    .set_body_string("api key rejected"),
-            )
-            .expect(1)
-            .mount(&mock_server)
-            .await;
-        Mock::given(method("POST"))
-            .and(path("/v1/chat/completions"))
-            .and(header("authorization", "Bearer jwt_access"))
-            .respond_with(
-                ResponseTemplate::new(200)
-                    .set_body_json(encrypted_response_bytes(&session_key, &response_body)),
-            )
-            .expect(1)
-            .mount(&mock_server)
-            .await;
-
-        let request = HttpRequest::builder()
-            .method(http::Method::POST)
-            .uri("/v1/chat/completions")
-            .body(request_body)
-            .unwrap();
-        let (response, clear_result) =
-            tokio::join!(client.send_inference_request(request), async {
-                tokio::time::sleep(Duration::from_millis(25)).await;
-                client.clear_api_key()
-            });
-
-        clear_result.unwrap();
-        let response = response.unwrap();
-        assert_eq!(response.status(), http::StatusCode::OK);
-        assert_eq!(
-            collect_response_body(response.into_body()).await.unwrap(),
-            response_body
-        );
-        mock_server.verify().await;
-    }
-
-    #[tokio::test]
-    async fn inference_transport_decrypts_non_success_encrypted_body() {
-        let mock_server = MockServer::start().await;
-        let client =
-            OpenSecretClient::new_with_api_key(mock_server.uri(), "api_key".to_string()).unwrap();
-        let session_id = Uuid::new_v4();
-        let session_key = [29u8; 32];
-        let error_body = Bytes::from_static(br#"{ "error": "provider rejected", "extra": 7 }"#);
-        client
-            .session_manager
-            .set_session(session_id, session_key)
-            .unwrap();
-
-        Mock::given(method("POST"))
-            .and(path("/v1/embeddings"))
-            .respond_with(
-                ResponseTemplate::new(422)
-                    .set_body_json(encrypted_response_bytes(&session_key, &error_body)),
-            )
-            .expect(1)
-            .mount(&mock_server)
-            .await;
-
-        let request = HttpRequest::builder()
-            .method(http::Method::POST)
-            .uri("/v1/embeddings")
-            .body(Bytes::from_static(br#"{"model":"x","input":"y"}"#))
-            .unwrap();
-        let response = client.send_inference_request(request).await.unwrap();
-
-        assert_eq!(response.status(), http::StatusCode::UNPROCESSABLE_ENTITY);
-        assert_eq!(
-            collect_response_body(response.into_body()).await.unwrap(),
-            error_body
-        );
-    }
-
-    #[tokio::test]
-    async fn inference_transport_preserves_non_envelope_error_with_encrypted_field() {
-        let mock_server = MockServer::start().await;
-        let client =
-            OpenSecretClient::new_with_api_key(mock_server.uri(), "api_key".to_string()).unwrap();
-        let session_key = [36u8; 32];
-        let error_body = Bytes::from(
-            serde_json::to_vec(&json!({
-                "encrypted": BASE64.encode([0u8; 28]),
-                "message": "plain backend error"
-            }))
-            .unwrap(),
-        );
-        client
-            .session_manager
-            .set_session(Uuid::new_v4(), session_key)
-            .unwrap();
-
-        Mock::given(method("POST"))
-            .and(path("/v1/embeddings"))
-            .respond_with(ResponseTemplate::new(422).set_body_bytes(error_body.clone()))
-            .expect(1)
-            .mount(&mock_server)
-            .await;
-
-        let request = HttpRequest::builder()
-            .method(http::Method::POST)
-            .uri("/v1/embeddings")
-            .body(Bytes::from_static(br#"{"model":"x","input":"y"}"#))
-            .unwrap();
-        let response = client.send_inference_request(request).await.unwrap();
-
-        assert_eq!(response.status(), http::StatusCode::UNPROCESSABLE_ENTITY);
-        assert_eq!(
-            collect_response_body(response.into_body()).await.unwrap(),
-            error_body
-        );
-    }
-
-    #[tokio::test]
-    async fn inference_transport_establishes_attestation_and_replays_exact_bytes() {
-        let mock_server = MockServer::start().await;
-        let client =
-            OpenSecretClient::new_with_api_key(mock_server.uri(), "api_key".to_string()).unwrap();
-        let stale_session_id = Uuid::new_v4();
-        let stale_session_key = [33u8; 32];
-        let server_secret_key = [34u8; 32];
-        let server_public_key =
-            x25519_dalek::PublicKey::from(&x25519_dalek::StaticSecret::from(server_secret_key));
-        let fresh_session_key = [35u8; 32];
-        let fresh_session_id = Uuid::new_v4();
-        let request_body = Bytes::from_static(br#"{ "model":"x", "input":"exact bytes" }"#);
-        let response_body = Bytes::from_static(br#"{ "ok": true }"#);
-        client
-            .session_manager
-            .set_session(stale_session_id, stale_session_key)
-            .unwrap();
-
-        Mock::given(method("POST"))
-            .and(path("/v1/embeddings"))
-            .and(query_param("trace", "one two"))
-            .and(header("authorization", "Bearer api_key"))
-            .and(header("x-session-id", stale_session_id.to_string()))
-            .and(header("x-provider-beta", "raw-replay"))
-            .and(EncryptedBytesBodyMatcher {
-                session_key: stale_session_key,
-                expected: request_body.clone(),
-            })
-            .respond_with(v1_error_response(
-                400,
-                Some("session_not_found"),
-                "stale session",
-            ))
-            .expect(1)
-            .mount(&mock_server)
-            .await;
-
-        Mock::given(method("GET"))
-            .and(PathPrefixMatcher("/attestation/"))
-            .respond_with(AttestationResponder {
-                server_public_key: server_public_key.to_bytes(),
-            })
-            .expect(1)
-            .mount(&mock_server)
-            .await;
-        Mock::given(method("POST"))
-            .and(path("/key_exchange"))
-            .and(MissingHeaderMatcher("authorization"))
-            .respond_with(KeyExchangeResponder {
-                server_secret_key,
-                session_key: fresh_session_key,
-                session_id: fresh_session_id.to_string(),
-            })
-            .expect(1)
-            .mount(&mock_server)
-            .await;
-        Mock::given(method("POST"))
-            .and(path("/v1/embeddings"))
-            .and(query_param("trace", "one two"))
-            .and(header("authorization", "Bearer api_key"))
-            .and(header("x-session-id", fresh_session_id.to_string()))
-            .and(header("x-provider-beta", "raw-replay"))
-            .and(EncryptedBytesBodyMatcher {
-                session_key: fresh_session_key,
-                expected: request_body.clone(),
-            })
-            .respond_with(
-                ResponseTemplate::new(200)
-                    .set_body_json(encrypted_response_bytes(&fresh_session_key, &response_body)),
-            )
-            .expect(1)
-            .mount(&mock_server)
-            .await;
-
-        let request = HttpRequest::builder()
-            .method(http::Method::POST)
-            .uri("/v1/embeddings?trace=one%20two")
-            .header("x-provider-beta", "raw-replay")
-            .body(request_body)
-            .unwrap();
-        let response = client.send_inference_request(request).await.unwrap();
-
-        assert_eq!(
-            collect_response_body(response.into_body()).await.unwrap(),
-            response_body
-        );
-    }
-
-    #[tokio::test]
-    async fn inference_sse_transport_preserves_framing_across_arbitrary_chunks() {
-        let session_key = [30u8; 32];
-        let decrypted_payload =
-            br#"{ "delta": {"huge":184467440737095516160000000000000}, "text":"hi" }"#;
-        let encrypted_payload = encrypted_sse_bytes(&session_key, decrypted_payload);
-        let encrypted_sse = format!(
-            ": heartbeat\r\nevent: chunk\r\nid: provider-7\r\nretry: 1500\r\ndata: {encrypted_payload}\r\n\r\n: provider-heartbeat\n\ndata:\n\ndata: [DONE]\n\n"
-        );
-        let expected = format!(
-            ": heartbeat\r\nevent: chunk\r\nid: provider-7\r\nretry: 1500\r\ndata: {}\r\n\r\n: provider-heartbeat\n\ndata:\n\ndata: [DONE]\n\n",
-            String::from_utf8_lossy(decrypted_payload)
-        );
-        let chunks = encrypted_sse
-            .as_bytes()
-            .chunks(3)
-            .map(|chunk| Ok(Bytes::copy_from_slice(chunk)))
-            .collect::<Vec<Result<Bytes>>>();
-        let source: OpenSecretResponseBody = Box::pin(futures::stream::iter(chunks));
-
-        let actual = collect_response_body(decrypt_sse_stream(source, session_key))
-            .await
-            .unwrap();
-
-        assert_eq!(actual, expected.as_bytes());
-        assert_eq!(
-            actual
-                .windows(6)
-                .filter(|window| *window == b"[DONE]")
-                .count(),
-            1
-        );
-    }
-
-    #[tokio::test]
-    async fn inference_sse_transport_rejects_plaintext_completion_chunk() {
-        let session_key = [47u8; 32];
-        let source: OpenSecretResponseBody = Box::pin(futures::stream::iter([Ok(
-            Bytes::from_static(
-                br#"data: {"id":"chatcmpl-injected","choices":[{"delta":{"content":"untrusted"}}]}\n\n"#,
-            ),
-        )]));
-
-        let error = collect_response_body(decrypt_sse_stream(source, session_key))
-            .await
-            .unwrap_err();
 
         assert!(matches!(
-            error,
-            Error::InvalidResponse(message) if message.contains("not valid encrypted payload")
+            pending.await.unwrap(),
+            Err(Error::Authentication(message))
+                if message == "Credential changed before Transport V2 request admission"
         ));
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].url.path(), "/v2/session");
     }
 
     #[tokio::test]
-    async fn inference_sse_transport_rejects_short_base64_payload() {
-        let session_key = [48u8; 32];
-        let source: OpenSecretResponseBody = Box::pin(futures::stream::iter([Ok(
-            Bytes::from_static(b"data: YWJj\n\n"),
-        )]));
+    async fn superseded_stored_api_key_during_session_establishment_is_never_sent() {
+        let server = MockServer::start().await;
+        mount_delayed_session_with_no_request(&server, [0x82; 32]).await;
+        let client = Arc::new(
+            OpenSecretClient::new_with_api_key(server.uri(), "old-api-key".to_string()).unwrap(),
+        );
 
-        let error = collect_response_body(decrypt_sse_stream(source, session_key))
-            .await
-            .unwrap_err();
+        let pending = {
+            let client = Arc::clone(&client);
+            tokio::spawn(async move { client.get_models().await })
+        };
+        wait_until_session_establishment_is_in_flight(&server).await;
+        client.set_api_key("new-api-key".to_string()).unwrap();
 
         assert!(matches!(
-            error,
-            Error::InvalidResponse(message) if message.contains("encrypted payload minimum")
+            pending.await.unwrap(),
+            Err(Error::Authentication(message))
+                if message == "Credential changed before Transport V2 request admission"
         ));
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].url.path(), "/v2/session");
     }
 
     #[tokio::test]
-    async fn inference_sse_transport_reports_corrupt_ciphertext() {
-        let session_key = [31u8; 32];
-        let mut encrypted = crypto::encrypt_data(&session_key, br#"{"delta":"x"}"#).unwrap();
-        *encrypted.last_mut().unwrap() ^= 0xff;
-        let source: OpenSecretResponseBody = Box::pin(futures::stream::iter([Ok(Bytes::from(
-            format!("data: {}\n\n", BASE64.encode(encrypted)),
-        ))]));
+    async fn cleared_resumption_during_session_establishment_is_never_sent() {
+        let server = MockServer::start().await;
+        mount_delayed_session_with_no_request(&server, [0x83; 32]).await;
+        let client = Arc::new(OpenSecretClient::new(server.uri()).unwrap());
+        client
+            .set_tokens("old-access".to_string(), Some("old-refresh".to_string()))
+            .unwrap();
 
-        let error = collect_response_body(decrypt_sse_stream(source, session_key))
-            .await
-            .unwrap_err();
+        let pending = {
+            let client = Arc::clone(&client);
+            tokio::spawn(async move { client.refresh_token().await })
+        };
+        wait_until_session_establishment_is_in_flight(&server).await;
+        client.session_manager.clear_tokens().unwrap();
 
-        assert!(matches!(error, Error::Decryption(message) if message.contains("SSE data")));
+        assert!(matches!(
+            pending.await.unwrap(),
+            Err(Error::Authentication(message))
+                if message == "Credential changed before Transport V2 request admission"
+        ));
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].url.path(), "/v2/session");
     }
 
     #[tokio::test]
-    async fn inference_sse_transport_bounds_each_line_not_each_network_chunk() {
-        let session_key = [37u8; 32];
-        let within_limit = Bytes::from_static(b":1\n:2\n:3\n");
-        let source: OpenSecretResponseBody =
-            Box::pin(futures::stream::iter([Ok(within_limit.clone())]));
-        let actual =
-            collect_response_body(decrypt_sse_stream_with_line_limit(source, session_key, 8))
-                .await
-                .unwrap();
-        assert_eq!(actual, within_limit);
-
-        let exact_limit = Bytes::from_static(b":1234567");
-        let source: OpenSecretResponseBody =
-            Box::pin(futures::stream::iter([Ok(exact_limit.clone())]));
-        let actual =
-            collect_response_body(decrypt_sse_stream_with_line_limit(source, session_key, 8))
-                .await
-                .unwrap();
-        assert_eq!(actual, exact_limit);
-
-        for chunks in [
-            vec![
-                Ok(Bytes::from_static(b":1234")),
-                Ok(Bytes::from_static(b"5678")),
-            ],
-            vec![Ok(Bytes::from_static(b":12345678\n"))],
-        ] {
-            let source: OpenSecretResponseBody = Box::pin(futures::stream::iter(chunks));
-            let error =
-                collect_response_body(decrypt_sse_stream_with_line_limit(source, session_key, 8))
-                    .await
-                    .unwrap_err();
-            assert!(matches!(
-                error,
-                Error::InvalidResponse(message) if message.contains("8-byte limit")
-            ));
+    async fn concurrent_preflight_refreshes_once_before_sending_each_original_request_once() {
+        let server = MockServer::start().await;
+        let state = TestV2ServerState::new();
+        state.queue_json_response(
+            200,
+            serde_json::json!({
+                "access_token": "fresh-access",
+                "refresh_token": "fresh-refresh",
+            }),
+        );
+        for _ in 0..2 {
+            state.queue_json_response(
+                200,
+                serde_json::json!({
+                    "object": "list",
+                    "data": [],
+                }),
+            );
         }
+        Mock::given(method("POST"))
+            .and(path("/v2/session"))
+            .respond_with(SessionResponder {
+                server_secret: [0x78; 32],
+                state: Some(state.clone()),
+                delay: None,
+            })
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/v2/request"))
+            .respond_with(state.request_responder())
+            .expect(3)
+            .mount(&server)
+            .await;
+
+        let client = OpenSecretClient::new(server.uri()).unwrap();
+        client
+            .set_tokens(encoded_timing_token(0), Some("refresh-secret".to_string()))
+            .unwrap();
+        let (first, second) = tokio::join!(client.get_models(), client.get_models());
+        assert!(first.is_ok());
+        assert!(second.is_ok());
+
+        let logical = state.captured_requests();
+        assert_eq!(logical.len(), 3);
+        assert_eq!(logical[0]["target"], "/refresh");
+        assert_eq!(logical[0]["credential"]["kind"], "resumption");
+        assert_eq!(logical[0]["credential"]["value"], "refresh-secret");
+        for request in &logical[1..] {
+            assert_eq!(request["target"], "/v1/models");
+            assert_eq!(request["credential"]["kind"], "bearer");
+            assert_eq!(request["credential"]["value"], "fresh-access");
+        }
+        let outer = server.received_requests().await.unwrap();
+        assert_eq!(outer.len(), 4);
+        assert!(outer
+            .iter()
+            .all(|request| !request.headers.contains_key(header::AUTHORIZATION)));
+        assert_eq!(
+            client.get_access_token().unwrap().as_deref(),
+            Some("fresh-access")
+        );
     }
 
     #[tokio::test]
-    async fn typed_chat_completion_keeps_legacy_stream_false_and_error_mapping() {
-        let mock_server = MockServer::start().await;
-        let client =
-            OpenSecretClient::new_with_api_key(mock_server.uri(), "api_key".to_string()).unwrap();
-        let session_id = Uuid::new_v4();
-        let session_key = [32u8; 32];
-        client
-            .session_manager
-            .set_session(session_id, session_key)
-            .unwrap();
-
+    async fn authenticated_post_send_failure_is_not_retried_or_repaired() {
+        let server = MockServer::start().await;
+        let state = TestV2ServerState::new();
+        state.queue_json_response(401, serde_json::json!({ "error": "rejected" }));
         Mock::given(method("POST"))
-            .and(path("/v1/chat/completions"))
-            .and(EncryptedJsonBodyMatcher {
-                session_key,
-                expected: json!({
-                    "model": "typed-model",
-                    "messages": [{"role": "user", "content": "hi"}],
-                    "stream": false
-                }),
+            .and(path("/v2/session"))
+            .respond_with(SessionResponder {
+                server_secret: [0x79; 32],
+                state: Some(state.clone()),
+                delay: None,
             })
-            .respond_with(ResponseTemplate::new(409).set_body_string("typed conflict"))
             .expect(1)
-            .mount(&mock_server)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/v2/request"))
+            .respond_with(state.request_responder())
+            .expect(1)
+            .mount(&server)
             .await;
 
-        let error = client
-            .create_chat_completion(ChatCompletionRequest {
-                model: "typed-model".to_string(),
-                messages: vec![ChatMessage {
-                    role: "user".to_string(),
-                    content: json!("hi"),
-                    tool_calls: None,
-                    reasoning_content: None,
-                }],
-                temperature: None,
-                max_tokens: None,
-                stream: Some(true),
-                stream_options: None,
-                tools: None,
-                tool_choice: None,
-            })
+        let client =
+            OpenSecretClient::new_with_api_key(server.uri(), "api-key".to_string()).unwrap();
+        assert!(matches!(
+            client.get_models().await,
+            Err(Error::Api { status: 401, .. })
+        ));
+        assert_eq!(state.captured_requests().len(), 1);
+        let outer = server.received_requests().await.unwrap();
+        assert_eq!(outer.len(), 2);
+        assert_eq!(outer[0].url.path(), "/v2/session");
+        assert_eq!(outer[1].url.path(), "/v2/request");
+    }
+
+    #[test]
+    fn inference_request_headers_preserve_logical_content_type_but_strip_outer_authority() {
+        let mut headers = HttpHeaderMap::new();
+        headers.insert(
+            header::AUTHORIZATION,
+            "Bearer outer-secret".parse().unwrap(),
+        );
+        headers.insert(
+            header::CONTENT_TYPE,
+            "multipart/form-data; boundary=test".parse().unwrap(),
+        );
+        headers.insert(header::CONTENT_LENGTH, "123".parse().unwrap());
+        headers.insert(header::CONTENT_ENCODING, "gzip".parse().unwrap());
+        headers.insert(header::COOKIE, "session=outer-secret".parse().unwrap());
+        headers.insert("forwarded", "for=192.0.2.1".parse().unwrap());
+        headers.insert("via", "1.1 outer-proxy".parse().unwrap());
+        headers.insert("x-forwarded-for", "192.0.2.1".parse().unwrap());
+        headers.insert("x-forwarded-host", "outer.example".parse().unwrap());
+        headers.insert("x-forwarded-proto", "https".parse().unwrap());
+        headers.insert("x-session-id", "outer-session".parse().unwrap());
+        headers.insert(ROUTING_KEY_HEADER, "outer-routing-key".parse().unwrap());
+        headers.insert("x-client-metadata", "kept".parse().unwrap());
+        headers.append("x-client-metadata", "also-kept".parse().unwrap());
+
+        let sanitized = sanitize_inference_request_headers(&headers);
+
+        assert_eq!(
+            sanitized.get(header::CONTENT_TYPE).unwrap(),
+            "multipart/form-data; boundary=test"
+        );
+        assert_eq!(
+            sanitized
+                .get_all("x-client-metadata")
+                .iter()
+                .map(|value| value.to_str().unwrap())
+                .collect::<Vec<_>>(),
+            ["kept", "also-kept"]
+        );
+        assert!(!sanitized.contains_key(header::AUTHORIZATION));
+        assert!(!sanitized.contains_key(header::CONTENT_LENGTH));
+        assert!(!sanitized.contains_key(header::CONTENT_ENCODING));
+        assert!(!sanitized.contains_key(header::COOKIE));
+        assert!(!sanitized.contains_key("forwarded"));
+        assert!(!sanitized.contains_key("via"));
+        assert!(!sanitized.contains_key("x-forwarded-for"));
+        assert!(!sanitized.contains_key("x-forwarded-host"));
+        assert!(!sanitized.contains_key("x-forwarded-proto"));
+        assert!(!sanitized.contains_key("x-session-id"));
+        assert!(!sanitized.contains_key(ROUTING_KEY_HEADER));
+    }
+
+    #[tokio::test]
+    async fn response_events_reconstruct_status_headers_and_incremental_body() {
+        let events = response_events(vec![
+            Ok(ResponseEvent::Start {
+                status: 206,
+                headers: vec![LogicalHeader::new(
+                    "content-type".to_string(),
+                    "audio/mpeg".to_string(),
+                )
+                .unwrap()],
+            }),
+            Ok(ResponseEvent::Chunk(Bytes::from_static(b"abc"))),
+            Ok(ResponseEvent::Chunk(Bytes::from_static(b"def"))),
+            Ok(ResponseEvent::End),
+        ]);
+
+        let response = response_from_events(events, None).await.unwrap();
+        assert_eq!(response.status(), http::StatusCode::PARTIAL_CONTENT);
+        assert_eq!(
+            response.headers().get(header::CONTENT_TYPE).unwrap(),
+            "audio/mpeg"
+        );
+        assert_eq!(
+            collect_response_body(response.into_body()).await.unwrap(),
+            Bytes::from_static(b"abcdef")
+        );
+    }
+
+    #[tokio::test]
+    async fn response_error_record_is_not_mistaken_for_clean_eof() {
+        let events = response_events(vec![
+            Ok(ResponseEvent::Start {
+                status: 200,
+                headers: Vec::new(),
+            }),
+            Ok(ResponseEvent::Chunk(Bytes::from_static(b"partial"))),
+            Ok(ResponseEvent::Error {
+                code: "provider_failed".to_string(),
+            }),
+        ]);
+
+        let response = response_from_events(events, None).await.unwrap();
+        let error = collect_response_body(response.into_body())
             .await
             .unwrap_err();
-
-        assert!(matches!(
-            error,
-            Error::Api { status: 409, message } if message == "typed conflict"
-        ));
+        assert!(error.to_string().contains("provider_failed"));
     }
 
     #[tokio::test]
-    async fn typed_models_and_embeddings_remain_compatible() {
-        let mock_server = MockServer::start().await;
-        let client =
-            OpenSecretClient::new_with_api_key(mock_server.uri(), "api_key".to_string()).unwrap();
-        let session_id = Uuid::new_v4();
-        let session_key = [33u8; 32];
-        client
-            .session_manager
-            .set_session(session_id, session_key)
-            .unwrap();
+    async fn response_without_authenticated_terminal_is_rejected() {
+        let events = response_events(vec![
+            Ok(ResponseEvent::Start {
+                status: 200,
+                headers: Vec::new(),
+            }),
+            Ok(ResponseEvent::Chunk(Bytes::from_static(b"partial"))),
+        ]);
 
-        Mock::given(method("GET"))
-            .and(path("/v1/models"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(encrypted_response(
-                &session_key,
-                &json!({
-                    "object": "list",
-                    "data": [{"id": "model-a", "object": "model"}]
-                }),
-            )))
-            .expect(1)
-            .mount(&mock_server)
-            .await;
-        Mock::given(method("POST"))
-            .and(path("/v1/embeddings"))
-            .and(EncryptedJsonBodyMatcher {
-                session_key,
-                expected: json!({
-                    "input": "hello",
-                    "model": "embedding-model"
-                }),
-            })
-            .respond_with(ResponseTemplate::new(200).set_body_json(encrypted_response(
-                &session_key,
-                &json!({
-                    "object": "list",
-                    "data": [{"object": "embedding", "index": 0, "embedding": [0.25, 0.5]}],
-                    "model": "embedding-model",
-                    "usage": {"prompt_tokens": 1, "total_tokens": 1}
-                }),
-            )))
-            .expect(1)
-            .mount(&mock_server)
-            .await;
-
-        let models = client.get_models().await.unwrap();
-        let embeddings = client
-            .create_embeddings(EmbeddingRequest {
-                input: "hello".into(),
-                model: "embedding-model".to_string(),
-                encoding_format: None,
-                dimensions: None,
-                user: None,
-            })
+        let response = response_from_events(events, None).await.unwrap();
+        let error = collect_response_body(response.into_body())
             .await
-            .unwrap();
-
-        assert_eq!(models.data[0].id, "model-a");
-        assert_eq!(
-            embeddings.data[0].embedding.as_floats(),
-            Some(&[0.25, 0.5][..])
-        );
+            .unwrap_err();
+        assert!(error.to_string().contains("authenticated finality"));
     }
 
-    #[tokio::test]
-    async fn test_refresh_reestablishes_attestation_without_sending_auth_headers() {
-        let mock_server = MockServer::start().await;
-        let client = OpenSecretClient::new(mock_server.uri()).unwrap();
-        let server_secret_key = [11u8; 32];
-        let server_public_key =
-            x25519_dalek::PublicKey::from(&x25519_dalek::StaticSecret::from(server_secret_key));
-        let session_key = [9u8; 32];
-        let session_id = Uuid::new_v4().to_string();
-        let refreshed_access = "refreshed_access";
-        let refreshed_refresh = "refreshed_refresh";
-
-        client
-            .session_manager
-            .set_tokens(
-                "expired_access".to_string(),
-                Some("refresh_token".to_string()),
-            )
-            .unwrap();
-
-        Mock::given(method("GET"))
-            .and(PathPrefixMatcher("/attestation/"))
-            .respond_with(AttestationResponder {
-                server_public_key: server_public_key.to_bytes(),
-            })
-            .expect(1)
-            .mount(&mock_server)
-            .await;
-
-        Mock::given(method("POST"))
-            .and(path("/key_exchange"))
-            .and(MissingHeaderMatcher("authorization"))
-            .respond_with(KeyExchangeResponder {
-                server_secret_key,
-                session_key,
-                session_id: session_id.clone(),
-            })
-            .expect(1)
-            .mount(&mock_server)
-            .await;
-
-        Mock::given(method("POST"))
-            .and(path("/refresh"))
-            .and(MissingHeaderMatcher("authorization"))
-            .and(header("x-session-id", session_id.clone()))
-            .respond_with(ResponseTemplate::new(200).set_body_json(encrypted_response(
-                &session_key,
-                &json!({
-                    "access_token": refreshed_access,
-                    "refresh_token": refreshed_refresh,
-                }),
-            )))
-            .expect(1)
-            .mount(&mock_server)
-            .await;
-
-        client.refresh_token().await.unwrap();
-
-        assert_eq!(
-            client.get_session_id().unwrap(),
-            Some(Uuid::parse_str(&session_id).unwrap())
-        );
-        assert_eq!(
-            client.get_access_token().unwrap().as_deref(),
-            Some(refreshed_access)
-        );
-        assert_eq!(
-            client.get_refresh_token().unwrap().as_deref(),
-            Some(refreshed_refresh)
-        );
-    }
-
-    #[tokio::test]
-    async fn delayed_manual_refresh_does_not_overwrite_newly_set_tokens() {
-        let mock_server = MockServer::start().await;
-        let client = OpenSecretClient::new(mock_server.uri()).unwrap();
-        let session_id = Uuid::new_v4();
-        let session_key = [43u8; 32];
-        client
-            .session_manager
-            .set_session(session_id, session_key)
-            .unwrap();
-        client
-            .session_manager
-            .set_tokens("old_access".to_string(), Some("old_refresh".to_string()))
-            .unwrap();
-
-        Mock::given(method("POST"))
-            .and(path("/refresh"))
-            .and(EncryptedJsonBodyMatcher {
-                session_key,
-                expected: json!({ "refresh_token": "old_refresh" }),
-            })
-            .respond_with(
-                ResponseTemplate::new(200)
-                    .set_delay(Duration::from_millis(100))
-                    .set_body_json(encrypted_response(
-                        &session_key,
-                        &json!({
-                            "access_token": "stale_refreshed_access",
-                            "refresh_token": "stale_refreshed_refresh",
-                        }),
-                    )),
-            )
-            .expect(1)
-            .mount(&mock_server)
-            .await;
-
-        let (refresh_result, ()) = tokio::join!(client.refresh_token(), async {
-            tokio::time::sleep(Duration::from_millis(25)).await;
-            client
-                .set_tokens("app_access".to_string(), Some("app_refresh".to_string()))
-                .unwrap();
-        });
-
-        refresh_result.unwrap();
-        assert_eq!(
-            client.get_access_token().unwrap().as_deref(),
-            Some("app_access")
-        );
-        assert_eq!(
-            client.get_refresh_token().unwrap().as_deref(),
-            Some("app_refresh")
-        );
-        assert!(client.get_session_id().unwrap().is_none());
-    }
-
-    #[tokio::test]
-    async fn delayed_manual_refresh_does_not_restore_cleared_credentials() {
-        let mock_server = MockServer::start().await;
-        let client = OpenSecretClient::new(mock_server.uri()).unwrap();
-        let session_id = Uuid::new_v4();
-        let session_key = [44u8; 32];
-        client
-            .session_manager
-            .set_session(session_id, session_key)
-            .unwrap();
-        client
-            .session_manager
-            .set_tokens("old_access".to_string(), Some("old_refresh".to_string()))
-            .unwrap();
-
-        Mock::given(method("POST"))
-            .and(path("/refresh"))
-            .respond_with(
-                ResponseTemplate::new(200)
-                    .set_delay(Duration::from_millis(100))
-                    .set_body_json(encrypted_response(
-                        &session_key,
-                        &json!({
-                            "access_token": "stale_refreshed_access",
-                            "refresh_token": "stale_refreshed_refresh",
-                        }),
-                    )),
-            )
-            .expect(1)
-            .mount(&mock_server)
-            .await;
-
-        let (refresh_result, clear_result) = tokio::join!(client.refresh_token(), async {
-            tokio::time::sleep(Duration::from_millis(25)).await;
-            client.session_manager.clear_all()
-        });
-
-        refresh_result.unwrap();
-        clear_result.unwrap();
-        assert!(client.get_access_token().unwrap().is_none());
-        assert!(client.get_refresh_token().unwrap().is_none());
-        assert!(client.get_session_id().unwrap().is_none());
-    }
-
-    #[tokio::test]
-    async fn concurrent_manual_refresh_and_logout_finish_logged_out() {
-        let mock_server = MockServer::start().await;
-        let client = OpenSecretClient::new(mock_server.uri()).unwrap();
-        let session_id = Uuid::new_v4();
-        let session_key = [45u8; 32];
-        client
-            .session_manager
-            .set_session(session_id, session_key)
-            .unwrap();
-        client
-            .session_manager
-            .set_tokens("old_access".to_string(), Some("old_refresh".to_string()))
-            .unwrap();
-
-        Mock::given(method("POST"))
-            .and(path("/refresh"))
-            .respond_with(
-                ResponseTemplate::new(200)
-                    .set_delay(Duration::from_millis(100))
-                    .set_body_json(encrypted_response(
-                        &session_key,
-                        &json!({
-                            "access_token": "fresh_access",
-                            "refresh_token": "fresh_refresh",
-                        }),
-                    )),
-            )
-            .expect(1)
-            .mount(&mock_server)
-            .await;
-        Mock::given(method("POST"))
-            .and(path("/logout"))
-            .and(EncryptedJsonBodyMatcher {
-                session_key,
-                expected: json!({
-                    "refresh_token": "fresh_refresh"
-                }),
-            })
-            .respond_with(
-                ResponseTemplate::new(200)
-                    .set_body_json(encrypted_response(&session_key, &json!({}))),
-            )
-            .expect(1)
-            .mount(&mock_server)
-            .await;
-
-        let (refresh_result, logout_result) = tokio::join!(client.refresh_token(), async {
-            tokio::time::sleep(Duration::from_millis(25)).await;
-            client.logout().await
-        });
-
-        refresh_result.unwrap();
-        logout_result.unwrap();
-        assert!(client.get_access_token().unwrap().is_none());
-        assert!(client.get_refresh_token().unwrap().is_none());
-        assert!(client.get_session_id().unwrap().is_none());
-    }
-
-    #[tokio::test]
-    async fn delayed_logout_does_not_clear_newly_set_tokens() {
-        let mock_server = MockServer::start().await;
-        let client = OpenSecretClient::new(mock_server.uri()).unwrap();
-        let session_id = Uuid::new_v4();
-        let session_key = [49u8; 32];
-        client
-            .session_manager
-            .set_session(session_id, session_key)
-            .unwrap();
-        client
-            .session_manager
-            .set_tokens("old_access".to_string(), Some("old_refresh".to_string()))
-            .unwrap();
-
-        Mock::given(method("POST"))
-            .and(path("/logout"))
-            .and(EncryptedJsonBodyMatcher {
-                session_key,
-                expected: json!({
-                    "refresh_token": "old_refresh"
-                }),
-            })
-            .respond_with(
-                ResponseTemplate::new(200)
-                    .set_delay(Duration::from_millis(100))
-                    .set_body_json(encrypted_response(&session_key, &json!({}))),
-            )
-            .expect(1)
-            .mount(&mock_server)
-            .await;
-
-        let (logout_result, ()) = tokio::join!(client.logout(), async {
-            tokio::time::sleep(Duration::from_millis(25)).await;
-            client
-                .set_tokens("new_access".to_string(), Some("new_refresh".to_string()))
-                .unwrap();
-        });
-
-        logout_result.unwrap();
-        assert_eq!(
-            client.get_access_token().unwrap().as_deref(),
-            Some("new_access")
-        );
-        assert_eq!(
-            client.get_refresh_token().unwrap().as_deref(),
-            Some("new_refresh")
-        );
-        assert!(client.get_session_id().unwrap().is_none());
-    }
-
-    #[tokio::test]
-    async fn web_search_uses_authenticated_encrypted_endpoint() {
-        let mock_server = MockServer::start().await;
-        let client = OpenSecretClient::new(mock_server.uri()).unwrap();
-        let session_id = Uuid::new_v4();
-        let session_key = [51u8; 32];
-
-        client
-            .session_manager
-            .set_session(session_id, session_key)
-            .unwrap();
-        client
-            .session_manager
-            .set_tokens(
-                "web_access_token".to_string(),
-                Some("web_refresh_token".to_string()),
-            )
-            .unwrap();
-
-        let request = WebSearchRequest {
-            query: "rust confidential computing".to_string(),
-            workflow: Some(WebSearchWorkflow::News),
-            page: Some(2),
+    #[test]
+    fn endpoint_builders_encode_query_values() {
+        let params = ConversationsListParams {
             limit: Some(25),
-            safe_search: Some(false),
-            timeout: Some(2.5),
-            lens_id: None,
-            lens: Some(WebSearchLens {
-                sites_included: Some(vec!["example.com".to_string()]),
-                keywords_included: Some(vec!["enclave".to_string()]),
-                time_relative: Some(WebSearchTimeRelative::Week),
-                search_region: Some("US".to_string()),
-                ..Default::default()
-            }),
-            filters: Some(WebSearchFilters {
-                region: Some("US".to_string()),
-                after: None,
-                before: None,
-            }),
+            after: Some(Uuid::nil()),
+            order: Some("desc".to_string()),
+            project_id: None,
+            unassigned_project: Some(true),
+            pinned: Some(false),
         };
-        let response = WebSearchResponse {
-            trace_id: Some("trace-search-1".to_string()),
-            results: vec![WebSearchResult {
-                category: "news".to_string(),
-                url: "https://example.com/enclave".to_string(),
-                title: "Enclave update".to_string(),
-                snippet: Some("A short description.".to_string()),
-                published_at: Some("2026-07-16T12:00:00Z".to_string()),
-            }],
-        };
+        let endpoint = build_conversations_endpoint(Some(&params));
 
-        Mock::given(method("POST"))
-            .and(path("/v1/web/search"))
-            .and(header("authorization", "Bearer web_access_token"))
-            .and(header("x-session-id", session_id.to_string()))
-            .and(EncryptedJsonBodyMatcher {
-                session_key,
-                expected: json!({
-                    "query": "rust confidential computing",
-                    "workflow": "news",
-                    "page": 2,
-                    "limit": 25,
-                    "safe_search": false,
-                    "timeout": 2.5,
-                    "lens": {
-                        "sites_included": ["example.com"],
-                        "keywords_included": ["enclave"],
-                        "time_relative": "week",
-                        "search_region": "US"
-                    },
-                    "filters": {
-                        "region": "US"
-                    }
-                }),
-            })
-            .respond_with(
-                ResponseTemplate::new(200)
-                    .set_body_json(encrypted_response(&session_key, &response)),
-            )
-            .expect(1)
-            .mount(&mock_server)
-            .await;
-
-        let actual = client.web_search(request).await.unwrap();
-
-        assert_eq!(actual, response);
-        mock_server.verify().await;
+        assert!(endpoint.starts_with("/v1/conversations?"));
+        assert!(endpoint.contains("limit=25"));
+        assert!(endpoint.contains("after=00000000%2D0000%2D0000%2D0000%2D000000000000"));
+        assert!(endpoint.contains("order=desc"));
+        assert!(endpoint.contains("unassigned_project=true"));
+        assert!(endpoint.contains("pinned=false"));
     }
 
     #[tokio::test]
-    async fn web_extract_preserves_order_and_partial_page_errors() {
-        let mock_server = MockServer::start().await;
-        let client = OpenSecretClient::new(mock_server.uri()).unwrap();
-        let session_id = Uuid::new_v4();
-        let session_key = [52u8; 32];
+    async fn empty_conversation_updates_still_fail_before_network_use() {
+        let client = OpenSecretClient::new("http://127.0.0.1:1").unwrap();
 
-        client
-            .session_manager
-            .set_session(session_id, session_key)
-            .unwrap();
-        client
-            .session_manager
-            .set_tokens(
-                "web_access_token".to_string(),
-                Some("web_refresh_token".to_string()),
-            )
-            .unwrap();
-
-        let first_url = "https://example.com/first".to_string();
-        let second_url = "https://example.com/second".to_string();
-        let request = WebExtractRequest {
-            urls: vec![first_url.clone(), second_url.clone()],
-            timeout: Some(4.5),
-        };
-        let response = WebExtractResponse {
-            trace_id: Some("trace-extract-1".to_string()),
-            pages: vec![
-                WebExtractPage {
-                    url: first_url.clone(),
-                    markdown: Some("# First\n\nExtracted text.".to_string()),
-                    error: None,
-                },
-                WebExtractPage {
-                    url: second_url.clone(),
-                    markdown: None,
-                    error: Some(WebExtractPageError {
-                        code: "no_content".to_string(),
-                        message: "No readable content was found.".to_string(),
-                    }),
-                },
-            ],
-        };
-
-        Mock::given(method("POST"))
-            .and(path("/v1/web/extract"))
-            .and(header("authorization", "Bearer web_access_token"))
-            .and(header("x-session-id", session_id.to_string()))
-            .and(EncryptedJsonBodyMatcher {
-                session_key,
-                expected: json!({
-                    "urls": [first_url, second_url],
-                    "timeout": 4.5
-                }),
-            })
-            .respond_with(
-                ResponseTemplate::new(200)
-                    .set_body_json(encrypted_response(&session_key, &response)),
-            )
-            .expect(1)
-            .mount(&mock_server)
-            .await;
-
-        let actual = client.web_extract(request).await.unwrap();
-
-        assert_eq!(actual, response);
-        assert_eq!(actual.pages[0].url, "https://example.com/first");
-        assert_eq!(
-            actual.pages[1]
-                .error
-                .as_ref()
-                .map(|error| error.code.as_str()),
-            Some("no_content")
-        );
-        mock_server.verify().await;
+        assert!(matches!(
+            client
+                .update_conversation(Uuid::nil(), ConversationUpdateRequest::default())
+                .await,
+            Err(Error::Configuration(message))
+                if message.contains("at least one field")
+        ));
+        assert!(matches!(
+            client
+                .update_conversation_project(
+                    Uuid::nil(),
+                    ConversationProjectUpdateRequest::default(),
+                )
+                .await,
+            Err(Error::Configuration(message))
+                if message.contains("at least one field")
+        ));
     }
 
-    #[tokio::test]
-    async fn web_validation_error_does_not_retry_attestation() {
-        let mock_server = MockServer::start().await;
-        let client = OpenSecretClient::new(mock_server.uri()).unwrap();
-        let session_id = Uuid::new_v4();
-        let session_key = [53u8; 32];
-
-        client
-            .session_manager
-            .set_session(session_id, session_key)
-            .unwrap();
-        client
-            .session_manager
-            .set_tokens(
-                "web_access_token".to_string(),
-                Some("web_refresh_token".to_string()),
-            )
-            .unwrap();
-
-        Mock::given(method("POST"))
-            .and(path("/v1/web/search"))
-            .and(header("authorization", "Bearer web_access_token"))
-            .and(header("x-session-id", session_id.to_string()))
-            .respond_with(ResponseTemplate::new(422).set_body_json(json!({
-                "status": 422,
-                "code": "invalid_request",
-                "message": "The web request is invalid."
-            })))
-            .expect(1)
-            .mount(&mock_server)
-            .await;
-
-        let error = client
-            .web_search(WebSearchRequest::new("maple privacy"))
-            .await
-            .unwrap_err();
-
-        match error {
-            Error::Api { status, message } => {
-                assert_eq!(status, 422);
-                assert!(message.contains("invalid_request"));
-            }
-            other => panic!("expected API validation error, got {other:?}"),
-        }
-        mock_server.verify().await;
-    }
-
-    #[tokio::test]
-    async fn test_init_main_agent_uses_authenticated_encrypted_v1_endpoint() {
-        let mock_server = MockServer::start().await;
-        let client = OpenSecretClient::new(mock_server.uri()).unwrap();
-        let session_id = Uuid::new_v4();
-        let session_key = [31u8; 32];
-
-        client
-            .session_manager
-            .set_session(session_id, session_key)
-            .unwrap();
-        client
-            .session_manager
-            .set_tokens(
-                "access_token".to_string(),
-                Some("refresh_token".to_string()),
-            )
-            .unwrap();
-
-        let request = InitMainAgentRequest {
-            timezone: Some("America/Chicago".to_string()),
-            locale: Some("en-US".to_string()),
-        };
-        let response = InitMainAgentResponse {
-            id: Uuid::new_v4(),
-            object: "agent.main".to_string(),
-            kind: "main".to_string(),
-            conversation_id: Uuid::new_v4(),
-            display_name: "Maple".to_string(),
-            created_at: 1_710_000_000,
-            updated_at: 1_710_000_000,
-            messages: vec![ConversationItem::Message {
-                id: Uuid::new_v4(),
-                status: Some("completed".to_string()),
-                role: "assistant".to_string(),
-                content: vec![ConversationContent::OutputText {
-                    text: "Hey — I'm Maple.".to_string(),
-                }],
-                reaction: None,
-                created_at: Some(1_710_000_000),
-            }],
-        };
-        let expected_request = request.clone();
-        let expected_response = response.clone();
-
-        Mock::given(method("POST"))
-            .and(path("/v1/agent/init"))
-            .and(header("authorization", "Bearer access_token"))
-            .and(header("x-session-id", session_id.to_string()))
-            .respond_with(move |req: &Request| {
-                let body: InitMainAgentRequest = decrypt_request_body(req, &session_key);
-                assert_eq!(body, expected_request);
-
-                ResponseTemplate::new(200)
-                    .set_body_json(encrypted_response(&session_key, &expected_response))
-            })
-            .expect(1)
-            .mount(&mock_server)
-            .await;
-
-        let initialized = client.init_main_agent(request.clone()).await.unwrap();
-
-        assert_eq!(initialized.id, response.id);
-        assert_eq!(initialized.conversation_id, response.conversation_id);
-        assert_eq!(initialized.display_name, "Maple");
-        assert_eq!(initialized.messages.len(), 1);
-    }
-
-    #[tokio::test]
-    async fn test_set_main_agent_item_reaction_uses_authenticated_encrypted_v1_endpoint() {
-        let mock_server = MockServer::start().await;
-        let client = OpenSecretClient::new(mock_server.uri()).unwrap();
-        let session_id = Uuid::new_v4();
-        let session_key = [32u8; 32];
-        let item_id = Uuid::new_v4();
-
-        client
-            .session_manager
-            .set_session(session_id, session_key)
-            .unwrap();
-        client
-            .session_manager
-            .set_tokens(
-                "access_token".to_string(),
-                Some("refresh_token".to_string()),
-            )
-            .unwrap();
-
-        let response = ConversationItem::Message {
-            id: item_id,
-            status: Some("completed".to_string()),
-            role: "assistant".to_string(),
-            content: vec![ConversationContent::OutputText {
-                text: "Nice!".to_string(),
-            }],
-            reaction: Some("🎉".to_string()),
-            created_at: Some(1_710_000_000),
-        };
-        let expected_response = response.clone();
-
-        Mock::given(method("POST"))
-            .and(path(format!("/v1/agent/items/{}/reaction", item_id)))
-            .and(header("authorization", "Bearer access_token"))
-            .and(header("x-session-id", session_id.to_string()))
-            .respond_with(move |req: &Request| {
-                let body: SetMessageReactionRequest = decrypt_request_body(req, &session_key);
-                assert_eq!(
-                    body,
-                    SetMessageReactionRequest {
-                        emoji: "🎉".to_string()
-                    }
-                );
-
-                ResponseTemplate::new(200)
-                    .set_body_json(encrypted_response(&session_key, &expected_response))
-            })
-            .expect(1)
-            .mount(&mock_server)
-            .await;
-
-        let item = client
-            .set_main_agent_item_reaction(item_id, "🎉")
-            .await
-            .unwrap();
-
-        match item {
-            ConversationItem::Message { id, reaction, .. } => {
-                assert_eq!(id, item_id);
-                assert_eq!(reaction.as_deref(), Some("🎉"));
-            }
-            other => panic!("Expected message item, got {:?}", other),
-        }
-    }
-
-    #[tokio::test]
-    async fn test_clear_subagent_item_reaction_uses_authenticated_v1_endpoint() {
-        let mock_server = MockServer::start().await;
-        let client = OpenSecretClient::new(mock_server.uri()).unwrap();
-        let session_id = Uuid::new_v4();
-        let session_key = [33u8; 32];
-        let subagent_id = Uuid::new_v4();
-        let item_id = Uuid::new_v4();
-
-        client
-            .session_manager
-            .set_session(session_id, session_key)
-            .unwrap();
-        client
-            .session_manager
-            .set_tokens(
-                "access_token".to_string(),
-                Some("refresh_token".to_string()),
-            )
-            .unwrap();
-
-        let response = ConversationItem::Message {
-            id: item_id,
-            status: Some("completed".to_string()),
-            role: "assistant".to_string(),
-            content: vec![ConversationContent::OutputText {
-                text: "Done".to_string(),
-            }],
-            reaction: None,
-            created_at: Some(1_710_000_001),
-        };
-        let expected_response = response.clone();
-
-        Mock::given(method("DELETE"))
-            .and(path(format!(
-                "/v1/agent/subagents/{}/items/{}/reaction",
-                subagent_id, item_id
-            )))
-            .and(header("authorization", "Bearer access_token"))
-            .and(header("x-session-id", session_id.to_string()))
-            .respond_with(
-                ResponseTemplate::new(200)
-                    .set_body_json(encrypted_response(&session_key, &expected_response)),
-            )
-            .expect(1)
-            .mount(&mock_server)
-            .await;
-
-        let item = client
-            .clear_subagent_item_reaction(subagent_id, item_id)
-            .await
-            .unwrap();
-
-        match item {
-            ConversationItem::Message { id, reaction, .. } => {
-                assert_eq!(id, item_id);
-                assert_eq!(reaction, None);
-            }
-            other => panic!("Expected message item, got {:?}", other),
-        }
-    }
-
-    #[tokio::test]
-    async fn test_agent_chat_stream_parses_reaction_and_message_ids() {
-        let mock_server = MockServer::start().await;
-        let client = OpenSecretClient::new(mock_server.uri()).unwrap();
-        let session_id = Uuid::new_v4();
-        let session_key = [34u8; 32];
-        let reaction_item_id = Uuid::new_v4();
+    #[test]
+    fn agent_sse_parser_preserves_typed_message_and_reaction_ids() {
         let message_id = Uuid::new_v4();
-
-        client
-            .session_manager
-            .set_session(session_id, session_key)
-            .unwrap();
-        client
-            .session_manager
-            .set_tokens(
-                "access_token".to_string(),
-                Some("refresh_token".to_string()),
-            )
-            .unwrap();
-
-        let sse_body = format!(
-            "{}{}{}{}data: [DONE]\n\n",
-            encrypted_sse_data(&session_key, &json!({})).replacen(
-                "data:",
-                "event: agent.typing\ndata:",
-                1
-            ),
-            encrypted_sse_data(
-                &session_key,
-                &json!({
-                    "item_id": reaction_item_id,
-                    "emoji": "🫡"
-                })
-            )
-            .replacen("data:", "event: agent.reaction\ndata:", 1),
-            encrypted_sse_data(
-                &session_key,
-                &json!({
-                    "message_id": message_id,
-                    "message": "hello there"
-                })
-            )
-            .replacen("data:", "event: agent.message\ndata:", 1),
-            encrypted_sse_data(&session_key, &json!({})).replacen(
-                "data:",
-                "event: agent.done\ndata:",
-                1
-            ),
-        );
-
-        Mock::given(method("POST"))
-            .and(path("/v1/agent/chat"))
-            .and(header("authorization", "Bearer access_token"))
-            .and(header("x-session-id", session_id.to_string()))
-            .respond_with(move |req: &Request| {
-                let body: AgentChatRequest = decrypt_request_body(req, &session_key);
-                assert_eq!(body.input, "hey there");
-
-                ResponseTemplate::new(200)
-                    .insert_header("content-type", "text/event-stream")
-                    .set_body_string(sse_body.clone())
-            })
-            .expect(1)
-            .mount(&mock_server)
-            .await;
-
-        let mut stream = client.agent_chat("hey there").await.unwrap();
-
-        match stream.next().await.unwrap().unwrap() {
-            AgentSseEvent::Typing(_) => {}
-            other => panic!("Expected typing event, got {:?}", other),
+        let message = format!(r#"{{"message_id":"{message_id}","message":"hello"}}"#);
+        match parse_agent_sse_event("agent.message", &message)
+            .unwrap()
+            .unwrap()
+        {
+            AgentSseEvent::Message(event) => {
+                assert_eq!(event.message_id, message_id);
+                assert_eq!(event.message, "hello");
+            }
+            other => panic!("unexpected event: {other:?}"),
         }
 
-        match stream.next().await.unwrap().unwrap() {
+        let item_id = Uuid::new_v4();
+        let reaction = format!(r#"{{"item_id":"{item_id}","emoji":"👍"}}"#);
+        match parse_agent_sse_event("agent.reaction", &reaction)
+            .unwrap()
+            .unwrap()
+        {
             AgentSseEvent::Reaction(event) => {
-                assert_eq!(event.item_id, reaction_item_id);
-                assert_eq!(event.emoji, "🫡");
+                assert_eq!(event.item_id, item_id);
+                assert_eq!(event.emoji, "👍");
             }
-            other => panic!("Expected reaction event, got {:?}", other),
+            other => panic!("unexpected event: {other:?}"),
         }
 
-        match stream.next().await.unwrap().unwrap() {
-            AgentSseEvent::Message(event) => {
-                assert_eq!(event.message_id, message_id);
-                assert_eq!(event.message, "hello there".to_string());
-            }
-            other => panic!("Expected message event, got {:?}", other),
-        }
-
-        match stream.next().await.unwrap().unwrap() {
-            AgentSseEvent::Done(_) => {}
-            other => panic!("Expected done event, got {:?}", other),
-        }
-
-        assert!(stream.next().await.is_none());
-    }
-
-    #[tokio::test]
-    async fn agent_stream_v1_generic_401_does_not_refresh() {
-        let mock_server = MockServer::start().await;
-        let client = OpenSecretClient::new(mock_server.uri()).unwrap();
-        let session_id = Uuid::new_v4();
-        let session_key = [49u8; 32];
-        client
-            .session_manager
-            .set_session(session_id, session_key)
-            .unwrap();
-        client
-            .session_manager
-            .set_tokens(
-                "access_token".to_string(),
-                Some("refresh_token".to_string()),
-            )
-            .unwrap();
-
-        Mock::given(method("POST"))
-            .and(path("/v1/agent/chat"))
-            .and(header("authorization", "Bearer access_token"))
-            .and(header("x-session-id", session_id.to_string()))
-            .and(EncryptedJsonBodyMatcher {
-                session_key,
-                expected: json!({ "input": "generic unauthorized" }),
-            })
-            .respond_with(v1_error_response(401, None, "generic unauthorized"))
-            .expect(1)
-            .mount(&mock_server)
-            .await;
-        Mock::given(method("POST"))
-            .and(path("/refresh"))
-            .respond_with(ResponseTemplate::new(500))
-            .expect(0)
-            .mount(&mock_server)
-            .await;
-
-        match client.agent_chat("generic unauthorized").await {
-            Err(Error::Api { status: 401, .. }) => {}
-            Err(other) => panic!("expected generic 401 API error, got {other:?}"),
-            Ok(_) => panic!("generic 401 unexpectedly started an Agent stream"),
-        }
-        mock_server.verify().await;
-    }
-
-    #[tokio::test]
-    async fn concurrent_agent_stream_401s_share_one_refresh_and_decrypt() {
-        let mock_server = MockServer::start().await;
-        let client = OpenSecretClient::new(mock_server.uri()).unwrap();
-        let session_id = Uuid::new_v4();
-        let session_key = [50u8; 32];
-        let message_id = Uuid::new_v4();
-        client
-            .session_manager
-            .set_session(session_id, session_key)
-            .unwrap();
-        client
-            .session_manager
-            .set_tokens(
-                "expired_access".to_string(),
-                Some("refresh_token".to_string()),
-            )
-            .unwrap();
-
-        Mock::given(method("POST"))
-            .and(path("/v1/agent/chat"))
-            .and(header("authorization", "Bearer expired_access"))
-            .and(header("x-session-id", session_id.to_string()))
-            .and(EncryptedJsonBodyMatcher {
-                session_key,
-                expected: json!({ "input": "stream retry" }),
-            })
-            .respond_with(
-                ResponseTemplate::new(401)
-                    .insert_header(ERROR_CONTRACT_HEADER, "1")
-                    .insert_header(ERROR_CODE_HEADER, "access_token_expired")
-                    .set_delay(Duration::from_millis(50))
-                    .set_body_string("jwt expired"),
-            )
-            .expect(2)
-            .mount(&mock_server)
-            .await;
-
-        Mock::given(method("POST"))
-            .and(path("/refresh"))
-            .and(MissingHeaderMatcher("authorization"))
-            .and(header("x-session-id", session_id.to_string()))
-            .and(EncryptedJsonBodyMatcher {
-                session_key,
-                expected: json!({ "refresh_token": "refresh_token" }),
-            })
-            .respond_with(
-                ResponseTemplate::new(200)
-                    .set_delay(Duration::from_millis(100))
-                    .set_body_json(encrypted_response(
-                        &session_key,
-                        &json!({
-                            "access_token": "fresh_access",
-                            "refresh_token": "fresh_refresh",
-                        }),
-                    )),
-            )
-            .expect(1)
-            .mount(&mock_server)
-            .await;
-
-        let sse_body = format!(
-            "{}data: [DONE]\n\n",
-            encrypted_sse_data(
-                &session_key,
-                &json!({
-                    "message_id": message_id,
-                    "message": "stream recovered"
-                })
-            )
-            .replacen("data:", "event: agent.message\ndata:", 1),
-        );
-        Mock::given(method("POST"))
-            .and(path("/v1/agent/chat"))
-            .and(header("authorization", "Bearer fresh_access"))
-            .and(header("x-session-id", session_id.to_string()))
-            .and(EncryptedJsonBodyMatcher {
-                session_key,
-                expected: json!({ "input": "stream retry" }),
-            })
-            .respond_with(
-                ResponseTemplate::new(200)
-                    .insert_header("content-type", "text/event-stream")
-                    .set_body_string(sse_body),
-            )
-            .expect(2)
-            .mount(&mock_server)
-            .await;
-
-        let (first, second) = tokio::join!(
-            client.agent_chat("stream retry"),
-            client.agent_chat("stream retry")
-        );
-        let mut first = first.unwrap();
-        let mut second = second.unwrap();
-
-        for stream in [&mut first, &mut second] {
-            match stream.next().await.unwrap().unwrap() {
-                AgentSseEvent::Message(event) => {
-                    assert_eq!(event.message_id, message_id);
-                    assert_eq!(event.message, "stream recovered");
-                }
-                other => panic!("Expected recovered agent message, got {other:?}"),
-            }
-            assert!(stream.next().await.is_none());
-        }
-        assert_eq!(
-            client.get_access_token().unwrap().as_deref(),
-            Some("fresh_access")
-        );
-        assert_eq!(
-            client.get_refresh_token().unwrap().as_deref(),
-            Some("fresh_refresh")
-        );
-        mock_server.verify().await;
-    }
-
-    #[tokio::test]
-    async fn agent_stream_stale_session_reattests_and_decrypts() {
-        let mock_server = MockServer::start().await;
-        let client = OpenSecretClient::new(mock_server.uri()).unwrap();
-        let stale_session_id = Uuid::new_v4();
-        let stale_session_key = [51u8; 32];
-        let server_secret_key = [52u8; 32];
-        let server_public_key =
-            x25519_dalek::PublicKey::from(&x25519_dalek::StaticSecret::from(server_secret_key));
-        let fresh_session_id = Uuid::new_v4();
-        let fresh_session_key = [53u8; 32];
-        let message_id = Uuid::new_v4();
-        client
-            .session_manager
-            .set_session(stale_session_id, stale_session_key)
-            .unwrap();
-        client
-            .session_manager
-            .set_tokens(
-                "access_token".to_string(),
-                Some("refresh_token".to_string()),
-            )
-            .unwrap();
-
-        Mock::given(method("POST"))
-            .and(path("/v1/agent/chat"))
-            .and(header("authorization", "Bearer access_token"))
-            .and(header("x-session-id", stale_session_id.to_string()))
-            .and(EncryptedJsonBodyMatcher {
-                session_key: stale_session_key,
-                expected: json!({ "input": "stale stream" }),
-            })
-            .respond_with(ResponseTemplate::new(400).set_body_string("stale session"))
-            .expect(1)
-            .mount(&mock_server)
-            .await;
-        Mock::given(method("GET"))
-            .and(PathPrefixMatcher("/attestation/"))
-            .respond_with(AttestationResponder {
-                server_public_key: server_public_key.to_bytes(),
-            })
-            .expect(1)
-            .mount(&mock_server)
-            .await;
-        Mock::given(method("POST"))
-            .and(path("/key_exchange"))
-            .and(MissingHeaderMatcher("authorization"))
-            .respond_with(KeyExchangeResponder {
-                server_secret_key,
-                session_key: fresh_session_key,
-                session_id: fresh_session_id.to_string(),
-            })
-            .expect(1)
-            .mount(&mock_server)
-            .await;
-
-        let sse_body = format!(
-            "{}data: [DONE]\n\n",
-            encrypted_sse_data(
-                &fresh_session_key,
-                &json!({
-                    "message_id": message_id,
-                    "message": "fresh session"
-                })
-            )
-            .replacen("data:", "event: agent.message\ndata:", 1),
-        );
-        Mock::given(method("POST"))
-            .and(path("/v1/agent/chat"))
-            .and(header("authorization", "Bearer access_token"))
-            .and(header("x-session-id", fresh_session_id.to_string()))
-            .and(EncryptedJsonBodyMatcher {
-                session_key: fresh_session_key,
-                expected: json!({ "input": "stale stream" }),
-            })
-            .respond_with(
-                ResponseTemplate::new(200)
-                    .insert_header("content-type", "text/event-stream")
-                    .set_body_string(sse_body),
-            )
-            .expect(1)
-            .mount(&mock_server)
-            .await;
-
-        let mut stream = client.agent_chat("stale stream").await.unwrap();
-        match stream.next().await.unwrap().unwrap() {
-            AgentSseEvent::Message(event) => {
-                assert_eq!(event.message_id, message_id);
-                assert_eq!(event.message, "fresh session");
-            }
-            other => panic!("Expected agent message after re-attestation, got {other:?}"),
-        }
-        assert!(stream.next().await.is_none());
-        assert_eq!(client.get_session_id().unwrap(), Some(fresh_session_id));
-        mock_server.verify().await;
+        assert!(parse_agent_sse_event("unknown", "{}").is_none());
     }
 }
+
+#[cfg(test)]
+mod recovery_tests;

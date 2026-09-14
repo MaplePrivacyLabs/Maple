@@ -22,6 +22,7 @@ import { getBillingService } from "@/billing/billingService";
 import { MapleWordmark } from "@/components/MapleWordmark";
 import { SettingsNavigationLockProvider } from "@/components/settings/SettingsNavigationLockProvider";
 import { useCompactSettingsLayout } from "@/components/settings/useCompactSettingsLayout";
+import { useSettingsAuthRedirect } from "@/components/settings/useSettingsAuthRedirect";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { usePersistentHomeNavigation } from "@/contexts/PersistentHomeNavigationContext";
@@ -151,16 +152,7 @@ function SettingsLayoutContent() {
   const [signOutError, setSignOutError] = useState<string | null>(null);
 
   useSettingsNavigationLock(isSigningOut);
-
-  useEffect(() => {
-    if (!os.auth.loading && !os.auth.user) {
-      void router.navigate({
-        to: "/login",
-        search: { next: location.href },
-        replace: true
-      });
-    }
-  }, [location.href, os.auth.loading, os.auth.user, router]);
+  useSettingsAuthRedirect(os.auth);
 
   useEffect(() => {
     const pathChanged = previousPathnameRef.current !== location.pathname;

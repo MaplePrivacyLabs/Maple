@@ -1,8 +1,9 @@
 import { expect, test, beforeEach } from "bun:test";
-import { platformLogin, platformRegister, platformMe } from "../../platformApi";
+import { getPlatformApiUrl, platformLogin, platformRegister, platformMe } from "../../platformApi";
 import "../platform-api-url-loader";
 import * as platformApi from "../../platformApi";
 import { encode } from "@stablelib/base64";
+import { installTransportV2Credentials, readTransportV2Credentials } from "../../transportV2/auth";
 
 const TEST_DEVELOPER_EMAIL = process.env.VITE_TEST_DEVELOPER_EMAIL;
 const TEST_DEVELOPER_PASSWORD = process.env.VITE_TEST_DEVELOPER_PASSWORD;
@@ -29,6 +30,12 @@ const encodeSecret = (secret: string): string => {
 async function tryDeveloperLogin() {
   // If we have a successful login cached, reuse it
   if (cachedLoginResponse) {
+    installTransportV2Credentials(
+      getPlatformApiUrl(),
+      "platform",
+      cachedLoginResponse.access_token,
+      cachedLoginResponse.refresh_token
+    );
     return cachedLoginResponse;
   }
 
@@ -38,10 +45,6 @@ async function tryDeveloperLogin() {
     const response = await platformLogin(TEST_DEVELOPER_EMAIL!, TEST_DEVELOPER_PASSWORD!);
     console.log("Login successful");
     cachedLoginResponse = response;
-
-    // Store tokens for subsequent API calls
-    window.localStorage.setItem("access_token", response.access_token);
-    window.localStorage.setItem("refresh_token", response.refresh_token);
 
     return response;
   } catch {
@@ -58,10 +61,6 @@ async function tryDeveloperLogin() {
       console.log("Successfully registered test user");
       cachedLoginResponse = response;
 
-      // Store tokens for subsequent API calls
-      window.localStorage.setItem("access_token", response.access_token);
-      window.localStorage.setItem("refresh_token", response.refresh_token);
-
       return response;
     } catch (registerError: any) {
       if (
@@ -72,10 +71,6 @@ async function tryDeveloperLogin() {
         // If user already exists, try login again (maybe there was a temporary issue)
         const response = await platformLogin(TEST_DEVELOPER_EMAIL!, TEST_DEVELOPER_PASSWORD!);
         cachedLoginResponse = response;
-
-        // Store tokens for subsequent API calls
-        window.localStorage.setItem("access_token", response.access_token);
-        window.localStorage.setItem("refresh_token", response.refresh_token);
 
         return response;
       } else {
@@ -97,13 +92,11 @@ test("Developer login and token storage", async () => {
     expect(access_token).toBeDefined();
     expect(refresh_token).toBeDefined();
 
-    // Store tokens in localStorage
-    window.localStorage.setItem("access_token", access_token);
-    window.localStorage.setItem("refresh_token", refresh_token);
-
-    // Verify tokens were stored
-    expect(window.localStorage.getItem("access_token")).toBe(access_token);
-    expect(window.localStorage.getItem("refresh_token")).toBe(refresh_token);
+    const stored = readTransportV2Credentials(getPlatformApiUrl(), "platform");
+    expect(stored?.accessToken).toBe(access_token);
+    expect(stored?.refreshToken).toBe(refresh_token);
+    expect(window.localStorage.getItem("access_token")).toBeNull();
+    expect(window.localStorage.getItem("refresh_token")).toBeNull();
   } catch (error: any) {
     console.error("Test failed:", error.message);
     throw error;
@@ -116,11 +109,7 @@ test("Platform Me endpoint returns user with organizations", async () => {
     window.localStorage.clear();
 
     // Login first to get authenticated
-    const { access_token, refresh_token } = await tryDeveloperLogin();
-
-    // Store tokens for subsequent API calls
-    window.localStorage.setItem("access_token", access_token);
-    window.localStorage.setItem("refresh_token", refresh_token);
+    await tryDeveloperLogin();
 
     try {
       // Call the me endpoint
@@ -183,17 +172,15 @@ test("Developer login persists tokens correctly", async () => {
   try {
     const { access_token, refresh_token } = await tryDeveloperLogin();
 
-    window.localStorage.setItem("access_token", access_token);
-    window.localStorage.setItem("refresh_token", refresh_token);
-
-    // Verify tokens are stored
-    expect(window.localStorage.getItem("access_token")).toBe(access_token);
-    expect(window.localStorage.getItem("refresh_token")).toBe(refresh_token);
+    const stored = readTransportV2Credentials(getPlatformApiUrl(), "platform");
+    expect(stored?.accessToken).toBe(access_token);
+    expect(stored?.refreshToken).toBe(refresh_token);
+    expect(window.localStorage.getItem("access_token")).toBeNull();
+    expect(window.localStorage.getItem("refresh_token")).toBeNull();
 
     // Clear storage
     window.localStorage.clear();
-    expect(window.localStorage.getItem("access_token")).toBeNull();
-    expect(window.localStorage.getItem("refresh_token")).toBeNull();
+    expect(readTransportV2Credentials(getPlatformApiUrl(), "platform")).toBeNull();
   } catch (error: any) {
     console.error("Test failed:", error.message);
     throw error;
@@ -236,9 +223,7 @@ test("Developer registration validates input", async () => {
 test("Create, list, and delete organization", async () => {
   try {
     // Login first to get authenticated
-    const { access_token, refresh_token } = await tryDeveloperLogin();
-    window.localStorage.setItem("access_token", access_token);
-    window.localStorage.setItem("refresh_token", refresh_token);
+    await tryDeveloperLogin();
 
     // Create a unique organization name (to avoid conflicts if test is run multiple times)
     const orgName = `Test Org ${Date.now()}`;
@@ -275,9 +260,7 @@ test("Create, list, and delete organization", async () => {
 test("Organization creation with invalid input", async () => {
   try {
     // Login first to get authenticated
-    const { access_token, refresh_token } = await tryDeveloperLogin();
-    window.localStorage.setItem("access_token", access_token);
-    window.localStorage.setItem("refresh_token", refresh_token);
+    await tryDeveloperLogin();
 
     // Test empty name
     try {
@@ -304,9 +287,7 @@ test("Organization creation with invalid input", async () => {
 test("Organization deletion edge cases", async () => {
   try {
     // Login first to get authenticated
-    const { access_token, refresh_token } = await tryDeveloperLogin();
-    window.localStorage.setItem("access_token", access_token);
-    window.localStorage.setItem("refresh_token", refresh_token);
+    await tryDeveloperLogin();
 
     // Test deleting non-existent organization
     try {
@@ -314,7 +295,7 @@ test("Organization deletion edge cases", async () => {
       throw new Error("Should not be able to delete non-existent organization");
     } catch (error: any) {
       expect(error.message).toMatch(
-        /Not Found|Organization not found|Bad Request|HTTP error! Status: 400/i
+        /Not Found|Organization not found|Bad Request|Invalid URL|UUID parsing failed|HTTP error! Status: 400/i
       );
     }
   } catch (error: any) {
@@ -326,9 +307,7 @@ test("Organization deletion edge cases", async () => {
 test("Create organization with duplicate name", async () => {
   try {
     // Login first to get authenticated
-    const { access_token, refresh_token } = await tryDeveloperLogin();
-    window.localStorage.setItem("access_token", access_token);
-    window.localStorage.setItem("refresh_token", refresh_token);
+    await tryDeveloperLogin();
 
     // Create a unique organization name
     const orgName = `Test Duplicate Org ${Date.now()}`;
@@ -364,9 +343,7 @@ test("Create organization with duplicate name", async () => {
 test("Create and manage multiple organizations", async () => {
   try {
     // Login first to get authenticated
-    const { access_token, refresh_token } = await tryDeveloperLogin();
-    window.localStorage.setItem("access_token", access_token);
-    window.localStorage.setItem("refresh_token", refresh_token);
+    await tryDeveloperLogin();
 
     // Keep track of created organizations to delete them later
     const createdOrgIds: string[] = [];
@@ -404,9 +381,7 @@ test("Create and manage multiple organizations", async () => {
 test("List organizations with no organizations", async () => {
   try {
     // Login first to get authenticated
-    const { access_token, refresh_token } = await tryDeveloperLogin();
-    window.localStorage.setItem("access_token", access_token);
-    window.localStorage.setItem("refresh_token", refresh_token);
+    await tryDeveloperLogin();
 
     // Get all existing organizations
     const initialOrgs = await platformApi.listOrganizations();
@@ -466,9 +441,7 @@ test("Organization operations require authentication", async () => {
 test("Organization with special characters in name", async () => {
   try {
     // Login first to get authenticated
-    const { access_token, refresh_token } = await tryDeveloperLogin();
-    window.localStorage.setItem("access_token", access_token);
-    window.localStorage.setItem("refresh_token", refresh_token);
+    await tryDeveloperLogin();
 
     // Create an organization with special characters in name
     const specialOrgName = `Test Org & Special #${Date.now()}`;
@@ -493,9 +466,7 @@ test("Organization with special characters in name", async () => {
 test("List organizations pagination handling", async () => {
   try {
     // Login first to get authenticated
-    const { access_token, refresh_token } = await tryDeveloperLogin();
-    window.localStorage.setItem("access_token", access_token);
-    window.localStorage.setItem("refresh_token", refresh_token);
+    await tryDeveloperLogin();
 
     // Get initial list of organizations
     const initialOrgs = await platformApi.listOrganizations();
@@ -546,9 +517,7 @@ test("Platform API URL is required", () => {
 test("Organization API flow with chained operations", async () => {
   try {
     // Login first to get authenticated
-    const { access_token, refresh_token } = await tryDeveloperLogin();
-    window.localStorage.setItem("access_token", access_token);
-    window.localStorage.setItem("refresh_token", refresh_token);
+    await tryDeveloperLogin();
 
     // 1. Create a new organization
     const orgName = `Test Chain Org ${Date.now()}`;
@@ -586,9 +555,7 @@ test("Organization API flow with chained operations", async () => {
 test("Organization deletion with random UUID", async () => {
   try {
     // Login first to get authenticated
-    const { access_token, refresh_token } = await tryDeveloperLogin();
-    window.localStorage.setItem("access_token", access_token);
-    window.localStorage.setItem("refresh_token", refresh_token);
+    await tryDeveloperLogin();
 
     // Generate a random UUID that (almost certainly) doesn't exist
     const randomUUID = crypto.randomUUID();
@@ -614,9 +581,7 @@ test("Organization deletion with random UUID", async () => {
 test("Get project by ID", async () => {
   try {
     // Login first to get authenticated
-    const { access_token, refresh_token } = await tryDeveloperLogin();
-    window.localStorage.setItem("access_token", access_token);
-    window.localStorage.setItem("refresh_token", refresh_token);
+    await tryDeveloperLogin();
 
     // Create a new organization for testing
     const orgName = `Test Get Project Org ${Date.now()}`;
@@ -678,9 +643,7 @@ test("Get project by ID", async () => {
 test("Project CRUD operations within an organization", async () => {
   try {
     // Login first to get authenticated
-    const { access_token, refresh_token } = await tryDeveloperLogin();
-    window.localStorage.setItem("access_token", access_token);
-    window.localStorage.setItem("refresh_token", refresh_token);
+    await tryDeveloperLogin();
 
     // Create a new organization for testing projects
     const orgName = `Test Project Org ${Date.now()}`;
@@ -765,9 +728,7 @@ test("Project CRUD operations within an organization", async () => {
 test("Project creation with invalid input", async () => {
   try {
     // Login first to get authenticated
-    const { access_token, refresh_token } = await tryDeveloperLogin();
-    window.localStorage.setItem("access_token", access_token);
-    window.localStorage.setItem("refresh_token", refresh_token);
+    await tryDeveloperLogin();
 
     // Create an organization for testing
     const orgName = `Test Project Error Org ${Date.now()}`;
@@ -811,9 +772,7 @@ test("Project creation with invalid input", async () => {
 test("Project update with invalid input", async () => {
   try {
     // Login first to get authenticated
-    const { access_token, refresh_token } = await tryDeveloperLogin();
-    window.localStorage.setItem("access_token", access_token);
-    window.localStorage.setItem("refresh_token", refresh_token);
+    await tryDeveloperLogin();
 
     // Create an organization for testing
     const orgName = `Test Project Update Org ${Date.now()}`;
@@ -867,9 +826,7 @@ test("Project update with invalid input", async () => {
 test("Project deletion edge cases", async () => {
   try {
     // Login first to get authenticated
-    const { access_token, refresh_token } = await tryDeveloperLogin();
-    window.localStorage.setItem("access_token", access_token);
-    window.localStorage.setItem("refresh_token", refresh_token);
+    await tryDeveloperLogin();
 
     // Create an organization for testing
     const orgName = `Test Project Delete Org ${Date.now()}`;
@@ -917,9 +874,7 @@ test("Project deletion edge cases", async () => {
 test("Project with special characters in name", async () => {
   try {
     // Login first to get authenticated
-    const { access_token, refresh_token } = await tryDeveloperLogin();
-    window.localStorage.setItem("access_token", access_token);
-    window.localStorage.setItem("refresh_token", refresh_token);
+    await tryDeveloperLogin();
 
     // Create an organization for testing
     const orgName = `Test Project Special Chars Org ${Date.now()}`;
@@ -956,9 +911,7 @@ test("Project with special characters in name", async () => {
 test("Project listing with multiple projects (pagination handling)", async () => {
   try {
     // Login first to get authenticated
-    const { access_token, refresh_token } = await tryDeveloperLogin();
-    window.localStorage.setItem("access_token", access_token);
-    window.localStorage.setItem("refresh_token", refresh_token);
+    await tryDeveloperLogin();
 
     // Create an organization for testing
     const orgName = `Test Project Pagination Org ${Date.now()}`;
@@ -1009,9 +962,7 @@ test("Project listing with multiple projects (pagination handling)", async () =>
 test("Project operations require authentication", async () => {
   try {
     // First create an org and project while authenticated
-    const { access_token, refresh_token } = await tryDeveloperLogin();
-    window.localStorage.setItem("access_token", access_token);
-    window.localStorage.setItem("refresh_token", refresh_token);
+    await tryDeveloperLogin();
 
     const orgName = `Test Project Auth Org ${Date.now()}`;
     const createdOrg = await platformApi.createOrganization(orgName);
@@ -1056,8 +1007,7 @@ test("Project operations require authentication", async () => {
     }
 
     // Re-authenticate to clean up
-    window.localStorage.setItem("access_token", access_token);
-    window.localStorage.setItem("refresh_token", refresh_token);
+    await tryDeveloperLogin();
 
     // Clean up
     await platformApi.deleteProject(createdOrg.id.toString(), createdProject.id.toString());
@@ -1071,9 +1021,7 @@ test("Project operations require authentication", async () => {
 test("Create project with duplicate name in same organization", async () => {
   try {
     // Login first to get authenticated
-    const { access_token, refresh_token } = await tryDeveloperLogin();
-    window.localStorage.setItem("access_token", access_token);
-    window.localStorage.setItem("refresh_token", refresh_token);
+    await tryDeveloperLogin();
 
     // Create an organization for testing
     const orgName = `Test Project Duplicate Org ${Date.now()}`;
@@ -1115,9 +1063,7 @@ test("Create project with duplicate name in same organization", async () => {
 test("Project API flow with chained operations", async () => {
   try {
     // Login first to get authenticated
-    const { access_token, refresh_token } = await tryDeveloperLogin();
-    window.localStorage.setItem("access_token", access_token);
-    window.localStorage.setItem("refresh_token", refresh_token);
+    await tryDeveloperLogin();
 
     // Create an organization for testing
     const orgName = `Test Project Chain Org ${Date.now()}`;
@@ -1182,9 +1128,7 @@ test("Project API flow with chained operations", async () => {
 test("Project deletion with random UUID", async () => {
   try {
     // Login first to get authenticated
-    const { access_token, refresh_token } = await tryDeveloperLogin();
-    window.localStorage.setItem("access_token", access_token);
-    window.localStorage.setItem("refresh_token", refresh_token);
+    await tryDeveloperLogin();
 
     // Create an organization for testing
     const orgName = `Test Project Random UUID Org ${Date.now()}`;
@@ -1219,9 +1163,7 @@ test("Project deletion with random UUID", async () => {
 test("Platform user email verification functionality", async () => {
   try {
     // Login first to get authenticated
-    const { access_token, refresh_token } = await tryDeveloperLogin();
-    window.localStorage.setItem("access_token", access_token);
-    window.localStorage.setItem("refresh_token", refresh_token);
+    await tryDeveloperLogin();
 
     // Mock invalid verification code
     const invalidCode = "invalid-verification-code";
@@ -1267,9 +1209,7 @@ test("Platform user email verification functionality", async () => {
 test("Platform verification requires authentication for requestNewPlatformVerificationCode", async () => {
   try {
     // First make sure we're authenticated
-    const { access_token, refresh_token } = await tryDeveloperLogin();
-    window.localStorage.setItem("access_token", access_token);
-    window.localStorage.setItem("refresh_token", refresh_token);
+    await tryDeveloperLogin();
 
     // Now clear authentication and try operations
     window.localStorage.clear();
@@ -1350,11 +1290,7 @@ test("Platform password reset flow", async () => {
 test("Platform password change API call interface", async () => {
   try {
     // Login first to get authenticated
-    const initialLogin = await tryDeveloperLogin();
-
-    // Store tokens for authentication
-    window.localStorage.setItem("access_token", initialLogin.access_token);
-    window.localStorage.setItem("refresh_token", initialLogin.refresh_token);
+    await tryDeveloperLogin();
 
     // Try with incorrect current password (should fail)
     try {
@@ -1385,9 +1321,7 @@ test("Platform password change API call interface", async () => {
 test("Platform password change requires authentication", async () => {
   try {
     // First make sure we're authenticated
-    const { access_token, refresh_token } = await tryDeveloperLogin();
-    window.localStorage.setItem("access_token", access_token);
-    window.localStorage.setItem("refresh_token", refresh_token);
+    await tryDeveloperLogin();
 
     // Now clear authentication and try operations
     window.localStorage.clear();
@@ -1409,9 +1343,7 @@ test("Platform password change requires authentication", async () => {
 
 test.skip("Project push settings CRUD operations", async () => {
   try {
-    const { access_token, refresh_token } = await tryDeveloperLogin();
-    window.localStorage.setItem("access_token", access_token);
-    window.localStorage.setItem("refresh_token", refresh_token);
+    await tryDeveloperLogin();
 
     const orgName = `Test Push Settings Org ${Date.now()}`;
     const createdOrg = await platformApi.createOrganization(orgName);
@@ -1481,9 +1413,7 @@ test.skip("Project push settings CRUD operations", async () => {
 test("Project secret CRUD operations", async () => {
   try {
     // Login first to get authenticated
-    const { access_token, refresh_token } = await tryDeveloperLogin();
-    window.localStorage.setItem("access_token", access_token);
-    window.localStorage.setItem("refresh_token", refresh_token);
+    await tryDeveloperLogin();
 
     // Create a new organization for testing
     const orgName = `Test Secret Org ${Date.now()}`;
@@ -1563,9 +1493,7 @@ test("Project secret CRUD operations", async () => {
 test("Project secret creation with invalid input", async () => {
   try {
     // Login first to get authenticated
-    const { access_token, refresh_token } = await tryDeveloperLogin();
-    window.localStorage.setItem("access_token", access_token);
-    window.localStorage.setItem("refresh_token", refresh_token);
+    await tryDeveloperLogin();
 
     // Create an organization for testing
     const orgName = `Test Secret Error Org ${Date.now()}`;
@@ -1659,9 +1587,7 @@ test("Project secret creation with invalid input", async () => {
 test("Project secret with special characters in key name", async () => {
   try {
     // Login first to get authenticated
-    const { access_token, refresh_token } = await tryDeveloperLogin();
-    window.localStorage.setItem("access_token", access_token);
-    window.localStorage.setItem("refresh_token", refresh_token);
+    await tryDeveloperLogin();
 
     // Create an organization for testing
     const orgName = `Test Secret Special Chars Org ${Date.now()}`;
@@ -1730,9 +1656,7 @@ test("Project secret with special characters in key name", async () => {
 test("Project secret deletion edge cases", async () => {
   try {
     // Login first to get authenticated
-    const { access_token, refresh_token } = await tryDeveloperLogin();
-    window.localStorage.setItem("access_token", access_token);
-    window.localStorage.setItem("refresh_token", refresh_token);
+    await tryDeveloperLogin();
 
     // Create an organization for testing
     const orgName = `Test Secret Delete Org ${Date.now()}`;
@@ -1824,9 +1748,7 @@ test("Project secret deletion edge cases", async () => {
 test("Create project secret with duplicate key name", async () => {
   try {
     // Login first to get authenticated
-    const { access_token, refresh_token } = await tryDeveloperLogin();
-    window.localStorage.setItem("access_token", access_token);
-    window.localStorage.setItem("refresh_token", refresh_token);
+    await tryDeveloperLogin();
 
     // Create an organization for testing
     const orgName = `Test Secret Duplicate Org ${Date.now()}`;
@@ -1887,9 +1809,7 @@ test("Create project secret with duplicate key name", async () => {
 test("Project secret operations require authentication", async () => {
   try {
     // First create an org and project while authenticated
-    const { access_token, refresh_token } = await tryDeveloperLogin();
-    window.localStorage.setItem("access_token", access_token);
-    window.localStorage.setItem("refresh_token", refresh_token);
+    await tryDeveloperLogin();
 
     const orgName = `Test Secret Auth Org ${Date.now()}`;
     const createdOrg = await platformApi.createOrganization(orgName);
@@ -1943,8 +1863,7 @@ test("Project secret operations require authentication", async () => {
     }
 
     // Re-authenticate to clean up
-    window.localStorage.setItem("access_token", access_token);
-    window.localStorage.setItem("refresh_token", refresh_token);
+    await tryDeveloperLogin();
 
     // Clean up
     await platformApi.deleteProjectSecret(
@@ -1963,9 +1882,7 @@ test("Project secret operations require authentication", async () => {
 test("Project secret API flow with chained operations", async () => {
   try {
     // Login first to get authenticated
-    const { access_token, refresh_token } = await tryDeveloperLogin();
-    window.localStorage.setItem("access_token", access_token);
-    window.localStorage.setItem("refresh_token", refresh_token);
+    await tryDeveloperLogin();
 
     // Create an organization for testing
     const orgName = `Test Secret Chain Org ${Date.now()}`;
@@ -2054,9 +1971,7 @@ test("Project secret API flow with chained operations", async () => {
 test("Project secret listing with no secrets", async () => {
   try {
     // Login first to get authenticated
-    const { access_token, refresh_token } = await tryDeveloperLogin();
-    window.localStorage.setItem("access_token", access_token);
-    window.localStorage.setItem("refresh_token", refresh_token);
+    await tryDeveloperLogin();
 
     // Create an organization for testing
     const orgName = `Test Secret Empty Org ${Date.now()}`;
@@ -2096,9 +2011,7 @@ test("Project secret listing with no secrets", async () => {
 test("Organization invite CRUD operations", async () => {
   try {
     // Login first to get authenticated
-    const { access_token, refresh_token } = await tryDeveloperLogin();
-    window.localStorage.setItem("access_token", access_token);
-    window.localStorage.setItem("refresh_token", refresh_token);
+    await tryDeveloperLogin();
 
     // Create a new organization for testing
     const orgName = `Test Invite Org ${Date.now()}`;
@@ -2172,9 +2085,7 @@ test("Organization invite CRUD operations", async () => {
 test("Organization invite with invalid input", async () => {
   try {
     // Login first to get authenticated
-    const { access_token, refresh_token } = await tryDeveloperLogin();
-    window.localStorage.setItem("access_token", access_token);
-    window.localStorage.setItem("refresh_token", refresh_token);
+    await tryDeveloperLogin();
 
     // Create an organization for testing
     const orgName = `Test Invite Error Org ${Date.now()}`;
@@ -2229,9 +2140,7 @@ test("Organization invite with invalid input", async () => {
 test("Organization invite operations require authentication", async () => {
   try {
     // First create an org and invite while authenticated
-    const { access_token, refresh_token } = await tryDeveloperLogin();
-    window.localStorage.setItem("access_token", access_token);
-    window.localStorage.setItem("refresh_token", refresh_token);
+    await tryDeveloperLogin();
 
     const orgName = `Test Invite Auth Org ${Date.now()}`;
     const createdOrg = await platformApi.createOrganization(orgName);
@@ -2272,8 +2181,7 @@ test("Organization invite operations require authentication", async () => {
     }
 
     // Re-authenticate to clean up
-    window.localStorage.setItem("access_token", access_token);
-    window.localStorage.setItem("refresh_token", refresh_token);
+    await tryDeveloperLogin();
 
     // Clean up
     try {

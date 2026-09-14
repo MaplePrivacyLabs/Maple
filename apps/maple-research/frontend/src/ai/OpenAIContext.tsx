@@ -8,11 +8,10 @@ export const OpenAIProvider = ({ children }: { children: React.ReactNode }) => {
     throw new Error("VITE_OPEN_SECRET_API_URL must be set");
   }
 
-  const { aiCustomFetch } = useOpenSecret();
-  const access_token = window.localStorage.getItem("access_token");
+  const { aiCustomFetch, auth } = useOpenSecret();
 
   // If we're not logged in we can't set up openai
-  if (!access_token) {
+  if (!auth.user) {
     return <OpenAIContext.Provider value={undefined}>{children}</OpenAIContext.Provider>;
   }
 

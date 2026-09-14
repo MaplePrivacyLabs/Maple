@@ -1,5 +1,17 @@
-import { encryptedApiCall, authenticatedApiCall } from "./encryptedApi";
+import {
+  encryptedApiCall,
+  authenticatedApiCall,
+  authenticatedApiCallWithAuthority,
+  authenticatedApiCallWithSelectedAuthority
+} from "./encryptedApi";
 import { snapshotPcrConfig, type PcrConfig } from "./pcr";
+import {
+  clearLegacyTransportV1Credentials,
+  installTransportV2Credentials,
+  snapshotTransportV2Auth,
+  type TransportV2AuthSnapshot
+} from "./transportV2/auth";
+import { transportV2AuthRuntime } from "./transportV2/authRuntime";
 
 // Platform Auth Types
 export type PlatformLoginResponse = {
@@ -13,6 +25,12 @@ export type PlatformLoginResponse = {
 export type PlatformRefreshResponse = {
   access_token: string;
   refresh_token: string;
+};
+
+type PlatformCredentialUpdateResponse = {
+  message: string;
+  access_token?: string;
+  refresh_token?: string;
 };
 
 // Platform User Types
@@ -132,10 +150,12 @@ export type OrganizationMember = {
 
 let platformApiUrl = "";
 let platformPcrConfig: PcrConfig = snapshotPcrConfig();
+clearLegacyTransportV1Credentials();
 
 export function setPlatformApiUrl(url: string, pcrConfig?: PcrConfig) {
   platformApiUrl = url;
   platformPcrConfig = snapshotPcrConfig(pcrConfig);
+  clearLegacyTransportV1Credentials();
 }
 
 export function getPlatformApiUrl(): string {
@@ -146,18 +166,49 @@ export function getPlatformPcrConfig(): PcrConfig {
   return snapshotPcrConfig(platformPcrConfig);
 }
 
+function installPlatformLoginResponse(
+  response: PlatformLoginResponse,
+  expected: TransportV2AuthSnapshot
+): PlatformLoginResponse {
+  installTransportV2Credentials(
+    platformApiUrl,
+    "platform",
+    response.access_token,
+    response.refresh_token,
+    expected
+  );
+  return response;
+}
+
+function installPlatformCredentialUpdate(
+  response: PlatformCredentialUpdateResponse,
+  startedWith: TransportV2AuthSnapshot,
+  targetApiUrl: string
+): void {
+  if (!response.access_token && !response.refresh_token) return;
+  if (!response.access_token || !response.refresh_token) {
+    throw new Error("Transport v2 credential update returned an incomplete token pair.");
+  }
+  installTransportV2Credentials(
+    targetApiUrl,
+    "platform",
+    response.access_token,
+    response.refresh_token,
+    startedWith
+  );
+}
+
 // Platform Authentication
 export async function platformLogin(
   email: string,
   password: string
 ): Promise<PlatformLoginResponse> {
-  return encryptedApiCall<{ email: string; password: string }, PlatformLoginResponse>(
-    `${platformApiUrl}/platform/login`,
-    "POST",
-    { email, password },
-    undefined,
-    "Failed to login"
-  );
+  const expected = snapshotTransportV2Auth(platformApiUrl, "platform");
+  const response = await encryptedApiCall<
+    { email: string; password: string },
+    PlatformLoginResponse
+  >(`${platformApiUrl}/platform/login`, "POST", { email, password }, undefined, "Failed to login");
+  return installPlatformLoginResponse(response, expected);
 }
 
 /**
@@ -174,7 +225,8 @@ export async function platformRegister(
   invite_code: string,
   name?: string
 ): Promise<PlatformLoginResponse> {
-  return encryptedApiCall<
+  const expected = snapshotTransportV2Auth(platformApiUrl, "platform");
+  const response = await encryptedApiCall<
     { email: string; password: string; invite_code: string; name?: string },
     PlatformLoginResponse
   >(
@@ -184,6 +236,7 @@ export async function platformRegister(
     undefined,
     "Failed to register"
   );
+  return installPlatformLoginResponse(response, expected);
 }
 
 export async function platformLogout(refresh_token: string): Promise<void> {
@@ -200,38 +253,22 @@ export async function platformLogout(refresh_token: string): Promise<void> {
  * Refreshes platform access and refresh tokens
  *
  * This function:
- * 1. Gets the refresh token from localStorage
- * 2. Calls the platform-specific refresh endpoint (/platform/refresh)
- * 3. Updates localStorage with the new tokens
+ * 1. Reads the origin-scoped V2 resumption credential
+ * 2. Sends it inside an encrypted credential field with no logical body
+ * 3. Atomically installs the returned V2 credential pair
  *
- * The platform refresh endpoint expects:
- * - A refresh token with audience "platform_refresh" in the request body
- * - The request to be encrypted according to the platform's encryption scheme
- *
- * It returns new access and refresh tokens if validation succeeds.
+ * The backend remains authoritative for signature, expiry, and account state.
  */
 export async function platformRefreshToken(): Promise<PlatformRefreshResponse> {
-  const refresh_token = window.localStorage.getItem("refresh_token");
-  if (!refresh_token) throw new Error("No refresh token available");
-
-  const refreshData = { refresh_token };
-
-  try {
-    const response = await encryptedApiCall<typeof refreshData, PlatformRefreshResponse>(
-      `${platformApiUrl}/platform/refresh`,
-      "POST",
-      refreshData,
-      undefined,
-      "Failed to refresh platform token"
-    );
-
-    window.localStorage.setItem("access_token", response.access_token);
-    window.localStorage.setItem("refresh_token", response.refresh_token);
-    return response;
-  } catch (error) {
-    console.error("Error refreshing platform token:", error);
-    throw error;
-  }
+  const refreshed = await transportV2AuthRuntime.refresh(
+    platformApiUrl,
+    platformPcrConfig,
+    "platform"
+  );
+  return {
+    access_token: refreshed.accessToken,
+    refresh_token: refreshed.refreshToken
+  };
 }
 
 // Organization Management
@@ -519,6 +556,21 @@ export async function platformMe(): Promise<MeResponse> {
   return authenticatedApiCall<void, MeResponse>(`${platformApiUrl}/platform/me`, "GET", undefined);
 }
 
+/** @internal Keeps React publication tied to the exact authority used for this request. */
+export async function platformMeWithTransportV2Authority(
+  targetApiUrl: string,
+  pcrConfig: PcrConfig,
+  authority: import("./transportV2/authRuntime").TransportV2Authority
+) {
+  return authenticatedApiCallWithSelectedAuthority<void, MeResponse>(
+    `${targetApiUrl}/platform/me`,
+    "GET",
+    undefined,
+    undefined,
+    { apiUrl: targetApiUrl, pcrConfig, kind: "platform", authority }
+  );
+}
+
 /**
  * Verifies a platform user's email using the verification code
  * @param code - The verification code sent to the user's email
@@ -634,14 +686,22 @@ export async function changePlatformPassword(
   currentPassword: string,
   newPassword: string
 ): Promise<{ message: string }> {
+  const targetApiUrl = platformApiUrl;
+  const pcrConfig = snapshotPcrConfig(platformPcrConfig);
   const changePasswordData = {
     current_password: currentPassword,
     new_password: newPassword
   };
-  return authenticatedApiCall<typeof changePasswordData, { message: string }>(
-    `${platformApiUrl}/platform/change-password`,
+  const result = await authenticatedApiCallWithAuthority<
+    typeof changePasswordData,
+    PlatformCredentialUpdateResponse
+  >(
+    `${targetApiUrl}/platform/change-password`,
     "POST",
     changePasswordData,
-    "Failed to change platform password"
+    "Failed to change platform password",
+    { apiUrl: targetApiUrl, pcrConfig, kind: "platform" }
   );
+  installPlatformCredentialUpdate(result.data, result.authority.snapshot, result.apiUrl);
+  return result.data;
 }

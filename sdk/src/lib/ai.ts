@@ -1,15 +1,28 @@
-import { decryptMessage, encryptMessage } from "./encryption";
-import { getAttestation, type Attestation } from "./getAttestation";
 import * as api from "./api";
-import { serializePcrConfig, snapshotPcrConfig, type PcrConfig } from "./pcr";
-import { classifyRecovery } from "./recovery";
+import { snapshotPcrConfig, type PcrConfig } from "./pcr";
+import {
+  getOrCreateTransportV2CacheRoot,
+  readTransportV2Credentials,
+  type StoredTransportV2Credentials
+} from "./transportV2/auth";
+import {
+  transportV2AuthRuntime,
+  type TransportV2Authority,
+  type TransportV2AuthRuntime
+} from "./transportV2/authRuntime";
+import type { TransportV2Credential, TransportV2Header } from "./transportV2/protocol";
+import {
+  transportV2LogicalTarget,
+  transportV2Runtime,
+  type TransportV2Runtime
+} from "./transportV2/runtime";
 
 export interface CustomFetchOptions {
-  /** Optional API key to use instead of a JWT token. */
+  /** Optional API key to use instead of the signed-in user's V2 bearer. */
   apiKey?: string;
-  /** API URL used for attestation; required outside OpenSecretProvider. */
+  /** Fixed API URL whose attestation policy governs every request. */
   apiUrl?: string;
-  /** PCR0 trust policy enforced before non-loopback session key exchange; defaults to production. */
+  /** PCR0 trust policy enforced before non-loopback session establishment. */
   pcrConfig?: PcrConfig;
 }
 
@@ -90,127 +103,152 @@ function inferenceCapacityError(
   );
 }
 
-function takeInferenceSendLimit(headers: Headers): {
-  maxSends: number;
-  explicitlyBounded: boolean;
-} {
+function takeInferenceSendLimit(headers: Headers): number {
   const rawLimit = headers.get(OPEN_SECRET_INFERENCE_SEND_LIMIT_HEADER);
   headers.delete(OPEN_SECRET_INFERENCE_SEND_LIMIT_HEADER);
-  if (rawLimit === "1") return { maxSends: 1, explicitlyBounded: true };
-  if (rawLimit === "2") return { maxSends: 2, explicitlyBounded: true };
-  return { maxSends: 2, explicitlyBounded: false };
-}
-
-interface ActiveAttestation {
-  sessionKey: Uint8Array;
-  sessionId: string;
+  return rawLimit === "1" ? 1 : 2;
 }
 
 /** @internal Exported for deterministic transport tests, not from the package entry point. */
 export interface CustomFetchDependencies {
-  decryptMessage: typeof decryptMessage;
-  encryptMessage: typeof encryptMessage;
-  fetch: typeof globalThis.fetch;
-  getAttestation: typeof getAttestation;
-  refreshToken: typeof api.refreshToken;
-}
-
-interface RequestSnapshot {
-  url: string;
-  headers: Headers;
-  options: RequestInit;
-  plaintextBody?: string;
-  signal?: AbortSignal | null;
+  auth: Pick<TransportV2AuthRuntime, "authority" | "noteResponse">;
+  runtime: Pick<TransportV2Runtime, "request">;
+  getApiPcrConfig: typeof api.getApiPcrConfig;
+  getApiUrl: typeof api.getApiUrl;
+  getCacheRoot(apiUrl: string): Uint8Array;
+  readUserCredentials(apiUrl: string): StoredTransportV2Credentials | null;
 }
 
 const defaultDependencies: CustomFetchDependencies = {
-  decryptMessage,
-  encryptMessage,
-  fetch: (...args) => globalThis.fetch(...args),
-  getAttestation,
-  refreshToken: api.refreshToken
+  auth: transportV2AuthRuntime,
+  runtime: transportV2Runtime,
+  getApiPcrConfig: () => api.getApiPcrConfig(),
+  getApiUrl: () => api.getApiUrl(),
+  getCacheRoot: (apiUrl) => getOrCreateTransportV2CacheRoot(apiUrl),
+  readUserCredentials: (apiUrl) => readTransportV2Credentials(apiUrl, "user")
 };
 
-function requireActiveAttestation(attestation: Attestation): ActiveAttestation {
-  if (!attestation.sessionKey || !attestation.sessionId) {
-    throw new Error("No session key or ID available");
+// These fields either control the untrusted outer hop or can carry a second,
+// conflicting credential. All ordinary application headers remain inside the
+// authenticated request envelope.
+const OMITTED_LOGICAL_HEADERS = new Set([
+  "authorization",
+  "proxy-authorization",
+  "cookie",
+  "set-cookie",
+  "host",
+  "content-length",
+  "transfer-encoding",
+  "connection",
+  "keep-alive",
+  "te",
+  "trailer",
+  "upgrade",
+  "forwarded",
+  "via",
+  "x-forwarded-for",
+  "x-forwarded-host",
+  "x-forwarded-proto",
+  "x-opensecret-routing-key",
+  "x-session-id",
+  "x-api-key",
+  "api-key",
+  "x-openai-api-key",
+  "x-tinfoil-api-key",
+  "x-goog-api-key",
+  "x-anthropic-api-key"
+]);
+
+function logicalHeaders(input: Headers): TransportV2Header[] {
+  const output: TransportV2Header[] = [];
+  input.forEach((value, name) => {
+    const normalizedName = name.toLowerCase();
+    if (
+      !OMITTED_LOGICAL_HEADERS.has(normalizedName) &&
+      !normalizedName.startsWith("x-stainless-")
+    ) {
+      output.push({ name: normalizedName, value });
+    }
+  });
+  return output;
+}
+
+function rejectAutomaticOpenAiRetry(headers: Headers): void {
+  const retryCount = headers.get("x-stainless-retry-count");
+  if (retryCount !== null && retryCount !== "0") {
+    throw new Error(
+      "Transport v2 rejected an automatic OpenAI retry after a potentially sent request. Configure maxRetries: 0."
+    );
   }
-
-  return {
-    sessionKey: attestation.sessionKey,
-    sessionId: attestation.sessionId
-  };
 }
 
-async function discardResponse(response: Response): Promise<void> {
-  try {
-    await response.body?.cancel();
-  } catch {
-    // The response is being discarded for a bounded retry. Some runtimes may
-    // already have closed its body, which needs no further cleanup.
-  }
-}
-
-function throwIfAborted(signal?: AbortSignal | null): void {
-  signal?.throwIfAborted();
-}
-
-function allowsRequestBody(method: string): boolean {
-  return method !== "GET" && method !== "HEAD";
-}
-
-async function snapshotPlaintextBody(
-  normalized: Request,
-  init?: RequestInit
-): Promise<string | undefined> {
-  if (!allowsRequestBody(normalized.method)) return undefined;
-
-  const bodyKnownPresent = init?.body != null || normalized.body != null;
-  const plaintextBody = await normalized.text();
-  return bodyKnownPresent || normalized.bodyUsed || plaintextBody !== ""
-    ? plaintextBody
-    : undefined;
-}
-
-async function snapshotRequest(
+function bodyIsPresent(
   input: string | URL | Request,
-  init?: RequestInit
-): Promise<RequestSnapshot> {
-  const normalized = new Request(input, init);
-  const signal =
-    init?.signal === null
-      ? null
-      : (init?.signal ?? (input instanceof Request ? input.signal : undefined));
-  const url = normalized.url;
-  const headers = new Headers(normalized.headers);
-  const options: RequestInit = {
-    ...init,
-    method: normalized.method,
-    cache: init?.cache ?? normalized.cache,
-    credentials: init?.credentials ?? normalized.credentials,
-    integrity: init?.integrity ?? normalized.integrity,
-    keepalive: init?.keepalive ?? normalized.keepalive,
-    mode: init?.mode ?? normalized.mode,
-    redirect: init?.redirect ?? normalized.redirect,
-    referrer: init?.referrer ?? normalized.referrer,
-    referrerPolicy: init?.referrerPolicy ?? normalized.referrerPolicy,
-    signal
-  };
-  delete options.body;
-  delete options.headers;
-  // Firefox does not expose Request.body. Gate on the normalized method first,
-  // then use the plaintext and explicit init body as fallback presence signals.
-  const plaintextBody = await snapshotPlaintextBody(normalized, init);
-
-  return {
-    url,
-    headers,
-    options,
-    plaintextBody,
-    signal
-  };
+  init: RequestInit | undefined,
+  normalized: Request
+): boolean {
+  if (normalized.method === "GET" || normalized.method === "HEAD") return false;
+  if (init && Object.prototype.hasOwnProperty.call(init, "body") && init.body !== undefined) {
+    return init.body !== null;
+  }
+  if (normalized.body !== null && normalized.body !== undefined) return true;
+  return input instanceof Request && input.body !== null && input.body !== undefined;
 }
 
+async function requestBody(
+  input: string | URL | Request,
+  init: RequestInit | undefined,
+  normalized: Request
+): Promise<Uint8Array | undefined> {
+  if (!bodyIsPresent(input, init, normalized)) return undefined;
+  return new Uint8Array(await normalized.arrayBuffer());
+}
+
+function requestSignal(
+  input: string | URL | Request,
+  init: RequestInit | undefined
+): AbortSignal | null | undefined {
+  if (init?.signal === null) return null;
+  return init?.signal ?? (input instanceof Request ? input.signal : undefined);
+}
+
+function normalizedRequest(input: string | URL | Request, init: RequestInit | undefined): Request {
+  if (init?.signal !== null) return new Request(input, init);
+  // Bun currently inherits an already-aborted source Request signal even when
+  // RequestInit.signal is explicitly null. Use a fresh never-aborted signal to
+  // preserve Fetch's public detachment semantics while passing null onward.
+  return new Request(input, { ...init, signal: new AbortController().signal });
+}
+
+async function authorityFor(
+  apiUrl: string,
+  pcrConfig: PcrConfig,
+  target: string,
+  apiKey: string | undefined,
+  dependencies: CustomFetchDependencies
+): Promise<{
+  credential?: TransportV2Credential;
+  authority?: TransportV2Authority;
+}> {
+  if (apiKey !== undefined) {
+    if (apiKey.length === 0) {
+      throw new Error("Transport v2 API key must not be empty.");
+    }
+    return { credential: { kind: "api_key", value: apiKey } };
+  }
+  if (!dependencies.readUserCredentials(apiUrl)) {
+    if (new URL(target, "https://logical.invalid").pathname === "/v1/models") return {};
+    throw new Error("A fresh transport v2 sign-in or API key is required.");
+  }
+  const authority = await dependencies.auth.authority(apiUrl, pcrConfig, "user");
+  return { credential: authority.credential, authority };
+}
+
+/**
+ * Creates an attested Transport V2 fetch adapter for OpenAI-compatible calls.
+ * Set the OpenAI client to `maxRetries: 0`; this adapter additionally refuses
+ * a nonzero Stainless retry before another SDK operation can be sent.
+ */
 export function createCustomFetch(
   options?: CustomFetchOptions
 ): (input: string | URL | Request, init?: RequestInit) => Promise<Response> {
@@ -222,354 +260,69 @@ export function createCustomFetchWithDependencies(
   options: CustomFetchOptions | undefined,
   dependencies: CustomFetchDependencies
 ): (input: string | URL | Request, init?: RequestInit) => Promise<Response> {
-  const attestationRefreshes = new Map<string, Promise<ActiveAttestation>>();
+  return async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
+    const configuredApiKey = options?.apiKey;
+    const apiUrl = options?.apiUrl ?? dependencies.getApiUrl();
+    const pcrConfig = snapshotPcrConfig(options?.pcrConfig ?? dependencies.getApiPcrConfig());
+    const signal = requestSignal(input, init);
+    const normalized = normalizedRequest(input, init);
+    signal?.throwIfAborted();
+    rejectAutomaticOpenAiRetry(normalized.headers);
+    const maxInferenceSends = takeInferenceSendLimit(normalized.headers);
+    let inferenceSendCount = 0;
 
-  const resolveAttestationIdentity = () => {
-    const apiUrl = options?.apiUrl || api.getApiUrl() || undefined;
-    const pcrConfig = snapshotPcrConfig(options?.pcrConfig || api.getApiPcrConfig());
-    return {
+    const target = transportV2LogicalTarget(apiUrl, normalized.url);
+    const { credential, authority } = await authorityFor(
       apiUrl,
       pcrConfig,
-      scope: `${apiUrl || ""}\n${serializePcrConfig(pcrConfig)}`
-    };
-  };
-
-  const renewAttestation = async (
-    failedSessionId: string,
-    identity: ReturnType<typeof resolveAttestationIdentity>
-  ): Promise<ActiveAttestation> => {
-    const renewalScope = `${identity.scope}\n${failedSessionId}`;
-    let attestationRefresh = attestationRefreshes.get(renewalScope);
-    if (!attestationRefresh) {
-      let resolveRefresh!: (attestation: ActiveAttestation) => void;
-      let rejectRefresh!: (reason?: unknown) => void;
-      attestationRefresh = new Promise<ActiveAttestation>((resolve, reject) => {
-        resolveRefresh = resolve;
-        rejectRefresh = reject;
-      });
-      attestationRefreshes.set(renewalScope, attestationRefresh);
-
-      const registeredRefresh = attestationRefresh;
-      void (async () => {
-        try {
-          // A concurrent request or token refresh may already have replaced
-          // the failed generation. This lookup belongs inside the registered
-          // leader so a late caller cannot miss the in-flight renewal after
-          // its forced refresh evicts the cache.
-          const currentAttestation = requireActiveAttestation(
-            await dependencies.getAttestation(false, identity.apiUrl, identity.pcrConfig)
-          );
-          const renewedAttestation =
-            currentAttestation.sessionId === failedSessionId
-              ? requireActiveAttestation(
-                  await dependencies.getAttestation(true, identity.apiUrl, identity.pcrConfig)
-                )
-              : currentAttestation;
-          resolveRefresh(renewedAttestation);
-        } catch (error) {
-          rejectRefresh(error);
-        } finally {
-          if (attestationRefreshes.get(renewalScope) === registeredRefresh) {
-            attestationRefreshes.delete(renewalScope);
-          }
-        }
-      })();
-    }
-
-    return attestationRefresh;
-  };
-
-  return async (requestUrl: string | URL | Request, init?: RequestInit): Promise<Response> => {
-    // Authentication mode is part of the logical request snapshot. A caller
-    // may retain and mutate the options object while this request is in
-    // flight; recovery must not switch between API-key and JWT credentials.
-    const apiKey = options?.apiKey;
-    const usesApiKey = Boolean(apiKey);
-    const getAuthHeader = () => {
-      // If an API key is provided, use it instead of JWT token
-      if (apiKey) {
-        return `Bearer ${apiKey}`;
-      }
-
-      // Otherwise, use the standard JWT token
-      const currentAccessToken = window.localStorage.getItem("access_token");
-      if (!currentAccessToken) {
-        throw new Error("No access token or API key available");
-      }
-      return `Bearer ${currentAccessToken}`;
-    };
+      target,
+      configuredApiKey,
+      dependencies
+    );
+    const body = await requestBody(input, init, normalized);
+    let cacheNamespaceRoot: Uint8Array | undefined;
 
     try {
-      // Capture endpoint and trust policy together so retries cannot cross a
-      // provider reconfiguration that happens while this request is in flight.
-      const attestationIdentity = resolveAttestationIdentity();
-      // Keep this operation bound to the identity that initiated it. An
-      // unrelated account change during attestation must not send the
-      // already-prepared plaintext request under a different token.
-      let authHeader = getAuthHeader();
-      const request = await snapshotRequest(requestUrl, init);
-      const { maxSends: maxInferenceSends, explicitlyBounded } = takeInferenceSendLimit(
-        request.headers
-      );
-      if (explicitlyBounded) request.options.redirect = "manual";
-      throwIfAborted(request.signal);
-
-      let inferenceSendCount = 0;
-
-      const makeRequest = async (attestation: ActiveAttestation) => {
-        const headers = new Headers(request.headers);
-        headers.set("Authorization", authHeader);
-        headers.set("x-session-id", attestation.sessionId);
-
-        const requestOptions: RequestInit = { ...request.options, headers };
-
-        // Encrypt the original plaintext again for every attempt. Reusing an
-        // old request body with a new session ID would make recovery fail.
-        if (
-          request.plaintextBody !== undefined &&
-          allowsRequestBody(request.options.method ?? "GET")
-        ) {
-          const encryptedBody = dependencies.encryptMessage(
-            attestation.sessionKey,
-            request.plaintextBody
-          );
-          requestOptions.body = JSON.stringify({ encrypted: encryptedBody });
-          headers.set("Content-Type", "application/json");
-        }
-
-        inferenceSendCount += 1;
-        return {
-          attestation,
-          response: await dependencies.fetch(request.url, requestOptions)
-        };
-      };
-
-      let attestation = requireActiveAttestation(
-        await dependencies.getAttestation(
-          false,
-          attestationIdentity.apiUrl,
-          attestationIdentity.pcrConfig
-        )
-      );
-      throwIfAborted(request.signal);
-      let replayed = false;
-      let finalAttempt: Awaited<ReturnType<typeof makeRequest>>;
-
-      while (true) {
-        const attempt = await makeRequest(attestation);
-        const recovery = classifyRecovery(attempt.response.status, attempt.response.headers);
-
-        if (recovery === "refresh_access_token" && !usesApiKey && !replayed) {
-          const canReplay = inferenceSendCount < maxInferenceSends;
-          if (canReplay) await discardResponse(attempt.response);
-          throwIfAborted(request.signal);
-          console.warn("Unauthorized, refreshing access token");
-          await dependencies.refreshToken();
-          throwIfAborted(request.signal);
-          authHeader = getAuthHeader();
-
-          // The encrypted refresh call may itself have replaced a stale
-          // attestation. Always rebuild the outer request from current state.
-          attestation = requireActiveAttestation(
-            await dependencies.getAttestation(
-              false,
-              attestationIdentity.apiUrl,
-              attestationIdentity.pcrConfig
-            )
-          );
-          if (!canReplay) {
-            finalAttempt = attempt;
-            break;
+      signal?.throwIfAborted();
+      cacheNamespaceRoot = credential ? dependencies.getCacheRoot(apiUrl) : undefined;
+      const result = await dependencies.runtime.request({
+        apiUrl,
+        pcrConfig,
+        canReplay: () => inferenceSendCount < maxInferenceSends,
+        beforeSend: () => {
+          authority?.assertCurrent();
+          // The runtime calls this synchronous fence immediately before each
+          // application fetch, including a session-recovery replay. Attestation
+          // and auth preparation do not consume the inference send budget.
+          if (inferenceSendCount >= maxInferenceSends) {
+            throw new Error("Inference request send budget exhausted");
           }
-          replayed = true;
-          continue;
+          inferenceSendCount += 1;
+        },
+        signal,
+        request: {
+          credential,
+          cacheNamespaceRoot,
+          method: normalized.method,
+          target,
+          headers: logicalHeaders(normalized.headers),
+          body
         }
-
-        if (recovery === "renew_session" && !replayed) {
-          const canReplay = inferenceSendCount < maxInferenceSends;
-          if (canReplay) await discardResponse(attempt.response);
-          throwIfAborted(request.signal);
-          console.warn("Bad Request, renewing attestation and retrying once");
-          attestation = await renewAttestation(attempt.attestation.sessionId, attestationIdentity);
-          throwIfAborted(request.signal);
-          if (!canReplay) {
-            finalAttempt = attempt;
-            break;
-          }
-          replayed = true;
-          continue;
-        }
-
-        finalAttempt = attempt;
-        break;
+      });
+      if (authority) {
+        dependencies.auth.noteResponse(result.response, apiUrl, pcrConfig, "user", authority);
       }
-
-      const { response } = finalAttempt;
-      const { sessionKey } = finalAttempt.attestation;
-
-      const capacityError = inferenceCapacityError(response, inferenceSendCount);
+      const capacityError = inferenceCapacityError(result.response, inferenceSendCount);
       if (capacityError) {
-        await discardResponse(response);
+        await result.response.body?.cancel("inference capacity response").catch(() => {});
         throw capacityError;
       }
-
-      if (!response.ok) {
-        const errorText = await response.text();
-        console.error(
-          "Request failed with response status:",
-          response.status,
-          " and message:",
-          errorText
-        );
-        throw Object.assign(
-          new Error(`Request failed with status ${response.status}: ${errorText}`),
-          {
-            status: response.status,
-            headers: new Headers(response.headers)
-          }
-        );
-      }
-
-      // Decrypt SSE events
-      if (response.headers.get("content-type")?.includes("text/event-stream")) {
-        const reader = response.body?.getReader();
-        const decoder = new TextDecoder();
-
-        let buffer = "";
-        const stream = new ReadableStream({
-          async start(controller) {
-            while (true) {
-              const { done, value } = await reader!.read();
-              if (done) break;
-
-              const chunk = decoder.decode(value);
-              buffer += chunk;
-
-              let event;
-              while ((event = extractEvent(buffer))) {
-                buffer = buffer.slice(event.length);
-
-                // Split the event into individual lines
-                const lines = event.split("\n");
-
-                for (const line of lines) {
-                  // Handle event: lines - pass them through as-is
-                  if (line.trim().startsWith("event: ")) {
-                    controller.enqueue(line + "\n");
-                  }
-                  // Handle data: lines - decrypt them
-                  else if (line.trim().startsWith("data: ")) {
-                    const data = line.slice(6).trim();
-                    if (data === "[DONE]") {
-                      controller.enqueue(`data: [DONE]\n\n`);
-                    } else {
-                      try {
-                        const decrypted = dependencies.decryptMessage(sessionKey, data);
-
-                        // Always enqueue the decrypted data
-                        // Note: We don't add \n\n here because the empty line will be added separately
-                        controller.enqueue(`data: ${decrypted}\n`);
-                      } catch (error) {
-                        console.error("Decryption error:", error, "Data:", data);
-                        // Instead of sending the encrypted data, we'll skip this chunk
-                        console.log("Skipping corrupted chunk");
-                      }
-                    }
-                  }
-                  // Pass through empty lines
-                  else if (line === "") {
-                    controller.enqueue("\n");
-                  }
-                }
-              }
-            }
-            controller.close();
-          }
-        });
-
-        return new Response(stream, {
-          headers: response.headers,
-          status: response.status,
-          statusText: response.statusText
-        });
-      }
-
-      // Decrypt regular JSON responses
-      const responseText = await response.text();
-      try {
-        const responseData = JSON.parse(responseText);
-
-        // Check if the response has an encrypted field
-        if (responseData.encrypted) {
-          const decrypted = dependencies.decryptMessage(sessionKey, responseData.encrypted);
-
-          // Try to parse as JSON to check for TTS response format
-          try {
-            const decryptedData = JSON.parse(decrypted);
-
-            // Check if this is a TTS response with content_base64 and content_type
-            if (decryptedData.content_base64 && decryptedData.content_type) {
-              console.log("TTS response detected with content_type:", decryptedData.content_type);
-
-              // Decode base64 audio data to binary
-              let bytes: Uint8Array;
-              try {
-                const binaryString = atob(decryptedData.content_base64);
-                bytes = new Uint8Array(binaryString.length);
-                for (let i = 0; i < binaryString.length; i++) {
-                  bytes[i] = binaryString.charCodeAt(i);
-                }
-              } catch (e) {
-                console.error("Failed to decode base64 audio data:", e);
-                throw new Error("Invalid base64 audio data in TTS response");
-              }
-
-              console.log("Decoded audio bytes length:", bytes.length);
-
-              // Return as a binary response with the proper content type
-              const headersOut = new Headers(response.headers);
-              headersOut.set("content-type", decryptedData.content_type);
-              // Remove headers that are no longer valid for the decoded response
-              headersOut.delete("content-encoding");
-              headersOut.delete("content-length");
-              headersOut.delete("transfer-encoding");
-
-              return new Response(bytes, {
-                headers: headersOut,
-                status: response.status,
-                statusText: response.statusText
-              });
-            }
-          } catch {
-            // Not JSON, continue with regular text response
-          }
-          // Return a new Response with the decrypted data
-          return new Response(decrypted, {
-            headers: response.headers,
-            status: response.status,
-            statusText: response.statusText
-          });
-        }
-      } catch {
-        // If it's not JSON or doesn't have encrypted field, return original response
-        console.log("Response is not encrypted JSON, returning as-is");
-      }
-
-      // Return the original response text as a new Response
-      return new Response(responseText, {
-        headers: response.headers,
-        status: response.status,
-        statusText: response.statusText
-      });
-    } catch (error) {
-      console.error("Error during fetch process:", error);
-      throw error;
+      // Transport V2 decrypts opaque body bytes. Returning the authenticated
+      // Response unchanged preserves incremental SSE and native TTS bytes.
+      return result.response;
+    } finally {
+      body?.fill(0);
+      cacheNamespaceRoot?.fill(0);
     }
   };
-}
-
-function extractEvent(buffer: string): string | null {
-  const eventEnd = buffer.indexOf("\n\n");
-  if (eventEnd === -1) return null;
-  return buffer.slice(0, eventEnd + 2);
 }

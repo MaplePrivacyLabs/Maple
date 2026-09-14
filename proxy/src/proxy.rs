@@ -6,62 +6,40 @@ use axum::{
     response::{IntoResponse, Response},
     Json,
 };
-use dashmap::DashMap;
 use futures::{future::BoxFuture, Stream, StreamExt};
-use maple_sdk::{client::OpenSecretResponseBody, OpenSecretClient, Result as OpenSecretResult};
-use std::{
-    collections::HashSet,
-    io,
-    pin::Pin,
-    sync::Arc,
-    time::{Duration, Instant},
+use maple_sdk::{
+    client::OpenSecretResponseBody, OpenSecretClient, Result as OpenSecretResult,
+    TransportV2CacheNamespaceRoot,
 };
-use tokio::sync::OnceCell;
-use tracing::{debug, error};
-
-const CLIENT_CACHE_MAX_ENTRIES: usize = 1024;
-const CLIENT_CACHE_ENTRY_TTL: Duration = Duration::from_secs(60 * 60);
+use std::{collections::HashSet, io, pin::Pin, sync::Arc, time::Duration};
+use tokio::{sync::OnceCell, time::Instant};
+use tracing::{debug, error, warn};
 
 type ProxyError = (StatusCode, Json<OpenAIError>);
 
 trait InferenceTransport: Send + Sync {
-    fn send_inference_request(
+    fn send_inference_request_with_api_key(
         &self,
         request: Request<Bytes>,
+        api_key: String,
     ) -> BoxFuture<'_, OpenSecretResult<http::Response<OpenSecretResponseBody>>>;
 }
 
 impl InferenceTransport for OpenSecretClient {
-    fn send_inference_request(
+    fn send_inference_request_with_api_key(
         &self,
         request: Request<Bytes>,
+        api_key: String,
     ) -> BoxFuture<'_, OpenSecretResult<http::Response<OpenSecretResponseBody>>> {
-        Box::pin(OpenSecretClient::send_inference_request(self, request))
+        Box::pin(OpenSecretClient::send_inference_request_with_api_key(
+            self, request, api_key,
+        ))
     }
 }
 
-struct CachedClientEntry {
-    cell: OnceCell<Arc<OpenSecretClient>>,
-    created_at: Instant,
-}
-
-impl CachedClientEntry {
-    fn new(created_at: Instant) -> Self {
-        Self {
-            cell: OnceCell::new(),
-            created_at,
-        }
-    }
-
-    fn is_expired(&self, now: Instant) -> bool {
-        now.saturating_duration_since(self.created_at) >= CLIENT_CACHE_ENTRY_TTL
-    }
-}
-
-#[derive(Clone)]
 pub(crate) struct ProxyState {
     config: Config,
-    clients: DashMap<String, Arc<CachedClientEntry>>,
+    client: OnceCell<Arc<OpenSecretClient>>,
     transport_override: Option<Arc<dyn InferenceTransport>>,
 }
 
@@ -69,7 +47,7 @@ impl ProxyState {
     pub(crate) fn new(config: Config) -> Self {
         Self {
             config,
-            clients: DashMap::new(),
+            client: OnceCell::new(),
             transport_override: None,
         }
     }
@@ -78,51 +56,25 @@ impl ProxyState {
     fn with_transport(config: Config, transport: Arc<dyn InferenceTransport>) -> Self {
         Self {
             config,
-            clients: DashMap::new(),
+            client: OnceCell::new(),
             transport_override: Some(transport),
         }
     }
 
-    fn client_entry_for_api_key(&self, api_key: &str) -> Arc<CachedClientEntry> {
-        let now = Instant::now();
-
-        if let Some(entry) = self.clients.get(api_key) {
-            if !entry.is_expired(now) {
-                return Arc::clone(entry.value());
-            }
-        }
-
-        self.clients
-            .remove_if(api_key, |_, entry| entry.is_expired(now));
-        self.evict_expired_clients(now);
-        self.evict_oldest_client_if_needed();
-
-        self.clients
-            .entry(api_key.to_string())
-            .or_insert_with(|| Arc::new(CachedClientEntry::new(now)))
-            .clone()
-    }
-
-    async fn client_for_api_key(&self, api_key: &str) -> Result<Arc<OpenSecretClient>, ProxyError> {
-        let cache_key = api_key.to_string();
-        let client_entry = self.client_entry_for_api_key(&cache_key);
+    async fn client(&self) -> Result<Arc<OpenSecretClient>, ProxyError> {
         let backend_url = self.config.backend_url.clone();
         let pcr0_environment = self.config.pcr0_environment;
         let request_timeout = self.config.request_timeout();
-        let init_api_key = cache_key.clone();
+        let configured_cache_namespace_root = self.config.cache_namespace_root.clone();
 
-        let client = client_entry
-            .cell
+        let client = self
+            .client
             .get_or_try_init(|| async move {
-                debug!(
-                    "Creating OpenSecret client for API key: {}...",
-                    &init_api_key[..8.min(init_api_key.len())]
-                );
-                create_client_with_auth(
+                create_shared_client(
                     &backend_url,
-                    &init_api_key,
                     pcr0_environment,
                     request_timeout,
+                    configured_cache_namespace_root,
                 )
                 .await
                 .map(Arc::new)
@@ -131,48 +83,17 @@ impl ProxyState {
 
         match client {
             Ok(client) => Ok(Arc::clone(client)),
-            Err(error) => {
-                self.remove_client_entry_if_same(&cache_key, &client_entry);
-                Err(error)
-            }
+            Err(error) => Err(error),
         }
     }
 
-    async fn transport_for_api_key(
-        &self,
-        api_key: &str,
-    ) -> Result<Arc<dyn InferenceTransport>, ProxyError> {
+    async fn transport(&self) -> Result<Arc<dyn InferenceTransport>, ProxyError> {
         if let Some(transport) = &self.transport_override {
             return Ok(Arc::clone(transport));
         }
 
-        let client = self.client_for_api_key(api_key).await?;
+        let client = self.client().await?;
         Ok(client)
-    }
-
-    fn remove_client_entry_if_same(&self, api_key: &str, client_entry: &Arc<CachedClientEntry>) {
-        self.clients
-            .remove_if(api_key, |_, entry| Arc::ptr_eq(entry, client_entry));
-    }
-
-    fn evict_expired_clients(&self, now: Instant) {
-        self.clients.retain(|_, entry| !entry.is_expired(now));
-    }
-
-    fn evict_oldest_client_if_needed(&self) {
-        while self.clients.len() >= CLIENT_CACHE_MAX_ENTRIES {
-            let oldest_key = self
-                .clients
-                .iter()
-                .min_by_key(|entry| entry.value().created_at)
-                .map(|entry| entry.key().clone());
-
-            let Some(oldest_key) = oldest_key else {
-                break;
-            };
-
-            self.clients.remove(&oldest_key);
-        }
     }
 }
 
@@ -184,10 +105,7 @@ pub(crate) async fn health_check() -> impl IntoResponse {
     }))
 }
 
-fn extract_api_key(
-    headers: &HeaderMap,
-    default_key: &Option<String>,
-) -> Result<String, OpenAIError> {
+fn extract_api_key(headers: &HeaderMap, default_key: Option<&str>) -> Result<String, OpenAIError> {
     // Try to get API key from Authorization header first
     if let Some(auth_header) = headers.get("authorization") {
         let auth_str = auth_header.to_str().map_err(|_| {
@@ -201,23 +119,26 @@ fn extract_api_key(
 
     // Fall back to default API key from config
     default_key
-        .as_ref()
-        .cloned()
+        .map(str::to_owned)
         .ok_or_else(|| OpenAIError::authentication_error("No API key provided. Set MAPLE_API_KEY environment variable or provide Authorization header"))
 }
 
-async fn create_client_with_auth(
+async fn create_shared_client(
     backend_url: &str,
-    api_key: &str,
     pcr0_environment: maple_sdk::Pcr0Environment,
     request_timeout: Duration,
+    configured_cache_namespace_root: Option<TransportV2CacheNamespaceRoot>,
 ) -> Result<OpenSecretClient, ProxyError> {
-    let client = OpenSecretClient::new_with_api_key_and_pcr0_environment(
-        backend_url,
-        api_key.to_string(),
-        pcr0_environment,
-    )
-    .map_err(|e| transport_error_response("OpenSecret client creation", &e))?;
+    let client = OpenSecretClient::new_with_pcr0_environment(backend_url, pcr0_environment)
+        .map_err(|e| transport_error_response("OpenSecret client creation", &e))?;
+    let client = if let Some(cache_namespace_root) = configured_cache_namespace_root {
+        client.with_cache_namespace_root(cache_namespace_root)
+    } else {
+        warn!(
+            "MAPLE_CACHE_NAMESPACE_ROOT is not configured; provider cache continuity will reset when this proxy process restarts"
+        );
+        client
+    };
 
     // Perform attestation handshake
     tokio::time::timeout(request_timeout, client.perform_attestation_handshake())
@@ -253,27 +174,33 @@ pub(crate) async fn proxy_openai_request(
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Response, ProxyError> {
-    let api_key = extract_api_key(&headers, &state.config.default_api_key)
+    // Browser-reachable CORS mode and a server-held fallback credential are
+    // deliberately mutually exclusive. An explicit request credential still
+    // works, while a configured default is ignored in this mode.
+    let default_api_key = (!state.config.enable_cors)
+        .then(|| state.config.default_api_key.as_deref())
+        .flatten();
+    let api_key = extract_api_key(&headers, default_api_key)
         .map_err(|e| (StatusCode::UNAUTHORIZED, Json(e)))?;
 
-    debug!(
-        "Proxying {} {} for API key: {}...",
-        method,
-        uri,
-        &api_key[..8.min(api_key.len())]
-    );
+    debug!("Proxying {} {}", method, uri.path());
 
-    let transport = state.transport_for_api_key(&api_key).await?;
+    let transport = state.transport().await?;
     let request = build_upstream_request(method, uri, &headers, body);
     let request_timeout = state.config.request_timeout();
-    let response = tokio::time::timeout(request_timeout, transport.send_inference_request(request))
-        .await
-        .map_err(|_| timeout_response("OpenAI-compatible request", request_timeout))?
-        .map_err(|error| transport_error_response("OpenSecret inference request", &error))?;
+    let request_deadline = tokio::time::sleep(request_timeout).deadline();
+    let response = tokio::time::timeout_at(
+        request_deadline,
+        transport.send_inference_request_with_api_key(request, api_key),
+    )
+    .await
+    .map_err(|_| timeout_response("OpenAI-compatible request", request_timeout))?
+    .map_err(|error| transport_error_response("OpenSecret inference request", &error))?;
 
     Ok(build_downstream_response(
         response,
         state.config.stream_idle_timeout(),
+        request_deadline,
     ))
 }
 
@@ -318,6 +245,7 @@ fn is_unsafe_request_header(name: &HeaderName) -> bool {
         name.as_str(),
         "authorization"
             | "cookie"
+            | "set-cookie"
             | "accept-encoding"
             | "proxy-authorization"
             | "host"
@@ -329,6 +257,11 @@ fn is_unsafe_request_header(name: &HeaderName) -> bool {
             | "te"
             | "trailer"
             | "upgrade"
+            | "forwarded"
+            | "via"
+            | "x-forwarded-for"
+            | "x-forwarded-host"
+            | "x-forwarded-proto"
             | "x-session-id"
     )
 }
@@ -346,15 +279,28 @@ fn transport_error_response(operation: &str, error: &impl std::fmt::Display) -> 
 fn build_downstream_response(
     response: http::Response<OpenSecretResponseBody>,
     stream_idle_timeout: Duration,
+    request_deadline: Instant,
 ) -> Response {
     let (parts, body) = response.into_parts();
-    let mut response = Response::new(Body::from_stream(stream_with_idle_timeout(
+    // V2 returns at authenticated Start, before the body completes. Ordinary
+    // responses retain the original request deadline; SSE uses only idle time.
+    let request_deadline = (!is_event_stream(&parts.headers)).then_some(request_deadline);
+    let mut response = Response::new(Body::from_stream(stream_with_timeouts(
         body,
         stream_idle_timeout,
+        request_deadline,
     )));
     *response.status_mut() = parts.status;
     copy_safe_response_headers(&parts.headers, response.headers_mut());
     response
+}
+
+fn is_event_stream(headers: &HeaderMap) -> bool {
+    headers
+        .get(header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.split(';').next())
+        .is_some_and(|value| value.trim().eq_ignore_ascii_case("text/event-stream"))
 }
 
 fn copy_safe_response_headers(source: &HeaderMap, destination: &mut HeaderMap) {
@@ -386,26 +332,36 @@ fn is_unsafe_response_header(name: &HeaderName) -> bool {
     )
 }
 
-fn stream_with_idle_timeout(
+fn stream_with_timeouts(
     mut stream: OpenSecretResponseBody,
     stream_idle_timeout: Duration,
+    request_deadline: Option<Instant>,
 ) -> Pin<Box<dyn Stream<Item = Result<Bytes, io::Error>> + Send>> {
     Box::pin(async_stream::stream! {
         loop {
-            let chunk_result = match tokio::time::timeout(stream_idle_timeout, stream.next()).await {
-                Ok(Some(chunk_result)) => chunk_result,
-                Ok(None) => break,
-                Err(_) => {
-                    error!(
-                        "OpenSecret response stream idle timed out after {} seconds",
-                        stream_idle_timeout.as_secs()
-                    );
+            let idle_deadline = tokio::time::sleep(stream_idle_timeout).deadline();
+            let (deadline, message) = match request_deadline {
+                Some(deadline) if deadline <= idle_deadline =>
+                    (deadline, "Maple backend request timed out"),
+                _ => (idle_deadline, "Maple backend response stream timed out"),
+            };
+            let chunk_result = tokio::select! {
+                // An expired total deadline wins even if buffered body data is
+                // ready, including when the downstream consumer resumes late.
+                biased;
+                _ = tokio::time::sleep_until(deadline) => {
+                    error!("{message}");
+                    drop(stream);
                     yield Err(io::Error::new(
                         io::ErrorKind::TimedOut,
-                        "Maple backend response stream timed out",
+                        message,
                     ));
                     break;
-                }
+                },
+                chunk = stream.next() => match chunk {
+                    Some(chunk_result) => chunk_result,
+                    None => break,
+                },
             };
 
             match chunk_result {
@@ -427,7 +383,13 @@ mod tests {
         body::to_bytes,
         http::{HeaderValue, Request as AxumRequest},
     };
-    use std::{collections::VecDeque, sync::Mutex};
+    use std::{
+        collections::VecDeque,
+        sync::{
+            atomic::{AtomicBool, Ordering},
+            Mutex,
+        },
+    };
     use tower::ServiceExt;
 
     fn test_config() -> Config {
@@ -437,6 +399,7 @@ mod tests {
             backend_url: "http://localhost:3000".to_string(),
             pcr0_environment: maple_sdk::Pcr0Environment::Production,
             default_api_key: None,
+            cache_namespace_root: None,
             debug: false,
             enable_cors: false,
             request_timeout_secs: 300,
@@ -445,8 +408,9 @@ mod tests {
     }
 
     struct MockTransport {
-        requests: Mutex<Vec<Request<Bytes>>>,
+        requests: Mutex<Vec<(String, Request<Bytes>)>>,
         responses: Mutex<VecDeque<OpenSecretResult<http::Response<OpenSecretResponseBody>>>>,
+        start_delay: Duration,
     }
 
     impl MockTransport {
@@ -454,36 +418,44 @@ mod tests {
             Self {
                 requests: Mutex::new(Vec::new()),
                 responses: Mutex::new(responses.into()),
+                start_delay: Duration::ZERO,
             }
         }
 
-        fn take_requests(&self) -> Vec<Request<Bytes>> {
+        fn take_requests(&self) -> Vec<(String, Request<Bytes>)> {
             std::mem::take(&mut *self.requests.lock().unwrap())
         }
     }
 
     impl InferenceTransport for MockTransport {
-        fn send_inference_request(
+        fn send_inference_request_with_api_key(
             &self,
             request: Request<Bytes>,
+            api_key: String,
         ) -> BoxFuture<'_, OpenSecretResult<http::Response<OpenSecretResponseBody>>> {
-            self.requests.lock().unwrap().push(request);
+            self.requests.lock().unwrap().push((api_key, request));
             let response = self
                 .responses
                 .lock()
                 .unwrap()
                 .pop_front()
                 .expect("a mock response for every request");
-            Box::pin(async move { response })
+            Box::pin(async move {
+                if !self.start_delay.is_zero() {
+                    tokio::time::sleep(self.start_delay).await;
+                }
+                response
+            })
         }
     }
 
     struct PendingTransport;
 
     impl InferenceTransport for PendingTransport {
-        fn send_inference_request(
+        fn send_inference_request_with_api_key(
             &self,
             _request: Request<Bytes>,
+            _api_key: String,
         ) -> BoxFuture<'_, OpenSecretResult<http::Response<OpenSecretResponseBody>>> {
             Box::pin(std::future::pending())
         }
@@ -515,70 +487,6 @@ mod tests {
         crate::create_app_with_state(config, state)
     }
 
-    #[test]
-    fn reuses_client_cell_for_same_api_key() {
-        let state = ProxyState::new(test_config());
-
-        let first = state.client_entry_for_api_key("key-a");
-        let second = state.client_entry_for_api_key("key-a");
-
-        assert!(Arc::ptr_eq(&first, &second));
-        assert_eq!(state.clients.len(), 1);
-    }
-
-    #[test]
-    fn keeps_client_cells_separate_by_api_key() {
-        let state = ProxyState::new(test_config());
-
-        let first = state.client_entry_for_api_key("key-a");
-        let second = state.client_entry_for_api_key("key-b");
-
-        assert!(!Arc::ptr_eq(&first, &second));
-        assert_eq!(state.clients.len(), 2);
-    }
-
-    #[test]
-    fn evicts_old_client_cell_at_capacity() {
-        let state = ProxyState::new(test_config());
-
-        for index in 0..CLIENT_CACHE_MAX_ENTRIES {
-            state.client_entry_for_api_key(&format!("key-{}", index));
-        }
-
-        state.client_entry_for_api_key("new-key");
-
-        assert!(state.clients.contains_key("new-key"));
-        assert_eq!(state.clients.len(), CLIENT_CACHE_MAX_ENTRIES);
-    }
-
-    #[test]
-    fn replaces_expired_client_cell() {
-        let state = ProxyState::new(test_config());
-        let expired_at = Instant::now()
-            .checked_sub(CLIENT_CACHE_ENTRY_TTL + Duration::from_secs(1))
-            .unwrap();
-        let expired = Arc::new(CachedClientEntry::new(expired_at));
-
-        state
-            .clients
-            .insert("key-a".to_string(), Arc::clone(&expired));
-
-        let fresh = state.client_entry_for_api_key("key-a");
-
-        assert!(!Arc::ptr_eq(&expired, &fresh));
-        assert_eq!(state.clients.len(), 1);
-    }
-
-    #[test]
-    fn removes_failed_initialization_cell() {
-        let state = ProxyState::new(test_config());
-        let entry = state.client_entry_for_api_key("key-a");
-
-        state.remove_client_entry_if_same("key-a", &entry);
-
-        assert!(!state.clients.contains_key("key-a"));
-    }
-
     #[tokio::test]
     async fn all_explicit_inference_routes_forward_method_uri_headers_and_exact_body() {
         let responses = (0..3)
@@ -601,14 +509,14 @@ mod tests {
             AxumRequest::builder()
                 .method(Method::GET)
                 .uri("/v1/models?provider=tinfoil")
-                .header(header::AUTHORIZATION, "Bearer request-key")
+                .header(header::AUTHORIZATION, "Bearer models-key")
                 .header("x-provider-beta", "models-v2")
                 .body(Body::empty())
                 .unwrap(),
             AxumRequest::builder()
                 .method(Method::POST)
                 .uri("/v1/chat/completions?preview=1")
-                .header(header::AUTHORIZATION, "Bearer request-key")
+                .header(header::AUTHORIZATION, "Bearer chat-key")
                 .header(header::CONTENT_TYPE, "application/json")
                 .header("x-provider-beta", "thinking-controls")
                 .body(Body::from(chat_body.clone()))
@@ -616,7 +524,6 @@ mod tests {
             AxumRequest::builder()
                 .method(Method::POST)
                 .uri("/v1/embeddings")
-                .header(header::AUTHORIZATION, "Bearer request-key")
                 .header(header::CONTENT_TYPE, "application/json")
                 .body(Body::from(embedding_body.clone()))
                 .unwrap(),
@@ -628,22 +535,25 @@ mod tests {
 
         let requests = transport.take_requests();
         assert_eq!(requests.len(), 3);
-        assert_eq!(requests[0].method(), Method::GET);
-        assert_eq!(requests[0].uri(), "/v1/models?provider=tinfoil");
-        assert!(requests[0].body().is_empty());
-        assert_eq!(requests[0].headers()["x-provider-beta"], "models-v2");
-        assert_eq!(requests[1].method(), Method::POST);
-        assert_eq!(requests[1].uri(), "/v1/chat/completions?preview=1");
-        assert_eq!(requests[1].body(), &chat_body);
+        assert_eq!(requests[0].0, "models-key");
+        assert_eq!(requests[1].0, "chat-key");
+        assert_eq!(requests[2].0, "default-key");
+        assert_eq!(requests[0].1.method(), Method::GET);
+        assert_eq!(requests[0].1.uri(), "/v1/models?provider=tinfoil");
+        assert!(requests[0].1.body().is_empty());
+        assert_eq!(requests[0].1.headers()["x-provider-beta"], "models-v2");
+        assert_eq!(requests[1].1.method(), Method::POST);
+        assert_eq!(requests[1].1.uri(), "/v1/chat/completions?preview=1");
+        assert_eq!(requests[1].1.body(), &chat_body);
         assert_eq!(
-            requests[1].headers()["x-provider-beta"],
+            requests[1].1.headers()["x-provider-beta"],
             "thinking-controls"
         );
-        assert_eq!(requests[2].uri(), "/v1/embeddings");
-        assert_eq!(requests[2].body(), &embedding_body);
+        assert_eq!(requests[2].1.uri(), "/v1/embeddings");
+        assert_eq!(requests[2].1.body(), &embedding_body);
         assert!(requests
             .iter()
-            .all(|request| request.headers().get(header::AUTHORIZATION).is_none()));
+            .all(|(_, request)| request.headers().get(header::AUTHORIZATION).is_none()));
     }
 
     #[tokio::test]
@@ -755,7 +665,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn response_start_timeout_is_gateway_timeout() {
         let mut config = test_config();
         config.default_api_key = Some("default-key".to_string());
@@ -776,6 +686,174 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::GATEWAY_TIMEOUT);
+    }
+
+    struct DropMarker(Arc<AtomicBool>);
+
+    impl Drop for DropMarker {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::SeqCst);
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn very_large_configured_timeouts_preserve_ready_responses() {
+        let transport = Arc::new(MockTransport::new(vec![Ok(raw_response(
+            StatusCode::OK,
+            &[("content-type", "application/json")],
+            vec![Bytes::from_static(b"{}")],
+        ))]));
+        let config = test_config()
+            .with_api_key("fixture-key".into())
+            .with_request_timeout_secs(u64::MAX)
+            .with_stream_idle_timeout_secs(u64::MAX);
+        let state = Arc::new(ProxyState::with_transport(config.clone(), transport));
+        let response = crate::create_app_with_state(config, state)
+            .oneshot(
+                AxumRequest::builder()
+                    .uri("/v1/models")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(to_bytes(response.into_body(), 1024).await.unwrap(), "{}");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn non_streaming_body_uses_original_request_deadline_and_drops_without_retry() {
+        let dropped = Arc::new(AtomicBool::new(false));
+        let guard = DropMarker(Arc::clone(&dropped));
+        let body: OpenSecretResponseBody = Box::pin(async_stream::stream! {
+            let _guard = guard;
+            tokio::time::sleep(Duration::from_millis(600)).await;
+            yield Ok(Bytes::from_static(b"{}"));
+        });
+        let mut upstream = http::Response::new(body);
+        upstream
+            .headers_mut()
+            .insert(header::CONTENT_TYPE, "application/json".parse().unwrap());
+        let mut transport = MockTransport::new(vec![Ok(upstream)]);
+        transport.start_delay = Duration::from_millis(600);
+        let transport = Arc::new(transport);
+        // Short test-only durations on a paused clock; production defaults stay 300s.
+        let config = test_config()
+            .with_api_key("fixture-key".into())
+            .with_request_timeout_secs(1)
+            .with_stream_idle_timeout_secs(5);
+        let state = Arc::new(ProxyState::with_transport(
+            config.clone(),
+            transport.clone(),
+        ));
+        let started = Instant::now();
+        let response = crate::create_app_with_state(config, state)
+            .oneshot(
+                AxumRequest::builder()
+                    .uri("/v1/models")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(started.elapsed() >= Duration::from_millis(600));
+        assert!(to_bytes(response.into_body(), 1024).await.is_err());
+        assert!(started.elapsed() >= Duration::from_secs(1));
+        assert!(started.elapsed() < Duration::from_millis(1200));
+        assert!(dropped.load(Ordering::SeqCst));
+        assert_eq!(transport.take_requests().len(), 1);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn timely_non_streaming_chunks_do_not_extend_the_total_deadline() {
+        let dropped = Arc::new(AtomicBool::new(false));
+        let guard = DropMarker(Arc::clone(&dropped));
+        let body: OpenSecretResponseBody = Box::pin(async_stream::stream! {
+            let _guard = guard;
+            loop {
+                tokio::time::sleep(Duration::from_millis(300)).await;
+                yield Ok(Bytes::from_static(b"chunk"));
+            }
+        });
+        let mut stream = stream_with_timeouts(
+            body,
+            Duration::from_secs(5),
+            Some(Instant::now() + Duration::from_secs(1)),
+        );
+        for _ in 0..3 {
+            assert_eq!(stream.next().await.unwrap().unwrap(), "chunk");
+        }
+        let error = stream.next().await.unwrap().unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+        // Upstream is released before yielding the error, even if the caller stops polling.
+        assert!(dropped.load(Ordering::SeqCst));
+        assert!(stream.next().await.is_none());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn expired_deadline_rejects_ready_body_when_consumer_resumes() {
+        let body: OpenSecretResponseBody =
+            Box::pin(futures::stream::iter([Ok(Bytes::from_static(b"ready"))]));
+        let mut stream = stream_with_timeouts(
+            body,
+            Duration::from_secs(5),
+            Some(Instant::now() + Duration::from_secs(1)),
+        );
+        tokio::time::advance(Duration::from_secs(2)).await;
+        assert_eq!(
+            stream.next().await.unwrap().unwrap_err().kind(),
+            io::ErrorKind::TimedOut
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn sse_remains_incremental_beyond_request_deadline() {
+        let body: OpenSecretResponseBody = Box::pin(async_stream::stream! {
+            for chunk in [b"data: first\n\n".as_slice(), b"data: second\n\n", b"data: [DONE]\n\n"] {
+                tokio::time::sleep(Duration::from_millis(600)).await;
+                yield Ok(Bytes::from_static(chunk));
+            }
+        });
+        let mut upstream = http::Response::new(body);
+        upstream.headers_mut().insert(
+            header::CONTENT_TYPE,
+            "Text/Event-Stream ; charset=utf-8".parse().unwrap(),
+        );
+        let started = Instant::now();
+        let response = build_downstream_response(
+            upstream,
+            Duration::from_secs(1),
+            started + Duration::from_secs(1),
+        );
+        let mut stream = response.into_body().into_data_stream();
+        assert_eq!(stream.next().await.unwrap().unwrap(), "data: first\n\n");
+        assert!(started.elapsed() < Duration::from_secs(1));
+        assert_eq!(stream.next().await.unwrap().unwrap(), "data: second\n\n");
+        assert_eq!(stream.next().await.unwrap().unwrap(), "data: [DONE]\n\n");
+        assert!(started.elapsed() > Duration::from_secs(1));
+        assert!(stream.next().await.is_none());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn dropping_downstream_body_releases_pending_upstream() {
+        let dropped = Arc::new(AtomicBool::new(false));
+        let guard = DropMarker(Arc::clone(&dropped));
+        let body: OpenSecretResponseBody = Box::pin(async_stream::stream! {
+            let _guard = guard;
+            yield Ok(Bytes::from_static(b"first"));
+            std::future::pending::<()>().await;
+        });
+        let response = build_downstream_response(
+            http::Response::new(body),
+            Duration::from_secs(300),
+            Instant::now() + Duration::from_secs(300),
+        );
+        let mut body = response.into_body().into_data_stream();
+        assert_eq!(body.next().await.unwrap().unwrap(), "first");
+        drop(body);
+        assert!(dropped.load(Ordering::SeqCst));
     }
 
     #[tokio::test]
@@ -829,6 +907,11 @@ mod tests {
         source.insert(header::CONTENT_LENGTH, "10".parse().unwrap());
         source.insert(header::CONNECTION, "x-remove".parse().unwrap());
         source.insert("x-session-id", "forged".parse().unwrap());
+        source.insert("forwarded", "for=192.0.2.1".parse().unwrap());
+        source.insert("via", "1.1 outer-proxy".parse().unwrap());
+        source.insert("x-forwarded-for", "192.0.2.1".parse().unwrap());
+        source.insert("x-forwarded-host", "outer.example".parse().unwrap());
+        source.insert("x-forwarded-proto", "https".parse().unwrap());
         source.insert("x-remove", "also-forbidden".parse().unwrap());
         source.insert("x-provider-beta", "keep-me".parse().unwrap());
 
@@ -841,6 +924,11 @@ mod tests {
         assert!(destination.get(header::ACCEPT_ENCODING).is_none());
         assert!(destination.get(header::CONTENT_LENGTH).is_none());
         assert!(destination.get("x-session-id").is_none());
+        assert!(destination.get("forwarded").is_none());
+        assert!(destination.get("via").is_none());
+        assert!(destination.get("x-forwarded-for").is_none());
+        assert!(destination.get("x-forwarded-host").is_none());
+        assert!(destination.get("x-forwarded-proto").is_none());
         assert!(destination.get("x-remove").is_none());
     }
 
@@ -864,7 +952,7 @@ mod tests {
     async fn response_stream_reports_idle_timeout() {
         let backend_stream: OpenSecretResponseBody =
             Box::pin(futures::stream::pending::<OpenSecretResult<Bytes>>());
-        let mut stream = stream_with_idle_timeout(backend_stream, Duration::from_millis(1));
+        let mut stream = stream_with_timeouts(backend_stream, Duration::from_millis(1), None);
 
         let error = tokio::time::timeout(Duration::from_secs(1), stream.next())
             .await
@@ -879,12 +967,67 @@ mod tests {
         let mut headers = HeaderMap::new();
         headers.insert(header::AUTHORIZATION, "Bearer request-key".parse().unwrap());
         assert_eq!(
-            extract_api_key(&headers, &Some("default-key".to_string())).unwrap(),
+            extract_api_key(&headers, Some("default-key")).unwrap(),
             "request-key"
         );
         assert_eq!(
-            extract_api_key(&HeaderMap::new(), &Some("default-key".to_string())).unwrap(),
+            extract_api_key(&HeaderMap::new(), Some("default-key")).unwrap(),
             "default-key"
         );
+        assert!(extract_api_key(&HeaderMap::new(), None).is_err());
+    }
+
+    #[tokio::test]
+    async fn cors_mode_never_spends_the_configured_default_key() {
+        let transport = Arc::new(MockTransport::new(vec![Ok(raw_response(
+            StatusCode::OK,
+            &[],
+            vec![Bytes::from_static(b"ok")],
+        ))]));
+        let mut config = test_config();
+        config.enable_cors = true;
+        config.default_api_key = Some("must-not-be-spent".to_string());
+        let state = Arc::new(ProxyState::with_transport(
+            config.clone(),
+            Arc::clone(&transport) as Arc<dyn InferenceTransport>,
+        ));
+        let response = crate::create_app_with_state(config.clone(), state)
+            .oneshot(
+                AxumRequest::builder()
+                    .method(Method::GET)
+                    .uri("/v1/models")
+                    .header(header::ORIGIN, "https://untrusted.example")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        assert!(transport.take_requests().is_empty());
+
+        let response = crate::create_app_with_state(
+            config.clone(),
+            Arc::new(ProxyState::with_transport(
+                config,
+                Arc::clone(&transport) as Arc<dyn InferenceTransport>,
+            )),
+        )
+        .oneshot(
+            AxumRequest::builder()
+                .method(Method::GET)
+                .uri("/v1/models")
+                .header(header::ORIGIN, "https://browser.example")
+                .header(header::AUTHORIZATION, "Bearer per-request-key")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let requests = transport.take_requests();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].0, "per-request-key");
     }
 }

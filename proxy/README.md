@@ -72,11 +72,40 @@ export MAPLE_PORT=8080                         # Server port (default: 8080)
 export MAPLE_BACKEND_URL=http://localhost:3000         # Maple backend URL (prod: https://enclave.trymaple.ai)
 export MAPLE_PCR0_ENVIRONMENT=production       # PCR0 trust roots: production (default) or development
 export MAPLE_API_KEY=your-maple-api-key        # Optional for trusted, non-browser clients only
+export MAPLE_CACHE_NAMESPACE_ROOT="$(openssl rand -base64 32)" # Generate once; persist it
 export MAPLE_DEBUG=true                        # Enable debug logging
 export MAPLE_ENABLE_CORS=false                 # Default; see browser warning below
 export MAPLE_REQUEST_TIMEOUT_SECS=300          # Backend request timeout
 export MAPLE_STREAM_IDLE_TIMEOUT_SECS=300      # Streaming idle timeout between chunks
 ```
+
+Both timeout defaults are five minutes. `MAPLE_REQUEST_TIMEOUT_SECS` covers
+sending a request through completion of a non-streaming response body. For SSE,
+it covers response setup; once the stream starts, `MAPLE_STREAM_IDLE_TIMEOUT_SECS`
+limits the wait for each next chunk without imposing a total stream duration.
+A timeout before response headers returns HTTP 504. After headers have been
+forwarded, a timeout terminates the response body with an error. Timed-out
+requests are not automatically retried.
+
+The underlying Rust SDK permits one session-recovery resend, including for
+inference, after a fresh verified handshake only on outer HTTP `400` with
+exactly `x-opensecret-error-contract: 1` and `x-opensecret-error-code` equal to
+`session_not_found` or `request_decryption_failed`. The backend marks only a
+missing/expired session or incoming-request AEAD authentication failure before
+dispatch. These hints are unauthenticated: an intermediary can forge one after
+execution and cause a duplicate in the new session. This V1-equivalent
+best-effort behavior does not guarantee cross-session at-most-once execution.
+Response decryption/framing failures, network failures, timeouts, partial
+streams, generic `400`/`503`, redirects, and application errors do not trigger
+resends. There is no V1 fallback or plaintext credential resend. See the
+[Rust SDK retry limits](../sdk/rust/README.md#session-recovery-and-retry-limits).
+
+`MAPLE_CACHE_NAMESPACE_ROOT` is a client-side secret used to keep Tinfoil
+provider-cache entries stable across proxy restarts. Generate it once with
+`openssl rand -base64 32`, store the canonical padded base64 output in your
+secret manager, and never log or commit it. If it is omitted, the proxy safely
+generates a process-lifetime root; requests still work, but provider-cache hits
+from an earlier proxy process are intentionally unavailable.
 
 Or use CLI arguments:
 ```bash
@@ -279,6 +308,10 @@ Override the default key or provide one if not set:
 curl -H "Authorization: Bearer different-api-key" ...
 ```
 
+The proxy maintains one shared attested V2 session. Each request's API key is
+placed inside that request's encrypted envelope; it is not installed as mutable
+client state and is not written to proxy logs.
+
 ## 🌐 CORS Support
 
 The standalone proxy does not inherit Maple's Tauri wrapper protections. If a
@@ -291,6 +324,9 @@ unset MAPLE_API_KEY
 export MAPLE_ENABLE_CORS=true
 cargo run --locked
 ```
+
+When CORS is enabled, the proxy ignores any configured default API key and
+rejects requests that do not provide their own bearer credential.
 
 ## 🐳 Docker Deployment
 
@@ -423,6 +459,7 @@ environment:
   - MAPLE_STREAM_IDLE_TIMEOUT_SECS=300             # Streaming idle timeout
   - RUST_LOG=info                                  # Logging level
   # - MAPLE_API_KEY=xxx                            # Only for private deployments!
+  # - MAPLE_CACHE_NAMESPACE_ROOT=xxx               # Stable secret for cache continuity
 ```
 
 ## 🔧 Development
@@ -517,8 +554,9 @@ cargo run --locked
 ```
 
 1. **Client** makes standard OpenAI API calls to localhost
-2. **Maple Proxy** handles authentication and TEE handshake
-3. **Requests** are securely forwarded to Maple's TEE infrastructure
+2. **Maple Proxy** maintains one attested encrypted session to the TEE
+3. **Requests**, including their individual API keys, are encrypted and
+   securely forwarded
 4. **Responses** are streamed back to the client in OpenAI format
 
 ## 📝 License

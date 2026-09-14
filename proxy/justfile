@@ -163,6 +163,7 @@ env:
     @echo "MAPLE_BACKEND_URL: ${MAPLE_BACKEND_URL:-https://enclave.trymaple.ai}"
     @echo "MAPLE_PCR0_ENVIRONMENT: ${MAPLE_PCR0_ENVIRONMENT:-production}"
     @echo "MAPLE_API_KEY: $(if [ -n \"${MAPLE_API_KEY:-}\" ]; then printf '[set]'; else printf '[not set]'; fi)"
+    @echo "MAPLE_CACHE_NAMESPACE_ROOT: $(if [ -n \"${MAPLE_CACHE_NAMESPACE_ROOT:-}\" ]; then printf '[set]'; else printf '[not set]'; fi)"
     @echo "MAPLE_DEBUG: ${MAPLE_DEBUG:-false}"
     @echo "MAPLE_ENABLE_CORS: ${MAPLE_ENABLE_CORS:-false}"
     @echo "MAPLE_REQUEST_TIMEOUT_SECS: ${MAPLE_REQUEST_TIMEOUT_SECS:-300}"
@@ -180,6 +181,7 @@ docker-run:
     @{{container}} run --rm -it \
         -p ${MAPLE_PORT:-8080}:8080 \
         -e MAPLE_API_KEY=${MAPLE_API_KEY} \
+        -e MAPLE_CACHE_NAMESPACE_ROOT \
         -e MAPLE_BACKEND_URL=${MAPLE_BACKEND_URL:-https://enclave.trymaple.ai} \
         -e MAPLE_PCR0_ENVIRONMENT=${MAPLE_PCR0_ENVIRONMENT:-production} \
         -e MAPLE_DEBUG=${MAPLE_DEBUG:-false} \
@@ -195,6 +197,7 @@ docker-run-detached:
         --name maple-proxy \
         -p ${MAPLE_PORT:-8080}:8080 \
         -e MAPLE_API_KEY=${MAPLE_API_KEY} \
+        -e MAPLE_CACHE_NAMESPACE_ROOT \
         -e MAPLE_BACKEND_URL=${MAPLE_BACKEND_URL:-https://enclave.trymaple.ai} \
         -e MAPLE_PCR0_ENVIRONMENT=${MAPLE_PCR0_ENVIRONMENT:-production} \
         -e MAPLE_DEBUG=${MAPLE_DEBUG:-false} \

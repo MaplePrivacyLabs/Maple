@@ -1,6 +1,6 @@
 mod common;
 
-use maple_sdk::Result;
+use maple_sdk::{Error, Result};
 use std::env;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -15,8 +15,8 @@ async fn test_client_initialization() -> Result<()> {
 }
 
 #[tokio::test]
-async fn test_health_check_mock() -> Result<()> {
-    // Start a mock server
+async fn test_v1_only_health_check_fails_closed() -> Result<()> {
+    // A legacy server may expose plaintext health but no Transport V2 session endpoint.
     let mock_server = MockServer::start().await;
 
     Mock::given(method("GET"))
@@ -29,9 +29,8 @@ async fn test_health_check_mock() -> Result<()> {
         .await;
 
     let client = common::new_test_client(mock_server.uri())?;
-    let response = client.test_connection().await?;
-
-    assert!(response.contains("healthy"));
+    let error = client.test_connection().await.unwrap_err();
+    assert!(matches!(error, Error::InvalidResponse(_)));
 
     Ok(())
 }

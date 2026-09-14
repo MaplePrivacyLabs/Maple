@@ -1,12 +1,17 @@
-import React, { useEffect, useRef } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { useOpenSecret } from "@mapleai/sdk";
-import { v4 as uuidv4 } from "uuid";
-import { sha256 } from "@noble/hashes/sha256";
-import { bytesToHex } from "@noble/hashes/utils";
 import { Button, type ButtonProps } from "./ui/button";
 import { Apple } from "./icons/Apple";
+import { HostedNativeSignInConfirmation } from "./HostedNativeSignInConfirmation";
 import { getBillingService } from "@/billing/billingService";
-import { getSafeInternalRedirect } from "@/utils/internalRedirect";
+import {
+  clearDesktopOAuthTransport,
+  clearDesktopOAuthTarget,
+  isCurrentDesktopOAuthTarget,
+  readTransportV2DesktopOAuth,
+  isNativeOAuthRedirect,
+  type TransportV2DesktopOAuthState
+} from "@/services/desktopOAuthTransport";
 
 interface AppleAuthProviderProps {
   onSuccess?: () => void;
@@ -60,6 +65,23 @@ function isAppleAuthCancellation(error: Error): boolean {
   return error.message === "user_cancelled_authorize" || error.message === "popup_closed_by_user";
 }
 
+function getAppleAuthorizationNonce(authUrl: string): string {
+  let url: URL;
+  try {
+    url = new URL(authUrl);
+  } catch {
+    throw new Error("Apple authorization response did not contain a valid nonce");
+  }
+
+  const nonces = url.searchParams.getAll("nonce");
+  const nonce = nonces[0];
+  if (nonces.length !== 1 || !nonce || !/^[0-9a-f]{64}$/u.test(nonce)) {
+    throw new Error("Apple authorization response did not contain a valid nonce");
+  }
+
+  return nonce;
+}
+
 export function AppleAuthProvider({
   onSuccess,
   onError,
@@ -73,8 +95,12 @@ export function AppleAuthProvider({
 }: AppleAuthProviderProps) {
   const os = useOpenSecret();
   const appleScriptLoaded = useRef(false);
-  const rawNonceRef = useRef<string>("");
   const isSignInPending = useRef(false);
+  const active = useRef(true);
+  const ownedTarget = useRef<TransportV2DesktopOAuthState | null>(null);
+  const [nativeConfirmation, setNativeConfirmation] = useState<TransportV2DesktopOAuthState | null>(
+    null
+  );
 
   useEffect(() => {
     if (appleScriptLoaded.current) return;
@@ -95,17 +121,28 @@ export function AppleAuthProvider({
     };
   }, []);
 
-  const initializeAppleAuth = async () => {
+  useEffect(() => {
+    active.current = true;
+    return () => {
+      active.current = false;
+      queueMicrotask(() => {
+        if (!active.current && ownedTarget.current) clearDesktopOAuthTarget(ownedTarget.current);
+      });
+    };
+  }, []);
+
+  const initializeAppleAuth = async (target: TransportV2DesktopOAuthState | null) => {
     if (!window.AppleID) {
       throw new Error("Apple Sign In SDK not loaded");
     }
 
+    if (!isNativeOAuthRedirect()) clearDesktopOAuthTransport();
+
     // A retry is a new authorization attempt, so it gets a fresh backend state and nonce.
     const initiateResult = await os.initiateAppleAuth(inviteCode || "");
-    rawNonceRef.current = uuidv4();
-    const hashedNonce = bytesToHex(sha256(new TextEncoder().encode(rawNonceRef.current)));
+    if (!active.current || (target && !isCurrentDesktopOAuthTarget(target))) return;
+    const nonce = getAppleAuthorizationNonce(initiateResult.auth_url);
 
-    sessionStorage.setItem("apple_auth_nonce", rawNonceRef.current);
     const state = initiateResult.state || "";
     sessionStorage.setItem("apple_auth_state", state);
 
@@ -118,14 +155,20 @@ export function AppleAuthProvider({
       scope: "name email",
       redirectURI: window.location.origin + "/auth/apple/callback",
       state,
-      nonce: hashedNonce,
+      nonce,
       usePopup: true
     });
   };
 
-  const completeAuthorization = async (authorization: AppleAuthorization) => {
+  const completeAuthorization = async (
+    authorization: AppleAuthorization,
+    nativeFlow: boolean,
+    target: TransportV2DesktopOAuthState | null
+  ) => {
     sessionStorage.removeItem("apple_auth_state");
     await os.handleAppleCallback(authorization.code, authorization.state, inviteCode || "");
+
+    if (!active.current) return;
 
     try {
       getBillingService().clearToken();
@@ -133,29 +176,11 @@ export function AppleAuthProvider({
       console.warn("Failed to clear billing token:", billingError);
     }
 
-    const isTauriAuth = localStorage.getItem("redirect-to-native") === "true";
-    if (isTauriAuth) {
-      localStorage.removeItem("redirect-to-native");
-
-      const accessToken = localStorage.getItem("access_token") || "";
-      const refreshToken = localStorage.getItem("refresh_token");
-      let deepLinkUrl = `cloud.opensecret.maple://auth?access_token=${encodeURIComponent(accessToken)}`;
-
-      if (refreshToken) {
-        deepLinkUrl += `&refresh_token=${encodeURIComponent(refreshToken)}`;
+    if (nativeFlow) {
+      if (!target || !isCurrentDesktopOAuthTarget(target)) {
+        throw new Error("Native sign-in changed or expired; please restart login in Maple.");
       }
-
-      const postAuthRedirect = sessionStorage.getItem("post_auth_redirect");
-      sessionStorage.removeItem("post_auth_redirect");
-      const safePostAuthRedirect = getSafeInternalRedirect(postAuthRedirect);
-
-      if (!selectedPlan && safePostAuthRedirect) {
-        deepLinkUrl += `&next=${encodeURIComponent(safePostAuthRedirect)}`;
-      }
-
-      setTimeout(() => {
-        window.location.href = deepLinkUrl;
-      }, 1000);
+      setNativeConfirmation(target);
       return;
     }
 
@@ -164,22 +189,31 @@ export function AppleAuthProvider({
   };
 
   const handleAppleSignIn = async () => {
-    if (isSignInPending.current) return;
+    if (isSignInPending.current || nativeConfirmation || !active.current) return;
     isSignInPending.current = true;
+    const nativeFlow = isNativeOAuthRedirect();
+    const target = nativeFlow ? readTransportV2DesktopOAuth("apple") : null;
+    ownedTarget.current = target;
 
     try {
-      await initializeAppleAuth();
+      if (nativeFlow && !target) {
+        throw new Error("Native sign-in changed or expired; please restart login in Maple.");
+      }
+      await initializeAppleAuth(target);
+      if (!active.current || (target && !isCurrentDesktopOAuthTarget(target))) return;
 
       // Programmatic Apple sign-in returns one promise that resolves on success and rejects on
       // failure. It is the only completion channel; document events are intentionally unused.
       const authResult = await window.AppleID.auth.signIn();
+      if (!active.current || (target && !isCurrentDesktopOAuthTarget(target))) return;
       const authorization = authResult?.authorization;
       if (!authorization?.code || !authorization.state) {
         throw new Error("Missing required authentication data");
       }
 
-      await completeAuthorization(authorization);
+      await completeAuthorization(authorization, nativeFlow, target);
     } catch (error) {
+      if (!active.current || (target && !isCurrentDesktopOAuthTarget(target))) return;
       const signInError = getAppleAuthError(error);
       console.error("[Apple Auth] Sign In failed:", signInError);
 
@@ -193,6 +227,10 @@ export function AppleAuthProvider({
 
   if (window.location.protocol === "tauri:") {
     return null;
+  }
+
+  if (nativeConfirmation) {
+    return <HostedNativeSignInConfirmation target={nativeConfirmation} />;
   }
 
   return children ? (
