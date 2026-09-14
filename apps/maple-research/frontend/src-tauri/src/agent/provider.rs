@@ -1658,6 +1658,8 @@ mod tests {
         for auxiliary in [false, true] {
             let transport = Arc::new(FakeTransport::new(fragmented_success_response()));
             let provider = MapleProvider::new(transport.clone());
+            // Goose still publishes output limits for this retired ID. The test
+            // is that Maple omits them from requests, not catalog membership.
             let model_config = ModelConfig::new("deepseek-v4-flash")
                 .with_canonical_limits(MAPLE_PROVIDER_NAME)
                 .with_context_limit(Some(1_048_576))

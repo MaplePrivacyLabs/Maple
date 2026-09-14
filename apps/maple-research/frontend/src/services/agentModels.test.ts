@@ -16,7 +16,7 @@ import {
 const models = [
   { id: PREVIOUS_RECOMMENDED_AGENT_MODEL },
   { id: "glm-5-3" },
-  { id: "deepseek-v4-flash" },
+  { id: "deepseek-v4-1-flash" },
   { id: "kimi-k2-6" }
 ];
 
@@ -35,6 +35,7 @@ describe("Agent Mode model defaults", () => {
   test("clears the previous Agent-only recommended model from sticky preferences", () => {
     expect(migrateAgentModelPreference(PREVIOUS_RECOMMENDED_AGENT_MODEL)).toBeNull();
     expect(migrateAgentModelPreference("  glm-5-2  ")).toBeNull();
+    expect(migrateAgentModelPreference("deepseek-v4-flash")).toBeNull();
     expect(migrateAgentModelPreference(null)).toBeNull();
     expect(migrateAgentModelPreference("kimi-k2-6")).toBe("kimi-k2-6");
     expect(migrateAgentModelPreference(POWERFUL_MODEL_ALIAS)).toBe(POWERFUL_MODEL_ALIAS);
