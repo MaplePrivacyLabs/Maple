@@ -170,7 +170,7 @@ Use this ec2 command:
 
 
 Replace `AWS_PROFILE` with your CLI access name. Ex. `AdministratorAccess-1111`
-Replace `KEY_NAME` with the uploaded ssh key. Ex. `tony_dev_ssh`
+Replace `KEY_NAME` with the uploaded ssh key pair name. Ex. `opensecret-admin`
 
 ```
 aws ec2 run-instances \
