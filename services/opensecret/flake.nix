@@ -543,6 +543,14 @@
         checks = {
           entrypoint-entropy-preflight = entrypointEntropyPreflight;
           kernel-source-pin = kernelSourcePin;
+          traffic-forwarder = pkgs.runCommand "opensecret-traffic-forwarder-tests" {
+            nativeBuildInputs = [ pkgs.python3 ];
+            src = ./nitro-toolkit;
+          } ''
+            cd "$src"
+            python3 -B -m unittest -v test_traffic_forwarder
+            touch "$out"
+          '';
           operator-boundaries = pkgs.runCommand "opensecret-operator-boundaries" {
             nativeBuildInputs = [
               pkgs.bash pkgs.coreutils pkgs.git pkgs.jq pkgs.just pkgs.nodejs
