@@ -41,7 +41,9 @@ export function migrateAgentModelPreference(
   currentModel: string | null | undefined
 ): string | null {
   const model = currentModel?.trim() || null;
-  if (!model || model === PREVIOUS_RECOMMENDED_AGENT_MODEL) return null;
+  if (!model || model === PREVIOUS_RECOMMENDED_AGENT_MODEL || model === "deepseek-v4-flash") {
+    return null;
+  }
   return model;
 }
 

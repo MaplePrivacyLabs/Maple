@@ -64,7 +64,6 @@ function ModelId({ modelId }: { modelId: string }) {
 
 function capabilityLabels(model: OpenSecretModel): string[] {
   const labels: string[] = [];
-  if (model.capabilities?.reasoning) labels.push("Reasoning");
   if (model.capabilities?.tool_use) labels.push("Tools");
   if (model.capabilities?.vision) labels.push("Vision");
   if (model.capabilities?.tool_use === false) labels.push("No tools");

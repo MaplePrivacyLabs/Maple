@@ -6093,11 +6093,6 @@ mod tests {
         ));
         assert!(ensure_completion_model_access("kimi-k3", ModelPlan::Paid).is_ok());
         assert!(matches!(
-            ensure_completion_model_access("deepseek-v4-flash", ModelPlan::Free),
-            Err(ApiError::ModelNotAvailableOnPlan)
-        ));
-        assert!(ensure_completion_model_access("deepseek-v4-flash", ModelPlan::Paid).is_ok());
-        assert!(matches!(
             ensure_completion_model_access("deepseek-v4-1-flash", ModelPlan::Free),
             Err(ApiError::ModelNotAvailableOnPlan)
         ));
@@ -6669,7 +6664,6 @@ mod tests {
 
         for (provider, public_model) in [
             ("tinfoil", "gpt-oss-120b"),
-            ("tinfoil", "deepseek-v4-flash"),
             ("tinfoil", "deepseek-v4-1-flash"),
             ("tinfoil", "kimi-k3"),
             ("tinfoil", "glm-5-3"),

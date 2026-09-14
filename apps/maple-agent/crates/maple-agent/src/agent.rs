@@ -8865,6 +8865,7 @@ fn migrate_agent_config(config: &mut AgentConfig) -> bool {
     let mut changed = false;
     if config.default_model == LEGACY_AGENT_DEFAULT_MODEL
         || config.default_model == PREVIOUS_RECOMMENDED_AGENT_MODEL
+        || config.default_model == "deepseek-v4-flash"
     {
         config.default_model = default_agent_model();
         changed = true;
@@ -14244,6 +14245,21 @@ mod tests {
         let mut config = AgentConfig {
             default_project_root: Some("/tmp/project".to_string()),
             default_model: PREVIOUS_RECOMMENDED_AGENT_MODEL.to_string(),
+            mcp_servers: Vec::new(),
+            project_trust: Vec::new(),
+            removed_project_roots: Vec::new(),
+        };
+
+        assert!(migrate_agent_config(&mut config));
+        assert_eq!(config.default_model, DEFAULT_AGENT_MODEL);
+        assert!(!migrate_agent_config(&mut config));
+    }
+
+    #[test]
+    fn retired_deepseek_v4_flash_agent_default_migrates_to_glm_5_3() {
+        let mut config = AgentConfig {
+            default_project_root: Some("/tmp/project".to_string()),
+            default_model: "deepseek-v4-flash".to_string(),
             mcp_servers: Vec::new(),
             project_trust: Vec::new(),
             removed_project_roots: Vec::new(),

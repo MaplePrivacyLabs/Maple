@@ -786,8 +786,8 @@ mod tests {
     };
     use crate::model_config::{
         ModelAliasTargets, ModelPlan, PaidModelAliasOverrides, AUTO_POWERFUL_MODEL_ID,
-        AUTO_QUICK_MODEL_ID, DEEPSEEK_V4_FLASH_MODEL_ID, GLM_5_3_FLASH_MODEL_ID, GLM_5_3_MODEL_ID,
-        KIMI_K2_6_MODEL_ID, KIMI_K3_MODEL_ID, QUICK_MODEL_ID,
+        AUTO_QUICK_MODEL_ID, DEEPSEEK_V4_1_FLASH_MODEL_ID, GLM_5_3_FLASH_MODEL_ID,
+        GLM_5_3_MODEL_ID, KIMI_K2_6_MODEL_ID, KIMI_K3_MODEL_ID, QUICK_MODEL_ID,
     };
     use crate::os_flags::PAID_POWERFUL_GLM_5_3_ALIAS_FLAG_KEY;
     use std::collections::HashMap;
@@ -1092,9 +1092,9 @@ mod tests {
                 provider_preference: None,
                 continuum_available: true,
                 expected_access: true,
-                expected_public_model: DEEPSEEK_V4_FLASH_MODEL_ID,
+                expected_public_model: DEEPSEEK_V4_1_FLASH_MODEL_ID,
                 expected_provider: "tinfoil",
-                expected_provider_model: DEEPSEEK_V4_FLASH_MODEL_ID,
+                expected_provider_model: DEEPSEEK_V4_1_FLASH_MODEL_ID,
                 expected_source: RouteSelectionSource::StaticSplit,
             },
             Case {
@@ -1256,6 +1256,7 @@ mod tests {
             "unknown-model",
             "kimi-k-3",
             "kimi-k3-latest",
+            "deepseek-v4-flash",
             "deepseek-v4-flash-0731",
             "deepseek-v4.1-flash",
             "deepseek-v4-1-flash-latest",
@@ -1870,12 +1871,7 @@ mod tests {
         let router = ProviderRouter::default();
         let proxy_router = proxy_router_with_both_providers();
 
-        for model_id in [
-            "kimi-k3",
-            "deepseek-v4-flash",
-            "deepseek-v4-1-flash",
-            "glm-5-3-flash",
-        ] {
+        for model_id in ["kimi-k3", "deepseek-v4-1-flash", "glm-5-3-flash"] {
             let selected = router
                 .select_completion_route(&proxy_router, uuid_for_bucket(50), model_id)
                 .expect("canonical Tinfoil model should route");
@@ -1896,6 +1892,7 @@ mod tests {
         for model_id in [
             "kimi-k-3",
             "kimi-k3-latest",
+            "deepseek-v4-flash",
             "deepseek-v4-flash-0731",
             "deepseek-v4flash",
             "deepseek-v4.1-flash",

@@ -13219,6 +13219,8 @@ mod tests {
 
     #[test]
     fn maple_model_config_omits_goose_canonical_output_limits() {
+        // Goose still publishes output limits for this retired ID. The test is
+        // that Maple strips them, not that the model remains selectable.
         let canonical =
             ModelConfig::new("deepseek-v4-flash").with_canonical_limits(MAPLE_PROVIDER_NAME);
         assert!(canonical.max_tokens.is_some());

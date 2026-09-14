@@ -1465,7 +1465,7 @@ mod tests {
         );
         let raw_stream = raw_provider
             .stream(
-                &ModelConfig::new("deepseek-v4-flash"),
+                &ModelConfig::new("deepseek-v4-1-flash"),
                 "system",
                 &[initial.clone(), tool_request.clone(), raw_response],
                 &[],
@@ -1497,7 +1497,7 @@ mod tests {
             Message::user().with_tool_response("cua-call-1", Ok(mediated_result));
         let mediated_stream = mediated_provider
             .stream(
-                &ModelConfig::new("deepseek-v4-flash"),
+                &ModelConfig::new("deepseek-v4-1-flash"),
                 "system",
                 &[initial, tool_request, mediated_response],
                 &[],

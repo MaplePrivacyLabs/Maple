@@ -1797,14 +1797,6 @@ mod tests {
             "glm-5-3-flash"
         );
         assert!(matches!(
-            resolve_responses_model("deepseek-v4-flash", "tinfoil", ModelPlan::Free),
-            Err(ApiError::ModelNotAvailableOnPlan)
-        ));
-        assert_eq!(
-            resolve_responses_model("deepseek-v4-flash", "tinfoil", ModelPlan::Paid).unwrap(),
-            "deepseek-v4-flash"
-        );
-        assert!(matches!(
             resolve_responses_model("deepseek-v4-1-flash", "tinfoil", ModelPlan::Free),
             Err(ApiError::ModelNotAvailableOnPlan)
         ));
@@ -1875,7 +1867,7 @@ mod tests {
                 name: "paid auto quick",
                 plan: ModelPlan::Paid,
                 selector: crate::model_config::AUTO_QUICK_MODEL_ID,
-                expected_model: crate::model_config::DEEPSEEK_V4_FLASH_MODEL_ID,
+                expected_model: crate::model_config::DEEPSEEK_V4_1_FLASH_MODEL_ID,
                 expected_access: true,
             },
             Case {
@@ -1986,7 +1978,7 @@ mod tests {
         );
         assert_eq!(
             paid_quick_request["model"],
-            crate::model_config::DEEPSEEK_V4_FLASH_MODEL_ID
+            crate::model_config::DEEPSEEK_V4_1_FLASH_MODEL_ID
         );
         assert!(paid_quick_request.get("chat_template_kwargs").is_none());
     }

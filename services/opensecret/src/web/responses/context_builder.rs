@@ -1005,7 +1005,6 @@ mod tests {
         assert_eq!(prompt_token_budget("glm-5-3"), 262_144);
         assert_eq!(prompt_token_budget("glm-5-3-flash"), 1_048_576);
         assert_eq!(prompt_token_budget("deepseek-v4-1-flash"), 1_048_576);
-        assert_eq!(prompt_token_budget("deepseek-v4-flash"), 1_048_576);
     }
 
     // Helper to create a ChatMsg
