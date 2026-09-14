@@ -16,9 +16,9 @@ package boundaries remain independently versioned and publishable:
 - `rust/` builds the `maple-sdk` crate (imported as `maple_sdk`) for native consumers.
 - `apps/maple-research/frontend/package.json` is authoritative for whether Maple's browser client
   consumes a published TypeScript version or the in-tree `file:../../../sdk` package.
-- Research desktop, Maple Agent, and `proxy/` select their Rust SDK through
-  their own manifests and lockfiles. iOS and Android do not compile Research's
-  desktop-only SDK/proxy consumers.
+- Research native clients, Maple Agent, and `proxy/` select their Rust SDK
+  through their own manifests and lockfiles. Research iOS and Android use the
+  Rust SDK for native OAuth; the embedded proxy and Goose remain desktop-only.
 
 Follow the [consumer version policy](../../../docs/sdk-publishing.md#consumer-version-policy).
 Prefer published pins without upgrading unrelated consumers. Local links are
@@ -53,8 +53,12 @@ Use the SDK's pinned Nix shell. For TypeScript/React work:
 nix develop --no-update-lock-file -c bun install --frozen-lockfile --ignore-scripts
 nix develop --no-update-lock-file -c bun run format:check
 nix develop --no-update-lock-file -c bun run build
-nix develop --no-update-lock-file -c bun test --timeout 30000
 ```
+
+For tests without service fixtures, use the credential-free selection in
+`.github/workflows/sdk-typescript.yml`. An unfiltered `bun test` also collects
+integration tests that require a configured backend and test identities; use
+`sdk-integration.yml` for that complete local-stack setup.
 
 For Rust work:
 

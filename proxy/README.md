@@ -54,11 +54,13 @@ maple-proxy = "0.3.2"
 Crates.io publishing remains separate from Maple application releases; the
 example above uses the latest published crate version.
 
-The source uses a compatible `maple-sdk` registry requirement, starting at
-`3.6.2`. The standalone binary's lockfile selects its SDK version; an embedding
-application selects its own. Keep the host and proxy on one SDK source/version
-because their public APIs exchange SDK types. Local SDK links are supported
-for active development. See the [SDK consumer version policy](../docs/sdk-publishing.md#consumer-version-policy).
+This checkout prepares proxy `0.4.0` with a compatible `maple-sdk` requirement
+starting at `4.0.0` and an in-tree link until that SDK is published. The published
+crate in the example above predates this Transport V2 update. The standalone
+binary's lockfile selects its SDK version; an embedding application selects its
+own. Keep the host and proxy on one SDK source/version because their public APIs
+exchange SDK types. See the [SDK consumer version policy](../docs/sdk-publishing.md#consumer-version-policy).
+Switch the SDK dependency to its published version after publication is verified.
 A proxy crate publication still requires its SDK dependency to be published.
 
 ## ⚙️ Configuration
@@ -346,7 +348,7 @@ The old `ghcr.io/opensecretcloud/maple-proxy` package remains available at its
 existing versions but receives no new publications. Existing deployments must
 change their image URL to receive future updates; registry image names do not
 follow the repository transfer redirect. Version `0.3.3` remains the explicit
-unbackfilled baseline. The next prepared proxy version is `0.3.4`.
+unbackfilled baseline. The next prepared proxy version is `0.4.0`.
 
 After the first new-namespace publication is verified:
 

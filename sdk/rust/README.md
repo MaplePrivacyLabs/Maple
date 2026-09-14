@@ -18,20 +18,23 @@ Maple Rust SDK for the OpenSecret backend: secure AI APIs, encrypted sessions, a
 
 ## Installation
 
-`maple-sdk` is the published replacement for the `opensecret` crate. Add it to
-your `Cargo.toml`:
+`maple-sdk` is the published replacement for the `opensecret` crate. This source
+prepares version `4.0.0`; after its independent crates.io publication is verified,
+add it to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-maple-sdk = "3.6.2"
+maple-sdk = "4.0.0"
 bytes = "1"
 futures = "0.3"
 http = "1"
 ```
 
-Public Rust types such as `OpenSecretClient` keep their existing names. The
-package and import names change; backend URLs, authentication, and attestation
-behavior remain unchanged.
+Public Rust types such as `OpenSecretClient` keep their existing names from the
+package rename. Version 4 uses Transport V2, requires a V2-capable backend, and
+does not fall back to V1. Existing V1 users must sign in again to establish a new
+session. Coordinate native and hosted OAuth flows with the consuming app; see
+the [version 4 preparation notes](../README.md#version-4-release-preparation).
 
 ## Quick Start
 

@@ -23,7 +23,8 @@ and tests.
 Maple consumers prefer independently selected published SDK versions; local
 TypeScript `file:` and Rust `path` dependencies remain available for active
 development. The consumer's manifest and lockfile determine what it builds.
-iOS and Android exclude the desktop-only Rust SDK/proxy consumers. See the
+Research uses the Rust SDK on desktop and mobile for native authentication;
+the embedded proxy remains desktop-only. See the
 [consumer version policy](../docs/sdk-publishing.md#consumer-version-policy)
 for switching sources and preparing client releases.
 
@@ -38,6 +39,22 @@ The rename preserves the exported API, including `OpenSecretProvider`,
 the backend name. Backend URLs, configuration variables, signed-PCR verification
 and encrypted transport retain their existing contracts. Existing published
 `@opensecret/react` and `opensecret` packages remain available to older consumers.
+
+## Version 4 release preparation
+
+Both SDKs are prepared as `4.0.0` for the Transport V2 cutover. Version 4 requires
+a backend with Transport V2 support and does not fall back to V1. Applications
+upgrading from V1 must establish a new session and ask existing users to sign in
+again. Native authentication and hosted OAuth callbacks must use the matching
+V2 flows; updating only one side of that handoff is insufficient.
+
+The TypeScript SDK, Rust SDK, and Maple app are published independently. The
+version declarations in this checkout do not establish registry availability.
+Maple Research, Agent, and the proxy currently use the in-tree SDKs so they can
+validate this source before publication. After both SDK publications are
+verified, switch consumers to the selected published versions and regenerate
+their lockfiles before cutting the Maple app release. See the
+[publishing guide](../docs/sdk-publishing.md).
 
 ## Security model
 
@@ -80,10 +97,10 @@ for future operations without resending the failed operation.
 
 ## TypeScript/React SDK
 
-Install the package:
+After its registry publication is verified, install the version described here:
 
 ```sh
-bun add --exact @mapleai/sdk@3.5.2
+bun add --exact @mapleai/sdk@4.0.0
 ```
 
 Wrap the application with `OpenSecretProvider` and supply the backend URL and
@@ -122,8 +139,11 @@ nix develop --no-update-lock-file
 bun install --frozen-lockfile --ignore-scripts
 bun run format:check
 bun run build
-bun test --timeout 30000
 ```
+
+For tests without a configured backend, use the credential-free selection in
+the root `sdk-typescript.yml` workflow. An unfiltered `bun test` also collects
+integration tests and requires the fixtures described below.
 
 Integration tests read the variables documented in `.env.example`. Monorepo
 [`sdk-integration.yml`](../.github/workflows/sdk-integration.yml) migrates
@@ -156,7 +176,7 @@ Publishing runs in GitHub Actions. To dispatch validation of the committed
 TypeScript version from `sdk/`:
 
 ```sh
-just publish-npm 3.5.2
+just publish-npm 4.0.0
 ```
 
 This defaults to a dry run. See the [SDK publishing guide](../docs/sdk-publishing.md)
@@ -164,11 +184,11 @@ for the protected publish action and the one-time registry setup.
 
 ## Rust SDK
 
-Add the crate to a Rust application:
+After its registry publication is verified, add the crate to a Rust application:
 
 ```toml
 [dependencies]
-maple-sdk = "=3.6.2"
+maple-sdk = "=4.0.0"
 ```
 
 Import the primary entry point with `use maple_sdk::OpenSecretClient`.
@@ -194,7 +214,7 @@ separate from the default local validation path.
 To dispatch validation of the committed Rust version from `sdk/`:
 
 ```sh
-just publish-cargo 3.6.2
+just publish-cargo 4.0.0
 ```
 
 This defaults to a dry run. Both recipes only dispatch GitHub Actions; they do
