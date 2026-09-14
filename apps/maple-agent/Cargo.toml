@@ -20,7 +20,7 @@ once_cell = "1.18.0"
 http = "1"
 reqwest = { version = "0.13", features = ["stream"] }
 # Shared monorepo crates retain their independent package names and versions.
-maple-sdk = { version = "=4.0.0", path = "../../sdk/rust" }
+maple-sdk = "=4.0.0"
 maple-proxy = { version = "0.4.0", path = "../../proxy" }
 
 [profile.dev]

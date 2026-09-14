@@ -40,20 +40,20 @@ the backend name. Backend URLs, configuration variables, signed-PCR verification
 and encrypted transport retain their existing contracts. Existing published
 `@opensecret/react` and `opensecret` packages remain available to older consumers.
 
-## Version 4 release preparation
+## Version 4 upgrade
 
-Both SDKs are prepared as `4.0.0` for the Transport V2 cutover. Version 4 requires
-a backend with Transport V2 support and does not fall back to V1. Applications
+Both SDKs use Transport V2 starting at `4.0.0`. Version 4 requires a backend
+with Transport V2 support and does not fall back to V1. Applications
 upgrading from V1 must establish a new session and ask existing users to sign in
 again. Native authentication and hosted OAuth callbacks must use the matching
 V2 flows; updating only one side of that handoff is insufficient.
 
-The TypeScript SDK, Rust SDK, and Maple app are published independently. The
-version declarations in this checkout do not establish registry availability.
-Maple Research, Agent, and the proxy currently use the in-tree SDKs so they can
-validate this source before publication. After both SDK publications are
-verified, switch consumers to the selected published versions and regenerate
-their lockfiles before cutting the Maple app release. See the
+The TypeScript SDK, Rust SDK, and Maple app are published independently.
+Research selects `@mapleai/sdk` `4.0.0` from npm. Research's native clients,
+Maple Agent, and the proxy resolve `maple-sdk` `4.0.0` from crates.io in their
+lockfiles. Research and Agent still consume the in-tree proxy library.
+Editing SDK source does not change these registry-pinned consumers; use local
+links when validating an SDK change with an affected consumer. See the
 [publishing guide](../docs/sdk-publishing.md).
 
 ## Security model
@@ -97,7 +97,7 @@ for future operations without resending the failed operation.
 
 ## TypeScript/React SDK
 
-After its registry publication is verified, install the version described here:
+Install the selected SDK version:
 
 ```sh
 bun add --exact @mapleai/sdk@4.0.0
@@ -184,7 +184,7 @@ for the protected publish action and the one-time registry setup.
 
 ## Rust SDK
 
-After its registry publication is verified, add the crate to a Rust application:
+Add the selected SDK version to a Rust application:
 
 ```toml
 [dependencies]
