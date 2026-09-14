@@ -12,7 +12,8 @@ use crate::model_config::{
 use crate::models::token_usage::NewTokenUsage;
 use crate::models::users::User;
 use crate::provider_cache::{
-    derive_tinfoil_cache_namespace, CacheNamespaceRoot, DerivedCacheNamespace,
+    derive_provider_cache_namespaces, legacy_continuum_cache_salt, CacheNamespaceRoot,
+    DerivedCacheNamespaces,
 };
 use crate::provider_client::{
     ProviderClient, ProviderRequest, ProviderRequestError, ProviderResponse, ProviderSendTrace,
@@ -77,7 +78,7 @@ const PROVIDER_MANAGED_USER_CACHE_SECRET_FIELD: &str = "user_cache_secret";
 #[derive(Clone)]
 pub(crate) enum CompletionCachePolicy {
     LegacyV1,
-    BoundV2(DerivedCacheNamespace),
+    BoundV2(DerivedCacheNamespaces),
 }
 
 impl CompletionCachePolicy {
@@ -88,7 +89,7 @@ impl CompletionCachePolicy {
     ) -> Result<Self, ApiError> {
         if transport.is_v2() {
             let root = cache_namespace_root.ok_or(ApiError::BadRequest)?;
-            Ok(Self::BoundV2(derive_tinfoil_cache_namespace(
+            Ok(Self::BoundV2(derive_provider_cache_namespaces(
                 &root,
                 verified_user_id,
             )))
@@ -2275,8 +2276,6 @@ pub(crate) async fn get_chat_completion_response_for_expected_route(
             CompletionExecutionError::Request(ApiError::ServiceUnavailable)
         })?;
 
-    let continuum_cache_salt = (route.provider_name == ProviderId::Continuum.as_str())
-        .then(|| format!("server-selected-{}", Uuid::new_v4().simple()));
     let started = get_chat_completion_response_with_options(
         state,
         user,
@@ -2289,7 +2288,6 @@ pub(crate) async fn get_chat_completion_response_for_expected_route(
                 provider_name: route.provider_name.to_string(),
                 provider_model_id: route.provider_model_id.to_string(),
             }),
-            continuum_cache_salt,
             non_streaming_body_limit: Some(MAX_BOUNDED_PROVIDER_RESPONSE_BYTES),
         },
     )
@@ -2320,7 +2318,6 @@ fn completion_route_matches_exact_constraint(
 #[derive(Default)]
 struct CompletionExecutionOptions {
     exact_route: Option<ExactCompletionRoute>,
-    continuum_cache_salt: Option<String>,
     non_streaming_body_limit: Option<usize>,
 }
 
@@ -2459,13 +2456,6 @@ async fn get_chat_completion_response_with_options(
         user.uuid,
         cache_policy,
     );
-    if options.exact_route.is_some() {
-        apply_server_selected_cache_isolation(
-            &mut modified_body,
-            &selected_route.proxy.provider_name,
-            options.continuum_cache_salt.as_deref(),
-        )?;
-    }
     billing_context.model_name = selected_route.public_model_id.clone();
 
     // Prepare one logical model-turn execution. The provider transport may
@@ -2887,28 +2877,17 @@ fn apply_provider_managed_request_fields(
     } else if replaced_user_cache_secret {
         debug!("Stripped provider-managed completion request field: user_cache_secret");
     }
-}
 
-fn apply_server_selected_cache_isolation(
-    body: &mut serde_json::Map<String, Value>,
-    provider_name: &str,
-    continuum_cache_salt: Option<&str>,
-) -> Result<(), ApiError> {
-    if provider_name != ProviderId::Continuum.as_str() {
-        return Ok(());
+    if provider_name == ProviderId::Continuum.as_str() {
+        let cache_salt = match cache_policy {
+            CompletionCachePolicy::LegacyV1 => legacy_continuum_cache_salt(user_uuid),
+            CompletionCachePolicy::BoundV2(namespaces) => namespaces.continuum_cache_salt(),
+        };
+        body.insert(
+            PROVIDER_MANAGED_CACHE_SALT_FIELD.to_string(),
+            json!(cache_salt),
+        );
     }
-
-    let cache_salt = continuum_cache_salt
-        .filter(|salt| salt.len() >= 32)
-        .ok_or_else(|| {
-            error!("Missing or invalid server-owned Continuum cache salt");
-            ApiError::InternalServerError
-        })?;
-    body.insert(
-        PROVIDER_MANAGED_CACHE_SALT_FIELD.to_string(),
-        json!(cache_salt),
-    );
-    Ok(())
 }
 
 /// A finish reason marks model completion, but providers may send a richer
@@ -6455,7 +6434,7 @@ mod tests {
     fn bound_v2_cache_namespace_replaces_legacy_and_client_values() {
         let user_uuid = Uuid::from_u128(42);
         let root = CacheNamespaceRoot::from_bytes([0x55; 32]);
-        let namespace = derive_tinfoil_cache_namespace(&root, user_uuid);
+        let namespace = derive_provider_cache_namespaces(&root, user_uuid);
         let expected = namespace.tinfoil_user_cache_secret();
         let mut body = serde_json::Map::from_iter([
             ("cache_salt".to_string(), json!("user-supplied")),
@@ -6481,7 +6460,7 @@ mod tests {
     }
 
     #[test]
-    fn strips_tinfoil_cache_fields_from_non_tinfoil_requests() {
+    fn strips_cache_fields_from_other_providers() {
         let mut body = serde_json::Map::from_iter([
             ("cache_salt".to_string(), json!("user-supplied")),
             ("user_cache_secret".to_string(), json!("client-controlled")),
@@ -6489,7 +6468,7 @@ mod tests {
 
         apply_provider_managed_request_fields(
             &mut body,
-            ProviderId::Continuum.as_str(),
+            "other-provider",
             Uuid::from_u128(42),
             &CompletionCachePolicy::LegacyV1,
         );
@@ -6499,37 +6478,98 @@ mod tests {
     }
 
     #[test]
-    fn server_selected_continuum_route_replaces_caller_salt_with_isolated_salt() {
+    fn continuum_cache_salt_replaces_caller_fields_for_both_transports() {
         let user_uuid = Uuid::from_u128(42);
-        let mut body = serde_json::Map::from_iter([
-            ("cache_salt".to_string(), json!("caller-controlled")),
-            ("messages".to_string(), json!([])),
-        ]);
-
-        apply_provider_managed_request_fields(
-            &mut body,
-            ProviderId::Continuum.as_str(),
+        let namespaces = derive_provider_cache_namespaces(
+            &CacheNamespaceRoot::from_bytes([0x55; 32]),
             user_uuid,
-            &CompletionCachePolicy::LegacyV1,
         );
-        assert!(!body.contains_key(PROVIDER_MANAGED_CACHE_SALT_FIELD));
+        let v2_salt = namespaces.continuum_cache_salt();
+        let v1_salt = legacy_continuum_cache_salt(user_uuid);
+        assert_ne!(v1_salt, v2_salt);
+        for (policy, expected) in [
+            (CompletionCachePolicy::LegacyV1, v1_salt),
+            (CompletionCachePolicy::BoundV2(namespaces), v2_salt),
+        ] {
+            for caller_salt in [
+                Value::Null,
+                json!(""),
+                json!("caller-controlled"),
+                json!("x".repeat(64)),
+                json!(42),
+                json!({"nested": "value"}),
+            ] {
+                let mut body = serde_json::Map::from_iter([
+                    ("model".to_string(), json!("provider-model")),
+                    ("cache_salt".to_string(), caller_salt),
+                    ("user_cache_secret".to_string(), json!("caller-controlled")),
+                    ("messages".to_string(), json!([])),
+                ]);
+                apply_provider_managed_request_fields(
+                    &mut body,
+                    ProviderId::Continuum.as_str(),
+                    user_uuid,
+                    &policy,
+                );
+                assert_eq!(body.get("cache_salt"), Some(&json!(expected)));
+                assert!(!body.contains_key("user_cache_secret"));
+                assert_eq!(body.get("model"), Some(&json!("provider-model")));
+                assert_eq!(body.get("messages"), Some(&json!([])));
+            }
 
-        let server_salt = format!("server-selected-{}", Uuid::new_v4().simple());
-        apply_server_selected_cache_isolation(
-            &mut body,
+            // Every turn, including internal exact-route completions, passes
+            // through this same boundary with the original cache policy.
+            let mut body = serde_json::Map::new();
+            for turn_policy in [&policy, &policy.clone()] {
+                apply_provider_managed_request_fields(
+                    &mut body,
+                    ProviderId::Continuum.as_str(),
+                    user_uuid,
+                    turn_policy,
+                );
+                assert_eq!(body.get("cache_salt"), Some(&json!(expected)));
+            }
+        }
+    }
+
+    #[test]
+    fn v2_completion_cache_policy_requires_a_root_and_binds_verified_identity() {
+        use crate::transport_v2::crypto::SessionId;
+
+        let transport = TransportSession::v2(SessionId::from_bytes([0x11; 16]));
+        let user = Uuid::from_u128(1);
+        assert!(matches!(
+            CompletionCachePolicy::for_request(&transport, None, user),
+            Err(ApiError::BadRequest)
+        ));
+
+        let root = CacheNamespaceRoot::from_bytes([0x42; 32]);
+        let policy =
+            CompletionCachePolicy::for_request(&transport, Some(root.clone()), user).unwrap();
+        assert!(policy.requires_provider_done());
+        let mut first = serde_json::Map::new();
+        apply_provider_managed_request_fields(
+            &mut first,
             ProviderId::Continuum.as_str(),
-            Some(&server_salt),
-        )
-        .expect("server-selected Continuum salt should be accepted");
-
-        assert_eq!(
-            body.get(PROVIDER_MANAGED_CACHE_SALT_FIELD),
-            Some(&json!(server_salt))
+            user,
+            &policy,
         );
-        assert_ne!(
-            body.get(PROVIDER_MANAGED_CACHE_SALT_FIELD),
-            Some(&json!("caller-controlled"))
-        );
+        for (other_user, other_root) in [
+            (Uuid::from_u128(2), root),
+            (user, CacheNamespaceRoot::from_bytes([0x24; 32])),
+        ] {
+            let other_policy =
+                CompletionCachePolicy::for_request(&transport, Some(other_root), other_user)
+                    .unwrap();
+            let mut other = serde_json::Map::new();
+            apply_provider_managed_request_fields(
+                &mut other,
+                ProviderId::Continuum.as_str(),
+                other_user,
+                &other_policy,
+            );
+            assert_ne!(first.get("cache_salt"), other.get("cache_salt"));
+        }
     }
 
     #[test]

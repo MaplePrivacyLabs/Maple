@@ -15,6 +15,13 @@ Maple             VITE_OPEN_SECRET_API_URL=http://127.0.0.1:3000
 Tinfoil discovery, attestation, TLS pinning, and requests happen inside the
 OpenSecret process; there is no local Tinfoil sidecar or port.
 
+The Continuum proxy deliberately has no shared prompt-cache default.
+OpenSecret injects user-bound `cache_salt` values into completion requests;
+explicit salts enable reuse without `--sharedPromptCache`. Do not add a
+proxy-wide salt to the launch command. See the
+[provider cache contract](transport-v2-protocol.md#provider-cache-root) for
+V1/V2 scope and restart behavior.
+
 ## One-time setup
 
 ```sh

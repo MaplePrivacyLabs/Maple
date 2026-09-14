@@ -249,7 +249,7 @@ _run-continuum-proxy-macos:
     : "${CONTINUUM_API_KEY:?Run just run-continuum-proxy-macos to resolve local secrets}"
     workspace="${CONTINUUM_PROXY_WORKSPACE:-.local/continuum}"
     mkdir -p "$workspace"
-    exec "$bin" --port "${CONTINUUM_PROXY_PORT:-8092}" --workspace "$workspace" --apiKey "$CONTINUUM_API_KEY" --sharedPromptCache
+    exec "$bin" --port "${CONTINUUM_PROXY_PORT:-8092}" --workspace "$workspace" --apiKey "$CONTINUUM_API_KEY"
 
 # Resolve Tinfoil and Kagi for the backend; no provider-key dotenv/file fallback.
 run-local-backend-macos:
