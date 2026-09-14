@@ -39,9 +39,13 @@ compare without signing.
    pinned public key before the history is rewritten atomically. Setup is in
    [`secretspec/README.md`](../secretspec/README.md).
 3. The job commits the two changed approval files to
-   `opensecret/pcr-approval-<env>-<commit>` and prints the compare link. Open
-   the pull request yourself; the approval checks then rebuild and compare on
-   that PR, and the root `pcr-compatibility` check verifies every signature.
+   `opensecret/pcr-approval-<commit>` and prints the compare link. That branch
+   is shared by both environments' runs for the same source commit: when both
+   measurement sets change, the second run lands its commit on top of the
+   first, so one pull request carries both approvals and each environment's
+   approval check compares against its updated file. Open the pull request
+   yourself; the approval checks then rebuild and compare on that PR, and the
+   root `pcr-compatibility` check verifies every signature.
    After merging, mirror the four files to the legacy repository with the
    manual [compatibility procedure](pcr-compatibility.md) and verify both
    public locations.
