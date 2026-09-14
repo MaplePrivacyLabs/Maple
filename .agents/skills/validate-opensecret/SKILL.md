@@ -127,12 +127,13 @@ Health probes are preliminary only:
 
 ```sh
 curl --fail --silent --show-error http://127.0.0.1:3000/health-check
-curl --fail --silent --show-error http://127.0.0.1:3000/health-check-extended
 ```
 
-The first is process liveness; the second checks Tinfoil model connectivity.
-Neither proves PostgreSQL, auth, encryption, persistence, routing, billing,
-flags, or a user flow.
+This reports process liveness with `status` and `version` JSON. It does not call
+a provider or probe PostgreSQL, and does not prove provider availability, auth,
+encryption, persistence, routing, billing, flags, or a user flow. Provider
+availability checks belong to separate diagnostics, not load-balancer origin
+health.
 
 Exercise protected routes through the monorepo-root `sdk/` directory or through
 the corresponding Maple application client:
