@@ -542,6 +542,15 @@
 
         checks = {
           entrypoint-entropy-preflight = entrypointEntropyPreflight;
+          provider-cache-defaults = pkgs.runCommand "opensecret-provider-cache-defaults" {
+            nativeBuildInputs = [ pkgs.gnugrep ];
+          } ''
+            if grep -Eq -- '--(sharedPromptCache|promptCacheSalt)' ${./entrypoint.sh} ${./justfile}; then
+              echo "Continuum launchers must not enable a shared cache fallback" >&2
+              exit 1
+            fi
+            touch "$out"
+          '';
           kernel-source-pin = kernelSourcePin;
           operator-boundaries = pkgs.runCommand "opensecret-operator-boundaries" {
             nativeBuildInputs = [

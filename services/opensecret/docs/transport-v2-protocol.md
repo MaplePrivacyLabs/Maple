@@ -275,10 +275,31 @@ HMAC-SHA256(
 ```
 
 Only the hexadecimal derived value is supplied to Tinfoil as
-`user_cache_secret`. The raw root is not persisted by OpenSecret. Caller
-versions of provider-managed cache fields are removed; non-Tinfoil providers
-do not receive `user_cache_secret`, and Continuum retains its separate
-server-controlled cache isolation.
+`user_cache_secret`. Continuum uses the same construction with the distinct
+label `opensecret/provider-cache/continuum/user-cache-namespace/v1` and receives
+its hexadecimal derived value as `cache_salt`. Neither provider receives the
+other provider's namespace or the raw root. The raw root is not persisted by
+OpenSecret.
+
+Caller versions of both provider-managed fields are removed before injecting
+the selected provider's value. The shared completion path applies this policy
+to chat, Responses model/tool turns, and server-selected image descriptions.
+The same root and verified user retain the same provider namespace across
+requests; changing either isolates the cache. Different devices with different
+roots do not share cache entries, even for the same user.
+
+The Continuum proxy runs without `--sharedPromptCache` or `--promptCacheSalt`.
+Explicit request salts still enable prefix-cache reuse; a request without a
+salt gets the proxy's fresh random salt instead of a shared fallback. Salting
+partitions cached KV prefixes, not complete generated responses, and does not
+guarantee cache residency or retention.
+
+Legacy V1 clients do not supply a cache root. OpenSecret derives their Continuum
+salts with the Continuum label and verified user UUID, keyed by a random
+32-byte secret held only in the backend process. Those salts remain stable
+within that process; restart or a different backend replica cold-starts the
+namespace. No database migration or additional configured secret is required.
+Legacy Tinfoil's `SHA-256(user UUID)` behavior is unchanged.
 
 ### Request record encryption
 
