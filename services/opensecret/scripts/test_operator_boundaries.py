@@ -197,8 +197,10 @@ class OperatorBoundaryTests(unittest.TestCase):
         # Committed project IDs: distinct projects, keyring-only credential for signing.
         self.assertEqual(signing["providers"], {"opensecret_pcr_signing": {
             "uri": "bws://2305d292-179b-477e-b6a8-b4c4007eac20", "credentials": {"access_token": "keyring"}}})
+        # Local development reads the machine's shared keyring item; signing keeps its own.
         self.assertEqual(local["providers"]["opensecret_local"],
-                         {"uri": "bws://9a8c5b99-b00c-4403-beb1-b4c400050810", "credentials": {"access_token": "keyring"}})
+                         {"uri": "bws://9a8c5b99-b00c-4403-beb1-b4c400050810", "credentials": {"access_token": {
+                             "provider": "keyring", "ref": {"item": "secretspec/opensecret-dev-observability/_provider/access_token"}}}})
         self.assertEqual(local["providers"]["opensecret_local_headless"], "bws://9a8c5b99-b00c-4403-beb1-b4c400050810")
 
 
