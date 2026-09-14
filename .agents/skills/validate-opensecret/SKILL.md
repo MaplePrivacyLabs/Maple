@@ -178,7 +178,8 @@ and compares generated measurements on PRs that explicitly edit the four
 approved PCR JSON files, relevant backend/TEE or approval changes to master,
 and manual runs. Ordinary backend PRs do not require new PCR approvals; master
 mismatches intentionally signal that the revision does not match its current
-approvals. CI does not sign, create EIF releases, or deploy the TEE service.
+approvals. This repository's CI signs only in the reviewer-gated `OpenSecret EIF release`
+workflow, never creates GitHub Releases, and never deploys the TEE service.
 Ordinary pull-request completion does not update PCR references.
 Do not copy or sign values just to clear a validation failure; distinguish an
 EIF build failure from a PCR mismatch. Use `docs/pcr-compatibility.md` for the
