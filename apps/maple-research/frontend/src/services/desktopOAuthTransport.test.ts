@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import {
   TRANSPORT_V2_PENDING_TTL_MS,
   buildTransportV2DesktopAuthUrl,
@@ -47,7 +47,12 @@ function location(pathname: string, search = ""): Pick<Location, "pathname" | "s
   return { pathname, search };
 }
 
+let originalLocalStorage: PropertyDescriptor | undefined;
+let originalSessionStorage: PropertyDescriptor | undefined;
+
 beforeEach(() => {
+  originalLocalStorage = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
+  originalSessionStorage = Object.getOwnPropertyDescriptor(globalThis, "sessionStorage");
   Object.defineProperty(globalThis, "localStorage", {
     configurable: true,
     value: new MemoryStorage(),
@@ -58,6 +63,19 @@ beforeEach(() => {
     value: new MemoryStorage(),
     writable: true
   });
+});
+
+afterEach(() => {
+  if (originalLocalStorage) {
+    Object.defineProperty(globalThis, "localStorage", originalLocalStorage);
+  } else {
+    Reflect.deleteProperty(globalThis, "localStorage");
+  }
+  if (originalSessionStorage) {
+    Object.defineProperty(globalThis, "sessionStorage", originalSessionStorage);
+  } else {
+    Reflect.deleteProperty(globalThis, "sessionStorage");
+  }
 });
 
 describe("desktop OAuth transport selection", () => {

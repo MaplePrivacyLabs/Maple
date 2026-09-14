@@ -1,8 +1,55 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 
 import { ensureNativeTransportRoot } from "./nativeTransportRoot";
 
+class MemoryStorage implements Storage {
+  private readonly values = new Map<string, string>();
+
+  get length(): number {
+    return this.values.size;
+  }
+
+  clear(): void {
+    this.values.clear();
+  }
+
+  getItem(key: string): string | null {
+    return this.values.get(key) ?? null;
+  }
+
+  key(index: number): string | null {
+    return [...this.values.keys()][index] ?? null;
+  }
+
+  removeItem(key: string): void {
+    this.values.delete(key);
+  }
+
+  setItem(key: string, value: string): void {
+    this.values.set(key, value);
+  }
+}
+
 describe("ensureNativeTransportRoot", () => {
+  let originalLocalStorage: PropertyDescriptor | undefined;
+
+  beforeEach(() => {
+    originalLocalStorage = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
+    Object.defineProperty(globalThis, "localStorage", {
+      configurable: true,
+      value: new MemoryStorage(),
+      writable: true
+    });
+  });
+
+  afterEach(() => {
+    if (originalLocalStorage) {
+      Object.defineProperty(globalThis, "localStorage", originalLocalStorage);
+    } else {
+      Reflect.deleteProperty(globalThis, "localStorage");
+    }
+  });
+
   test("installs one canonical root per origin and coalesces concurrent callers", async () => {
     const calls: Array<{ command: string; args?: Record<string, unknown> }> = [];
     const invokeNative = async <T>(command: string, args?: Record<string, unknown>): Promise<T> => {

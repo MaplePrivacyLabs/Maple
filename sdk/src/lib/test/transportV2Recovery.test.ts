@@ -396,9 +396,13 @@ describe("Transport V2 bounded session repair", () => {
   test("coalesces repair and reuses a replacement established by another stale caller", async () => {
     const firstHint = deferred<Response>();
     const secondHint = deferred<Response>();
+    const sentFirst = deferred<void>();
     const sentBoth = deferred<void>();
     const fixture = await harness((attempt) => {
-      if (attempt.index === 0) return firstHint.promise;
+      if (attempt.index === 0) {
+        sentFirst.resolve();
+        return firstHint.promise;
+      }
       if (attempt.index === 1) {
         sentBoth.resolve();
         return secondHint.promise;
@@ -407,6 +411,9 @@ describe("Transport V2 bounded session repair", () => {
     });
     const input = { apiUrl: API_URL, request: { method: "POST", target: "/v1/item" } };
     const first = fixture.runtime.request(input);
+    // Sealing is asynchronous. Fix arrival order before starting the second
+    // caller, while keeping both requests in flight before releasing either hint.
+    await sentFirst.promise;
     const second = fixture.runtime.request(input);
     await sentBoth.promise;
     firstHint.resolve(hint("session_not_found"));
