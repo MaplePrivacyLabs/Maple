@@ -661,7 +661,7 @@ class ApprovalPublishCommandTests(unittest.TestCase):
         marker = self.root / "raced"
         real_git = shutil.which("git")
         (shim_dir / "git").write_text(
-            "#!/usr/bin/env bash\n"
+            f"#!{shutil.which('bash')}\n"
             "for arg in \"$@\"; do\n"
             f"  if [ \"$arg\" = push ] && [ ! -e '{marker}' ]; then touch '{marker}'; "
             f"'{real_git}' -C '{rival}' push -q origin HEAD:refs/heads/{self.branch()}; fi\n"
