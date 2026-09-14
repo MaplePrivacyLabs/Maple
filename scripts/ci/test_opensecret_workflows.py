@@ -577,12 +577,16 @@ class ApprovalPublishCommandTests(unittest.TestCase):
                    "measurements": VALID_MEASUREMENTS, "eif_sha256": "f" * 64, **overrides}
         (self.artifact / "handoff.json").write_text(json.dumps(handoff))
 
-    def change_approvals(self):
-        for name in ("pcrDev.json", "pcrDevHistory.json"):
+    def change_approvals(self, mode="dev"):
+        prefix = "pcrDev" if mode == "dev" else "pcrProd"
+        for name in (f"{prefix}.json", f"{prefix}History.json"):
             (self.repo / "services/opensecret" / name).write_text(f"{name} approved\n")
 
-    def run_publish(self, mode="dev"):
-        env = {"PATH": os.environ["PATH"], "HOME": str(self.root), "GITHUB_TOKEN": "fixture-token",
+    def branch(self):
+        return f"opensecret/pcr-approval-{self.source_sha[:12]}"
+
+    def run_publish(self, mode="dev", path=None):
+        env = {"PATH": path or os.environ["PATH"], "HOME": str(self.root), "GITHUB_TOKEN": "fixture-token",
                "GITHUB_REPOSITORY": "fixture/repo", "GITHUB_RUN_ID": "7", "GITHUB_STEP_SUMMARY": str(self.summary)}
         return subprocess.run(
             [shutil.which("bash"), "--noprofile", "--norc",
@@ -597,7 +601,7 @@ class ApprovalPublishCommandTests(unittest.TestCase):
         self.change_approvals()
         result = self.run_publish()
         self.assertEqual(result.returncode, 0, result.stderr)
-        branch = f"opensecret/pcr-approval-dev-{self.source_sha[:12]}"
+        branch = self.branch()
         self.assertEqual(sorted(self.origin_branches().split()), sorted(["master", branch]))
         self.assertEqual(self.git("-C", str(self.origin), "rev-parse", "master"), self.source_sha)
         changed = self.git("-C", str(self.origin), "diff", "--name-only", "master", branch)
@@ -610,7 +614,7 @@ class ApprovalPublishCommandTests(unittest.TestCase):
         self.assertNotIn("fixture-token", (self.repo / ".git/config").read_text())
         self.assertNotIn("fixture-token", result.stdout + result.stderr)
 
-    def test_refuses_unexpected_changes_and_existing_branches(self):
+    def test_refuses_unexpected_changes_and_a_repeated_environment(self):
         self.change_approvals()
         (self.repo / "services/opensecret/other.rs").write_text("fn main() { changed }\n")
         result = self.run_publish()
@@ -622,7 +626,59 @@ class ApprovalPublishCommandTests(unittest.TestCase):
         self.change_approvals()
         result = self.run_publish()
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("already exists", result.stderr)
+        self.assertIn("already carries the dev approval", result.stderr)
+        self.assertEqual(len(self.git("-C", str(self.origin), "rev-list", f"master..{self.branch()}").split()), 1)
+
+    def test_second_environment_lands_on_the_same_branch(self):
+        self.change_approvals("dev")
+        self.assertEqual(self.run_publish("dev").returncode, 0)
+        self.git("-C", str(self.repo), "reset", "-q", "--hard", self.source_sha)
+        self.change_approvals("prod")
+        self.write_handoff(environment="prod")
+        result = self.run_publish("prod")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        branch = self.branch()
+        self.assertEqual(sorted(self.origin_branches().split()), sorted(["master", branch]))
+        self.assertEqual(self.git("-C", str(self.origin), "rev-parse", "master"), self.source_sha)
+        self.assertEqual(len(self.git("-C", str(self.origin), "rev-list", f"master..{branch}").split()), 2)
+        changed = self.git("-C", str(self.origin), "diff", "--name-only", "master", branch)
+        self.assertEqual(changed.split(), ["services/opensecret/pcrDev.json", "services/opensecret/pcrDevHistory.json",
+                                           "services/opensecret/pcrProd.json", "services/opensecret/pcrProdHistory.json"])
+        subjects = self.git("-C", str(self.origin), "log", "--format=%s", f"master..{branch}")
+        self.assertEqual(subjects.splitlines(), [f"Approve prod OpenSecret EIF measurements from {self.source_sha[:12]}",
+                                                 f"Approve dev OpenSecret EIF measurements from {self.source_sha[:12]}"])
+
+    def test_lost_push_race_is_replayed_on_top_of_the_other_environment(self):
+        # A git shim lets the prod run push to the branch after the dev run has
+        # fetched and just before it pushes, so the first push is rejected.
+        rival = self.root / "rival"
+        self.git("clone", "-q", str(self.origin), str(rival))
+        for name in ("pcrProd.json", "pcrProdHistory.json"):
+            (rival / "services/opensecret" / name).write_text(f"{name} approved\n")
+        self.git("-C", str(rival), "commit", "-q", "-am", f"Approve prod OpenSecret EIF measurements from {self.source_sha[:12]}")
+        shim_dir = self.root / "shim"
+        shim_dir.mkdir()
+        marker = self.root / "raced"
+        real_git = shutil.which("git")
+        (shim_dir / "git").write_text(
+            "#!/usr/bin/env bash\n"
+            "for arg in \"$@\"; do\n"
+            f"  if [ \"$arg\" = push ] && [ ! -e '{marker}' ]; then touch '{marker}'; "
+            f"'{real_git}' -C '{rival}' push -q origin HEAD:refs/heads/{self.branch()}; fi\n"
+            "done\n"
+            f"exec '{real_git}' \"$@\"\n")
+        (shim_dir / "git").chmod(0o755)
+        self.change_approvals("dev")
+        result = self.run_publish("dev", path=f"{shim_dir}:{os.environ['PATH']}")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("rejected (attempt 1)", result.stderr)
+        branch = self.branch()
+        self.assertEqual(len(self.git("-C", str(self.origin), "rev-list", f"master..{branch}").split()), 2)
+        changed = self.git("-C", str(self.origin), "diff", "--name-only", "master", branch)
+        self.assertEqual(changed.split(), ["services/opensecret/pcrDev.json", "services/opensecret/pcrDevHistory.json",
+                                           "services/opensecret/pcrProd.json", "services/opensecret/pcrProdHistory.json"])
+        subjects = self.git("-C", str(self.origin), "log", "--format=%s", f"master..{branch}")
+        self.assertEqual(subjects.splitlines()[0], f"Approve dev OpenSecret EIF measurements from {self.source_sha[:12]}")
 
     def test_nothing_to_publish_and_handoff_mismatches(self):
         result = self.run_publish()
