@@ -44,17 +44,29 @@ import {
   type NewChatNavigationDetail
 } from "@/services/chatRuntimeNavigation";
 import { useChatRuntimeStore } from "@/contexts/ChatRuntimeContext";
+import { useOpenAI } from "@/ai/useOpenAi";
 import {
   resumeOrCreateChatDraftKey,
   rootChatDraftKeyAfterProjectDeletion
 } from "@/services/chatDraftSelection";
 import { createConversationChatKey } from "@/services/chatRuntimeStore";
 import {
+  beginAllChatRuntimeDeletionFence,
+  beginChatProjectRuntimeDeletionFence,
+  beginChatRuntimeDeletionFence
+} from "@/services/chatRuntimeDeletionFence";
+import {
   INITIAL_CHAT_HISTORY_RETRY_COUNT,
   conversationHistoryQueryKey,
   initialChatHistoryPage,
   shouldLoadConversationHistory
 } from "@/services/chatHistoryAccountScope";
+import {
+  cancelChatResponseForHistoryDeletion,
+  quiesceChatRuntimeRunsForHistoryDeletion,
+  settleChatRuntimeAfterHistoryCancellation
+} from "@/services/chatHistoryDeletionQuiescence";
+import { assertChatAccountCredential } from "@/services/chatAccountCredential";
 
 const MAX_PROJECTS = 10;
 /** Lucide default; keep sidebar list icons visually consistent. */
@@ -96,6 +108,7 @@ export function ChatHistoryList({
   containerRef
 }: ChatHistoryListProps) {
   const opensecret = useOpenSecret();
+  const openai = useOpenAI();
   const router = useRouter();
   const queryClient = useQueryClient();
   const { selectedProjectId, setSelectedProjectId } = useSelectedProjectState();
@@ -680,7 +693,22 @@ export function ChatHistoryList({
   // Handle conversation deletion via API
   const handleDeleteConversation = useCallback(
     async (conversationId: string) => {
+      const expectedUserId = opensecret.auth.user?.user.id;
+      const releaseDeletionFence = beginChatRuntimeDeletionFence(
+        runtimeStore,
+        createConversationChatKey(conversationId)
+      );
       try {
+        assertChatAccountCredential(expectedUserId);
+        await quiesceChatRuntimeRunsForHistoryDeletion({
+          store: runtimeStore,
+          keys: [createConversationChatKey(conversationId)],
+          responseOwnershipClient: openai,
+          cancelResponse: (responseId) => cancelChatResponseForHistoryDeletion(openai, responseId),
+          settleCancelledRun: (key, runToken) =>
+            settleChatRuntimeAfterHistoryCancellation(runtimeStore, key, runToken)
+        });
+        assertChatAccountCredential(expectedUserId);
         await opensecret.deleteConversation(conversationId);
 
         if (conversationId === currentChatId) {
@@ -700,9 +728,11 @@ export function ChatHistoryList({
         }
       } catch (error) {
         console.error("Error deleting conversation:", error);
+      } finally {
+        releaseDeletionFence();
       }
     },
-    [currentChatId, invalidateConversationData, opensecret, runtimeStore]
+    [currentChatId, invalidateConversationData, openai, opensecret, runtimeStore]
   );
 
   const MAX_SELECTION = 20;
@@ -730,11 +760,26 @@ export function ChatHistoryList({
     if (selectedIds.size === 0) return;
 
     setIsBulkDeleting(true);
+    const releaseDeletionFences = Array.from(selectedIds, (id) =>
+      beginChatRuntimeDeletionFence(runtimeStore, createConversationChatKey(id))
+    );
     try {
+      const expectedUserId = opensecret.auth.user?.user.id;
+      assertChatAccountCredential(expectedUserId);
       const idsToDelete = Array.from(selectedIds);
+      const keysToDelete = idsToDelete.map((id) => createConversationChatKey(id));
       const deletedIds = new Set<string>();
 
       if (opensecret) {
+        await quiesceChatRuntimeRunsForHistoryDeletion({
+          store: runtimeStore,
+          keys: keysToDelete,
+          responseOwnershipClient: openai,
+          cancelResponse: (responseId) => cancelChatResponseForHistoryDeletion(openai, responseId),
+          settleCancelledRun: (key, runToken) =>
+            settleChatRuntimeAfterHistoryCancellation(runtimeStore, key, runToken)
+        });
+        assertChatAccountCredential(expectedUserId);
         const result = await opensecret.batchDeleteConversations(idsToDelete);
 
         result.data.filter((item) => item.deleted).forEach((item) => deletedIds.add(item.id));
@@ -764,10 +809,12 @@ export function ChatHistoryList({
     } catch (error) {
       console.error("Error bulk deleting chats:", error);
     } finally {
+      for (const releaseDeletionFence of releaseDeletionFences) releaseDeletionFence();
       setIsBulkDeleting(false);
     }
   }, [
     selectedIds,
+    openai,
     opensecret,
     invalidateConversationData,
     currentChatId,
@@ -981,13 +1028,15 @@ export function ChatHistoryList({
   const handleDeleteProject = useCallback(async () => {
     if (!selectedProject) return;
     let replacementDispatched = false;
+    const projectConversationKeys = new Set<ReturnType<typeof createConversationChatKey>>();
     const projectAwayFromDeletedProject = () => {
       if (replacementDispatched) return;
       const deletingProjectedChat =
         selectedProjectId === selectedProject.id ||
         (currentChatId
-          ? runtimeStore.getActivityGroupId(createConversationChatKey(currentChatId)) ===
-            selectedProject.id
+          ? projectConversationKeys.has(createConversationChatKey(currentChatId)) ||
+            runtimeStore.getActivityGroupId(createConversationChatKey(currentChatId)) ===
+              selectedProject.id
           : false);
       if (!deletingProjectedChat) return;
 
@@ -1011,7 +1060,38 @@ export function ChatHistoryList({
       window.dispatchEvent(new Event("projectselected"));
     };
 
+    // Until server membership is known, conservatively pause every local
+    // runner. Replace this short discovery fence synchronously with exact-key
+    // plus activity-group fences before the destructive request starts.
+    const releaseDiscoveryFence = beginAllChatRuntimeDeletionFence(runtimeStore);
+    let releaseDeletionFence: (() => void) | null = null;
     try {
+      const expectedUserId = opensecret.auth.user?.user.id;
+      assertChatAccountCredential(expectedUserId);
+      const projectConversations = await listAllConversations(opensecret, {
+        project_id: selectedProject.id
+      });
+      for (const conversation of projectConversations) {
+        projectConversationKeys.add(createConversationChatKey(conversation.id));
+      }
+      releaseDeletionFence = beginChatProjectRuntimeDeletionFence(
+        runtimeStore,
+        selectedProject.id,
+        Array.from(projectConversationKeys)
+      );
+      releaseDiscoveryFence();
+
+      await quiesceChatRuntimeRunsForHistoryDeletion({
+        store: runtimeStore,
+        keys: Array.from(projectConversationKeys),
+        activityGroupId: selectedProject.id,
+        responseOwnershipClient: openai,
+        cancelResponse: (responseId) => cancelChatResponseForHistoryDeletion(openai, responseId),
+        settleCancelledRun: (key, runToken) =>
+          settleChatRuntimeAfterHistoryCancellation(runtimeStore, key, runToken)
+      });
+
+      assertChatAccountCredential(expectedUserId);
       await opensecret.deleteConversationProject(selectedProject.id);
       projectAwayFromDeletedProject();
 
@@ -1027,16 +1107,21 @@ export function ChatHistoryList({
         projectAwayFromDeletedProject();
         // A selected chat in this project has now committed its replacement;
         // grouped background runtimes can be aborted and discarded safely.
+        for (const key of projectConversationKeys) runtimeStore.delete(key);
         runtimeStore.deleteActivityGroup(selectedProject.id);
       }
     } catch (error) {
       console.error("Error deleting project:", error);
       throw error;
+    } finally {
+      releaseDeletionFence?.();
+      releaseDiscoveryFence();
     }
   }, [
     currentChatId,
     expandedProjectId,
     invalidateConversationData,
+    openai,
     opensecret,
     selectedProject,
     selectedProjectId,

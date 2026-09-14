@@ -6,6 +6,7 @@ import {
   type ChatRuntimeRunUpdater,
   type ChatRuntimeSnapshot
 } from "./chatRuntimeStore";
+import { chatCursorAfterSendFailure } from "./chatSendFailureRecovery";
 
 type Conversation = { id: string; title: string };
 type Message = { id: string; text: string; status: "streaming" | "completed" };
@@ -162,6 +163,9 @@ describe("ChatRuntimeStore", () => {
       input: "updated A while offscreen",
       attachmentIds: ["a.png"]
     });
+    const snapshots = store.getSnapshots();
+    expect(Object.isFrozen(snapshots)).toBe(true);
+    expect(new Set(snapshots.map((snapshot) => snapshot.key))).toEqual(new Set([A, B]));
 
     store.select(A);
     expect(store.getActive()?.composer.input).toBe("updated A while offscreen");
@@ -441,6 +445,38 @@ describe("ChatRuntimeStore", () => {
       assistantStreaming: true,
       currentResponseId: "response-b",
       runToken: runB.token
+    });
+  });
+
+  test("can reconcile durable completion while aborting the stale local stream", () => {
+    const store = createStore();
+    store.select(A);
+    const run = store.beginRun(A);
+    store.updateForRun(A, run.token, (snapshot) => ({
+      ...snapshot,
+      lastSeenItemId: "persisted-user"
+    }));
+    store.setCurrentResponseId(A, run.token, "completed-response");
+    store.setAssistantStreaming(A, run.token, true);
+
+    expect(
+      store.completeRunAndAbort(A, run.token, (snapshot) => ({
+        ...snapshot,
+        lastSeenItemId: chatCursorAfterSendFailure({
+          currentCursor: snapshot.lastSeenItemId,
+          optimisticMessageId: "persisted-user",
+          previousCursor: undefined,
+          responseCreated: Boolean(snapshot.currentResponseId)
+        })
+      }))
+    ).toBe(true);
+    expect(run.signal.aborted).toBe(true);
+    expect(store.get(A)).toMatchObject({
+      isGenerating: false,
+      assistantStreaming: false,
+      currentResponseId: undefined,
+      lastSeenItemId: "persisted-user",
+      runToken: null
     });
   });
 
@@ -868,6 +904,39 @@ describe("ChatRuntimeStore", () => {
     expect(store.getActiveRunKeys()).toEqual([]);
     expect(store.getCompletedUnreadKeys()).toEqual([]);
     expect(store.deleteActivityGroup("project-delete")).toEqual([]);
+  });
+
+  test("clears every runtime and resource while keeping the store reusable", () => {
+    const disposed: Array<{ key: string; reason: string }> = [];
+    const store = createStore({
+      disposeEntry: (snapshot, reason) => disposed.push({ key: snapshot.key, reason })
+    });
+    const draft = createChatDraftKey("clear-all-draft");
+    store.select(draft, { composer: { input: "unsent", attachmentIds: ["blob"] } });
+    store.rememberDraftKey(null, draft);
+    const active = store.beginRun(A, { groupId: "project-clear" });
+    const unread = store.beginRun(B, { groupId: "project-clear" });
+    expect(store.completeRun(B, unread.token)).toBe(true);
+    store.claimVisibleChat({}, A);
+
+    const cleared = store.clearAll();
+
+    expect(new Set(cleared)).toEqual(new Set([draft, A, B]));
+    expect(Object.isFrozen(cleared)).toBe(true);
+    expect(active.signal.aborted).toBe(true);
+    expect(store.getActive()).toBeUndefined();
+    expect(store.getActiveRunKeys()).toEqual([]);
+    expect(store.getCompletedUnreadKeys()).toEqual([]);
+    expect(store.getRememberedDraftKey(null)).toBeNull();
+    expect(new Set(disposed)).toEqual(
+      new Set([
+        { key: draft, reason: "deleted" },
+        { key: A, reason: "deleted" },
+        { key: B, reason: "deleted" }
+      ])
+    );
+
+    expect(store.select(createChatDraftKey("after-clear"))).toBeDefined();
   });
 
   test("dispose resets unread and visible ownership state and notifies subscribers", () => {

@@ -1,5 +1,6 @@
 import OpenAI from "openai";
 import { useOpenSecret } from "@mapleai/sdk";
+import { createAccountBoundChatFetch } from "@/services/chatAccountCredential";
 import { OpenAIContext } from "./OpenAIContextDef";
 
 export const OpenAIProvider = ({ children }: { children: React.ReactNode }) => {
@@ -23,7 +24,10 @@ export const OpenAIProvider = ({ children }: { children: React.ReactNode }) => {
     defaultHeaders: {
       "Accept-Encoding": "identity"
     },
-    fetch: aiCustomFetch,
+    fetch: createAccountBoundChatFetch({
+      expectedUserId: auth.user?.user.id,
+      fetch: aiCustomFetch
+    }),
     maxRetries: 0 // Disable automatic retries
   });
 

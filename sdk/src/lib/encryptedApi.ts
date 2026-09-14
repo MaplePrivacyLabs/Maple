@@ -1,3 +1,8 @@
+import {
+  assertExpectedAccountPrincipal,
+  guardAccountResponse,
+  isAccountCredentialMismatchError
+} from "./credentialIdentity";
 import { getApiPcrConfig, getApiUrl } from "./api";
 import { getPlatformApiUrl, getPlatformPcrConfig } from "./platformApi";
 import { snapshotPcrConfig, type PcrConfig } from "./pcr";
@@ -20,12 +25,14 @@ interface ApiResponse<T> {
   hasData: boolean;
   data?: T;
   error?: string;
+  headers?: Headers;
 }
 
 /** @internal Exported for deterministic transport tests, not from the package entry point. */
 export interface EncryptedApiDependencies {
   runtime: TransportV2Runtime;
   auth: TransportV2AuthRuntime;
+  readCredentials: typeof readTransportV2Credentials;
   getApiPcrConfig: typeof getApiPcrConfig;
   getApiUrl: typeof getApiUrl;
   getPlatformApiUrl: typeof getPlatformApiUrl;
@@ -35,6 +42,7 @@ export interface EncryptedApiDependencies {
 const defaultDependencies: EncryptedApiDependencies = {
   runtime: transportV2Runtime,
   auth: transportV2AuthRuntime,
+  readCredentials: readTransportV2Credentials,
   getApiPcrConfig: () => getApiPcrConfig(),
   getApiUrl: () => getApiUrl(),
   getPlatformApiUrl: () => getPlatformApiUrl(),
@@ -231,33 +239,43 @@ async function performTransportV2Call<T, U>(
         body
       }
     });
+    const assertAccount = () => {
+      if (authority) {
+        assertExpectedAccountPrincipal(
+          authority.credentials.principalId,
+          dependencies.readCredentials(resolved.apiUrl, resolved.kind)?.principalId ?? null
+        );
+      }
+    };
+    const response = authority
+      ? guardAccountResponse(exchange.response, assertAccount)
+      : exchange.response;
     if (authority) {
       dependencies.auth.noteResponse(
-        exchange.response,
+        response,
         resolved.apiUrl,
         resolved.pcrConfig,
         resolved.kind,
         authority
       );
     }
-    if (!exchange.response.ok) {
-      return {
-        status: exchange.response.status,
-        hasData: false,
-        error: await readError(exchange.response, errorFallback)
-      };
+    if (!response.ok) {
+      const error = await readError(response, errorFallback);
+      assertAccount();
+      return { status: response.status, hasData: false, error, headers: response.headers };
     }
 
-    const text = await exchange.response.text();
+    const text = await response.text();
+    assertAccount();
     if (method.toUpperCase() === "POST" && resolved.target.split("?", 1)[0] === "/v1/responses") {
       return {
-        status: exchange.response.status,
+        status: response.status,
         hasData: true,
         data: completedResponseFromSse(text) as U
       };
     }
     if (text.length === 0) {
-      return { status: exchange.response.status, hasData: true, data: undefined as U };
+      return { status: response.status, hasData: true, data: undefined as U };
     }
     let value: unknown;
     try {
@@ -283,11 +301,12 @@ async function performTransportV2Call<T, U>(
       );
     }
     return {
-      status: exchange.response.status,
+      status: response.status,
       hasData: true,
       data: compatibilityResponseShape(url, value) as U
     };
   } catch (error) {
+    if (isAccountCredentialMismatchError(error)) throw error;
     return {
       status: 500,
       hasData: false,
@@ -300,7 +319,11 @@ async function performTransportV2Call<T, U>(
 }
 
 function unwrapApiResponse<U>(response: ApiResponse<U>, missingDataMessage: string): U {
-  if (response.error) throw new Error(response.error);
+  if (response.error)
+    throw Object.assign(new Error(response.error), {
+      status: response.status,
+      headers: response.headers
+    });
   if (!response.hasData) throw new Error(missingDataMessage);
   return response.data as U;
 }
@@ -309,9 +332,17 @@ export async function authenticatedApiCall<T, U>(
   url: string,
   method: string,
   data: T,
-  errorMessage?: string
+  errorMessage?: string,
+  expectedUserId?: string
 ): Promise<U> {
-  return authenticatedApiCallWithDependencies(url, method, data, errorMessage, defaultDependencies);
+  return authenticatedApiCallWithDependencies(
+    url,
+    method,
+    data,
+    errorMessage,
+    defaultDependencies,
+    expectedUserId
+  );
 }
 
 export interface TransportV2AuthenticatedCallResult<U> {
@@ -328,13 +359,28 @@ async function performAuthenticatedApiCall<T, U>(
   method: string,
   data: T,
   errorFallback: string | undefined,
-  dependencies: EncryptedApiDependencies
+  dependencies: EncryptedApiDependencies,
+  expectedUserId?: string
 ): Promise<TransportV2AuthenticatedCallResult<U>> {
+  const expectedPrincipal =
+    expectedUserId ?? dependencies.readCredentials(resolved.apiUrl, resolved.kind)?.principalId;
+  const assertAccount = () => {
+    if (expectedPrincipal !== undefined) {
+      assertExpectedAccountPrincipal(
+        expectedPrincipal,
+        dependencies.readCredentials(resolved.apiUrl, resolved.kind)?.principalId ?? null
+      );
+    }
+  };
+  assertAccount();
   const authority = await dependencies.auth.authority(
     resolved.apiUrl,
     resolved.pcrConfig,
     resolved.kind
   );
+  assertAccount();
+  if (expectedPrincipal !== undefined)
+    assertExpectedAccountPrincipal(expectedPrincipal, authority.credentials.principalId);
   const response = await performTransportV2Call<T, U>(
     url,
     resolved,
@@ -432,7 +478,8 @@ export async function authenticatedApiCallWithDependencies<T, U>(
   method: string,
   data: T,
   errorFallback: string | undefined,
-  dependencies: EncryptedApiDependencies
+  dependencies: EncryptedApiDependencies,
+  expectedUserId?: string
 ): Promise<U> {
   const resolved = endpoint(url, dependencies);
   return (
@@ -442,7 +489,8 @@ export async function authenticatedApiCallWithDependencies<T, U>(
       method,
       data,
       errorFallback,
-      dependencies
+      dependencies,
+      expectedUserId
     )
   ).data;
 }
@@ -531,7 +579,7 @@ export async function encryptedApiCallWithDependencies<T, U>(
     if (!accessToken) throw new Error("Access token cannot be empty");
     credential = { kind: "bearer", value: accessToken };
   } else if (!anonymousPath(resolved.kind, resolved.target)) {
-    const stored = readTransportV2Credentials(resolved.apiUrl, resolved.kind);
+    const stored = dependencies.readCredentials(resolved.apiUrl, resolved.kind);
     if (stored) {
       authority = await dependencies.auth.authority(
         resolved.apiUrl,

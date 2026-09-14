@@ -1,5 +1,54 @@
 import { describe, expect, test } from "bun:test";
-import { recoverFailedSendAfterDestinationAdoption } from "./chatSendFailureRecovery";
+import {
+  chatCursorAfterSendFailure,
+  recoverFailedSendAfterDestinationAdoption
+} from "./chatSendFailureRecovery";
+
+describe("chatCursorAfterSendFailure", () => {
+  test("rewinds an unconfirmed optimistic cursor to the previous durable item", () => {
+    expect(
+      chatCursorAfterSendFailure({
+        currentCursor: "optimistic-user",
+        optimisticMessageId: "optimistic-user",
+        previousCursor: "previous-item",
+        responseCreated: false
+      })
+    ).toBe("previous-item");
+  });
+
+  test("keeps the persisted user cursor after response.created", () => {
+    expect(
+      chatCursorAfterSendFailure({
+        currentCursor: "optimistic-user",
+        optimisticMessageId: "optimistic-user",
+        previousCursor: "previous-item",
+        responseCreated: true
+      })
+    ).toBe("optimistic-user");
+  });
+
+  test("never rewinds a cursor that already advanced beyond the optimistic user", () => {
+    expect(
+      chatCursorAfterSendFailure({
+        currentCursor: "assistant-item",
+        optimisticMessageId: "optimistic-user",
+        previousCursor: "previous-item",
+        responseCreated: false
+      })
+    ).toBe("assistant-item");
+  });
+
+  test("rewinds an unconfirmed first turn to an empty cursor", () => {
+    expect(
+      chatCursorAfterSendFailure({
+        currentCursor: "optimistic-user",
+        optimisticMessageId: "optimistic-user",
+        previousCursor: undefined,
+        responseCreated: false
+      })
+    ).toBeUndefined();
+  });
+});
 
 describe("recoverFailedSendAfterDestinationAdoption", () => {
   test("keeps destination B composer resources while retaining failed source A", () => {

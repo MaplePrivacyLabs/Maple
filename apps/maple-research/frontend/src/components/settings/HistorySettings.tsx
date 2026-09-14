@@ -5,12 +5,23 @@ import { useOpenSecret } from "@mapleai/sdk";
 import { Loader2, Trash2 } from "lucide-react";
 import { AlertDestructive } from "@/components/AlertDestructive";
 import { Button } from "@/components/ui/button";
+import { useChatRuntimeStore } from "@/contexts/ChatRuntimeContext";
 import { useSettingsNavigationLock } from "@/contexts/SettingsNavigationLockContext";
+import { useOpenAI } from "@/ai/useOpenAi";
 import { clearAgentHistoryForUser } from "@/services/agentRuntimeService";
+import {
+  cancelChatResponseForHistoryDeletion,
+  quiesceChatRuntimeRunsForHistoryDeletion,
+  settleChatRuntimeAfterHistoryCancellation
+} from "@/services/chatHistoryDeletionQuiescence";
+import { beginAllChatRuntimeDeletionFence } from "@/services/chatRuntimeDeletionFence";
+import { assertChatAccountCredential } from "@/services/chatAccountCredential";
 import { SettingsPage, SettingsSection } from "./SettingsPage";
 
 export function HistorySettings() {
   const os = useOpenSecret();
+  const openai = useOpenAI();
+  const runtimeStore = useChatRuntimeStore<unknown, unknown>();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const [isConfirming, setIsConfirming] = useState(false);
@@ -25,16 +36,29 @@ export function HistorySettings() {
   useSettingsNavigationLock(isDeleting);
 
   const handleDeleteHistory = async () => {
+    const expectedUserId = os.auth.user?.user.id;
     setError(null);
     setIsDeleting(true);
+    const releaseDeletionFence = beginAllChatRuntimeDeletionFence(runtimeStore);
     let operationBlock: Awaited<ReturnType<typeof clearAgentHistoryForUser>> | null = null;
     try {
-      const conversations = await os.listConversations({ limit: 1 });
-      if (conversations.data?.length) {
-        await os.deleteConversations();
-      }
+      assertChatAccountCredential(expectedUserId);
+      await quiesceChatRuntimeRunsForHistoryDeletion({
+        store: runtimeStore,
+        responseOwnershipClient: openai,
+        cancelResponse: (responseId) => cancelChatResponseForHistoryDeletion(openai, responseId),
+        settleCancelledRun: (key, runToken) =>
+          settleChatRuntimeAfterHistoryCancellation(runtimeStore, key, runToken)
+      });
 
-      operationBlock = await clearAgentHistoryForUser(os.auth.user?.user.id);
+      assertChatAccountCredential(expectedUserId);
+      await os.deleteConversations();
+      // Chat deletion is now confirmed (including the already-empty case).
+      // Clear server-deleted transcripts and client-only queues even if the
+      // separate Agent history cleanup below fails.
+      runtimeStore.clearAll();
+
+      operationBlock = await clearAgentHistoryForUser(expectedUserId);
 
       queryClient.invalidateQueries({ queryKey: ["conversations"] });
       queryClient.invalidateQueries({ queryKey: ["pinnedConversations"] });
@@ -51,9 +75,12 @@ export function HistorySettings() {
       window.dispatchEvent(new CustomEvent("newchat", { detail: { projectId: null } }));
     } catch (deleteError) {
       console.error("Error deleting chat history:", deleteError);
+      // Preserve unresolved response ownership so a retry can still issue the
+      // server cancellation before any destructive request.
       setError("Maple could not delete all chat and task history. Please try again.");
     } finally {
       operationBlock?.release();
+      releaseDeletionFence();
       setIsDeleting(false);
     }
   };

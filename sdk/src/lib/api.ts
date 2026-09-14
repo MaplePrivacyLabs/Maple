@@ -215,21 +215,23 @@ export async function fetchPut(key: string, value: string): Promise<string> {
   );
 }
 
-export async function fetchDelete(key: string): Promise<void> {
+export async function fetchDelete(key: string, expectedUserId?: string): Promise<void> {
   return authenticatedApiCall<void, void>(
     `${apiUrl}/protected/kv/${key}`,
     "DELETE",
     undefined,
-    "Failed to delete key-value pair"
+    "Failed to delete key-value pair",
+    expectedUserId
   );
 }
 
-export async function fetchDeleteAllKV(): Promise<void> {
+export async function fetchDeleteAllKV(expectedUserId?: string): Promise<void> {
   return authenticatedApiCall<void, void>(
     `${apiUrl}/protected/kv`,
     "DELETE",
     undefined,
-    "Failed to delete all key-value pairs"
+    "Failed to delete all key-value pairs",
+    expectedUserId
   );
 }
 
@@ -1229,7 +1231,10 @@ export async function decryptData(
  * 3. The email contains a confirmation code that will be needed for confirmation
  * 4. The client must store the plaintext secret for confirmation
  */
-export async function requestAccountDeletion(hashedSecret: string): Promise<void> {
+export async function requestAccountDeletion(
+  hashedSecret: string,
+  expectedUserId?: string
+): Promise<void> {
   const deleteData = {
     hashed_secret: hashedSecret
   };
@@ -1237,7 +1242,8 @@ export async function requestAccountDeletion(hashedSecret: string): Promise<void
     `${apiUrl}/protected/delete-account/request`,
     "POST",
     deleteData,
-    "Failed to request account deletion"
+    "Failed to request account deletion",
+    expectedUserId
   );
 }
 
@@ -1256,7 +1262,8 @@ export async function requestAccountDeletion(hashedSecret: string): Promise<void
  */
 export async function confirmAccountDeletion(
   confirmationCode: string,
-  plaintextSecret: string
+  plaintextSecret: string,
+  expectedUserId?: string
 ): Promise<void> {
   const confirmData = {
     confirmation_code: confirmationCode,
@@ -1266,7 +1273,8 @@ export async function confirmAccountDeletion(
     `${apiUrl}/protected/delete-account/confirm`,
     "POST",
     confirmData,
-    "Failed to confirm account deletion"
+    "Failed to confirm account deletion",
+    expectedUserId
   );
 }
 
@@ -1565,14 +1573,15 @@ export async function listApiKeys(): Promise<{ keys: ApiKeyListResponse }> {
  * console.log("API key deleted successfully");
  * ```
  */
-export async function deleteApiKey(name: string): Promise<void> {
+export async function deleteApiKey(name: string, expectedUserId?: string): Promise<void> {
   // URL-encode the name to handle special characters
   const encodedName = encodeURIComponent(name);
   return authenticatedApiCall<void, void>(
     `${apiUrl}/protected/api-keys/${encodedName}`,
     "DELETE",
     undefined,
-    "Failed to delete API key"
+    "Failed to delete API key",
+    expectedUserId
   );
 }
 
@@ -1876,6 +1885,8 @@ export type ResponsesListParams = {
 
 export type ConversationItem = {
   id: string;
+  /** OpenSecret extension: response that created this item, when applicable. */
+  response_id?: string;
   type: "message";
   status: "completed" | "in_progress" | "incomplete";
   role: "user" | "assistant" | "system";
@@ -2158,12 +2169,16 @@ export type ResponsesCancelResponse = {
  * }
  * ```
  */
-export async function cancelResponse(responseId: string): Promise<ResponsesCancelResponse> {
+export async function cancelResponse(
+  responseId: string,
+  expectedUserId?: string
+): Promise<ResponsesCancelResponse> {
   return authenticatedApiCall<void, ResponsesCancelResponse>(
     `${apiUrl}/v1/responses/${encodeURIComponent(responseId)}/cancel`,
     "POST",
     undefined,
-    "Failed to cancel response"
+    "Failed to cancel response",
+    expectedUserId
   );
 }
 
@@ -2324,13 +2339,15 @@ export async function updateConversation(
  * ```
  */
 export async function deleteConversation(
-  conversationId: string
+  conversationId: string,
+  expectedUserId?: string
 ): Promise<ConversationDeleteResponse> {
   return authenticatedApiCall<void, ConversationDeleteResponse>(
     `${apiUrl}/v1/conversations/${encodeURIComponent(conversationId)}`,
     "DELETE",
     undefined,
-    "Failed to delete conversation"
+    "Failed to delete conversation",
+    expectedUserId
   );
 }
 
@@ -2353,12 +2370,15 @@ export async function deleteConversation(
  * }
  * ```
  */
-export async function deleteConversations(): Promise<ConversationsDeleteResponse> {
+export async function deleteConversations(
+  expectedUserId?: string
+): Promise<ConversationsDeleteResponse> {
   return authenticatedApiCall<void, ConversationsDeleteResponse>(
     `${apiUrl}/v1/conversations`,
     "DELETE",
     undefined,
-    "Failed to delete conversations"
+    "Failed to delete conversations",
+    expectedUserId
   );
 }
 
@@ -2390,13 +2410,15 @@ export async function deleteConversations(): Promise<ConversationsDeleteResponse
  * ```
  */
 export async function batchDeleteConversations(
-  ids: string[]
+  ids: string[],
+  expectedUserId?: string
 ): Promise<BatchDeleteConversationsResponse> {
   return authenticatedApiCall<BatchDeleteConversationsRequest, BatchDeleteConversationsResponse>(
     `${apiUrl}/v1/conversations/batch-delete`,
     "POST",
     { ids },
-    "Failed to batch delete conversations"
+    "Failed to batch delete conversations",
+    expectedUserId
   );
 }
 
@@ -2650,13 +2672,15 @@ export async function updateConversationProject(
 }
 
 export async function deleteConversationProject(
-  projectId: string
+  projectId: string,
+  expectedUserId?: string
 ): Promise<ConversationProjectDeleteResponse> {
   return authenticatedApiCall<void, ConversationProjectDeleteResponse>(
     `${apiUrl}/v1/conversation-projects/${encodeURIComponent(projectId)}`,
     "DELETE",
     undefined,
-    "Failed to delete conversation project"
+    "Failed to delete conversation project",
+    expectedUserId
   );
 }
 
@@ -2722,12 +2746,16 @@ export async function createResponse(
  * }
  * ```
  */
-export async function deleteResponse(responseId: string): Promise<ResponsesDeleteResponse> {
+export async function deleteResponse(
+  responseId: string,
+  expectedUserId?: string
+): Promise<ResponsesDeleteResponse> {
   return authenticatedApiCall<void, ResponsesDeleteResponse>(
     `${apiUrl}/v1/responses/${encodeURIComponent(responseId)}`,
     "DELETE",
     undefined,
-    "Failed to delete response"
+    "Failed to delete response",
+    expectedUserId
   );
 }
 
@@ -2938,12 +2966,16 @@ export async function updateInstruction(
  * }
  * ```
  */
-export async function deleteInstruction(instructionId: string): Promise<InstructionDeleteResponse> {
+export async function deleteInstruction(
+  instructionId: string,
+  expectedUserId?: string
+): Promise<InstructionDeleteResponse> {
   return authenticatedApiCall<void, InstructionDeleteResponse>(
     `${apiUrl}/v1/instructions/${encodeURIComponent(instructionId)}`,
     "DELETE",
     undefined,
-    "Failed to delete instruction"
+    "Failed to delete instruction",
+    expectedUserId
   );
 }
 

@@ -6,7 +6,8 @@ import {
   useCallback,
   memo,
   useMemo,
-  useId
+  useId,
+  useSyncExternalStore
 } from "react";
 import { flushSync } from "react-dom";
 import {
@@ -60,6 +61,11 @@ import {
   ChatDesktopConversationHeader,
   ChatUserTurn
 } from "@/components/chat/ChatTurn";
+import {
+  DiscardQueuedMessageEditButton,
+  QUEUED_MESSAGE_EDIT_PLACEHOLDER,
+  QueuedComposerMessages
+} from "@/components/chat/QueuedComposerMessages";
 import { ChatCopyButton } from "@/components/chat/ChatCopyButton";
 import { ToolActivityCard } from "@/components/ToolActivityCard";
 import {
@@ -166,23 +172,69 @@ import {
   cleanupRecordingForTeardown,
   isRecordingOwnershipCurrent
 } from "@/services/chatRecordingNavigation";
-import {
-  canAdoptAttachmentDestination,
-  mutateAttachmentComposerWhenIdle,
-  planRestoredImageUrls
-} from "@/services/chatAttachmentOwnership";
+import { canAdoptAttachmentDestination } from "@/services/chatAttachmentOwnership";
 import {
   classifyChatStreamEof,
   createChatStreamDeltaCoalescer,
   flushRegisteredChatStreamDeltas,
   isTerminalChatStreamErrorEvent,
   registerChatStreamDeltaCoalescer,
-  removeOwnedChatStreamAttemptItems,
   unregisterChatStreamDeltaCoalescer,
   type ChatStreamTerminalState
 } from "@/services/chatStreamDeltaCoalescer";
-import { recoverFailedSendAfterDestinationAdoption } from "@/services/chatSendFailureRecovery";
-import { isImageDescriptionUnavailableError } from "@/services/chatResponseErrors";
+import {
+  isChatRequestDefinitelyNotDispatchedError,
+  isChatResponseCancellationAlreadyTerminalError,
+  isChatResponseDefinitelyRejectedError,
+  isImageDescriptionUnavailableError
+} from "@/services/chatResponseErrors";
+import { isChatAccountCredentialMismatchError } from "@/services/chatAccountCredential";
+import { chatCursorAfterSendFailure } from "@/services/chatSendFailureRecovery";
+import { normalizeChatPollingPage } from "@/services/chatPollingPage";
+import {
+  classifyChatResponseReconciliation,
+  responseIdForChatMessage
+} from "@/services/chatResponseReconciliation";
+import {
+  clearUnresolvedChatResponseMessage,
+  getUnresolvedChatResponseMessage,
+  registerUnresolvedChatResponseMessage
+} from "@/services/chatUnresolvedResponseOwnership";
+import {
+  chatAccountQueueUsage,
+  selectChatImageFilesForRetention
+} from "@/services/chatAccountQueueBudget";
+import { isChatRuntimeDeletionPending } from "@/services/chatRuntimeDeletionFence";
+import {
+  clearChatRunQueueHalt,
+  isChatRunQueueHaltRequested,
+  requestChatRunQueueHalt
+} from "@/services/chatRunQueueHalt";
+import { chatStoppingRuntimeRegistryFor } from "@/services/chatStoppingRuntimeRegistry";
+import {
+  registerChatCurrentTurn,
+  restoreRegisteredChatTurnBeforeRequest
+} from "@/services/chatCurrentTurnRegistry";
+import {
+  beginChatQueuedMessageEdit,
+  cancelChatQueuedMessage,
+  chatComposerObjectUrls,
+  chatQueuedTextByteLength,
+  discardChatQueuedMessageEdit,
+  MAX_CHAT_ACCOUNT_RETAINED_ATTACHMENT_BYTES,
+  MAX_CHAT_ACCOUNT_RETAINED_IMAGES,
+  mergeChatComposerDraftsForRekey,
+  recoverDetachedChatComposerDraft,
+  takeNextChatQueuedMessage,
+  type ChatQueuedMessage,
+  type ChatQueuedMessageMetadata
+} from "@/services/chatComposerQueue";
+import {
+  canSubmitChatComposer,
+  chatComposerWithInputOverride,
+  chatComposerShowsStop,
+  planChatComposerSubmission
+} from "@/services/chatComposerSend";
 import {
   chatToolCallStatus,
   chatToolOutputStatus,
@@ -201,6 +253,12 @@ import { withInferenceCapacityRetry } from "@/services/inferenceCapacityRetry";
 
 const CHAT_ALERT_CLASS = "absolute top-16 left-1/2 z-50 w-full max-w-2xl -translate-x-1/2 px-4";
 const STREAM_EVENT_DEBUG_STORAGE_KEY = "maple:sse-debug";
+const CHAT_ACCOUNT_ATTACHMENT_LIMIT_MESSAGE =
+  "Chat drafts and queued attachments can use up to 256 MiB across your account";
+const CHAT_ACCOUNT_IMAGE_LIMIT_MESSAGE = `Chat drafts and queued messages can retain up to ${MAX_CHAT_ACCOUNT_RETAINED_IMAGES} images across your account`;
+const CHAT_MESSAGE_IMAGE_LIMIT_MESSAGE = "You can attach up to 10 images to a message";
+const CHAT_STOP_WAITING_MESSAGE = "Stopping as soon as the response is ready…";
+const CHAT_STOP_REQUEST_TIMEOUT_MS = 5000;
 
 function isStreamEventDebugLoggingEnabled(): boolean {
   if (!import.meta.env.DEV || typeof window === "undefined") return false;
@@ -276,6 +334,75 @@ type Message =
   | ToolCallItem
   | ToolOutputItem
   | ReasoningItem;
+
+function queuedChatMessageText(item: ChatQueuedMessage): string {
+  return item.documentText + (item.documentText && item.text ? `\n\n${item.text}` : item.text);
+}
+
+function queuedChatMessageContent(
+  item: ChatQueuedMessage,
+  imageUrlForFile: (file: File) => string | undefined
+): (InputTextContent | InputImageContent)[] {
+  const content: (InputTextContent | InputImageContent)[] = [];
+  const text = queuedChatMessageText(item);
+  if (text) content.push({ type: "input_text", text });
+  for (const file of item.draftImages) {
+    const imageUrl = imageUrlForFile(file);
+    if (!imageUrl) continue;
+    content.push({
+      type: "input_image",
+      image_url: imageUrl,
+      detail: "auto",
+      file_id: null
+    });
+  }
+  return content;
+}
+
+function promotedChatUserMessage(
+  item: ChatQueuedMessage,
+  content = queuedChatMessageContent(item, (file) => item.imageUrls.get(file))
+): Message {
+  return {
+    id: item.messageId,
+    type: "message",
+    role: "user",
+    content,
+    status: "completed"
+  } as unknown as Message;
+}
+
+function queuedChatMessageFallbackLabel(item: ChatQueuedMessage): string {
+  if (item.documentName) return item.documentName;
+  const imageCount = item.draftImages.length;
+  return imageCount === 1 ? "1 image" : imageCount > 1 ? `${imageCount} images` : "Queued message";
+}
+
+function chatTranscriptObjectUrls(messages: readonly Message[]): string[] {
+  const urls = new Set<string>();
+  for (const message of messages) {
+    if (message.type !== "message" || !Array.isArray(message.content)) continue;
+    for (const content of message.content) {
+      if (
+        content.type === "input_image" &&
+        typeof content.image_url === "string" &&
+        content.image_url.startsWith("blob:")
+      ) {
+        urls.add(content.image_url);
+      }
+    }
+  }
+  return Array.from(urls);
+}
+
+function revokeQueuedChatMessageObjectUrls(
+  item: ChatQueuedMessage,
+  retainedObjectUrls: ReadonlySet<string> = new Set()
+): void {
+  for (const url of new Set(item.imageUrls.values())) {
+    if (!retainedObjectUrls.has(url)) URL.revokeObjectURL(url);
+  }
+}
 
 // Helper function to merge messages while ensuring uniqueness by ID
 // This prevents duplicate key warnings in React by deduplicating messages
@@ -694,7 +821,7 @@ function summarizeStreamEventForLog(eventType: string, event: unknown): Record<s
 
 function updateActiveItemStatuses(
   messages: Message[],
-  status: "error" | "incomplete",
+  status: "completed" | "error" | "incomplete",
   ownedItemIds?: ReadonlySet<string>
 ): Message[] {
   const updatedMessages = messages
@@ -1418,6 +1545,7 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
   const runtimeStore = useChatRuntimeStore<Conversation, Message>();
   const runtimeInstanceId = useId();
   const visibleChatOwner = useRef<object>({}).current;
+  const responseReconciliationsInFlightRef = useRef(new Set<string>());
 
   const [initialRuntimeSelection] = useState(() => {
     const params = new URLSearchParams(window.location.search);
@@ -1521,18 +1649,17 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
     [runtimeStore]
   );
 
-  const updateIdleAttachmentComposerForKey = useCallback(
+  const updateAttachmentComposerForKey = useCallback(
     (key: ChatRuntimeKey, updater: (composer: ChatComposerState) => ChatComposerState) => {
-      const startSnapshot = runtimeStore.get(key);
-      if (!startSnapshot || startSnapshot.isGenerating) return false;
-
-      const result = mutateAttachmentComposerWhenIdle(startSnapshot, updater);
-      if (!result.didMutate) return false;
-      runtimeStore.update(key, (snapshot) => ({
-        ...snapshot,
-        composer: result.composer
-      }));
-      return true;
+      if (!runtimeStore.get(key)) return false;
+      let didMutate = false;
+      runtimeStore.update(key, (snapshot) => {
+        if (snapshot.composer.queue.edit) return snapshot;
+        const composer = updater(snapshot.composer);
+        didMutate = composer !== snapshot.composer;
+        return didMutate ? { ...snapshot, composer } : snapshot;
+      });
+      return didMutate;
     },
     [runtimeStore]
   );
@@ -1544,6 +1671,22 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
   const input = activeRuntime.composer.input;
   const draftProjectId = activeRuntime.composer.draftProjectId;
   const isGenerating = activeRuntime.isGenerating;
+  const queuedMessages = activeRuntime.composer.queue.items;
+  const queueEdit = activeRuntime.composer.queue.edit;
+  const stoppingRuntimeRegistry = useMemo(
+    () => chatStoppingRuntimeRegistryFor(runtimeStore),
+    [runtimeStore]
+  );
+  useSyncExternalStore(
+    stoppingRuntimeRegistry.subscribe,
+    stoppingRuntimeRegistry.getSnapshot,
+    stoppingRuntimeRegistry.getSnapshot
+  );
+  const isStopping = Array.from(stoppingRuntimeRegistry.getEntries()).some(
+    ([key, runTokens]) =>
+      runTokens.size > 0 &&
+      runtimeStore.resolveKey(key) === runtimeStore.resolveKey(activeRuntime.key)
+  );
   const [isSidebarOpen, setIsSidebarOpen] = usePersistentSidebarState(isCompactLayout);
   const [isSidebarTransitioning, setIsSidebarTransitioning] = useState(false);
   const error = activeRuntime.error;
@@ -1567,6 +1710,21 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
     attachmentError,
     audioError
   } = activeRuntime.composer;
+  const editedQueuedMessage = queueEdit
+    ? queuedMessages.find((item) => item.queueId === queueEdit.queueId)
+    : undefined;
+  const canSubmitMessage = canSubmitChatComposer({
+    text: input,
+    hasAttachments: queueEdit
+      ? Boolean(editedQueuedMessage?.draftImages.length || editedQueuedMessage?.documentText)
+      : Boolean(draftImages.length || documentText),
+    hasQueuedMessages: queuedMessages.length > 0,
+    isEditingQueuedMessage: Boolean(queueEdit),
+    hasActiveRun: isGenerating,
+    isProcessingDocument,
+    isStopping
+  });
+  const showsStop = chatComposerShowsStop(isGenerating, isStopping);
 
   const setConversationForKey = useCallback(
     (key: ChatRuntimeKey, update: StateUpdate<Conversation | null>) => {
@@ -2430,44 +2588,214 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
     };
   }, [chatId, runtimeStore, selectConversationRuntime, selectFreshDraftRuntime, selectedProjectId]);
 
+  const settleLocallyCancelledRun = useCallback(
+    (runtimeKey: ChatRuntimeKey, runToken: number, optimisticMessageId: string | undefined) => {
+      const cancelled = runtimeStore.cancelRun(runtimeKey, runToken);
+      if (!cancelled) return false;
+      clearUnresolvedChatResponseMessage(runtimeStore, runToken);
+      runtimeStore.update(runtimeKey, (snapshot) => ({
+        ...snapshot,
+        error: snapshot.error === CHAT_STOP_WAITING_MESSAGE ? null : snapshot.error,
+        messages: cancelled.responseId
+          ? updateActiveItemStatuses(snapshot.messages as Message[], "incomplete")
+          : updateActiveItemStatuses(
+              markOptimisticMessageIncomplete(snapshot.messages as Message[], optimisticMessageId),
+              "incomplete"
+            )
+      }));
+      if (optimisticMessageId) {
+        unregisterChatOptimisticMessage(runtimeStore, runToken, optimisticMessageId);
+      }
+      return true;
+    },
+    [runtimeStore]
+  );
+
+  const cancelKnownChatResponse = useCallback(
+    async (
+      runtimeKey: ChatRuntimeKey,
+      runToken: number,
+      responseId: string,
+      optimisticMessageId: string | undefined
+    ): Promise<boolean> => {
+      if (!openai) return false;
+      try {
+        await (
+          openai.responses as {
+            cancel: (id: string, options?: { timeout?: number }) => Promise<unknown>;
+          }
+        ).cancel(responseId, { timeout: CHAT_STOP_REQUEST_TIMEOUT_MS });
+        return settleLocallyCancelledRun(runtimeKey, runToken, optimisticMessageId);
+      } catch (error) {
+        console.error("Failed to cancel response:", error);
+        if (!isChatResponseCancellationAlreadyTerminalError(error)) {
+          if (runtimeStore.isRunCurrent(runtimeKey, runToken)) {
+            setErrorForKey(runtimeKey, "Failed to cancel response. Please try Stop again.");
+          }
+          return false;
+        }
+        try {
+          const response = await openai.responses.retrieve(responseId, undefined, {
+            timeout: CHAT_STOP_REQUEST_TIMEOUT_MS
+          });
+          const status = (response as { status?: string }).status;
+          const runIsCurrent = runtimeStore.isRunCurrent(runtimeKey, runToken);
+
+          if (status === "completed") {
+            // Stop intent is sticky across this reconciliation. Settle now even
+            // if a buffered stream is healthy so the outer loop cannot promote
+            // a queued turn after this helper releases the Stop UI fence. The
+            // persisted user/item cursor remains valid for ascending polling.
+            if (runIsCurrent) {
+              runtimeStore.completeRunAndAbort(runtimeKey, runToken, (owned) => ({
+                ...owned,
+                messages: updateActiveItemStatuses(owned.messages as Message[], "completed"),
+                error: "The response finished before it could be stopped."
+              }));
+              clearUnresolvedChatResponseMessage(runtimeStore, runToken);
+              return true;
+            }
+            return false;
+          }
+
+          if (status === "failed" || status === "cancelled" || status === "incomplete") {
+            return settleLocallyCancelledRun(runtimeKey, runToken, optimisticMessageId);
+          }
+        } catch (reconciliationError) {
+          console.error(
+            "Failed to reconcile response after cancellation error:",
+            reconciliationError
+          );
+        }
+
+        if (runtimeStore.isRunCurrent(runtimeKey, runToken)) {
+          setErrorForKey(runtimeKey, "Failed to cancel response. Please try Stop again.");
+        }
+        return false;
+      } finally {
+        // Keep this fence through cancellation/retrieval so the send loop
+        // cannot promote a later FIFO item under the same outer run token.
+        stoppingRuntimeRegistry.delete(runtimeKey, runToken);
+        if (!runtimeStore.isRunCurrent(runtimeKey, runToken)) {
+          clearChatRunQueueHalt(runtimeStore, runToken);
+        }
+      }
+    },
+    [openai, runtimeStore, setErrorForKey, settleLocallyCancelledRun, stoppingRuntimeRegistry]
+  );
+
+  const reconcileDetachedChatResponse = useCallback(
+    async (runtimeKey: ChatRuntimeKey) => {
+      const snapshot = runtimeStore.get(runtimeKey);
+      if (
+        !openai ||
+        !snapshot?.isGenerating ||
+        snapshot.runToken === null ||
+        !snapshot.currentResponseId
+      ) {
+        return;
+      }
+
+      const runToken = snapshot.runToken;
+      const responseId = snapshot.currentResponseId;
+      const reconciliationKey = `${runtimeStore.resolveKey(runtimeKey)}:${runToken}:${responseId}`;
+      if (responseReconciliationsInFlightRef.current.has(reconciliationKey)) return;
+      responseReconciliationsInFlightRef.current.add(reconciliationKey);
+
+      try {
+        if (isChatRunQueueHaltRequested(runtimeStore, runToken)) {
+          await cancelKnownChatResponse(runtimeKey, runToken, responseId, undefined);
+          return;
+        }
+        const response = await openai.responses.retrieve(responseId, undefined, {
+          timeout: CHAT_STOP_REQUEST_TIMEOUT_MS
+        });
+        const current = runtimeStore.get(runtimeKey);
+        if (!current || current.runToken !== runToken || current.currentResponseId !== responseId) {
+          return;
+        }
+
+        const resolution = classifyChatResponseReconciliation(
+          (response as { status?: string | null }).status
+        );
+        if (resolution === "completed") {
+          runtimeStore.completeRunAndAbort(runtimeKey, runToken, (owned) => ({
+            ...owned,
+            messages: updateActiveItemStatuses(owned.messages as Message[], "completed"),
+            error:
+              "The response completed after the connection was restored. Queued messages were kept."
+          }));
+          clearUnresolvedChatResponseMessage(runtimeStore, runToken);
+          stoppingRuntimeRegistry.delete(runtimeKey, runToken);
+          clearChatRunQueueHalt(runtimeStore, runToken);
+        } else if (resolution === "terminal") {
+          if (settleLocallyCancelledRun(runtimeKey, runToken, undefined)) {
+            setErrorForKey(
+              runtimeKey,
+              "The interrupted response stopped. Queued messages were kept."
+            );
+            stoppingRuntimeRegistry.delete(runtimeKey, runToken);
+            clearChatRunQueueHalt(runtimeStore, runToken);
+          }
+        }
+      } catch (error) {
+        console.error("Failed to reconcile interrupted response:", error);
+      } finally {
+        responseReconciliationsInFlightRef.current.delete(reconciliationKey);
+      }
+    },
+    [
+      cancelKnownChatResponse,
+      openai,
+      runtimeStore,
+      setErrorForKey,
+      settleLocallyCancelledRun,
+      stoppingRuntimeRegistry
+    ]
+  );
+
   // Cancel the current response
   const handleCancelResponse = useCallback(async () => {
-    const runtimeKey = activeRuntimeKeyRef.current;
-    const runToken = runtimeStore.get(runtimeKey)?.runToken;
-    if (runToken === null || runToken === undefined) return;
+    const runtimeKey = runtimeStore.resolveKey(activeRuntimeKeyRef.current);
+    const runSnapshot = runtimeStore.get(runtimeKey);
+    if (!runSnapshot || runSnapshot.runToken === null) return;
+    const runToken = runSnapshot.runToken;
+    stoppingRuntimeRegistry.add(runtimeKey, runToken);
+    requestChatRunQueueHalt(runtimeStore, runToken);
     const optimisticMessageId = getRegisteredChatOptimisticMessage(runtimeStore, runToken);
+    const restoredBeforeRequest = restoreRegisteredChatTurnBeforeRequest(
+      runtimeStore,
+      runToken,
+      "Stopped before sending. Your message was restored."
+    );
     // Commit the final partial frame while this run still owns its token. Once
     // cancelRun clears ownership, any delayed callback must fail closed.
     flushRegisteredChatStreamDeltas(runtimeStore, runToken);
-    const cancelled = runtimeStore.cancelRun(runtimeKey, runToken);
-    if (!cancelled) return;
 
-    runtimeStore.update(runtimeKey, (snapshot) => ({
-      ...snapshot,
-      messages: cancelled.responseId
-        ? updateActiveItemStatuses(snapshot.messages as Message[], "incomplete")
-        : updateActiveItemStatuses(
-            markOptimisticMessageIncomplete(snapshot.messages as Message[], optimisticMessageId),
-            "incomplete"
-          )
-    }));
-    if (optimisticMessageId) {
-      unregisterChatOptimisticMessage(runtimeStore, runToken, optimisticMessageId);
+    if (restoredBeforeRequest) {
+      settleLocallyCancelledRun(runtimeKey, runToken, optimisticMessageId);
+      stoppingRuntimeRegistry.delete(runtimeKey, runToken);
+      return;
     }
 
-    try {
-      if (cancelled.responseId && openai) {
-        await (openai.responses as { cancel: (id: string) => Promise<unknown> }).cancel(
-          cancelled.responseId
-        );
-      }
-    } catch (error) {
-      console.error("Failed to cancel response:", error);
-      if (runtimeStore.get(runtimeKey)) {
-        setErrorForKey(runtimeKey, "Failed to cancel response. Please try again.");
-      }
+    const currentResponseId = runtimeStore.get(runtimeKey)?.currentResponseId;
+    if (currentResponseId) {
+      await cancelKnownChatResponse(runtimeKey, runToken, currentResponseId, optimisticMessageId);
+      return;
     }
-  }, [openai, runtimeStore, setErrorForKey]);
+
+    // The POST may already be accepted even though response.created has not
+    // arrived. Preserve the run and Stop fence; the stream handler will cancel
+    // immediately when it learns the server response ID. Local cancellation
+    // here would orphan server work and allow the FIFO to overlap it.
+    setErrorForKey(runtimeKey, CHAT_STOP_WAITING_MESSAGE);
+  }, [
+    cancelKnownChatResponse,
+    runtimeStore,
+    setErrorForKey,
+    settleLocallyCancelledRun,
+    stoppingRuntimeRegistry
+  ]);
 
   // Load conversation from API
   const loadConversation = useCallback(
@@ -2519,6 +2847,32 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
         const newestCompletedItem = itemsResponse.data.find(
           (item) => (item as Message).status !== "in_progress"
         );
+        const snapshotBeforeItems = runtimeStore.get(runtimeKey);
+        if (
+          snapshotBeforeItems?.isGenerating &&
+          !snapshotBeforeItems.currentResponseId &&
+          snapshotBeforeItems.runToken !== null
+        ) {
+          const unresolvedMessageId = getUnresolvedChatResponseMessage(
+            runtimeStore,
+            snapshotBeforeItems.runToken
+          );
+          const recoveredResponseId = unresolvedMessageId
+            ? responseIdForChatMessage(unresolvedMessageId, itemsResponse.data)
+            : undefined;
+          if (recoveredResponseId) {
+            runtimeStore.setCurrentResponseId(
+              runtimeKey,
+              snapshotBeforeItems.runToken,
+              recoveredResponseId
+            );
+            clearUnresolvedChatResponseMessage(
+              runtimeStore,
+              snapshotBeforeItems.runToken,
+              unresolvedMessageId
+            );
+          }
+        }
         runtimeStore.update(runtimeKey, (snapshot) => ({
           ...snapshot,
           messages: mergeLoadedMessagesWithRuntime(messagesInChronologicalOrder, snapshot.messages),
@@ -2725,20 +3079,88 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
       const conversationId =
         snapshot?.conversation?.id ??
         conversationIdFromChatRuntimeKey(runtimeStore.resolveKey(runtimeKey));
-      if (!snapshot || !conversationId || !openai || snapshot.assistantStreaming) return;
+      if (
+        !snapshot ||
+        !conversationId ||
+        !openai ||
+        (snapshot.assistantStreaming && snapshot.currentResponseId)
+      ) {
+        return;
+      }
 
       try {
+        if (!snapshot.currentResponseId && snapshot.runToken !== null) {
+          const unresolvedMessageId = getUnresolvedChatResponseMessage(
+            runtimeStore,
+            snapshot.runToken
+          );
+          // Retrieve the exact persisted user item. A list page can contain ten
+          // image-description call/output pairs before the user item and is not
+          // a reliable response-ownership lookup.
+          if (unresolvedMessageId) {
+            try {
+              const linkedItem = await openai.conversations.items.retrieve(unresolvedMessageId, {
+                conversation_id: conversationId
+              });
+              const recoveredResponseId = responseIdForChatMessage(unresolvedMessageId, [
+                linkedItem
+              ]);
+              if (
+                recoveredResponseId &&
+                runtimeStore.setCurrentResponseId(
+                  runtimeKey,
+                  snapshot.runToken,
+                  recoveredResponseId
+                )
+              ) {
+                clearUnresolvedChatResponseMessage(
+                  runtimeStore,
+                  snapshot.runToken,
+                  unresolvedMessageId
+                );
+              }
+            } catch (error) {
+              const status = (error as { status?: unknown })?.status;
+              if (status !== 404) console.error("Response ownership polling error:", error);
+            }
+          }
+        }
+
         // Fetch NEW items that came after the last seen ID
         // Use order=asc to get items chronologically after the lastSeenItemId
+        const hasCursor = Boolean(snapshot.lastSeenItemId);
         const response = await openai.conversations.items.list(conversationId, {
-          ...(snapshot.lastSeenItemId ? { after: snapshot.lastSeenItemId, order: "asc" } : {}),
+          ...(snapshot.lastSeenItemId ? { after: snapshot.lastSeenItemId } : {}),
+          order: hasCursor ? "asc" : "desc",
           limit: 20 // Smaller limit since we only expect a few new messages
         });
+        const pollingPage = normalizeChatPollingPage(response.data, hasCursor);
+
+        if (!snapshot.currentResponseId && snapshot.runToken !== null) {
+          const unresolvedMessageId = getUnresolvedChatResponseMessage(
+            runtimeStore,
+            snapshot.runToken
+          );
+          const recoveredResponseId = unresolvedMessageId
+            ? responseIdForChatMessage(unresolvedMessageId, response.data)
+            : undefined;
+          if (recoveredResponseId) {
+            if (
+              runtimeStore.setCurrentResponseId(runtimeKey, snapshot.runToken, recoveredResponseId)
+            ) {
+              clearUnresolvedChatResponseMessage(
+                runtimeStore,
+                snapshot.runToken,
+                unresolvedMessageId
+              );
+            }
+          }
+        }
 
         if (response.data.length > 0) {
           // Convert API items to UI messages, grouping tool calls with their messages
           const newMessages = convertItemsToMessages(
-            response.data as Array<{
+            pollingPage.chronologicalItems as Array<{
               id: string;
               type: string;
               role?: string;
@@ -2773,10 +3195,8 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
             // Update last seen item ID for next poll
             // Since we're using order=asc, the LAST item is the newest
             // Skip in_progress messages by finding the last completed one
-            const newestCompletedItem = [...response.data]
-              .reverse()
-              .find((item) => (item as Message).status !== "in_progress");
-            if (newestCompletedItem) {
+            const newestCompletedItem = pollingPage.newestCompletedItem;
+            if (newestCompletedItem?.id) {
               setLastSeenItemIdForKey(runtimeKey, newestCompletedItem.id);
             }
           }
@@ -2785,8 +3205,28 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
         console.error("Polling error:", error);
         // Don't throw - polling should fail silently
       }
+      if (!runtimeStore.get(runtimeKey)?.conversation) {
+        try {
+          const conversation = (await openai.conversations.retrieve(
+            conversationId
+          )) as Conversation;
+          if (runtimeStore.get(runtimeKey)) {
+            runtimeStore.update(runtimeKey, (current) => ({ ...current, conversation }));
+            runtimeStore.updateActivityGroup(runtimeKey, conversation.project_id ?? null);
+          }
+        } catch (error) {
+          console.error("Conversation metadata polling error:", error);
+        }
+      }
+      await reconcileDetachedChatResponse(runtimeKey);
     },
-    [isRuntimeSelected, openai, runtimeStore, setLastSeenItemIdForKey]
+    [
+      isRuntimeSelected,
+      openai,
+      reconcileDetachedChatResponse,
+      runtimeStore,
+      setLastSeenItemIdForKey
+    ]
   );
 
   // Load conversation when URL changes or on mount. Cached runtimes—including
@@ -2801,8 +3241,11 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
   }, [activeRuntimeKey, chatId, openai, loadConversation, runtimeStore]);
 
   // Set up progressive polling interval
+  const pollingConversationId =
+    conversation?.id ?? conversationIdFromChatRuntimeKey(runtimeStore.resolveKey(activeRuntimeKey));
+
   useEffect(() => {
-    if (!conversation?.id || !openai) return;
+    if (!pollingConversationId || !openai) return;
     const runtimeKey = activeRuntimeKey;
 
     // Progressive intervals: 2s, 5s, 10s, 15s, 20s, 30s, 60s (then 60s forever)
@@ -2833,7 +3276,7 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
     return () => {
       if (timeoutId) clearTimeout(timeoutId);
     };
-  }, [activeRuntimeKey, conversation?.id, openai, pollForNewItems]);
+  }, [activeRuntimeKey, openai, pollForNewItems, pollingConversationId]);
 
   // Poll for title updates when it's "New Conversation" with exponential backoff
   useEffect(() => {
@@ -3406,7 +3849,7 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
       const selectedFiles = Array.from(e.currentTarget.files ?? []);
       e.currentTarget.value = "";
       const ownerSnapshot = runtimeStore.get(ownerKey);
-      if (selectedFiles.length === 0 || !ownerSnapshot || ownerSnapshot.isGenerating) return;
+      if (selectedFiles.length === 0 || !ownerSnapshot || ownerSnapshot.composer.queue.edit) return;
 
       const supportedTypes = ["image/jpeg", "image/jpg", "image/png", "image/webp"];
       const maxSizeInBytes = 20 * 1024 * 1024;
@@ -3423,26 +3866,50 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
         }
         return true;
       });
-      if (validationError) {
+      if (validFiles.length === 0) {
+        if (validationError) {
+          setComposerErrorForKey(ownerKey, "attachmentError", validationError);
+        }
+        return;
+      }
+      const accountUsage = chatAccountQueueUsage(runtimeStore);
+      const selection = selectChatImageFilesForRetention({
+        composer: ownerSnapshot.composer,
+        candidates: validFiles,
+        accountUsage
+      });
+      if (selection.accountLimitExceeded) {
+        setComposerErrorForKey(ownerKey, "attachmentError", CHAT_ACCOUNT_IMAGE_LIMIT_MESSAGE);
+      } else if (selection.messageLimitExceeded) {
+        setComposerErrorForKey(ownerKey, "attachmentError", CHAT_MESSAGE_IMAGE_LIMIT_MESSAGE);
+      } else if (validationError) {
         setComposerErrorForKey(ownerKey, "attachmentError", validationError);
       }
-      if (validFiles.length === 0) return;
+      if (selection.files.length === 0) return;
+      const additionalBytes = selection.files.reduce((total, file) => total + file.size, 0);
+      if (
+        accountUsage.attachmentBytes + additionalBytes >
+        MAX_CHAT_ACCOUNT_RETAINED_ATTACHMENT_BYTES
+      ) {
+        setComposerErrorForKey(ownerKey, "attachmentError", CHAT_ACCOUNT_ATTACHMENT_LIMIT_MESSAGE);
+        return;
+      }
 
-      const newUrls = validFiles.map((file) => [file, URL.createObjectURL(file)] as const);
-      const attached = updateIdleAttachmentComposerForKey(ownerKey, (composer) => ({
+      const newUrls = selection.files.map((file) => [file, URL.createObjectURL(file)] as const);
+      const attached = updateAttachmentComposerForKey(ownerKey, (composer) => ({
         ...composer,
         imageUrls: new Map([...composer.imageUrls, ...newUrls]),
-        draftImages: [...composer.draftImages, ...validFiles]
+        draftImages: [...composer.draftImages, ...selection.files]
       }));
       if (!attached) for (const [, url] of newUrls) URL.revokeObjectURL(url);
     },
-    [runtimeStore, setComposerErrorForKey, updateIdleAttachmentComposerForKey]
+    [runtimeStore, setComposerErrorForKey, updateAttachmentComposerForKey]
   );
 
   const attachPastedImages = useCallback(
     (imageFiles: File[], ownerKey: ChatRuntimeKey, expectedGeneration: number) => {
       const ownerSnapshot = runtimeStore.get(ownerKey);
-      if (!ownerSnapshot || ownerSnapshot.isGenerating) return;
+      if (!ownerSnapshot || ownerSnapshot.composer.queue.edit) return;
 
       if (!canUseImages) {
         if (isRuntimeSelected(ownerKey)) {
@@ -3467,21 +3934,44 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
         }
         return true;
       });
-      if (validationError) {
+      if (validFiles.length === 0) {
+        if (validationError) {
+          setComposerErrorForKey(ownerKey, "attachmentError", validationError);
+        }
+        return;
+      }
+      const accountUsage = chatAccountQueueUsage(runtimeStore);
+      const selection = selectChatImageFilesForRetention({
+        composer: ownerSnapshot.composer,
+        candidates: validFiles,
+        accountUsage
+      });
+      if (selection.accountLimitExceeded) {
+        setComposerErrorForKey(ownerKey, "attachmentError", CHAT_ACCOUNT_IMAGE_LIMIT_MESSAGE);
+      } else if (selection.messageLimitExceeded) {
+        setComposerErrorForKey(ownerKey, "attachmentError", CHAT_MESSAGE_IMAGE_LIMIT_MESSAGE);
+      } else if (validationError) {
         setComposerErrorForKey(ownerKey, "attachmentError", validationError);
       }
+      if (selection.files.length === 0) return;
+      const additionalBytes = selection.files.reduce((total, file) => total + file.size, 0);
+      if (
+        accountUsage.attachmentBytes + additionalBytes >
+        MAX_CHAT_ACCOUNT_RETAINED_ATTACHMENT_BYTES
+      ) {
+        setComposerErrorForKey(ownerKey, "attachmentError", CHAT_ACCOUNT_ATTACHMENT_LIMIT_MESSAGE);
+        return;
+      }
 
-      if (validFiles.length === 0) return;
-
-      const newUrls = validFiles.map((file) => [file, URL.createObjectURL(file)] as const);
+      const newUrls = selection.files.map((file) => [file, URL.createObjectURL(file)] as const);
       let generationMatched = false;
-      const attached = updateIdleAttachmentComposerForKey(ownerKey, (composer) => {
+      const attached = updateAttachmentComposerForKey(ownerKey, (composer) => {
         if (composer.imagePasteGeneration !== expectedGeneration) return composer;
         generationMatched = true;
         return {
           ...composer,
           imageUrls: new Map([...composer.imageUrls, ...newUrls]),
-          draftImages: [...composer.draftImages, ...validFiles]
+          draftImages: [...composer.draftImages, ...selection.files]
         };
       });
       if (!attached || !generationMatched) {
@@ -3493,7 +3983,7 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
       isRuntimeSelected,
       runtimeStore,
       setComposerErrorForKey,
-      updateIdleAttachmentComposerForKey
+      updateAttachmentComposerForKey
     ]
   );
 
@@ -3501,7 +3991,7 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
     (e: React.ClipboardEvent) => {
       const ownerKey = activeRuntimeKeyRef.current;
       const startSnapshot = runtimeStore.get(ownerKey);
-      if (!startSnapshot || startSnapshot.isGenerating) return;
+      if (!startSnapshot || startSnapshot.composer.queue.edit) return;
       const pasteGeneration = startSnapshot.composer.imagePasteGeneration + 1;
       updateComposerForKey(ownerKey, (composer) => ({
         ...composer,
@@ -3556,11 +4046,11 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
     (idx: number) => {
       const ownerKey = activeRuntimeKeyRef.current;
       const snapshot = runtimeStore.get(ownerKey);
-      if (!snapshot || snapshot.isGenerating) return;
+      if (!snapshot || snapshot.composer.queue.edit) return;
       const fileToRemove = snapshot?.composer.draftImages[idx];
       if (!fileToRemove) return;
       const url = snapshot.composer.imageUrls.get(fileToRemove);
-      const removed = updateIdleAttachmentComposerForKey(ownerKey, (composer) => {
+      const removed = updateAttachmentComposerForKey(ownerKey, (composer) => {
         const nextUrls = new Map(composer.imageUrls);
         nextUrls.delete(fileToRemove);
         return {
@@ -3571,7 +4061,7 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
       });
       if (removed && url) URL.revokeObjectURL(url);
     },
-    [runtimeStore, updateIdleAttachmentComposerForKey]
+    [runtimeStore, updateAttachmentComposerForKey]
   );
 
   const handleDocumentUpload = useCallback(
@@ -3583,7 +4073,7 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
       if (!file) return;
 
       const startSnapshot = runtimeStore.get(ownerKey);
-      if (!startSnapshot || startSnapshot.isGenerating) {
+      if (!startSnapshot || startSnapshot.composer.queue.edit) {
         inputElement.value = "";
         return;
       }
@@ -3596,7 +4086,7 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
       }
 
       const uploadGeneration = startSnapshot.composer.documentUploadGeneration + 1;
-      const started = updateIdleAttachmentComposerForKey(ownerKey, (composer) => ({
+      const started = updateAttachmentComposerForKey(ownerKey, (composer) => ({
         ...composer,
         isProcessingDocument: true,
         attachmentError: null,
@@ -3611,13 +4101,28 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
         updater: (composer: ChatComposerState) => ChatComposerState
       ) => {
         let generationMatched = false;
-        const updated = updateIdleAttachmentComposerForKey(ownerKey, (composer) => {
+        const updated = updateAttachmentComposerForKey(ownerKey, (composer) => {
           if (composer.documentUploadGeneration !== uploadGeneration) return composer;
           generationMatched = true;
           return updater(composer);
         });
         return updated && generationMatched;
       };
+      const retainDocumentIfWithinAccountBudget = (documentText: string, documentName: string) =>
+        updateDocumentIfCurrent((composer) => {
+          const accountUsage = chatAccountQueueUsage(runtimeStore);
+          const nextAttachmentBytes =
+            accountUsage.attachmentBytes -
+            chatQueuedTextByteLength(composer.documentText) +
+            chatQueuedTextByteLength(documentText);
+          if (nextAttachmentBytes > MAX_CHAT_ACCOUNT_RETAINED_ATTACHMENT_BYTES) {
+            return {
+              ...composer,
+              attachmentError: CHAT_ACCOUNT_ATTACHMENT_LIMIT_MESSAGE
+            };
+          }
+          return { ...composer, documentText, documentName };
+        });
 
       try {
         const documentType = getSupportedDocumentType(file.name);
@@ -3630,11 +4135,7 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
               text_content: text
             }
           };
-          updateDocumentIfCurrent((composer) => ({
-            ...composer,
-            documentText: JSON.stringify(documentData),
-            documentName: file.name
-          }));
+          retainDocumentIfWithinAccountBudget(JSON.stringify(documentData), file.name);
         } else if (documentType && isNativeDocumentType(documentType) && isTauriEnv) {
           const result = await extractDocumentContent(file, documentType);
           if (runtimeStore.get(ownerKey)?.composer.documentUploadGeneration !== uploadGeneration)
@@ -3662,11 +4163,7 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
             }
           };
 
-          updateDocumentIfCurrent((composer) => ({
-            ...composer,
-            documentText: JSON.stringify(cleanedParsed),
-            documentName: file.name
-          }));
+          retainDocumentIfWithinAccountBudget(JSON.stringify(cleanedParsed), file.name);
         } else if (documentType && isNativeDocumentType(documentType)) {
           setComposerErrorForKey(
             ownerKey,
@@ -3690,26 +4187,36 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
           );
         }
       } finally {
-        updateDocumentIfCurrent((composer) => ({
-          ...composer,
-          isProcessingDocument: false
-        }));
+        // An edit may begin while native document extraction is in flight.
+        // Attachment mutation stays blocked during the edit, but the owned
+        // processing flag must always settle so the composer cannot deadlock.
+        updateComposerForKey(ownerKey, (composer) =>
+          composer.documentUploadGeneration === uploadGeneration
+            ? { ...composer, isProcessingDocument: false }
+            : composer
+        );
         inputElement.value = "";
       }
     },
-    [isTauriEnv, runtimeStore, setComposerErrorForKey, updateIdleAttachmentComposerForKey]
+    [
+      isTauriEnv,
+      runtimeStore,
+      setComposerErrorForKey,
+      updateAttachmentComposerForKey,
+      updateComposerForKey
+    ]
   );
 
   const removeDocument = useCallback(() => {
     const ownerKey = activeRuntimeKeyRef.current;
-    updateIdleAttachmentComposerForKey(ownerKey, (composer) => ({
+    updateAttachmentComposerForKey(ownerKey, (composer) => ({
       ...composer,
       isProcessingDocument: false,
       documentText: "",
       documentName: "",
       documentUploadGeneration: composer.documentUploadGeneration + 1
     }));
-  }, [updateIdleAttachmentComposerForKey]);
+  }, [updateAttachmentComposerForKey]);
 
   // Audio recording functions
   const startRecording = async () => {
@@ -3978,14 +4485,102 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
     }
   };
 
-  // Helper function to process streaming response - used by both initial request and retry
+  const discardQueueEdit = useCallback(() => {
+    const runtimeKey = runtimeStore.resolveKey(activeRuntimeKeyRef.current);
+    if (!runtimeStore.get(runtimeKey)) return;
+    runtimeStore.update(runtimeKey, (snapshot) => {
+      const discarded = discardChatQueuedMessageEdit(snapshot.composer.queue);
+      if (discarded.status !== "ended") return snapshot;
+      return {
+        ...snapshot,
+        composer: {
+          ...snapshot.composer,
+          input: discarded.restoreInput,
+          queue: discarded.queue
+        }
+      };
+    });
+  }, [runtimeStore]);
+
+  const cancelQueuedMessage = useCallback(
+    (queueId: string) => {
+      const runtimeKey = runtimeStore.resolveKey(activeRuntimeKeyRef.current);
+      let removedItem: ChatQueuedMessage | null = null;
+      let retainedObjectUrls = new Set<string>();
+      if (!runtimeStore.get(runtimeKey)) return;
+      runtimeStore.update(runtimeKey, (snapshot) => {
+        const cancelled = cancelChatQueuedMessage(snapshot.composer.queue, queueId);
+        if (cancelled.status !== "cancelled") return snapshot;
+        removedItem = cancelled.item;
+        const composer = {
+          ...snapshot.composer,
+          input: cancelled.restoreInput ?? snapshot.composer.input,
+          queue: cancelled.queue
+        };
+        retainedObjectUrls = new Set([
+          ...chatComposerObjectUrls(composer),
+          ...chatTranscriptObjectUrls(snapshot.messages as Message[])
+        ]);
+        return {
+          ...snapshot,
+          composer
+        };
+      });
+      if (removedItem) {
+        revokeQueuedChatMessageObjectUrls(removedItem, retainedObjectUrls);
+      }
+    },
+    [runtimeStore]
+  );
+
+  const editQueuedMessage = useCallback(
+    (queueId: string) => {
+      const runtimeKey = runtimeStore.resolveKey(activeRuntimeKeyRef.current);
+      let shouldFocus = false;
+      if (!runtimeStore.get(runtimeKey)) return;
+      runtimeStore.update(runtimeKey, (snapshot) => {
+        const started = beginChatQueuedMessageEdit(
+          snapshot.composer.queue,
+          runtimeKey,
+          queueId,
+          snapshot.composer.input
+        );
+        if (started.status === "already_editing") {
+          const discarded = discardChatQueuedMessageEdit(snapshot.composer.queue);
+          if (discarded.status !== "ended") return snapshot;
+          return {
+            ...snapshot,
+            composer: {
+              ...snapshot.composer,
+              input: discarded.restoreInput,
+              queue: discarded.queue
+            }
+          };
+        }
+        if (started.status !== "started") return snapshot;
+        shouldFocus = true;
+        return {
+          ...snapshot,
+          composer: {
+            ...snapshot.composer,
+            input: started.input,
+            queue: started.queue
+          }
+        };
+      });
+      if (shouldFocus) requestAnimationFrame(() => textareaRef.current?.focus());
+    },
+    [runtimeStore]
+  );
+
+  // Helper function to process one streaming response.
   const processStreamingResponse = useCallback(
     async (
       stream: AsyncIterable<unknown>,
       runtimeKey: ChatRuntimeKey,
       runToken: number,
       optimisticMessageId: string,
-      discardOwnedItemsOnError: boolean
+      onResponseCreated: (responseId: string) => Promise<boolean>
     ): Promise<ChatStreamTerminalState> => {
       const messageTextBuffers = new Map<string, Map<number, string>>();
       const reasoningTextBuffers = new Map<string, Map<number, string>>();
@@ -4115,12 +4710,15 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
           if (eventType === "response.created") {
             unregisterChatOptimisticMessage(runtimeStore, runToken, optimisticMessageId);
             const eventWithResponse = event as { response?: { id?: string } };
-            if (eventWithResponse.response?.id) {
-              runtimeStore.setCurrentResponseId(
-                runtimeKey,
-                runToken,
-                eventWithResponse.response.id
-              );
+            const responseId = eventWithResponse.response?.id;
+            if (responseId) {
+              if (runtimeStore.setCurrentResponseId(runtimeKey, runToken, responseId)) {
+                clearUnresolvedChatResponseMessage(runtimeStore, runToken, optimisticMessageId);
+              }
+              if (await onResponseCreated(responseId)) {
+                terminalState = "cancelled";
+                break;
+              }
             }
           } else if (eventType === "response.output_item.added") {
             const addedEvent = event as ResponseOutputItemAddedEvent;
@@ -4296,6 +4894,9 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
             }
           } else if (eventType === "response.completed") {
             terminalState = "completed";
+            // This is the authoritative terminal frame. Do not let a later
+            // transport-close error turn a durable completion into a retry.
+            break;
           } else if (isTerminalChatStreamErrorEvent(eventType)) {
             terminalState = "error";
             console.error("Streaming error:", event);
@@ -4329,11 +4930,7 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
         // and account teardown clear run ownership before aborting, so their
         // resulting iterator errors remain stale-fenced here.
         deltaCoalescer.finish();
-        updateRunMessages((messages) =>
-          discardOwnedItemsOnError
-            ? removeOwnedChatStreamAttemptItems(messages, ownedItemIds)
-            : updateActiveItemStatuses(messages, "error", ownedItemIds)
-        );
+        updateRunMessages((messages) => updateActiveItemStatuses(messages, "error", ownedItemIds));
         throw error;
       } finally {
         // Natural EOF and thrown stream errors both commit the final partial
@@ -4348,138 +4945,158 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
     [logStreamEvent, runtimeStore]
   );
 
-  // Every send captures its owning runtime key. Navigation only changes the
-  // projected runtime; it never changes where this request or its SSE events land.
+  // Every submit synchronously detaches its owning composer. During an active
+  // run that creates a staged chip; otherwise one outer run drains the FIFO as
+  // separate Responses turns without an idle run-token or AbortController gap.
   const handleSendMessage = useCallback(
     async (e?: React.FormEvent, overrideInput?: string, ownerRuntimeKey?: ChatRuntimeKey) => {
       e?.preventDefault();
       let runtimeKey = runtimeStore.resolveKey(ownerRuntimeKey ?? activeRuntimeKeyRef.current);
       const startSnapshot = runtimeStore.get(runtimeKey);
-      if (!startSnapshot || !openai) return;
-
-      const originalComposer = startSnapshot.composer;
-      const textToSend = overrideInput ?? originalComposer.input;
-      const trimmedInput = textToSend.trim();
-      const originalImages = [...originalComposer.draftImages];
-      const originalDocumentText = originalComposer.documentText;
-      const originalDocumentName = originalComposer.documentName;
-      const hasContent =
-        trimmedInput.length > 0 || originalImages.length > 0 || originalDocumentText.length > 0;
-      if (!hasContent || startSnapshot.isGenerating || originalComposer.isProcessingDocument) {
+      if (!startSnapshot) return;
+      const retainOverrideInput = () => {
+        if (overrideInput === undefined) return;
+        runtimeStore.update(runtimeKey, (snapshot) => ({
+          ...snapshot,
+          composer: chatComposerWithInputOverride(snapshot.composer, overrideInput)
+        }));
+      };
+      if (!openai || isChatRuntimeDeletionPending(runtimeStore, runtimeKey)) {
+        retainOverrideInput();
+        return;
+      }
+      const isRuntimeStopping = (runToken?: number) =>
+        Array.from(stoppingRuntimeRegistry.getEntries()).some(
+          ([key, runTokens]) =>
+            (runToken === undefined || runTokens.has(runToken)) &&
+            runtimeStore.resolveKey(key) === runtimeKey
+        );
+      if (isRuntimeStopping()) {
+        retainOverrideInput();
         return;
       }
 
-      const requestModel = model || DEFAULT_MODEL_ID;
-      const requestWebSearchEnabled = isWebSearchEnabled;
-      const billingStatusAtSend = billingStatus;
-      const existingConversationId =
-        startSnapshot.conversation?.id ?? conversationIdFromChatRuntimeKey(runtimeKey);
-      const isFollowUpConversation =
-        Boolean(existingConversationId) && startSnapshot.messages.length > 1;
+      const metadata: ChatQueuedMessageMetadata = {
+        queueId: uuidv4(),
+        messageId: uuidv4(),
+        model: model || DEFAULT_MODEL_ID,
+        webSearchEnabled: isWebSearchEnabled,
+        createdMs: Date.now()
+      };
+      const composerAtSubmit = chatComposerWithInputOverride(startSnapshot.composer, overrideInput);
+      const preflight = planChatComposerSubmission({
+        composer: composerAtSubmit,
+        hasActiveRun: startSnapshot.isGenerating,
+        metadata,
+        accountUsage: chatAccountQueueUsage(runtimeStore)
+      });
+      const submissionError = (status: typeof preflight.status): string | null => {
+        if (status === "queue_full") return "You can queue up to 16 messages.";
+        if (status === "text_too_large") return "Queued messages must be 32 KiB or smaller.";
+        if (status === "too_many_images") {
+          return "You can attach up to 10 images to a queued message.";
+        }
+        if (status === "image_too_large") {
+          return "Each queued image must be 20 MiB or smaller.";
+        }
+        if (status === "document_too_large") {
+          return "Queued documents must be 10 MiB or smaller.";
+        }
+        if (status === "queue_payload_too_large") {
+          return "Queued attachments can use up to 256 MiB in total.";
+        }
+        if (status === "account_queue_full") {
+          return "You can retain up to 64 queued chat messages across your account.";
+        }
+        if (status === "account_payload_too_large") {
+          return "Chat drafts and queued attachments can use up to 256 MiB across your account.";
+        }
+        if (status === "processing") return "Wait for the document to finish processing.";
+        if (status === "missing_edit") return "That queued message is no longer available.";
+        return null;
+      };
+
+      if (startSnapshot.isGenerating) {
+        runtimeStore.update(runtimeKey, (snapshot) => {
+          const composer = chatComposerWithInputOverride(snapshot.composer, overrideInput);
+          const plan = planChatComposerSubmission({
+            composer,
+            hasActiveRun: true,
+            metadata,
+            accountUsage: chatAccountQueueUsage(runtimeStore)
+          });
+          if (plan.status === "queued" || plan.status === "updated") {
+            return { ...snapshot, composer: plan.composer, error: null };
+          }
+          return { ...snapshot, error: submissionError(plan.status) ?? snapshot.error };
+        });
+        return;
+      }
+
+      if (preflight.status !== "start") {
+        const message = submissionError(preflight.status);
+        if (message) setErrorForKey(runtimeKey, message);
+        return;
+      }
+
       const run = runtimeStore.beginRun(runtimeKey, {
         groupId:
           startSnapshot.conversation?.project_id ??
-          originalComposer.draftProjectId ??
+          preflight.item.draftProjectId ??
           selectedProjectId ??
           null
       });
-      const localMessageId = uuidv4();
-      let conversationId = existingConversationId;
-      let composerRestored = false;
-      let adoptedExistingDestination = false;
-      let completedSuccessfully = false;
-
-      const restoreOriginComposer = (message: string) => {
-        if (composerRestored) return true;
-
-        let createdUrls: string[] = [];
-        let displacedUrls: string[] = [];
-        const restored = runtimeStore.updateForRun(runtimeKey, run.token, (snapshot) => {
-          const adoptedDestinationRecovery = recoverFailedSendAfterDestinationAdoption(
-            adoptedExistingDestination,
-            snapshot.messages as Message[],
-            snapshot.composer,
-            localMessageId
-          );
-          if (adoptedDestinationRecovery) {
-            return {
-              ...snapshot,
-              messages: adoptedDestinationRecovery.messages,
-              composer: adoptedDestinationRecovery.composer,
-              error: message
-            };
-          }
-
-          const restoredUrlPlan = planRestoredImageUrls(
-            originalImages,
-            snapshot.composer.imageUrls,
-            (file) => URL.createObjectURL(file)
-          );
-          createdUrls = restoredUrlPlan.createdUrls;
-          displacedUrls = restoredUrlPlan.displacedUrls;
-
-          return {
-            ...snapshot,
-            messages: (snapshot.messages as Message[]).filter((item) => item.id !== localMessageId),
-            error: message,
-            composer: {
-              ...snapshot.composer,
-              input: textToSend,
-              draftImages: originalImages,
-              imageUrls: restoredUrlPlan.imageUrls,
-              documentText: originalDocumentText,
-              documentName: originalDocumentName,
-              isProcessingDocument: false,
-              attachmentError: null,
-              imagePasteGeneration: snapshot.composer.imagePasteGeneration + 1,
-              documentUploadGeneration: snapshot.composer.documentUploadGeneration + 1
-            }
-          };
+      type ChatQueueTurn = {
+        item: ChatQueuedMessage;
+        recoverOnFailure: boolean;
+        previousLastSeenItemId: string | undefined;
+      };
+      let currentTurn: ChatQueueTurn | undefined;
+      const started = runtimeStore.updateForRun(runtimeKey, run.token, (snapshot) => {
+        const composer = chatComposerWithInputOverride(snapshot.composer, overrideInput);
+        const plan = planChatComposerSubmission({
+          composer,
+          hasActiveRun: false,
+          metadata,
+          accountUsage: chatAccountQueueUsage(runtimeStore)
         });
-
-        if (!restored) {
-          for (const url of createdUrls) URL.revokeObjectURL(url);
-          return false;
-        }
-        for (const url of displacedUrls) URL.revokeObjectURL(url);
-        composerRestored = true;
-        return true;
-      };
-
-      const createResponseStream = async (targetConversationId: string) => {
-        const responseParams: ResponseCreateParamsStreaming = {
-          conversation: targetConversationId,
-          model: requestModel,
-          input: [{ role: "user", content: messageContent }],
-          metadata: { internal_message_id: localMessageId },
-          stream: true,
-          store: true,
-          ...(requestWebSearchEnabled && { tools: [{ type: "web_search" }] })
+        if (plan.status !== "start") return snapshot;
+        currentTurn = {
+          item: plan.item,
+          recoverOnFailure: plan.recoverOnFailure,
+          previousLastSeenItemId: snapshot.lastSeenItemId
         };
-        const stream = await withInferenceCapacityRetry(
-          (maxInferenceSends) =>
-            openai.responses.create(responseParams, {
-              signal: run.signal,
-              headers: {
-                [OPEN_SECRET_INFERENCE_SEND_LIMIT_HEADER]: String(maxInferenceSends)
-              }
-            }),
-          run.signal
-        );
+        return {
+          ...snapshot,
+          composer: plan.composer,
+          messages: mergeMessagesById(snapshot.messages as Message[], [
+            promotedChatUserMessage(plan.item)
+          ]),
+          lastSeenItemId: plan.item.messageId,
+          error: null
+        };
+      });
+      if (!started || !currentTurn) {
+        runtimeStore.finishRun(runtimeKey, run.token);
+        return;
+      }
+      registerChatOptimisticMessage(runtimeStore, run.token, currentTurn.item.messageId);
+      if (
+        !isCompactLayout &&
+        startSnapshot.messages.length === 0 &&
+        isRuntimeSelected(runtimeKey)
+      ) {
+        // The first optimistic row swaps the centered composer for the bottom
+        // composer. Restore focus once after that remount so follow-ups can be
+        // queued immediately without focusing on every streamed item.
+        requestAnimationFrame(() => textareaRef.current?.focus());
+      }
 
-        if (!runtimeStore.setAssistantStreaming(runtimeKey, run.token, true)) return null;
-        try {
-          return await processStreamingResponse(
-            stream,
-            runtimeKey,
-            run.token,
-            localMessageId,
-            false
-          );
-        } finally {
-          runtimeStore.setAssistantStreaming(runtimeKey, run.token, false);
-        }
-      };
+      let conversationId =
+        startSnapshot.conversation?.id ?? conversationIdFromChatRuntimeKey(runtimeKey);
+      let completedAnyTurn = false;
+      let stopOwnsSettlement = false;
+      let detachedResponseOwnsSettlement = false;
 
       const scheduleBillingRefresh = () => {
         const timeout = setTimeout(() => {
@@ -4489,293 +5106,549 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
         billingRefreshTimeoutsRef.current.add(timeout);
       };
 
-      const messageContent: (InputTextContent | InputImageContent)[] = [];
-      let finalText = trimmedInput;
-      if (originalDocumentText) {
-        finalText = originalDocumentText + (trimmedInput ? `\n\n${trimmedInput}` : "");
-      }
-      if (finalText) {
-        messageContent.push({
-          type: "input_text",
-          text: finalText
-        });
-      }
+      const sendTurn = async (turn: ChatQueueTurn): Promise<boolean> => {
+        const { item, recoverOnFailure, previousLastSeenItemId } = turn;
+        const localMessageId = item.messageId;
+        let ownsObjectUrls = true;
+        let responseRequestStarted = false;
+        let conversationCreateInFlight = false;
+        let turnRestored = false;
+        let preserveUnresolvedResponseOwnership = false;
 
-      try {
-        for (const file of originalImages) {
-          try {
-            const dataUrl = await fileToDataURL(file);
-            messageContent.push({
-              type: "input_image",
-              image_url: dataUrl,
-              detail: "auto",
-              file_id: null
-            });
-          } catch (error) {
-            console.error("Failed to convert image:", error);
-          }
-        }
-        if (!runtimeStore.isRunCurrent(runtimeKey, run.token)) return;
-
-        const userMessage = {
-          id: localMessageId,
-          type: "message",
-          role: "user",
-          content: messageContent,
-          status: "completed"
-        } as unknown as Message;
-
-        const stagedImageUrls = new Set<string>();
-        const staged = runtimeStore.updateForRun(runtimeKey, run.token, (snapshot) => {
-          for (const url of snapshot.composer.imageUrls.values()) stagedImageUrls.add(url);
-          return {
-            ...snapshot,
-            messages: mergeMessagesById(snapshot.messages as Message[], [userMessage]),
-            lastSeenItemId: localMessageId,
-            composer: {
-              ...snapshot.composer,
-              input: "",
-              draftImages: [],
-              imageUrls: new Map(),
-              documentText: "",
-              documentName: "",
-              isProcessingDocument: false,
-              attachmentError: null,
-              imagePasteGeneration: snapshot.composer.imagePasteGeneration + 1,
-              documentUploadGeneration: snapshot.composer.documentUploadGeneration + 1
-            }
-          };
-        });
-        if (!staged) return;
-        registerChatOptimisticMessage(runtimeStore, run.token, localMessageId);
-        for (const url of stagedImageUrls) URL.revokeObjectURL(url);
-
-        if (!conversationId) {
-          const createParams: Parameters<typeof openai.conversations.create>[0] & {
-            project_id?: string;
-          } = {
-            metadata: {},
-            ...(originalComposer.draftProjectId && {
-              project_id: originalComposer.draftProjectId
-            })
-          };
-          const newConv = await openai.conversations.create(createParams, {
-            signal: run.signal
-          });
-          conversationId = newConv.id;
-          const sourceWasSelected = isRuntimeSelected(runtimeKey);
-          const destinationKey = createConversationChatKey(conversationId);
-          const destinationSnapshot = runtimeStore.get(destinationKey);
-          const rawRecordingOwnerKey = recordingOwnerKeyRef.current;
-          const canonicalRecordingOwnerKey = rawRecordingOwnerKey
-            ? runtimeStore.resolveKey(rawRecordingOwnerKey)
-            : null;
-          if (!canAdoptRecordingDestination(destinationKey, canonicalRecordingOwnerKey)) {
-            // Let pending microphone, recording, or transcription work finish on
-            // the idle destination. Adoption would make its eventual send fail.
-            restoreOriginComposer(
-              "This conversation is still processing a voice message. Your message was restored in its original draft."
-            );
-            return;
-          }
-          if (!canAdoptAttachmentDestination(destinationSnapshot)) {
-            // Let the destination's extraction callback finish on its original
-            // idle runtime. Adopting it into this run would fence that callback
-            // and permanently strand isProcessingDocument=true.
-            restoreOriginComposer(
-              "This conversation is still processing an attachment. Your message was restored in its original draft."
-            );
-            return;
-          }
-          const migration = runtimeStore.rekeyRunAdoptingIdleDestination(
-            runtimeKey,
-            destinationKey,
-            run.token,
-            (source, destination) => ({
-              ...source,
-              conversation: destination.conversation ?? source.conversation,
-              messages: mergeLoadedMessagesWithRuntime(
-                destination.messages as Message[],
-                source.messages
-              ),
-              composer: destination.composer,
-              error: source.error ?? destination.error,
-              lastSeenItemId: source.lastSeenItemId ?? destination.lastSeenItemId,
-              historyLoaded: source.historyLoaded || destination.historyLoaded
-            })
+        const releaseObjectUrls = () => {
+          if (!ownsObjectUrls) return;
+          ownsObjectUrls = false;
+          const snapshot = runtimeStore.get(runtimeKey);
+          const retainedObjectUrls = new Set(
+            snapshot
+              ? [
+                  ...chatComposerObjectUrls(snapshot.composer),
+                  ...chatTranscriptObjectUrls(snapshot.messages as Message[])
+                ]
+              : []
           );
+          revokeQueuedChatMessageObjectUrls(item, retainedObjectUrls);
+        };
 
-          if (migration.status === "source_stale") {
-            // Creation may already be visible to another tab or device. Without
-            // atomic server proof that C is empty and owned by this attempt,
-            // prefer a harmless empty orphan over deleting real chat history.
-            return;
+        const restoreTurn = (message: string) => {
+          if (turnRestored) return true;
+          let transferred = false;
+          const restored = runtimeStore.updateForRun(runtimeKey, run.token, (snapshot) => {
+            const recovery = recoverDetachedChatComposerDraft(snapshot.composer, item);
+            let composer = recovery.composer;
+            if (!recoverOnFailure && recovery.status === "restored") {
+              composer = {
+                ...snapshot.composer,
+                queue: {
+                  ...snapshot.composer.queue,
+                  items: [item, ...snapshot.composer.queue.items]
+                }
+              };
+            }
+            transferred = true;
+            return {
+              ...snapshot,
+              messages: (snapshot.messages as Message[]).filter(
+                (messageItem) => messageItem.id !== localMessageId
+              ),
+              lastSeenItemId:
+                snapshot.lastSeenItemId === localMessageId
+                  ? previousLastSeenItemId
+                  : snapshot.lastSeenItemId,
+              composer,
+              error: message
+            };
+          });
+          if (restored && transferred) {
+            ownsObjectUrls = false;
+            turnRestored = true;
           }
+          return restored && transferred;
+        };
 
-          if (migration.status === "destination_active") {
-            // Never replace or delete a destination that already owns a run.
-            // Browser history retains this source draft, so restoring here makes
-            // the original prompt and attachments recoverable with Back.
-            restoreOriginComposer(
-              "This conversation became active before your message was sent. Your message was restored in its original draft."
-            );
-            return;
-          }
-
-          runtimeKey = migration.key;
-          adoptedExistingDestination = migration.adoptedExistingDestination;
+        const markTurnIncomplete = (message: string) => {
           runtimeStore.updateForRun(runtimeKey, run.token, (snapshot) => ({
             ...snapshot,
-            conversation: newConv as Conversation,
-            composer: { ...snapshot.composer, draftProjectId: null }
+            messages: markOptimisticMessageIncomplete(
+              snapshot.messages as Message[],
+              localMessageId
+            ),
+            lastSeenItemId: chatCursorAfterSendFailure({
+              currentCursor: snapshot.lastSeenItemId,
+              optimisticMessageId: localMessageId,
+              previousCursor: previousLastSeenItemId,
+              responseCreated: Boolean(snapshot.currentResponseId)
+            }),
+            error: message
           }));
+        };
 
-          const keepSelection = shouldProjectMigratedConversation(
-            runtimeStore.isChatVisible(runtimeKey),
-            sourceWasSelected,
-            migration.destinationWasSelected
-          );
-          if (keepSelection) {
-            activeRuntimeKeyRef.current = runtimeKey;
-            setActiveRuntimeKey(runtimeKey);
-            setChatId(conversationId);
-            canonicalizeConversationHistoryEntry(conversationId);
-          }
-          window.dispatchEvent(new Event("conversationcreated"));
-        }
+        const unregisterCurrentTurn = registerChatCurrentTurn(runtimeStore, run.token, {
+          responseRequestStarted: () => responseRequestStarted,
+          serverRequestInFlight: () => conversationCreateInFlight,
+          restoreBeforeRequest: restoreTurn,
+          retainedPayload: item,
+          retainsPayload: () => !turnRestored,
+          countsTowardQueueLimit: true
+        });
 
-        const terminalState = await createResponseStream(conversationId);
-        completedSuccessfully = terminalState === "completed";
-        scheduleBillingRefresh();
-      } catch (error) {
-        console.error("Failed to send message:", error);
-        let errorMessage = error instanceof Error ? error.message : "Something went wrong";
-        const causeMessage = (error as Error & { cause?: { message?: string } })?.cause?.message;
-        if (causeMessage && causeMessage.includes("Request failed with status")) {
-          errorMessage = causeMessage;
-        }
-
-        if (isImageDescriptionUnavailableError(error)) {
-          restoreOriginComposer(
-            "Image description is temporarily unavailable. Your message and images were restored; please try again."
-          );
-          return;
-        }
-
-        const parseStatusError = (status: number) => {
-          if (!errorMessage.includes(`Request failed with status ${status}:`)) return null;
-          try {
-            const jsonMatch = errorMessage.match(
-              new RegExp(`Request failed with status ${status}:\\s*({.*})`)
-            );
-            return jsonMatch?.[1]
-              ? (JSON.parse(jsonMatch[1]) as { status: number; message: string })
-              : null;
-          } catch (parseError) {
-            console.error(`Failed to parse ${status} error:`, parseError);
+        const messageContent = queuedChatMessageContent(item, () => undefined);
+        const createResponseStream = async () => {
+          if (
+            !runtimeStore.updateForRun(runtimeKey, run.token, (snapshot) => ({
+              ...snapshot,
+              assistantStreaming: false
+            }))
+          ) {
             return null;
+          }
+          registerChatOptimisticMessage(runtimeStore, run.token, localMessageId);
+          const responseParams: ResponseCreateParamsStreaming = {
+            conversation: conversationId!,
+            model: item.model,
+            input: [{ role: "user", content: messageContent }],
+            metadata: { internal_message_id: localMessageId },
+            stream: true,
+            store: true,
+            ...(item.webSearchEnabled && { tools: [{ type: "web_search" }] })
+          };
+          const stream = await withInferenceCapacityRetry(
+            (maxInferenceSends) => {
+              registerUnresolvedChatResponseMessage(runtimeStore, run.token, localMessageId);
+              responseRequestStarted = true;
+              return openai.responses.create(responseParams, {
+                signal: run.signal,
+                headers: {
+                  [OPEN_SECRET_INFERENCE_SEND_LIMIT_HEADER]: String(maxInferenceSends)
+                }
+              });
+            },
+            run.signal,
+            (capacityError) => {
+              // Capacity rejection proves this turn was not accepted. Stop or
+              // deletion can safely restore it and abort the replay delay.
+              responseRequestStarted = false;
+              clearUnresolvedChatResponseMessage(runtimeStore, run.token, localMessageId);
+              if (
+                isChatRunQueueHaltRequested(runtimeStore, run.token) ||
+                isChatRuntimeDeletionPending(runtimeStore, runtimeKey)
+              ) {
+                throw capacityError;
+              }
+            }
+          );
+
+          if (!runtimeStore.setAssistantStreaming(runtimeKey, run.token, true)) return null;
+          try {
+            return await processStreamingResponse(
+              stream,
+              runtimeKey,
+              run.token,
+              localMessageId,
+              async (responseId) => {
+                if (!isRuntimeStopping(run.token)) return false;
+                return cancelKnownChatResponse(runtimeKey, run.token, responseId, localMessageId);
+              }
+            );
+          } finally {
+            runtimeStore.setAssistantStreaming(runtimeKey, run.token, false);
           }
         };
 
-        const status413Error = parseStatusError(413);
-        if (status413Error && status413Error.message === "Message exceeds context limit") {
-          restoreOriginComposer("Your message exceeds the context limit for this model.");
-          if (isRuntimeSelected(runtimeKey)) setContextLimitDialogOpen(true);
-          return;
-        }
-
-        const status403Error = parseStatusError(403);
-        if (status403Error) {
-          let displayError: string;
-          if (status403Error.message === "Free tier token limit exceeded") {
-            displayError =
-              "This conversation is too long for the free tier. Upgrade to Pro for longer conversations.";
-            if (isRuntimeSelected(runtimeKey)) {
-              setUpgradeFeature("tokens");
-              setUpgradeDialogOpen(true);
-            }
-          } else if (status403Error.message === "Usage limit reached") {
-            const isFreeTier =
-              !billingStatusAtSend?.product_name ||
-              billingStatusAtSend.product_name.toLowerCase() === "free";
-
-            if (isFreeTier) {
-              displayError =
-                "You've reached your daily usage limit. Upgrade to Pro for more chats.";
-            } else {
-              const isPro =
-                billingStatusAtSend.product_name?.toLowerCase().includes("pro") &&
-                !billingStatusAtSend.product_name?.toLowerCase().includes("max");
-              displayError = isPro
-                ? "You've reached your monthly Pro limit. Upgrade to Max for 10x more usage."
-                : "You've reached your monthly usage limit. Please wait for the next billing cycle.";
-            }
-            if (isRuntimeSelected(runtimeKey)) {
-              setUpgradeFeature("usage");
-              setUpgradeDialogOpen(true);
-            }
-          } else {
-            displayError =
-              status403Error.message || "Access denied. Please check your subscription.";
-          }
-          restoreOriginComposer(displayError);
-        } else if (findOpenSecretInferenceCapacityError(error)) {
-          restoreOriginComposer(
-            "Inference capacity is temporarily unavailable. Your message was restored. Please try again shortly."
-          );
-        } else if (error instanceof Error && error.name !== "AbortError") {
-          if (isFollowUpConversation && conversationId) {
+        try {
+          const dataUrls = new Map<File, string>();
+          for (const file of item.draftImages) {
             try {
-              const finalCheckResponse = await openai.conversations.items.list(conversationId, {
-                limit: 5,
-                order: "desc"
-              });
-              const foundMessage = finalCheckResponse.data.find(
-                (item) => item.id === localMessageId
+              dataUrls.set(file, await fileToDataURL(file));
+            } catch (error) {
+              console.error("Failed to convert image:", error);
+              const restored = restoreTurn(
+                "An image could not be prepared. Your message and images were restored; please try again."
               );
-
-              if (!foundMessage) {
-                console.log("Message not found after send failure - restoring input");
-                restoreOriginComposer("Failed to send message. Please try again.");
-              } else {
-                console.log("Message found after send failure - it actually went through");
+              if (!restored && runtimeStore.get(runtimeKey)) {
+                const durableContent = queuedChatMessageContent(item, (image) =>
+                  dataUrls.get(image)
+                );
+                runtimeStore.update(runtimeKey, (snapshot) => ({
+                  ...snapshot,
+                  messages: markOptimisticMessageIncomplete(
+                    updateMessageById(snapshot.messages as Message[], localMessageId, (message) =>
+                      message.type === "message"
+                        ? ({ ...message, content: durableContent } as unknown as Message)
+                        : message
+                    ),
+                    localMessageId
+                  )
+                }));
               }
-            } catch (finalCheckError) {
-              console.error("Final check failed:", finalCheckError);
-              restoreOriginComposer("Failed to send message. Please try again.");
+              return false;
             }
-          } else {
-            const optimisticMessageId = getRegisteredChatOptimisticMessage(runtimeStore, run.token);
+          }
+          messageContent.push(
+            ...queuedChatMessageContent({ ...item, text: "", documentText: "" }, (file) =>
+              dataUrls.get(file)
+            )
+          );
+
+          const updateMaterializedMessage = (messages: readonly Message[]) =>
+            updateMessageById(messages as Message[], localMessageId, (message) =>
+              message.type === "message"
+                ? ({ ...message, content: messageContent } as unknown as Message)
+                : message
+            );
+          if (!runtimeStore.isRunCurrent(runtimeKey, run.token)) {
+            if (runtimeStore.get(runtimeKey)) {
+              runtimeStore.update(runtimeKey, (snapshot) => ({
+                ...snapshot,
+                messages: updateMaterializedMessage(snapshot.messages as Message[])
+              }));
+            }
+            return false;
+          }
+          if (
+            !runtimeStore.updateForRun(runtimeKey, run.token, (snapshot) => ({
+              ...snapshot,
+              messages: updateMaterializedMessage(snapshot.messages as Message[])
+            }))
+          ) {
+            return false;
+          }
+          if (isChatRuntimeDeletionPending(runtimeStore, runtimeKey)) {
+            restoreTurn("Sending paused because this conversation is being deleted.");
+            return false;
+          }
+
+          if (!conversationId) {
+            const createParams: Parameters<typeof openai.conversations.create>[0] & {
+              project_id?: string;
+            } = {
+              metadata: {},
+              ...(item.draftProjectId && { project_id: item.draftProjectId })
+            };
+            conversationCreateInFlight = true;
+            let newConv: Awaited<ReturnType<typeof openai.conversations.create>>;
+            try {
+              newConv = await openai.conversations.create(createParams, {
+                signal: run.signal
+              });
+            } finally {
+              conversationCreateInFlight = false;
+            }
+            conversationId = newConv.id;
+            const sourceWasSelected = isRuntimeSelected(runtimeKey);
+            const destinationKey = createConversationChatKey(conversationId);
+            const destinationSnapshot = runtimeStore.get(destinationKey);
+            const rawRecordingOwnerKey = recordingOwnerKeyRef.current;
+            const canonicalRecordingOwnerKey = rawRecordingOwnerKey
+              ? runtimeStore.resolveKey(rawRecordingOwnerKey)
+              : null;
+            if (!canAdoptRecordingDestination(destinationKey, canonicalRecordingOwnerKey)) {
+              restoreTurn(
+                "This conversation is still processing a voice message. Your message was restored in its original draft."
+              );
+              return false;
+            }
+            if (!canAdoptAttachmentDestination(destinationSnapshot)) {
+              restoreTurn(
+                "This conversation is still processing an attachment. Your message was restored in its original draft."
+              );
+              return false;
+            }
+
+            let displacedObjectUrls: string[] = [];
+            const migration = runtimeStore.rekeyRunAdoptingIdleDestination(
+              runtimeKey,
+              destinationKey,
+              run.token,
+              (source, destination) => {
+                const mergedComposer = mergeChatComposerDraftsForRekey(
+                  source.composer,
+                  destination.composer,
+                  destinationKey
+                );
+                displacedObjectUrls = mergedComposer.displacedObjectUrls;
+                return {
+                  ...source,
+                  conversation: destination.conversation ?? source.conversation,
+                  messages: mergeLoadedMessagesWithRuntime(
+                    destination.messages as Message[],
+                    source.messages
+                  ),
+                  composer: mergedComposer.composer,
+                  error: source.error ?? destination.error,
+                  lastSeenItemId: source.lastSeenItemId ?? destination.lastSeenItemId,
+                  historyLoaded: source.historyLoaded || destination.historyLoaded
+                };
+              }
+            );
+
+            if (migration.status === "source_stale") return false;
+            if (migration.status === "destination_active") {
+              restoreTurn(
+                "This conversation became active before your message was sent. Your message was restored in its original draft."
+              );
+              return false;
+            }
+            for (const url of displacedObjectUrls) URL.revokeObjectURL(url);
+
+            runtimeKey = migration.key;
             runtimeStore.updateForRun(runtimeKey, run.token, (snapshot) => ({
               ...snapshot,
-              messages: markOptimisticMessageIncomplete(
-                snapshot.messages as Message[],
-                optimisticMessageId
-              ),
-              error: `${errorMessage}. Please try again.`
+              conversation: newConv as Conversation,
+              composer: { ...snapshot.composer, draftProjectId: null }
             }));
+
+            const keepSelection = shouldProjectMigratedConversation(
+              runtimeStore.isChatVisible(runtimeKey),
+              sourceWasSelected,
+              migration.destinationWasSelected
+            );
+            if (keepSelection) {
+              activeRuntimeKeyRef.current = runtimeKey;
+              setActiveRuntimeKey(runtimeKey);
+              setChatId(conversationId);
+              canonicalizeConversationHistoryEntry(conversationId);
+            }
+            window.dispatchEvent(new Event("conversationcreated"));
           }
+
+          if (isChatRuntimeDeletionPending(runtimeStore, runtimeKey)) {
+            restoreTurn("Sending paused because this conversation is being deleted.");
+            return false;
+          }
+
+          const terminalState = await createResponseStream();
+          scheduleBillingRefresh();
+          return terminalState === "completed";
+        } catch (error) {
+          console.error("Failed to send message:", error);
+          let errorMessage = error instanceof Error ? error.message : "Something went wrong";
+          const causeMessage = (error as Error & { cause?: { message?: string } })?.cause?.message;
+          if (causeMessage?.includes("Request failed with status")) errorMessage = causeMessage;
+
+          const retainAmbiguousResponseOwnership = (message: string) => {
+            markTurnIncomplete(message);
+            preserveUnresolvedResponseOwnership = !runtimeStore.get(runtimeKey)?.currentResponseId;
+            detachedResponseOwnsSettlement = true;
+          };
+
+          if (isChatAccountCredentialMismatchError(error)) {
+            if (!responseRequestStarted || isChatRequestDefinitelyNotDispatchedError(error)) {
+              restoreTurn(
+                "Sending paused because the authenticated account changed. Your message was restored."
+              );
+            } else {
+              retainAmbiguousResponseOwnership(
+                "The authenticated account changed after sending began. The response may still be running; queued messages were kept."
+              );
+            }
+            return false;
+          }
+
+          if (isImageDescriptionUnavailableError(error)) {
+            restoreTurn(
+              "Image description is temporarily unavailable. Your message and images were restored; please try again."
+            );
+            return false;
+          }
+
+          if (findOpenSecretInferenceCapacityError(error)) {
+            responseRequestStarted = false;
+            stoppingRuntimeRegistry.delete(runtimeKey, run.token);
+            restoreTurn(
+              "Inference capacity is temporarily unavailable. Your message was restored. Please try again shortly."
+            );
+            return false;
+          }
+
+          const parseStatusError = (status: number) => {
+            if (!errorMessage.includes(`Request failed with status ${status}:`)) return null;
+            try {
+              const jsonMatch = errorMessage.match(
+                new RegExp(`Request failed with status ${status}:\\s*({.*})`)
+              );
+              return jsonMatch?.[1]
+                ? (JSON.parse(jsonMatch[1]) as { status: number; message: string })
+                : null;
+            } catch (parseError) {
+              console.error(`Failed to parse ${status} error:`, parseError);
+              return null;
+            }
+          };
+
+          const status413Error = parseStatusError(413);
+          if (status413Error?.message === "Message exceeds context limit") {
+            restoreTurn("Your message exceeds the context limit for this model.");
+            if (isRuntimeSelected(runtimeKey)) setContextLimitDialogOpen(true);
+            return false;
+          }
+
+          const status403Error = parseStatusError(403);
+          if (status403Error) {
+            let displayError: string;
+            if (status403Error.message === "Free tier token limit exceeded") {
+              displayError =
+                "This conversation is too long for the free tier. Upgrade to Pro for longer conversations.";
+              if (isRuntimeSelected(runtimeKey)) {
+                setUpgradeFeature("tokens");
+                setUpgradeDialogOpen(true);
+              }
+            } else if (status403Error.message === "Usage limit reached") {
+              const isFreeTier =
+                !billingStatus?.product_name || billingStatus.product_name.toLowerCase() === "free";
+              if (isFreeTier) {
+                displayError =
+                  "You've reached your daily usage limit. Upgrade to Pro for more chats.";
+              } else {
+                const isPro =
+                  billingStatus.product_name?.toLowerCase().includes("pro") &&
+                  !billingStatus.product_name?.toLowerCase().includes("max");
+                displayError = isPro
+                  ? "You've reached your monthly Pro limit. Upgrade to Max for 10x more usage."
+                  : "You've reached your monthly usage limit. Please wait for the next billing cycle.";
+              }
+              if (isRuntimeSelected(runtimeKey)) {
+                setUpgradeFeature("usage");
+                setUpgradeDialogOpen(true);
+              }
+            } else {
+              displayError =
+                status403Error.message || "Access denied. Please check your subscription.";
+            }
+            restoreTurn(displayError);
+            return false;
+          }
+
+          if (
+            isChatRequestDefinitelyNotDispatchedError(error) ||
+            isChatResponseDefinitelyRejectedError(error)
+          ) {
+            restoreTurn(`${errorMessage}. Please try again.`);
+            return false;
+          }
+
+          if (error instanceof Error && error.name !== "AbortError") {
+            if (!responseRequestStarted) {
+              restoreTurn(`${errorMessage}. Please try again.`);
+            } else {
+              // Once an ambiguous streaming POST has started, replaying it can
+              // create a duplicate provider turn. Keep later FIFO items staged
+              // and retain known server ownership until polling or Stop reaches
+              // a terminal response state.
+              retainAmbiguousResponseOwnership(
+                `${errorMessage}. The response may still be running; queued messages were kept.`
+              );
+            }
+          }
+          return false;
+        } finally {
+          unregisterCurrentTurn();
+          unregisterChatOptimisticMessage(runtimeStore, run.token, localMessageId);
+          if (!preserveUnresolvedResponseOwnership) {
+            clearUnresolvedChatResponseMessage(runtimeStore, run.token, localMessageId);
+          }
+          releaseObjectUrls();
+        }
+      };
+
+      try {
+        while (currentTurn && runtimeStore.isRunCurrent(runtimeKey, run.token)) {
+          const completed = await sendTurn(currentTurn);
+          if (!completed || !runtimeStore.isRunCurrent(runtimeKey, run.token)) {
+            if (runtimeStore.isRunCurrent(runtimeKey, run.token) && isRuntimeStopping(run.token)) {
+              const responseId = runtimeStore.get(runtimeKey)?.currentResponseId;
+              stopOwnsSettlement = Boolean(responseId);
+              if (!responseId) {
+                // A failed POST before response.created can still be accepted
+                // server-side. Keep the run and Stop intent fenced until item
+                // polling recovers its response UUID; never overlap the FIFO.
+                setErrorForKey(
+                  runtimeKey,
+                  "Maple could not confirm that the response stopped. Queued messages were kept."
+                );
+              }
+            }
+            break;
+          }
+          completedAnyTurn = true;
+          if (isChatRunQueueHaltRequested(runtimeStore, run.token)) {
+            if (!runtimeStore.get(runtimeKey)?.currentResponseId) {
+              stoppingRuntimeRegistry.delete(runtimeKey, run.token);
+            }
+            break;
+          }
+          if (isRuntimeStopping(run.token)) break;
+          if (isChatRuntimeDeletionPending(runtimeStore, runtimeKey)) break;
+
+          let nextTurn: ChatQueueTurn | undefined;
+          const advanced = runtimeStore.updateForRun(runtimeKey, run.token, (snapshot) => {
+            const next = takeNextChatQueuedMessage(snapshot.composer.queue);
+            if (next.status !== "taken") {
+              return {
+                ...snapshot,
+                currentResponseId: undefined,
+                assistantStreaming: false
+              };
+            }
+            nextTurn = {
+              item: next.item,
+              recoverOnFailure: false,
+              previousLastSeenItemId: snapshot.lastSeenItemId
+            };
+            return {
+              ...snapshot,
+              composer: { ...snapshot.composer, queue: next.queue },
+              messages: mergeMessagesById(snapshot.messages as Message[], [
+                promotedChatUserMessage(next.item)
+              ]),
+              lastSeenItemId: next.item.messageId,
+              currentResponseId: undefined,
+              assistantStreaming: false,
+              error: null
+            };
+          });
+          if (!advanced) break;
+          if (!nextTurn) {
+            break;
+          }
+          currentTurn = nextTurn;
+          registerChatOptimisticMessage(runtimeStore, run.token, currentTurn.item.messageId);
         }
       } finally {
-        unregisterChatOptimisticMessage(runtimeStore, run.token, localMessageId);
-        if (completedSuccessfully) {
-          runtimeStore.completeRun(runtimeKey, run.token);
-        } else {
-          runtimeStore.finishRun(runtimeKey, run.token);
+        if (
+          runtimeStore.isRunCurrent(runtimeKey, run.token) &&
+          !stopOwnsSettlement &&
+          !detachedResponseOwnsSettlement
+        ) {
+          if (completedAnyTurn) runtimeStore.completeRun(runtimeKey, run.token);
+          else runtimeStore.finishRun(runtimeKey, run.token);
+        }
+        if (!runtimeStore.isRunCurrent(runtimeKey, run.token)) {
+          clearUnresolvedChatResponseMessage(runtimeStore, run.token);
+        }
+        if (!runtimeStore.isRunCurrent(runtimeKey, run.token)) {
+          stoppingRuntimeRegistry.delete(runtimeKey, run.token);
+        }
+        if (!runtimeStore.isRunCurrent(runtimeKey, run.token)) {
+          clearChatRunQueueHalt(runtimeStore, run.token);
         }
       }
     },
     [
       billingRefreshTimeoutsRef,
       billingStatus,
+      cancelKnownChatResponse,
       isRuntimeSelected,
+      isCompactLayout,
       isWebSearchEnabled,
       model,
       openai,
       processStreamingResponse,
       queryClient,
       runtimeStore,
-      selectedProjectId
+      selectedProjectId,
+      setErrorForKey,
+      stoppingRuntimeRegistry
     ]
   );
 
@@ -4783,6 +5656,11 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
     // On desktop: Enter submits, Shift+Enter for new line
     // On mobile: Enter for new line, no keyboard shortcut to submit (use button)
     if (e.nativeEvent.isComposing) return;
+    if (e.key === "Escape" && queueEdit) {
+      e.preventDefault();
+      discardQueueEdit();
+      return;
+    }
     if ((e.shiftKey || isCompactLayout) && continueChatComposerList(e, setInput)) {
       return;
     }
@@ -4981,7 +5859,7 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
 
                 <form onSubmit={handleSendMessage} className="relative w-full">
                   <div className="space-y-2">
-                    {(draftImages.length > 0 || documentName) && (
+                    {!queueEdit && (draftImages.length > 0 || documentName) && (
                       <div className="space-y-2">
                         {draftImages.length > 0 && (
                           <div className="flex flex-wrap gap-2">
@@ -4995,7 +5873,6 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
                                 <button
                                   type="button"
                                   onClick={() => removeImage(i)}
-                                  disabled={isGenerating}
                                   aria-label={`Remove attachment ${i + 1}`}
                                   className="absolute -right-1 -top-1 rounded-full border bg-background p-0.5 opacity-0 transition-opacity group-hover:opacity-100 disabled:pointer-events-none disabled:opacity-40"
                                 >
@@ -5013,7 +5890,6 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
                             <button
                               type="button"
                               onClick={removeDocument}
-                              disabled={isGenerating}
                               aria-label="Remove document"
                               className="text-muted-foreground hover:text-foreground disabled:pointer-events-none disabled:opacity-40"
                             >
@@ -5035,6 +5911,14 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
                         isFullscreenAnimating ? "transition-all duration-300" : "transition-colors"
                       } ${isFullscreen ? "h-[70vh] max-h-[800px] min-h-0" : ""}`}
                     >
+                      <QueuedComposerMessages
+                        items={queuedMessages}
+                        className="pr-10"
+                        editingQueueId={queueEdit?.queueId}
+                        getFallbackLabel={queuedChatMessageFallbackLabel}
+                        onRemove={cancelQueuedMessage}
+                        onEdit={editQueuedMessage}
+                      />
                       <button
                         type="button"
                         onClick={toggleFullscreen}
@@ -5054,8 +5938,10 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
                         onKeyDown={handleKeyDown}
                         onBeforeInput={handleBeforeInput}
                         onPaste={handlePaste}
-                        placeholder="Message Maple..."
-                        disabled={isGenerating || isRecordingForActive}
+                        placeholder={
+                          queueEdit ? QUEUED_MESSAGE_EDIT_PLACEHOLDER : "Message Maple..."
+                        }
+                        disabled={isRecordingForActive}
                         className={`resize-none border-0 bg-transparent pl-4 pr-8 text-base leading-6 focus-visible:ring-0 focus-visible:ring-offset-0 placeholder:text-muted-foreground/60 ${
                           isFullscreen
                             ? "flex-1 min-h-0 pt-3 pb-2"
@@ -5105,13 +5991,13 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
                                 variant="ghost"
                                 size="sm"
                                 className="h-8 w-8 p-0 text-[hsl(var(--maple-secondary-700))] hover:bg-[hsl(var(--maple-primary-container))] hover:text-[hsl(var(--maple-secondary-700))]"
-                                disabled={isGenerating || isProcessingDocument}
+                                disabled={Boolean(queueEdit) || isProcessingDocument}
                                 aria-busy={isProcessingDocument}
                                 aria-label={
                                   isProcessingDocument
                                     ? "Processing document"
-                                    : isGenerating
-                                      ? "Attachments unavailable while generating"
+                                    : queueEdit
+                                      ? "Attachments unavailable while editing a queued message"
                                       : "Add attachment"
                                 }
                               >
@@ -5130,7 +6016,7 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
                             </DropdownMenuTrigger>
                             <DropdownMenuContent align="start">
                               <DropdownMenuItem
-                                disabled={isGenerating}
+                                disabled={Boolean(queueEdit)}
                                 onClick={() => {
                                   if (!canUseImages) {
                                     setUpgradeFeature("image");
@@ -5145,7 +6031,7 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
                                 <span>Add Images</span>
                               </DropdownMenuItem>
                               <DropdownMenuItem
-                                disabled={isGenerating}
+                                disabled={Boolean(queueEdit)}
                                 onClick={() => {
                                   if (!isTauriEnv) {
                                     setDocumentPlatformDialogOpen(true);
@@ -5169,17 +6055,21 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
                           <Button
                             type="button"
                             onClick={startRecording}
-                            disabled={isGenerating || isRecording || !canUseVoice}
+                            disabled={isStopping || isRecording || !canUseVoice}
                             size="icon"
                             variant="ghost"
                             className="h-8 w-8 rounded-xl hover:bg-muted sm:h-9 sm:w-9"
                           >
                             <Mic className="h-4 w-4" />
                           </Button>
-                          {isGenerating ? (
+                          {queueEdit ? (
+                            <DiscardQueuedMessageEditButton onDiscard={discardQueueEdit} />
+                          ) : null}
+                          {showsStop ? (
                             <Button
                               type="button"
                               onClick={handleCancelResponse}
+                              disabled={isStopping}
                               aria-label="Stop generating"
                               size="icon"
                               variant="destructive"
@@ -5187,19 +6077,15 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
                             >
                               <div className="h-3 w-3 rounded-md bg-current" />
                             </Button>
-                          ) : (
-                            <button
-                              type="submit"
-                              aria-label="Send message"
-                              disabled={
-                                isProcessingDocument ||
-                                (!input.trim() && !draftImages.length && !documentText)
-                              }
-                              className="flex h-8 w-8 items-center justify-center rounded-full bg-gradient-to-b from-[hsl(var(--maple-primary))] to-[hsl(var(--maple-primary-strong))] text-[hsl(var(--maple-on-primary))]/90 transition-all duration-200 ease-out active:scale-[0.95] disabled:pointer-events-none disabled:opacity-40 sm:h-9 sm:w-9"
-                            >
-                              <ArrowUp className="h-3.5 w-3.5 sm:h-4 sm:w-4" />
-                            </button>
-                          )}
+                          ) : null}
+                          <button
+                            type="submit"
+                            aria-label={queueEdit ? "Save queued message" : "Send message"}
+                            disabled={!canSubmitMessage}
+                            className="flex h-8 w-8 items-center justify-center rounded-full bg-gradient-to-b from-[hsl(var(--maple-primary))] to-[hsl(var(--maple-primary-strong))] text-[hsl(var(--maple-on-primary))]/90 transition-all duration-200 ease-out active:scale-[0.95] disabled:pointer-events-none disabled:opacity-40 sm:h-9 sm:w-9"
+                          >
+                            <ArrowUp className="h-3.5 w-3.5 sm:h-4 sm:w-4" />
+                          </button>
                         </div>
                       </div>
 
@@ -5232,7 +6118,7 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
             <div className="mx-auto max-w-4xl px-4 landscape-short:px-3">
               <form onSubmit={handleSendMessage} className="relative">
                 <div className="space-y-2 landscape-short:space-y-1">
-                  {(draftImages.length > 0 || documentName) && (
+                  {!queueEdit && (draftImages.length > 0 || documentName) && (
                     <div className="space-y-2 landscape-short:space-y-1">
                       {draftImages.length > 0 && (
                         <div className="flex flex-wrap gap-2">
@@ -5246,7 +6132,6 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
                               <button
                                 type="button"
                                 onClick={() => removeImage(i)}
-                                disabled={isGenerating}
                                 aria-label={`Remove attachment ${i + 1}`}
                                 className="absolute -right-1 -top-1 rounded-full border bg-background p-0.5 opacity-0 transition-opacity group-hover:opacity-100 disabled:pointer-events-none disabled:opacity-40"
                               >
@@ -5264,7 +6149,6 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
                           <button
                             type="button"
                             onClick={removeDocument}
-                            disabled={isGenerating}
                             aria-label="Remove document"
                             className="text-muted-foreground hover:text-foreground disabled:pointer-events-none disabled:opacity-40"
                           >
@@ -5282,6 +6166,13 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
                   )}
 
                   <ChatComposerSurface>
+                    <QueuedComposerMessages
+                      items={queuedMessages}
+                      editingQueueId={queueEdit?.queueId}
+                      getFallbackLabel={queuedChatMessageFallbackLabel}
+                      onRemove={cancelQueuedMessage}
+                      onEdit={editQueuedMessage}
+                    />
                     <Textarea
                       ref={textareaRef}
                       value={input}
@@ -5289,8 +6180,8 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
                       onKeyDown={handleKeyDown}
                       onBeforeInput={handleBeforeInput}
                       onPaste={handlePaste}
-                      placeholder="Message Maple..."
-                      disabled={isGenerating || isRecordingForActive}
+                      placeholder={queueEdit ? QUEUED_MESSAGE_EDIT_PLACEHOLDER : "Message Maple..."}
+                      disabled={isRecordingForActive}
                       className={CHAT_COMPOSER_TEXTAREA_CLASS}
                       rows={1}
                       id="message"
@@ -5330,13 +6221,13 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
                               variant="ghost"
                               size="sm"
                               className="h-8 w-8 p-0 text-[hsl(var(--maple-secondary-700))] hover:bg-[hsl(var(--maple-primary-container))] hover:text-[hsl(var(--maple-secondary-700))]"
-                              disabled={isGenerating || isProcessingDocument}
+                              disabled={Boolean(queueEdit) || isProcessingDocument}
                               aria-busy={isProcessingDocument}
                               aria-label={
                                 isProcessingDocument
                                   ? "Processing document"
-                                  : isGenerating
-                                    ? "Attachments unavailable while generating"
+                                  : queueEdit
+                                    ? "Attachments unavailable while editing a queued message"
                                     : "Add attachment"
                               }
                             >
@@ -5355,7 +6246,7 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
                           </DropdownMenuTrigger>
                           <DropdownMenuContent align="start">
                             <DropdownMenuItem
-                              disabled={isGenerating}
+                              disabled={Boolean(queueEdit)}
                               onClick={() => {
                                 if (!canUseImages) {
                                   setUpgradeFeature("image");
@@ -5370,7 +6261,7 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
                               <span>Add Images</span>
                             </DropdownMenuItem>
                             <DropdownMenuItem
-                              disabled={isGenerating}
+                              disabled={Boolean(queueEdit)}
                               onClick={() => {
                                 if (!isTauriEnv) {
                                   setDocumentPlatformDialogOpen(true);
@@ -5394,17 +6285,21 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
                         <Button
                           type="button"
                           onClick={startRecording}
-                          disabled={isGenerating || isRecording || !canUseVoice}
+                          disabled={isStopping || isRecording || !canUseVoice}
                           size="icon"
                           variant="ghost"
                           className="h-8 w-8 rounded-xl text-[hsl(var(--maple-secondary-700))] hover:bg-[hsl(var(--maple-primary-container))] hover:text-[hsl(var(--maple-secondary-700))]"
                         >
                           <Mic className="h-4 w-4 text-[hsl(var(--maple-secondary-700))]" />
                         </Button>
-                        {isGenerating ? (
+                        {queueEdit ? (
+                          <DiscardQueuedMessageEditButton onDiscard={discardQueueEdit} />
+                        ) : null}
+                        {showsStop ? (
                           <Button
                             type="button"
                             onClick={handleCancelResponse}
+                            disabled={isStopping}
                             aria-label="Stop generating"
                             size="icon"
                             variant="destructive"
@@ -5412,19 +6307,15 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
                           >
                             <div className="h-3 w-3 rounded-md bg-current" />
                           </Button>
-                        ) : (
-                          <button
-                            type="submit"
-                            aria-label="Send message"
-                            disabled={
-                              isProcessingDocument ||
-                              (!input.trim() && !draftImages.length && !documentText)
-                            }
-                            className="flex h-8 w-8 items-center justify-center rounded-full bg-gradient-to-b from-[hsl(var(--maple-primary))] to-[hsl(var(--maple-primary-strong))] text-[hsl(var(--maple-on-primary))]/90 transition-all duration-200 ease-out active:scale-[0.95] disabled:pointer-events-none disabled:opacity-40"
-                          >
-                            <ArrowUp className="h-4 w-4" />
-                          </button>
-                        )}
+                        ) : null}
+                        <button
+                          type="submit"
+                          aria-label={queueEdit ? "Save queued message" : "Send message"}
+                          disabled={!canSubmitMessage}
+                          className="flex h-8 w-8 items-center justify-center rounded-full bg-gradient-to-b from-[hsl(var(--maple-primary))] to-[hsl(var(--maple-primary-strong))] text-[hsl(var(--maple-on-primary))]/90 transition-all duration-200 ease-out active:scale-[0.95] disabled:pointer-events-none disabled:opacity-40"
+                        >
+                          <ArrowUp className="h-4 w-4" />
+                        </button>
                       </div>
                     </div>
 

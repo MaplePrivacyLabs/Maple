@@ -81,6 +81,7 @@ function harness(
     dependencies: {
       runtime,
       auth,
+      readCredentials: (apiUrl, kind) => credentials(kind, apiUrl),
       getApiPcrConfig: () => snapshotPcrConfig({ environment: "development" }),
       getApiUrl: () => appApiUrl,
       getPlatformApiUrl: () => platformApiUrl,
@@ -562,5 +563,93 @@ describe("simplified Transport V2 encrypted API seam", () => {
       )
     ).rejects.toThrow("transport v2 connection dropped after send");
     expect(testHarness.request).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("queued Chat authenticated operations", () => {
+  test("stale account deletion cannot select replacement credentials", async () => {
+    const testHarness = harness(async () => exchange(jsonResponse({ deleted: true })));
+    await expect(
+      authenticatedApiCallWithDependencies(
+        `${appApiUrl}/v1/conversations`,
+        "DELETE",
+        undefined,
+        undefined,
+        testHarness.dependencies,
+        "old-user"
+      )
+    ).rejects.toMatchObject({ code: "chat_account_credential_mismatch" });
+    expect(testHarness.authority).not.toHaveBeenCalled();
+    expect(testHarness.request).not.toHaveBeenCalled();
+  });
+
+  test("cancellation preserves the authenticated status for terminal-race handling", async () => {
+    const testHarness = harness(async (input) => {
+      input.beforeSend?.();
+      return exchange(jsonResponse({ message: "already terminal" }, { status: 400 }));
+    });
+    await expect(
+      authenticatedApiCallWithDependencies(
+        `${appApiUrl}/v1/responses/owned/cancel`,
+        "POST",
+        undefined,
+        undefined,
+        testHarness.dependencies,
+        "user-principal"
+      )
+    ).rejects.toMatchObject({ status: 400, message: "already terminal" });
+    expect(testHarness.request).toHaveBeenCalledTimes(1);
+  });
+
+  for (const status of [200, 403]) {
+    test(`account replacement while a ${status} body arrives cannot publish its result`, async () => {
+      let current = credentials("user", appApiUrl);
+      const testHarness = harness(async (input) => {
+        input.beforeSend?.();
+        return exchange(
+          new Response(
+            new ReadableStream<Uint8Array>({
+              pull(controller) {
+                current = { ...current, principalId: "replacement" };
+                controller.enqueue(new TextEncoder().encode('{"message":"old-user-data"}'));
+                controller.close();
+              }
+            }),
+            { status }
+          )
+        );
+      });
+      testHarness.dependencies.readCredentials = () => current;
+      await expect(
+        authenticatedApiCallWithDependencies(
+          `${appApiUrl}/v1/conversations`,
+          "GET",
+          undefined,
+          undefined,
+          testHarness.dependencies,
+          "user-principal"
+        )
+      ).rejects.toMatchObject({ code: "chat_account_credential_mismatch" });
+    });
+  }
+
+  test("same-user refresh during a request allows its authenticated result", async () => {
+    let current = credentials("user", appApiUrl);
+    const testHarness = harness(async (input) => {
+      input.beforeSend?.();
+      current = { ...current, revision: current.revision + 1, accessToken: "refreshed" };
+      return exchange(jsonResponse({ items: [] }));
+    });
+    testHarness.dependencies.readCredentials = () => current;
+    expect(
+      await authenticatedApiCallWithDependencies(
+        `${appApiUrl}/v1/conversations`,
+        "GET",
+        undefined,
+        undefined,
+        testHarness.dependencies,
+        "user-principal"
+      )
+    ).toEqual({ items: [] });
   });
 });

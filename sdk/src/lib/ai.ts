@@ -1,3 +1,4 @@
+import { assertExpectedAccountPrincipal, guardAccountResponse } from "./credentialIdentity";
 import * as api from "./api";
 import { snapshotPcrConfig, type PcrConfig } from "./pcr";
 import {
@@ -17,9 +18,51 @@ import {
   type TransportV2Runtime
 } from "./transportV2/runtime";
 
+/** Identifies a failure that occurred before the target fetch was invoked. */
+export const REQUEST_NOT_DISPATCHED_CODE = "opensecret_request_not_dispatched";
+const ERROR_CONTRACT_VERSION = "1";
+const IMAGE_DESCRIPTION_UNAVAILABLE_ERROR_CODE = "image_description_unavailable";
+const IMAGE_DESCRIPTION_UNAVAILABLE_STATUS = 503;
+
+/** Orthogonal dispatch metadata that preserves the source error's code and name. */
+export interface RequestNotDispatchedMarker {
+  readonly requestDispatchCode: typeof REQUEST_NOT_DISPATCHED_CODE;
+  readonly definitelyNotDispatched: true;
+}
+
+function markRequestNotDispatched(error: unknown): unknown & RequestNotDispatchedMarker {
+  const marker: RequestNotDispatchedMarker = {
+    requestDispatchCode: REQUEST_NOT_DISPATCHED_CODE,
+    definitelyNotDispatched: true
+  };
+
+  if ((typeof error === "object" && error !== null) || typeof error === "function") {
+    try {
+      // Errors and DOMExceptions are normally extensible. Tagging the original
+      // preserves credential codes, AbortError names, prototypes, and identity.
+      return Object.assign(error, marker);
+    } catch {
+      // Fall through for frozen or host-provided exception objects.
+    }
+  }
+
+  const wrapped = Object.assign(
+    new Error(error instanceof Error ? error.message : "Request failed before transport dispatch"),
+    { cause: error },
+    marker
+  ) as Error & { code?: unknown } & RequestNotDispatchedMarker;
+  if (typeof error === "object" && error !== null) {
+    if ("name" in error && typeof error.name === "string") wrapped.name = error.name;
+    if ("code" in error) wrapped.code = error.code;
+  }
+  return wrapped;
+}
+
 export interface CustomFetchOptions {
   /** Optional API key to use instead of the signed-in user's V2 bearer. */
   apiKey?: string;
+  /** Account that owns this client; refreshed credentials must retain this principal. */
+  expectedUserId?: string;
   /** Fixed API URL whose attestation policy governs every request. */
   apiUrl?: string;
   /** PCR0 trust policy enforced before non-loopback session establishment. */
@@ -261,42 +304,63 @@ export function createCustomFetchWithDependencies(
   dependencies: CustomFetchDependencies
 ): (input: string | URL | Request, init?: RequestInit) => Promise<Response> {
   return async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
-    const configuredApiKey = options?.apiKey;
-    const apiUrl = options?.apiUrl ?? dependencies.getApiUrl();
-    const pcrConfig = snapshotPcrConfig(options?.pcrConfig ?? dependencies.getApiPcrConfig());
-    const signal = requestSignal(input, init);
-    const normalized = normalizedRequest(input, init);
-    signal?.throwIfAborted();
-    rejectAutomaticOpenAiRetry(normalized.headers);
-    const maxInferenceSends = takeInferenceSendLimit(normalized.headers);
-    let inferenceSendCount = 0;
-
-    const target = transportV2LogicalTarget(apiUrl, normalized.url);
-    const { credential, authority } = await authorityFor(
-      apiUrl,
-      pcrConfig,
-      target,
-      configuredApiKey,
-      dependencies
-    );
-    const body = await requestBody(input, init, normalized);
+    let requestAcceptanceAmbiguous = false;
+    let body: Uint8Array | undefined;
     let cacheNamespaceRoot: Uint8Array | undefined;
-
     try {
+      const configuredApiKey = options?.apiKey;
+      const apiUrl = options?.apiUrl ?? dependencies.getApiUrl();
+      const pcrConfig = snapshotPcrConfig(options?.pcrConfig ?? dependencies.getApiPcrConfig());
+      const expectedUserId =
+        options?.expectedUserId ??
+        (configuredApiKey === undefined
+          ? dependencies.readUserCredentials(apiUrl)?.principalId
+          : undefined);
+      const assertExpectedAccount = () => {
+        if (expectedUserId !== undefined) {
+          assertExpectedAccountPrincipal(
+            expectedUserId,
+            dependencies.readUserCredentials(apiUrl)?.principalId ?? null
+          );
+        }
+      };
+      assertExpectedAccount();
+      const signal = requestSignal(input, init);
+      const normalized = normalizedRequest(input, init);
       signal?.throwIfAborted();
+      rejectAutomaticOpenAiRetry(normalized.headers);
+      const maxInferenceSends = takeInferenceSendLimit(normalized.headers);
+      let inferenceSendCount = 0;
+      const target = transportV2LogicalTarget(apiUrl, normalized.url);
+      const { credential, authority } = await authorityFor(
+        apiUrl,
+        pcrConfig,
+        target,
+        configuredApiKey,
+        dependencies
+      );
+      assertExpectedAccount();
+      if (expectedUserId !== undefined && authority) {
+        assertExpectedAccountPrincipal(expectedUserId, authority.credentials.principalId);
+      }
+      body = await requestBody(input, init, normalized);
+      signal?.throwIfAborted();
+      assertExpectedAccount();
       cacheNamespaceRoot = credential ? dependencies.getCacheRoot(apiUrl) : undefined;
       const result = await dependencies.runtime.request({
         apiUrl,
         pcrConfig,
         canReplay: () => inferenceSendCount < maxInferenceSends,
         beforeSend: () => {
+          assertExpectedAccount();
           authority?.assertCurrent();
-          // The runtime calls this synchronous fence immediately before each
-          // application fetch, including a session-recovery replay. Attestation
-          // and auth preparation do not consume the inference send budget.
+          // Keep V2's exact authority fence and bounded recovery. Every actual
+          // application send is ambiguous until an authenticated rejection;
+          // an untrusted outer recovery hint never proves non-acceptance.
           if (inferenceSendCount >= maxInferenceSends) {
             throw new Error("Inference request send budget exhausted");
           }
+          requestAcceptanceAmbiguous = true;
           inferenceSendCount += 1;
         },
         signal,
@@ -309,17 +373,37 @@ export function createCustomFetchWithDependencies(
           body
         }
       });
+      // A later same-principal refresh may legitimately advance the revision.
+      // Publication checks identity, while the actual send retains V2's CAS.
+      const response =
+        expectedUserId === undefined
+          ? result.response
+          : guardAccountResponse(result.response, assertExpectedAccount);
       if (authority) {
-        dependencies.auth.noteResponse(result.response, apiUrl, pcrConfig, "user", authority);
+        dependencies.auth.noteResponse(response, apiUrl, pcrConfig, "user", authority);
       }
-      const capacityError = inferenceCapacityError(result.response, inferenceSendCount);
+      const capacityError = inferenceCapacityError(response, inferenceSendCount);
       if (capacityError) {
-        await result.response.body?.cancel("inference capacity response").catch(() => {});
+        requestAcceptanceAmbiguous = false;
+        await response.body?.cancel("inference capacity response").catch(() => {});
         throw capacityError;
       }
-      // Transport V2 decrypts opaque body bytes. Returning the authenticated
-      // Response unchanged preserves incremental SSE and native TTS bytes.
-      return result.response;
+      if (!response.ok) {
+        const preAcceptanceRejection =
+          (response.status >= 400 && response.status < 500 && response.status !== 408) ||
+          (response.status === IMAGE_DESCRIPTION_UNAVAILABLE_STATUS &&
+            response.headers.get(INFERENCE_CAPACITY_CONTRACT_HEADER) === ERROR_CONTRACT_VERSION &&
+            response.headers.get(INFERENCE_CAPACITY_CODE_HEADER) ===
+              IMAGE_DESCRIPTION_UNAVAILABLE_ERROR_CODE);
+        // Preserve Fetch status/headers for OpenAI. Even a truncated error body
+        // retains the authenticated pre-acceptance result through its marker.
+        if (preAcceptanceRejection) {
+          return guardAccountResponse(response, assertExpectedAccount, markRequestNotDispatched);
+        }
+      }
+      return response;
+    } catch (error) {
+      throw !requestAcceptanceAmbiguous ? markRequestNotDispatched(error) : error;
     } finally {
       body?.fill(0);
       cacheNamespaceRoot?.fill(0);

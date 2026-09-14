@@ -1,5 +1,10 @@
 import { describe, expect, spyOn, test } from "bun:test";
-import { createChatComposerState, createChatRuntimeStore } from "./ChatRuntimeContext";
+import {
+  composerHasRetainedDraft,
+  createChatComposerState,
+  createChatRuntimeStore
+} from "./ChatRuntimeContext";
+import { cancelActiveChatRuntimeRuns } from "@/services/chatRuntimeCancellation";
 import {
   draftScopeForRuntimeSelection,
   moveRememberedChatDraftToScope,
@@ -8,11 +13,66 @@ import {
   rootChatDraftKeyAfterProjectDeletion
 } from "../services/chatDraftSelection";
 import { createChatDraftKey, createConversationChatKey } from "../services/chatRuntimeStore";
+import {
+  mergeChatComposerDraftsForRekey,
+  type ChatQueuedMessage
+} from "../services/chatComposerQueue";
 
 type Conversation = { id: string };
 type Message = { id: string };
 
+function queuedMessage(id: string, overrides: Partial<ChatQueuedMessage> = {}): ChatQueuedMessage {
+  return {
+    queueId: `queue-${id}`,
+    messageId: `message-${id}`,
+    text: id,
+    draftImages: [],
+    imageUrls: new Map(),
+    documentText: "",
+    documentName: "",
+    draftProjectId: null,
+    model: "maple-model",
+    webSearchEnabled: false,
+    createdMs: 0,
+    ...overrides
+  };
+}
+
 describe("ChatRuntimeContext eviction policy", () => {
+  test("account teardown synchronously cancels every active queue runner", () => {
+    const store = createChatRuntimeStore<Conversation, Message>();
+    const firstKey = createConversationChatKey("first-running-conversation");
+    const secondKey = createConversationChatKey("second-running-conversation");
+    store.ensure(firstKey);
+    store.ensure(secondKey);
+    const first = store.beginRun(firstKey);
+    const second = store.beginRun(secondKey);
+
+    cancelActiveChatRuntimeRuns(store);
+
+    expect(first.signal.aborted).toBe(true);
+    expect(second.signal.aborted).toBe(true);
+    expect(store.getActiveRunKeys()).toEqual([]);
+    expect(store.get(firstKey)?.composer).toBeDefined();
+    expect(store.get(secondKey)?.composer).toBeDefined();
+  });
+
+  test("retains an idle runtime whose only unsent material is its queue", () => {
+    const store = createChatRuntimeStore<Conversation, Message>(0);
+    const queuedKey = createConversationChatKey("queued-conversation");
+    const nextKey = createConversationChatKey("next-conversation");
+    const composer = createChatComposerState();
+    composer.queue.items = [queuedMessage("retained")];
+
+    store.select(queuedKey, { composer });
+    store.select(nextKey, { conversation: { id: "next-conversation" } });
+
+    expect(store.get(queuedKey)?.composer.queue.items).toEqual([
+      expect.objectContaining({ queueId: "queue-retained" })
+    ]);
+    expect(composerHasRetainedDraft(queuedKey, composer)).toBe(true);
+  });
+
   test("retains and restores an idle draft with unsent composer content across selection", () => {
     const store = createChatRuntimeStore<Conversation, Message>(0);
     const draftKey = createChatDraftKey("retained-unsent-composer");
@@ -329,10 +389,19 @@ describe("ChatRuntimeContext eviction policy", () => {
     const firstAccountKey = createChatDraftKey("first-account");
     const secondAccountKey = createChatDraftKey("second-account");
     const image = new File(["private"], "private.png", { type: "image/png" });
+    const queuedImage = new File(["queued-private"], "queued-private.png", {
+      type: "image/png"
+    });
     const composer = createChatComposerState();
     composer.input = "first account draft";
     composer.draftImages = [image];
     composer.imageUrls.set(image, "blob:first-account");
+    composer.queue.items = [
+      queuedMessage("first-account-queued", {
+        draftImages: [queuedImage],
+        imageUrls: new Map([[queuedImage, "blob:first-account-queued"]])
+      })
+    ];
 
     try {
       firstAccountStore.select(firstAccountKey, { composer });
@@ -347,6 +416,7 @@ describe("ChatRuntimeContext eviction policy", () => {
 
       expect(run.signal.aborted).toBe(true);
       expect(revokeObjectURL).toHaveBeenCalledWith("blob:first-account");
+      expect(revokeObjectURL).toHaveBeenCalledWith("blob:first-account-queued");
       expect(secondAccountStore.getRememberedDraftKey(null)).toBe(secondAccountKey);
     } finally {
       firstAccountStore.dispose();
@@ -411,5 +481,83 @@ describe("ChatRuntimeContext eviction policy", () => {
       store.dispose();
       revokeObjectURL.mockRestore();
     }
+  });
+
+  test("disposal revokes active and queued object URLs exactly once", () => {
+    const revokeObjectURL = spyOn(URL, "revokeObjectURL").mockImplementation(() => {});
+    const store = createChatRuntimeStore<Conversation, Message>();
+    const key = createChatDraftKey("queued-object-urls");
+    const activeFile = new File(["active"], "active.png", { type: "image/png" });
+    const queuedFile = new File(["queued"], "queued.png", { type: "image/png" });
+    const composer = createChatComposerState();
+    composer.draftImages = [activeFile];
+    composer.imageUrls.set(activeFile, "blob:shared");
+    composer.queue.items = [
+      queuedMessage("with-images", {
+        draftImages: [queuedFile],
+        imageUrls: new Map([
+          [activeFile, "blob:shared"],
+          [queuedFile, "blob:queued"]
+        ])
+      })
+    ];
+
+    try {
+      store.ensure(key, { composer });
+      store.dispose();
+
+      expect(revokeObjectURL).toHaveBeenCalledTimes(2);
+      expect(revokeObjectURL).toHaveBeenCalledWith("blob:shared");
+      expect(revokeObjectURL).toHaveBeenCalledWith("blob:queued");
+    } finally {
+      store.dispose();
+      revokeObjectURL.mockRestore();
+    }
+  });
+
+  test("draft adoption merges source and destination queues without losing composer text", () => {
+    const store = createChatRuntimeStore<Conversation, Message>();
+    const sourceKey = createChatDraftKey("queued-source");
+    const destinationKey = createConversationChatKey("queued-destination");
+    const sourceComposer = createChatComposerState("project-a");
+    sourceComposer.input = "source draft";
+    sourceComposer.queue.items = [queuedMessage("source", { createdMs: 20 })];
+    const destinationComposer = createChatComposerState();
+    destinationComposer.input = "destination draft";
+    destinationComposer.queue.items = [queuedMessage("destination", { createdMs: 10 })];
+
+    store.select(sourceKey, { composer: sourceComposer });
+    const run = store.beginRun(sourceKey);
+    store.ensure(destinationKey, {
+      conversation: { id: "queued-destination" },
+      composer: destinationComposer,
+      historyLoaded: true
+    });
+
+    expect(
+      store.rekeyRunAdoptingIdleDestination(
+        sourceKey,
+        destinationKey,
+        run.token,
+        (source, destination) => ({
+          ...source,
+          conversation: destination.conversation,
+          historyLoaded: destination.historyLoaded,
+          composer: mergeChatComposerDraftsForRekey(
+            source.composer,
+            destination.composer,
+            destinationKey
+          ).composer
+        })
+      )
+    ).toMatchObject({ status: "migrated", key: destinationKey });
+
+    expect(store.get(destinationKey)?.composer.input).toBe("destination draft\nsource draft");
+    expect(store.get(destinationKey)?.composer.queue.items.map((item) => item.queueId)).toEqual([
+      "queue-destination",
+      "queue-source"
+    ]);
+    expect(store.isRunCurrent(destinationKey, run.token)).toBe(true);
+    expect(store.get(sourceKey)).toBe(store.get(destinationKey));
   });
 });

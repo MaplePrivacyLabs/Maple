@@ -55,6 +55,11 @@ import {
 } from "@/components/chat/ChatTurn";
 import { ChatCopyButton } from "@/components/chat/ChatCopyButton";
 import {
+  DiscardQueuedMessageEditButton,
+  QUEUED_MESSAGE_EDIT_PLACEHOLDER,
+  QueuedComposerMessages
+} from "@/components/chat/QueuedComposerMessages";
+import {
   continueChatComposerList,
   continueChatComposerListBeforeInput
 } from "@/components/chatComposerListContinuation";
@@ -5045,55 +5050,16 @@ function AgentComposer({
           {isExpanded ? <Shrink className="h-4 w-4" /> : <Expand className="h-4 w-4" />}
         </button>
       ) : null}
-      {queuedMessages.length > 0 ? (
-        <div className="flex flex-col gap-1 px-3 pt-2">
-          {queuedMessages.map((item) => (
-            <div
-              key={item.queueId}
-              className={cn(
-                "flex items-center gap-1 rounded-lg bg-muted/70 px-2 py-1 text-left text-xs text-muted-foreground",
-                item.queueId === editingQueueId && "bg-muted text-foreground ring-1 ring-border"
-              )}
-            >
-              <span className="min-w-0 flex-1 truncate" title={item.text}>
-                {item.text || `${item.attachments?.length ?? 0} image attachment(s)`}
-              </span>
-              {onCancelQueuedMessage ? (
-                <button
-                  type="button"
-                  className="rounded-md p-1 text-muted-foreground transition-colors hover:bg-background hover:text-foreground"
-                  onClick={() => onCancelQueuedMessage(item.queueId)}
-                  aria-label="Remove queued message"
-                >
-                  <Trash className="h-3.5 w-3.5" />
-                </button>
-              ) : null}
-              {onEditQueuedMessage ? (
-                <button
-                  type="button"
-                  className="rounded-md p-1 text-muted-foreground transition-colors hover:bg-background hover:text-foreground"
-                  onClick={() => onEditQueuedMessage(item.queueId)}
-                  aria-label="Edit queued message"
-                >
-                  <FilePenLine className="h-3.5 w-3.5" />
-                </button>
-              ) : null}
-              {onSteerQueuedMessage ? (
-                <button
-                  type="button"
-                  className="rounded-md p-1 text-muted-foreground transition-colors hover:bg-background hover:text-foreground disabled:pointer-events-none disabled:opacity-40"
-                  onClick={() => onSteerQueuedMessage(item.queueId)}
-                  disabled={isSendDisabled}
-                  title="Send into the current turn"
-                  aria-label="Send queued message into the current turn"
-                >
-                  <ArrowUp className="h-3.5 w-3.5" />
-                </button>
-              ) : null}
-            </div>
-          ))}
-        </div>
-      ) : null}
+      <QueuedComposerMessages
+        items={queuedMessages}
+        className={onToggleExpanded ? "pr-10" : undefined}
+        editingQueueId={editingQueueId}
+        getFallbackLabel={(item) => `${item.attachments?.length ?? 0} image attachment(s)`}
+        onRemove={onCancelQueuedMessage}
+        onEdit={onEditQueuedMessage}
+        onSendNow={onSteerQueuedMessage}
+        sendNowDisabled={isSendDisabled}
+      />
       {!editingQueueId && draftImages.length > 0 ? (
         <div className="flex flex-wrap gap-2 px-3 pt-3">
           {draftImages.map((image, index) => (
@@ -5132,9 +5098,7 @@ function AgentComposer({
         onPaste={onImagePaste}
         disabled={isSendDisabled}
         placeholder={
-          editingQueueId
-            ? "Edit the queued message, then send to keep its place..."
-            : "Ask Maple to work in this folder..."
+          editingQueueId ? QUEUED_MESSAGE_EDIT_PLACEHOLDER : "Ask Maple to work in this folder..."
         }
         className={cn(
           CHAT_COMPOSER_TEXTAREA_CLASS,
@@ -5217,15 +5181,7 @@ function AgentComposer({
 
         <div className="flex shrink-0 items-center self-end gap-1.5 sm:gap-2">
           {editingQueueId && onDiscardQueuedMessageEdit ? (
-            <Button
-              type="button"
-              size="sm"
-              variant="ghost"
-              className="h-8 px-2 text-xs text-muted-foreground"
-              onClick={onDiscardQueuedMessageEdit}
-            >
-              Discard
-            </Button>
+            <DiscardQueuedMessageEditButton onDiscard={onDiscardQueuedMessageEdit} />
           ) : null}
           {agentComposerShowsStop(isSending) ? (
             <Button

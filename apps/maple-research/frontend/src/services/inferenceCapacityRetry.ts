@@ -1,4 +1,7 @@
-import { findOpenSecretInferenceCapacityError } from "@mapleai/sdk";
+import {
+  findOpenSecretInferenceCapacityError,
+  type OpenSecretInferenceCapacityError
+} from "@mapleai/sdk";
 
 async function waitForRetry(delayMs: number, signal: AbortSignal): Promise<void> {
   signal.throwIfAborted();
@@ -22,7 +25,8 @@ type InferenceSendLimit = 1 | 2;
 /** Executes at most two inference sends across SDK repair and capacity replay. */
 export async function withInferenceCapacityRetry<T>(
   send: (maxInferenceSends: InferenceSendLimit) => Promise<T>,
-  signal: AbortSignal
+  signal: AbortSignal,
+  onCapacityRejected?: (error: OpenSecretInferenceCapacityError) => void
 ): Promise<T> {
   signal.throwIfAborted();
 
@@ -30,7 +34,9 @@ export async function withInferenceCapacityRetry<T>(
     return await send(2);
   } catch (error) {
     const capacity = findOpenSecretInferenceCapacityError(error);
-    if (!capacity || capacity.retryDelayMs === null || capacity.inferenceSendCount !== 1) {
+    if (!capacity) throw error;
+    onCapacityRejected?.(capacity);
+    if (capacity.retryDelayMs === null || capacity.inferenceSendCount !== 1) {
       throw error;
     }
 
