@@ -119,7 +119,6 @@ pub const GLM_5_3_FLASH_MODEL_ID: &str = "glm-5-3-flash";
 pub const POWERFUL_MODEL_ID: &str = GLM_5_3_MODEL_ID;
 pub const KIMI_K3_MODEL_ID: &str = "kimi-k3";
 pub const KIMI_K2_6_MODEL_ID: &str = "kimi-k2-6";
-pub const DEEPSEEK_V4_FLASH_MODEL_ID: &str = "deepseek-v4-flash";
 pub const DEEPSEEK_V4_1_FLASH_MODEL_ID: &str = "deepseek-v4-1-flash";
 
 const FREE_MODEL_ALIAS_TARGETS: ModelAliasTargets = ModelAliasTargets {
@@ -1148,7 +1147,7 @@ mod tests {
             assert_eq!(catalog["defaults"]["quick"], AUTO_QUICK_MODEL_ID);
             assert_eq!(catalog["defaults"]["powerful"], AUTO_POWERFUL_MODEL_ID);
             assert!(!has_model(&catalog, "glm-5-2"));
-            assert!(!has_model(&catalog, DEEPSEEK_V4_FLASH_MODEL_ID));
+            assert!(!has_model(&catalog, "deepseek-v4-flash"));
             assert!(has_model(&catalog, GLM_5_3_MODEL_ID));
         }
     }
@@ -1459,7 +1458,7 @@ mod tests {
             resolve_completion_model_id(DEEPSEEK_V4_1_FLASH_MODEL_ID),
             Some(DEEPSEEK_V4_1_FLASH_MODEL_ID)
         );
-        assert!(!has_model(&catalog, DEEPSEEK_V4_FLASH_MODEL_ID));
+        assert!(!has_model(&catalog, "deepseek-v4-flash"));
     }
 
     #[test]
