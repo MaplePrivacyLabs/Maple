@@ -1,8 +1,9 @@
 use crate::native_transport_root::TransportRootState;
 use crate::open_secret_config::{configured_pcr0_environment, normalize_api_url};
 use maple_sdk::{
-    InferenceRequest, InferenceResponse, InferenceSendBudget, OpenSecretClient, TransportV2CacheNamespaceRoot,
-    WebExtractRequest, WebExtractResponse, WebSearchRequest, WebSearchResponse,
+    InferenceRequest, InferenceResponse, InferenceSendBudget, OpenSecretClient,
+    TransportV2CacheNamespaceRoot, WebExtractRequest, WebExtractResponse, WebSearchRequest,
+    WebSearchResponse,
 };
 use rand::RngCore;
 use serde::{Deserialize, Serialize};

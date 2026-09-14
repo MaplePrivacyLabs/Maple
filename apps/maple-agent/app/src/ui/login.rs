@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use gpui::{AppContext, Context, Div, Entity, EventEmitter, Render, Window, div, prelude::*};
 
-use crate::backend::{AgentBackend, OAuthProvider};
+use crate::backend::{AgentBackend, AuthSession, OAuthProvider};
 use crate::ui::icons::wordmark;
 use crate::ui::text_input::TextInput;
 use crate::ui::theme;
@@ -184,14 +184,25 @@ impl LoginScreen {
         self.call(
             async move { backend.oauth_complete(provider, redirected).await },
             cx,
-            |this, result, cx| match result {
-                Ok(session) => cx.emit(LoginSucceeded(session.user_id)),
-                Err(message) => this.error = Some(message),
-            },
+            Self::oauth_completed,
         );
     }
 
+    fn oauth_completed(&mut self, result: Result<AuthSession, String>, cx: &mut Context<Self>) {
+        match result {
+            // Success means native authentication is already installed and
+            // persisted. If Back raced with its queued UI receipt, follow
+            // that committed account instead of leaving a signed-out form
+            // over a live session. `busy` prevents another sign-in until
+            // this completion is delivered.
+            Ok(session) => cx.emit(LoginSucceeded(session.user_id)),
+            Err(_) if matches!(self.oauth, OAuthFlow::Idle) => {}
+            Err(message) => self.error = Some(message),
+        }
+    }
+
     fn cancel_oauth(&mut self, cx: &mut Context<Self>) {
+        self.backend.cancel_oauth();
         self.oauth = OAuthFlow::Idle;
         self.error = None;
         self.callback_input.update(cx, |input, cx| input.clear(cx));
@@ -380,4 +391,60 @@ fn field(label: &str, input: Entity<TextInput>) -> Div {
         );
     }
     container.child(widgets::input_frame().child(input))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gpui::TestAppContext;
+    use std::{cell::RefCell, rc::Rc};
+
+    #[gpui::test]
+    fn oauth_committed_success_is_delivered_when_back_precedes_ui_receipt(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        let backend =
+            Arc::new(AgentBackend::new("http://127.0.0.1:9".to_string(), String::new()).unwrap());
+        let screen = cx.new(|cx| LoginScreen::new(backend, cx));
+        let signed_in = Rc::new(RefCell::new(Vec::new()));
+        let observed = Rc::clone(&signed_in);
+        let _subscription = cx.update(|cx| {
+            cx.subscribe(&screen, move |_, event: &LoginSucceeded, _| {
+                observed.borrow_mut().push(event.0.clone());
+            })
+        });
+
+        // The backend has completed publication, but its bridge has not
+        // delivered the successful result to the login screen yet.
+        let committed = Ok(AuthSession {
+            user_id: "oauth-account-fixture".to_string(),
+        });
+        screen.update(cx, |this, cx| {
+            this.oauth = OAuthFlow::Pending {
+                provider: OAuthProvider::Github,
+                auth_url: "https://example.com/authorize".to_string(),
+            };
+            this.busy = true;
+            this.cancel_oauth(cx);
+            assert!(
+                this.busy,
+                "Back must not admit a replacement sign-in before receipt"
+            );
+            assert!(matches!(this.oauth, OAuthFlow::Idle));
+
+            // Deliver the same completion handler that the real bridge uses.
+            this.busy = false;
+            this.oauth_completed(committed, cx);
+            assert!(this.error.is_none());
+        });
+        assert_eq!(&*signed_in.borrow(), &["oauth-account-fixture"]);
+
+        screen.update(cx, |this, cx| {
+            this.oauth_completed(Err("Sign in was cancelled. Start again.".to_string()), cx);
+            assert!(
+                this.error.is_none(),
+                "an actual cancellation stays on the clean login form"
+            );
+        });
+        assert_eq!(signed_in.borrow().len(), 1);
+    }
 }

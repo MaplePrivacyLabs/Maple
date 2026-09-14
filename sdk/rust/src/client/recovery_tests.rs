@@ -190,6 +190,110 @@ async fn recovery_preserves_absent_body_and_serializes_typed_input_only_once() {
 }
 
 #[tokio::test]
+async fn inference_recovery_consumes_the_shared_send_ceiling() {
+    for code in ["session_not_found", "request_decryption_failed"] {
+        let server = MockServer::start().await;
+        let state = TestV2ServerState::new();
+        mount_sessions(&server, &state, 2, false).await;
+        mount_recovery_then_success(&server, &state, code, false, 2).await;
+        let client =
+            OpenSecretClient::new_with_api_key(server.uri(), "fixture-key".to_string()).unwrap();
+        let send_budget = InferenceSendBudget::new(2).unwrap();
+        let request = HttpRequest::get("/v1/models").body(Bytes::new()).unwrap();
+        let response = client
+            .send_inference_request_with_budget(request, send_budget.clone())
+            .await
+            .unwrap();
+        collect_response_body(response.into_body()).await.unwrap();
+        assert_eq!(send_budget.remaining(), 0);
+        let plaintexts = state.captured_request_plaintexts();
+        assert_eq!(plaintexts.len(), 2);
+        assert_eq!(plaintexts[0], plaintexts[1]);
+
+        // An outer caller cannot spend a third HTTP send after the SDK has
+        // already used the second slot for its transparent session recovery.
+        let request = HttpRequest::get("/v1/models").body(Bytes::new()).unwrap();
+        assert!(matches!(
+            client
+                .send_inference_request_with_budget(request, send_budget)
+                .await,
+            Err(Error::Other(message)) if message == "Inference request send budget exhausted"
+        ));
+        assert_eq!(state.captured_requests().len(), 2);
+        server.verify().await;
+    }
+}
+
+#[tokio::test]
+async fn inference_recovery_stops_when_the_caller_has_no_send_capacity_left() {
+    for code in ["session_not_found", "request_decryption_failed"] {
+        let server = MockServer::start().await;
+        let state = TestV2ServerState::new();
+        mount_sessions(&server, &state, 1, false).await;
+        Mock::given(method("POST"))
+            .and(path("/v2/request"))
+            .respond_with(recovery_response(code))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let client =
+            OpenSecretClient::new_with_api_key(server.uri(), "fixture-key".to_string()).unwrap();
+        let send_budget = InferenceSendBudget::new(1).unwrap();
+        let request = HttpRequest::get("/v1/models").body(Bytes::new()).unwrap();
+        assert!(matches!(
+            client
+                .send_inference_request_with_budget(request, send_budget.clone())
+                .await,
+            Err(Error::InvalidResponse(_))
+        ));
+        assert_eq!(send_budget.remaining(), 0);
+        assert!(client.get_session_id().unwrap().is_none());
+        server.verify().await;
+    }
+}
+
+#[tokio::test]
+async fn failed_recovery_handshake_does_not_consume_an_inference_send() {
+    let server = MockServer::start().await;
+    let state = TestV2ServerState::new();
+    let responder = SessionResponder {
+        server_secret: [0x94; 32],
+        state: Some(state),
+        delay: None,
+    };
+    let calls = AtomicUsize::new(0);
+    Mock::given(method("POST"))
+        .and(path("/v2/session"))
+        .respond_with(move |request: &Request| {
+            if calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                responder.respond(request)
+            } else {
+                ResponseTemplate::new(503)
+            }
+        })
+        .expect(2)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v2/request"))
+        .respond_with(recovery_response("session_not_found"))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let client =
+        OpenSecretClient::new_with_api_key(server.uri(), "fixture-key".to_string()).unwrap();
+    let send_budget = InferenceSendBudget::new(2).unwrap();
+    let request = HttpRequest::get("/v1/models").body(Bytes::new()).unwrap();
+    assert!(client
+        .send_inference_request_with_budget(request, send_budget.clone())
+        .await
+        .is_err());
+    assert_eq!(send_budget.remaining(), 1);
+    assert!(client.get_session_id().unwrap().is_none());
+    server.verify().await;
+}
+
+#[tokio::test]
 async fn recovery_reasons_share_one_budget_and_second_hint_surfaces() {
     for codes in [
         ["session_not_found", "request_decryption_failed"],

@@ -1065,15 +1065,20 @@ mod tests {
     }
     use axum::{
         Json, Router,
-        extract::{Path, State},
-        http::{HeaderMap, StatusCode, header::AUTHORIZATION},
+        body::Bytes,
+        extract::State,
+        http::{HeaderMap, header},
         response::{IntoResponse, Response},
-        routing::{get, post},
+        routing::post,
     };
     use base64::{Engine, engine::general_purpose::STANDARD as BASE64};
+    use chacha20poly1305::{
+        ChaCha20Poly1305, KeyInit,
+        aead::{Aead, Payload},
+    };
     use ciborium::value::Value as CborValue;
     use goose_providers::{base::Provider, conversation::message::Message, model::ModelConfig};
-    use maple_sdk::types::KeyExchangeRequest;
+    use hkdf::Hkdf;
     use std::sync::Mutex as StdMutex;
     use tokio::sync::Notify;
 
@@ -1134,27 +1139,63 @@ mod tests {
     #[derive(Clone)]
     struct RefreshThenStallState {
         key_pair: Arc<maple_sdk::crypto::KeyPair>,
-        session_key: [u8; 32],
-        session_id: String,
-        retry_started: Arc<Notify>,
+        secrets: Arc<StdMutex<Option<FixtureSessionSecrets>>>,
+        requests: Arc<StdMutex<Vec<serde_json::Value>>>,
+        request_started: Arc<Notify>,
     }
 
     struct RefreshThenStallFixture {
         session: Arc<MapleApiSession>,
         sink: Arc<RecordingEventSink>,
-        retry_started: Arc<Notify>,
+        requests: Arc<StdMutex<Vec<serde_json::Value>>>,
+        request_started: Arc<Notify>,
         server: tokio::task::JoinHandle<()>,
     }
 
-    fn mock_attestation_document(nonce: &str, server_public_key: &[u8; 32]) -> String {
+    #[derive(Clone)]
+    struct FixtureSessionSecrets {
+        session_id: [u8; 16],
+        request_key: [u8; 32],
+        response_key: [u8; 32],
+    }
+
+    fn fixture_context(label: &[u8], suffixes: &[&[u8]]) -> Vec<u8> {
+        let mut context = label.to_vec();
+        context.push(0);
+        for suffix in suffixes {
+            context.extend_from_slice(suffix);
+        }
+        context
+    }
+
+    fn fixture_session_id(secrets: &FixtureSessionSecrets) -> String {
+        secrets
+            .session_id
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect()
+    }
+
+    fn mock_attestation_document(
+        challenge: &[u8; 32],
+        client_public_key: &[u8; 32],
+        server_public_key: &[u8; 32],
+    ) -> String {
         let payload = CborValue::Map(vec![
             (
                 CborValue::Text("public_key".to_string()),
                 CborValue::Bytes(server_public_key.to_vec()),
             ),
             (
+                CborValue::Text("user_data".to_string()),
+                CborValue::Bytes(fixture_context(
+                    b"opensecret/transport-v2/session/v1/client-public-key",
+                    &[client_public_key],
+                )),
+            ),
+            (
                 CborValue::Text("nonce".to_string()),
-                CborValue::Bytes(nonce.as_bytes().to_vec()),
+                CborValue::Bytes(challenge.to_vec()),
             ),
         ]);
         let mut payload_bytes = Vec::new();
@@ -1170,83 +1211,198 @@ mod tests {
         BASE64.encode(cose_bytes)
     }
 
-    async fn attestation_handler(
+    async fn session_handler(
         State(state): State<RefreshThenStallState>,
-        Path(nonce): Path<String>,
+        Json(request): Json<serde_json::Value>,
     ) -> Json<serde_json::Value> {
-        Json(serde_json::json!({
-            "attestation_document": mock_attestation_document(
-                &nonce,
-                state.key_pair.public.as_bytes(),
-            )
-        }))
-    }
-
-    async fn key_exchange_handler(
-        State(state): State<RefreshThenStallState>,
-        Json(request): Json<KeyExchangeRequest>,
-    ) -> Json<serde_json::Value> {
-        let client_public_bytes = BASE64.decode(request.client_public_key).unwrap();
-        let client_public_key = maple_sdk::crypto::PublicKey::from(
-            <[u8; 32]>::try_from(client_public_bytes.as_slice()).unwrap(),
-        );
+        let challenge: [u8; 32] = BASE64
+            .decode(request["challenge"].as_str().unwrap())
+            .unwrap()
+            .try_into()
+            .unwrap();
+        let client_public_bytes: [u8; 32] = BASE64
+            .decode(request["client_public_key"].as_str().unwrap())
+            .unwrap()
+            .try_into()
+            .unwrap();
+        let client_public_key = maple_sdk::crypto::PublicKey::from(client_public_bytes);
         let shared_secret =
             maple_sdk::crypto::derive_shared_secret(&state.key_pair.secret, &client_public_key);
-        let encrypted_session_key = BASE64.encode(
-            maple_sdk::crypto::encrypt_data(shared_secret.as_bytes(), &state.session_key).unwrap(),
-        );
+        let server_public_key = state.key_pair.public.as_bytes();
+        let transcript = Sha256::digest(fixture_context(
+            b"opensecret/transport-v2/session/v1",
+            &[&challenge, &client_public_bytes, server_public_key],
+        ));
+        let hkdf = Hkdf::<Sha256>::new(Some(&challenge), shared_secret.as_bytes());
+        let mut secrets = FixtureSessionSecrets {
+            session_id: [0; 16],
+            request_key: [0; 32],
+            response_key: [0; 32],
+        };
+        for (label, output) in [
+            (
+                b"opensecret/transport-v2/request-key/v1".as_slice(),
+                secrets.request_key.as_mut_slice(),
+            ),
+            (
+                b"opensecret/transport-v2/response-key/v1".as_slice(),
+                secrets.response_key.as_mut_slice(),
+            ),
+            (
+                b"opensecret/transport-v2/session-id/v1".as_slice(),
+                secrets.session_id.as_mut_slice(),
+            ),
+        ] {
+            hkdf.expand(&fixture_context(label, &[&transcript]), output)
+                .unwrap();
+        }
+        let session_id = fixture_session_id(&secrets);
+        *state.secrets.lock().unwrap() = Some(secrets);
         Json(serde_json::json!({
-            "encrypted_session_key": encrypted_session_key,
-            "session_id": state.session_id,
+            "version": 2,
+            "session_id": session_id,
+            "expires_in_seconds": 3600,
+            "attestation_document": mock_attestation_document(
+                &challenge,
+                &client_public_bytes,
+                server_public_key,
+            ),
         }))
     }
 
-    async fn refresh_handler(
-        State(state): State<RefreshThenStallState>,
-    ) -> Json<serde_json::Value> {
-        let plaintext = serde_json::to_vec(&serde_json::json!({
-            "access_token": "fresh_access",
-            "refresh_token": "fresh_refresh",
+    fn fixture_record_key(
+        base_key: &[u8; 32],
+        label: &[u8],
+        session_id: &[u8; 16],
+        request_id: &[u8; 16],
+    ) -> [u8; 32] {
+        let mut key = [0; 32];
+        Hkdf::<Sha256>::from_prk(base_key)
+            .unwrap()
+            .expand(&fixture_context(label, &[session_id, request_id]), &mut key)
+            .unwrap();
+        key
+    }
+
+    fn fixture_json_response(
+        secrets: &FixtureSessionSecrets,
+        request_id: &[u8; 16],
+        body: serde_json::Value,
+    ) -> Response {
+        let key = fixture_record_key(
+            &secrets.response_key,
+            b"opensecret/transport-v2/response-subkey/v1",
+            &secrets.session_id,
+            request_id,
+        );
+        let cipher = ChaCha20Poly1305::new((&key).into());
+        let metadata = serde_json::to_vec(&serde_json::json!({
+            "status": 200,
+            "headers": [{"name": "content-type", "value": "application/json"}],
         }))
         .unwrap();
-        let encrypted = maple_sdk::crypto::encrypt_data(&state.session_key, &plaintext).unwrap();
-        Json(serde_json::json!({ "encrypted": BASE64.encode(encrypted) }))
+        let records = [
+            [&[1][..], metadata.as_slice()].concat(),
+            [&[2][..], serde_json::to_vec(&body).unwrap().as_slice()].concat(),
+            vec![3],
+        ];
+        let mut wire = Vec::new();
+        for (sequence, record) in records.iter().enumerate() {
+            let sequence = (sequence as u64).to_be_bytes();
+            let mut nonce = [0; 12];
+            nonce[4..].copy_from_slice(&sequence);
+            let aad = fixture_context(
+                b"opensecret/transport-v2/response-record/v1",
+                &[&secrets.session_id, request_id, &sequence],
+            );
+            let encrypted = cipher
+                .encrypt(
+                    (&nonce).into(),
+                    Payload {
+                        msg: record,
+                        aad: &aad,
+                    },
+                )
+                .unwrap();
+            wire.extend_from_slice(&(encrypted.len() as u32).to_be_bytes());
+            wire.extend(encrypted);
+        }
+        ([(header::CONTENT_TYPE, "application/octet-stream")], wire).into_response()
     }
 
     async fn refresh_then_stall_handler(
         State(state): State<RefreshThenStallState>,
         headers: HeaderMap,
+        body: Bytes,
     ) -> Response {
-        match headers
-            .get(AUTHORIZATION)
-            .and_then(|value| value.to_str().ok())
-        {
-            Some("Bearer expired_access") => {
-                (StatusCode::UNAUTHORIZED, "expired access token").into_response()
+        assert!(!headers.contains_key(header::AUTHORIZATION));
+        assert!(!headers.contains_key(header::COOKIE));
+        let secrets = state.secrets.lock().unwrap().clone().unwrap();
+        assert_eq!(headers["x-session-id"], fixture_session_id(&secrets));
+        let request_id: [u8; 16] = body[..16].try_into().unwrap();
+        let key = fixture_record_key(
+            &secrets.request_key,
+            b"opensecret/transport-v2/request-subkey/v1",
+            &secrets.session_id,
+            &request_id,
+        );
+        let aad = fixture_context(
+            b"opensecret/transport-v2/request-record/v1",
+            &[&secrets.session_id, &request_id],
+        );
+        let plaintext = ChaCha20Poly1305::new((&key).into())
+            .decrypt(
+                (&[0; 12]).into(),
+                Payload {
+                    msg: &body[16..],
+                    aad: &aad,
+                },
+            )
+            .unwrap();
+        let metadata_length = u32::from_be_bytes(plaintext[..4].try_into().unwrap()) as usize;
+        let metadata: serde_json::Value =
+            serde_json::from_slice(&plaintext[4..4 + metadata_length]).unwrap();
+        assert_eq!(metadata["version"], 2);
+        assert_eq!(metadata["method"], "POST");
+        state.requests.lock().unwrap().push(metadata.clone());
+        match metadata["target"].as_str().unwrap() {
+            "/refresh" => {
+                assert_eq!(metadata["credential"]["kind"], "resumption");
+                assert_eq!(metadata["credential"]["value"], "old_refresh");
+                assert_eq!(metadata["body_present"], false);
+                assert_eq!(plaintext.len(), 4 + metadata_length);
+                fixture_json_response(
+                    &secrets,
+                    &request_id,
+                    serde_json::json!({
+                        "access_token": "fresh_access",
+                        "refresh_token": "fresh_refresh",
+                    }),
+                )
             }
-            Some("Bearer fresh_access") => {
-                state.retry_started.notify_one();
+            "/v1/chat/completions" | "/v1/web/search" => {
+                assert_eq!(metadata["credential"]["kind"], "bearer");
+                assert_eq!(metadata["credential"]["value"], "fresh_access");
+                state.request_started.notify_one();
                 futures_util::future::pending::<Response>().await
             }
-            _ => (StatusCode::FORBIDDEN, "unexpected credential").into_response(),
+            target => panic!("unexpected logical request target: {target}"),
         }
     }
 
     async fn refresh_then_stall_fixture() -> RefreshThenStallFixture {
         let key_pair = Arc::new(maple_sdk::crypto::generate_key_pair());
-        let retry_started = Arc::new(Notify::new());
+        let request_started = Arc::new(Notify::new());
         let state = RefreshThenStallState {
             key_pair,
-            session_key: [41; 32],
-            session_id: "00000000-0000-0000-0000-000000000041".to_string(),
-            retry_started: Arc::clone(&retry_started),
+            secrets: Arc::new(StdMutex::new(None)),
+            requests: Arc::new(StdMutex::new(Vec::new())),
+            request_started: Arc::clone(&request_started),
         };
+        let requests = Arc::clone(&state.requests);
         let app = Router::new()
-            .route("/attestation/{nonce}", get(attestation_handler))
-            .route("/key_exchange", post(key_exchange_handler))
-            .route("/refresh", post(refresh_handler))
-            .route("/v1/chat/completions", post(refresh_then_stall_handler))
-            .route("/v1/web/search", post(refresh_then_stall_handler))
+            .route("/v2/session", post(session_handler))
+            .route("/v2/request", post(refresh_then_stall_handler))
             .with_state(state);
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let api_url = format!("http://{}", listener.local_addr().unwrap());
@@ -1255,7 +1411,9 @@ mod tests {
         let client = Arc::new(OpenSecretClient::new(api_url.clone()).unwrap());
         client
             .set_tokens(
-                "expired_access".to_string(),
+                // The unsigned local fixture only needs timing claims: V2
+                // refreshes proactively before admitting the original request.
+                "e30.eyJleHAiOjB9.c2ln".to_string(),
                 Some("old_refresh".to_string()),
             )
             .unwrap();
@@ -1275,7 +1433,8 @@ mod tests {
         RefreshThenStallFixture {
             session,
             sink,
-            retry_started,
+            requests,
+            request_started,
             server,
         }
     }
@@ -1294,6 +1453,10 @@ mod tests {
         .expect("refreshed credentials should be reconciled");
         assert_eq!(snapshot.access_token, "fresh_access");
         assert_eq!(snapshot.refresh_token.as_deref(), Some("fresh_refresh"));
+        let requests = fixture.requests.lock().unwrap();
+        assert_eq!(requests.len(), 2, "one refresh and one application request");
+        assert_eq!(requests[0]["target"], "/refresh");
+        assert_ne!(requests[1]["target"], "/refresh");
         assert_eq!(
             fixture.sink.events.lock().expect("event lock").as_slice(),
             &[("user-a".to_string(), 2)]
@@ -1501,10 +1664,10 @@ mod tests {
 
         tokio::time::timeout(
             std::time::Duration::from_secs(2),
-            fixture.retry_started.notified(),
+            fixture.request_started.notified(),
         )
         .await
-        .expect("refreshed inference retry should start");
+        .expect("refreshed inference request should start");
         cancellation.cancel();
         let result = tokio::time::timeout(std::time::Duration::from_secs(2), request)
             .await
@@ -1534,10 +1697,10 @@ mod tests {
 
         tokio::time::timeout(
             std::time::Duration::from_secs(2),
-            fixture.retry_started.notified(),
+            fixture.request_started.notified(),
         )
         .await
-        .expect("refreshed web retry should start");
+        .expect("refreshed web request should start");
         request.abort();
         let _ = request.await;
         assert_refresh_reconciled(&fixture).await;
@@ -1561,10 +1724,10 @@ mod tests {
 
         tokio::time::timeout(
             std::time::Duration::from_secs(2),
-            fixture.retry_started.notified(),
+            fixture.request_started.notified(),
         )
         .await
-        .expect("refreshed classifier retry should start");
+        .expect("refreshed classifier request should start");
         request.abort();
         let _ = request.await;
         assert_refresh_reconciled(&fixture).await;

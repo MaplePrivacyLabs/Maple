@@ -175,7 +175,7 @@ need cache hits across restarts should generate a root once, store it as a
 secret, and restore it when constructing the client:
 
 ```rust
-use opensecret::TransportV2CacheNamespaceRoot;
+use maple_sdk::TransportV2CacheNamespaceRoot;
 
 let root = TransportV2CacheNamespaceRoot::generate()?;
 let persisted = root.to_base64();

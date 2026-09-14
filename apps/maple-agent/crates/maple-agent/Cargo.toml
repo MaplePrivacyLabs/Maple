@@ -65,5 +65,7 @@ cua-driver-sdk = { git = "https://github.com/trycua/cua.git", rev = "2dbc1c2cfbe
 libc = "0.2"
 
 [dev-dependencies]
+chacha20poly1305 = "0.10"
+hkdf = "0.12"
 axum = "0.8"
 ciborium = "0.2"

@@ -46,6 +46,8 @@ export interface TransportV2RuntimeRequest {
   signal?: AbortSignal | null;
   /** Synchronous authority fence run after encryption and immediately before fetch. */
   beforeSend?: () => void;
+  /** Caller-owned replay budget, checked after repairing a recoverable session. */
+  canReplay?: () => boolean;
   oauthCallback?: {
     provider: TransportV2OAuthProvider;
     state: string;
@@ -457,7 +459,7 @@ export class TransportV2Runtime {
     // Freeze every logical value and authority callback before establishment
     // or a compatibility repair can await. Only transport keys and IDs change.
     const request = snapshotRequest(input.request);
-    const { signal, beforeSend } = input;
+    const { signal, beforeSend, canReplay } = input;
     const oauthCallback = input.oauthCallback ? { ...input.oauthCallback } : undefined;
     const sessionBound =
       oauthCallback !== undefined ||
@@ -480,6 +482,7 @@ export class TransportV2Runtime {
 
       let logical: TransportV2LogicalResponse;
       for (let attempt = 0; ; attempt += 1) {
+        let recoveryError: TransportV2UntrustedRecoveryHint;
         this.#retain(client);
         try {
           logical = await client.request(request, signal, beforeSend);
@@ -493,6 +496,7 @@ export class TransportV2Runtime {
           ) {
             throw error;
           }
+          recoveryError = error;
           // One V1-compatible repair is allowed for an exact outer hint. The
           // hint is untrusted: this trades duplicate-execution risk for recovery.
           // Network, response authentication, and stream failures never enter it.
@@ -501,6 +505,9 @@ export class TransportV2Runtime {
         }
         signal?.throwIfAborted();
         client = await this.#clientFor(identity.apiUrl, identity.policy, signal);
+        // Keep the repaired session for future calls, but do not let a nested
+        // session replay exceed the caller's logical inference send ceiling.
+        if (canReplay && !canReplay()) throw recoveryError;
       }
       const response = await toFetchResponse(logical);
       return {
