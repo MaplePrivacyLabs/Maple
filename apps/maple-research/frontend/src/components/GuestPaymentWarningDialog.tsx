@@ -18,6 +18,9 @@ import {
 import { resetWorkspaceModePreference } from "@/services/workspaceModePreference";
 import { useState } from "react";
 import { getBillingService } from "@/billing/billingService";
+import { useChatRuntimeStore } from "@/contexts/ChatRuntimeContext";
+import { beginAllChatRuntimeDeletionFence } from "@/services/chatRuntimeDeletionFence";
+import { assertChatAccountCredential } from "@/services/chatAccountCredential";
 
 interface GuestPaymentWarningDialogProps {
   open: boolean;
@@ -28,6 +31,7 @@ export function GuestPaymentWarningDialog({ open, onOpenChange }: GuestPaymentWa
   const navigate = useNavigate();
   const os = useOpenSecret();
   const queryClient = useQueryClient();
+  const runtimeStore = useChatRuntimeStore<unknown, unknown>();
   const [isLoggingOut, setIsLoggingOut] = useState(false);
   const [logoutError, setLogoutError] = useState<string | null>(null);
 
@@ -38,25 +42,42 @@ export function GuestPaymentWarningDialog({ open, onOpenChange }: GuestPaymentWa
   const handleLogout = async () => {
     setLogoutError(null);
     setIsLoggingOut(true);
+    const releaseChatFence = beginAllChatRuntimeDeletionFence(runtimeStore);
     let operationBlock: Awaited<ReturnType<typeof stopAgentRuntimeForUser>> | null = null;
     let signedOut = false;
     let nativeAuthCleared = false;
     const userId = os.auth.user?.user.id;
 
     try {
+      assertChatAccountCredential(userId);
+    } catch (error) {
+      console.error("Account changed before sign out:", error);
+      releaseChatFence();
+      setLogoutError("Your account changed in another window. Refresh Maple before signing out.");
+      setIsLoggingOut(false);
+      return;
+    }
+
+    try {
       operationBlock = await stopAgentRuntimeForUser(userId);
     } catch (error) {
       console.error("Error stopping Agent Mode:", error);
+      releaseChatFence();
       setLogoutError("Maple couldn't stop Agent Mode. Please try logging out again.");
       setIsLoggingOut(false);
       return;
     }
 
     try {
+      assertChatAccountCredential(userId);
       // Credential reset is a required part of logout.
       const { proxyService } = await import("@/services/proxyService");
-      await proxyService.stopAndResetProxy(userId, os.deleteApiKey);
+      await proxyService.stopAndResetProxy(userId, (name) => {
+        assertChatAccountCredential(userId);
+        return os.deleteApiKey(name);
+      });
 
+      assertChatAccountCredential(userId);
       // Third-party billing tokens outlive the OpenSecret browser session. If
       // one survives logout, the next account can briefly query billing as the
       // previous user until that token expires.
@@ -68,6 +89,7 @@ export function GuestPaymentWarningDialog({ open, onOpenChange }: GuestPaymentWa
 
       await clearMapleApiAuthForUser(userId);
       nativeAuthCleared = true;
+      assertChatAccountCredential(userId);
       await os.signOut();
       signedOut = true;
       resetWorkspaceModePreference();
@@ -79,6 +101,7 @@ export function GuestPaymentWarningDialog({ open, onOpenChange }: GuestPaymentWa
       );
     } finally {
       if (!signedOut) {
+        releaseChatFence();
         if (nativeAuthCleared) {
           try {
             await restoreMapleApiAuthForUser(userId);

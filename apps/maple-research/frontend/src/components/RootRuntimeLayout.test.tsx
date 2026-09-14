@@ -1,7 +1,8 @@
 import { describe, expect, mock, test } from "bun:test";
-import { useCallback, useEffect, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useLayoutEffect, useState, type ReactNode } from "react";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import { useChatRuntimeStore } from "@/contexts/ChatRuntimeContext";
+import { createConversationChatKey } from "@/services/chatRuntimeStore";
 import { RootRuntimeLayout } from "./RootRuntimeLayout";
 
 function OAuthCallbackProbe({ processCallback }: { processCallback: () => void }) {
@@ -51,6 +52,48 @@ function ChatStoreProbe({ onStore }: { onStore: (store: unknown) => void }) {
   useEffect(() => {
     onStore(store);
   }, [onStore, store]);
+
+  return null;
+}
+
+type AccountRunBoundary = {
+  previous?: {
+    store: {
+      getActiveRunKeys: () => readonly string[];
+    };
+    signal: AbortSignal;
+  };
+  observed?: {
+    activeRunKeys: readonly string[];
+    signalAborted: boolean;
+  };
+};
+
+function AccountRunBoundaryProbe({
+  userId,
+  boundary
+}: {
+  userId: string;
+  boundary: AccountRunBoundary;
+}) {
+  const store = useChatRuntimeStore<unknown, unknown>();
+
+  useLayoutEffect(() => {
+    if (userId === "user-a") {
+      const runtimeKey = createConversationChatKey("account-boundary");
+      store.ensure(runtimeKey);
+      const run = store.beginRun(runtimeKey);
+      boundary.previous = { store, signal: run.signal };
+      return;
+    }
+
+    const previous = boundary.previous;
+    if (!previous) return;
+    boundary.observed = {
+      activeRunKeys: [...previous.store.getActiveRunKeys()],
+      signalAborted: previous.signal.aborted
+    };
+  }, [boundary, store, userId]);
 
   return null;
 }
@@ -160,6 +203,41 @@ describe("RootRuntimeLayout", () => {
     act(() => renderer.unmount());
   });
 
+  test("cancels the previous account's queue runner before new-account layout effects", () => {
+    const boundary: AccountRunBoundary = {};
+    let renderer: ReactTestRenderer;
+
+    act(() => {
+      renderer = create(
+        <RootRuntimeLayout
+          userId="user-a"
+          pathname="/"
+          authenticatedHome={null}
+          routeContent={<div />}
+          accountScopedUi={<AccountRunBoundaryProbe userId="user-a" boundary={boundary} />}
+        />
+      );
+    });
+
+    expect(boundary.previous?.signal.aborted).toBe(false);
+
+    act(() => {
+      renderer.update(
+        <RootRuntimeLayout
+          userId="user-b"
+          pathname="/"
+          authenticatedHome={null}
+          routeContent={<div />}
+          accountScopedUi={<AccountRunBoundaryProbe userId="user-b" boundary={boundary} />}
+        />
+      );
+    });
+
+    expect(boundary.observed).toEqual({ activeRunKeys: [], signalAborted: true });
+
+    act(() => renderer.unmount());
+  });
+
   test("shares the same-account chat store when moving from home to an ordinary route", () => {
     const homeStores: unknown[] = [];
     const routeStores: unknown[] = [];
@@ -192,6 +270,30 @@ describe("RootRuntimeLayout", () => {
     expect(homeStores).toHaveLength(1);
     expect(routeStores).toHaveLength(1);
     expect(routeStores[0]).toBe(homeStores[0]);
+
+    act(() => renderer.unmount());
+  });
+
+  test("shares the account chat store with account-scoped UI", () => {
+    const homeStores: unknown[] = [];
+    const accountUiStores: unknown[] = [];
+    let renderer: ReactTestRenderer;
+
+    act(() => {
+      renderer = create(
+        <RootRuntimeLayout
+          userId="user-a"
+          pathname="/"
+          authenticatedHome={<ChatStoreProbe onStore={(store) => homeStores.push(store)} />}
+          routeContent={<div />}
+          accountScopedUi={<ChatStoreProbe onStore={(store) => accountUiStores.push(store)} />}
+        />
+      );
+    });
+
+    expect(homeStores).toHaveLength(1);
+    expect(accountUiStores).toHaveLength(1);
+    expect(accountUiStores[0]).toBe(homeStores[0]);
 
     act(() => renderer.unmount());
   });

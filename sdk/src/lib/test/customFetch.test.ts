@@ -681,3 +681,189 @@ describe("Transport V2 custom Fetch adapter", () => {
     });
   });
 });
+
+describe("queued Chat ownership through Transport V2", () => {
+  const user = userCredentials();
+  const options = { apiUrl, expectedUserId: user.principalId };
+  const requestInit = { method: "POST", body: JSON.stringify({ input: "queue-once" }) };
+  const url = `${apiUrl}/v1/responses`;
+  const marker = {
+    requestDispatchCode: "opensecret_request_not_dispatched",
+    definitelyNotDispatched: true
+  };
+
+  test("blocks an old account client before auth or transport work", async () => {
+    const deps = dependencies(async () => result(new Response("unexpected")), user);
+    deps.readUserCredentials = () => ({ ...user, principalId: "replacement" });
+    await expect(
+      createCustomFetchWithDependencies(options, deps)(url, requestInit)
+    ).rejects.toMatchObject({
+      ...marker,
+      code: "chat_account_credential_mismatch"
+    });
+    expect(deps.auth.authority).not.toHaveBeenCalled();
+    expect(deps.runtime.request).not.toHaveBeenCalled();
+  });
+
+  test("rechecks the owner after asynchronous authority selection", async () => {
+    const deps = dependencies(async () => result(new Response("unexpected")), user);
+    const select = deps.auth.authority;
+    deps.auth.authority = async (...args) => {
+      const selected = await select(...args);
+      deps.readUserCredentials = () => ({ ...user, principalId: "replacement" });
+      return selected;
+    };
+    await expect(
+      createCustomFetchWithDependencies(options, deps)(url, requestInit)
+    ).rejects.toMatchObject({
+      ...marker,
+      code: "chat_account_credential_mismatch"
+    });
+    expect(deps.runtime.request).not.toHaveBeenCalled();
+  });
+
+  test("rechecks the owner immediately before the actual application send", async () => {
+    let sends = 0;
+    const deps = dependencies(async (input) => {
+      deps.readUserCredentials = () => ({ ...user, principalId: "replacement" });
+      input.beforeSend?.();
+      sends++;
+      return result(new Response("unexpected"));
+    }, user);
+    await expect(
+      createCustomFetchWithDependencies(options, deps)(url, requestInit)
+    ).rejects.toMatchObject({
+      ...marker,
+      code: "chat_account_credential_mismatch"
+    });
+    expect(sends).toBe(0);
+  });
+
+  test("frozen preparation errors retain their code and name with dispatch metadata", async () => {
+    const source = Object.freeze(
+      Object.assign(new Error("policy unavailable"), { code: "pcr_policy", name: "PcrError" })
+    );
+    const deps = dependencies(async () => {
+      throw source;
+    }, user);
+    await expect(
+      createCustomFetchWithDependencies(options, deps)(url, requestInit)
+    ).rejects.toMatchObject({
+      ...marker,
+      code: "pcr_policy",
+      name: "PcrError",
+      cause: source
+    });
+  });
+
+  for (const secondFence of [false, true]) {
+    test(`keeps an ambiguous send unsafe after ${secondFence ? "a recovery fence" : "a network failure"}`, async () => {
+      const source = new Error("response lost");
+      const deps = dependencies(async (input) => {
+        input.beforeSend?.();
+        if (secondFence) {
+          deps.readUserCredentials = () => null;
+          input.beforeSend?.();
+        }
+        throw source;
+      }, user);
+      const error = await createCustomFetchWithDependencies(options, deps)(url, requestInit).catch(
+        (error: unknown) => error
+      );
+      expect(error).toBeInstanceOf(Error);
+      expect(error).not.toHaveProperty("definitelyNotDispatched");
+      expect(deps.runtime.request).toHaveBeenCalledTimes(1);
+    });
+  }
+
+  test("discards a response from an account replaced during the send", async () => {
+    let cancelled = false;
+    const deps = dependencies(async (input) => {
+      input.beforeSend?.();
+      deps.readUserCredentials = () => ({ ...user, principalId: "replacement" });
+      return result(
+        new Response(
+          new ReadableStream({
+            cancel() {
+              cancelled = true;
+            }
+          })
+        )
+      );
+    }, user);
+    const error = await createCustomFetchWithDependencies(options, deps)(url, requestInit).catch(
+      (error: unknown) => error
+    );
+    expect(error).toMatchObject({ code: "chat_account_credential_mismatch" });
+    expect(error).not.toHaveProperty("definitelyNotDispatched");
+    expect(cancelled).toBe(true);
+  });
+
+  test("fences incremental streaming but allows a same-user credential refresh", async () => {
+    let controller!: ReadableStreamDefaultController<Uint8Array>;
+    const deps = dependencies(async (input) => {
+      input.beforeSend?.();
+      return result(
+        new Response(
+          new ReadableStream<Uint8Array>({
+            start(value) {
+              controller = value;
+            }
+          })
+        )
+      );
+    }, user);
+    const response = await createCustomFetchWithDependencies(options, deps)(url, requestInit);
+    const reader = response.body!.getReader();
+    deps.readUserCredentials = () => ({ ...user, revision: 2, accessToken: "refreshed" });
+    controller.enqueue(new Uint8Array([0, 255, 128]));
+    expect((await reader.read()).value).toEqual(new Uint8Array([0, 255, 128]));
+    const pending = reader.read();
+    deps.readUserCredentials = () => null;
+    controller.enqueue(new Uint8Array([42]));
+    await expect(pending).rejects.toMatchObject({ code: "chat_account_credential_mismatch" });
+  });
+
+  for (const status of [403, 408, 500, 503]) {
+    test(`truncated authenticated ${status} body retains the correct acceptance classification`, async () => {
+      const deps = dependencies(async (input) => {
+        input.beforeSend?.();
+        return result(
+          new Response(
+            new ReadableStream({
+              start(controller) {
+                controller.error(new Error("truncated"));
+              }
+            }),
+            {
+              status,
+              headers:
+                status === 503
+                  ? {
+                      "x-opensecret-error-contract": "1",
+                      "x-opensecret-error-code": "image_description_unavailable"
+                    }
+                  : undefined
+            }
+          )
+        );
+      }, user);
+      const response = await createCustomFetchWithDependencies(options, deps)(url, requestInit);
+      const error = await response.text().catch((error: unknown) => error);
+      if (status === 403 || status === 503) expect(error).toMatchObject(marker);
+      else expect(error).not.toHaveProperty("definitelyNotDispatched");
+    });
+  }
+
+  test("authenticated capacity rejection remains classifiable and safe to restore", async () => {
+    const deps = dependencies(async (input) => {
+      input.beforeSend?.();
+      return result(capacityContractError(503));
+    }, user);
+    const error = await createCustomFetchWithDependencies(options, deps)(url, requestInit).catch(
+      (error: unknown) => error
+    );
+    expect(error).toMatchObject(marker);
+    expect(findOpenSecretInferenceCapacityError(error)?.inferenceSendCount).toBe(1);
+  });
+});

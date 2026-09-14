@@ -1,3 +1,9 @@
+import {
+  beginQueuedMessageEdit as beginSharedQueuedMessageEdit,
+  discardQueuedMessageEdit as discardSharedQueuedMessageEdit,
+  queuedMessageEditStillPresent as sharedQueuedMessageEditStillPresent
+} from "./composerQueue";
+
 export interface AgentQueuedMessage {
   queueId: string;
   messageId: string;
@@ -59,28 +65,51 @@ export function beginQueuedMessageEdit({
   item: AgentQueuedMessage;
   composerText: string;
 }): { edit: AgentQueuedMessageEdit; composer: string } | null {
-  if (current?.sessionId === sessionId && current.queueId === item.queueId) {
-    return null;
-  }
+  const result = beginSharedQueuedMessageEdit({
+    current: current
+      ? {
+          scopeKey: current.sessionId,
+          queueId: current.queueId,
+          stashedDraft: current.stashedDraft
+        }
+      : null,
+    scopeKey: sessionId,
+    item,
+    composerText
+  });
+  if (!result) return null;
   return {
     edit: {
-      sessionId,
-      queueId: item.queueId,
-      stashedDraft: current?.sessionId === sessionId ? current.stashedDraft : composerText
+      sessionId: result.edit.scopeKey,
+      queueId: result.edit.queueId,
+      stashedDraft: result.edit.stashedDraft
     },
-    composer: item.text
+    composer: result.composer
   };
 }
 
 export function discardQueuedMessageEdit(edit: AgentQueuedMessageEdit): string {
-  return edit.stashedDraft;
+  return discardSharedQueuedMessageEdit({
+    scopeKey: edit.sessionId,
+    queueId: edit.queueId,
+    stashedDraft: edit.stashedDraft
+  });
 }
 
 export function queuedMessageEditStillPresent(
   edit: AgentQueuedMessageEdit | null,
   items: AgentQueuedMessage[]
 ): boolean {
-  return Boolean(edit && items.some((item) => item.queueId === edit.queueId));
+  return sharedQueuedMessageEditStillPresent(
+    edit
+      ? {
+          scopeKey: edit.sessionId,
+          queueId: edit.queueId,
+          stashedDraft: edit.stashedDraft
+        }
+      : null,
+    items
+  );
 }
 
 export function shouldPrepareThoughtAfterAgentSend(queued?: AgentQueuedMessage | null): boolean {

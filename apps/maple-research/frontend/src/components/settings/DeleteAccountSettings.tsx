@@ -18,6 +18,15 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useSettingsNavigationLock } from "@/contexts/SettingsNavigationLockContext";
+import { useChatRuntimeStore } from "@/contexts/ChatRuntimeContext";
+import { useOpenAI } from "@/ai/useOpenAi";
+import { beginAllChatRuntimeDeletionFence } from "@/services/chatRuntimeDeletionFence";
+import { assertChatAccountCredential } from "@/services/chatAccountCredential";
+import {
+  cancelChatResponseForHistoryDeletion,
+  quiesceChatRuntimeRunsForHistoryDeletion,
+  settleChatRuntimeAfterHistoryCancellation
+} from "@/services/chatHistoryDeletionQuiescence";
 import {
   clearAgentDataForUser,
   clearMapleApiAuthForUser,
@@ -29,8 +38,10 @@ import { SettingsPage, SettingsSection } from "./SettingsPage";
 
 export function DeleteAccountSettings() {
   const os = useOpenSecret();
+  const openai = useOpenAI();
   const queryClient = useQueryClient();
   const { billingStatus } = useBillingState();
+  const runtimeStore = useChatRuntimeStore<unknown, unknown>();
   const [step, setStep] = useState<"request" | "confirm">("request");
   const [confirmationCode, setConfirmationCode] = useState("");
   const [secret, setSecret] = useState("");
@@ -60,8 +71,12 @@ export function DeleteAccountSettings() {
     setIsLoading(true);
     setError(null);
     try {
+      const expectedUserId = os.auth.user?.user.id;
+      assertChatAccountCredential(expectedUserId);
       const generatedSecret = generateSecureSecret();
-      await os.requestAccountDeletion(await hashSecret(generatedSecret));
+      const hashedSecret = await hashSecret(generatedSecret);
+      assertChatAccountCredential(expectedUserId);
+      await os.requestAccountDeletion(hashedSecret);
       setSecret(generatedSecret);
       setStep("confirm");
     } catch (requestError) {
@@ -75,6 +90,7 @@ export function DeleteAccountSettings() {
   const handleConfirmDeletion = async () => {
     setIsLoading(true);
     setError(null);
+    const releaseChatFence = beginAllChatRuntimeDeletionFence(runtimeStore);
     let deletionConfirmed = isAccountDeleted;
     let agentDataCleared = cleanupBlockRef.current !== null;
     let proxyReset = false;
@@ -82,6 +98,15 @@ export function DeleteAccountSettings() {
     const userId = os.auth.user?.user.id;
 
     try {
+      assertChatAccountCredential(userId);
+      await quiesceChatRuntimeRunsForHistoryDeletion({
+        store: runtimeStore,
+        responseOwnershipClient: openai,
+        cancelResponse: (responseId) => cancelChatResponseForHistoryDeletion(openai, responseId),
+        settleCancelledRun: (key, runToken) =>
+          settleChatRuntimeAfterHistoryCancellation(runtimeStore, key, runToken)
+      });
+
       if (!cleanupBlockRef.current) {
         // Clear local Agent data before the irreversible remote deletion.
         cleanupBlockRef.current = await clearAgentDataForUser(userId);
@@ -91,18 +116,27 @@ export function DeleteAccountSettings() {
       // Proxy credential reset is required before remote deletion so a crash
       // cannot leave a deleted account's key on disk.
       const { proxyService } = await import("@/services/proxyService");
-      await proxyService.stopAndResetProxy(userId, os.deleteApiKey);
+      await proxyService.stopAndResetProxy(userId, (name) => {
+        assertChatAccountCredential(userId);
+        return os.deleteApiKey(name);
+      });
       proxyReset = true;
 
       await clearMapleApiAuthForUser(userId);
       nativeAuthCleared = true;
 
       if (!deletionConfirmed) {
+        assertChatAccountCredential(userId);
         await os.confirmAccountDeletion(confirmationCode, secret);
         deletionConfirmed = true;
         setIsAccountDeleted(true);
         cleanupBlockRef.current.retainUntilNextSession();
       }
+
+      // The remote account no longer owns any renderable client state. Clear
+      // queued messages and attachment resources before credential cleanup,
+      // which can fail independently during a cross-tab account transition.
+      runtimeStore.clearAll();
 
       resetWorkspaceModePreference();
 
@@ -122,6 +156,7 @@ export function DeleteAccountSettings() {
       // If remote deletion did not happen, the authenticated user must be able
       // to start a fresh Agent runtime after this attempt.
       if (!deletionConfirmed) {
+        releaseChatFence();
         if (nativeAuthCleared) {
           try {
             await restoreMapleApiAuthForUser(userId);

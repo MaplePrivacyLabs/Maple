@@ -69,6 +69,55 @@ describe("withInferenceCapacityRetry", () => {
     expect(sends).toBe(1);
   });
 
+  test("reports a rejected turn before the delay so Stop can restore it and abort replay", async () => {
+    const controller = new AbortController();
+    let sends = 0;
+    let responseMayBeAccepted = false;
+    let acknowledgeRejection!: () => void;
+    const rejected = new Promise<void>((resolve) => {
+      acknowledgeRejection = resolve;
+    });
+    const replay = withInferenceCapacityRetry(
+      async () => {
+        sends += 1;
+        responseMayBeAccepted = true;
+        throw new OpenSecretInferenceCapacityError(503, 60_000);
+      },
+      controller.signal,
+      () => {
+        responseMayBeAccepted = false;
+        acknowledgeRejection();
+      }
+    );
+
+    await rejected;
+    expect(responseMayBeAccepted).toBe(false);
+    controller.abort();
+    await expect(replay).rejects.toMatchObject({ name: "AbortError" });
+    expect(sends).toBe(1);
+  });
+
+  test("a pending Stop or deletion can decline replay after a definite capacity rejection", async () => {
+    const capacity = new OpenSecretInferenceCapacityError(503, 0);
+    let sends = 0;
+    let rejected = 0;
+    await expect(
+      withInferenceCapacityRetry(
+        async () => {
+          sends += 1;
+          throw capacity;
+        },
+        new AbortController().signal,
+        (error) => {
+          rejected += 1;
+          throw error;
+        }
+      )
+    ).rejects.toBe(capacity);
+    expect(sends).toBe(1);
+    expect(rejected).toBe(1);
+  });
+
   test("propagates the sole replay failure after exactly two total sends", async () => {
     let sends = 0;
     const retryFailure = new Error("retry failed");

@@ -46,18 +46,30 @@ import { RenameChatDialog } from "@/components/RenameChatDialog";
 import { DeleteChatDialog } from "@/components/DeleteChatDialog";
 import { BulkDeleteDialog } from "@/components/BulkDeleteDialog";
 import { MoveChatsDialog } from "@/components/MoveChatsDialog";
-import { listAllConversationProjects } from "@/utils/paginatedLists";
+import { listAllConversationProjects, listAllConversations } from "@/utils/paginatedLists";
 import { usePersistentSidebarState } from "@/contexts/PersistentHomeNavigationContext";
 import { useChatRuntimeStore } from "@/contexts/ChatRuntimeContext";
+import { useOpenAI } from "@/ai/useOpenAi";
 import {
   resumeOrCreateChatDraftKey,
   rootChatDraftKeyAfterProjectDeletion
 } from "@/services/chatDraftSelection";
 import { createConversationChatKey } from "@/services/chatRuntimeStore";
 import {
+  beginAllChatRuntimeDeletionFence,
+  beginChatProjectRuntimeDeletionFence,
+  beginChatRuntimeDeletionFence
+} from "@/services/chatRuntimeDeletionFence";
+import {
   createChatHistoryEntryForDraft,
   type NewChatNavigationDetail
 } from "@/services/chatRuntimeNavigation";
+import {
+  cancelChatResponseForHistoryDeletion,
+  quiesceChatRuntimeRunsForHistoryDeletion,
+  settleChatRuntimeAfterHistoryCancellation
+} from "@/services/chatHistoryDeletionQuiescence";
+import { assertChatAccountCredential } from "@/services/chatAccountCredential";
 
 const PROJECT_PAGE_SIZE = 20;
 const MAX_SELECTION = 20;
@@ -154,6 +166,7 @@ function ProjectInstructionsDialog({
 
 export function ProjectDetailView({ projectId }: ProjectDetailViewProps) {
   const os = useOpenSecret();
+  const openai = useOpenAI();
   const userId = os.auth.user?.user.id;
   const queryClient = useQueryClient();
   const isMobile = useIsMobile();
@@ -386,20 +399,51 @@ export function ProjectDetailView({ projectId }: ProjectDetailViewProps) {
   );
 
   const handleDeleteProject = useCallback(async () => {
-    await os.deleteConversationProject(projectId);
-    runtimeStore.deleteActivityGroup(projectId);
-    await invalidateConversationData();
-    setSelectedProjectId(null);
-    const draftRuntimeKey = rootChatDraftKeyAfterProjectDeletion(runtimeStore);
-    const chatEntry = createChatHistoryEntryForDraft(draftRuntimeKey);
-    window.history.replaceState(chatEntry.historyState, "", "/");
-    window.dispatchEvent(
-      new CustomEvent<NewChatNavigationDetail>("newchat", {
-        detail: { projectId: null, draftRuntimeKey: chatEntry.draftRuntimeKey }
-      })
-    );
-    window.dispatchEvent(new Event("projectselected"));
-  }, [invalidateConversationData, os, projectId, runtimeStore, setSelectedProjectId]);
+    const expectedUserId = os.auth.user?.user.id;
+    const releaseDiscoveryFence = beginAllChatRuntimeDeletionFence(runtimeStore);
+    let releaseDeletionFence: (() => void) | null = null;
+    try {
+      assertChatAccountCredential(expectedUserId);
+      const projectConversationKeys = (
+        await listAllConversations(os, { project_id: projectId })
+      ).map((conversation) => createConversationChatKey(conversation.id));
+      releaseDeletionFence = beginChatProjectRuntimeDeletionFence(
+        runtimeStore,
+        projectId,
+        projectConversationKeys
+      );
+      releaseDiscoveryFence();
+
+      await quiesceChatRuntimeRunsForHistoryDeletion({
+        store: runtimeStore,
+        keys: projectConversationKeys,
+        activityGroupId: projectId,
+        responseOwnershipClient: openai,
+        cancelResponse: (responseId) => cancelChatResponseForHistoryDeletion(openai, responseId),
+        settleCancelledRun: (key, runToken) =>
+          settleChatRuntimeAfterHistoryCancellation(runtimeStore, key, runToken)
+      });
+
+      assertChatAccountCredential(expectedUserId);
+      await os.deleteConversationProject(projectId);
+      for (const key of projectConversationKeys) runtimeStore.delete(key);
+      runtimeStore.deleteActivityGroup(projectId);
+      await invalidateConversationData();
+      setSelectedProjectId(null);
+      const draftRuntimeKey = rootChatDraftKeyAfterProjectDeletion(runtimeStore);
+      const chatEntry = createChatHistoryEntryForDraft(draftRuntimeKey);
+      window.history.replaceState(chatEntry.historyState, "", "/");
+      window.dispatchEvent(
+        new CustomEvent<NewChatNavigationDetail>("newchat", {
+          detail: { projectId: null, draftRuntimeKey: chatEntry.draftRuntimeKey }
+        })
+      );
+      window.dispatchEvent(new Event("projectselected"));
+    } finally {
+      releaseDeletionFence?.();
+      releaseDiscoveryFence();
+    }
+  }, [invalidateConversationData, openai, os, projectId, runtimeStore, setSelectedProjectId]);
 
   const handleRenameConversation = useCallback(
     async (conversationId: string, newTitle: string) => {
@@ -411,16 +455,35 @@ export function ProjectDetailView({ projectId }: ProjectDetailViewProps) {
 
   const handleDeleteConversation = useCallback(
     async (conversationId: string) => {
-      await os.deleteConversation(conversationId);
-      runtimeStore.delete(createConversationChatKey(conversationId));
-      setSelectedIds((prev) => {
-        const next = new Set(prev);
-        next.delete(conversationId);
-        return next;
-      });
-      await refreshProjectPage();
+      const expectedUserId = os.auth.user?.user.id;
+      const releaseDeletionFence = beginChatRuntimeDeletionFence(
+        runtimeStore,
+        createConversationChatKey(conversationId)
+      );
+      try {
+        assertChatAccountCredential(expectedUserId);
+        await quiesceChatRuntimeRunsForHistoryDeletion({
+          store: runtimeStore,
+          keys: [createConversationChatKey(conversationId)],
+          responseOwnershipClient: openai,
+          cancelResponse: (responseId) => cancelChatResponseForHistoryDeletion(openai, responseId),
+          settleCancelledRun: (key, runToken) =>
+            settleChatRuntimeAfterHistoryCancellation(runtimeStore, key, runToken)
+        });
+        assertChatAccountCredential(expectedUserId);
+        await os.deleteConversation(conversationId);
+        runtimeStore.delete(createConversationChatKey(conversationId));
+        setSelectedIds((prev) => {
+          const next = new Set(prev);
+          next.delete(conversationId);
+          return next;
+        });
+        await refreshProjectPage();
+      } finally {
+        releaseDeletionFence();
+      }
     },
-    [os, refreshProjectPage, runtimeStore]
+    [openai, os, refreshProjectPage, runtimeStore]
   );
 
   const handleToggleConversationPin = useCallback(
@@ -452,8 +515,23 @@ export function ProjectDetailView({ projectId }: ProjectDetailViewProps) {
 
     setIsBulkDeleting(true);
     setError(null);
+    const releaseDeletionFences = Array.from(selectedIds, (id) =>
+      beginChatRuntimeDeletionFence(runtimeStore, createConversationChatKey(id))
+    );
     try {
-      const result = await os.batchDeleteConversations(Array.from(selectedIds));
+      const expectedUserId = os.auth.user?.user.id;
+      assertChatAccountCredential(expectedUserId);
+      const idsToDelete = Array.from(selectedIds);
+      await quiesceChatRuntimeRunsForHistoryDeletion({
+        store: runtimeStore,
+        keys: idsToDelete.map((id) => createConversationChatKey(id)),
+        responseOwnershipClient: openai,
+        cancelResponse: (responseId) => cancelChatResponseForHistoryDeletion(openai, responseId),
+        settleCancelledRun: (key, runToken) =>
+          settleChatRuntimeAfterHistoryCancellation(runtimeStore, key, runToken)
+      });
+      assertChatAccountCredential(expectedUserId);
+      const result = await os.batchDeleteConversations(idsToDelete);
       for (const item of result.data) {
         if (item.deleted) runtimeStore.delete(createConversationChatKey(item.id));
       }
@@ -464,9 +542,10 @@ export function ProjectDetailView({ projectId }: ProjectDetailViewProps) {
       console.error("Error bulk deleting chats:", error);
       setError("Failed to delete selected chats. Please try again.");
     } finally {
+      for (const releaseDeletionFence of releaseDeletionFences) releaseDeletionFence();
       setIsBulkDeleting(false);
     }
-  }, [os, refreshProjectPage, runtimeStore, selectedIds]);
+  }, [openai, os, refreshProjectPage, runtimeStore, selectedIds]);
 
   const handleMoveSelectedConversations = useCallback(
     async (targetProjectId: string | null) => {

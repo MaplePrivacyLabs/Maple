@@ -3,6 +3,21 @@ export type AdoptedDestinationFailureRecovery<TMessage, TComposer> = Readonly<{
   composer: TComposer;
 }>;
 
+export function chatCursorAfterSendFailure({
+  currentCursor,
+  optimisticMessageId,
+  previousCursor,
+  responseCreated
+}: {
+  currentCursor: string | undefined;
+  optimisticMessageId: string;
+  previousCursor: string | undefined;
+  responseCreated: boolean;
+}): string | undefined {
+  if (currentCursor !== optimisticMessageId || responseCreated) return currentCursor;
+  return previousCursor;
+}
+
 /**
  * Once a source run adopts an independently selected destination runtime, that
  * destination owns its composer and object URLs. A later source-send failure

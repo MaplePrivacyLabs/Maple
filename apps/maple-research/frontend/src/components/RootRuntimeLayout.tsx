@@ -35,8 +35,8 @@ function getRouteScopeKey(pathname: string, accountScopeKey: string): string {
  * ordinary routed content. OAuth callback and desktop-auth routes stay outside
  * that provider so authentication preserves their one-shot flow and account
  * confirmation. Signup also retains its route state long enough to show a newly
- * created anonymous user's Account ID. Global account-scoped UI retains its
- * previous remount behavior.
+ * created anonymous user's Account ID. Global account-scoped UI shares the
+ * Chat runtime while retaining its account-transition remount behavior.
  */
 export function RootRuntimeLayout({
   userId,
@@ -58,9 +58,9 @@ export function RootRuntimeLayout({
       <ChatRuntimeProvider key={`chat:${accountScopeKey}`}>
         {authenticatedHome}
         {!isAuthTransitionRoute ? keyedRouteContent : null}
+        <Fragment key={`global:${accountScopeKey}`}>{accountScopedUi}</Fragment>
       </ChatRuntimeProvider>
       {isAuthTransitionRoute ? keyedRouteContent : null}
-      <Fragment key={`global:${accountScopeKey}`}>{accountScopedUi}</Fragment>
     </>
   );
 }

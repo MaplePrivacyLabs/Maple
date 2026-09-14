@@ -101,6 +101,28 @@ describe("agent composer queue projection", () => {
     expect(queuedMessageEditStillPresent(second!.edit, [queued("q1", "oldest")])).toBe(false);
   });
 
+  test("preserves the Agent session-keyed edit API over the shared helper", () => {
+    const next = beginQueuedMessageEdit({
+      current: {
+        sessionId: "session-1",
+        queueId: "q1",
+        stashedDraft: "session one draft"
+      },
+      sessionId: "session-2",
+      item: queued("q2", "session two queued"),
+      composerText: "session two draft"
+    });
+
+    expect(next).toEqual({
+      edit: {
+        sessionId: "session-2",
+        queueId: "q2",
+        stashedDraft: "session two draft"
+      },
+      composer: "session two queued"
+    });
+  });
+
   test("does not seed thought tracking for a staged follow-up", () => {
     expect(shouldPrepareThoughtAfterAgentSend(undefined)).toBe(true);
     expect(shouldPrepareThoughtAfterAgentSend(null)).toBe(true);

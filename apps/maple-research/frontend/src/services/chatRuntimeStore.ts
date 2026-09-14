@@ -368,6 +368,42 @@ export class ChatRuntimeStore<TConversation, TMessage, TComposer> {
     return Object.freeze(Array.from(keys));
   }
 
+  /** Clears every account-scoped runtime while keeping this provider's store reusable. */
+  clearAll(): readonly ChatRuntimeKey[] {
+    this.assertNotDisposed();
+    const currentEntries = Array.from(this.entries.entries());
+    const keys = Object.freeze(currentEntries.map(([key]) => key));
+    const hadState =
+      currentEntries.length > 0 ||
+      this.aliases.size > 0 ||
+      this.completedUnreadGroups.size > 0 ||
+      this.rememberedDraftKeys.size > 0 ||
+      this.activeKey !== null ||
+      this.visibleChatLease !== null;
+    if (!hadState) return keys;
+
+    this.entries.clear();
+    this.aliases.clear();
+    this.completedUnreadGroups.clear();
+    this.rememberedDraftKeys.clear();
+    this.activeKey = null;
+    this.visibleChatLease = null;
+    this.visibleChatKey = null;
+
+    this.runAll([
+      ...currentEntries.flatMap(([, entry]) =>
+        entry.activeRun ? [() => entry.activeRun!.controller.abort()] : []
+      ),
+      ...currentEntries.map(
+        ([, entry]) =>
+          () =>
+            this.disposeEntry?.(entry.snapshot, "deleted")
+      ),
+      () => this.publish(true, true)
+    ]);
+    return keys;
+  }
+
   subscribeKey(key: ChatRuntimeKey, listener: () => void): () => void {
     let lastSnapshot = this.get(key);
     return this.subscribe(() => {
@@ -408,6 +444,11 @@ export class ChatRuntimeStore<TConversation, TMessage, TComposer> {
 
   get(key: ChatRuntimeKey): ChatRuntimeSnapshot<TConversation, TMessage, TComposer> | undefined {
     return this.entries.get(this.resolveKey(key))?.snapshot;
+  }
+
+  /** Read-only account snapshot used for aggregate resource admission checks. */
+  getSnapshots(): readonly ChatRuntimeSnapshot<TConversation, TMessage, TComposer>[] {
+    return Object.freeze(Array.from(this.entries.values(), (entry) => entry.snapshot));
   }
 
   ensure(
@@ -580,11 +621,25 @@ export class ChatRuntimeStore<TConversation, TMessage, TComposer> {
     return this.settleRun(key, token, true, updater);
   }
 
+  /**
+   * Reconciles a durably completed response while terminating a stream that
+   * can no longer provide useful ownership updates. Ownership is cleared before
+   * abort listeners run, preserving the same stale-token guarantee as cancel.
+   */
+  completeRunAndAbort(
+    key: ChatRuntimeKey,
+    token: number,
+    updater?: ChatRuntimeRunUpdater<TConversation, TMessage, TComposer>
+  ): boolean {
+    return this.settleRun(key, token, true, updater, true);
+  }
+
   private settleRun(
     key: ChatRuntimeKey,
     token: number,
     completedSuccessfully: boolean,
-    updater?: ChatRuntimeRunUpdater<TConversation, TMessage, TComposer>
+    updater?: ChatRuntimeRunUpdater<TConversation, TMessage, TComposer>,
+    abortController = false
   ): boolean {
     if (this.disposed) return false;
     const canonicalKey = this.resolveKey(key);
@@ -593,6 +648,7 @@ export class ChatRuntimeStore<TConversation, TMessage, TComposer> {
 
     const completed = updater ? { ...entry.snapshot, ...updater(entry.snapshot) } : entry.snapshot;
     const completedGroupId = entry.activeRun.groupId;
+    const run = entry.activeRun;
     entry.activeRun = null;
     entry.snapshot = this.updatedSnapshot(
       entry.snapshot,
@@ -618,6 +674,7 @@ export class ChatRuntimeStore<TConversation, TMessage, TComposer> {
     }
     this.touch(entry);
     this.evictInactiveCompletedEntries();
+    if (abortController) run.controller.abort();
     this.publish();
     return true;
   }

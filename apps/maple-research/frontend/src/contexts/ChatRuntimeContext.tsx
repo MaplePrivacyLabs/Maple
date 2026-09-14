@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useMemo, type ReactNode } from "react";
+import { createContext, useContext, useLayoutEffect, useMemo, type ReactNode } from "react";
 import {
   ChatRuntimeStore,
   type ChatRuntimeKey,
@@ -6,6 +6,12 @@ import {
   type ChatRuntimeStoreOptions
 } from "@/services/chatRuntimeStore";
 import { createDeferredDisposalLifecycle } from "@/services/deferredDisposalLifecycle";
+import {
+  disposeChatComposerObjectUrls,
+  emptyChatComposerQueueState,
+  type ChatComposerQueueState
+} from "@/services/chatComposerQueue";
+import { cancelActiveChatRuntimeRuns } from "@/services/chatRuntimeCancellation";
 
 export type ChatPaginationState = {
   oldestItemId: string | undefined;
@@ -25,6 +31,7 @@ export type ChatComposerState = {
   audioError: string | null;
   imagePasteGeneration: number;
   documentUploadGeneration: number;
+  queue: ChatComposerQueueState;
   pagination: ChatPaginationState;
 };
 
@@ -41,6 +48,7 @@ export function createChatComposerState(draftProjectId: string | null = null): C
     audioError: null,
     imagePasteGeneration: 0,
     documentUploadGeneration: 0,
+    queue: emptyChatComposerQueueState(),
     pagination: {
       oldestItemId: undefined,
       isLoadingOlderMessages: false,
@@ -63,16 +71,16 @@ export function composerHasRetainedDraft(
     composer.draftImages.length > 0 ||
     composer.documentText.length > 0 ||
     composer.documentName.length > 0 ||
-    composer.isProcessingDocument
+    composer.isProcessingDocument ||
+    composer.queue.items.length > 0 ||
+    composer.queue.edit !== null
   );
 }
 
 function disposeComposerResources(
   snapshot: ChatRuntimeSnapshot<unknown, unknown, ChatComposerState>
 ): void {
-  for (const url of snapshot.composer.imageUrls.values()) {
-    URL.revokeObjectURL(url);
-  }
+  disposeChatComposerObjectUrls(snapshot.composer);
 }
 
 export function createChatRuntimeStore<TConversation = unknown, TMessage = unknown>(
@@ -103,7 +111,16 @@ export function ChatRuntimeProvider({ children }: { children: ReactNode }) {
     [store]
   );
 
-  useEffect(() => disposalLifecycle.activate(), [disposalLifecycle]);
+  useLayoutEffect(() => {
+    const scheduleDisposal = disposalLifecycle.activate();
+    return () => {
+      // Account-keyed provider teardown must fence an old account's FIFO
+      // synchronously. Resource disposal stays deferred for Strict Mode replay,
+      // but no queued request may advance during that deferral window.
+      cancelActiveChatRuntimeRuns(store);
+      scheduleDisposal();
+    };
+  }, [disposalLifecycle, store]);
 
   return <ChatRuntimeContext.Provider value={store}>{children}</ChatRuntimeContext.Provider>;
 }

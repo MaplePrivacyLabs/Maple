@@ -1,3 +1,4 @@
+import { clearUserCredentialsForSignOut } from "./credentialIdentity";
 import React, { createContext, useState, useEffect, useRef } from "react";
 import * as api from "./api";
 import { createCustomFetch } from "./ai";
@@ -13,7 +14,6 @@ import type { AttestationDocument } from "./attestation";
 import type { LoginResponse, ThirdPartyTokenResponse, DocumentResponse } from "./api";
 import { PcrConfig } from "./pcr";
 import {
-  clearTransportV2CredentialsIfCurrent,
   readTransportV2Credentials,
   snapshotTransportV2Auth,
   subscribeTransportV2AuthInvalidation,
@@ -1057,6 +1057,7 @@ export function OpenSecretProvider({
     loading: true,
     user: undefined
   });
+  const authenticatedUserId = auth.user?.user.id;
   const authLoadGeneration = useRef(0);
   const authorityScope = snapshotTransportV2AuthorityScope(apiUrl, pcrConfig, "user");
   const authorityScopeKey = JSON.stringify([authorityScope.key, clientId]);
@@ -1107,11 +1108,13 @@ export function OpenSecretProvider({
   useEffect(() => {
     if (apiUrl) {
       // Pass API key if available, otherwise falls back to JWT
-      setAiCustomFetch(() => createCustomFetch({ apiKey, apiUrl, pcrConfig }));
+      setAiCustomFetch(() =>
+        createCustomFetch({ apiKey, apiUrl, pcrConfig, expectedUserId: authenticatedUserId })
+      );
     } else {
       setAiCustomFetch(undefined);
     }
-  }, [apiUrl, apiKey, pcrConfig]);
+  }, [apiUrl, apiKey, authenticatedUserId, pcrConfig]);
 
   async function fetchUser() {
     const generation = authLoadGeneration.current + 1;
@@ -1239,12 +1242,9 @@ export function OpenSecretProvider({
   }
 
   async function signOut() {
-    const credentials = readTransportV2Credentials(apiUrl, "user");
-    const snapshot = snapshotTransportV2Auth(apiUrl, "user");
-    clearTransportV2CredentialsIfCurrent(snapshot);
+    const refresh_token = clearUserCredentialsForSignOut(apiUrl, authenticatedUserId);
     setApiKey(undefined);
     setAuth({ loading: false, user: undefined });
-    const refresh_token = credentials?.refreshToken;
     if (refresh_token) {
       try {
         await api.fetchLogout(refresh_token);
@@ -1358,8 +1358,8 @@ export function OpenSecretProvider({
     get: api.fetchGet,
     put: api.fetchPut,
     list: api.fetchList,
-    del: api.fetchDelete,
-    delAll: api.fetchDeleteAllKV,
+    del: (key) => api.fetchDelete(key, authenticatedUserId),
+    delAll: () => api.fetchDeleteAllKV(authenticatedUserId),
     refetchUser: fetchUser,
     verifyEmail: api.verifyEmail,
     requestNewVerificationCode: api.requestNewVerificationCode,
@@ -1374,8 +1374,10 @@ export function OpenSecretProvider({
       plaintextSecret: string,
       newPassword: string
     ) => api.confirmPasswordReset(email, alphanumericCode, plaintextSecret, newPassword, clientId),
-    requestAccountDeletion: api.requestAccountDeletion,
-    confirmAccountDeletion: api.confirmAccountDeletion,
+    requestAccountDeletion: (hashedSecret) =>
+      api.requestAccountDeletion(hashedSecret, authenticatedUserId),
+    confirmAccountDeletion: (confirmationCode, plaintextSecret) =>
+      api.confirmAccountDeletion(confirmationCode, plaintextSecret, authenticatedUserId),
     initiateGitHubAuth,
     handleGitHubCallback,
     initiateGoogleAuth,
@@ -1415,35 +1417,37 @@ export function OpenSecretProvider({
     uploadDocumentWithPolling: api.uploadDocumentWithPolling,
     createApiKey: api.createApiKey,
     listApiKeys: api.listApiKeys,
-    deleteApiKey: api.deleteApiKey,
+    deleteApiKey: (name) => api.deleteApiKey(name, authenticatedUserId),
     transcribeAudio: api.transcribeAudio,
     webSearch: api.webSearch,
     webExtract: api.webExtract,
     fetchResponsesList: api.fetchResponsesList,
     fetchResponse: api.fetchResponse,
-    cancelResponse: api.cancelResponse,
-    deleteResponse: api.deleteResponse,
+    cancelResponse: (responseId) => api.cancelResponse(responseId, authenticatedUserId),
+    deleteResponse: (responseId) => api.deleteResponse(responseId, authenticatedUserId),
     createResponse: api.createResponse,
     createConversation: api.createConversation,
     getConversation: api.getConversation,
     updateConversation: api.updateConversation,
-    deleteConversation: api.deleteConversation,
+    deleteConversation: (conversationId) =>
+      api.deleteConversation(conversationId, authenticatedUserId),
     listConversationItems: api.listConversationItems,
     getConversationItem: api.getConversationItem,
     listConversations: api.listConversations,
-    deleteConversations: api.deleteConversations,
-    batchDeleteConversations: api.batchDeleteConversations,
+    deleteConversations: () => api.deleteConversations(authenticatedUserId),
+    batchDeleteConversations: (ids) => api.batchDeleteConversations(ids, authenticatedUserId),
     batchUpdateConversationProject: api.batchUpdateConversationProject,
     createConversationProject: api.createConversationProject,
     listConversationProjects: api.listConversationProjects,
     getConversationProject: api.getConversationProject,
     updateConversationProject: api.updateConversationProject,
-    deleteConversationProject: api.deleteConversationProject,
+    deleteConversationProject: (projectId) =>
+      api.deleteConversationProject(projectId, authenticatedUserId),
     createInstruction: api.createInstruction,
     listInstructions: api.listInstructions,
     getInstruction: api.getInstruction,
     updateInstruction: api.updateInstruction,
-    deleteInstruction: api.deleteInstruction,
+    deleteInstruction: (instructionId) => api.deleteInstruction(instructionId, authenticatedUserId),
     setDefaultInstruction: api.setDefaultInstruction
   };
 
