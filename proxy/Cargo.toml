@@ -28,8 +28,8 @@ name = "maple-proxy"
 path = "src/main.rs"
 
 [dependencies]
-# Let embedded consumers select a compatible SDK; Cargo.lock pins standalone builds.
-maple-sdk = "3.6.2"
+# Exercise the in-tree Transport V2 SDK until its independent publication.
+maple-sdk = { version = "3.6.2", path = "../sdk/rust" }
 
 # Web server
 axum = { version = "0.8.4", features = ["http2", "macros"] }

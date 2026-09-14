@@ -1915,20 +1915,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "dashmap"
-version = "6.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e6361d5c062261c78a176addb82d4c821ae42bed6089de0e12603cd25de2059c"
-dependencies = [
- "cfg-if",
- "crossbeam-utils",
- "hashbrown 0.14.5",
- "lock_api",
- "once_cell",
- "parking_lot_core",
-]
-
-[[package]]
 name = "data-encoding"
 version = "2.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4772,7 +4758,6 @@ dependencies = [
  "async-stream",
  "axum",
  "clap",
- "dashmap",
  "dotenvy",
  "futures",
  "http",
@@ -4789,8 +4774,6 @@ dependencies = [
 [[package]]
 name = "maple-sdk"
 version = "3.6.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ee9efa6ceaaddf0d1ff4d88448eacd48f3ebd6900a8c597d3b729b334750a5b4"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -4814,6 +4797,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.10.9",
+ "subtle",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
@@ -4821,6 +4805,7 @@ dependencies = [
  "x25519-dalek",
  "x509-parser",
  "yasna",
+ "zeroize",
 ]
 
 [[package]]

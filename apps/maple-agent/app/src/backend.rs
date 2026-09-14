@@ -97,6 +97,7 @@ pub struct AgentBackend {
     auth: MapleApiAuthState,
     api_url: String,
     persisted_auth: Arc<PersistedAuthStore>,
+    pending_oauth: PendingOAuthStore,
     client_id: Uuid,
     event_rx: tokio::sync::Mutex<Option<mpsc::UnboundedReceiver<AgentServiceEvent>>>,
     billing: crate::billing::BillingClient,
@@ -173,6 +174,121 @@ impl OAuthProvider {
             Self::Github => "GitHub",
             Self::Google => "Google",
             Self::Apple => "Apple",
+        }
+    }
+}
+
+const OAUTH_CANCELLED_MESSAGE: &str = "Sign in was cancelled. Start again.";
+
+/// V2 binds the provider callback to the SDK session that started it. Keep
+/// that exact client until the one permitted completion, and revoke work
+/// already in flight when the user cancels or starts another sign-in.
+struct OAuthAttempt {
+    provider: OAuthProvider,
+    client: Arc<OpenSecretClient>,
+    cancelled: tokio::sync::watch::Sender<bool>,
+}
+
+impl OAuthAttempt {
+    async fn while_active<T>(
+        &self,
+        operation: impl Future<Output = Result<T, String>>,
+    ) -> Result<T, String> {
+        let mut cancelled = self.cancelled.subscribe();
+        if *cancelled.borrow() {
+            return Err(OAUTH_CANCELLED_MESSAGE.to_string());
+        }
+        tokio::select! {
+            biased;
+            _ = cancelled.changed() => Err(OAUTH_CANCELLED_MESSAGE.to_string()),
+            result = operation => result,
+        }
+    }
+}
+
+struct PendingOAuth {
+    attempt: Arc<OAuthAttempt>,
+    state: Option<String>,
+    completing: bool,
+}
+
+#[derive(Default)]
+struct PendingOAuthStore(std::sync::Mutex<Option<PendingOAuth>>);
+
+impl PendingOAuthStore {
+    fn begin(&self, provider: OAuthProvider, client: OpenSecretClient) -> Arc<OAuthAttempt> {
+        let attempt = Arc::new(OAuthAttempt {
+            provider,
+            client: Arc::new(client),
+            cancelled: tokio::sync::watch::channel(false).0,
+        });
+        let mut pending = self.0.lock().expect("pending OAuth lock");
+        if let Some(previous) = pending.replace(PendingOAuth {
+            attempt: Arc::clone(&attempt),
+            state: None,
+            completing: false,
+        }) {
+            previous.attempt.cancelled.send_replace(true);
+        }
+        attempt
+    }
+
+    fn set_state(&self, attempt: &Arc<OAuthAttempt>, state: String) -> Result<(), String> {
+        let mut pending = self.0.lock().expect("pending OAuth lock");
+        let flow = pending
+            .as_mut()
+            .filter(|flow| Arc::ptr_eq(&flow.attempt, attempt))
+            .ok_or_else(|| OAUTH_CANCELLED_MESSAGE.to_string())?;
+        flow.state = Some(state);
+        Ok(())
+    }
+
+    fn complete(&self, provider: OAuthProvider, state: &str) -> Result<Arc<OAuthAttempt>, String> {
+        let mut pending = self.0.lock().expect("pending OAuth lock");
+        let flow = pending
+            .as_mut()
+            .filter(|flow| {
+                flow.attempt.provider == provider
+                    && flow.state.as_deref() == Some(state)
+                    && !flow.completing
+            })
+            .ok_or_else(|| {
+                "This callback does not match the pending sign in. Start again.".to_string()
+            })?;
+        flow.completing = true;
+        Ok(Arc::clone(&flow.attempt))
+    }
+
+    fn clear(&self, attempt: &Arc<OAuthAttempt>) {
+        let mut pending = self.0.lock().expect("pending OAuth lock");
+        if pending
+            .as_ref()
+            .is_some_and(|flow| Arc::ptr_eq(&flow.attempt, attempt))
+            && let Some(flow) = pending.take()
+        {
+            flow.attempt.cancelled.send_replace(true);
+        }
+    }
+
+    fn cancel(&self) {
+        if let Some(flow) = self.0.lock().expect("pending OAuth lock").take() {
+            flow.attempt.cancelled.send_replace(true);
+        }
+    }
+}
+
+/// A dropped initiation/completion must not leave a usable pending flow.
+/// Clearing is scoped to this attempt so late cleanup preserves a replacement.
+struct OAuthAttemptGuard<'a> {
+    store: &'a PendingOAuthStore,
+    attempt: &'a Arc<OAuthAttempt>,
+    retain: bool,
+}
+
+impl Drop for OAuthAttemptGuard<'_> {
+    fn drop(&mut self) {
+        if !self.retain {
+            self.store.clear(self.attempt);
         }
     }
 }
@@ -557,6 +673,7 @@ impl AgentBackend {
             auth: MapleApiAuthState::new(),
             api_url,
             persisted_auth,
+            pending_oauth: PendingOAuthStore::default(),
             client_id: configured_client_id(),
             event_rx: tokio::sync::Mutex::new(Some(event_rx)),
             billing,
@@ -613,6 +730,7 @@ impl AgentBackend {
         if password.is_empty() {
             return Err("Enter a password".to_string());
         }
+        self.cancel_oauth();
         let environment = configured_pcr0_environment()?;
         let client = OpenSecretClient::new_with_pcr0_environment(self.api_url.clone(), environment)
             .map_err(|_| "Maple API authentication failed".to_string())?;
@@ -699,6 +817,7 @@ impl AgentBackend {
     /// Validate the saved credentials with the server and install the
     /// session on success. Definitive rejections clear the saved file.
     async fn validate_persisted_auth(&self) -> RestoreOutcome {
+        self.cancel_oauth();
         let Some(persisted) = self.load_persisted_auth() else {
             return RestoreOutcome::Rejected;
         };
@@ -767,6 +886,7 @@ impl AgentBackend {
     /// Drop the live session and the persisted record. `revoke` also sends
     /// `POST /logout`; a deleted account has no session left to report.
     async fn clear_session(&self, user_id: &str, revoke: bool) -> Result<(), String> {
+        self.cancel_oauth();
         self.wait_for_restore().await;
         let auth_snapshot = self.auth.auth_snapshot_for(user_id).await.ok();
         let persisted_without_session = auth_snapshot
@@ -841,39 +961,52 @@ impl AgentBackend {
     /// Begin an OAuth flow: returns the authorization URL to open in a
     /// browser (also opens it via the system browser).
     pub async fn oauth_start(&self, provider: OAuthProvider) -> Result<String, String> {
-        let client = self.oauth_client()?;
-        let client_id = self.client_id;
-        let (auth_url, state) = match provider {
-            OAuthProvider::Github => {
-                let response = client
-                    .initiate_github_auth(client_id, None)
-                    .await
-                    .map_err(|_| "Could not start GitHub sign in".to_string())?;
-                (response.auth_url, response.state)
-            }
-            OAuthProvider::Google => {
-                let response = client
-                    .initiate_google_auth(client_id, None)
-                    .await
-                    .map_err(|_| "Could not start Google sign in".to_string())?;
-                (response.auth_url, response.state)
-            }
-            OAuthProvider::Apple => {
-                let response = client
-                    .initiate_apple_auth(client_id, None)
-                    .await
-                    .map_err(|_| "Could not start Apple sign in".to_string())?;
-                (response.auth_url, response.state)
-            }
+        let attempt = self.pending_oauth.begin(provider, self.oauth_client()?);
+        let mut guard = OAuthAttemptGuard {
+            store: &self.pending_oauth,
+            attempt: &attempt,
+            retain: false,
         };
-        // The state lives in the redirected URL the user pastes back; the
-        // backend re-validates it during the callback exchange.
-        let _ = state;
+        let client = &attempt.client;
+        let client_id = self.client_id;
+        let (auth_url, state) = attempt
+            .while_active(async {
+                Ok(match provider {
+                    OAuthProvider::Github => {
+                        let response = client
+                            .initiate_github_auth(client_id, None)
+                            .await
+                            .map_err(|_| "Could not start GitHub sign in".to_string())?;
+                        (response.auth_url, response.state)
+                    }
+                    OAuthProvider::Google => {
+                        let response = client
+                            .initiate_google_auth(client_id, None)
+                            .await
+                            .map_err(|_| "Could not start Google sign in".to_string())?;
+                        (response.auth_url, response.state)
+                    }
+                    OAuthProvider::Apple => {
+                        let response = client
+                            .initiate_apple_auth(client_id, None)
+                            .await
+                            .map_err(|_| "Could not start Apple sign in".to_string())?;
+                        (response.auth_url, response.state)
+                    }
+                })
+            })
+            .await?;
+        self.pending_oauth.set_state(&attempt, state)?;
         if webbrowser::open(&auth_url).is_err() {
             // No system browser available: the UI still shows the URL.
             log::debug!("failed to open system browser for OAuth");
         }
+        guard.retain = true;
         Ok(auth_url)
+    }
+
+    pub fn cancel_oauth(&self) {
+        self.pending_oauth.cancel();
     }
 
     /// Complete an OAuth flow from the redirected URL (pasted by the user or
@@ -889,27 +1022,37 @@ impl AgentBackend {
                     .to_string(),
             );
         };
-        let client = self.oauth_client()?;
-        let response = match provider {
-            OAuthProvider::Github => client
-                .handle_github_callback(code, state, String::new())
-                .await
-                .map_err(|_| "GitHub sign in failed".to_string())?,
-            OAuthProvider::Google => client
-                .handle_google_callback(code, state, String::new())
-                .await
-                .map_err(|_| "Google sign in failed".to_string())?,
-            OAuthProvider::Apple => client
-                .handle_apple_callback(code, state, String::new())
-                .await
-                .map_err(|_| "Apple sign in failed".to_string())?,
+        let attempt = self.pending_oauth.complete(provider, &state)?;
+        let _guard = OAuthAttemptGuard {
+            store: &self.pending_oauth,
+            attempt: &attempt,
+            retain: false,
         };
-        self.publish_session(
-            response.id.to_string(),
-            response.access_token,
-            Some(response.refresh_token),
-        )
-        .await
+        attempt
+            .while_active(async {
+                let client = &attempt.client;
+                let response = match provider {
+                    OAuthProvider::Github => client
+                        .handle_github_callback(code, state, String::new())
+                        .await
+                        .map_err(|_| "GitHub sign in failed".to_string())?,
+                    OAuthProvider::Google => client
+                        .handle_google_callback(code, state, String::new())
+                        .await
+                        .map_err(|_| "Google sign in failed".to_string())?,
+                    OAuthProvider::Apple => client
+                        .handle_apple_callback(code, state, String::new())
+                        .await
+                        .map_err(|_| "Apple sign in failed".to_string())?,
+                };
+                self.publish_session(
+                    response.id.to_string(),
+                    response.access_token,
+                    Some(response.refresh_token),
+                )
+                .await
+            })
+            .await
     }
 
     /// The signed-in account's profile from the backend.
@@ -2145,6 +2288,119 @@ fn account_error_message(error: MapleAccountError, fallback: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn oauth_test_client() -> OpenSecretClient {
+        // Construct the SDK without making any network request.
+        OpenSecretClient::new("http://127.0.0.1:1").unwrap()
+    }
+
+    #[tokio::test]
+    async fn oauth_completion_keeps_the_originating_client_and_consumes_only_its_callback() {
+        let store = PendingOAuthStore::default();
+        let started = store.begin(OAuthProvider::Github, oauth_test_client());
+        store
+            .set_state(&started, "fixture-state".to_string())
+            .unwrap();
+
+        assert!(
+            store
+                .complete(OAuthProvider::Google, "fixture-state")
+                .is_err()
+        );
+        assert!(
+            store
+                .complete(OAuthProvider::Github, "other-state")
+                .is_err()
+        );
+        let completed = store
+            .complete(OAuthProvider::Github, "fixture-state")
+            .unwrap();
+        assert!(Arc::ptr_eq(&started.client, &completed.client));
+        assert!(
+            store
+                .complete(OAuthProvider::Github, "fixture-state")
+                .is_err()
+        );
+        store.clear(&completed);
+        assert!(
+            store
+                .complete(OAuthProvider::Github, "fixture-state")
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn oauth_replacement_rejects_late_start_and_preserves_new_attempt_during_old_cleanup() {
+        let store = PendingOAuthStore::default();
+        let old = store.begin(OAuthProvider::Github, oauth_test_client());
+        let old_guard = OAuthAttemptGuard {
+            store: &store,
+            attempt: &old,
+            retain: false,
+        };
+        let current = store.begin(OAuthProvider::Google, oauth_test_client());
+        assert!(store.set_state(&old, "old-state".to_string()).is_err());
+        drop(old_guard);
+        store
+            .set_state(&current, "current-state".to_string())
+            .unwrap();
+        let completed = store
+            .complete(OAuthProvider::Google, "current-state")
+            .unwrap();
+        assert!(Arc::ptr_eq(&completed.client, &current.client));
+
+        assert!(
+            old.while_active::<()>(async { panic!("cancelled work must not run") })
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn oauth_cancellation_discards_an_inflight_completion_before_publication() {
+        let store = Arc::new(PendingOAuthStore::default());
+        let attempt = store.begin(OAuthProvider::Apple, oauth_test_client());
+        store
+            .set_state(&attempt, "fixture-state".to_string())
+            .unwrap();
+        let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+        let published = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let task_store = Arc::clone(&store);
+        let task_published = Arc::clone(&published);
+        let task = tokio::spawn(async move {
+            let attempt = task_store
+                .complete(OAuthProvider::Apple, "fixture-state")
+                .unwrap();
+            let _guard = OAuthAttemptGuard {
+                store: &task_store,
+                attempt: &attempt,
+                retain: false,
+            };
+            attempt
+                .while_active(async {
+                    entered_tx.send(()).unwrap();
+                    release_rx.await.unwrap();
+                    task_published.store(true, std::sync::atomic::Ordering::SeqCst);
+                    Ok(())
+                })
+                .await
+        });
+        entered_rx.await.unwrap();
+        store.cancel();
+        let _ = release_tx.send(());
+        let result = tokio::time::timeout(std::time::Duration::from_secs(2), task)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(result, Err(OAUTH_CANCELLED_MESSAGE.to_string()));
+        assert!(!published.load(std::sync::atomic::Ordering::SeqCst));
+        assert!(
+            store
+                .complete(OAuthProvider::Apple, "fixture-state")
+                .is_err()
+        );
+    }
 
     fn auth_snapshot(
         user_id: &str,

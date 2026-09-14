@@ -3502,7 +3502,8 @@ mod tests {
             .expect(0)
             .mount(&server)
             .await;
-        let client = OpenSecretClient::new_with_api_key(server.uri(), "api-key".to_string()).unwrap();
+        let client =
+            OpenSecretClient::new_with_api_key(server.uri(), "api-key".to_string()).unwrap();
         let send_budget = InferenceSendBudget::new(2).unwrap();
         let request = HttpRequest::get("/v1/models").body(Bytes::new()).unwrap();
         assert!(matches!(

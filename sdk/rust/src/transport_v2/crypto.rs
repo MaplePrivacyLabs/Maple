@@ -335,7 +335,7 @@ fn seal(
 ) -> Result<Vec<u8>> {
     ChaCha20Poly1305::new((&key.0).into())
         .encrypt(
-            Nonce::from_slice(&nonce),
+            &Nonce::from(nonce),
             Payload {
                 msg: plaintext,
                 aad,
@@ -354,7 +354,7 @@ fn open(
         return Err(TransportV2Error::InvalidFrame);
     }
     ChaCha20Poly1305::new((&key.0).into())
-        .decrypt(Nonce::from_slice(&nonce), Payload { msg: record, aad })
+        .decrypt(&Nonce::from(nonce), Payload { msg: record, aad })
         .map_err(|_| TransportV2Error::Authentication)
 }
 

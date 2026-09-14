@@ -1,5 +1,11 @@
 import { beforeEach, describe, expect, mock, test } from "bun:test";
 import type { PcrConfig } from "../pcr";
+import {
+  createCustomFetchWithDependencies,
+  findOpenSecretInferenceCapacityError,
+  OPEN_SECRET_INFERENCE_SEND_LIMIT_HEADER,
+  OpenSecretInferenceCapacityError
+} from "../ai";
 import { TransportV2Client, type TransportV2ClientOptions } from "../transportV2/client";
 import {
   deriveTransportV2SessionKeys,
@@ -144,6 +150,106 @@ async function harness(
   });
   return { runtime, establish, attempts, keys };
 }
+
+function inferenceFetch(runtime: TransportV2Runtime) {
+  return createCustomFetchWithDependencies(
+    { apiKey: "fixture-api-key", apiUrl: API_URL },
+    {
+      auth: {
+        authority: async () => {
+          throw new Error("API-key inference must not request user authority");
+        },
+        noteResponse() {}
+      },
+      runtime,
+      getApiPcrConfig: () => ({ environment: "development" }),
+      getApiUrl: () => API_URL,
+      getCacheRoot: () => new Uint8Array(32).fill(0x51),
+      readUserCredentials: () => null
+    }
+  );
+}
+
+const CAPACITY_HEADERS = [
+  { name: CONTRACT, value: "1" },
+  { name: CODE, value: "inference_capacity" },
+  { name: "x-opensecret-client-replay", value: "safe" },
+  { name: "retry-after", value: "0" }
+];
+
+describe("Transport V2 inference budget across session repair", () => {
+  test("reports both actual sends after session repair reaches authenticated capacity", async () => {
+    const fixture = await harness((attempt) =>
+      attempt.index === 0
+        ? hint("session_not_found")
+        : responseFor(attempt, { status: 503, logicalHeaders: CAPACITY_HEADERS })
+    );
+    const customFetch = inferenceFetch(fixture.runtime);
+    const expected = encodeRequestEnvelope({
+      method: "POST",
+      target: "/v1/responses",
+      credential: { kind: "api_key", value: "fixture-api-key" },
+      cacheNamespaceRoot: new Uint8Array(32).fill(0x51),
+      headers: [{ name: "content-type", value: "application/json" }],
+      body: utf8("{}")
+    });
+    let failure: unknown;
+    try {
+      await customFetch(`${API_URL}/v1/responses`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          [OPEN_SECRET_INFERENCE_SEND_LIMIT_HEADER]: "2"
+        },
+        body: "{}"
+      });
+    } catch (error) {
+      failure = error;
+    }
+    expect(failure).toBeInstanceOf(OpenSecretInferenceCapacityError);
+    expect(findOpenSecretInferenceCapacityError(failure)).toMatchObject({
+      status: 503,
+      retryDelayMs: 0,
+      inferenceSendCount: 2
+    });
+    expect(fixture.establish).toHaveBeenCalledTimes(2);
+    expect(fixture.attempts).toHaveLength(2);
+    for (const attempt of fixture.attempts) {
+      expect(new Headers(attempt.init.headers).has(OPEN_SECRET_INFERENCE_SEND_LIMIT_HEADER)).toBe(
+        false
+      );
+      // The client-only limit is absent from the encrypted logical headers too.
+      expect(attempt.wire).toEqual(
+        await encryptTransportV2Request(attempt.keys, attempt.requestId, expected)
+      );
+      expect(attempt.init.redirect).toBe("error");
+    }
+  });
+
+  for (const code of CODES) {
+    test(`a one-send budget repairs ${code} and preserves its failure category`, async () => {
+      const fixture = await harness((attempt) =>
+        attempt.index === 0 ? hint(code) : responseFor(attempt)
+      );
+      const customFetch = inferenceFetch(fixture.runtime);
+      await expect(
+        customFetch(`${API_URL}/v1/responses`, {
+          headers: { [OPEN_SECRET_INFERENCE_SEND_LIMIT_HEADER]: "1" }
+        })
+      ).rejects.toMatchObject({ name: "TransportV2UntrustedRecoveryHint", code });
+      expect(fixture.attempts).toHaveLength(1);
+      expect(fixture.establish).toHaveBeenCalledTimes(2);
+
+      // An independent request may use the repaired session without another
+      // establishment; the exhausted operation itself was never replayed.
+      const response = await customFetch(`${API_URL}/v1/models`);
+      expect(await response.text()).toBe("ok");
+      expect(fixture.establish).toHaveBeenCalledTimes(2);
+      expect(fixture.attempts).toHaveLength(2);
+      expect(fixture.attempts[1].session).toBe(1);
+    });
+  }
+});
 
 beforeEach(() => globalThis.sessionStorage.clear());
 

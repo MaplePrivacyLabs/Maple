@@ -525,12 +525,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "crossbeam-utils"
-version = "0.8.21"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d0a5c400df2834b80a4c3327b3aad3a4c4cd4de0629063962b03235697506a28"
-
-[[package]]
 name = "crunchy"
 version = "0.2.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -592,20 +586,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn",
-]
-
-[[package]]
-name = "dashmap"
-version = "6.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e6361d5c062261c78a176addb82d4c821ae42bed6089de0e12603cd25de2059c"
-dependencies = [
- "cfg-if",
- "crossbeam-utils",
- "hashbrown 0.14.5",
- "lock_api",
- "once_cell",
- "parking_lot_core",
 ]
 
 [[package]]
@@ -1038,12 +1018,6 @@ dependencies = [
 
 [[package]]
 name = "hashbrown"
-version = "0.14.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e5274423e17b7c9fc20b6e7e208532f9b19825d82dfd615708b70edd83df41f1"
-
-[[package]]
-name = "hashbrown"
 version = "0.15.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9229cfe53dfd69f0609a49f65461bd93001ea1ef889cd5529dd176593f5338a1"
@@ -1452,7 +1426,6 @@ dependencies = [
  "axum",
  "axum-test",
  "clap",
- "dashmap",
  "dotenvy",
  "futures",
  "http",
@@ -1469,8 +1442,6 @@ dependencies = [
 [[package]]
 name = "maple-sdk"
 version = "3.6.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ee9efa6ceaaddf0d1ff4d88448eacd48f3ebd6900a8c597d3b729b334750a5b4"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -1494,6 +1465,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "subtle",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
@@ -1501,6 +1473,7 @@ dependencies = [
  "x25519-dalek",
  "x509-parser",
  "yasna",
+ "zeroize",
 ]
 
 [[package]]

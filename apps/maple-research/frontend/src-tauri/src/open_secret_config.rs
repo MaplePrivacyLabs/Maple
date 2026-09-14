@@ -1,4 +1,4 @@
-use opensecret::Pcr0Environment;
+use maple_sdk::Pcr0Environment;
 
 pub(crate) fn parse_pcr0_environment(value: Option<&str>) -> Result<Pcr0Environment, String> {
     match value {

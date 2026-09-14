@@ -288,6 +288,7 @@ export function createCustomFetchWithDependencies(
       const result = await dependencies.runtime.request({
         apiUrl,
         pcrConfig,
+        canReplay: () => inferenceSendCount < maxInferenceSends,
         beforeSend: () => {
           authority?.assertCurrent();
           // The runtime calls this synchronous fence immediately before each
