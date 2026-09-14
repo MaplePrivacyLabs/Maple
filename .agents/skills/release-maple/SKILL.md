@@ -71,8 +71,10 @@ repair package visibility. Existing old-namespace images receive no updates.
    printf 'current=%s released=%s\n' "$current_version" "$released_version"
    ```
 
-2. If `current_version` is newer, retain it. Never bump again merely because a
-   release was requested.
+2. If `current_version` is newer, retain that pending version unless the user
+   explicitly chooses a different target. For example, a requested `3.4.0`
+   replaces a pending `3.3.11`; a generic request to release does not trigger
+   another bump. The chosen target must still be newer than the published release.
 3. If versions are equal, establish the intended next version. Proceed when
    the user names an exact version or patch/minor/major level. If the user
    delegates the choice, use patch; do not infer minor or major from commits.
@@ -199,7 +201,7 @@ not rerun the core Release to repair either sibling:
 
 ```bash
 gh run list --repo MaplePrivacyLabs/Maple --workflow 'Publish updater metadata' \
-  --commit "$head_sha" --limit 10 \
+  --limit 10 \
   --json databaseId,status,conclusion,headSha,createdAt,url
 
 pages_workflow='Promote Pages production'
@@ -213,9 +215,10 @@ gh run list --repo MaplePrivacyLabs/Maple --workflow "$pages_workflow" \
   --json databaseId,status,conclusion,headSha,createdAt,url
 ```
 
-The publisher executes trusted master, which can be newer than the release.
-Inspect its production job's validated source SHA instead of filtering runs by
-the workflow checkout SHA; preview publication uses the same workflow name.
+Both publishers execute trusted master, which can be newer than the release.
+Identify the updater run by its validated release tag and source, and the Pages
+run by its production job's validated source SHA. Do not filter either by the
+workflow checkout SHA; preview publication uses the same Pages workflow name.
 
 Also inspect the independent proxy-container publisher. It should either prove
 the expected immutable proxy version, public AMD64/ARM64 manifest, per-platform

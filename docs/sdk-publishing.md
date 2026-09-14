@@ -23,10 +23,11 @@ separate choices; publishing does not update application dependencies.
 
 Prefer published SDK versions for client applications, with each consumer
 choosing when to upgrade. Pin application manifests exactly and commit their
-lockfiles. The Research frontend starts at `@mapleai/sdk` `3.5.2`; Research
-desktop and Maple Agent independently start at `maple-sdk` `=3.6.2`. The reusable
-proxy library uses a compatible SDK requirement (`3.6.2`), so its embedding
-application can choose the version. The standalone proxy has its own lockfile.
+lockfiles. Read each consumer's current manifest and lockfile to determine its
+selected version and source; the initial registry versions and command examples
+in this guide are not current dependency declarations. The reusable proxy
+library uses a compatible SDK requirement, so its embedding application can
+choose the version. The standalone proxy has its own lockfile.
 An SDK publication should not automatically upgrade every consumer, and an
 older published pin is not a reason to block an unrelated client release.
 

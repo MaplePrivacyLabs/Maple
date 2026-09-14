@@ -1,6 +1,6 @@
 [package]
 name = "maple"
-version = "3.3.11"
+version = "3.4.0"
 description = "Maple AI"
 authors = ["tony@trymaple.ai"]
 license = "MIT"
@@ -52,7 +52,7 @@ reqwest = { version = "0.13", features = ["stream"] }
 futures-util = "0.3"
 sha2 = "0.10"
 rand = "0.8.6"
-maple-sdk = { version = "3.6.2", path = "../../../../sdk/rust" }
+maple-sdk = { version = "=4.0.0", path = "../../../../sdk/rust" }
 
 [target.'cfg(any(target_os = "macos", target_os = "windows", target_os = "linux", target_os = "android"))'.dependencies]
 # PDF OCR uses Maple's explicitly packaged ONNX Runtime. The loader policy
@@ -65,7 +65,7 @@ ort = { version = "=2.0.0-rc.11", default-features = false, features = ["std", "
 # history.
 goose = { git = "https://github.com/aaif-goose/goose.git", rev = "f9c7aaccde4834810dfd13d5efa8f0d39ba28a20", package = "goose", default-features = false }
 goose-providers = { git = "https://github.com/aaif-goose/goose.git", rev = "f9c7aaccde4834810dfd13d5efa8f0d39ba28a20", package = "goose-providers", default-features = false }
-maple-proxy = { version = "0.3.3", path = "../../../../proxy" }
+maple-proxy = { version = "0.4.0", path = "../../../../proxy" }
 axum = "0.8"
 tower-http = { version = "0.6", features = ["cors"] }
 async-trait = "0.1"
