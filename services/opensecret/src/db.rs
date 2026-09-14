@@ -779,14 +779,16 @@ pub trait DBConnection {
     fn get_recovery_wrap(&self, user_id: Uuid) -> Result<Option<UserSeedWrapping>, DBError>;
     fn insert_recovery_wrap_if_absent(
         &self,
+        user: &User,
         new_wrapping: NewUserSeedWrapping,
     ) -> Result<UserSeedWrapping, DBError>;
     fn replace_recovery_wrap_if_unchanged(
         &self,
+        user: &User,
         old_wrapping: &UserSeedWrapping,
         new_wrapping: NewUserSeedWrapping,
     ) -> Result<UserSeedWrapping, DBError>;
-    fn delete_recovery_wrap_for_user(&self, user_id: Uuid) -> Result<usize, DBError>;
+    fn delete_recovery_wrap_for_user(&self, user: &User) -> Result<usize, DBError>;
     fn recovery_wrap_exists(&self, user_id: Uuid) -> Result<bool, DBError>;
 }
 
@@ -1084,8 +1086,18 @@ impl DBConnection for PostgresConnection {
                 password_reset_requests::table
                     .filter(password_reset_requests::id.eq(reset_request.id))
                     .filter(password_reset_requests::user_id.eq(user_id))
+                    .filter(password_reset_requests::hashed_secret.eq(&reset_request.hashed_secret))
+                    .filter(
+                        password_reset_requests::encrypted_code.eq(&reset_request.encrypted_code),
+                    )
                     .filter(password_reset_requests::is_reset.eq(false))
-                    .filter(password_reset_requests::expiration_time.gt(diesel::dsl::now)),
+                    .filter(
+                        password_reset_requests::expiration_time.gt(diesel::dsl::sql::<
+                            diesel::sql_types::Timestamptz,
+                        >(
+                            "clock_timestamp()"
+                        )),
+                    ),
             )
             .set(password_reset_requests::is_reset.eq(true))
             .execute(conn)?;
@@ -1169,8 +1181,15 @@ impl DBConnection for PostgresConnection {
                 .filter(password_reset_requests::id.eq(request.id))
                 .filter(password_reset_requests::user_id.eq(user.uuid))
                 .filter(password_reset_requests::hashed_secret.eq(request.hashed_secret.as_str()))
+                .filter(password_reset_requests::encrypted_code.eq(&request.encrypted_code))
                 .filter(password_reset_requests::is_reset.eq(false))
-                .filter(password_reset_requests::expiration_time.gt(diesel::dsl::now)),
+                .filter(
+                    password_reset_requests::expiration_time.gt(diesel::dsl::sql::<
+                        diesel::sql_types::Timestamptz,
+                    >(
+                        "clock_timestamp()"
+                    )),
+                ),
         )
         .set(password_reset_requests::is_reset.eq(true))
         .execute(conn)?;
@@ -1213,8 +1232,19 @@ impl DBConnection for PostgresConnection {
                         password_reset_requests::hashed_secret
                             .eq(reset_request.hashed_secret.as_str()),
                     )
+                    .filter(
+                        password_reset_requests::encrypted_code.eq(&reset_request.encrypted_code),
+                    )
                     .filter(password_reset_requests::is_reset.eq(false))
-                    .filter(password_reset_requests::expiration_time.gt(diesel::dsl::now)),
+                    // PostgreSQL `now` is the transaction start, potentially
+                    // before a long user-row lock wait. Expiry is checked here.
+                    .filter(
+                        password_reset_requests::expiration_time.gt(diesel::dsl::sql::<
+                            diesel::sql_types::Timestamptz,
+                        >(
+                            "clock_timestamp()"
+                        )),
+                    ),
             )
             .set(password_reset_requests::is_reset.eq(true))
             .execute(conn)?;
@@ -1234,12 +1264,8 @@ impl DBConnection for PostgresConnection {
             // The recovery wrap opened above must be the one still stored:
             // a concurrent rotation or disablement makes the opened seed
             // stale, so the whole completion fails without writing anything.
-            let current_recovery = UserSeedWrapping::get_for_user_and_kind(
-                conn,
-                user.uuid,
-                CredentialKind::Recovery.as_str(),
-            )?;
-            match current_recovery.into_iter().next() {
+            let current_recovery = load_recovery_wrap(conn, user.uuid)?;
+            match current_recovery {
                 Some(current)
                     if current.id == recovery_wrap.id
                         && current.seed_enc == recovery_wrap.seed_enc
@@ -3141,28 +3167,22 @@ impl DBConnection for PostgresConnection {
     // Recovery wrap helpers
     fn get_recovery_wrap(&self, user_id: Uuid) -> Result<Option<UserSeedWrapping>, DBError> {
         let conn = &mut self.db.get().map_err(|_| DBError::ConnectionError)?;
-        let wraps = UserSeedWrapping::get_for_user_and_kind(
-            conn,
-            user_id,
-            CredentialKind::Recovery.as_str(),
-        )
-        .map_err(DBError::from)?;
-        Ok(wraps.into_iter().next())
+        load_recovery_wrap(conn, user_id)
     }
 
     fn insert_recovery_wrap_if_absent(
         &self,
+        user: &User,
         new_wrapping: NewUserSeedWrapping,
     ) -> Result<UserSeedWrapping, DBError> {
         let conn = &mut self.db.get().map_err(|_| DBError::ConnectionError)?;
         conn.transaction::<_, DBError, _>(|conn| {
-            let existing = UserSeedWrapping::get_for_user_and_kind(
-                conn,
-                new_wrapping.user_id,
-                CredentialKind::Recovery.as_str(),
-            )
-            .map_err(DBError::from)?;
-            if existing.into_iter().next().is_some() {
+            lock_recovery_management_user(conn, user)?;
+            if new_wrapping.user_id != user.uuid {
+                return Err(DBError::StaleCredentialState);
+            }
+            let existing = load_recovery_wrap(conn, new_wrapping.user_id)?;
+            if existing.is_some() {
                 return Err(DBError::StaleCredentialState);
             }
             new_wrapping.insert(conn).map_err(|e| match e {
@@ -3177,21 +3197,25 @@ impl DBConnection for PostgresConnection {
 
     fn replace_recovery_wrap_if_unchanged(
         &self,
+        user: &User,
         old_wrapping: &UserSeedWrapping,
         new_wrapping: NewUserSeedWrapping,
     ) -> Result<UserSeedWrapping, DBError> {
         let conn = &mut self.db.get().map_err(|_| DBError::ConnectionError)?;
         conn.transaction::<_, DBError, _>(|conn| {
-            let current = UserSeedWrapping::get_for_user_and_kind(
-                conn,
-                old_wrapping.user_id,
-                CredentialKind::Recovery.as_str(),
-            )
-            .map_err(DBError::from)?;
-
-            let current = current.into_iter().next();
+            lock_recovery_management_user(conn, user)?;
+            if old_wrapping.user_id != user.uuid || new_wrapping.user_id != user.uuid {
+                return Err(DBError::StaleCredentialState);
+            }
+            let current = load_recovery_wrap(conn, old_wrapping.user_id)?;
             match current {
-                Some(existing) if existing.id == old_wrapping.id => {
+                Some(existing)
+                    if existing.id == old_wrapping.id
+                        && existing.seed_enc == old_wrapping.seed_enc
+                        && existing.credential_lookup_hash
+                            == old_wrapping.credential_lookup_hash
+                        && existing.wrapping_version == old_wrapping.wrapping_version =>
+                {
                     // The `id` check above is a soft guard; the conditional DELETE below is the
                     // actual CAS -- it only removes the exact row we think we’re replacing. If
                     // another transaction already replaced or deleted it, the count will be 0
@@ -3201,6 +3225,15 @@ impl DBConnection for PostgresConnection {
                         user_seed_wrappings::table
                             .filter(user_seed_wrappings::user_id.eq(old_wrapping.user_id))
                             .filter(user_seed_wrappings::id.eq(old_wrapping.id))
+                            .filter(user_seed_wrappings::seed_enc.eq(&old_wrapping.seed_enc))
+                            .filter(
+                                user_seed_wrappings::credential_lookup_hash
+                                    .eq(&old_wrapping.credential_lookup_hash),
+                            )
+                            .filter(
+                                user_seed_wrappings::wrapping_version
+                                    .eq(old_wrapping.wrapping_version),
+                            )
                             .filter(
                                 user_seed_wrappings::credential_kind
                                     .eq(CredentialKind::Recovery.as_str()),
@@ -3218,10 +3251,17 @@ impl DBConnection for PostgresConnection {
         })
     }
 
-    fn delete_recovery_wrap_for_user(&self, user_id: Uuid) -> Result<usize, DBError> {
+    fn delete_recovery_wrap_for_user(&self, user: &User) -> Result<usize, DBError> {
         let conn = &mut self.db.get().map_err(|_| DBError::ConnectionError)?;
-        UserSeedWrapping::delete_for_user_and_kind(conn, user_id, CredentialKind::Recovery.as_str())
+        conn.transaction::<_, DBError, _>(|conn| {
+            lock_recovery_management_user(conn, user)?;
+            UserSeedWrapping::delete_for_user_and_kind(
+                conn,
+                user.uuid,
+                CredentialKind::Recovery.as_str(),
+            )
             .map_err(DBError::from)
+        })
     }
 
     fn recovery_wrap_exists(&self, user_id: Uuid) -> Result<bool, DBError> {
@@ -3229,6 +3269,59 @@ impl DBConnection for PostgresConnection {
     }
 
     // Maintenance
+}
+
+/// Credential writes serialize on the user before touching wraps. Recheck the
+/// password snapshot verified by step-up, so an in-flight management request
+/// cannot install an old seed or disable recovery after a reset/password change.
+fn lock_recovery_management_user(conn: &mut PgConnection, expected: &User) -> Result<(), DBError> {
+    let current = users::table
+        .filter(users::uuid.eq(expected.uuid))
+        .for_update()
+        .first::<User>(conn)?;
+    if current.password_enc != expected.password_enc
+        || current.project_id != expected.project_id
+        || current.email != expected.email
+    {
+        return Err(DBError::StaleCredentialState);
+    }
+    Ok(())
+}
+
+/// Do not materialize attacker-sized recovery ciphertext/lookup values or an
+/// unbounded collection of wraps from host-visible storage. An oversized value
+/// is projected as empty bytes, which cannot authenticate. Duplicate slots fail
+/// closed rather than selecting an arbitrary credential.
+fn load_recovery_wrap(
+    conn: &mut PgConnection,
+    user_id: Uuid,
+) -> Result<Option<UserSeedWrapping>, DBError> {
+    use crate::models::schema::user_seed_wrappings as w;
+    use diesel::{
+        dsl::sql,
+        sql_types::{Binary, Integer},
+    };
+    let mut wraps = w::table
+        .filter(w::user_id.eq(user_id))
+        .filter(w::credential_kind.eq(CredentialKind::Recovery.as_str()))
+        .select((
+            w::id,
+            w::user_id,
+            w::credential_kind,
+            sql::<Binary>("substring(credential_lookup_hash from 1 for 33)"),
+            w::wrapping_version,
+            sql::<Binary>("CASE WHEN octet_length(seed_enc) <= ")
+                .bind::<Integer, _>(crate::seed_wrapping::MAX_RECOVERY_ENVELOPE_BYTES as i32)
+                .sql(" THEN seed_enc ELSE decode('', 'hex') END"),
+            w::created_at,
+            w::updated_at,
+        ))
+        .limit(2)
+        .load::<UserSeedWrapping>(conn)?;
+    if wraps.len() > 1 {
+        return Err(DBError::StaleCredentialState);
+    }
+    Ok(wraps.pop())
 }
 
 pub(crate) fn setup_db(url: String) -> Arc<dyn DBConnection + Send + Sync> {

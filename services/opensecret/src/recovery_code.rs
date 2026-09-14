@@ -47,9 +47,21 @@ impl RecoveryCode {
     /// Parses a user-submitted code, rejecting malformed input before any
     /// database work. Consumed by the recovery reset completion flow.
     pub fn parse(input: &str) -> Result<Self, RecoveryCodeError> {
-        let normalized: String = input.chars().filter(|c| *c != ' ' && *c != '-').collect();
-
-        let normalized_upper = normalized.to_ascii_uppercase();
+        // Reject Unicode before byte slicing, and bound normalization independently
+        // of the transport's much larger general-purpose request limit.
+        if input.len() > 256 {
+            return Err(RecoveryCodeError::InvalidLength);
+        }
+        if !input.is_ascii() {
+            return Err(RecoveryCodeError::InvalidCharacter);
+        }
+        let normalized_upper = Zeroizing::new(
+            input
+                .chars()
+                .filter(|c| *c != ' ' && *c != '-')
+                .map(|c| c.to_ascii_uppercase())
+                .collect::<String>(),
+        );
         if !normalized_upper.starts_with(RECOVERY_CODE_PREFIX) {
             return Err(RecoveryCodeError::InvalidPrefix);
         }
@@ -64,7 +76,7 @@ impl RecoveryCode {
         let secret_part = &payload[..52];
         let checksum_part = &payload[52..];
 
-        let secret_bytes = crockford::decode(secret_part)?;
+        let secret_bytes = Zeroizing::new(crockford::decode(secret_part)?);
         if secret_bytes.len() != 32 {
             return Err(RecoveryCodeError::InvalidFormat);
         }
@@ -74,7 +86,7 @@ impl RecoveryCode {
             return Err(RecoveryCodeError::InvalidFormat);
         }
 
-        let mut secret = [0u8; 32];
+        let mut secret = Zeroizing::new([0u8; 32]);
         secret.copy_from_slice(&secret_bytes);
 
         // Verify checksum
@@ -83,29 +95,24 @@ impl RecoveryCode {
             return Err(RecoveryCodeError::InvalidChecksum);
         }
 
-        Ok(Self {
-            secret: Zeroizing::new(secret),
-        })
+        Ok(Self { secret })
     }
 
     pub fn display(&self) -> Zeroizing<String> {
-        let secret_encoded = crockford::encode(&self.secret[..]);
+        let secret_encoded = Zeroizing::new(crockford::encode(&self.secret[..]));
         let checksum = compute_checksum(&self.secret);
         let checksum_encoded = crockford::encode(&checksum);
 
-        let mut groups: Vec<String> = Vec::new();
-        // Prefix
-        groups.push(RECOVERY_CODE_PREFIX.to_string());
-        // Secret groups of 4
-        for chunk in secret_encoded.as_bytes().chunks(RECOVERY_CODE_GROUP_SIZE) {
-            groups.push(String::from_utf8_lossy(chunk).to_string());
+        let mut display = Zeroizing::new(RECOVERY_CODE_PREFIX.to_string());
+        for encoded in [secret_encoded.as_str(), checksum_encoded.as_str()] {
+            for chunk in encoded.as_bytes().chunks(RECOVERY_CODE_GROUP_SIZE) {
+                display.push('-');
+                for &byte in chunk {
+                    display.push(char::from(byte));
+                }
+            }
         }
-        // Checksum groups of 4
-        for chunk in checksum_encoded.as_bytes().chunks(RECOVERY_CODE_GROUP_SIZE) {
-            groups.push(String::from_utf8_lossy(chunk).to_string());
-        }
-
-        Zeroizing::new(groups.join("-"))
+        display
     }
 
     pub(crate) fn secret_bytes(&self) -> &[u8; 32] {
@@ -217,6 +224,40 @@ mod crockford {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn recovery_code_rejects_unicode_at_every_payload_boundary_without_panicking() {
+        for index in 0..59 {
+            let input = format!("MPLRC1{}é{}", "0".repeat(index), "0".repeat(58 - index));
+            assert!(matches!(
+                RecoveryCode::parse(&input),
+                Err(RecoveryCodeError::InvalidCharacter)
+            ));
+        }
+        assert!(RecoveryCode::parse(&" ".repeat(257)).is_err());
+    }
+
+    #[test]
+    fn recovery_code_fixed_vector_and_padding() {
+        let code = RecoveryCode {
+            secret: Zeroizing::new([0; 32]),
+        };
+        let displayed = code.display();
+        assert_eq!(
+            displayed.as_str(),
+            "MPLRC1-0000-0000-0000-0000-0000-0000-0000-0000-0000-0000-0000-0000-0000-39YZ-VTQZ"
+        );
+        let mut compact = displayed.replace('-', "");
+        assert_eq!(compact.len(), 66);
+        compact.replace_range(57..58, "1");
+        assert!(matches!(
+            RecoveryCode::parse(&compact),
+            Err(RecoveryCodeError::InvalidPadding)
+        ));
+        for invalid in ["\t", "\n", "\r", "\0"] {
+            assert!(RecoveryCode::parse(&format!("{}{invalid}", displayed.as_str())).is_err());
+        }
+    }
 
     #[tokio::test]
     async fn recovery_code_generate_roundtrip() {

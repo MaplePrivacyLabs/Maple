@@ -1,5 +1,13 @@
 # Recovery Code Implementation Plan
 
+> **Implementation follow-up:** The local encrypted-HTTP recovery flow and log
+> scan now pass; see [the smoke runner guide](dev-shell.md#recovery-credential-smoke).
+> Phase 8 counts and the carrier deferral below are historical evidence from the
+> original implementation. Follow-up fixes add user-lock/password-snapshot checks, strict completion
+> payloads, a 256-byte input limit, bounded recovery envelopes/database reads,
+> and mutation-time reset expiry/proof checks. Registered guests with valid JWTs
+> can read an unenrolled status but cannot enroll, rotate, or disable recovery.
+
 ## Scope
 
 OpenSecret already supports credential-bound seed wraps for password and OAuth authentication. Password change rewraps the existing seed; password reset creates a new seed and deletes old seed-dependent state.
@@ -782,7 +790,7 @@ Nothing below blocks the silent backend rollout.
 | Decision | Opened by | Binding milestone | Notes |
 |----------|-----------|-------------------|-------|
 | Client-facing management status codes: re-enroll → `409 Conflict`; rotate with no wrap → `400`; idempotent disable → `200`; wrong step-up password → `401 InvalidUsernameOrPassword` | P4 handlers | **Resolved:** confirmed as implemented | Exercised by route tests; consumers must match these codes when they add recovery support (SDK mocks, Security settings UI) |
-| `recovery_status` eligibility for OAuth-only users (reachable; returns `enrolled: false`; guests fail JWT validation) | P4 handler + P4.6 wording | **Resolved:** kept reachable | Any validated JWT user may call the route; OAuth-only accounts observe `enrolled: false`; guests fail JWT validation. Response carries no oracle value |
+| `recovery_status` eligibility for OAuth-only users (reachable; returns `enrolled: false`) | P4 handler + P4.6 wording | **Resolved:** kept reachable | Any validated JWT user may call the route. OAuth-only accounts and genuinely registered guests with valid password-bound JWTs observe `enrolled: false`; management writes reject both. The original guest fixture lacked a seed wrap and tested invalid JWTs instead of guest eligibility; the review adds a registered-guest regression. |
 | Plan § "Recovery Seed Wrap" sketches a `recovery_wrap_key`/`recovery_wrap_aad` envelope that the shipped implementation does not use; `RecoveryCode::parse` and those helpers currently have no production consumer (`#[allow(dead_code)]` markers carry the gap) | P2 helpers vs P4 sealing path | Phase 6 implementation (P6.2 "Open recovery wrap") | **Resolved at Phase 6:** the reset completion opens wraps through `decrypt_seed_v1` with a recovery `AuthBinding` as required; the dead `recovery_wrap_key`/`recovery_wrap_aad` helpers were deleted and the plan section above was reconciled. `RecoveryCode::parse` now has its production consumer and its markers were removed |
 | v2 carrier encryption + runtime log-capture evidence for recovery routes | P4 route tests scope | **Resolved:** closed at Phase 8 by product decision | Rollout is silent and no client consumes recovery yet. Gateway sealing is source-confirmed (pre-existing shared transport code, separately tested, route wiring pinned by `security_invariants`); log hygiene is statically scanned plus source-audited. The encrypted SDK smoke test and runtime log capture move to the client-rollout gate (Frontend Rollout) |
 

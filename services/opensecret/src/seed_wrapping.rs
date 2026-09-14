@@ -29,6 +29,10 @@ const RECOVERY_LOOKUP_DOMAIN: &str = "os.recovery-lookup.v1";
 const RECOVERY_AUTH_BINDING_DOMAIN: &str = "os.recovery-auth-binding.v1";
 
 pub const SEED_WRAP_VERSION_V1: i16 = 1;
+// BIP-39 supports at most 24 English words, each at most eight ASCII bytes,
+// separated by 23 spaces. AES-GCM adds a 12-byte nonce and 16-byte tag.
+pub const MAX_RECOVERY_SEED_BYTES: usize = 24 * 8 + 23;
+pub const MAX_RECOVERY_ENVELOPE_BYTES: usize = MAX_RECOVERY_SEED_BYTES + 12 + 16;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CredentialKind {
@@ -295,6 +299,10 @@ pub fn encrypt_seed_v1(
     credential_kind: CredentialKind,
     auth_binding: &AuthBinding,
 ) -> Result<Vec<u8>, EncryptError> {
+    if credential_kind == CredentialKind::Recovery && plaintext_seed.len() > MAX_RECOVERY_SEED_BYTES
+    {
+        return Err(EncryptError::BadData);
+    }
     let aead_key = derive_seed_wrap_aead_key(root_key, auth_binding)?;
     let aad = seed_wrap_aad_v1(user_uuid, project_id, credential_kind, auth_binding);
     encrypt_aead_v1(&aead_key, plaintext_seed, &aad)
@@ -308,6 +316,11 @@ pub fn decrypt_seed_v1(
     credential_kind: CredentialKind,
     auth_binding: &AuthBinding,
 ) -> Result<Vec<u8>, EncryptError> {
+    if credential_kind == CredentialKind::Recovery
+        && encrypted_seed.len() > MAX_RECOVERY_ENVELOPE_BYTES
+    {
+        return Err(EncryptError::BadData);
+    }
     let aead_key = derive_seed_wrap_aead_key(root_key, auth_binding)?;
     let aad = seed_wrap_aad_v1(user_uuid, project_id, credential_kind, auth_binding);
     decrypt_aead_v1(&aead_key, encrypted_seed, &aad)
@@ -1184,6 +1197,34 @@ mod tests {
             PROJECT_ID,
             CredentialKind::Recovery,
             &binding,
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn recovery_wrap_rejects_authenticated_oversized_plaintext() {
+        let binding =
+            compute_recovery_auth_binding(&ROOT_KEY, PROJECT_ID, USER_UUID, &[1; 32]).unwrap();
+        let seed = vec![b'a'; MAX_RECOVERY_SEED_BYTES + 1];
+        let key = derive_seed_wrap_aead_key(&ROOT_KEY, &binding).unwrap();
+        let aad = seed_wrap_aad_v1(USER_UUID, PROJECT_ID, CredentialKind::Recovery, &binding);
+        let oversized = encrypt_aead_v1(&key, &seed, &aad).unwrap();
+        assert!(decrypt_seed_v1(
+            &ROOT_KEY,
+            &oversized,
+            USER_UUID,
+            PROJECT_ID,
+            CredentialKind::Recovery,
+            &binding
+        )
+        .is_err());
+        assert!(encrypt_seed_v1(
+            &ROOT_KEY,
+            &seed,
+            USER_UUID,
+            PROJECT_ID,
+            CredentialKind::Recovery,
+            &binding
         )
         .is_err());
     }

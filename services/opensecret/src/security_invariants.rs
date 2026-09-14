@@ -490,7 +490,7 @@ fn destructive_password_reset_wipes_user_key_encrypted_storage_roots() {
         "password_reset_requests::id.eq(reset_request.id)",
         "password_reset_requests::user_id.eq(user_id)",
         "password_reset_requests::is_reset.eq(false)",
-        "password_reset_requests::expiration_time.gt(diesel::dsl::now)",
+        "clock_timestamp()",
         "if consumed_reset_count != 1",
         "DBError::PasswordResetRequestNotFound",
         "password_reset_requests::id.ne(reset_request.id)",
@@ -1361,7 +1361,7 @@ fn recovery_stepup_gates_before_seed_open_and_insert() {
 
     // Disablement deletes through the idempotent helper only.
     assert!(
-        disable_body.contains("delete_recovery_wrap_for_user(user.uuid)"),
+        disable_body.contains("delete_recovery_wrap_for_user(&user)"),
         "disable must delete the wrap through the idempotent helper"
     );
 }
@@ -1625,11 +1625,11 @@ fn password_reset_v2_complete_requires_v2_transport_and_guarded_completion() {
             "password_reset_requests::id.eq(reset_request.id)",
             "password_reset_requests::hashed_secret",
             "password_reset_requests::is_reset.eq(false)",
-            "password_reset_requests::expiration_time.gt(diesel::dsl::now)",
+            "clock_timestamp()",
             "if consumed_reset_count != 1",
             "DBError::PasswordResetRequestNotFound",
             "password_reset_requests::id.ne(reset_request.id)",
-            "CredentialKind::Recovery.as_str()",
+            "load_recovery_wrap(conn, user.uuid)",
             "current.id == recovery_wrap.id",
             "current.seed_enc == recovery_wrap.seed_enc",
             "DBError::StaleCredentialState",
@@ -1657,7 +1657,7 @@ fn password_reset_v2_complete_requires_v2_transport_and_guarded_completion() {
         "password_reset_requests::user_id.eq(user.uuid)",
         "password_reset_requests::hashed_secret",
         "password_reset_requests::is_reset.eq(false)",
-        "password_reset_requests::expiration_time.gt(diesel::dsl::now)",
+        "clock_timestamp()",
         "if consumed_count != 1",
         "DBError::PasswordResetRequestNotFound",
     ] {

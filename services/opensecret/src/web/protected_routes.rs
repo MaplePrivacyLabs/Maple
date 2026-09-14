@@ -104,17 +104,17 @@ pub struct ConfirmAccountDeletionRequest {
     pub plaintext_secret: String,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Clone, Deserialize)]
 pub struct EnrollRecoveryRequest {
     pub current_password: String,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Clone, Deserialize)]
 pub struct RotateRecoveryRequest {
     pub current_password: String,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Clone, Deserialize)]
 pub struct DisableRecoveryRequest {
     pub current_password: String,
 }
@@ -125,7 +125,7 @@ pub struct RecoveryStatusResponse {
     pub enrolled_at: Option<DateTime<Utc>>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Serialize)]
 pub struct RecoveryCodeResponse {
     pub recovery_code: String,
 }
@@ -1568,7 +1568,7 @@ pub async fn enroll_recovery(
         })?;
 
     data.db
-        .insert_recovery_wrap_if_absent(wrapping)
+        .insert_recovery_wrap_if_absent(&user, wrapping)
         .map_err(|e| {
             debug!("Recovery enrollment insert rejected: {:?}", e);
             match e {
@@ -1630,7 +1630,7 @@ pub async fn rotate_recovery(
         })?;
 
     data.db
-        .replace_recovery_wrap_if_unchanged(&old_wrap, replacement)
+        .replace_recovery_wrap_if_unchanged(&user, &old_wrap, replacement)
         .map_err(|e| {
             debug!("Recovery rotation CAS rejected: {:?}", e);
             match e {
@@ -1670,12 +1670,13 @@ pub async fn disable_recovery(
 
     // Idempotent at the API boundary: deleting an absent wrap is a no-op, so
     // a concurrent rotation or disabling race cannot make this fail.
-    data.db
-        .delete_recovery_wrap_for_user(user.uuid)
-        .map_err(|e| {
-            error!("Failed to delete recovery wrap: {:?}", e);
-            ApiError::InternalServerError
-        })?;
+    data.db.delete_recovery_wrap_for_user(&user).map_err(|e| {
+        error!("Failed to delete recovery wrap: {:?}", e);
+        match e {
+            DBError::StaleCredentialState => ApiError::Unauthorized,
+            _ => ApiError::InternalServerError,
+        }
+    })?;
 
     info!("Recovery disabled for user {}", user.uuid);
     let response = json!({ "message": "Recovery disabled successfully" });

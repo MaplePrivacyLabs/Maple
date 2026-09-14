@@ -622,6 +622,61 @@ async fn recovery_management_rejects_guest_and_oauth_only_users() {
         "guest accounts must fail JWT validation before recovery logic"
     );
 
+    // A genuinely registered guest has a password wrap and a valid JWT.
+    // Exercise eligibility independently of the invalid-auth fixture above.
+    let registered_guest = app_state
+        .register_user(RegisterCredentials {
+            email: None,
+            name: None,
+            password: "registered-guest-password".into(),
+            client_id: project.client_id,
+        })
+        .await
+        .unwrap();
+    let authenticated = app_state
+        .authenticate_user(
+            None,
+            Some(registered_guest.uuid),
+            "registered-guest-password".into(),
+            project.id,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    let guest_token = v2_access_token(&app_state, &authenticated.user, &authenticated.auth_context);
+    let guest_status = send(
+        app.clone(),
+        v2_request(
+            "GET",
+            "/protected/recovery-code",
+            None,
+            Some(guest_token.clone()),
+        ),
+    )
+    .await;
+    assert_eq!(guest_status.status(), StatusCode::OK);
+    assert_eq!(response_json(guest_status).await["enrolled"], false);
+    for (method, path) in [
+        ("POST", "/protected/recovery-code/enroll"),
+        ("POST", "/protected/recovery-code/rotate"),
+        ("DELETE", "/protected/recovery-code"),
+    ] {
+        assert_generic_bad_request(
+            send(
+                app.clone(),
+                v2_request(
+                    method,
+                    path,
+                    Some(json!({"current_password":"registered-guest-password"})),
+                    Some(guest_token.clone()),
+                ),
+            )
+            .await,
+        )
+        .await;
+    }
+    app_state.db.delete_user(&registered_guest).unwrap();
+
     // OAuth-only accounts pass JWT validation but cannot enroll.
     let oauth_auth_context = app_state
         .oauth_auth_context_for_user(&oauth_user, "github", &provider_user_id)
@@ -870,7 +925,7 @@ fn insert_enrolled_recovery_wrap(app_state: &AppState, user: &crate::models::use
         .expect("the options fixture wrap should seal");
     app_state
         .db
-        .insert_recovery_wrap_if_absent(wrapping)
+        .insert_recovery_wrap_if_absent(user, wrapping)
         .expect("the options fixture wrap should insert");
 }
 
@@ -1357,7 +1412,7 @@ async fn enroll_recovery_over_authenticated_seed(
         .expect("enrollment wrap should seal");
     app_state
         .db
-        .insert_recovery_wrap_if_absent(wrapping)
+        .insert_recovery_wrap_if_absent(user, wrapping)
         .expect("enrollment wrap should insert");
     code.display().to_string()
 }
@@ -1413,6 +1468,43 @@ fn assert_recovery_wrap_unchanged(app_state: &AppState, user_id: Uuid, before: &
     );
 }
 
+fn linked_credentials_fixture(
+    app: &AppState,
+    user: &crate::models::users::User,
+    seed: &[u8],
+) -> (AuthContext, i32) {
+    let provider = app
+        .db
+        .get_oauth_provider_by_name("github")
+        .unwrap()
+        .unwrap();
+    let subject = Uuid::new_v4().to_string();
+    app.db
+        .create_user_oauth_connection(NewUserOAuthConnection {
+            user_id: user.uuid,
+            provider_id: provider.id,
+            provider_user_id: subject.clone(),
+            access_token_enc: Vec::new(),
+            refresh_token_enc: None,
+            expires_at: None,
+        })
+        .unwrap();
+    app.create_oauth_seed_wrap_for_user(user, "github", &subject, seed)
+        .unwrap();
+    let auth = app
+        .oauth_auth_context_for_user(user, "github", &subject)
+        .unwrap();
+    let key = app
+        .db
+        .create_user_api_key(crate::models::user_api_keys::NewUserApiKey::new(
+            user.uuid,
+            Uuid::new_v4().to_string(),
+            "recovery-test".into(),
+        ))
+        .unwrap();
+    (auth, key.id)
+}
+
 fn open_recovery_wrap_with_code(
     user: &crate::models::users::User,
     wrap: &UserSeedWrapping,
@@ -1447,6 +1539,8 @@ async fn password_reset_v2_preserving_completion_preserves_seed_wrap_and_encrypt
     let seed_before = app_state
         .decrypt_seed_for_auth_context(&fixture.user, &fixture.auth_context)
         .expect("authenticated seed should open before the reset");
+    let (oauth_context, api_key_id) =
+        linked_credentials_fixture(app_state, &fixture.user, &seed_before);
     let marker = insert_kv_marker(app_state, &fixture.user);
     let code_display =
         enroll_recovery_over_authenticated_seed(app_state, &fixture.user, &fixture.auth_context)
@@ -1501,6 +1595,25 @@ async fn password_reset_v2_preserving_completion_preserves_seed_wrap_and_encrypt
 
     // The recovery wrap survives byte-for-byte.
     assert_recovery_wrap_unchanged(app_state, fixture.user.uuid, &wrap_before);
+    assert_eq!(
+        app_state
+            .decrypt_seed_for_auth_context(&fixture.user, &oauth_context)
+            .unwrap(),
+        seed_before
+    );
+    assert_eq!(
+        app_state
+            .db
+            .get_all_user_oauth_connections_for_user(fixture.user.uuid)
+            .unwrap()
+            .len(),
+        1
+    );
+    assert!(app_state
+        .db
+        .get_user_api_key_by_id(api_key_id)
+        .unwrap()
+        .is_some());
 
     // The old password stops authenticating; the new one authenticates and
     // opens the same seed.
@@ -1759,6 +1872,8 @@ async fn password_reset_v2_destructive_completion_reuses_destructive_behavior_wi
     let seed_before = app_state
         .decrypt_seed_for_auth_context(&fixture.user, &fixture.auth_context)
         .expect("authenticated seed should open before the reset");
+    let (oauth_context, api_key_id) =
+        linked_credentials_fixture(app_state, &fixture.user, &seed_before);
     let marker = insert_kv_marker(app_state, &fixture.user);
     // Recovery is enrolled, so destructive completion must remove it and
     // create no replacement.
@@ -1829,6 +1944,19 @@ async fn password_reset_v2_destructive_completion_reuses_destructive_behavior_wi
         seed_after, seed_before,
         "destructive reset must generate a fresh seed"
     );
+    assert!(app_state
+        .decrypt_seed_for_auth_context(&fixture.user, &oauth_context)
+        .is_err());
+    assert!(app_state
+        .db
+        .get_all_user_oauth_connections_for_user(fixture.user.uuid)
+        .unwrap()
+        .is_empty());
+    assert!(app_state
+        .db
+        .get_user_api_key_by_id(api_key_id)
+        .unwrap()
+        .is_some());
 
     // Destructive cleanup ran: no recovery wrap (was enrolled), user-private
     // data deleted, and no recovery wrap created.

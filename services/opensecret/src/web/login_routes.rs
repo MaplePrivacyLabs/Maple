@@ -73,6 +73,7 @@ where
 /// time, and the coordinates (email, client_id) that scope the account.
 /// Reused unchanged by the read-only options route and the completion route.
 #[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PasswordResetV2Proof {
     pub email: String,
     pub alphanumeric_code: String,
@@ -95,13 +96,14 @@ pub struct PasswordResetV2OptionsResponse {
 /// the enrolled seed by presenting the recovery code; Destructive discards
 /// every encrypted credential and must explicitly acknowledge the data loss.
 #[derive(Deserialize, Clone)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum CompletePasswordResetMode {
     Preserve { recovery_code: String },
     Destructive { acknowledge_data_loss: bool },
 }
 
 #[derive(Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
 pub struct CompletePasswordResetV2Request {
     pub proof: PasswordResetV2Proof,
     pub new_password: String,
@@ -679,6 +681,8 @@ fn map_reset_proof_error(e: Error) -> ApiError {
         | Error::PasswordResetExpired
         | Error::InvalidPasswordResetSecret
         | Error::InvalidPasswordResetRequest
+        | Error::DatabaseError(DBError::PasswordResetRequestNotFound)
+        | Error::DatabaseError(DBError::StaleCredentialState)
         | Error::DatabaseError(DBError::UserNotFound) => ApiError::BadRequest,
         _ => ApiError::InternalServerError,
     }
@@ -875,6 +879,36 @@ mod tests {
             "new_password": "new-password",
             "client_id": Uuid::new_v4(),
         })
+    }
+
+    #[test]
+    fn recovery_completion_rejects_ambiguous_or_mistyped_modes() {
+        let proof = json!({"email":"user@example.com", "alphanumeric_code":"12345678",
+            "plaintext_secret":"secret", "client_id":Uuid::new_v4()});
+        for mode in [
+            json!(null),
+            json!("preserve"),
+            json!({}),
+            json!({"preserve":{}}),
+            json!({"preserve":{"recovery_code":null}}),
+            json!({"preserve":{"recovery_code":42}}),
+            json!({"destructive":{}}),
+            json!({"destructive":{"acknowledge_data_loss":"true"}}),
+            json!({"destructive":{"acknowledge_data_loss":true,"recovery_code":"secret"}}),
+            json!({"preserve":{"recovery_code":"secret"},"destructive":{"acknowledge_data_loss":true}}),
+        ] {
+            assert!(
+                serde_json::from_value::<CompletePasswordResetV2Request>(json!({
+                    "proof":proof,"new_password":"new-password","mode":mode
+                }))
+                .is_err()
+            );
+        }
+        let mut body = json!({"proof":proof,"new_password":"new-password",
+            "mode":{"destructive":{"acknowledge_data_loss":true}}});
+        assert!(serde_json::from_value::<CompletePasswordResetV2Request>(body.clone()).is_ok());
+        body["recovery_code"] = json!(null);
+        assert!(serde_json::from_value::<CompletePasswordResetV2Request>(body).is_err());
     }
 
     /// The old-client payload shape omits `recovery_code` entirely and must
