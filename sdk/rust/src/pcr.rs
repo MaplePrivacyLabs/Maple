@@ -28,6 +28,12 @@ pub const OFFICIAL_DEVELOPMENT_PCR_HISTORY_URL: &str =
     "https://raw.githubusercontent.com/MaplePrivacyLabs/Maple/master/services/opensecret/pcrDevHistory.json";
 
 const OFFICIAL_PRODUCTION_PCR0S: &[&str] = &[
+    // Approved 2026-09-14 (services/opensecret signed history)
+    "a0ef363874f70bd82af98d8e628bf7f128dfca1f9918e83af494cd17f5d4ff1a0c1b94b235941a6d20138d1152cbe5aa",
+    // Approved 2026-09-12 (services/opensecret signed history)
+    "3d2f90b4dac7316e5485e03f4cdf3f2f8ae79fde77442546475eac6c3037916ac54b8bdb26c85a73e9b778a9a5077638",
+    // Approved 2026-09-05 (services/opensecret signed history)
+    "a1c09f74133cbcc0e5034b9a8a5ed1a5a567d4922140d69534827b4473c7f385b989ce594e0b11f6b8ec971decb95608",
     "eeddbb58f57c38894d6d5af5e575fbe791c5bf3bbcfb5df8da8cfcf0c2e1da1913108e6a762112444740b88c163d7f4b",
     "74ed417f88cb0ca76c4a3d10f278bd010f1d3f95eafb254d4732511bb50e404507a4049b779c5230137e4091a5582271",
     "9043fcab93b972d3c14ad2dc8fa78ca7ad374fc937c02435681772a003f7a72876bc4d578089b5c4cf3fe9b480f1aabb",
@@ -38,6 +44,12 @@ const OFFICIAL_PRODUCTION_PCR0S: &[&str] = &[
 ];
 
 const OFFICIAL_DEVELOPMENT_PCR0S: &[&str] = &[
+    // Approved 2026-09-14 (services/opensecret signed history)
+    "61d92c66684de563fbc4ce3ece9680966672a065a65dedfd1dcdab149b2d3d3d725ab853dae6dc251dbb3326ff7d1214",
+    // Approved 2026-09-12 (services/opensecret signed history)
+    "c5470ea9d2d8499a65fbb9bc936bd7a62a5ef90b54da1504535cb4384f303fb673369d64f1a43f17c8ed8d2a89f09949",
+    // Approved 2026-09-05 (services/opensecret signed history)
+    "831eb975dad0b3f3741612acc92f020c0467bd3ac967ddf925fa60eff9e02cf9239ec50c699715fbf9a35e3448e2a117",
     "62c0407056217a4c10764ed9045694c29fa93255d3cc04c2f989cdd9a1f8050c8b169714c71f1118ebce2fcc9951d1a9",
     "cb95519905443f9f66f05f63c548b61ad1561a27fd5717b69285861aaea3c3063fe12a2571773b67fea3c6c11b4d8ec6",
     "deb5895831b5e4286f5a2dcf5e9c27383821446f8df2b465f141d10743599be20ba3bb381ce063bf7139cc89f7f61d4c",
