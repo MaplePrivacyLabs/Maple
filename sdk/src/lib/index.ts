@@ -163,8 +163,14 @@ export type {
   PushSettings
 } from "./developer";
 export type { AttestationDocument } from "./attestation";
+export {
+  AttestationClockSkewError,
+  ATTESTATION_NOT_BEFORE_LEEWAY_MS,
+  type AttestationClockSkewDetails
+} from "./attestationClock";
 export type { ParsedAttestationView } from "./attestationForView";
 export type { PcrConfig, PcrEnvironment, Pcr0ValidationResult } from "./pcr";
+export { Pcr0ValidationError } from "./pcr";
 
 // Export crypto utilities
 // TODO: these can actually just be used internally by the password reset function

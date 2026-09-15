@@ -67,6 +67,18 @@ Mock attestation is limited to exact loopback development endpoints (plus the
 documented Android emulator alias in the Rust SDK). Do not weaken attestation,
 PCR0 validation, or encrypted transport to accommodate a caller.
 
+Certificate validity is checked against the device clock, as AWS specifies,
+after the chain and COSE signatures are verified. `notBefore` gets a
+five-minute leeway (`ATTESTATION_NOT_BEFORE_LEEWAY_MS` in both SDKs) because
+the enclave leaf certificate is issued without backdating and re-issued about
+every 2 h 45 m, so a device clock a few seconds slow used to fail right after
+each re-issue. `notAfter` is strict: a fast device clock is bounded by the
+leaf's remaining validity (15 minutes to 3 hours), and freshness itself comes
+from the per-handshake nonce. A failure raises `AttestationClockSkewError`,
+whose message compares the device clock with the document's signed timestamp
+and tells the user to check the device's date, time and time zone; the OAuth
+handlers rethrow it instead of a generic provider failure.
+
 The SDKs use operating-system or Web Crypto randomness for keys, nonces, and
 session material. Never substitute deterministic or convenience randomness in
 production paths.

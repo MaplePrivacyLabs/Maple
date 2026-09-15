@@ -7,7 +7,8 @@ import {
   openAiAuthenticatedApiCall
 } from "./encryptedApi";
 import type { Model } from "openai/resources/models.js";
-import { snapshotPcrConfig, type PcrConfig } from "./pcr";
+import { Pcr0ValidationError, snapshotPcrConfig, type PcrConfig } from "./pcr";
+import { AttestationClockSkewError } from "./attestationClock";
 import {
   clearLegacyTransportV1Credentials,
   installTransportV2Credentials,
@@ -189,6 +190,15 @@ export async function fetchUser(): Promise<UserResponse> {
     undefined,
     "Failed to fetch user"
   );
+}
+
+/**
+ * Attestation policy failures happen before any credential reaches the server,
+ * so the OAuth handlers rethrow them unchanged instead of reporting a generic
+ * provider sign-in failure that hides the actual (usually device-side) cause.
+ */
+function isAttestationPolicyError(error: unknown): boolean {
+  return error instanceof AttestationClockSkewError || error instanceof Pcr0ValidationError;
 }
 
 /** @internal Keeps React publication tied to the exact authority used for this request. */
@@ -419,6 +429,9 @@ export async function handleGitHubCallback(
     return installLoginResponse(response, expected);
   } catch (error) {
     console.error("Detailed GitHub callback error:", error);
+    if (isAttestationPolicyError(error)) {
+      throw error;
+    }
     if (error instanceof Error) {
       if (
         error.message.includes("User exists") ||
@@ -595,6 +608,9 @@ export async function handleGoogleCallback(
     return installLoginResponse(response, expected);
   } catch (error) {
     console.error("Detailed Google callback error:", error);
+    if (isAttestationPolicyError(error)) {
+      throw error;
+    }
     if (error instanceof Error) {
       if (
         error.message.includes("User exists") ||
@@ -686,6 +702,9 @@ export async function handleAppleCallback(
     return installLoginResponse(response, expected);
   } catch (error) {
     console.error("Detailed Apple callback error:", error);
+    if (isAttestationPolicyError(error)) {
+      throw error;
+    }
     if (error instanceof Error) {
       if (
         error.message.includes("User exists") ||
@@ -773,6 +792,9 @@ export async function handleAppleNativeSignIn(
     return installLoginResponse(response, expected);
   } catch (error) {
     console.error("Detailed Apple Sign-In error:", error);
+    if (isAttestationPolicyError(error)) {
+      throw error;
+    }
     if (error instanceof Error) {
       if (
         error.message.includes("User exists") ||
