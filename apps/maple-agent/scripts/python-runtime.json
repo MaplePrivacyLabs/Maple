@@ -1,0 +1,27 @@
+{
+  "implementation": "cpython",
+  "version": "3.13.15",
+  "release": "20260901",
+  "targets": {
+    "aarch64-apple-darwin": {
+      "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20260901/cpython-3.13.15+20260901-aarch64-apple-darwin-install_only_stripped.tar.gz",
+      "sha256": "d3904bd6a072246e07aa0bdadee9a14e80521e42a943c0848059feb16a2816dc",
+      "executable": "bin/python3.13"
+    },
+    "x86_64-apple-darwin": {
+      "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20260901/cpython-3.13.15+20260901-x86_64-apple-darwin-install_only_stripped.tar.gz",
+      "sha256": "f712a9143c8a5d248438ec7921a0b48d548bca4f1337d33c690d28c2d0504137",
+      "executable": "bin/python3.13"
+    },
+    "x86_64-unknown-linux-gnu": {
+      "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20260901/cpython-3.13.15+20260901-x86_64-unknown-linux-gnu-install_only_stripped.tar.gz",
+      "sha256": "8a689a077337bea6d1c4bc0b7df1d52fcaa28f5f67e50df8bf417c1e3f9d8874",
+      "executable": "bin/python3.13"
+    },
+    "x86_64-pc-windows-msvc": {
+      "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20260901/cpython-3.13.15+20260901-x86_64-pc-windows-msvc-install_only_stripped.tar.gz",
+      "sha256": "63d263ab0162f34a241a56dc5b283c22d6e131f5516117e6a921350c69ba7d4f",
+      "executable": "python.exe"
+    }
+  }
+}

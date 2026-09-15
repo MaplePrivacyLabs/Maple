@@ -1,0 +1,2 @@
+# Keep pinned upstream license notices byte-for-byte, including blank EOF lines.
+scripts/python-licenses/* whitespace=-blank-at-eof

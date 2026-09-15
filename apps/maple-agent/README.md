@@ -19,10 +19,10 @@ crates/maple-agent/   Maple's transport-neutral agent runtime, extracted from
                       tools, permission policy, account-scoped session
                       storage, and the ACP server.
 crates/maple-billing/ HTTP client for the Maple billing API.
-docs/                 Theme spec measured from the Tauri app.
-scripts/              One maintainer helper: screenshot.py takes a desktop
-                      screenshot through the xdg portal on GNOME Wayland.
-                      Nothing in the build or the app uses it.
+crates/maple-code-mode/ Bundled CPython worker, protocol, and process lifecycle.
+docs/                 Product and implementation notes, including the theme.
+scripts/              Python preparation, packaging and validation helpers;
+                      macOS debug-app staging; optional Wayland screenshots.
 ```
 
 ### Backend / frontend boundary
@@ -43,7 +43,8 @@ remove Tauri:
   sink are injectable traits
 - public visibility opened on the service surface the app consumes
 
-Goose is pinned to the aaif-goose fork revision recorded in this component’s
+Goose is pinned to an aaif-goose fork with Maple’s native-client integration and
+opt-in ordered tool scheduling. Its exact revision is recorded in this component’s
 Cargo manifests and lockfile; Research has an independent dependency graph.
 
 ## Features
@@ -56,18 +57,18 @@ Cargo manifests and lockfile; Research has an independent dependency graph.
 - Agent chat with streaming Markdown, tool calls, permission prompts,
   agent questions, image attachments (picker, paste, or drag and drop),
   a per-message Copy button, and a context-window indicator.
+- [Python scratchpad](docs/python-code-mode.md): the normal `python_code`
+  tool uses bundled CPython with persistent task state and top-level await.
+  Existing permissions apply; the task menu can reset retained Python state.
 - Slash commands in the composer: `/btw` asks a side question the task
   never sees, plus `/compact`, `/new`, `/pin`, `/web`, `/model`, and
   `/help`. The account's skills appear in the same list.
 - The task's latest todo list stays pinned above the composer.
 - Subagents: the task can give a piece of work to a subagent with the
-  `delegate` tool, which runs it in its own context. Known limitation:
-  a subagent does not inherit the task's permission mode. Goose runs
-  every subagent with all tools approved, so even in Read only mode a
-  subagent can run shell commands and edit files without a prompt. The
-  fix needs the Goose fork to forward subagent approvals to the parent
-  (summon.rs hard-codes Auto because an approval would hang). The
-  subagents that work now show above the composer with the tool each one
+  `delegate` tool, which runs it in its own context. The pinned Goose fork
+  inherits the parent's permission mode and forwards child approvals. Its
+  independently constructed clients do not receive Maple's Python capability.
+  Subagents show above the composer with the tool each one
   runs and how long it has worked. A subagent that runs in the background
   keeps its row after the turn ends, and Maple tells the task when it
   finishes: into the running turn, or into the next one.

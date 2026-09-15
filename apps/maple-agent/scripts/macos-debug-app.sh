@@ -17,6 +17,15 @@ if [[ ! "$bundle_id" =~ ^[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+$ ]]; then
     exit 1
 fi
 
+python_source="$repo_root/target/debug/runtime/python"
+worker_smoke="$repo_root/target/debug/code-mode-smoke"
+
+python3 "$repo_root/scripts/prepare-python.py" --distribution pbs
+if [[ ! -x "$worker_smoke" ]]; then
+    echo "CodeMode debug smoke binary missing; run 'just code-mode-smoke' first" >&2
+    exit 1
+fi
+
 if [[ ! -x "$binary_source" ]]; then
     echo "debug binary not found at $binary_source; run 'just build' first" >&2
     exit 1
@@ -52,7 +61,8 @@ contents_dir="$staged_bundle/Contents"
 frameworks_dir="$contents_dir/Frameworks"
 binary_destination="$contents_dir/MacOS/maple-gpui"
 
-mkdir -p "$contents_dir/MacOS" "$frameworks_dir"
+mkdir -p "$contents_dir/MacOS" "$frameworks_dir" "$contents_dir/Resources"
+cp -R "$python_source" "$contents_dir/Resources/python"
 cp "$repo_root/app/macos/Info.plist" "$contents_dir/Info.plist"
 python3 "$repo_root/scripts/macos-debug-plist.py" "$contents_dir/Info.plist"
 cp "$binary_source" "$binary_destination"
@@ -91,6 +101,15 @@ while IFS= read -r -d '' runtime_library; do
         "$runtime_library"
 done < <(/usr/bin/find "$frameworks_dir" -type f -name '*.dylib' -print0)
 
+# Sign every regular Mach-O payload, including stdlib extension modules and
+# libpython, before sealing the outer bundle. Symlink aliases share that code.
+while IFS= read -r -d '' python_code; do
+    if /usr/bin/file -b "$python_code" | /usr/bin/grep -q 'Mach-O'; then
+        /usr/bin/codesign --force --sign "$codesign_identity" --timestamp=none \
+            "$python_code"
+    fi
+done < <(/usr/bin/find "$contents_dir/Resources/python" -type f -print0)
+
 # Rust's linker gives arm64 executables an ad hoc signature, but copying that
 # executable into an app bundle does not bind Info.plist or seal the bundle.
 # TCC would then record a grant that the relaunched app cannot satisfy. Sign
@@ -116,6 +135,11 @@ if /usr/bin/grep -Fq "is implemented in both" "$smoke_stderr"; then
     /bin/cat "$smoke_stderr" >&2
     exit 1
 fi
+
+# Execute the actual signed nested interpreter and native stdlib extensions.
+"$contents_dir/Resources/python/bin/python3.13" -I -B -u -c \
+    'import sys, sysconfig, ssl, sqlite3, ctypes, zlib, bz2, lzma; assert sys.version_info[:3] == (3, 13, 15); assert not sysconfig.get_config_var("Py_GIL_DISABLED")'
+"$worker_smoke" --manifest "$contents_dir/Resources/python/runtime.json"
 
 # Build and validate away from the destination so a failed packaging step
 # leaves the developer's last working bundle untouched. Replace only the
