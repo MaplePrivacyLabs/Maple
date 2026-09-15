@@ -125,6 +125,15 @@ class OpenSecretChangeDetectionTests(unittest.TestCase):
             expected = "".join(f"{name}={'true' if name in selected else 'false'}\n" for name in OUTPUTS)
             self.assertEqual(result.stdout.decode(), expected)
 
+    def test_provider_manifests_only_select_the_flake_check(self):
+        for path in ("services/opensecret/secretspec.toml",
+                     "services/opensecret/secretspec/pcr-signing.toml",
+                     "services/opensecret/secretspec/README.md"):
+            with self.subTest(path=path):
+                self.assert_routes([path], "nix")
+                self.assertEqual(research_routes(path), frozenset())
+                self.assertFalse(affects_agent(path))
+
 
 if __name__ == "__main__":
     unittest.main()
