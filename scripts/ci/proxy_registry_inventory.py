@@ -228,10 +228,16 @@ def inventory(token: str, *, public_only: bool = False, get=get_json) -> dict:
     response = get(f"{REGISTRY}/v2/{IMAGE}/tags/list?n=10000", registry_token)
     if response.status != 200 or not isinstance(response.data, dict) or response.link:
         raise InventoryError("Public proxy tag inventory is unavailable or incomplete")
-    tags = response.data.get("tags")
+    if response.data.get("name") != IMAGE or "tags" not in response.data:
+        raise InventoryError("Invalid public proxy tag inventory")
+    tags = response.data["tags"]
+    # GHCR returns explicit null for a public package containing only untagged
+    # digest uploads. Accept it only after the complete successful response and
+    # canonical package checks above; absent fields and failed reads stay errors.
+    if tags is None:
+        tags = []
     if (
-        response.data.get("name") != IMAGE
-        or not isinstance(tags, list)
+        not isinstance(tags, list)
         or len(tags) > 10000
         or any(not isinstance(tag, str) or not re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}", tag) for tag in tags)
         or len(set(tags)) != len(tags)

@@ -194,6 +194,37 @@ class ProxyRegistryInventoryTests(unittest.TestCase):
         self.assertEqual(get.calls[1], (f"{inventory.REGISTRY}/token?scope=repository:{inventory.IMAGE}:pull", None))
         self.assertEqual(get.calls[2], (f"{inventory.REGISTRY}/v2/{inventory.IMAGE}/tags/list?n=10000", REGISTRY_TOKEN))
 
+    def test_public_untagged_package_accepts_explicit_null_tags(self):
+        for tags in (None, []):
+            with self.subTest(tags=tags):
+                responses = list(self.public_responses())
+                responses[2] = inventory.Response(200, {"name": inventory.IMAGE, "tags": tags})
+                get = FakeGet(*responses)
+                self.assertEqual(inventory.inventory(TOKEN, get=get), {"name": inventory.IMAGE, "tags": []})
+                self.assertEqual(len(get.calls), 3)
+
+    def test_null_tags_do_not_hide_missing_fields_wrong_name_or_failed_reads(self):
+        malformed = (
+            {}, {"name": inventory.IMAGE}, {"tags": None},
+            {"name": "other/proxy", "tags": None},
+        )
+        for data in malformed:
+            with self.subTest(data=data):
+                responses = list(self.public_responses())
+                responses[2] = inventory.Response(200, data)
+                with self.assertRaises(inventory.InventoryError):
+                    inventory.inventory(TOKEN, get=FakeGet(*responses))
+        for response in (
+            inventory.Response(403, {"name": inventory.IMAGE, "tags": None}),
+            inventory.Response(404, {"name": inventory.IMAGE, "tags": None}),
+            inventory.Response(200, {"name": inventory.IMAGE, "tags": None}, 'next; rel="next"'),
+        ):
+            with self.subTest(response=response):
+                responses = list(self.public_responses())
+                responses[2] = response
+                with self.assertRaises(inventory.InventoryError):
+                    inventory.inventory(TOKEN, get=FakeGet(*responses))
+
     def test_private_package_requires_operator_visibility_change(self):
         for visibility in ("private", "internal", None):
             with self.subTest(visibility=visibility):
@@ -238,7 +269,7 @@ class ProxyRegistryInventoryTests(unittest.TestCase):
         for token in (None, "", "bad\n::error::injected", "x" * 16385):
             with self.subTest(token=token), self.assertRaises(inventory.InventoryError):
                 inventory.inventory(TOKEN, get=FakeGet(inventory.Response(200, PACKAGE), inventory.Response(200, {"token": token})))
-        for tags in (None, {}, ["bad\n::error::injected"], ["0.3.4", "0.3.4"], [1], ["/bad"], ["a" * 129]):
+        for tags in ({}, "", False, 0, ["bad\n::error::injected"], ["0.3.4", "0.3.4"], [1], ["/bad"], ["a" * 129]):
             with self.subTest(tags=tags):
                 responses = list(self.public_responses())
                 responses[2] = inventory.Response(200, {"name": inventory.IMAGE, "tags": tags})
