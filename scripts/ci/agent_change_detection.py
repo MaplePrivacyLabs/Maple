@@ -18,6 +18,7 @@ AGENT_INERT_FILES = frozenset(
         "README.md",
         "LICENSE",
         ".gitignore",
+        "deny.toml",  # Validated by the independent supply-chain lane.
     }
 )
 AGENT_INERT_PREFIXES = ("docs/",)

@@ -53,6 +53,7 @@ class AgentChangeDetectionTests(unittest.TestCase):
         for path in (
             "apps/maple-agent/README.md", "apps/maple-agent/AGENTS.md",
             "apps/maple-agent/CLAUDE.md", "apps/maple-agent/LICENSE",
+            "apps/maple-agent/deny.toml", ".github/workflows/agent-supply-chain.yml",
             "apps/maple-agent/docs/development.md", "README.md",
             "sdk/rust/README.md", "sdk/rust/tests/client.rs", "sdk/rust/Cargo.lock",
             "proxy/README.md", "proxy/tests/health.rs", "proxy/Cargo.lock",
