@@ -4,6 +4,7 @@ import * as cbor from "cbor2";
 import { z } from "zod";
 import { fetchAttestationDocument, getApiUrl } from "./api";
 import awsRootCertDer from "../assets/aws_root.der";
+import { AttestationClockSkewError, isValidAtDeviceTime } from "./attestationClock";
 
 // Assert that the root cert is not empty
 if (!awsRootCertDer || awsRootCertDer.length === 0) {
@@ -132,6 +133,37 @@ async function verifySignature(
   }
 }
 
+/**
+ * Rejects the chain unless every certificate's validity window contains the
+ * device time (with the notBefore leeway from attestationClock.ts).
+ * `enclaveTime` is the document's signed timestamp, used only to explain a
+ * failure in terms of the device clock.
+ */
+export function assertChainValidAt(
+  certs: X509Certificate[],
+  deviceTime: Date,
+  enclaveTime: Date
+): void {
+  for (let i = 0; i < certs.length; i++) {
+    const cert = certs[i];
+    console.log("CERT: ", i);
+    console.log(cert.subject);
+    console.log("Not before:", cert.notBefore);
+    console.log("Not after:", cert.notAfter);
+
+    if (!isValidAtDeviceTime(cert.notBefore, cert.notAfter, deviceTime)) {
+      throw new AttestationClockSkewError({
+        deviceTime,
+        enclaveTime,
+        certificateIndex: i,
+        notBefore: cert.notBefore,
+        notAfter: cert.notAfter
+      });
+    }
+    console.log(`Certificate ${i} is valid at device time ${deviceTime.toISOString()}.`);
+  }
+}
+
 export async function authenticate(
   attestationDocumentBase64: string,
   trustedRootCert: Uint8Array,
@@ -221,25 +253,6 @@ async function authenticateWithNonceBytes(
     const certChainItems = await chain.build(leafCert);
     console.log("Chain items:", certChainItems);
 
-    // The chain builder checks signatures but not expiration
-    // So let's check for expiration ourselves
-    const date = new Date();
-    const time = date.getTime();
-    for (let i = 0; i < certChainItems.length; i++) {
-      const cert = certChainItems[i];
-      console.log("CERT: ", i);
-      console.log(cert.subject);
-      console.log("Not before:", cert.notBefore);
-      console.log("Not after:", cert.notAfter);
-      console.log(cert.toString("pem"));
-
-      if (cert.notBefore.getTime() > time || cert.notAfter.getTime() < time) {
-        throw new Error("Certificate is expired.");
-      } else {
-        console.log(`Certificate ${i} is not expired.`);
-      }
-    }
-
     // The chain should have the whole cabundle plus the leaf cert
     if (certChainItems.length !== document.cabundle.length + 1) {
       throw new Error("Certificate chain length does not match length of cabundle.");
@@ -261,6 +274,14 @@ async function authenticateWithNonceBytes(
     if (!verified) {
       throw new Error("Signature verification failed.");
     }
+
+    // Step 5. Check the validity window of every certificate in the chain
+    // against the device clock, as AWS specifies. The chain builder checks
+    // signatures but not validity periods. This runs after step 4 so the
+    // document's signed `timestamp` is authenticated and can explain a
+    // failure ("your clock is 3 days ahead") without being trusted for the
+    // check itself; the per-handshake nonce already guarantees freshness.
+    assertChainValidAt(certChainItems, new Date(), new Date(document.timestamp));
 
     return document;
   } catch (error) {
@@ -320,6 +341,10 @@ export async function verifyAttestation(
     const verifiedDocument = await authenticate(attestationDocumentBase64, awsRootCertDer, nonce);
     return verifiedDocument;
   } catch (error) {
+    if (error instanceof AttestationClockSkewError) {
+      console.error("Error verifying attestation document:", error);
+      throw error;
+    }
     if (error instanceof Error) {
       console.error("Error verifying attestation document:", error);
       throw new Error(`Couldn't process attestation document: ${error.message}`);

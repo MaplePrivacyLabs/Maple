@@ -88,6 +88,17 @@ impl AttestationVerifier {
         document_b64: &str,
         verify_nonce: impl FnOnce(&[u8]) -> Result<()>,
     ) -> Result<AttestationDocument> {
+        self.verify_attestation_document_at(document_b64, verify_nonce, current_time_ms())
+    }
+
+    /// Verifies a document with an explicit device clock reading (milliseconds
+    /// since the UNIX epoch). See [`ATTESTATION_NOT_BEFORE_LEEWAY_MS`].
+    fn verify_attestation_document_at(
+        &self,
+        document_b64: &str,
+        verify_nonce: impl FnOnce(&[u8]) -> Result<()>,
+        device_now_ms: u64,
+    ) -> Result<AttestationDocument> {
         let document_bytes = BASE64.decode(document_b64)?;
 
         // Parse COSE_Sign1 structure
@@ -149,11 +160,17 @@ impl AttestationVerifier {
         })?;
         verify_nonce(nonce_bytes)?;
 
-        // Verify certificate chain
+        // Verify certificate chain signatures up to the pinned AWS root
         self.verify_certificate_chain(&doc)?;
 
-        // Verify signature
+        // Verify the document signature; after this the payload, including
+        // its `timestamp`, is authenticated by the Nitro PKI.
         self.verify_signature(protected, payload, signature, &doc)?;
+
+        // Verify every certificate's validity window against the device clock,
+        // as AWS specifies. This runs after the signature check so the signed
+        // `timestamp` can explain a failure in terms of the device clock.
+        self.verify_certificate_validity(&doc, device_now_ms)?;
 
         // Verify PCRs if expected
         if let Some(expected_pcrs) = &self.expected_pcrs {
@@ -339,14 +356,8 @@ impl AttestationVerifier {
                 ))
             })?;
 
-            // Check certificate validity
-            if !cert.validity().is_valid() {
-                return Err(Error::AttestationVerificationFailed(format!(
-                    "Certificate {} is expired or not yet valid",
-                    i
-                )));
-            }
-
+            // Validity periods are checked against the device clock in
+            // `verify_certificate_validity` once the signature is verified.
             certs.push(cert);
         }
 
@@ -357,12 +368,6 @@ impl AttestationVerifier {
                 e
             ))
         })?;
-
-        if !leaf_cert.validity().is_valid() {
-            return Err(Error::AttestationVerificationFailed(
-                "Leaf certificate is expired or not yet valid".to_string(),
-            ));
-        }
 
         // Step 3: Verify the certificate chain signatures
         // AWS Nitro chain: root -> regional -> zonal -> instance -> leaf
@@ -412,6 +417,56 @@ impl AttestationVerifier {
             }
         }
 
+        Ok(())
+    }
+
+    /// Checks every certificate's validity window against the device clock,
+    /// with [`ATTESTATION_NOT_BEFORE_LEEWAY_MS`] applied to `notBefore`.
+    ///
+    /// The enclave leaf certificate is issued without backdating and re-issued
+    /// roughly every 2 h 45 m, so a device clock a few seconds slow used to
+    /// fail right after each re-issue. `notAfter` stays strict, which bounds a
+    /// fast device clock by the leaf's remaining validity. A failure is
+    /// explained by comparing the device clock with the signed `timestamp`.
+    fn verify_certificate_validity(
+        &self,
+        doc: &AttestationDocument,
+        device_now_ms: u64,
+    ) -> Result<()> {
+        let device_now_s = i64::try_from(device_now_ms / 1000).map_err(|_| {
+            Error::AttestationVerificationFailed("Device clock is out of range".to_string())
+        })?;
+        let leeway_s = (ATTESTATION_NOT_BEFORE_LEEWAY_MS / 1000) as i64;
+        let chain = doc
+            .cabundle
+            .iter()
+            .chain(std::iter::once(&doc.certificate))
+            .enumerate();
+        for (i, cert_der) in chain {
+            let (_, cert) = X509Certificate::from_der(cert_der).map_err(|e| {
+                Error::AttestationVerificationFailed(format!(
+                    "Failed to parse certificate {}: {:?}",
+                    i, e
+                ))
+            })?;
+            let validity = cert.validity();
+            let not_before_s = validity.not_before.timestamp();
+            let not_after_s = validity.not_after.timestamp();
+            let not_yet_valid = device_now_s + leeway_s < not_before_s;
+            let expired = device_now_s > not_after_s;
+            if not_yet_valid || expired {
+                return Err(Error::AttestationVerificationFailed(
+                    describe_validity_failure(
+                        i,
+                        if expired { "expired" } else { "not yet valid" },
+                        validity.not_before.timestamp() * 1000,
+                        validity.not_after.timestamp() * 1000,
+                        device_now_ms,
+                        doc.timestamp,
+                    ),
+                ));
+            }
+        }
         Ok(())
     }
 
@@ -643,6 +698,99 @@ fn create_sig_structure(protected: &[u8], payload: &[u8]) -> Result<Vec<u8>> {
     cbor::to_vec(&sig_structure)
 }
 
+/// Leeway applied to certificate `notBefore` so a device clock that runs
+/// slightly slow does not reject a freshly issued enclave leaf certificate.
+/// `notAfter` gets no leeway. The TypeScript SDK applies the same values.
+pub const ATTESTATION_NOT_BEFORE_LEEWAY_MS: u64 = 5 * 60 * 1000;
+
+/// Device/enclave difference above which a validity failure is reported as a
+/// device clock problem rather than a transient certificate problem.
+pub const NOTICEABLE_CLOCK_SKEW_MS: u64 = 60 * 1000;
+
+/// Prefix of every attestation failure message that blames the device clock.
+/// [`crate::Error::is_device_clock_problem`] recognizes it so clients can show
+/// their own clock guidance without surfacing SDK internals.
+const DEVICE_CLOCK_MESSAGE_PREFIX: &str = "This device's clock is about";
+
+impl crate::Error {
+    /// True when this is an attestation failure caused by the device clock
+    /// disagreeing with the enclave's signed timestamp (wrong date, time or
+    /// time zone on the device), as opposed to an untrusted or invalid
+    /// document.
+    pub fn is_device_clock_problem(&self) -> bool {
+        matches!(
+            self,
+            crate::Error::AttestationVerificationFailed(message)
+                if message.starts_with(DEVICE_CLOCK_MESSAGE_PREFIX)
+        )
+    }
+}
+
+fn current_time_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+fn format_time_ms(ms: i64) -> String {
+    chrono::DateTime::<chrono::Utc>::from_timestamp_millis(ms)
+        .map(|t| t.to_rfc3339_opts(chrono::SecondsFormat::Millis, true))
+        .unwrap_or_else(|| format!("{ms} ms since epoch"))
+}
+
+fn describe_duration_ms(ms: u64) -> String {
+    const MINUTE: u64 = 60 * 1000;
+    const HOUR: u64 = 60 * MINUTE;
+    const DAY: u64 = 24 * HOUR;
+    for (name, size) in [("day", DAY), ("hour", HOUR), ("minute", MINUTE)] {
+        if ms >= size {
+            let count = (ms as f64 / size as f64).round() as u64;
+            let plural = if count == 1 { "" } else { "s" };
+            return format!("{count} {name}{plural}");
+        }
+    }
+    format!("{} seconds", (ms as f64 / 1000.0).round() as u64)
+}
+
+/// Builds the user-facing message for a certificate outside its validity
+/// window, blaming the device clock when it disagrees with the enclave's
+/// signed timestamp by a noticeable amount.
+fn describe_validity_failure(
+    index: usize,
+    state: &str,
+    not_before_ms: i64,
+    not_after_ms: i64,
+    device_now_ms: u64,
+    enclave_now_ms: u64,
+) -> String {
+    let (skew, direction) = if device_now_ms >= enclave_now_ms {
+        (device_now_ms - enclave_now_ms, "ahead of")
+    } else {
+        (enclave_now_ms - device_now_ms, "behind")
+    };
+    let device = format_time_ms(i64::try_from(device_now_ms).unwrap_or(i64::MAX));
+    if skew >= NOTICEABLE_CLOCK_SKEW_MS {
+        format!(
+            "{DEVICE_CLOCK_MESSAGE_PREFIX} {} {} the secure enclave (device: {}, enclave: {}), so the enclave's certificate looks {}. Check the device's date, time and time zone settings, then try again.",
+            describe_duration_ms(skew),
+            direction,
+            device,
+            format_time_ms(i64::try_from(enclave_now_ms).unwrap_or(i64::MAX)),
+            state
+        )
+    } else {
+        format!(
+            "The secure enclave's certificate {} is {} on this device's clock (valid {} to {}, device: {}). Try again in a moment; if it keeps happening, check the device's date, time and time zone settings.",
+            index,
+            state,
+            format_time_ms(not_before_ms),
+            format_time_ms(not_after_ms),
+            device
+        )
+    }
+}
+
 #[cfg(feature = "mock-attestation")]
 pub fn create_mock_attestation_document(nonce: &str) -> Result<String> {
     use std::collections::HashMap;
@@ -692,5 +840,154 @@ mod tests {
             .unwrap_err();
 
         assert!(matches!(error, Error::AttestationVerificationFailed(_)));
+    }
+}
+
+#[cfg(test)]
+mod clock_policy_tests {
+    use super::*;
+
+    /// A real production document from 2024-10-28. Its leaf certificate became
+    /// valid 361 s before the document was signed and expired three hours later.
+    const FIXTURE: &str = include_str!("test_fixtures/nitro_attestation_document_2024-10-28.b64");
+    const NONCE: &str = "cc6b95ef-a0d7-477d-90f2-36cc088d2449";
+    const SIGNED_AT_MS: u64 = 1_730_141_656_206;
+    const LEAF_NOT_BEFORE_MS: u64 = SIGNED_AT_MS - 361 * 1000 - 206;
+    const LEAF_NOT_AFTER_MS: u64 = LEAF_NOT_BEFORE_MS + 3 * 60 * 60 * 1000 + 3 * 1000;
+    const SECOND_MS: u64 = 1000;
+    const DAY_MS: u64 = 24 * 60 * 60 * SECOND_MS;
+
+    fn verify_at(device_now_ms: u64) -> Result<AttestationDocument> {
+        AttestationVerifier::new().verify_attestation_document_at(
+            FIXTURE.trim(),
+            |nonce| {
+                assert_eq!(nonce, NONCE.as_bytes());
+                Ok(())
+            },
+            device_now_ms,
+        )
+    }
+
+    fn failure_at(device_now_ms: u64) -> String {
+        verify_at(device_now_ms).unwrap_err().to_string()
+    }
+
+    #[test]
+    fn fixture_leaf_validity_matches_the_certificate() {
+        let doc = verify_at(SIGNED_AT_MS).unwrap();
+        let (_, leaf) = X509Certificate::from_der(&doc.certificate).unwrap();
+        assert_eq!(
+            leaf.validity().not_before.timestamp() as u64 * 1000,
+            LEAF_NOT_BEFORE_MS
+        );
+        assert_eq!(
+            leaf.validity().not_after.timestamp() as u64 * 1000,
+            LEAF_NOT_AFTER_MS
+        );
+    }
+
+    #[test]
+    fn real_document_verifies_when_the_device_clock_matches_the_enclave() {
+        let doc = verify_at(SIGNED_AT_MS).unwrap();
+        assert_eq!(doc.module_id, "i-06c79bf817127030a-enc0192d3d4945e0432");
+        assert_eq!(doc.timestamp, SIGNED_AT_MS);
+    }
+
+    #[test]
+    fn device_clock_slightly_behind_a_fresh_leaf_verifies_within_the_leeway() {
+        for device_now_ms in [
+            LEAF_NOT_BEFORE_MS - SECOND_MS,
+            LEAF_NOT_BEFORE_MS - 60 * SECOND_MS,
+            LEAF_NOT_BEFORE_MS - ATTESTATION_NOT_BEFORE_LEEWAY_MS,
+        ] {
+            verify_at(device_now_ms).unwrap();
+        }
+    }
+
+    #[test]
+    fn device_clock_behind_by_more_than_the_leeway_is_a_clock_error() {
+        let message = failure_at(LEAF_NOT_BEFORE_MS - ATTESTATION_NOT_BEFORE_LEEWAY_MS - SECOND_MS);
+        assert!(
+            message.contains("about 11 minutes behind the secure enclave"),
+            "{message}"
+        );
+        assert!(message.contains("looks not yet valid"), "{message}");
+        assert!(
+            message.contains("date, time and time zone settings"),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn fast_device_clock_is_accepted_only_while_the_leaf_is_valid() {
+        verify_at(LEAF_NOT_AFTER_MS - SECOND_MS).unwrap();
+        let message = failure_at(LEAF_NOT_AFTER_MS + SECOND_MS);
+        assert!(
+            message.contains("about 3 hours ahead of the secure enclave"),
+            "{message}"
+        );
+        assert!(message.contains("looks expired"), "{message}");
+    }
+
+    #[test]
+    fn device_clock_days_off_names_the_difference() {
+        let ahead = failure_at(SIGNED_AT_MS + 3 * DAY_MS);
+        assert!(
+            ahead.contains("about 3 days ahead of the secure enclave"),
+            "{ahead}"
+        );
+        let behind = failure_at(SIGNED_AT_MS - 3 * DAY_MS);
+        assert!(
+            behind.contains("about 3 days behind the secure enclave"),
+            "{behind}"
+        );
+    }
+
+    #[test]
+    fn clock_problems_are_distinguishable_from_other_attestation_failures() {
+        let clock_error = verify_at(SIGNED_AT_MS + 3 * DAY_MS).unwrap_err();
+        assert!(clock_error.is_device_clock_problem());
+
+        let other = Error::AttestationVerificationFailed("PCR0 mismatch".to_string());
+        assert!(!other.is_device_clock_problem());
+        assert!(!Error::Session("expired".to_string()).is_device_clock_problem());
+    }
+
+    #[test]
+    fn todays_clock_rejects_the_2024_document() {
+        let message = failure_at(current_time_ms());
+        assert!(message.contains("ahead of the secure enclave"), "{message}");
+    }
+
+    #[test]
+    fn tampered_timestamp_fails_signature_verification_first() {
+        let raw = BASE64.decode(FIXTURE.trim()).unwrap();
+        let mut cose = match cbor::from_slice::<CborValue>(&raw).unwrap() {
+            CborValue::Array(items) => items,
+            other => panic!("unexpected COSE structure: {other:?}"),
+        };
+        let payload = match &cose[2] {
+            CborValue::Bytes(bytes) => bytes.clone(),
+            other => panic!("unexpected payload: {other:?}"),
+        };
+        let mut fields = match cbor::from_slice::<CborValue>(&payload).unwrap() {
+            CborValue::Map(fields) => fields,
+            other => panic!("unexpected payload map: {other:?}"),
+        };
+        for (key, value) in fields.iter_mut() {
+            if matches!(key, CborValue::Text(name) if name == "timestamp") {
+                *value = CborValue::Integer(current_time_ms().into());
+            }
+        }
+        cose[2] = CborValue::Bytes(cbor::to_vec(&CborValue::Map(fields)).unwrap());
+        let forged = BASE64.encode(cbor::to_vec(&CborValue::Array(cose)).unwrap());
+
+        let error = AttestationVerifier::new()
+            .verify_attestation_document_at(&forged, |_| Ok(()), SIGNED_AT_MS)
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("Signature verification failed"),
+            "{error}"
+        );
     }
 }
