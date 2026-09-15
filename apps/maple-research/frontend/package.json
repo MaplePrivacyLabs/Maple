@@ -21,7 +21,9 @@
     "test:coverage": "bun test --coverage",
     "preview": "vite preview",
     "add": "echo \"Disabled: use a reviewed, pinned shadcn CLI version explicitly\" && exit 1",
+    "preformat": "bash ../../../scripts/prepare-frontend-deps.sh",
     "format": "prettier --write \"src/**/*.{ts,tsx,js,jsx,json,css,md}\"",
+    "preformat:check": "bash ../../../scripts/prepare-frontend-deps.sh",
     "format:check": "prettier --check \"src/**/*.{ts,tsx,js,jsx,json,css,md}\""
   },
   "resolutions": {
