@@ -5,8 +5,6 @@
 //! Keeping one implementation means a fix to that cap, or to the way a partial
 //! read is reported, applies everywhere.
 
-#![cfg(target_os = "macos")]
-
 use tokio::io::AsyncReadExt;
 
 /// Read at most `max_bytes` from `stdout`, or fail if the child produced more.

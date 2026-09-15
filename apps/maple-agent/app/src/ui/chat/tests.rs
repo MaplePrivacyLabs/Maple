@@ -111,7 +111,7 @@ mod state_tests {
 
         let screen = screen(cx);
         screen.update(cx, |this, cx| {
-            assert!(this.render_subagents_card().is_none());
+            assert!(this.render_subagents_card(cx).is_none());
             this.handle_run_event(
                 "s1",
                 "r1",
@@ -119,11 +119,12 @@ mod state_tests {
                     id: "d1".to_string(),
                     task: "Review the parser".to_string(),
                     background: false,
+                    external: None,
                 },
                 cx,
             );
             assert_eq!(this.subagents.len(), 1);
-            assert!(this.render_subagents_card().is_some());
+            assert!(this.render_subagents_card(cx).is_some());
 
             // A subagent of a task that is not on screen stays off it.
             this.handle_run_event(
@@ -133,6 +134,7 @@ mod state_tests {
                     id: "d2".to_string(),
                     task: "Other task".to_string(),
                     background: true,
+                    external: None,
                 },
                 cx,
             );
@@ -174,7 +176,7 @@ mod state_tests {
                 cx,
             );
             assert!(this.subagents.is_empty());
-            assert!(this.render_subagents_card().is_none());
+            assert!(this.render_subagents_card(cx).is_none());
         });
     }
 
@@ -196,6 +198,7 @@ mod state_tests {
                         id: id.to_string(),
                         task: id.to_string(),
                         background,
+                        external: None,
                     },
                     cx,
                 );
@@ -210,7 +213,7 @@ mod state_tests {
             );
             assert_eq!(this.subagents.len(), 1);
             assert_eq!(this.subagents[0].id, "in-background");
-            assert!(this.render_subagents_card().is_some());
+            assert!(this.render_subagents_card(cx).is_some());
 
             // Opening the task later rebuilds the card from the runtime.
             this.set_subagents(
@@ -220,6 +223,7 @@ mod state_tests {
                     background: true,
                     elapsed_ms: 90_000,
                     activity: Some("Terminal: cargo build".to_string()),
+                    external: None,
                 }],
                 cx,
             );
@@ -238,7 +242,7 @@ mod state_tests {
             // An empty snapshot for a task with no subagent clears the card.
             this.set_subagents(Vec::new(), cx);
             assert!(this.subagents.is_empty());
-            assert!(this.render_subagents_card().is_none());
+            assert!(this.render_subagents_card(cx).is_none());
         });
     }
 
@@ -261,6 +265,7 @@ mod state_tests {
                     id: "d1".to_string(),
                     task: "Review the parser".to_string(),
                     background: false,
+                    external: None,
                 },
                 cx,
             );

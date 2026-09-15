@@ -1874,16 +1874,35 @@ impl AgentBackend {
             .await)
     }
 
+    /// Interrupt an external agent (Codex) from its row. The agent keeps
+    /// its thread so the task can continue it later.
+    pub async fn cancel_external_agent(
+        &self,
+        user_id: &str,
+        session_id: &str,
+        agent_id: &str,
+    ) -> Result<(), String> {
+        self.service
+            .handle_for_user(user_id)
+            .await?
+            .cancel_external_agent(session_id, agent_id)
+            .await
+    }
+
     /// Slash commands (installed skills) for a working directory. Filesystem
     /// scan, so it runs on a blocking thread.
     pub async fn list_slash_commands(
         &self,
+        user_id: &str,
         working_dir: Option<String>,
     ) -> Result<Vec<AgentSlashCommand>, String> {
         let service = self.service.clone();
-        tokio::task::spawn_blocking(move || service.list_slash_commands(working_dir.as_deref()))
-            .await
-            .map_err(|error| format!("Slash command scan failed: {error}"))
+        let user_id = user_id.to_string();
+        tokio::task::spawn_blocking(move || {
+            service.list_slash_commands(Some(&user_id), working_dir.as_deref())
+        })
+        .await
+        .map_err(|error| format!("Slash command scan failed: {error}"))
     }
 
     /// Expand `/command args` into the skill prompt; `None` when the command

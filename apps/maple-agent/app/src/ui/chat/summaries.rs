@@ -44,6 +44,10 @@ impl ChatScreen {
             Some("summaries are off in settings")
         } else if has_tool_input(item, "todos") {
             Some("todo list")
+        } else if super::transcript::has_external_agent_activity(item) {
+            // The row draws the agent's own activity; a one-line summary
+            // would hide what it did.
+            Some("external agent activity")
         } else if item.input.as_ref().is_none_or(serde_json::Value::is_null) {
             Some("no input")
         } else {

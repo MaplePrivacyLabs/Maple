@@ -5,6 +5,7 @@
 //! Maple-hosted implementation. A task freezes that backend choice when it is
 //! created; account defaults never rewrite existing tasks.
 
+use super::external_agents::codex::{self, CodexDetection};
 use super::*;
 use std::collections::HashSet;
 #[cfg(target_os = "macos")]
@@ -27,6 +28,31 @@ const CUA_EXTERNAL_MCP_DESCRIPTION: &str =
     "Control desktop applications through the locally installed Cua Driver.";
 #[cfg(target_os = "macos")]
 const CUA_DRIVER_MACOS_BINARY: &str = "/Applications/CuaDriver.app/Contents/MacOS/cua-driver";
+/// The Codex CLI as an external agent a task can hand work to.
+pub(super) const CODEX_INTEGRATION_ID: &str = "codex";
+const CODEX_CARD_NAME: &str = "Codex";
+const CODEX_CARD_DESCRIPTION: &str =
+    "Let a task hand work to the Codex CLI installed on this computer, with its own account.";
+/// Frontmatter line that marks a skill file as Maple's, so disabling the
+/// integration removes only what enabling it wrote.
+const EXTERNAL_AGENT_SKILL_MARKER: &str = "maple: external-agents";
+/// The skills that teach a task how to delegate. They are installed into
+/// the account's Goose skills directory, which both the composer's `/`
+/// list and the `load_skill` tool already scan.
+const EXTERNAL_AGENT_SKILLS: [(&str, &str); 3] = [
+    (
+        "handoff",
+        include_str!("../../resources/skills/handoff/SKILL.md"),
+    ),
+    (
+        "committee",
+        include_str!("../../resources/skills/committee/SKILL.md"),
+    ),
+    (
+        "advisor",
+        include_str!("../../resources/skills/advisor/SKILL.md"),
+    ),
+];
 const INTEGRATIONS_FILE_NAME: &str = "integrations.json";
 const INTEGRATIONS_FILE_VERSION: u32 = 2;
 const LEGACY_INTEGRATIONS_FILE_VERSION: u32 = 1;
@@ -65,6 +91,167 @@ impl StoredIntegrationRegistry {
             .iter_mut()
             .find(|entry| entry.id == CUA_DRIVER_INTEGRATION_ID)
     }
+
+    fn codex(&self) -> Option<&StoredIntegration> {
+        self.integrations
+            .iter()
+            .find(|entry| entry.id == CODEX_INTEGRATION_ID)
+    }
+
+    fn codex_mut(&mut self) -> Option<&mut StoredIntegration> {
+        self.integrations
+            .iter_mut()
+            .find(|entry| entry.id == CODEX_INTEGRATION_ID)
+    }
+}
+
+/// Everything discovered about the curated integrations on this device.
+#[derive(Debug)]
+pub(super) struct IntegrationDetections {
+    pub(super) cua: CuaDetection,
+    pub(super) codex: CodexDetection,
+}
+
+/// The Integrations card for Codex. Availability comes from the
+/// installation alone; sign-in is reported on the card but does not gate
+/// enabling, because the tool itself says what to do when it is missing.
+fn codex_public(
+    detection: &CodexDetection,
+    stored: Option<&StoredIntegration>,
+) -> AgentIntegration {
+    let availability = match (&detection.executable, &detection.problem) {
+        (None, _) => AgentIntegrationAvailability::NotDetected,
+        (Some(_), Some(_)) => AgentIntegrationAvailability::SetupRequired,
+        (Some(_), None) => AgentIntegrationAvailability::Available,
+    };
+    let detail = match (
+        &detection.executable,
+        &detection.problem,
+        detection.signed_in,
+    ) {
+        (None, _, _) => Some(
+            "Install the Codex CLI and make sure `codex` is on your PATH, then reopen this page."
+                .to_string(),
+        ),
+        (Some(_), Some(problem), _) => Some(problem.clone()),
+        (Some(_), None, Some(false)) => Some(codex::sign_in_hint().to_string()),
+        (Some(_), None, Some(true)) => Some("Signed in.".to_string()),
+        (Some(_), None, None) => None,
+    };
+    AgentIntegration {
+        id: CODEX_INTEGRATION_ID.to_string(),
+        name: CODEX_CARD_NAME.to_string(),
+        description: CODEX_CARD_DESCRIPTION.to_string(),
+        availability,
+        backend: stored.map(|entry| entry.backend),
+        version: detection.version.clone(),
+        standalone_version: None,
+        permissions: None,
+        setup_available: false,
+        enabled_for_new_tasks: stored.is_some_and(|entry| entry.enabled),
+        detail,
+    }
+}
+
+/// Whether tasks of this account may delegate to external agents. Read
+/// on a path that must keep working, so an unusable file reads as off.
+pub(super) fn external_agents_enabled(paths: &AgentPathLayout, user_id: &str) -> bool {
+    stored_integrations_for_read(paths, user_id)
+        .codex()
+        .is_some_and(|entry| entry.enabled)
+}
+
+/// The slash commands for the skills Maple installed in the account's
+/// Goose skills directory. A minimal frontmatter read: `name`,
+/// `description`, and `argument-hint`, which is all the composer shows.
+pub(super) fn account_skill_commands(
+    paths: &AgentPathLayout,
+    user_id: &str,
+) -> Vec<AgentSlashCommand> {
+    let Ok(root) = external_agent_skills_dir(paths, user_id) else {
+        return Vec::new();
+    };
+    let Ok(entries) = fs::read_dir(&root) else {
+        return Vec::new();
+    };
+    let mut commands = entries
+        .filter_map(|entry| entry.ok())
+        .filter_map(|entry| fs::read_to_string(entry.path().join("SKILL.md")).ok())
+        .filter_map(|content| skill_command_from_frontmatter(&content))
+        .collect::<Vec<_>>();
+    commands.sort_by(|a, b| a.name.cmp(&b.name));
+    commands
+}
+
+fn skill_command_from_frontmatter(content: &str) -> Option<AgentSlashCommand> {
+    let body = content.trim_start().strip_prefix("---")?;
+    let (frontmatter, _) = body.split_once("\n---")?;
+    let field = |key: &str| {
+        frontmatter.lines().find_map(|line| {
+            let (found, value) = line.split_once(':')?;
+            (found.trim() == key).then(|| value.trim().trim_matches('"').to_string())
+        })
+    };
+    let name = field("name")?;
+    if name.is_empty() || name.contains('/') {
+        return None;
+    }
+    Some(AgentSlashCommand {
+        name,
+        description: field("description").unwrap_or_default(),
+        input_hint: field("argument-hint").filter(|hint| !hint.is_empty()),
+    })
+}
+
+fn external_agent_skills_dir(paths: &AgentPathLayout, user_id: &str) -> Result<PathBuf, String> {
+    Ok(account_config_dir_path(paths, user_id)
+        .map_err(|error| error.to_string())?
+        .join("goose")
+        .join("config")
+        .join("skills"))
+}
+
+/// Install or remove the delegation skills so they match the toggle. Only
+/// files that carry Maple's marker are ever removed.
+pub(super) fn sync_external_agent_skills(
+    paths: &AgentPathLayout,
+    user_id: &str,
+    enabled: bool,
+) -> Result<(), String> {
+    let root = external_agent_skills_dir(paths, user_id)?;
+    for (name, content) in EXTERNAL_AGENT_SKILLS {
+        debug_assert!(content.contains(EXTERNAL_AGENT_SKILL_MARKER));
+        let dir = root.join(name);
+        let file = dir.join("SKILL.md");
+        if enabled {
+            let current = fs::read_to_string(&file).ok();
+            if current.as_deref() == Some(content) {
+                continue;
+            }
+            if current.is_some_and(|current| !current.contains(EXTERNAL_AGENT_SKILL_MARKER)) {
+                log::warn!(
+                    "Leaving the user's own skill in place at {}",
+                    file.display()
+                );
+                continue;
+            }
+            crate::private_file::write_private_file(&file, content.as_bytes())
+                .map_err(|error| format!("Failed to install the {name} skill: {error}"))?;
+            set_owner_only_dir_permissions(&dir);
+        } else {
+            let Ok(current) = fs::read_to_string(&file) else {
+                continue;
+            };
+            if !current.contains(EXTERNAL_AGENT_SKILL_MARKER) {
+                continue;
+            }
+            fs::remove_file(&file)
+                .map_err(|error| format!("Failed to remove the {name} skill: {error}"))?;
+            // Only the directory Maple made; a user's extra files keep it.
+            let _ = fs::remove_dir(&dir);
+        }
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -163,14 +350,20 @@ fn embedded_cua_version() -> Option<String> {
     None
 }
 
-pub(super) async fn detect_integrations() -> CuaDetection {
-    detect_cua_driver().await
+/// Discover every curated integration. `codex_search_path` is the PATH
+/// to look on for the Codex CLI, when the host knows a fuller one than
+/// the process environment (a macOS GUI launch).
+pub(super) async fn detect_integrations(codex_search_path: Option<&str>) -> IntegrationDetections {
+    IntegrationDetections {
+        cua: detect_cua_driver().await,
+        codex: codex::detect(codex_search_path).await,
+    }
 }
 
-/// The only integration Maple curates today. Every entry point that accepts an
+/// The integrations Maple curates. Every entry point that accepts an
 /// integration id checks it here so they cannot disagree.
 pub(super) fn require_known_integration(id: &str) -> Result<(), String> {
-    if id.trim() == CUA_DRIVER_INTEGRATION_ID {
+    if matches!(id.trim(), CUA_DRIVER_INTEGRATION_ID | CODEX_INTEGRATION_ID) {
         return Ok(());
     }
     Err(format!("Unknown integration '{}'", id.trim()))
@@ -179,20 +372,71 @@ pub(super) fn require_known_integration(id: &str) -> Result<(), String> {
 pub(super) fn project_integrations(
     paths: &AgentPathLayout,
     user_id: &str,
-    detection: &CuaDetection,
+    detections: &IntegrationDetections,
 ) -> Result<Vec<AgentIntegration>, String> {
     let stored = load_stored_integrations(paths, user_id)?;
-    Ok(vec![detection.public(stored.cua())])
+    Ok(vec![
+        detections.cua.public(stored.cua()),
+        codex_public(&detections.codex, stored.codex()),
+    ])
 }
 
 pub(super) fn set_integration_default(
     paths: &AgentPathLayout,
     user_id: &str,
     request: &AgentSetIntegrationEnabledRequest,
-    detection: &CuaDetection,
+    detections: &IntegrationDetections,
 ) -> Result<Vec<AgentIntegration>, String> {
     require_known_integration(&request.id)?;
+    if request.id.trim() == CODEX_INTEGRATION_ID {
+        set_codex_default(paths, user_id, request.enabled, &detections.codex)?;
+    } else {
+        set_cua_default(paths, user_id, request.enabled, &detections.cua)?;
+    }
+    project_integrations(paths, user_id, detections)
+}
 
+/// Enabling needs a usable installation; disabling never fails on the
+/// installation, so a removed Codex can still be switched off.
+fn set_codex_default(
+    paths: &AgentPathLayout,
+    user_id: &str,
+    enabled: bool,
+    detection: &CodexDetection,
+) -> Result<(), String> {
+    let mut stored = load_stored_integrations(paths, user_id)?;
+    if enabled {
+        if detection.executable.is_none() {
+            return Err(
+                "Install the Codex CLI and make sure `codex` is on your PATH before enabling it"
+                    .to_string(),
+            );
+        }
+        if let Some(problem) = &detection.problem {
+            return Err(problem.clone());
+        }
+        match stored.codex_mut() {
+            Some(entry) => entry.enabled = true,
+            None => stored.integrations.push(StoredIntegration {
+                id: CODEX_INTEGRATION_ID.to_string(),
+                enabled: true,
+                backend: AgentIntegrationBackend::Embedded,
+                external_server: None,
+            }),
+        }
+    } else if let Some(entry) = stored.codex_mut() {
+        entry.enabled = false;
+    }
+    save_stored_integrations(paths, user_id, &stored)?;
+    sync_external_agent_skills(paths, user_id, enabled)
+}
+
+fn set_cua_default(
+    paths: &AgentPathLayout,
+    user_id: &str,
+    enabled: bool,
+    detection: &CuaDetection,
+) -> Result<(), String> {
     let custom = normalize_mcp_servers(
         load_agent_config_inner(paths, user_id)
             .map_err(|error| format!("Failed to load MCP servers: {error}"))?
@@ -200,7 +444,7 @@ pub(super) fn set_integration_default(
     )?;
     let mut stored = load_stored_integrations(paths, user_id)?;
 
-    if request.enabled {
+    if enabled {
         ensure_no_custom_integration_collision(&custom)?;
         match stored.cua_mut() {
             Some(entry) => {
@@ -247,8 +491,7 @@ pub(super) fn set_integration_default(
         entry.enabled = false;
     }
 
-    save_stored_integrations(paths, user_id, &stored)?;
-    Ok(vec![detection.public(stored.cua())])
+    save_stored_integrations(paths, user_id, &stored)
 }
 
 /// Switch the new-task default to Maple's embedded backend only after the OS
@@ -257,10 +500,11 @@ pub(super) fn set_integration_default(
 pub(super) fn select_embedded_integration_backend(
     paths: &AgentPathLayout,
     user_id: &str,
-    detection: &CuaDetection,
+    detections: &IntegrationDetections,
 ) -> Result<Vec<AgentIntegration>, String> {
+    let detection = &detections.cua;
     if !detection.embedded_ready() {
-        return project_integrations(paths, user_id, detection);
+        return project_integrations(paths, user_id, detections);
     }
     let custom = normalize_mcp_servers(
         load_agent_config_inner(paths, user_id)
@@ -284,7 +528,7 @@ pub(super) fn select_embedded_integration_backend(
         }),
     }
     save_stored_integrations(paths, user_id, &stored)?;
-    project_integrations(paths, user_id, detection)
+    project_integrations(paths, user_id, detections)
 }
 
 pub(super) fn effective_mcp_servers(
@@ -599,11 +843,22 @@ fn validate_stored_registry(
     }
     let mut ids = HashSet::new();
     for entry in &registry.integrations {
-        if entry.id != CUA_DRIVER_INTEGRATION_ID || !ids.insert(entry.id.as_str()) {
+        if !matches!(
+            entry.id.as_str(),
+            CUA_DRIVER_INTEGRATION_ID | CODEX_INTEGRATION_ID
+        ) || !ids.insert(entry.id.as_str())
+        {
             return Err(
                 "Device-local integration settings contain an unknown or duplicate integration"
                     .to_string(),
             );
+        }
+        if entry.id == CODEX_INTEGRATION_ID {
+            if entry.backend != AgentIntegrationBackend::Embedded || entry.external_server.is_some()
+            {
+                return Err("Device-local Codex settings are invalid".to_string());
+            }
+            continue;
         }
         if entry.backend == AgentIntegrationBackend::External && entry.external_server.is_none() {
             return Err(
@@ -875,6 +1130,13 @@ fn join_mcp_command<'a>(parts: impl IntoIterator<Item = &'a str>) -> Result<Stri
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn cua_only(cua: CuaDetection) -> IntegrationDetections {
+        IntegrationDetections {
+            cua,
+            codex: CodexDetection::default(),
+        }
+    }
 
     fn stored_cua_server(root: &Path, enabled: bool) -> AgentMcpServer {
         let binary = root.join("cua-driver");
@@ -1197,7 +1459,7 @@ mod tests {
                 id: CUA_DRIVER_INTEGRATION_ID.to_string(),
                 enabled: true,
             },
-            &detection,
+            &cua_only(detection),
         )
         .unwrap();
         assert!(enabled[0].enabled_for_new_tasks);
@@ -1217,7 +1479,7 @@ mod tests {
                 id: CUA_DRIVER_INTEGRATION_ID.to_string(),
                 enabled: false,
             },
-            &CuaDetection::not_detected(),
+            &cua_only(CuaDetection::not_detected()),
         )
         .unwrap();
         assert!(!disabled[0].enabled_for_new_tasks);
@@ -1296,7 +1558,8 @@ mod tests {
             external_server: None,
         };
 
-        let projected = select_embedded_integration_backend(&paths, user, &detection).unwrap();
+        let projected =
+            select_embedded_integration_backend(&paths, user, &cua_only(detection)).unwrap();
         assert_eq!(
             projected[0].backend,
             Some(AgentIntegrationBackend::Embedded)
@@ -1320,5 +1583,154 @@ mod tests {
                 .unwrap_err()
                 .contains("Maple desktop app")
         );
+    }
+    #[test]
+    fn codex_toggle_persists_default_off_and_installs_skills() {
+        let temporary = tempfile::tempdir().unwrap();
+        let paths = AgentPathLayout::from_app_roots(
+            temporary.path().join("config"),
+            temporary.path().join("data"),
+        );
+        let user = "codex-user";
+        let detections = IntegrationDetections {
+            cua: CuaDetection::not_detected(),
+            codex: CodexDetection {
+                executable: Some(temporary.path().join("codex")),
+                version: Some("codex-cli 0.150.0".to_string()),
+                signed_in: Some(false),
+                problem: None,
+            },
+        };
+        let projected = project_integrations(&paths, user, &detections).unwrap();
+        let codex_card = projected
+            .iter()
+            .find(|integration| integration.id == CODEX_INTEGRATION_ID)
+            .unwrap();
+        assert!(!codex_card.enabled_for_new_tasks);
+        assert_eq!(
+            codex_card.availability,
+            AgentIntegrationAvailability::Available
+        );
+        assert_eq!(codex_card.version.as_deref(), Some("codex-cli 0.150.0"));
+        assert!(
+            codex_card
+                .detail
+                .as_deref()
+                .unwrap()
+                .contains("codex login")
+        );
+        assert!(!external_agents_enabled(&paths, user));
+
+        let enabled = set_integration_default(
+            &paths,
+            user,
+            &AgentSetIntegrationEnabledRequest {
+                id: CODEX_INTEGRATION_ID.to_string(),
+                enabled: true,
+            },
+            &detections,
+        )
+        .unwrap();
+        assert!(
+            enabled
+                .iter()
+                .find(|integration| integration.id == CODEX_INTEGRATION_ID)
+                .unwrap()
+                .enabled_for_new_tasks
+        );
+        assert!(external_agents_enabled(&paths, user));
+        let skills = external_agent_skills_dir(&paths, user).unwrap();
+        for (name, content) in EXTERNAL_AGENT_SKILLS {
+            assert_eq!(
+                fs::read_to_string(skills.join(name).join("SKILL.md")).unwrap(),
+                content
+            );
+        }
+        let commands = account_skill_commands(&paths, user);
+        assert_eq!(
+            commands.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(),
+            ["advisor", "committee", "handoff"]
+        );
+        assert_eq!(
+            commands[2].input_hint.as_deref(),
+            Some("<what to hand off>")
+        );
+        assert!(commands[2].description.contains("Codex"));
+        // A user's own skill of the same name is never overwritten or removed.
+        let own = skills.join("advisor").join("SKILL.md");
+        fs::write(&own, "---\nname: advisor\n---\nmine\n").unwrap();
+
+        let disabled = set_integration_default(
+            &paths,
+            user,
+            &AgentSetIntegrationEnabledRequest {
+                id: CODEX_INTEGRATION_ID.to_string(),
+                enabled: false,
+            },
+            &IntegrationDetections {
+                cua: CuaDetection::not_detected(),
+                codex: CodexDetection::default(),
+            },
+        )
+        .unwrap();
+        assert!(
+            !disabled
+                .iter()
+                .find(|integration| integration.id == CODEX_INTEGRATION_ID)
+                .unwrap()
+                .enabled_for_new_tasks
+        );
+        assert!(!external_agents_enabled(&paths, user));
+        assert!(!skills.join("handoff").join("SKILL.md").exists());
+        assert!(!skills.join("committee").join("SKILL.md").exists());
+        assert_eq!(
+            fs::read_to_string(&own).unwrap(),
+            "---\nname: advisor\n---\nmine\n"
+        );
+    }
+
+    #[test]
+    fn codex_cannot_be_enabled_without_a_usable_installation() {
+        let temporary = tempfile::tempdir().unwrap();
+        let paths = AgentPathLayout::from_app_roots(
+            temporary.path().join("config"),
+            temporary.path().join("data"),
+        );
+        let user = "codex-user";
+        let request = AgentSetIntegrationEnabledRequest {
+            id: CODEX_INTEGRATION_ID.to_string(),
+            enabled: true,
+        };
+        let missing = IntegrationDetections {
+            cua: CuaDetection::not_detected(),
+            codex: CodexDetection::default(),
+        };
+        let error = set_integration_default(&paths, user, &request, &missing).unwrap_err();
+        assert!(error.contains("Install the Codex CLI"));
+        let projected = project_integrations(&paths, user, &missing).unwrap();
+        assert_eq!(
+            projected[1].availability,
+            AgentIntegrationAvailability::NotDetected
+        );
+
+        let old = IntegrationDetections {
+            cua: CuaDetection::not_detected(),
+            codex: CodexDetection {
+                executable: Some(temporary.path().join("codex")),
+                version: Some("0.100.0".to_string()),
+                signed_in: Some(true),
+                problem: Some(
+                    "Codex 0.100.0 is older than the 0.143.0 that Maple needs.".to_string(),
+                ),
+            },
+        };
+        let error = set_integration_default(&paths, user, &request, &old).unwrap_err();
+        assert!(error.contains("older"));
+        let projected = project_integrations(&paths, user, &old).unwrap();
+        assert_eq!(
+            projected[1].availability,
+            AgentIntegrationAvailability::SetupRequired
+        );
+        assert!(!external_agents_enabled(&paths, user));
     }
 }
