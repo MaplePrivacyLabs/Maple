@@ -1,0 +1,907 @@
+//! Driver tests against a fake `codex app-server`.
+//!
+//! The fixture is this test binary re-executed as an ignored test. A shell
+//! shim named `codex` on a private PATH forwards to it, so the driver
+//! resolves and spawns it exactly as it would the real CLI. Unix only until
+//! a `.cmd` shim exists for Windows.
+
+#![cfg(unix)]
+
+use super::*;
+use crate::agent::tool_context::default_tool_context_spec;
+use crate::agent::{AgentEventSink, AgentPathLayout, MapleAgentHostResources};
+use std::io::{BufRead, Write};
+use std::os::unix::fs::PermissionsExt;
+
+const FIXTURE_TEST: &str = "agent::external_agents::tests::fake_codex_app_server";
+const FIXTURE_MARKER: &str = "MAPLE_FAKE_CODEX";
+const FIXTURE_ARGS: &str = "MAPLE_FAKE_CODEX_ARGS";
+const FIXTURE_MODE: &str = "MAPLE_FAKE_CODEX_MODE";
+const FIXTURE_PID_FILE: &str = "MAPLE_FAKE_CODEX_PID_FILE";
+const FIXTURE_LOG: &str = "MAPLE_FAKE_CODEX_LOG";
+const WAIT: Duration = Duration::from_secs(20);
+
+#[derive(Default)]
+struct RecordingSink {
+    events: StdMutex<Vec<AgentServiceEvent>>,
+}
+
+impl AgentEventSink for RecordingSink {
+    fn emit(&self, event: &AgentServiceEvent) {
+        self.events
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(event.clone());
+    }
+}
+
+impl RecordingSink {
+    fn events(&self) -> Vec<AgentServiceEvent> {
+        self.events
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+}
+
+struct Harness {
+    _temp: tempfile::TempDir,
+    project: PathBuf,
+    shim_dir: PathBuf,
+    service: MapleAgentService,
+    sink: Arc<RecordingSink>,
+    host: ExternalAgentHost,
+    registry: Arc<ExternalAgentRegistry>,
+    pid_file: PathBuf,
+    log_file: PathBuf,
+}
+
+impl Harness {
+    fn new(mode: &str) -> Self {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().to_path_buf();
+        let project = root.join("project");
+        fs::create_dir_all(&project).unwrap();
+        let history = root.join("history");
+        fs::create_dir_all(&history).unwrap();
+        let shim_dir = root.join("bin");
+        fs::create_dir_all(&shim_dir).unwrap();
+        let pid_file = root.join("codex.pid");
+        let log_file = root.join("codex.log");
+        let shim = format!(
+            "#!/bin/sh\nexport {FIXTURE_MARKER}=1\nexport {FIXTURE_MODE}='{mode}'\nexport {FIXTURE_PID_FILE}='{}'\nexport {FIXTURE_LOG}='{}'\nexport {FIXTURE_ARGS}=\"$*\"\nexec '{}' '{FIXTURE_TEST}' --exact --ignored --nocapture --test-threads=1\n",
+            pid_file.display(),
+            log_file.display(),
+            std::env::current_exe().unwrap().display(),
+        );
+        let shim_path = shim_dir.join("codex");
+        fs::write(&shim_path, shim).unwrap();
+        fs::set_permissions(&shim_path, fs::Permissions::from_mode(0o700)).unwrap();
+
+        let paths = AgentPathLayout::from_app_roots(root.join("config"), root.join("data"));
+        let sink = Arc::new(RecordingSink::default());
+        let service = MapleAgentService::new(MapleAgentHostResources::new(
+            paths,
+            sink.clone(),
+            default_tool_context_spec().unwrap(),
+            String::new(),
+        ));
+        let host = ExternalAgentHost {
+            service: service.clone(),
+            account_scope: Arc::from("scope"),
+            session_manager: Arc::new(SessionManager::new(history)),
+            permission_modes: Arc::new(Mutex::new(HashMap::new())),
+            project_root: project.clone(),
+            lifetime: CancellationToken::new(),
+        };
+        let registry = Arc::new(ExternalAgentRegistry::new(host.clone()));
+        Self {
+            _temp: temp,
+            project,
+            shim_dir,
+            service,
+            sink,
+            host,
+            registry,
+            pid_file,
+            log_file,
+        }
+    }
+
+    fn call(&self, session_id: &str, row_id: &str) -> ExternalAgentCall {
+        ExternalAgentCall {
+            session_id: session_id.to_string(),
+            working_dir: Some(self.project.clone()),
+            row_id: Some(row_id.to_string()),
+            login_path: Some(self.shim_dir.to_string_lossy().into_owned()),
+            tool_context: SharedAgentToolContext::new(default_tool_context_spec().unwrap())
+                .snapshot(),
+            cancel_token: CancellationToken::new(),
+        }
+    }
+
+    async fn set_mode(&self, session_id: &str, mode: GooseMode) {
+        self.host
+            .permission_modes
+            .lock()
+            .await
+            .insert(session_id.to_string(), mode);
+    }
+
+    async fn fixture_pid(&self) -> i32 {
+        wait_for(|| {
+            fs::read_to_string(&self.pid_file)
+                .ok()
+                .and_then(|pid| pid.trim().parse::<i32>().ok())
+        })
+        .await
+    }
+
+    fn log(&self) -> String {
+        fs::read_to_string(&self.log_file).unwrap_or_default()
+    }
+}
+
+async fn wait_for<T>(mut probe: impl FnMut() -> Option<T>) -> T {
+    let deadline = Instant::now() + WAIT;
+    loop {
+        if let Some(value) = probe() {
+            return value;
+        }
+        assert!(Instant::now() < deadline, "timed out waiting");
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+}
+
+fn result_text(result: &CallToolResult) -> String {
+    result
+        .content
+        .iter()
+        .filter_map(|content| content.as_text().map(|text| text.text.clone()))
+        .collect()
+}
+
+fn process_alive(pid: i32) -> bool {
+    // SAFETY: signal 0 only checks whether the process can be signalled.
+    unsafe { libc::kill(pid, 0) == 0 }
+}
+
+/// The fake app-server. It answers the handshake, starts a thread, and
+/// on `turn/start` plays a short turn that asks for one command approval
+/// and reports what decision it got in its final message. In `slow` mode
+/// it waits for `turn/interrupt` instead.
+#[test]
+#[ignore = "fake codex app-server run by the driver tests"]
+fn fake_codex_app_server() {
+    if std::env::var_os(FIXTURE_MARKER).is_none() {
+        return;
+    }
+    let stdout = std::io::stdout();
+    let mut out = stdout.lock();
+    // libtest prints "test <name> ... " with no newline before the test
+    // runs; end that line so the first protocol line stands alone.
+    writeln!(out).unwrap();
+    let args = std::env::var(FIXTURE_ARGS).unwrap_or_default();
+    if args.contains("--version") {
+        writeln!(out, "codex-cli 0.150.0").unwrap();
+        out.flush().unwrap();
+        return;
+    }
+    if let Ok(pid_file) = std::env::var(FIXTURE_PID_FILE) {
+        fs::write(pid_file, std::process::id().to_string()).unwrap();
+    }
+    let mode = std::env::var(FIXTURE_MODE).unwrap_or_default();
+    let log = std::env::var(FIXTURE_LOG).ok();
+    let stdin = std::io::stdin();
+    let mut lines = stdin.lock().lines();
+    let mut send = |value: Value| {
+        writeln!(out, "{value}").unwrap();
+        out.flush().unwrap();
+    };
+    while let Some(Ok(line)) = lines.next() {
+        if let Some(log) = &log {
+            let mut file = fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(log)
+                .unwrap();
+            writeln!(file, "<- {line}").unwrap();
+        }
+        let Ok(message) = serde_json::from_str::<Value>(&line) else {
+            continue;
+        };
+        let id = message.get("id").cloned();
+        let method = message
+            .get("method")
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        match (id, method.as_deref()) {
+            (Some(id), Some("initialize")) => send(json!({ "id": id, "result": {} })),
+            (Some(id), Some("thread/start")) => {
+                send(json!({ "id": id, "result": { "thread": { "id": "thread-1" } } }));
+                send(
+                    json!({ "method": "thread/started", "params": { "thread": { "id": "thread-1" } } }),
+                );
+            }
+            (Some(id), Some("thread/resume")) => {
+                send(
+                    json!({ "id": id, "result": { "thread": { "id": message["params"]["threadId"] } } }),
+                );
+            }
+            (Some(id), Some("turn/start")) => {
+                if let Some(log) = &log {
+                    let mut file = fs::OpenOptions::new()
+                        .create(true)
+                        .append(true)
+                        .open(log)
+                        .unwrap();
+                    writeln!(file, "{}", message["params"]).unwrap();
+                }
+                send(json!({ "id": id, "result": { "turn": { "id": "turn-1" } } }));
+                send(
+                    json!({ "method": "turn/started", "params": { "threadId": "thread-1", "turn": { "id": "turn-1" } } }),
+                );
+                if mode == "async-question" {
+                    let prompt = message["params"]["input"][0]["text"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .to_string();
+                    if prompt.starts_with("Answers to your questions") {
+                        let last = prompt.lines().last().unwrap_or_default().to_string();
+                        send(
+                            json!({ "method": "item/completed", "params": { "threadId": "thread-1", "item": { "id": "msg-a", "type": "agentMessage", "text": format!("Got: {last}") } } }),
+                        );
+                    } else {
+                        send(
+                            json!({ "method": "item/completed", "params": { "threadId": "thread-1", "item": { "id": "aq-1", "type": "agentMessage", "text": "Tabs or spaces?", "delivery": "async",
+                            "questions": [{ "title": "Tabs or spaces?", "options": ["Tabs", "Spaces"] }] } } }),
+                        );
+                    }
+                    send(
+                        json!({ "method": "turn/completed", "params": { "threadId": "thread-1", "turn": { "id": "turn-1", "status": "completed" } } }),
+                    );
+                    continue;
+                }
+                if mode == "question" {
+                    send(
+                        json!({ "id": 200, "method": "item/tool/requestUserInput", "params": { "itemId": "q-1", "threadId": "thread-1", "turnId": "turn-1",
+                        "questions": [{ "id": "style", "header": "Style", "question": "Tabs or spaces?", "options": [{ "label": "Tabs", "description": "t" }, { "label": "Spaces", "description": "s" }] }] } }),
+                    );
+                    let mut chosen = String::from("none");
+                    for line in lines.by_ref().map_while(Result::ok) {
+                        let Ok(message) = serde_json::from_str::<Value>(&line) else {
+                            continue;
+                        };
+                        if message.get("id").and_then(Value::as_u64) == Some(200) {
+                            chosen = message["result"]["answers"]["style"]["answers"][0]
+                                .as_str()
+                                .unwrap_or("none")
+                                .to_string();
+                            break;
+                        }
+                    }
+                    send(
+                        json!({ "method": "item/completed", "params": { "threadId": "thread-1", "item": { "id": "msg-q", "type": "agentMessage", "text": format!("Chosen: {chosen}") } } }),
+                    );
+                    send(
+                        json!({ "method": "turn/completed", "params": { "threadId": "thread-1", "turn": { "id": "turn-1", "status": "completed" } } }),
+                    );
+                    continue;
+                }
+                if mode == "slow" {
+                    for line in lines.by_ref().map_while(Result::ok) {
+                        let Ok(message) = serde_json::from_str::<Value>(&line) else {
+                            continue;
+                        };
+                        if message.get("method").and_then(Value::as_str) == Some("turn/interrupt") {
+                            send(json!({ "id": message["id"], "result": {} }));
+                            send(
+                                json!({ "method": "turn/completed", "params": { "threadId": "thread-1", "turn": { "id": "turn-1", "status": "interrupted" } } }),
+                            );
+                            break;
+                        }
+                    }
+                    continue;
+                }
+                send(
+                    json!({ "method": "item/started", "params": { "threadId": "thread-1", "item": { "id": "cmd-1", "type": "commandExecution", "command": ["cargo", "test"] } } }),
+                );
+                send(
+                    json!({ "id": 100, "method": "item/commandExecution/requestApproval", "params": { "itemId": "cmd-1", "threadId": "thread-1", "turnId": "turn-1", "command": "cargo test", "cwd": "." } }),
+                );
+                let mut decision = String::from("none");
+                for line in lines.by_ref().map_while(Result::ok) {
+                    let Ok(message) = serde_json::from_str::<Value>(&line) else {
+                        continue;
+                    };
+                    if message.get("id").and_then(Value::as_u64) == Some(100) {
+                        decision = message["result"]["decision"]
+                            .as_str()
+                            .unwrap_or("none")
+                            .to_string();
+                        break;
+                    }
+                }
+                let exit_code = if decision == "accept" { 0 } else { 1 };
+                send(
+                    json!({ "method": "item/completed", "params": { "threadId": "thread-1", "item": { "id": "cmd-1", "type": "commandExecution", "command": ["cargo", "test"], "exitCode": exit_code } } }),
+                );
+                send(
+                    json!({ "method": "item/completed", "params": { "threadId": "thread-1", "item": { "id": "fc-1", "type": "fileChange", "status": "completed", "changes": [{ "path": "src/lib.rs", "kind": "update" }] } } }),
+                );
+                send(
+                    json!({ "method": "item/agentMessage/delta", "params": { "threadId": "thread-1", "itemId": "msg-1", "delta": "Done: " } }),
+                );
+                send(
+                    json!({ "method": "item/agentMessage/delta", "params": { "threadId": "thread-1", "itemId": "msg-1", "delta": decision } }),
+                );
+                send(
+                    json!({ "method": "item/completed", "params": { "threadId": "thread-1", "item": { "id": "msg-1", "type": "agentMessage", "text": format!("Done: {decision}") } } }),
+                );
+                send(
+                    json!({ "method": "turn/completed", "params": { "threadId": "thread-1", "turn": { "id": "turn-1", "status": "completed" } } }),
+                );
+            }
+            (Some(id), Some("turn/interrupt")) => {
+                send(json!({ "id": id, "result": {} }));
+            }
+            (Some(id), Some(method)) => {
+                send(
+                    json!({ "id": id, "error": { "code": -32601, "message": format!("{method} unsupported") } }),
+                );
+            }
+            _ => {}
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn allow_all_turn_auto_approves_and_streams_activity() {
+    let harness = Harness::new("approve");
+    harness.set_mode("session-1", GooseMode::Auto).await;
+
+    let result = harness
+        .registry
+        .start(
+            harness.call("session-1", "row-1"),
+            AgentStartParams {
+                provider: "codex".into(),
+                prompt: "Fix the parser".into(),
+                background: false,
+                model: Some("gpt-5.4".into()),
+                effort: None,
+                cwd: None,
+            },
+        )
+        .await;
+    let text = result_text(&result);
+    assert!(
+        text.starts_with(
+            "Status: completed\nProvider: codex\nAgent ID: codex-1\nThread ID: thread-1\n"
+        ),
+        "{text}"
+    );
+    assert!(text.contains("Files changed (1): src/lib.rs"), "{text}");
+    assert!(text.contains("Commands run: 1 (0 failed)"), "{text}");
+    assert!(
+        text.contains("<agent-response>\nDone: accept\n</agent-response>"),
+        "{text}"
+    );
+    assert!(text.contains(AGENT_SEND_TOOL), "{text}");
+    let activity = result.structured_content.as_ref().unwrap()[ACTIVITY_KEY].clone();
+    assert_eq!(activity["status"], "completed");
+    assert_eq!(activity["commands"][0]["exitCode"], 0);
+
+    let log = harness.log();
+    // Maple sends no policy; Codex's configuration decides.
+    assert!(!log.contains("approvalPolicy"), "{log}");
+    assert!(!log.contains("sandboxPolicy"), "{log}");
+    assert!(log.contains("\"model\":\"gpt-5.4\""), "{log}");
+    assert!(log.contains("Fix the parser"), "{log}");
+
+    let events = harness.sink.events();
+    assert!(events.iter().any(|event| matches!(
+        event,
+        AgentServiceEvent::Run { session_id, run_id, event: AgentRunEvent::SubagentStarted { id, background: false, external: Some(external), .. } }
+            if session_id == "session-1" && run_id == "external-codex-1" && id == "external-agent-codex-1" && external.agent_id == "codex-1"
+    )));
+    assert!(events.iter().any(|event| matches!(
+        event,
+        AgentServiceEvent::Run { event: AgentRunEvent::SubagentFinished { id }, .. } if id == "external-agent-codex-1"
+    )));
+    let rows = events
+        .iter()
+        .filter_map(|event| match event {
+            AgentServiceEvent::TimelineItem { item, .. } if item.id == "row-1" => Some(item),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        rows.iter()
+            .any(|row| row.status.as_deref() == Some("running"))
+    );
+    let last = rows.last().unwrap();
+    assert_eq!(last.status.as_deref(), Some("completed"));
+    assert_eq!(
+        last.output.as_ref().unwrap()["structuredContent"][ACTIVITY_KEY]["fileChanges"][0]["path"],
+        "src/lib.rs"
+    );
+    // No permission card was needed in Allow all.
+    assert!(!events.iter().any(|event| matches!(
+        event,
+        AgentServiceEvent::Run {
+            event: AgentRunEvent::PermissionRequested { .. },
+            ..
+        }
+    )));
+
+    harness.registry.shutdown_all(Duration::from_secs(5)).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn read_only_turn_puts_the_approval_in_the_permission_table() {
+    let harness = Harness::new("approve");
+    let registry = Arc::clone(&harness.registry);
+    let call = harness.call("session-2", "row-2");
+    let turn = tokio::spawn(async move {
+        registry
+            .start(
+                call,
+                AgentStartParams {
+                    provider: "codex".into(),
+                    prompt: "Run the tests".into(),
+                    background: false,
+                    model: None,
+                    effort: None,
+                    cwd: None,
+                },
+            )
+            .await
+    });
+
+    let pending = {
+        let service = harness.service.clone();
+        wait_for(|| {
+            service
+                .pending_permissions
+                .try_lock()
+                .ok()
+                .and_then(|pending| {
+                    pending
+                        .iter()
+                        .next()
+                        .map(|(key, entry)| (key.clone(), entry.clone()))
+                })
+        })
+        .await
+    };
+    let ((session_id, request_id), entry) = pending;
+    assert_eq!(session_id, "session-2");
+    assert_eq!(request_id, "codex-1-cmd-1");
+    assert_eq!(entry.run_id, "external-codex-1");
+    assert_eq!(entry.routing, AgentPermissionRouting::Desktop);
+    assert_eq!(entry.request.tool_name, "codex_command");
+    assert_eq!(entry.request.arguments["command"], "cargo test");
+    let events = harness.sink.events();
+    assert!(events.iter().any(|event| matches!(
+        event,
+        AgentServiceEvent::Run { run_id, event: AgentRunEvent::PermissionRequested { request, item }, .. }
+            if run_id == "external-codex-1" && request.request_id == "codex-1-cmd-1" && item.id == "permission-codex-1-cmd-1"
+    )));
+    // The row shows the agent waiting on the user.
+    assert!(events.iter().any(|event| matches!(
+        event,
+        AgentServiceEvent::TimelineItem { item, .. }
+            if item.id == "row-2" && item.output.as_ref().unwrap()["structuredContent"][ACTIVITY_KEY]["pendingPermission"] == "run `cargo test`"
+    )));
+
+    // The user declines. In the app this comes through resolve_permission;
+    // the responder is what that path resolves.
+    let PendingPermissionOrigin::ExternalAgent(responder) = entry.origin else {
+        panic!("expected an external origin");
+    };
+    harness
+        .service
+        .pending_permissions
+        .lock()
+        .await
+        .remove(&(session_id, request_id));
+    assert!(responder.resolve(AgentPermissionDecision::DenyOnce));
+
+    let result = turn.await.unwrap();
+    let text = result_text(&result);
+    assert!(text.contains("Done: decline"), "{text}");
+    assert!(text.contains("Commands run: 1 (1 failed)"), "{text}");
+    harness.registry.shutdown_all(Duration::from_secs(5)).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cancelling_the_run_interrupts_the_turn_and_shutdown_kills_the_process() {
+    let harness = Harness::new("slow");
+    harness.set_mode("session-3", GooseMode::Auto).await;
+    let registry = Arc::clone(&harness.registry);
+    let call = harness.call("session-3", "row-3");
+    let cancel = call.cancel_token.clone();
+    let turn = tokio::spawn(async move {
+        registry
+            .start(
+                call,
+                AgentStartParams {
+                    provider: "codex".into(),
+                    prompt: "Take your time".into(),
+                    background: false,
+                    model: None,
+                    effort: None,
+                    cwd: None,
+                },
+            )
+            .await
+    });
+    let pid = harness.fixture_pid().await;
+    // Wait until the turn is identified, so the interrupt can name it.
+    {
+        let sink = Arc::clone(&harness.sink);
+        wait_for(|| {
+            sink.events()
+                .iter()
+                .any(|event| matches!(event, AgentServiceEvent::TimelineItem { item, .. } if item.id == "row-3"))
+                .then_some(())
+        })
+        .await;
+    }
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    cancel.cancel();
+    let result = turn.await.unwrap();
+    let text = result_text(&result);
+    assert!(text.starts_with("Status: cancelled"), "{text}");
+    assert!(text.contains(AGENT_SEND_TOOL), "{text}");
+    // A stop reclaims the process: Codex does not always end a sandboxed
+    // command on interrupt, so the process group goes with the turn.
+    wait_for(|| (!process_alive(pid)).then_some(())).await;
+    let status = harness
+        .registry
+        .status(
+            &harness.call("session-3", "row-3b"),
+            AgentRefParams {
+                provider: "codex".into(),
+                agent_id: "codex-1".into(),
+            },
+        )
+        .await;
+    assert!(result_text(&status).starts_with("Status: cancelled"));
+
+    // The agent is still there: the next send starts a fresh process and
+    // resumes the same thread.
+    fs::remove_file(&harness.pid_file).unwrap();
+    let follow_up = harness
+        .registry
+        .send(
+            harness.call("session-3", "row-3c"),
+            AgentSendParams {
+                provider: "codex".into(),
+                agent_id: "codex-1".into(),
+                prompt: "Carry on".into(),
+                background: true,
+                model: None,
+                effort: None,
+            },
+        )
+        .await;
+    assert!(result_text(&follow_up).starts_with("Status: running"));
+    let second_pid = harness.fixture_pid().await;
+    assert_ne!(second_pid, pid);
+    assert!(process_alive(second_pid));
+    let log = harness.log();
+    assert!(log.contains("\"threadId\":\"thread-1\""), "{log}");
+
+    // Stop from the row kills that process too.
+    harness
+        .registry
+        .cancel("session-3", "codex-1")
+        .await
+        .unwrap();
+    wait_for(|| (!process_alive(second_pid)).then_some(())).await;
+    harness.registry.shutdown_all(Duration::from_secs(5)).await;
+    wait_for(|| (!process_alive(pid)).then_some(())).await;
+    assert!(harness.registry.snapshot("session-3").await.is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn background_turn_reports_its_end_into_the_transcript() {
+    let harness = Harness::new("approve");
+    harness.set_mode("session-4", GooseMode::Auto).await;
+    let result = harness
+        .registry
+        .start(
+            harness.call("session-4", "row-4"),
+            AgentStartParams {
+                provider: "codex".into(),
+                prompt: "Work in the background".into(),
+                background: true,
+                model: None,
+                effort: None,
+                cwd: None,
+            },
+        )
+        .await;
+    let text = result_text(&result);
+    // The fixture answers instantly, so the turn may already be over when
+    // the call returns; either way the guidance matches the status.
+    if text.starts_with("Status: running") {
+        assert!(text.contains("do not poll"), "{text}");
+    } else {
+        assert!(text.starts_with("Status: completed"), "{text}");
+        assert!(text.contains(AGENT_SEND_TOOL), "{text}");
+    }
+
+    let sink = Arc::clone(&harness.sink);
+    wait_for(|| {
+        sink.events()
+            .iter()
+            .any(|event| {
+                matches!(
+                    event,
+                    AgentServiceEvent::Run {
+                        event: AgentRunEvent::SubagentFinished { .. },
+                        ..
+                    }
+                )
+            })
+            .then_some(())
+    })
+    .await;
+    let events = harness.sink.events();
+    let rows = events
+        .iter()
+        .filter_map(|event| match event {
+            AgentServiceEvent::TimelineItem { item, .. } if item.id == "row-4" => Some(item),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(rows.last().unwrap().status.as_deref(), Some("completed"));
+    let status = harness
+        .registry
+        .status(
+            &harness.call("session-4", "row-4b"),
+            AgentRefParams {
+                provider: "codex".into(),
+                agent_id: "codex-1".into(),
+            },
+        )
+        .await;
+    assert!(result_text(&status).contains("Done: accept"));
+    harness.registry.shutdown_all(Duration::from_secs(5)).await;
+}
+
+#[tokio::test]
+async fn registry_rejects_unknown_providers_bad_cwd_and_too_many_agents() {
+    let harness = Harness::new("approve");
+    let call = harness.call("session-5", "row-5");
+    let start = |provider: &str, cwd: Option<&str>| AgentStartParams {
+        provider: provider.into(),
+        prompt: "x".into(),
+        background: false,
+        model: None,
+        effort: None,
+        cwd: cwd.map(str::to_string),
+    };
+    let unknown = harness
+        .registry
+        .start(harness.call("session-5", "r"), start("claude", None))
+        .await;
+    assert_eq!(unknown.is_error, Some(true));
+    assert!(result_text(&unknown).contains("Unknown agent provider"));
+
+    fs::create_dir_all(harness.project.join("sub")).unwrap();
+    let outside = harness.resolve_cwd_for_test(&call, Some(".."));
+    assert!(outside.unwrap_err().contains("outside the project root"));
+    let inside = harness.resolve_cwd_for_test(&call, Some("sub")).unwrap();
+    assert!(inside.ends_with("sub"));
+
+    let empty = harness
+        .registry
+        .start(
+            harness.call("session-5", "r"),
+            AgentStartParams {
+                provider: "codex".into(),
+                prompt: "   ".into(),
+                background: false,
+                model: None,
+                effort: None,
+                cwd: None,
+            },
+        )
+        .await;
+    assert!(result_text(&empty).contains("prompt must not be empty"));
+
+    {
+        let mut sessions = harness.registry.sessions.lock().await;
+        let session = sessions.entry("session-5".to_string()).or_default();
+        for index in 0..MAX_AGENTS_PER_SESSION {
+            let agent_id = format!("codex-{index}");
+            session.agents.insert(
+                agent_id.clone(),
+                Arc::new(ExternalAgent::new(
+                    agent_id,
+                    "session-5".into(),
+                    "idle".into(),
+                    harness.project.clone(),
+                    harness.host.clone(),
+                    Arc::clone(&harness.registry.issued_permission_ids),
+                )),
+            );
+        }
+    }
+    let full = harness
+        .registry
+        .start(harness.call("session-5", "r"), start("codex", None))
+        .await;
+    assert!(result_text(&full).contains("already has 4 external agents"));
+    let missing = harness
+        .registry
+        .status(
+            &call,
+            AgentRefParams {
+                provider: "codex".into(),
+                agent_id: "codex-9".into(),
+            },
+        )
+        .await;
+    assert!(result_text(&missing).contains("No external agent 'codex-9'"));
+}
+
+impl Harness {
+    fn resolve_cwd_for_test(
+        &self,
+        call: &ExternalAgentCall,
+        requested: Option<&str>,
+    ) -> Result<PathBuf, String> {
+        self.registry.resolve_cwd(call, requested)
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_question_from_the_agent_goes_through_the_question_card() {
+    let harness = Harness::new("question");
+    harness.set_mode("session-6", GooseMode::Auto).await;
+    let registry = Arc::clone(&harness.registry);
+    let call = harness.call("session-6", "row-6");
+    let turn = tokio::spawn(async move {
+        registry
+            .start(
+                call,
+                AgentStartParams {
+                    provider: "codex".into(),
+                    prompt: "Ask me something".into(),
+                    background: false,
+                    model: None,
+                    effort: None,
+                    cwd: None,
+                },
+            )
+            .await
+    });
+    let sink = Arc::clone(&harness.sink);
+    let (request_id, questions) = wait_for(|| {
+        sink.events().iter().find_map(|event| match event {
+            AgentServiceEvent::Question {
+                session_id,
+                request_id,
+                questions,
+            } if session_id == "session-6" => Some((request_id.clone(), questions.clone())),
+            _ => None,
+        })
+    })
+    .await;
+    assert_eq!(questions.len(), 1);
+    assert_eq!(questions[0].id, "style");
+    assert_eq!(questions[0].options[1].label, "Spaces");
+    assert!(
+        harness
+            .service
+            .answer_question(
+                &request_id,
+                r#"{"answers":{"style":{"answers":["Spaces"]}}}"#.to_string(),
+            )
+            .await
+    );
+    let result = turn.await.unwrap();
+    let text = result_text(&result);
+    assert!(text.contains("Chosen: Spaces"), "{text}");
+    let log = harness.log();
+    assert!(log.contains("default_mode_request_user_input"), "{log}");
+    harness.registry.shutdown_all(Duration::from_secs(5)).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_async_question_is_answered_in_a_turn_of_maples_own() {
+    let harness = Harness::new("async-question");
+    harness.set_mode("session-7", GooseMode::Auto).await;
+    let result = harness
+        .registry
+        .start(
+            harness.call("session-7", "row-7"),
+            AgentStartParams {
+                provider: "codex".into(),
+                prompt: "Ask me something".into(),
+                background: false,
+                model: None,
+                effort: None,
+                cwd: None,
+            },
+        )
+        .await;
+    let text = result_text(&result);
+    assert!(text.starts_with("Status: completed"), "{text}");
+    // The turn ended, but the question is still open.
+    assert!(
+        text.contains("Waiting for the user to decide: answer a question"),
+        "{text}"
+    );
+
+    let sink = Arc::clone(&harness.sink);
+    let request_id = wait_for(|| {
+        sink.events().iter().find_map(|event| match event {
+            AgentServiceEvent::Question {
+                session_id,
+                request_id,
+                questions,
+            } if session_id == "session-7" && questions[0].question == "Tabs or spaces?" => {
+                Some(request_id.clone())
+            }
+            _ => None,
+        })
+    })
+    .await;
+    assert!(
+        harness
+            .service
+            .answer_question(
+                &request_id,
+                r#"{"answers":{"q0":{"answers":["Tabs"]}}}"#.to_string()
+            )
+            .await
+    );
+    // The answer starts a turn of Maple's own, with its own row.
+    let sink = Arc::clone(&harness.sink);
+    let row = wait_for(|| {
+        sink.events().iter().find_map(|event| match event {
+            AgentServiceEvent::TimelineItem { item, .. }
+                if item.id == "external-codex-1-turn-2"
+                    && item.status.as_deref() == Some("completed") =>
+            {
+                Some(item.clone())
+            }
+            _ => None,
+        })
+    })
+    .await;
+    assert_eq!(
+        row.title.as_deref(),
+        Some("External agent: answer delivered")
+    );
+    assert!(
+        row.output.as_ref().unwrap()["structuredContent"][ACTIVITY_KEY]["text"]
+            .as_str()
+            .unwrap()
+            .contains("Got: Tabs")
+    );
+    let log = harness.log();
+    assert!(log.contains("Answers to your questions"), "{log}");
+    let status = harness
+        .registry
+        .status(
+            &harness.call("session-7", "row-7b"),
+            AgentRefParams {
+                provider: "codex".into(),
+                agent_id: "codex-1".into(),
+            },
+        )
+        .await;
+    let status_text = result_text(&status);
+    assert!(
+        !status_text.contains("Waiting for the user"),
+        "{status_text}"
+    );
+    harness.registry.shutdown_all(Duration::from_secs(5)).await;
+}

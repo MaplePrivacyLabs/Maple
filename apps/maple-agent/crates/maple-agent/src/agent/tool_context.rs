@@ -214,6 +214,7 @@ impl SharedAgentToolContext {
     }
 }
 
+#[derive(Clone)]
 pub(crate) struct AgentToolContextSnapshot {
     pub(crate) values: BTreeMap<String, String>,
     pub(crate) scrub_from_parent: BTreeSet<String>,

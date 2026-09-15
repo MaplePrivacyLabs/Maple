@@ -4,11 +4,11 @@
 // that is expected.
 #![cfg_attr(not(feature = "acp"), allow(dead_code))]
 mod attachments;
-#[cfg(target_os = "macos")]
 mod bounded_process;
 #[cfg(embedded_cua)]
 mod cua;
 mod developer_tools;
+mod external_agents;
 #[cfg(target_os = "linux")]
 mod gnome_helper;
 // The computer-use half of this module is reachable only from `cua`, which
@@ -36,6 +36,11 @@ use attachments::{AgentAttachmentStore, AgentImageAttachment, PreparedAgentImage
 #[cfg(test)]
 use developer_tools::EXTERNAL_MCP_TOOL_NAME;
 use developer_tools::MapleDeveloperClient;
+pub use external_agents::{
+    ACTIVITY_KEY as EXTERNAL_AGENT_ACTIVITY_KEY, ActivityCommand, ActivityFileChange, ActivityTodo,
+    ExternalAgentActivity,
+};
+use external_agents::{ExternalAgentHost, ExternalAgentRegistry, ExternalPermissionResponder};
 use futures_util::StreamExt;
 use goose::agents::SUBAGENT_TOOL_REQUEST_TYPE;
 use goose::agents::extension::Envs;
@@ -157,6 +162,11 @@ const MAPLE_GOOSE_PERMISSION_CONFIG: &str = r#"user:
   - todo_write
   - request_user_input
   - load
+  - agent_start
+  - agent_send
+  - agent_status
+  - agent_cancel
+  - list_agent_providers
   ask_before:
   - delegate
   - read
@@ -335,6 +345,26 @@ struct PendingAgentPermission {
     run_id: String,
     routing: AgentPermissionRouting,
     request: AgentPermissionRequest,
+    origin: PendingPermissionOrigin,
+}
+
+/// Who answers a pending permission once the user decides.
+#[derive(Debug, Clone)]
+enum PendingPermissionOrigin {
+    /// Goose asked; the decision goes back through `handle_confirmation`.
+    Goose,
+    /// An external agent (Codex) asked; the decision goes to its waiter.
+    ExternalAgent(ExternalPermissionResponder),
+}
+
+impl PartialEq for PendingPermissionOrigin {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Goose, Self::Goose) => true,
+            (Self::ExternalAgent(a), Self::ExternalAgent(b)) => a.same_as(b),
+            _ => false,
+        }
+    }
 }
 type PendingPermissions = Arc<Mutex<HashMap<PendingPermissionKey, PendingAgentPermission>>>;
 type IssuedPermissionIds = Arc<Mutex<HashSet<String>>>;
@@ -355,6 +385,9 @@ struct AgentRuntime {
     session_tool_contexts: HashMap<String, InstalledAgentToolContext>,
     permission_modes: SessionPermissionModes,
     web_tool_state: Arc<WebToolState>,
+    /// The external agents (Codex) of this runtime's tasks. `None` only in
+    /// unit fixtures that never delegate.
+    external_agents: Option<Arc<ExternalAgentRegistry>>,
     project_root: PathBuf,
     model: String,
     mode: String,
@@ -945,9 +978,16 @@ impl MapleAgentService {
     }
 
     /// Slash commands available in `working_dir`: the installed skills,
-    /// normalized the way goose's slash-command layer does.
-    pub fn list_slash_commands(&self, working_dir: Option<&str>) -> Vec<AgentSlashCommand> {
-        goose::slash_commands::skill_slash_command::list_commands(
+    /// normalized the way goose's slash-command layer does, plus the skills
+    /// Maple installed for `user_id`'s account. Goose finds those too once
+    /// the runtime has pointed it at the account, but the list is asked for
+    /// before that, and after a toggle in Settings.
+    pub fn list_slash_commands(
+        &self,
+        user_id: Option<&str>,
+        working_dir: Option<&str>,
+    ) -> Vec<AgentSlashCommand> {
+        let mut commands = goose::slash_commands::skill_slash_command::list_commands(
             working_dir.map(std::path::Path::new),
         )
         .into_iter()
@@ -956,7 +996,18 @@ impl MapleAgentService {
             description: entry.description,
             input_hint: entry.input_hint,
         })
-        .collect()
+        .collect::<Vec<_>>();
+        if let Some(user_id) = user_id {
+            for command in account_skill_commands(&self.host.paths, user_id) {
+                if !commands
+                    .iter()
+                    .any(|existing| existing.name == command.name)
+                {
+                    commands.push(command);
+                }
+            }
+        }
+        commands
     }
 
     /// Expand `/command args` from the installed skills into the prompt that
@@ -1022,7 +1073,8 @@ impl AgentRuntimeHandle {
 
     /// Slash commands available in `working_dir` (installed skills).
     pub fn slash_commands(&self, working_dir: Option<&str>) -> Vec<AgentSlashCommand> {
-        self.service.list_slash_commands(working_dir)
+        self.service
+            .list_slash_commands(Some(&self.user_id), working_dir)
     }
 
     /// Expand `/command args` from the installed skills into the prompt that
@@ -1932,6 +1984,9 @@ enum PendingPermissionRegistration {
     Rejected,
 }
 
+// The origin is one more parameter than clippy likes; folding it into the
+// request would hide who answers the permission.
+#[allow(clippy::too_many_arguments)]
 async fn register_pending_permission(
     pending_permissions: &PendingPermissions,
     issued_permission_ids: &IssuedPermissionIds,
@@ -1940,6 +1995,7 @@ async fn register_pending_permission(
     routing: AgentPermissionRouting,
     request: AgentPermissionRequest,
     cancel_token: &CancellationToken,
+    origin: PendingPermissionOrigin,
 ) -> PendingPermissionRegistration {
     if cancel_token.is_cancelled() {
         return PendingPermissionRegistration::Rejected;
@@ -1949,6 +2005,7 @@ async fn register_pending_permission(
         run_id: run_id.to_string(),
         routing,
         request,
+        origin,
     };
     {
         let mut pending = pending_permissions.lock().await;
@@ -2001,7 +2058,7 @@ async fn stop_runtime_inner(
     requested_scope: Option<&str>,
 ) -> Result<(), String> {
     let session_lifecycle_guard = state.session_lifecycle.lock().await;
-    let (active_runs, session_title_tasks, web_tool_state, tool_contexts) = {
+    let (active_runs, session_title_tasks, web_tool_state, tool_contexts, external_agents) = {
         let mut runtime = state.inner.lock().await;
         let Some(current) = runtime.as_mut() else {
             return Ok(());
@@ -2016,6 +2073,7 @@ async fn stop_runtime_inner(
             std::mem::take(&mut current.session_title_tasks),
             Arc::clone(&current.web_tool_state),
             std::mem::take(&mut current.session_tool_contexts),
+            current.external_agents.take(),
         )
     };
 
@@ -2065,6 +2123,11 @@ async fn stop_runtime_inner(
     drop(session_lifecycle_guard);
 
     join_agent_tasks(task_handles, RUN_SHUTDOWN_TIMEOUT).await;
+    // Lifetime cancellation alone does not wait for the external agent
+    // processes to die; join them explicitly like the run tasks above.
+    if let Some(external_agents) = external_agents {
+        external_agents.shutdown_all(RUN_SHUTDOWN_TIMEOUT).await;
+    }
 
     state.pending_permissions.lock().await.clear();
     state.live_timelines.lock().await.clear();
@@ -2121,13 +2184,50 @@ impl AgentRuntimeHandle {
     /// whose run has ended reads this to show the background subagents
     /// that work on.
     pub async fn session_subagents(&self, session_id: &str) -> Vec<AgentSubagent> {
-        self.service
+        let mut rows = self
+            .service
             .subagents
             .lock()
             .await
             .get(session_id)
             .map(SubagentTracker::snapshot)
-            .unwrap_or_default()
+            .unwrap_or_default();
+        let external_agents = {
+            let runtime = self.service.inner.lock().await;
+            runtime
+                .as_ref()
+                .filter(|current| ensure_runtime_account(current, &self.account_scope).is_ok())
+                .and_then(|current| current.external_agents.clone())
+        };
+        if let Some(external_agents) = external_agents {
+            rows.extend(external_agents.snapshot(session_id).await);
+        }
+        rows
+    }
+
+    /// Interrupt an external agent's current turn from its row. The agent
+    /// keeps its thread, so the task can continue it later.
+    pub async fn cancel_external_agent(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+    ) -> Result<(), String> {
+        self.verify_generation().await?;
+        let external_agents = {
+            let runtime = self.service.inner.lock().await;
+            let current = runtime
+                .as_ref()
+                .ok_or_else(|| "Agent runtime is not running".to_string())?;
+            ensure_runtime_account(current, &self.account_scope)?;
+            current.external_agents.clone()
+        };
+        let Some(external_agents) = external_agents else {
+            return Err("External agents are not available".to_string());
+        };
+        external_agents
+            .cancel(session_id.trim(), agent_id)
+            .await
+            .map(|_| ())
     }
 
     pub async fn start(
@@ -2208,6 +2308,16 @@ async fn start_runtime_for_user(
     // is constructed so stale Goose AlwaysAllow entries cannot bypass Maple.
     let goose_config_dir = goose_path_root.join("config");
     reset_maple_owned_permission_file(&goose_config_dir.join("permission.yaml"))?;
+    // The delegation skills follow the Integrations toggle. Reconcile them
+    // here so an upgrade that changed their text, or a file removed by
+    // hand, is repaired without touching the toggle.
+    if let Err(error) = sync_external_agent_skills(
+        &state.host.paths,
+        user_id,
+        external_agents_enabled(&state.host.paths, user_id),
+    ) {
+        log::warn!("External agent skills were not reconciled: {error}");
+    }
     // Rewriting that file drops any tool entry Maple added, so the embedded
     // CUA tools must be pinned into it again before the next desktop run.
     #[cfg(embedded_cua)]
@@ -2262,6 +2372,16 @@ async fn start_runtime_for_user(
         .set_default_provider(Arc::new(MapleProvider::new(Arc::clone(&maple_api_session))))
         .await;
 
+    let permission_modes: SessionPermissionModes = Arc::new(Mutex::new(HashMap::new()));
+    let lifetime = CancellationToken::new();
+    let external_agents = Arc::new(ExternalAgentRegistry::new(ExternalAgentHost {
+        service: state.clone(),
+        account_scope: Arc::from(account_scope.as_str()),
+        session_manager: Arc::clone(&session_manager),
+        permission_modes: Arc::clone(&permission_modes),
+        project_root: project_root.clone(),
+        lifetime: lifetime.clone(),
+    }));
     let runtime = AgentRuntime {
         agent_manager,
         session_manager,
@@ -2269,13 +2389,14 @@ async fn start_runtime_for_user(
         active_runs: HashMap::new(),
         session_title_tasks: HashMap::new(),
         session_tool_contexts: HashMap::new(),
-        permission_modes: Arc::new(Mutex::new(HashMap::new())),
+        permission_modes,
         web_tool_state: Arc::new(WebToolState::default()),
+        external_agents: Some(external_agents),
         project_root: project_root.clone(),
         model: model.clone(),
         mode: mode.clone(),
         account_scope,
-        lifetime: CancellationToken::new(),
+        lifetime,
     };
     let status = runtime.desktop_status();
 
@@ -2357,6 +2478,24 @@ impl AgentRuntimeHandle {
         normalize_mcp_servers(config.mcp_servers)
     }
 
+    /// The PATH to look on for external agent executables. A macOS GUI
+    /// launch inherits a short PATH; the login shell's, once recovered for
+    /// the runtime, is the one the user's terminal has.
+    fn codex_search_path(&self) -> Option<String> {
+        #[cfg(target_os = "macos")]
+        {
+            self.service
+                .login_shell_search_paths
+                .get()
+                .and_then(|paths| std::env::join_paths(paths).ok())
+                .and_then(|joined| joined.into_string().ok())
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            None
+        }
+    }
+
     /// Maple-curated integrations discovered on this device.
     ///
     /// The external manifest probe runs without holding the runtime lifecycle
@@ -2364,7 +2503,7 @@ impl AgentRuntimeHandle {
     /// from publishing or mutating device-local state after logout.
     pub async fn list_integrations(&self) -> Result<Vec<AgentIntegration>, String> {
         self.verify_generation().await?;
-        let detected = detect_integrations().await;
+        let detected = detect_integrations(self.codex_search_path().as_deref()).await;
         let state = &self.service;
         let _runtime_lifecycle_guard = state.runtime_lifecycle.lock().await;
         self.verify_generation().await?;
@@ -2379,7 +2518,7 @@ impl AgentRuntimeHandle {
     ) -> Result<Vec<AgentIntegration>, String> {
         require_known_integration(&request.id)?;
         self.verify_generation().await?;
-        let detected = detect_integrations().await;
+        let detected = detect_integrations(self.codex_search_path().as_deref()).await;
         let state = &self.service;
         let _runtime_lifecycle_guard = state.runtime_lifecycle.lock().await;
         self.verify_generation().await?;
@@ -2404,7 +2543,7 @@ impl AgentRuntimeHandle {
         {
             cua::install_desktop_helper().await?;
         }
-        let detected = detect_integrations().await;
+        let detected = detect_integrations(self.codex_search_path().as_deref()).await;
         let state = &self.service;
         let _runtime_lifecycle_guard = state.runtime_lifecycle.lock().await;
         self.verify_generation().await?;
@@ -2809,6 +2948,7 @@ impl AgentRuntimeHandle {
             maple_api_session,
             permission_modes,
             web_tool_state,
+            external_agents,
             runtime_lifetime,
             runtime_project_root,
             runtime_model,
@@ -2825,6 +2965,7 @@ impl AgentRuntimeHandle {
                 Arc::clone(&current.maple_api_session),
                 Arc::clone(&current.permission_modes),
                 Arc::clone(&current.web_tool_state),
+                current.external_agents.clone(),
                 // Stop and logout cancel this token, which ends a stalled MCP
                 // startup that no run entry covers yet.
                 current.lifetime.clone(),
@@ -3005,6 +3146,7 @@ impl AgentRuntimeHandle {
                             primary_model_supports_vision: false,
                             tool_context: &tool_context,
                             allow_embedded_cua: !has_external_tool_context,
+                            external_agents: external_agents.as_ref(),
                         },
                     )
                     .await?;
@@ -3212,6 +3354,7 @@ impl AgentRuntimeHandle {
             maple_api_session,
             permission_modes,
             web_tool_state,
+            external_agents,
             runtime_model,
         ) = {
             let runtime = state.inner.lock().await;
@@ -3235,6 +3378,7 @@ impl AgentRuntimeHandle {
                 Arc::clone(&current.maple_api_session),
                 Arc::clone(&current.permission_modes),
                 Arc::clone(&current.web_tool_state),
+                current.external_agents.clone(),
                 current.model.clone(),
             )
         };
@@ -3382,6 +3526,7 @@ impl AgentRuntimeHandle {
                         primary_model_supports_vision: false,
                         tool_context: &tool_context,
                         allow_embedded_cua: false,
+                        external_agents: external_agents.as_ref(),
                     },
                 )
                 .await?;
@@ -4223,7 +4368,14 @@ impl AgentRuntimeHandle {
         }
 
         let _session_lifecycle_guard = state.session_lifecycle.lock().await;
-        let (agent_manager, session_manager, permission_modes, web_tool_state, title_task) = {
+        let (
+            agent_manager,
+            session_manager,
+            permission_modes,
+            web_tool_state,
+            title_task,
+            external_agents,
+        ) = {
             let mut runtime = state.inner.lock().await;
             match runtime.as_mut() {
                 Some(current) => {
@@ -4247,11 +4399,13 @@ impl AgentRuntimeHandle {
                         Some(Arc::clone(&current.permission_modes)),
                         Some(Arc::clone(&current.web_tool_state)),
                         current.session_title_tasks.remove(&session_id),
+                        current.external_agents.clone(),
                     )
                 }
                 None => (
                     None,
                     account_session_manager(&state.host.paths, user_id)?,
+                    None,
                     None,
                     None,
                     None,
@@ -4262,6 +4416,9 @@ impl AgentRuntimeHandle {
         if let Some(title_task) = title_task {
             title_task.token.cancel();
             join_agent_tasks(vec![title_task.task_handle], RUN_SHUTDOWN_TIMEOUT).await;
+        }
+        if let Some(external_agents) = external_agents {
+            external_agents.shutdown_session(&session_id).await;
         }
 
         delete_persisted_agent_session(
@@ -4867,6 +5024,7 @@ impl AgentRuntimeHandle {
             maple_api_session,
             permission_modes,
             web_tool_state,
+            external_agents,
             runtime_lifetime,
             model,
             mode,
@@ -4882,6 +5040,7 @@ impl AgentRuntimeHandle {
                 Arc::clone(&current.maple_api_session),
                 Arc::clone(&current.permission_modes),
                 Arc::clone(&current.web_tool_state),
+                current.external_agents.clone(),
                 // Stop and logout cancel this token, which ends a stalled MCP
                 // startup that no run entry covers yet.
                 current.lifetime.clone(),
@@ -5085,6 +5244,7 @@ impl AgentRuntimeHandle {
                     primary_model_supports_vision: request.vision_capable,
                     tool_context: &tool_context,
                     allow_embedded_cua: permission_routing == AgentPermissionRouting::Desktop,
+                    external_agents: external_agents.as_ref(),
                 },
             )
             .await?;
@@ -6117,7 +6277,7 @@ impl AgentRuntimeHandle {
         // fixed at start; one task's choice must not leak into other tasks.
 
         if goose_mode == GooseMode::Auto {
-            let request_ids = {
+            let drained = {
                 let mut pending = state.pending_permissions.lock().await;
                 let request_ids = pending
                     .iter()
@@ -6127,13 +6287,25 @@ impl AgentRuntimeHandle {
                     })
                     .map(|((_, request_id), _)| request_id.clone())
                     .collect::<Vec<_>>();
-                for request_id in &request_ids {
-                    pending.remove(&(session_id.clone(), request_id.clone()));
-                }
                 request_ids
+                    .into_iter()
+                    .filter_map(|request_id| {
+                        pending
+                            .remove(&(session_id.clone(), request_id.clone()))
+                            .map(|entry| (request_id, entry.origin))
+                    })
+                    .collect::<Vec<_>>()
             };
-            for request_id in request_ids {
-                deliver_tool_permission(&agent, request_id.clone(), Permission::AllowOnce).await;
+            for (request_id, origin) in drained {
+                match origin {
+                    PendingPermissionOrigin::Goose => {
+                        deliver_tool_permission(&agent, request_id.clone(), Permission::AllowOnce)
+                            .await;
+                    }
+                    PendingPermissionOrigin::ExternalAgent(responder) => {
+                        responder.resolve(AgentPermissionDecision::AllowOnce);
+                    }
+                }
                 if let Some(item) = update_live_permission_status(
                     &state.live_timelines,
                     &session_id,
@@ -6231,6 +6403,50 @@ impl AgentRuntimeHandle {
         if request_id.trim().is_empty() {
             return Err("Agent permission response requires a request ID".to_string());
         }
+        let key = (session_id.clone(), request_id.clone());
+        let external = {
+            let pending = state.pending_permissions.lock().await;
+            pending.get(&key).and_then(|pending| match &pending.origin {
+                PendingPermissionOrigin::ExternalAgent(responder) => {
+                    Some((responder.clone(), pending.routing, pending.request.clone()))
+                }
+                PendingPermissionOrigin::Goose => None,
+            })
+        };
+        if let Some((responder, routing, request)) = external {
+            // An external agent's request has no Goose run behind it; the
+            // desktop owns it, and the runtime that hosts the agent must
+            // still be this account's.
+            if !matches!(scope, AgentPermissionResponseScope::Desktop)
+                || routing != AgentPermissionRouting::Desktop
+            {
+                return Err("Agent permission responder does not own this request".to_string());
+            }
+            {
+                let runtime = state.inner.lock().await;
+                let current = runtime
+                    .as_ref()
+                    .ok_or_else(|| "Agent runtime is not running".to_string())?;
+                ensure_runtime_account(current, account_scope)?;
+            }
+            state.pending_permissions.lock().await.remove(&key);
+            responder.resolve(decision);
+            external_agents::publish_external_permission_decision(
+                state,
+                &session_id,
+                &request,
+                // The row draws `completed`, `denied`, or `cancelled`;
+                // nothing later rewrites an external row, so the raw
+                // decision string the desktop sends would leave it "waiting".
+                match decision {
+                    AgentPermissionDecision::AllowOnce => "completed",
+                    AgentPermissionDecision::DenyOnce => "denied",
+                    AgentPermissionDecision::Cancel => "cancelled",
+                },
+            )
+            .await;
+            return Ok(());
+        }
         let (agent, run_id, expected_routing, run_events, cancelled_permission_ids) = {
             let runtime = state.inner.lock().await;
             let current = runtime
@@ -6275,7 +6491,6 @@ impl AgentRuntimeHandle {
                 Arc::clone(&active_run.cancelled_permission_ids),
             )
         };
-        let key = (session_id.clone(), request_id.clone());
         {
             let mut pending = state.pending_permissions.lock().await;
             let Some(request) = pending.get(&key) else {
@@ -6853,6 +7068,7 @@ impl SubagentTracker {
                     id: id.to_string(),
                     task,
                     background,
+                    external: None,
                 })
             }
             SUBAGENT_LOAD_TOOL => {
@@ -6931,6 +7147,7 @@ impl SubagentTracker {
                     .as_millis()
                     .min(u64::MAX as u128) as u64,
                 activity: running.activity.clone(),
+                external: None,
             })
             .collect::<Vec<_>>();
         // The map has no order of its own; the oldest subagent reads first.
@@ -7436,6 +7653,7 @@ async fn run_agent_prompt(run: AgentPromptRun) -> Result<AgentPromptOutcome, Str
                             permission_routing,
                             request,
                             &cancel_token,
+                            PendingPermissionOrigin::Goose,
                         )
                         .await
                         {
@@ -7970,6 +8188,9 @@ struct SessionAgentConfiguration<'a> {
     /// A cached User session may later be leased by ACP, so SessionType alone
     /// is not a sufficient host-process capability check.
     allow_embedded_cua: bool,
+    /// The runtime's external agents, offered to desktop tasks when the
+    /// integration is enabled.
+    external_agents: Option<&'a Arc<ExternalAgentRegistry>>,
 }
 
 fn maple_model_config(
@@ -8320,6 +8541,7 @@ async fn finish_session_agent(
         primary_model_supports_vision,
         tool_context,
         allow_embedded_cua,
+        external_agents,
     } = configuration;
     let PreparedSessionAgent {
         agent,
@@ -8366,7 +8588,20 @@ async fn finish_session_agent(
     .map_err(|e| format!("Failed to create Maple developer tools: {e}"))?
     .with_attachment_store(attachment_store)
     .with_web_enabled(session_web_enabled(session))
-    .with_desktop_ui_tools(session.session_type != SessionType::Acp);
+    .with_desktop_ui_tools(session.session_type != SessionType::Acp)
+    // External agents are a desktop feature: their approvals and progress
+    // go to the desktop, and the toggle in Integrations decides whether a
+    // task may delegate at all. The toggle is read at every agent build,
+    // so it takes effect at the next run.
+    .with_external_agents(
+        external_agents
+            .filter(|_| {
+                session.session_type != SessionType::Acp
+                    && allow_embedded_cua
+                    && external_agents_enabled(skills_scope.paths, skills_scope.user_id)
+            })
+            .cloned(),
+    );
     agent
         .extension_manager
         .add_client(
@@ -10206,6 +10441,7 @@ pub(crate) mod test_support {
             session_tool_contexts: HashMap::new(),
             permission_modes: Arc::new(Mutex::new(HashMap::new())),
             web_tool_state: Arc::new(WebToolState::default()),
+            external_agents: None,
             project_root: project_root.clone(),
             model: DEFAULT_AGENT_MODEL.to_string(),
             mode: DEFAULT_GOOSE_MODE.to_string(),
@@ -10672,6 +10908,7 @@ mod tests {
             session_tool_contexts: HashMap::new(),
             permission_modes: Arc::new(Mutex::new(HashMap::new())),
             web_tool_state: Arc::new(WebToolState::default()),
+            external_agents: None,
             project_root: project_root.clone(),
             model: DEFAULT_AGENT_MODEL.to_string(),
             mode: DEFAULT_GOOSE_MODE.to_string(),
@@ -10733,6 +10970,7 @@ mod tests {
             run_id: run_id.to_string(),
             routing,
             request: test_permission_request(request_id),
+            origin: PendingPermissionOrigin::Goose,
         }
     }
 
@@ -10835,6 +11073,7 @@ mod tests {
             session_tool_contexts: HashMap::new(),
             permission_modes: Arc::new(Mutex::new(HashMap::new())),
             web_tool_state: Arc::new(WebToolState::default()),
+            external_agents: None,
             project_root: project_root.clone(),
             model: DEFAULT_AGENT_MODEL.to_string(),
             mode: DEFAULT_GOOSE_MODE.to_string(),
@@ -10972,6 +11211,7 @@ mod tests {
             session_tool_contexts: HashMap::new(),
             permission_modes: Arc::new(Mutex::new(HashMap::new())),
             web_tool_state: Arc::new(WebToolState::default()),
+            external_agents: None,
             project_root,
             model: DEFAULT_AGENT_MODEL.to_string(),
             mode: DEFAULT_GOOSE_MODE.to_string(),
@@ -11268,6 +11508,7 @@ mod tests {
             session_tool_contexts: HashMap::new(),
             permission_modes: Arc::new(Mutex::new(HashMap::new())),
             web_tool_state: Arc::new(WebToolState::default()),
+            external_agents: None,
             project_root,
             model: DEFAULT_AGENT_MODEL.to_string(),
             mode: DEFAULT_GOOSE_MODE.to_string(),
@@ -11712,6 +11953,7 @@ mod tests {
             session_tool_contexts: HashMap::new(),
             permission_modes: Arc::new(Mutex::new(HashMap::new())),
             web_tool_state: Arc::new(WebToolState::default()),
+            external_agents: None,
             project_root,
             model: DEFAULT_AGENT_MODEL.to_string(),
             mode: DEFAULT_GOOSE_MODE.to_string(),
@@ -13805,7 +14047,7 @@ mod tests {
         );
         assert!(matches!(
             started.as_slice(),
-            [AgentRunEvent::SubagentStarted { id, task, background: false }]
+            [AgentRunEvent::SubagentStarted { id, task, background: false, external: None }]
                 if id == "delegate-1" && task == "Review the parser"
         ));
         // The same tool-request message repeated must not add a row.
@@ -14130,6 +14372,16 @@ mod tests {
             manager.get_user_permission("load_skill"),
             Some(goose::config::permission::PermissionLevel::AlwaysAllow)
         );
+        for tool in external_agents::EXTERNAL_AGENT_TOOLS {
+            // Starting an external agent is always allowed: its own
+            // commands and file changes come back through Maple's
+            // permission card, so gating the hand-off would prompt twice.
+            assert_eq!(
+                manager.get_user_permission(tool),
+                Some(goose::config::permission::PermissionLevel::AlwaysAllow),
+                "{tool}"
+            );
+        }
         for tool in MAPLE_SUBAGENT_TOOLS {
             // KNOWN ISSUE: a subagent runs with every tool approved,
             // whatever the task's mode (see the note on
@@ -18217,6 +18469,7 @@ mod tests {
             session_tool_contexts: HashMap::new(),
             permission_modes: Arc::new(Mutex::new(HashMap::new())),
             web_tool_state: Arc::new(WebToolState::default()),
+            external_agents: None,
             project_root,
             model: DEFAULT_AGENT_MODEL.to_string(),
             mode: DEFAULT_GOOSE_MODE.to_string(),
@@ -19191,6 +19444,7 @@ mod tests {
                 AgentPermissionRouting::Desktop,
                 test_permission_request("request-1"),
                 &cancel_token,
+                PendingPermissionOrigin::Goose,
             )
             .await,
             PendingPermissionRegistration::Rejected
@@ -19243,6 +19497,7 @@ mod tests {
                 AgentPermissionRouting::CallingSurface,
                 original.clone(),
                 &cancel_token,
+                PendingPermissionOrigin::Goose,
             )
             .await,
             PendingPermissionRegistration::Registered
@@ -19256,6 +19511,7 @@ mod tests {
                 AgentPermissionRouting::CallingSurface,
                 original,
                 &cancel_token,
+                PendingPermissionOrigin::Goose,
             )
             .await,
             PendingPermissionRegistration::Existing
@@ -19274,6 +19530,7 @@ mod tests {
                 AgentPermissionRouting::CallingSurface,
                 conflicting,
                 &cancel_token,
+                PendingPermissionOrigin::Goose,
             )
             .await,
             PendingPermissionRegistration::Rejected
@@ -19295,6 +19552,7 @@ mod tests {
                 AgentPermissionRouting::Desktop,
                 test_permission_request("request-1"),
                 &cancel_token,
+                PendingPermissionOrigin::Goose,
             )
             .await,
             PendingPermissionRegistration::Registered
@@ -19319,6 +19577,7 @@ mod tests {
                 AgentPermissionRouting::Desktop,
                 reused,
                 &cancel_token,
+                PendingPermissionOrigin::Goose,
             )
             .await,
             PendingPermissionRegistration::Rejected

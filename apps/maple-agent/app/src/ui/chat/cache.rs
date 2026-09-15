@@ -11,11 +11,12 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use gpui::{AsyncApp, SharedString, Task, WeakEntity};
-use maple_agent::agent::AgentTimelineItem;
+use maple_agent::agent::{AgentTimelineItem, ExternalAgentActivity};
 
 use super::ChatScreen;
 use super::transcript::{
-    diff_lines_for, maple_display_text, tool_input_line, tool_output_markdown,
+    diff_lines_for, external_agent_activity, maple_display_text, tool_input_line,
+    tool_output_markdown,
 };
 use crate::ui::markdown;
 
@@ -259,6 +260,9 @@ pub(super) struct ItemDerived {
     pub(super) input_line: Option<SharedString>,
     /// +/- lines of an edit or write tool, capped at `MAX_DIFF_LINES`.
     pub(super) diff_lines: Arc<Vec<(char, SharedString)>>,
+    /// What an external agent (Codex) did, for the row of the tool call
+    /// that ran it.
+    pub(super) external_agent: Option<Arc<ExternalAgentActivity>>,
 }
 
 pub(super) const MAX_DIFF_LINES: usize = 200;
@@ -273,6 +277,7 @@ impl ItemDerived {
             output_text,
             input_line: tool_input_line(item).map(SharedString::from),
             diff_lines: Arc::new(diff_lines_for(item)),
+            external_agent: external_agent_activity(item).map(Arc::new),
         }
     }
 }

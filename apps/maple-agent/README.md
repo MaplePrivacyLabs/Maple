@@ -71,6 +71,16 @@ Cargo manifests and lockfile; Research has an independent dependency graph.
   runs and how long it has worked. A subagent that runs in the background
   keeps its row after the turn ends, and Maple tells the task when it
   finishes: into the running turn, or into the next one.
+- External agents: a task can hand work to the Codex CLI installed on
+  this computer with the `agent_start`, `agent_send`, `agent_status`,
+  `agent_cancel`, and `list_agent_providers` tools, once Codex is enabled
+  under Settings > Integrations. Codex runs in the project with its own
+  account, context, and sandbox settings; whatever it asks approval for
+  comes to you through Maple's permission card, and Allow all grants it. Its progress streams
+  into the tool call's row and its row above the composer has a Stop
+  button. Three skills, `/handoff`, `/committee`, and `/advisor`, teach the
+  task when and how to delegate. See
+  [`docs/external-agents.md`](docs/external-agents.md).
 - Voice: dictate a message with the microphone button, and read any
   message aloud. Both use Maple's speech models; the voice and speed
   are settings.
@@ -142,6 +152,17 @@ account configuration that may roam between devices.
 
 The embedded design, migration rules, privacy boundary, and preview limits are
 documented in [`docs/embedded-cua.md`](docs/embedded-cua.md).
+
+#### Codex
+
+Settings > Integrations also lists the Codex CLI when `codex` is on the PATH
+(the login shell's PATH on macOS). The card shows the installed version and
+whether Codex is signed in; Maple never runs Codex's sign-in itself. The
+toggle is off by default. Enabling it gives new runs the external-agent
+tools and installs the `handoff`, `committee`, and `advisor` skills into the
+account's Goose skills directory; disabling removes only the files Maple
+wrote. Codex needs version 0.143 or newer. See
+[`docs/external-agents.md`](docs/external-agents.md).
 
 ### Composer Vim preview
 
@@ -404,6 +425,7 @@ The roots follow the platform, the same way the Tauri app's
 | `<config>/settings.json` | App settings. |
 | `<config>/agent/accounts/<scope>/config.json` | Per-account agent configuration (default root, model, custom MCP servers, project trust). May roam between machines. |
 | `<config>/agent/accounts/<scope>/goose/config/` | Goose permission file for the account. |
+| `<config>/agent/accounts/<scope>/goose/config/skills/` | Skills the account's tasks can load, including the delegation skills Maple installs while Codex is enabled. |
 | `<config>/agent/goose-runtime/` | Goose process configuration. |
 | `<local data>/auth.json` | Sign-in credentials (mode 0600). Device-local; never in a roaming profile. |
 | `<local data>/agent/accounts/<scope>/integrations.json` | Per-account defaults and validated launch details for integrations detected on this device. |

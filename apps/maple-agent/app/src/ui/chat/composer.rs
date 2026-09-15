@@ -699,7 +699,7 @@ impl ChatScreen {
 
     /// The subagents working for this task, pinned above the composer.
     /// `None` when none are working, which is the common case.
-    pub(super) fn render_subagents_card(&self) -> Option<Div> {
+    pub(super) fn render_subagents_card(&self, cx: &mut Context<Self>) -> Option<Div> {
         if self.subagents.is_empty() {
             return None;
         }
@@ -735,13 +735,19 @@ impl ChatScreen {
                 .border_color(gpui::rgb(theme::border_subtle()))
                 .overflow_hidden()
                 .child(header)
-                .child(
-                    div().flex().flex_col().gap_1().px_3().pb_2().children(
-                        self.subagents
-                            .iter()
-                            .map(|subagent| render_subagent_row(subagent, now)),
-                    ),
-                ),
+                .child(div().flex().flex_col().gap_1().px_3().pb_2().children(
+                    self.subagents.iter().map(|subagent| {
+                        let on_stop = subagent.external.as_ref().map(|external| {
+                            let agent_id = external.agent_id.clone();
+                            let listener =
+                                cx.listener(move |this: &mut ChatScreen, _event, _window, cx| {
+                                    this.stop_external_agent(&agent_id, cx);
+                                });
+                            Box::new(listener) as super::transcript::StopHandler
+                        });
+                        render_subagent_row(subagent, now, on_stop)
+                    }),
+                )),
         )
     }
 

@@ -6,7 +6,10 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use gpui::{Div, Entity, IntoElement, SharedString, Window, div, prelude::*, px};
-use maple_agent::agent::{AgentTimelineItem, compaction_notice_text};
+use maple_agent::agent::{
+    AgentTimelineItem, EXTERNAL_AGENT_ACTIVITY_KEY, ExternalAgentActivity, ExternalAgentRef,
+    compaction_notice_text,
+};
 
 use super::cache::{MAX_DIFF_LINES, MarkdownKind};
 use super::commands::ChatCommand;
@@ -587,6 +590,35 @@ pub(super) struct ActiveSubagent {
     pub(super) started: std::time::Instant,
     /// The tool it called most recently, if any.
     pub(super) activity: Option<SharedString>,
+    /// Set for an external agent (Codex), which the user can stop.
+    pub(super) external: Option<ExternalAgentRef>,
+}
+
+/// A click handler for the Stop control of an external agent's row.
+pub(super) type StopHandler = Box<dyn Fn(&gpui::ClickEvent, &mut Window, &mut gpui::App) + 'static>;
+
+/// The activity payload an external agent's tool row carries, if any.
+pub(super) fn external_agent_activity(item: &AgentTimelineItem) -> Option<ExternalAgentActivity> {
+    if !matches!(item.item_type.as_str(), "tool" | "toolCall") {
+        return None;
+    }
+    let payload = item
+        .output
+        .as_ref()?
+        .get("structuredContent")?
+        .get(EXTERNAL_AGENT_ACTIVITY_KEY)?;
+    serde_json::from_value(payload.clone()).ok()
+}
+
+/// True when the row belongs to an external agent turn. Cheap: a key
+/// lookup, no parse.
+pub(super) fn has_external_agent_activity(item: &AgentTimelineItem) -> bool {
+    matches!(item.item_type.as_str(), "tool" | "toolCall")
+        && item
+            .output
+            .as_ref()
+            .and_then(|output| output.get("structuredContent"))
+            .is_some_and(|content| content.get(EXTERNAL_AGENT_ACTIVITY_KEY).is_some())
 }
 
 /// The todo list carried by a todo_write tool item, or `None` for any
@@ -617,8 +649,13 @@ pub(super) fn plan_entries(item: &AgentTimelineItem) -> Option<Vec<PlanEntry>> {
 }
 
 /// One row of the subagent card: what the subagent was asked to do, the
-/// tool it is running now, and how long it has worked.
-pub(super) fn render_subagent_row(subagent: &ActiveSubagent, now: std::time::Instant) -> Div {
+/// tool it is running now, and how long it has worked. An external agent's
+/// row also carries a Stop control.
+pub(super) fn render_subagent_row(
+    subagent: &ActiveSubagent,
+    now: std::time::Instant,
+    on_stop: Option<StopHandler>,
+) -> Div {
     let elapsed = now.saturating_duration_since(subagent.started);
     let mut row = div()
         .flex()
@@ -634,6 +671,15 @@ pub(super) fn render_subagent_row(subagent: &ActiveSubagent, now: std::time::Ins
                 .truncate()
                 .child(subagent.task.clone()),
         );
+    if let Some(external) = &subagent.external {
+        row = row.child(
+            div()
+                .flex_none()
+                .text_xs()
+                .text_color(gpui::rgb(theme::text_muted()))
+                .child(external.provider.clone()),
+        );
+    }
     if subagent.background {
         row = row.child(
             div()
@@ -643,26 +689,46 @@ pub(super) fn render_subagent_row(subagent: &ActiveSubagent, now: std::time::Ins
                 .child("background"),
         );
     }
+    let row = row
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .text_xs()
+                .text_color(gpui::rgb(theme::text_secondary()))
+                .truncate()
+                .child(
+                    subagent
+                        .activity
+                        .clone()
+                        .unwrap_or_else(|| SharedString::new_static("Starting")),
+                ),
+        )
+        .child(
+            div()
+                .flex_none()
+                .text_xs()
+                .text_color(gpui::rgb(theme::text_muted()))
+                .child(format_subagent_elapsed(elapsed)),
+        );
+    let Some(on_stop) = on_stop else {
+        return row;
+    };
     row.child(
         div()
-            .flex_1()
-            .min_w_0()
+            .id(SharedString::from(format!("subagent-stop-{}", subagent.id)))
+            .flex_none()
+            .px_2()
+            .py_0p5()
+            .rounded(theme::RADIUS_SM)
+            .border_1()
+            .border_color(gpui::rgb(theme::border_subtle()))
             .text_xs()
             .text_color(gpui::rgb(theme::text_secondary()))
-            .truncate()
-            .child(
-                subagent
-                    .activity
-                    .clone()
-                    .unwrap_or_else(|| SharedString::new_static("Starting")),
-            ),
-    )
-    .child(
-        div()
-            .flex_none()
-            .text_xs()
-            .text_color(gpui::rgb(theme::text_muted()))
-            .child(format_subagent_elapsed(elapsed)),
+            .cursor_pointer()
+            .hover(|style| style.border_color(gpui::rgb(theme::border())))
+            .on_click(on_stop)
+            .child("Stop"),
     )
 }
 
@@ -948,6 +1014,11 @@ fn render_tool(
         return div().child(card);
     }
     let derived = transcript.derived.get(item, revision);
+    if let Some(activity) = &derived.external_agent {
+        return div().child(card.child(render_external_agent_activity(
+            item, revision, activity, transcript,
+        )));
+    }
     // A click anywhere on the card, payload included, toggles it.
     let mut payload = div().flex().flex_col().gap_1();
     // Expanded: the call arguments and, until a summary exists, the raw
@@ -1012,6 +1083,111 @@ fn format_tool_input(value: &serde_json::Value) -> String {
             .join("\n"),
         _ => scalar(value),
     }
+}
+
+/// The expanded body of an external agent's row: what it said, ran, and
+/// changed, plus its todo list. The payload was parsed once into the
+/// derived cache; this only lays it out.
+fn render_external_agent_activity(
+    item: &AgentTimelineItem,
+    revision: u64,
+    activity: &ExternalAgentActivity,
+    transcript: &TranscriptCtx,
+) -> Div {
+    let muted = gpui::rgb(theme::text_muted());
+    let secondary = gpui::rgb(theme::text_secondary());
+    let mut body = div().flex().flex_col().gap_1p5().mt_1();
+    let mut meta = format!("{} · {}", activity.provider, activity.agent_id);
+    if let Some(error) = &activity.error {
+        meta.push_str(" · ");
+        meta.push_str(error);
+    }
+    if let Some(pending) = &activity.pending_permission {
+        meta.push_str(" · waiting for you to ");
+        meta.push_str(pending);
+    }
+    body = body.child(div().text_xs().text_color(muted).child(meta));
+    if !activity.text.trim().is_empty() {
+        body = body.child(
+            div()
+                .w_full()
+                .text_sm()
+                .text_color(secondary)
+                .child(markdown::render(&transcript.markdown_cache.get(
+                    &item.id,
+                    MarkdownKind::ToolOutput,
+                    revision,
+                    &activity.text,
+                ))),
+        );
+    }
+    if !activity.commands.is_empty() {
+        let mut list = div().flex().flex_col().gap_0p5();
+        for command in &activity.commands {
+            let (label, color) = match command.status.as_str() {
+                "running" => ("running", theme::status_running()),
+                "failed" => ("failed", theme::status_error()),
+                _ => ("done", theme::status_success()),
+            };
+            let exit = command
+                .exit_code
+                .map(|code| format!(" (exit {code})"))
+                .unwrap_or_default();
+            list = list.child(
+                div()
+                    .flex()
+                    .gap_2()
+                    .items_center()
+                    .child(div().text_xs().text_color(gpui::rgb(color)).child(label))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .text_xs()
+                            .text_color(secondary)
+                            .font_family(crate::assets::FONT_MONO)
+                            .truncate()
+                            .child(format!("{}{exit}", command.command)),
+                    ),
+            );
+        }
+        body = body
+            .child(div().text_xs().text_color(muted).child("Commands"))
+            .child(list);
+    }
+    if !activity.file_changes.is_empty() {
+        let mut list = div().flex().flex_col().gap_0p5();
+        for change in &activity.file_changes {
+            list = list.child(
+                div()
+                    .text_xs()
+                    .text_color(secondary)
+                    .font_family(crate::assets::FONT_MONO)
+                    .truncate()
+                    .child(format!("{} {}", change.kind, change.path)),
+            );
+        }
+        body = body
+            .child(div().text_xs().text_color(muted).child("Files"))
+            .child(list);
+    }
+    if !activity.todos.is_empty() {
+        let mut list = div().flex().flex_col().gap_0p5();
+        for todo in &activity.todos {
+            list = list.child(render_plan_row(&PlanEntry {
+                content: todo.text.clone().into(),
+                status: if todo.completed {
+                    PlanStatus::Completed
+                } else {
+                    PlanStatus::Pending
+                },
+            }));
+        }
+        body = body
+            .child(div().text_xs().text_color(muted).child("Plan"))
+            .child(list);
+    }
+    body
 }
 
 /// Extract readable text from a tool output for markdown rendering.
@@ -1322,6 +1498,16 @@ pub(super) fn render_waiting_indicator() -> gpui::Stateful<Div> {
         )
 }
 
+/// The card's heading names who is asking: Maple's own tools, or an
+/// external agent whose request Maple relays.
+pub(super) fn permission_card_heading(tool_name: &str) -> &'static str {
+    match tool_name {
+        "codex_command" => "Codex wants to run a command",
+        "codex_file_change" => "Codex wants to change files",
+        _ => "Permission required",
+    }
+}
+
 pub(super) fn render_permission_card(
     permission: &PendingPermission,
     responding: bool,
@@ -1332,6 +1518,7 @@ pub(super) fn render_permission_card(
         Some(prompt) => prompt.to_string().into(),
         None => format!("Run tool {}?", permission.tool_name).into(),
     };
+    let heading = permission_card_heading(&permission.tool_name);
     let arguments: SharedString = permission.arguments.clone().into();
     let mut card = div()
         .my_3()
@@ -1351,7 +1538,7 @@ pub(super) fn render_permission_card(
             div()
                 .font_weight(gpui::FontWeight::SEMIBOLD)
                 .text_color(gpui::rgb(theme::text_primary()))
-                .child("Permission required"),
+                .child(heading),
         )
         .child(
             div()

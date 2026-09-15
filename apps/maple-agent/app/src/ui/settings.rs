@@ -2373,6 +2373,12 @@ impl SettingsScreen {
                             .size(px(28.))
                             .text_color(gpui::rgb(theme::text_primary()))
                             .into_any_element()
+                    } else if is_codex(&integration.id) {
+                        gpui::svg()
+                            .path("icons/openai-mark.svg")
+                            .size(px(26.))
+                            .text_color(gpui::rgb(theme::text_primary()))
+                            .into_any_element()
                     } else {
                         icon("plug", widgets::ROW_ICON, theme::text_secondary()).into_any_element()
                     }),
@@ -2595,6 +2601,11 @@ fn plan_card(plan: &crate::billing::PlanUsage) -> Div {
 }
 
 fn integration_is_visible(integration: &AgentIntegration) -> bool {
+    // Codex is worth a row even before it is installed: the card says how
+    // to get it, where a hidden row would leave the feature undiscoverable.
+    if is_codex(&integration.id) {
+        return true;
+    }
     if is_cua_driver(&integration.id)
         && matches!(
             integration.availability,
@@ -2745,6 +2756,10 @@ fn cua_permission_badge(label: &'static str, granted: bool) -> Div {
 
 fn is_cua_driver(id: &str) -> bool {
     id == "cua-driver"
+}
+
+fn is_codex(id: &str) -> bool {
+    id == "codex"
 }
 
 /// Small on/off pill used in list rows.
@@ -3217,6 +3232,18 @@ mod tests {
         let mut generic_missing = enabled_but_missing.clone();
         generic_missing.id = "other".to_string();
         assert!(integration_is_visible(&generic_missing));
+
+        // Codex shows even when it is not installed, so the card can say
+        // how to install it; it can be enabled only once it is detected.
+        let mut codex_missing = integration(AgentIntegrationAvailability::NotDetected, false);
+        codex_missing.id = "codex".to_string();
+        assert!(integration_is_visible(&codex_missing));
+        assert!(!integration_can_enable(&codex_missing));
+        assert!(!integration_can_setup(&codex_missing));
+        let mut codex_ready = integration(AgentIntegrationAvailability::Available, false);
+        codex_ready.id = "codex".to_string();
+        assert!(integration_can_enable(&codex_ready));
+        assert!(!integration_can_setup(&codex_ready));
 
         let mut external = integration(AgentIntegrationAvailability::Available, true);
         external.backend = Some(AgentIntegrationBackend::External);

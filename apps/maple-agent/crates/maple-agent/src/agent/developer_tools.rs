@@ -1,4 +1,9 @@
 use super::attachments::{AgentAttachmentStore, attachment_id_from_source};
+use super::external_agents::{
+    AGENT_CANCEL_TOOL, AGENT_SEND_TOOL, AGENT_START_TOOL, AGENT_STATUS_TOOL, AgentRefParams,
+    AgentSendParams, AgentStartParams, EXTERNAL_AGENT_TOOLS, ExternalAgentCall,
+    ExternalAgentRegistry, LIST_AGENT_PROVIDERS_TOOL,
+};
 use super::web_tools::{
     OPEN_URL_TOOL_NAME, OpenUrlParams, WEB_SEARCH_TOOL_NAME, WebSearchParams, WebToolState,
     bound_open_url_tool_error, bound_web_search_tool_error, execute_open_url, execute_web_search,
@@ -156,6 +161,9 @@ pub(crate) struct MapleDeveloperClient {
     /// conversation and asks in plain text instead of writing to surfaces
     /// nobody can see.
     desktop_ui_tools: bool,
+    /// The external agents (Codex) this session may delegate to. `None`
+    /// leaves the `agent_*` tools out of the catalog.
+    external_agents: Option<Arc<ExternalAgentRegistry>>,
     #[cfg(not(windows))]
     login_path_probe: ShellTool,
     #[cfg(not(windows))]
@@ -189,6 +197,7 @@ impl MapleDeveloperClient {
             attachment_store: None,
             web_enabled: true,
             desktop_ui_tools: true,
+            external_agents: None,
             #[cfg(not(windows))]
             login_path_probe: ShellTool::new(true)?,
             #[cfg(not(windows))]
@@ -209,6 +218,134 @@ impl MapleDeveloperClient {
     pub(super) fn with_web_enabled(mut self, enabled: bool) -> Self {
         self.web_enabled = enabled;
         self
+    }
+
+    pub(super) fn with_external_agents(
+        mut self,
+        registry: Option<Arc<ExternalAgentRegistry>>,
+    ) -> Self {
+        self.external_agents = registry;
+        self
+    }
+
+    #[cfg(windows)]
+    async fn login_path(&self) -> Option<String> {
+        None
+    }
+
+    fn external_agent_tools() -> [Tool; 5] {
+        [
+            Tool::new(
+                AGENT_START_TOOL.to_string(),
+                format!(
+                    "Hand a self-contained piece of work to an external coding agent (an installed harness such as Codex) that runs in the project with its own context and its own account. \
+The new agent knows nothing about this conversation: write a complete briefing with the task, relevant files, current state, what was tried, decisions made, acceptance criteria, and constraints. \
+It runs under its own sandbox and approval settings; whatever it asks approval for comes to the user through Maple, and in Allow all Maple grants it. \
+Blocking by default: the call returns the agent's result. With background=true the call returns at once and Maple tells you when the agent finishes; do not poll. \
+Call {LIST_AGENT_PROVIDERS_TOOL} first when unsure what is installed."
+                ),
+                object!({
+                    "type": "object",
+                    "properties": {
+                        "provider": {
+                            "type": "string",
+                            "description": "Which external agent to use, from list_agent_providers (for example \"codex\")"
+                        },
+                        "prompt": {
+                            "type": "string",
+                            "description": "The complete, self-contained briefing for the agent"
+                        },
+                        "background": {
+                            "type": "boolean",
+                            "description": "Return at once and let the agent work on; Maple reports when it finishes (default false)"
+                        },
+                        "model": {
+                            "type": "string",
+                            "description": "Optional model override for the provider; omit to use its own default"
+                        },
+                        "effort": {
+                            "type": "string",
+                            "description": "Optional reasoning effort for the provider (for example \"low\", \"medium\", \"high\"); omit to use its default"
+                        },
+                        "cwd": {
+                            "type": "string",
+                            "description": "Optional subdirectory of the project for the agent to work in; must stay inside the project"
+                        }
+                    },
+                    "required": ["provider", "prompt"]
+                }),
+            ),
+            Tool::new(
+                AGENT_SEND_TOOL.to_string(),
+                format!(
+                    "Give an external agent you started with {AGENT_START_TOOL} more instructions in the same thread, with its context intact. Use it to follow up, correct, or continue that agent's work."
+                ),
+                object!({
+                    "type": "object",
+                    "properties": {
+                        "provider": { "type": "string", "description": "The agent's provider" },
+                        "agent_id": { "type": "string", "description": "The agent ID that agent_start returned" },
+                        "prompt": { "type": "string", "description": "The next instructions for the agent" },
+                        "background": {
+                            "type": "boolean",
+                            "description": "Return at once and let the agent work on; Maple reports when it finishes (default false)"
+                        },
+                        "model": { "type": "string", "description": "Optional model override" },
+                        "effort": { "type": "string", "description": "Optional reasoning effort" }
+                    },
+                    "required": ["provider", "agent_id", "prompt"]
+                }),
+            ),
+            Tool::new(
+                AGENT_STATUS_TOOL.to_string(),
+                "Read the state and latest result of an external agent: its status, last message, files it changed, and commands it ran. Maple tells you when a background agent finishes, so call this when you need the result or when the user asks, not in a loop.".to_string(),
+                object!({
+                    "type": "object",
+                    "properties": {
+                        "provider": { "type": "string", "description": "The agent's provider" },
+                        "agent_id": { "type": "string", "description": "The agent ID that agent_start returned" }
+                    },
+                    "required": ["provider", "agent_id"]
+                }),
+            ),
+            Tool::new(
+                AGENT_CANCEL_TOOL.to_string(),
+                format!(
+                    "Interrupt what an external agent is doing now. The agent keeps its thread, so {AGENT_SEND_TOOL} can continue it later."
+                ),
+                object!({
+                    "type": "object",
+                    "properties": {
+                        "provider": { "type": "string", "description": "The agent's provider" },
+                        "agent_id": { "type": "string", "description": "The agent ID that agent_start returned" }
+                    },
+                    "required": ["provider", "agent_id"]
+                }),
+            ),
+            Tool::new(
+                LIST_AGENT_PROVIDERS_TOOL.to_string(),
+                "List the external coding agents installed on this computer that a task may delegate to, with their version and sign-in state.".to_string(),
+                object!({
+                    "type": "object",
+                    "properties": {}
+                }),
+            ),
+        ]
+    }
+
+    async fn external_agent_call(
+        &self,
+        ctx: &ToolCallContext,
+        cancel_token: CancellationToken,
+    ) -> ExternalAgentCall {
+        ExternalAgentCall {
+            session_id: ctx.session_id.clone(),
+            working_dir: ctx.working_dir.clone(),
+            row_id: ctx.tool_call_request_id.clone(),
+            login_path: self.login_path().await,
+            tool_context: self.tool_context.snapshot(),
+            cancel_token,
+        }
     }
 
     #[cfg(not(windows))]
@@ -619,6 +756,9 @@ impl McpClientTrait for MapleDeveloperClient {
             tools.push(web_search_tool());
             tools.push(open_url_tool());
         }
+        if self.external_agents.is_some() {
+            tools.extend(Self::external_agent_tools());
+        }
 
         if let Some(router) = self.tool_context.transient_mcp() {
             if tools
@@ -647,6 +787,34 @@ impl McpClientTrait for MapleDeveloperClient {
         cancel_token: CancellationToken,
     ) -> Result<CallToolResult, Error> {
         let working_dir = ctx.working_dir.as_deref();
+        if EXTERNAL_AGENT_TOOLS.contains(&name) {
+            let Some(registry) = self.external_agents.as_ref() else {
+                return Ok(error_result(
+                    "External agents are not enabled for this task.",
+                ));
+            };
+            let call = self.external_agent_call(ctx, cancel_token).await;
+            let result = match name {
+                AGENT_START_TOOL => match Self::parse_args::<AgentStartParams>(arguments) {
+                    Ok(params) => registry.start(call, params).await,
+                    Err(error) => error_result(error),
+                },
+                AGENT_SEND_TOOL => match Self::parse_args::<AgentSendParams>(arguments) {
+                    Ok(params) => registry.send(call, params).await,
+                    Err(error) => error_result(error),
+                },
+                AGENT_STATUS_TOOL => match Self::parse_args::<AgentRefParams>(arguments) {
+                    Ok(params) => registry.status(&call, params).await,
+                    Err(error) => error_result(error),
+                },
+                AGENT_CANCEL_TOOL => match Self::parse_args::<AgentRefParams>(arguments) {
+                    Ok(params) => registry.cancel_tool(&call, params).await,
+                    Err(error) => error_result(error),
+                },
+                _ => registry.list_providers(&call).await,
+            };
+            return Ok(result);
+        }
         let result = match name {
             "read" => match Self::parse_args::<ReadParams>(arguments) {
                 Ok(params) => read_file(params, working_dir, cancel_token).await,
@@ -824,7 +992,7 @@ fn success_result(text: impl Into<String>) -> CallToolResult {
     CallToolResult::success(vec![prioritized_text(text)])
 }
 
-fn text_result(text: impl Into<String>) -> CallToolResult {
+pub(super) fn text_result(text: impl Into<String>) -> CallToolResult {
     CallToolResult::success(vec![prioritized_text(text)])
 }
 
@@ -871,7 +1039,7 @@ struct BoundedShellExecution {
 /// `Command::kill_on_drop` only reaches the shell leader; the process-wrap
 /// child reaches the Unix process group or Windows job from this synchronous
 /// drop path as well.
-struct ArmedShellChild {
+pub(super) struct ArmedShellChild {
     child: Box<dyn ChildWrapper>,
     armed: bool,
 }
@@ -881,11 +1049,11 @@ impl ArmedShellChild {
         Self { child, armed: true }
     }
 
-    fn as_mut(&mut self) -> &mut dyn ChildWrapper {
+    pub(super) fn as_mut(&mut self) -> &mut dyn ChildWrapper {
         self.child.as_mut()
     }
 
-    async fn kill_and_wait(&mut self) -> Option<i32> {
+    pub(super) async fn kill_and_wait(&mut self) -> Option<i32> {
         let kill_succeeded = match self.child.start_kill() {
             Ok(()) => true,
             Err(error) => {
@@ -1353,13 +1521,94 @@ fn apply_flatpak_tool_context(
     }
 }
 
-#[cfg(not(windows))]
-fn executable_on_path(name: &str) -> Option<PathBuf> {
-    std::env::var_os("PATH")
+pub(super) fn executable_on_path(name: &str) -> Option<PathBuf> {
+    std::env::var_os("PATH").and_then(|path| executable_in_paths(name, &path))
+}
+
+/// Like [`executable_on_path`], but against an explicit search path such
+/// as the one recovered from the user's login shell.
+pub(super) fn executable_in_search_path(name: &str, search_path: &str) -> Option<PathBuf> {
+    executable_in_paths(name, std::ffi::OsStr::new(search_path))
+}
+
+fn executable_in_paths(name: &str, path: &std::ffi::OsStr) -> Option<PathBuf> {
+    let candidates = executable_candidates(name);
+    std::env::split_paths(path).find_map(|dir| {
+        candidates
+            .iter()
+            .map(|candidate| dir.join(candidate))
+            .find(|candidate| candidate.is_file())
+    })
+}
+
+/// The file names one command name may resolve to. Windows resolves
+/// `codex` to `codex.exe` or the npm shim `codex.cmd` through `PATHEXT`;
+/// a real executable is preferred over a shim.
+#[cfg(windows)]
+fn executable_candidates(name: &str) -> Vec<String> {
+    if Path::new(name).extension().is_some() {
+        return vec![name.to_string()];
+    }
+    let pathext = std::env::var("PATHEXT").unwrap_or_else(|_| ".EXE;.CMD;.BAT;.COM".to_string());
+    let mut extensions = pathext
+        .split(';')
+        .map(str::trim)
+        .filter(|extension| !extension.is_empty())
+        .map(str::to_ascii_lowercase)
+        .collect::<Vec<_>>();
+    extensions.sort_by_key(|extension| extension != ".exe");
+    extensions
         .into_iter()
-        .flat_map(|path| std::env::split_paths(&path).collect::<Vec<_>>())
-        .map(|dir| dir.join(name))
-        .find(|candidate| candidate.is_file())
+        .map(|extension| format!("{name}{extension}"))
+        .collect()
+}
+
+#[cfg(not(windows))]
+fn executable_candidates(name: &str) -> Vec<String> {
+    vec![name.to_string()]
+}
+
+/// The command that starts a long-lived external agent process such as
+/// `codex app-server`. It runs in the project, on the user's login PATH,
+/// with the same environment scrubbing as the shell tool.
+pub(super) fn build_external_agent_command(
+    executable: &Path,
+    args: &[&str],
+    working_dir: &Path,
+    login_path: Option<&str>,
+    session_id: Option<&str>,
+    tool_context: &AgentToolContextSnapshot,
+) -> Result<tokio::process::Command, String> {
+    #[cfg(not(windows))]
+    if Path::new("/.flatpak-info").exists() {
+        return Err("External agents are not supported inside Flatpak yet".to_string());
+    }
+    let mut command = tokio::process::Command::new(executable);
+    command.args(args).current_dir(working_dir);
+    if let Some(path) = login_path {
+        command.env("PATH", path);
+    }
+    apply_session_environment(&mut command, session_id);
+    apply_tool_context(&mut command, tool_context);
+    #[cfg(unix)]
+    configure_subprocess(&mut command);
+    Ok(command)
+}
+
+/// Spawn under the same containment as the shell tool: a Unix process
+/// group or a Windows job, so teardown reaches every descendant.
+pub(super) fn spawn_contained(
+    command: tokio::process::Command,
+) -> std::io::Result<ArmedShellChild> {
+    let mut command = CommandWrap::from(command);
+    #[cfg(unix)]
+    command.wrap(ProcessGroup::leader());
+    #[cfg(windows)]
+    {
+        command.wrap(CreationFlags(CREATE_NO_WINDOW));
+        command.wrap(JobObject);
+    }
+    Ok(ArmedShellChild::new(command.spawn()?))
 }
 
 fn render_bounded_shell_result(
@@ -2475,7 +2724,9 @@ const MAX_USER_QUESTIONS: usize = 3;
 /// Build the question batch from the model's entries. Entries without
 /// text are skipped, ids are made unique, and the batch is capped at
 /// `MAX_USER_QUESTIONS` so the answer map always has one slot per id.
-fn parse_user_questions(entries: &[serde_json::Value]) -> Vec<crate::agent::AgentQuestion> {
+pub(super) fn parse_user_questions(
+    entries: &[serde_json::Value],
+) -> Vec<crate::agent::AgentQuestion> {
     let mut questions: Vec<crate::agent::AgentQuestion> = Vec::new();
     let mut seen_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
     for (index, entry) in entries.iter().enumerate() {

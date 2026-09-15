@@ -303,7 +303,7 @@ pub struct AgentSlashCommand {
 }
 
 /// One answer choice, mirroring codex's request_user_input option.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentQuestionOption {
     pub label: String,
@@ -313,7 +313,7 @@ pub struct AgentQuestionOption {
 /// One question in a request_user_input call: one to three related
 /// questions ride a single call and are answered together. The client adds
 /// a free-form "Other" answer next to these options.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentQuestion {
     pub id: String,
@@ -1034,6 +1034,9 @@ pub enum AgentRunEvent {
         /// The subagent runs in the background; the task collects its
         /// result later with `load`.
         background: bool,
+        /// Set when the subagent is an external agent (Codex), which the
+        /// user can stop from its row.
+        external: Option<ExternalAgentRef>,
     },
     /// The subagent called a tool. Only the latest one is shown.
     SubagentActivity {
@@ -1104,6 +1107,17 @@ pub struct AgentSubagent {
     pub elapsed_ms: u64,
     /// The tool it called most recently.
     pub activity: Option<String>,
+    /// Set when this is an external agent (Codex) rather than a Goose
+    /// subagent.
+    pub external: Option<ExternalAgentRef>,
+}
+
+/// Which external agent a subagent row stands for.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExternalAgentRef {
+    pub provider: String,
+    pub agent_id: String,
 }
 
 /// One finished exchange of a `/btw` thread, replayed on a follow-up so

@@ -407,6 +407,11 @@ pub(super) fn system_notification_item(
     notification: &SystemNotificationContent,
     created_ms: u128,
 ) -> AgentTimelineItem {
+    // An external agent's end-of-turn notice is the tool row it belongs
+    // to, not a separate notice; see `external_agents::notice_timeline_item`.
+    if let Some(item) = external_agents::notice_timeline_item(notification, created_ms) {
+        return item;
+    }
     let title = match notification.notification_type {
         SystemNotificationType::ThinkingMessage => "Thinking",
         SystemNotificationType::ProgressMessage => "Progress",
@@ -516,6 +521,11 @@ pub(super) fn descriptive_tool_title<T: Serialize>(
     // Preserve the existing, dedicated skill wording.
     if let Some(skill) = skill_load_title(tool_name, arguments) {
         return Some(skill);
+    }
+    // An external agent call is titled by what it does, not by its prompt;
+    // the row's own body shows the agent's work.
+    if let Some(title) = external_agents::tool_title(tool_name) {
+        return Some(title.to_string());
     }
     let arguments = serde_json::to_value(arguments).ok()?;
     // Most-descriptive argument per tool, in priority order. Only the shell
@@ -889,6 +899,9 @@ pub(super) fn message_role(message: &Message) -> String {
 }
 
 pub(super) fn format_tool_title(name: &str) -> String {
+    if let Some(title) = external_agents::tool_title(name) {
+        return title.to_string();
+    }
     let normalized = name.replace("__", ": ").replace('_', " ");
     normalized
         .split_whitespace()

@@ -339,6 +339,9 @@ pub struct ChatScreen {
     /// landed while it was in flight; a stale one would wipe a row the
     /// events already know about (or revive one they removed).
     subagent_epoch: u64,
+    /// Whether a running runtime has been seen, so the skills list is
+    /// re-read once Goose knows the account's skills directory.
+    runtime_running_seen: bool,
     /// Web tools on for the selected task (mirrors the session record).
     web_enabled: bool,
     /// Settings default applied to newly created tasks.
@@ -809,10 +812,16 @@ impl ChatScreen {
                 .iter()
                 .zip(&self.slash_entries)
                 .any(|(next, previous)| next.name != previous.name);
+        // The palette just opened: re-read the skills, so one installed
+        // since the last scan (a toggle in Settings) is in the list.
+        let palette_opened = self.slash_entries.is_empty() && !entries.is_empty();
         if has_text != self.composer_has_text || entries_changed {
             self.composer_has_text = has_text;
             self.slash_entries = entries;
             cx.notify();
+        }
+        if palette_opened {
+            self.refresh_slash_commands(cx);
         }
     }
 
@@ -959,6 +968,7 @@ impl ChatScreen {
             plan_collapsed: false,
             subagents: Vec::new(),
             subagent_tick_pending: std::cell::Cell::new(false),
+            runtime_running_seen: false,
             subagent_epoch: 0,
             audio: Arc::new(crate::audio::AudioEngine::new()),
             audio_caps: maple_agent::agent::AudioCapabilities::default(),
@@ -1946,6 +1956,7 @@ impl ChatScreen {
                     task: subagent.task.into(),
                     background: subagent.background,
                     activity: subagent.activity.map(SharedString::from),
+                    external: subagent.external,
                 }
             })
             .collect();
@@ -2245,16 +2256,20 @@ impl ChatScreen {
     /// Reload the skill slash commands for the current project root.
     pub fn refresh_slash_commands(&mut self, cx: &mut Context<Self>) {
         let backend = self.backend.clone();
+        let user_id = self.user_id.clone();
         let working_dir = self.project_root.clone();
         let requested_root = working_dir.clone();
         self.call(
-            async move { backend.list_slash_commands(working_dir).await },
+            async move { backend.list_slash_commands(&user_id, working_dir).await },
             cx,
             move |this, result, cx| {
                 if this.project_root == requested_root
                     && let Ok(commands) = result
                 {
                     this.slash_commands = commands;
+                    if let Some(composer) = this.composer.clone() {
+                        this.composer_changed(&composer, cx);
+                    }
                     cx.notify();
                 }
             },
@@ -2488,6 +2503,7 @@ impl ChatScreen {
         id: String,
         task: String,
         background: bool,
+        external: Option<maple_agent::agent::ExternalAgentRef>,
         cx: &mut Context<Self>,
     ) {
         if self.subagents.iter().any(|subagent| subagent.id == id) {
@@ -2500,8 +2516,34 @@ impl ChatScreen {
             background,
             started: std::time::Instant::now(),
             activity: None,
+            external,
         });
         self.schedule_subagent_tick(cx);
+    }
+
+    /// Stop an external agent from its row. The row closes when the
+    /// runtime reports the turn's end.
+    fn stop_external_agent(&mut self, agent_id: &str, cx: &mut Context<Self>) {
+        let Some(session_id) = self.selected_session.clone() else {
+            return;
+        };
+        let backend = self.backend.clone();
+        let user_id = self.user_id.clone();
+        let agent_id = agent_id.to_string();
+        self.call(
+            async move {
+                backend
+                    .cancel_external_agent(&user_id, &session_id, &agent_id)
+                    .await
+            },
+            cx,
+            |this, result, cx| {
+                if let Err(message) = result {
+                    this.notice = Some(message.into());
+                }
+                cx.notify();
+            },
+        );
     }
 
     /// Paint once a second while a subagent works, so the elapsed time on
@@ -3948,6 +3990,12 @@ impl ChatScreen {
     fn apply_service_event(&mut self, event: AgentServiceEvent, cx: &mut Context<Self>) -> bool {
         match event {
             AgentServiceEvent::RuntimeStatus(mut status) => {
+                // A runtime that just started points Goose at the account's
+                // skills, which the first scan ran before; ask again.
+                if status.running && !self.runtime_running_seen {
+                    self.runtime_running_seen = true;
+                    self.refresh_slash_commands(cx);
+                }
                 // The status snapshot is authoritative for active runs; one
                 // that repeats the known state changes nothing. A snapshot
                 // raced with a terminal event must not resurrect that run.
@@ -4142,11 +4190,12 @@ impl ChatScreen {
                 id,
                 task,
                 background,
+                external,
             } => {
                 if !self.is_selected(session_id) {
                     return false;
                 }
-                self.start_subagent(id, task, background, cx);
+                self.start_subagent(id, task, background, external, cx);
             }
             AgentRunEvent::SubagentActivity { id, tool } => {
                 if !self.is_selected(session_id) {
@@ -4444,7 +4493,7 @@ impl Render for ChatScreen {
                                 .flex_col()
                         })
                         .children(self.render_btw_card(cx))
-                        .children(self.render_subagents_card())
+                        .children(self.render_subagents_card(cx))
                         .children(self.render_plan_card(cx))
                         .child(self.render_composer(cx))
                         .children(self.render_slash_palette(cx))
