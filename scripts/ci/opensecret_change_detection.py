@@ -79,6 +79,10 @@ def classify_path(path: str) -> frozenset[str]:
             return frozenset({"rust", "nix", "integration", "eif"})
         if relative in NIX_TEST_INPUTS:
             return frozenset({"nix"})
+        if relative == "secretspec.toml" or relative.startswith("secretspec/"):
+            # Provider manifests are read only by the operator-boundary fixtures
+            # in the component flake check; they are not build or runtime inputs.
+            return frozenset({"nix"})
         if relative.startswith(("tests/", "migrations/")):
             return frozenset({"rust", "integration"})
         if relative == ".env.sample":
