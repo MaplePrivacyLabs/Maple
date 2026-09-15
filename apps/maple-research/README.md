@@ -218,7 +218,8 @@ monitoring, artifact verification, and explicit store handoff. Do not use the
 legacy `just release` recipe to create an unreviewed local tag.
 
 When the OpenSecret enclave changes, update and review the corresponding
-`pcr0DevValues` or `pcr0Values` in `apps/maple-research/frontend/src/app.tsx` as part of the
+`PCR0_DEV_VALUES` or `PCR0_VALUES` in
+`apps/maple-research/frontend/src/config/openSecretClientConfig.ts` as part of the
 attestation compatibility change.
 
 Version changes update:

@@ -3,6 +3,12 @@ import { openSecretPcrEnvironment } from "./openSecretPcrEnvironment";
 const DEFAULT_OPEN_SECRET_CLIENT_ID = "ba5a14b5-d915-47b1-b7b1-afda52bc5fc6";
 
 const PCR0_VALUES = [
+  // Approved 2026-09-14 (services/opensecret signed history)
+  "a0ef363874f70bd82af98d8e628bf7f128dfca1f9918e83af494cd17f5d4ff1a0c1b94b235941a6d20138d1152cbe5aa",
+  // Approved 2026-09-12 (services/opensecret signed history)
+  "3d2f90b4dac7316e5485e03f4cdf3f2f8ae79fde77442546475eac6c3037916ac54b8bdb26c85a73e9b778a9a5077638",
+  // Approved 2026-09-05 (services/opensecret signed history)
+  "a1c09f74133cbcc0e5034b9a8a5ed1a5a567d4922140d69534827b4473c7f385b989ce594e0b11f6b8ec971decb95608",
   "ed9109c16f30a470cf0ea2251816789b4ffa510c990118323ce94a2364b9bf05bdb8777959cbac86f5cabc4852e0da71",
   "4f2bcdf16c38842e1a45defd944d24ea58bb5bcb76491843223022acfe9eb6f1ff79b2cb9a6b2a9219daf9c7bf40fa37",
   "b8ee4b511ef2c9c6ab3e5c0840c5df2218fbb4d9df88254ece7af9462677e55aa5a03838f3ae432d86ca1cb6f992eee7",
@@ -22,6 +28,12 @@ const PCR0_VALUES = [
 ];
 
 const PCR0_DEV_VALUES = [
+  // Approved 2026-09-14 (services/opensecret signed history)
+  "61d92c66684de563fbc4ce3ece9680966672a065a65dedfd1dcdab149b2d3d3d725ab853dae6dc251dbb3326ff7d1214",
+  // Approved 2026-09-12 (services/opensecret signed history)
+  "c5470ea9d2d8499a65fbb9bc936bd7a62a5ef90b54da1504535cb4384f303fb673369d64f1a43f17c8ed8d2a89f09949",
+  // Approved 2026-09-05 (services/opensecret signed history)
+  "831eb975dad0b3f3741612acc92f020c0467bd3ac967ddf925fa60eff9e02cf9239ec50c699715fbf9a35e3448e2a117",
   "799600ba64a29e360b1651f4ced6c9ca5323094a45294551327b996062c3f21e6fef651e7e3d97ec8d25be87b9935b4f",
   "2fd9d4f716fd28336d96bc1a20b18a727c2d18f292577ba99323acfc8fb08959428a123b7acff478994c4f961247a0c7",
   "4292db2a90ce5ea6f6e2766e0238a328c81dc060a1f3175bced2e94a10e0490d3ff9125d774dafdff969ac661778e757",

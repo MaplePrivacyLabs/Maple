@@ -211,6 +211,9 @@ fn is_attempt_id(value: &str) -> bool {
         && value != "00000000-0000-0000-0000-000000000000"
 }
 
+const NATIVE_AUTH_FAILED_ERROR: &str = "Native authentication failed; restart sign-in";
+const NATIVE_AUTH_DEVICE_CLOCK_ERROR: &str = "Native authentication failed because this device's date or time looks wrong. Check the device's date, time and time zone settings, then restart sign-in";
+
 fn map_sdk_error(action: &'static str, error: &maple_sdk::Error) -> String {
     let category = match error {
         maple_sdk::Error::Http(_) => "http",
@@ -232,7 +235,10 @@ fn map_sdk_error(action: &'static str, error: &maple_sdk::Error) -> String {
         maple_sdk::Error::Other(_) => "other",
     };
     log::warn!("OpenSecret native authentication operation failed ({action}, {category})");
-    "Native authentication failed; restart sign-in".to_string()
+    if error.is_device_clock_problem() {
+        return NATIVE_AUTH_DEVICE_CLOCK_ERROR.to_string();
+    }
+    NATIVE_AUTH_FAILED_ERROR.to_string()
 }
 
 #[tauri::command]
@@ -266,6 +272,26 @@ pub async fn native_oauth_cancel(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sdk_errors_map_to_safe_messages_with_clock_guidance_when_applicable() {
+        let clock_error = maple_sdk::Error::AttestationVerificationFailed(
+            "This device's clock is about 3 days ahead of the secure enclave (private detail)"
+                .to_string(),
+        );
+        let message = map_sdk_error("prepare", &clock_error);
+        assert_eq!(message, NATIVE_AUTH_DEVICE_CLOCK_ERROR);
+        assert!(!message.contains("private detail"));
+
+        let other = maple_sdk::Error::AttestationVerificationFailed(
+            "private attestation detail".to_string(),
+        );
+        assert_eq!(map_sdk_error("prepare", &other), NATIVE_AUTH_FAILED_ERROR);
+        assert_eq!(
+            map_sdk_error("redeem", &maple_sdk::Error::Session("private".to_string())),
+            NATIVE_AUTH_FAILED_ERROR
+        );
+    }
 
     #[test]
     fn preparation_serializes_the_frontend_oauth_contract() {

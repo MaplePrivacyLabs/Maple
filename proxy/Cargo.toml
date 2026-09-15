@@ -29,7 +29,7 @@ path = "src/main.rs"
 
 [dependencies]
 # Keep the SDK requirement compatible with the embedding application's pin.
-maple-sdk = "4.0.0"
+maple-sdk = "4.0.1"
 
 # Web server
 axum = { version = "0.8.4", features = ["http2", "macros"] }
