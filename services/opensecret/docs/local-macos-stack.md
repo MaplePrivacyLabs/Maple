@@ -38,16 +38,20 @@ Just handle resolution; no custom runtime helper is needed.
 The pinned shell includes SecretSpec 0.20 and BWS. The manifest commits the
 `opensecret_local` alias with the local-development BWS project ID. The ID is
 an identifier, not a credential; authentication and BWS permissions control
-access. Store your own machine-account token once per machine:
+access. Every Maple repository's manifest uses the project name `maple`, so a
+machine stores its BWS machine-account token once and all of them work. If
+this machine has already logged in from another Maple repository, skip this;
+otherwise run it once:
 
 ```sh
 just local-secrets-login
 ```
 
 The login command uses SecretSpec's hidden prompt to store the token in
-Keychain (or the Linux Secret Service). Use a machine account with read access
-to only the local-development project. macOS may request Keychain access for a
-new SecretSpec executable.
+Keychain (or the Linux Secret Service). Grant the machine account read access
+to the BWS projects this machine may use; the local-development project is
+enough for this stack. macOS may request Keychain access for a new SecretSpec
+executable.
 
 Headless VMs and containers have no keyring. Export the token and select the
 credential-free twin alias instead; nothing else changes:
