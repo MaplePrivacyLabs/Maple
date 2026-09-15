@@ -1,6 +1,6 @@
 [package]
 name = "maple-proxy"
-version = "0.4.0"
+version = "0.4.1"
 edition = "2021"
 authors = ["OpenSecret"]
 description = "Lightweight OpenAI-compatible proxy server for Maple/OpenSecret TEE infrastructure"
