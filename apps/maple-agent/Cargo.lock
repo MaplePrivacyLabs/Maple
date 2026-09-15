@@ -5893,6 +5893,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "maple-harness"
+version = "0.1.0"
+dependencies = [
+ "jsonschema 0.49.9",
+ "schemars 1.2.2",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.20",
+ "tokio-util",
+ "uuid",
+]
+
+[[package]]
 name = "maple-proxy"
 version = "0.4.0"
 dependencies = [
@@ -8852,6 +8865,7 @@ dependencies = [
  "schemars_derive",
  "serde",
  "serde_json",
+ "uuid",
 ]
 
 [[package]]
