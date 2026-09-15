@@ -21,6 +21,9 @@ package boundaries remain independently versioned and publishable:
   Rust SDK for native OAuth; the embedded proxy and Goose remain desktop-only.
 
 Follow the [consumer version policy](../../../docs/sdk-publishing.md#consumer-version-policy).
+To ship an SDK change to clients, follow the
+[rollout order](../../../docs/sdk-publishing.md#rolling-an-sdk-fix-out-to-clients):
+SDK PR with version bump, publish, consumer pins, isolated app bump, release.
 Prefer published pins without upgrading unrelated consumers. Local links are
 allowed during active development, including on `master`; a registry-pinned
 client build does not exercise an SDK source edit. Test an affected consumer

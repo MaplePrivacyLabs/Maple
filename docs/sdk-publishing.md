@@ -92,6 +92,36 @@ Validate the selected dependency mode and lockfile. SDK source and backend
 integration checks continue to exercise the in-tree SDK; passing a client build
 that consumes a registry version does not validate unpublished SDK source.
 
+## Rolling an SDK fix out to clients
+
+Use this order when an SDK change must reach shipped clients. Each step is a
+separate reviewed PR or a separate protected action; none of them implies the
+next.
+
+1. **SDK PR on `master`.** Land the fix together with the SDK version bumps
+   (`sdk/package.json`, `sdk/rust/Cargo.toml` and its `Cargo.lock`) because the
+   publish workflows publish the version committed on `master`. If the change
+   touches enclave trust, refresh the embedded PCR0 roots in `sdk/src/lib/pcr.ts`
+   and `sdk/rust/src/pcr.rs` from `services/opensecret/pcr*History.json` in the
+   same PR. Keep the TypeScript and Rust policies aligned.
+2. **Publish both SDKs** from `sdk/` on the merged `master`:
+   `just publish-npm X.Y.Z trusted false` and
+   `just publish-cargo X.Y.Z trusted false`. Each run validates, then waits for
+   the protected environment approval described below.
+3. **Consumer PR.** Pin every consumer to the published version and commit the
+   lockfiles: the Research frontend with the `bun --no-env-file add --exact`
+   command above, and the Research native shell, `apps/maple-agent`, and
+   `proxy` with `cargo update -p maple-sdk --precise X.Y.Z`. The host app and
+   its embedded proxy must resolve the same SDK version. When the SDK adds a
+   user-facing condition, surface it through each client's own safe message
+   (native clients keep SDK error details private) and update the frontend's
+   embedded PCR0 roots if the SDK's changed.
+4. **Isolated app version bump** with `just update-version X.Y.Z` on its own
+   branch, following `.agents/skills/release-maple/`.
+5. **Release** through the release skill when the team decides to ship. If the
+   proxy's SDK pin changed, decide the proxy version explicitly before the
+   release preflight asks.
+
 ## Run a release
 
 After the one-time setup below:

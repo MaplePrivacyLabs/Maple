@@ -30,6 +30,7 @@ pub(super) const MAPLE_PROVIDER_NAME: &str = "maple";
 const AUTHENTICATION_ERROR_MESSAGE: &str = "Maple authentication failed";
 pub(super) const ATTESTATION_VERIFICATION_ERROR_MESSAGE: &str =
     "Maple could not verify the secure server connection";
+pub(super) const DEVICE_CLOCK_ERROR_MESSAGE: &str = "Maple could not verify the secure server connection because this device's date or time looks wrong. Check the device's date, time and time zone settings, then try again";
 pub(super) const SECURE_CONNECTION_ERROR_MESSAGE: &str =
     "Maple's encrypted connection could not be recovered";
 const ERROR_CONTRACT_HEADER: &str = "x-opensecret-error-contract";
@@ -958,6 +959,9 @@ fn map_opensecret_error_kind(error: maple_sdk::Error) -> ProviderError {
             } else {
                 ProviderError::NetworkError("The Maple network request failed".to_string())
             }
+        }
+        maple_sdk::Error::AttestationVerificationFailed(_) if error.is_device_clock_problem() => {
+            ProviderError::ExecutionError(DEVICE_CLOCK_ERROR_MESSAGE.to_string())
         }
         maple_sdk::Error::AttestationVerificationFailed(_) => {
             ProviderError::ExecutionError(ATTESTATION_VERIFICATION_ERROR_MESSAGE.to_string())
@@ -2408,6 +2412,30 @@ mod tests {
         );
         assert_eq!(transport.request_count(), 1);
         assert_eq!(transport.remaining_response_count(), 1);
+    }
+
+    #[test]
+    fn device_clock_attestation_failures_get_clock_guidance_without_sdk_detail() {
+        // The SDK marks clock-caused attestation failures with this prefix.
+        let clock_error = maple_sdk::Error::AttestationVerificationFailed(
+            "This device's clock is about 3 days ahead of the secure enclave (private detail)"
+                .to_string(),
+        );
+        assert!(clock_error.is_device_clock_problem());
+        let mapped = map_opensecret_error(clock_error);
+        assert_eq!(
+            mapped,
+            ProviderError::ExecutionError(DEVICE_CLOCK_ERROR_MESSAGE.to_string())
+        );
+        assert!(!format!("{mapped:?}").contains("private detail"));
+
+        let other = maple_sdk::Error::AttestationVerificationFailed(
+            "private attestation detail".to_string(),
+        );
+        assert_eq!(
+            map_opensecret_error(other),
+            ProviderError::ExecutionError(ATTESTATION_VERIFICATION_ERROR_MESSAGE.to_string())
+        );
     }
 
     #[tokio::test]
