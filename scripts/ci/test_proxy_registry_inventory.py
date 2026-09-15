@@ -29,8 +29,8 @@ class FakeGet:
         self.responses = list(responses)
         self.calls = []
 
-    def __call__(self, url, token=None):
-        self.calls.append((url, token))
+    def __call__(self, url, token=None, *, api_version=None):
+        self.calls.append((url, token) if api_version is None else (url, token, api_version))
         if not self.responses:
             raise AssertionError("Unexpected extra request")
         result = self.responses.pop(0)
@@ -70,6 +70,63 @@ class ProxyRegistryInventoryTests(unittest.TestCase):
         for data in ({}, None, [{"name": inventory.PACKAGE}], [{"name": "MAPLE-PROXY"}], ["invalid"], [{}]):
             with self.subTest(data=data), self.assertRaises(inventory.InventoryError):
                 inventory.inventory(TOKEN, get=FakeGet(inventory.Response(404), inventory.Response(200, data)))
+
+    def test_listing_failures_report_only_status_or_json_shape(self):
+        for response, expected in (
+            (inventory.Response(403), "HTTP 403"),
+            (inventory.Response(404), "HTTP 404"),
+            (inventory.Response(429), "HTTP 429"),
+            (inventory.Response(500), "HTTP 500"),
+            (inventory.Response(200, {"message": TOKEN}), "JSON object, expected array"),
+            (inventory.Response(200, TOKEN), "JSON string, expected array"),
+        ):
+            with self.subTest(expected=expected), self.assertRaisesRegex(inventory.InventoryError, expected) as result:
+                inventory.inventory(TOKEN, get=FakeGet(inventory.Response(404), response))
+            self.assertNotIn(TOKEN, str(result.exception))
+
+    def test_diagnostics_probe_only_fixed_endpoints_under_both_api_versions(self):
+        get = FakeGet(
+            inventory.Response(404), inventory.Response(403),
+            inventory.Response(404), inventory.Response(200, []),
+        )
+        result = inventory.diagnose(TOKEN, get=get)
+        expected_calls = [
+            (url, TOKEN, version)
+            for version in ("2022-11-28", "2026-03-10")
+            for url in (
+                inventory.PACKAGE_URL,
+                f"{inventory.API}/orgs/{inventory.OWNER}/packages?package_type=container&per_page=100&page=1",
+            )
+        ]
+        self.assertEqual(get.calls, expected_calls)
+        self.assertTrue(result["diagnostic_only"])
+        self.assertEqual([probe["http_status"] for probe in result["probes"]], [404, 403, 404, 200])
+        self.assertEqual([probe["json_type"] for probe in result["probes"]], ["not-read", "not-read", "not-read", "array"])
+        self.assertNotIn("tags", result)
+        self.assertNotIn(TOKEN, json.dumps(result))
+
+    def test_diagnostics_hide_values_headers_and_exception_text_and_continue(self):
+        get = FakeGet(
+            inventory.Response(200, {"message": TOKEN}, TOKEN),
+            inventory.InventoryError(TOKEN),
+            inventory.InventoryError(TOKEN, status=200, category="invalid-json"),
+            inventory.Response(200, TOKEN, TOKEN),
+        )
+        result = inventory.diagnose(TOKEN, get=get)
+        self.assertEqual(len(get.calls), 4)
+        self.assertEqual(result["probes"][0]["json_type"], "object")
+        self.assertEqual(result["probes"][1]["error_category"], "request-failed")
+        self.assertIsNone(result["probes"][1]["http_status"])
+        self.assertEqual(result["probes"][2]["http_status"], 200)
+        self.assertEqual(result["probes"][2]["error_category"], "invalid-json")
+        self.assertEqual(result["probes"][3]["json_type"], "string")
+        self.assertNotIn(TOKEN, json.dumps(result))
+
+    def test_diagnostics_require_a_token_before_any_request(self):
+        get = FakeGet()
+        with self.assertRaises(inventory.InventoryError):
+            inventory.diagnose("", get=get)
+        self.assertFalse(get.calls)
 
     def test_missing_package_checks_all_readable_package_pages(self):
         get = FakeGet(
@@ -164,6 +221,19 @@ class ProxyRegistryInventoryTests(unittest.TestCase):
             opener.return_value.open.side_effect = HTTPError(inventory.PACKAGE_URL, 403, TOKEN, {}, io.BytesIO(TOKEN.encode()))
             self.assertEqual(inventory.get_json(inventory.PACKAGE_URL, TOKEN), inventory.Response(403))
 
+    def test_api_version_comparison_does_not_change_the_default(self):
+        for version in (None, "2026-03-10"):
+            response = io.BytesIO(b"[]")
+            response.status = 200
+            response.headers = {}
+            with self.subTest(version=version), patch.object(inventory, "build_opener") as opener:
+                opener.return_value.open.return_value = response
+                options = {} if version is None else {"api_version": version}
+                inventory.get_json(inventory.PACKAGE_URL, TOKEN, **options)
+                request = opener.return_value.open.call_args.args[0]
+                self.assertEqual(request.get_header("X-github-api-version"), version or "2022-11-28")
+                self.assertEqual(request.get_method(), "GET")
+
     def test_invalid_or_oversized_response_is_sanitized(self):
         for payload, limit in ((TOKEN.encode(), 4096), (b" " * 10, 4)):
             response = io.BytesIO(payload)
@@ -174,6 +244,8 @@ class ProxyRegistryInventoryTests(unittest.TestCase):
                 with self.assertRaises(inventory.InventoryError) as result:
                     inventory.get_json(inventory.PACKAGE_URL, TOKEN)
                 self.assertNotIn(TOKEN, str(result.exception))
+                self.assertEqual(result.exception.status, 200)
+                self.assertEqual(result.exception.category, "response-too-large" if limit == 4 else "invalid-json")
 
     def test_http_redirects_never_forward_the_workflow_token(self):
         handler = inventory.NoRedirect()
@@ -194,6 +266,29 @@ class ProxyRegistryInventoryTests(unittest.TestCase):
             with self.subTest(key=key), patch.dict(os.environ, invalid, clear=True), patch.object(sys, "argv", ["inventory"]), patch.object(inventory, "inventory") as operation, contextlib.redirect_stderr(captured):
                 self.assertEqual(inventory.main(), 1)
                 operation.assert_not_called()
+                self.assertNotIn(TOKEN, captured.getvalue())
+
+    def test_diagnostic_cli_is_separate_from_admission_and_checks_repository(self):
+        environment = {
+            "GITHUB_REPOSITORY": inventory.REPOSITORY,
+            "GITHUB_REPOSITORY_ID": str(inventory.REPOSITORY_ID),
+            "GITHUB_REPOSITORY_OWNER_ID": str(inventory.OWNER_ID),
+            "IMAGE_NAME": inventory.IMAGE,
+            "REGISTRY": "ghcr.io",
+            "GH_TOKEN": TOKEN,
+        }
+        for valid in (True, False):
+            settings = dict(environment)
+            if not valid:
+                settings["GITHUB_REPOSITORY_ID"] = "0"
+            captured = io.StringIO()
+            with self.subTest(valid=valid), patch.dict(os.environ, settings, clear=True), patch.object(sys, "argv", ["inventory", "--diagnose"]), patch.object(inventory, "diagnose", return_value={"diagnostic_only": True}) as diagnose, patch.object(inventory, "inventory") as admission, contextlib.redirect_stdout(captured), contextlib.redirect_stderr(captured):
+                self.assertEqual(inventory.main(), 0 if valid else 1)
+                admission.assert_not_called()
+                if valid:
+                    diagnose.assert_called_once_with(TOKEN)
+                else:
+                    diagnose.assert_not_called()
                 self.assertNotIn(TOKEN, captured.getvalue())
 
 

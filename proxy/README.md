@@ -484,6 +484,13 @@ The transferred Maple repository publishes with its `GITHUB_TOKEN` in the
 The package must grant Maple Actions write access and be public for anonymous
 verification; local recipes intentionally cannot publish to it.
 
+If package inventory fails, run `Publish proxy container` manually with
+`diagnostics_only` enabled. This uses a read-only workflow token to report the
+HTTP status and JSON shape from fixed GitHub package endpoints, without exposing
+response bodies or credentials. A successful diagnostic run only means the
+observations completed; it does not validate publication. All build and publish
+jobs are skipped in this mode. Leave this input disabled for a normal retry.
+
 `proxy/Cargo.lock`, `sdk/rust/Cargo.lock`, and
 `apps/maple-research/frontend/src-tauri/Cargo.lock` remain separate lockfiles. Runtime dependency
 changes must keep the selected SDK sources and affected locks coherent; one

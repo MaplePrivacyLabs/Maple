@@ -490,6 +490,9 @@ check(
 )
 proxy_publish_on = proxy_container_publish.get("on", {})
 check("workflow_dispatch" in proxy_publish_on, "Proxy container publisher must support manual retry")
+diagnostic_input = proxy_publish_on.get("workflow_dispatch", {}).get("inputs", {}).get("diagnostics_only", {})
+check(diagnostic_input.get("type") == "boolean" and diagnostic_input.get("default") is False,
+      "Proxy diagnostics must be an explicit boolean opt-in")
 proxy_publish_workflow_run = proxy_publish_on.get("workflow_run", {})
 check(
     proxy_publish_workflow_run.get("workflows") == ["Release"]
@@ -513,9 +516,26 @@ check(
 
 container_jobs = proxy_container_publish.get("jobs", {})
 check(
-    set(container_jobs) == {"prepare", "build", "publish", "finalize"},
+    set(container_jobs) == {"diagnose", "prepare", "build", "publish", "finalize"},
     "Proxy container publisher must separate validation, builds, exact publication, and alias reconciliation",
 )
+diagnose = container_jobs["diagnose"]
+check(diagnose.get("permissions") == {"contents": "read", "packages": "read"},
+      "Proxy diagnostics must have read-only permissions")
+check(not needs(diagnose), "Proxy diagnostics must not depend on publication jobs")
+for required_gate in (
+    "github.repository == 'MaplePrivacyLabs/Maple'",
+    "github.repository_id == '923138240'",
+    "github.repository_owner_id == '322649754'",
+    "github.ref_type == 'branch'",
+    "github.event_name == 'workflow_dispatch' && inputs.diagnostics_only",
+):
+    check(required_gate in str(diagnose.get("if", "")), f"Proxy diagnostics is missing gate: {required_gate}")
+diagnostic_runs = [step.get("run") for step in diagnose.get("steps", []) if "run" in step]
+check(diagnostic_runs == ["python3 -I scripts/ci/proxy_registry_inventory.py --diagnose"],
+      "Proxy diagnostics must only inspect package API access")
+for job_name, job in container_jobs.items():
+    check("diagnose" not in needs(job), f"Publication job {job_name} must not depend on diagnostics")
 prepare = container_jobs["prepare"]
 prepare_if = str(prepare.get("if", ""))
 for required_gate in (
@@ -523,6 +543,7 @@ for required_gate in (
     "github.repository_id == '923138240'",
     "github.repository_owner_id == '322649754'",
     "github.ref == 'refs/heads/master'",
+    "!(github.event_name == 'workflow_dispatch' && inputs.diagnostics_only)",
     "workflow_run.conclusion == 'success'",
     "workflow_run.event == 'release'",
     "workflow_run.path == '.github/workflows/release.yml'",
