@@ -2478,15 +2478,16 @@ impl AgentRuntimeHandle {
         normalize_mcp_servers(config.mcp_servers)
     }
 
-    /// The PATH to look on for external agent executables. A macOS GUI
+    /// The PATH shared by integration discovery and task tools. A macOS GUI
     /// launch inherits a short PATH; the login shell's, once recovered for
     /// the runtime, is the one the user's terminal has.
-    fn codex_search_path(&self) -> Option<String> {
+    fn tool_search_path(&self) -> Option<String> {
         #[cfg(target_os = "macos")]
         {
             self.service
                 .login_shell_search_paths
                 .get()
+                .filter(|paths| !paths.is_empty())
                 .and_then(|paths| std::env::join_paths(paths).ok())
                 .and_then(|joined| joined.into_string().ok())
         }
@@ -2503,7 +2504,7 @@ impl AgentRuntimeHandle {
     /// from publishing or mutating device-local state after logout.
     pub async fn list_integrations(&self) -> Result<Vec<AgentIntegration>, String> {
         self.verify_generation().await?;
-        let detected = detect_integrations(self.codex_search_path().as_deref()).await;
+        let detected = detect_integrations(self.tool_search_path().as_deref()).await;
         let state = &self.service;
         let _runtime_lifecycle_guard = state.runtime_lifecycle.lock().await;
         self.verify_generation().await?;
@@ -2518,7 +2519,7 @@ impl AgentRuntimeHandle {
     ) -> Result<Vec<AgentIntegration>, String> {
         require_known_integration(&request.id)?;
         self.verify_generation().await?;
-        let detected = detect_integrations(self.codex_search_path().as_deref()).await;
+        let detected = detect_integrations(self.tool_search_path().as_deref()).await;
         let state = &self.service;
         let _runtime_lifecycle_guard = state.runtime_lifecycle.lock().await;
         self.verify_generation().await?;
@@ -2543,7 +2544,7 @@ impl AgentRuntimeHandle {
         {
             cua::install_desktop_helper().await?;
         }
-        let detected = detect_integrations(self.codex_search_path().as_deref()).await;
+        let detected = detect_integrations(self.tool_search_path().as_deref()).await;
         let state = &self.service;
         let _runtime_lifecycle_guard = state.runtime_lifecycle.lock().await;
         self.verify_generation().await?;
@@ -3147,6 +3148,7 @@ impl AgentRuntimeHandle {
                             tool_context: &tool_context,
                             allow_embedded_cua: !has_external_tool_context,
                             external_agents: external_agents.as_ref(),
+                            host_search_path: self.tool_search_path(),
                         },
                     )
                     .await?;
@@ -3527,6 +3529,7 @@ impl AgentRuntimeHandle {
                         tool_context: &tool_context,
                         allow_embedded_cua: false,
                         external_agents: external_agents.as_ref(),
+                        host_search_path: self.tool_search_path(),
                     },
                 )
                 .await?;
@@ -5245,6 +5248,7 @@ impl AgentRuntimeHandle {
                     tool_context: &tool_context,
                     allow_embedded_cua: permission_routing == AgentPermissionRouting::Desktop,
                     external_agents: external_agents.as_ref(),
+                    host_search_path: self.tool_search_path(),
                 },
             )
             .await?;
@@ -8191,6 +8195,7 @@ struct SessionAgentConfiguration<'a> {
     /// The runtime's external agents, offered to desktop tasks when the
     /// integration is enabled.
     external_agents: Option<&'a Arc<ExternalAgentRegistry>>,
+    host_search_path: Option<String>,
 }
 
 fn maple_model_config(
@@ -8542,6 +8547,7 @@ async fn finish_session_agent(
         tool_context,
         allow_embedded_cua,
         external_agents,
+        host_search_path,
     } = configuration;
     let PreparedSessionAgent {
         agent,
@@ -8586,6 +8592,7 @@ async fn finish_session_agent(
         tool_context.clone(),
     )
     .map_err(|e| format!("Failed to create Maple developer tools: {e}"))?
+    .with_host_search_path(host_search_path)
     .with_attachment_store(attachment_store)
     .with_web_enabled(session_web_enabled(session))
     .with_desktop_ui_tools(session.session_type != SessionType::Acp)

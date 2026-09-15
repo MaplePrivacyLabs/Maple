@@ -164,6 +164,8 @@ pub(crate) struct MapleDeveloperClient {
     /// The external agents (Codex) this session may delegate to. `None`
     /// leaves the `agent_*` tools out of the catalog.
     external_agents: Option<Arc<ExternalAgentRegistry>>,
+    /// The host's recovered search path, shared with integration discovery.
+    host_search_path: Option<String>,
     #[cfg(not(windows))]
     login_path_probe: ShellTool,
     #[cfg(not(windows))]
@@ -198,6 +200,7 @@ impl MapleDeveloperClient {
             web_enabled: true,
             desktop_ui_tools: true,
             external_agents: None,
+            host_search_path: None,
             #[cfg(not(windows))]
             login_path_probe: ShellTool::new(true)?,
             #[cfg(not(windows))]
@@ -207,6 +210,11 @@ impl MapleDeveloperClient {
 
     pub(super) fn with_attachment_store(mut self, store: Arc<AgentAttachmentStore>) -> Self {
         self.attachment_store = Some(store);
+        self
+    }
+
+    pub(super) fn with_host_search_path(mut self, path: Option<String>) -> Self {
+        self.host_search_path = path;
         self
     }
 
@@ -230,7 +238,7 @@ impl MapleDeveloperClient {
 
     #[cfg(windows)]
     async fn login_path(&self) -> Option<String> {
-        None
+        self.host_search_path.clone()
     }
 
     fn external_agent_tools() -> [Tool; 5] {
@@ -350,6 +358,9 @@ Call {LIST_AGENT_PROVIDERS_TOOL} first when unsure what is installed."
 
     #[cfg(not(windows))]
     async fn login_path(&self) -> Option<String> {
+        if let Some(path) = &self.host_search_path {
+            return Some(path.clone());
+        }
         self.login_path
             .get_or_init(|| async {
                 let probe = match shell_display_name().to_ascii_lowercase().as_str() {
@@ -4120,6 +4131,81 @@ mod tests {
                 "--env=BUZZ_PRIVATE_KEY=key=value",
             ]
         );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn host_search_path_agrees_for_settings_shell_and_external_agents() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = TestDir::new();
+        let bin = temp.path().join("login-bin");
+        fs::create_dir_all(&bin).unwrap();
+        let executable = bin.join("codex");
+        fs::write(
+            &executable,
+            "#!/bin/sh\nif [ \"$1\" = --version ]; then printf 'codex-cli 0.154.0\\n'; else printf '%s' \"$PATH\"; fi\n",
+        )
+        .unwrap();
+        fs::set_permissions(&executable, fs::Permissions::from_mode(0o700)).unwrap();
+        let host_path =
+            std::env::join_paths([bin.as_path(), Path::new("/usr/bin"), Path::new("/bin")])
+                .unwrap()
+                .into_string()
+                .unwrap();
+        let inherited_path = std::env::var_os("PATH");
+        let client = test_client(temp.path().join("sessions"), true)
+            .with_host_search_path(Some(host_path.clone()));
+        // A GUI process's shell-tool probe may know only bash's minimal PATH.
+        client
+            .login_path
+            .set(Some("/usr/bin:/bin".to_string()))
+            .unwrap();
+        let context = ToolCallContext::new(
+            "host-path-test".to_string(),
+            Some(temp.path().to_path_buf()),
+            None,
+        );
+        let settings = super::super::external_agents::codex::detect(Some(&host_path)).await;
+        assert_eq!(settings.executable.as_ref(), Some(&executable));
+        assert!(settings.problem.is_none());
+
+        let call = client
+            .external_agent_call(&context, CancellationToken::new())
+            .await;
+        assert_eq!(call.login_path.as_deref(), Some(host_path.as_str()));
+        let detected =
+            super::super::external_agents::codex::detect(call.login_path.as_deref()).await;
+        assert_eq!(detected, settings);
+        let output = build_external_agent_command(
+            detected.executable.as_ref().unwrap(),
+            &["app-server"],
+            temp.path(),
+            call.login_path.as_deref(),
+            Some(&call.session_id),
+            &call.tool_context,
+        )
+        .unwrap()
+        .output()
+        .await
+        .unwrap();
+        assert!(output.status.success());
+        assert_eq!(String::from_utf8(output.stdout).unwrap(), host_path);
+
+        let result = client
+            .call_tool(
+                &context,
+                "shell",
+                Some(object!({"command": "command -v codex", "timeout_secs": 2})),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        let output: ShellOutput =
+            serde_json::from_value(result.structured_content.unwrap()).unwrap();
+        assert_eq!(result.is_error, Some(false));
+        assert_eq!(Path::new(output.stdout.trim()), executable);
+        assert_eq!(std::env::var_os("PATH"), inherited_path);
     }
 
     #[cfg(unix)]
