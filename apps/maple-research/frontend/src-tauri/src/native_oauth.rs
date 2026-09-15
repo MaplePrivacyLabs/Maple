@@ -23,6 +23,7 @@ pub struct BeginNativeOAuthRequest {
 #[derive(Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct NativeOAuthPreparation {
+    #[serde(rename = "nativeOAuthAttempt")]
     native_oauth_attempt: String,
     session_id: String,
     request_id: String,
@@ -57,6 +58,7 @@ impl From<LoginResponse> for NativeOAuthAuthentication {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CancelNativeOAuthRequest {
+    #[serde(rename = "nativeOAuthAttempt")]
     native_oauth_attempt: String,
 }
 
@@ -264,6 +266,41 @@ pub async fn native_oauth_cancel(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn preparation_serializes_the_frontend_oauth_contract() {
+        let preparation = NativeOAuthPreparation {
+            native_oauth_attempt: "12345678-1234-4234-8234-123456789abc".to_string(),
+            session_id: "11111111111111111111111111111111".to_string(),
+            request_id: "22222222222222222222222222222222".to_string(),
+        };
+        assert_eq!(
+            serde_json::to_value(preparation).unwrap(),
+            serde_json::json!({
+                "nativeOAuthAttempt": "12345678-1234-4234-8234-123456789abc",
+                "sessionId": "11111111111111111111111111111111",
+                "requestId": "22222222222222222222222222222222",
+            }),
+        );
+    }
+
+    #[test]
+    fn cancellation_deserializes_the_frontend_oauth_contract() {
+        let request = serde_json::from_value::<CancelNativeOAuthRequest>(serde_json::json!({
+            "nativeOAuthAttempt": "12345678-1234-4234-8234-123456789abc",
+        }))
+        .unwrap();
+        assert_eq!(
+            request.native_oauth_attempt,
+            "12345678-1234-4234-8234-123456789abc",
+        );
+        assert!(
+            serde_json::from_value::<CancelNativeOAuthRequest>(serde_json::json!({
+                "nativeOauthAttempt": "12345678-1234-4234-8234-123456789abc",
+            }))
+            .is_err()
+        );
+    }
 
     #[test]
     fn confirmation_identity_is_serialized_from_the_verified_login_response() {
