@@ -446,6 +446,11 @@ async fn recovery_management_rejects_stale_password_snapshot_and_exact_row_tampe
 #[ignore = "requires a disposable migrated recovery test database"]
 async fn recovery_wrap_loading_bounds_host_data_and_rejects_duplicate_slots() {
     use crate::models::schema::user_seed_wrappings as w;
+    use crate::models::{
+        password_reset::NewPasswordResetRequest,
+        user_seed_wrappings::{UserSeedWrapping, UserSeedWrappingError},
+    };
+    use crate::seed_wrapping::{MAX_RECOVERY_ENVELOPE_BYTES, MIN_RECOVERY_ENVELOPE_BYTES};
     let db = build_db(test_database_url().expect("disposable database required"));
     let project = first_active_project(&db);
     let user = create_test_user(
@@ -458,20 +463,113 @@ async fn recovery_wrap_loading_bounds_host_data_and_rejects_duplicate_slots() {
         .insert_recovery_wrap_if_absent(&user, wrapping.clone())
         .unwrap();
     let conn = &mut db.get_pool().get().unwrap();
-    diesel::update(w::table.filter(w::id.eq(old.id)))
-        .set((
-            w::seed_enc.eq(vec![0u8; 1024 * 1024]),
-            w::credential_lookup_hash.eq(vec![0u8; 1024]),
+    let request = db
+        .create_password_reset_request(NewPasswordResetRequest::new(
+            user.uuid,
+            "hash".into(),
+            vec![1; 32],
+            24,
         ))
+        .unwrap();
+    let other_request = db
+        .create_password_reset_request(NewPasswordResetRequest::new(
+            user.uuid,
+            "other-hash".into(),
+            vec![2; 32],
+            24,
+        ))
+        .unwrap();
+    let replacement = NewUserSeedWrapping::new(user.uuid, "password", vec![2; 32], 1, vec![3; 32]);
+    for (hash_len, seed_len) in [
+        (0, old.seed_enc.len()),
+        (31, old.seed_enc.len()),
+        (33, old.seed_enc.len()),
+        (1024, old.seed_enc.len()),
+        (32, 0),
+        (32, MIN_RECOVERY_ENVELOPE_BYTES - 1),
+        (32, MAX_RECOVERY_ENVELOPE_BYTES + 1),
+        (32, 1024 * 1024),
+    ] {
+        diesel::update(w::table.filter(w::id.eq(old.id)))
+            .set((
+                w::credential_lookup_hash.eq(vec![0u8; hash_len]),
+                w::seed_enc.eq(vec![0u8; seed_len]),
+            ))
+            .execute(conn)
+            .unwrap();
+        assert!(matches!(
+            UserSeedWrapping::get_recovery_for_user(conn, user.uuid),
+            Err(UserSeedWrappingError::InvalidRecoveryWrapping)
+        ));
+        assert!(matches!(
+            db.get_recovery_wrap(user.uuid),
+            Err(DBError::UserSeedWrappingError(
+                UserSeedWrappingError::InvalidRecoveryWrapping
+            ))
+        ));
+        // This is the commit-time recheck of a previously opened candidate.
+        // Even the reset-row updates earlier in the transaction must roll back.
+        assert!(matches!(
+            db.complete_preserving_password_reset(
+                &user,
+                &request,
+                &old,
+                vec![9; 32],
+                replacement.clone()
+            ),
+            Err(DBError::UserSeedWrappingError(
+                UserSeedWrappingError::InvalidRecoveryWrapping
+            ))
+        ));
+        use crate::models::schema::password_reset_requests as r;
+        for reset in [&request, &other_request] {
+            assert!(!r::table
+                .find(reset.id)
+                .select(r::is_reset)
+                .first::<bool>(conn)
+                .unwrap());
+        }
+        assert!(db
+            .get_user_by_uuid(user.uuid)
+            .unwrap()
+            .password_enc
+            .is_none());
+        let stored = w::table
+            .find(old.id)
+            .first::<UserSeedWrapping>(conn)
+            .unwrap();
+        assert_eq!(stored.credential_lookup_hash.len(), hash_len);
+        assert_eq!(stored.seed_enc.len(), seed_len);
+    }
+    // Boundary-sized envelopes are passed through unchanged; only the crypto
+    // layer decides whether their contents authenticate and contain a mnemonic.
+    for seed_len in [MIN_RECOVERY_ENVELOPE_BYTES, MAX_RECOVERY_ENVELOPE_BYTES] {
+        let bytes = vec![7u8; seed_len];
+        diesel::update(w::table.find(old.id))
+            .set((
+                w::credential_lookup_hash.eq(&old.credential_lookup_hash),
+                w::seed_enc.eq(&bytes),
+            ))
+            .execute(conn)
+            .unwrap();
+        let fetched = UserSeedWrapping::get_recovery_for_user(conn, user.uuid)
+            .unwrap()
+            .unwrap();
+        assert_eq!(fetched.credential_lookup_hash, old.credential_lookup_hash);
+        assert_eq!(fetched.seed_enc, bytes);
+    }
+    diesel::update(w::table.find(old.id))
+        .set(w::seed_enc.eq(&old.seed_enc))
         .execute(conn)
         .unwrap();
-    let bounded = db.get_recovery_wrap(user.uuid).unwrap().unwrap();
-    assert!(bounded.seed_enc.is_empty());
-    assert_eq!(bounded.credential_lookup_hash.len(), 33);
-    wrapping.insert(conn).unwrap();
+    let mut duplicate = wrapping;
+    duplicate.credential_lookup_hash = vec![99; 32];
+    duplicate.insert(conn).unwrap();
     assert!(matches!(
         db.get_recovery_wrap(user.uuid),
-        Err(DBError::StaleCredentialState)
+        Err(DBError::UserSeedWrappingError(
+            UserSeedWrappingError::InvalidRecoveryWrapping
+        ))
     ));
     db.delete_user(&user).unwrap();
 }

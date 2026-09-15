@@ -193,6 +193,12 @@ impl Client {
                 "sanitized error for {path}"
             );
         }
+        if expected == 500 {
+            assert!(
+                value == json!({"status":500,"message":"Internal server error"}),
+                "sanitized storage error for {path}"
+            );
+        }
         value
     }
 }
@@ -531,6 +537,79 @@ async fn encrypted_account_flow() {
         .get_recovery_wrap(fixture.user.uuid)
         .unwrap()
         .unwrap();
+    // Invalid stored sizes are server integrity failures, not recovery guesses.
+    // Exercise their encrypted error contract and verify the same proof remains
+    // usable once the test fixture is restored.
+    use crate::models::schema::user_seed_wrappings as wraps;
+    for (hash, seed) in [
+        (vec![0u8; 31], wrap.seed_enc.clone()),
+        (vec![0u8; 33], wrap.seed_enc.clone()),
+        (wrap.credential_lookup_hash.clone(), vec![0u8; 27]),
+        (wrap.credential_lookup_hash.clone(), vec![0u8; 244]),
+    ] {
+        diesel::update(wraps::table.find(wrap.id))
+            .set((
+                wraps::credential_lookup_hash.eq(&hash),
+                wraps::seed_enc.eq(&seed),
+            ))
+            .execute(conn)
+            .unwrap();
+        client
+            .call("POST", options, Some(json!({"proof":proof})), None, 500)
+            .await;
+        client
+            .call(
+                "POST",
+                completion,
+                Some(complete(&proof, &next_password, code)),
+                None,
+                500,
+            )
+            .await;
+        client.call("GET", base, None, Some(old_token), 500).await;
+        client
+            .call(
+                "POST",
+                "/protected/recovery-code/enroll",
+                Some(json!({"current_password":password})),
+                Some(old_token),
+                500,
+            )
+            .await;
+        client
+            .call(
+                "POST",
+                "/protected/recovery-code/rotate",
+                Some(json!({"current_password":password})),
+                Some(old_token),
+                500,
+            )
+            .await;
+        let current_user = fixture.db.get_user_by_uuid(fixture.user.uuid).unwrap();
+        assert!(
+            current_user.password_enc == fixture.user.password_enc,
+            "storage error must not change the password"
+        );
+        let still_stored = wraps::table
+            .find(wrap.id)
+            .first::<crate::models::user_seed_wrappings::UserSeedWrapping>(conn)
+            .unwrap();
+        assert!(
+            still_stored.seed_enc == seed && still_stored.credential_lookup_hash == hash,
+            "storage error must not mutate recovery state"
+        );
+    }
+    diesel::update(wraps::table.find(wrap.id))
+        .set((
+            wraps::credential_lookup_hash.eq(&wrap.credential_lookup_hash),
+            wraps::seed_enc.eq(&wrap.seed_enc),
+        ))
+        .execute(conn)
+        .unwrap();
+    client
+        .call("POST", options, Some(json!({"proof":proof})), None, 200)
+        .await;
+    println!("PASS invalid stored sizes return encrypted server errors without consuming proof or mutating credentials");
     let sibling = fixture.proof(&client).await;
     let recovered = client
         .call(

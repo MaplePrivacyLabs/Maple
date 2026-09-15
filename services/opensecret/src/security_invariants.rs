@@ -1629,7 +1629,7 @@ fn password_reset_v2_complete_requires_v2_transport_and_guarded_completion() {
             "if consumed_reset_count != 1",
             "DBError::PasswordResetRequestNotFound",
             "password_reset_requests::id.ne(reset_request.id)",
-            "load_recovery_wrap(conn, user.uuid)",
+            "UserSeedWrapping::get_recovery_for_user(conn, user.uuid)",
             "current.id == recovery_wrap.id",
             "current.seed_enc == recovery_wrap.seed_enc",
             "DBError::StaleCredentialState",

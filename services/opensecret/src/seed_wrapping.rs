@@ -32,7 +32,9 @@ pub const SEED_WRAP_VERSION_V1: i16 = 1;
 // BIP-39 supports at most 24 English words, each at most eight ASCII bytes,
 // separated by 23 spaces. AES-GCM adds a 12-byte nonce and 16-byte tag.
 pub const MAX_RECOVERY_SEED_BYTES: usize = 24 * 8 + 23;
-pub const MAX_RECOVERY_ENVELOPE_BYTES: usize = MAX_RECOVERY_SEED_BYTES + 12 + 16;
+pub const MIN_RECOVERY_ENVELOPE_BYTES: usize = 12 + 16;
+pub const MAX_RECOVERY_ENVELOPE_BYTES: usize =
+    MAX_RECOVERY_SEED_BYTES + MIN_RECOVERY_ENVELOPE_BYTES;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CredentialKind {

@@ -8,6 +8,14 @@
 > and mutation-time reset expiry/proof checks. Registered guests with valid JWTs
 > can read an unenrolled status but cannot enroll, rotate, or disable recovery.
 
+Recovery reads are owned by `UserSeedWrapping::get_recovery_for_user`. It uses
+the caller's connection, bounds the query, and rejects duplicate slots or invalid
+stored sizes with a typed storage-integrity error. Lookup hashes must be exactly
+32 bytes; envelopes must be between the 28-byte nonce/tag minimum and 243 bytes.
+These structural size checks precede AEAD/mnemonic validation. Invalid stored
+sizes return a sanitized server error without consuming reset proof; they are
+not treated as wrong recovery-code guesses.
+
 ## Scope
 
 OpenSecret already supports credential-bound seed wraps for password and OAuth authentication. Password change rewraps the existing seed; password reset creates a new seed and deletes old seed-dependent state.

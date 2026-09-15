@@ -51,7 +51,10 @@ processes and report the location of retained private logs and database files.
 Coverage includes account creation, enrollment, preserving recovery, code reuse,
 rotation, disablement, re-enrollment, destructive reset, legacy compatibility,
 token lifecycle, invalid proof/code/payload scenarios, encrypted response
-framing, and a scan of owned backend logs for generated secrets.
+framing, and a scan of owned backend logs for generated secrets. It also injects
+invalid stored recovery hash/envelope sizes and checks that recovery lookup and
+completion return sanitized server errors without consuming the reset proof or
+changing credentials. Restoring the fixture lets the same proof complete.
 
 For an already running **disposable local backend**, set these environment
 variables and run `bash scripts/test-recovery-flow.sh --existing`:
