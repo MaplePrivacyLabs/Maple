@@ -50,10 +50,15 @@ Do not manually republish retained v3.3.10 updater metadata: its asset URLs use
 the current canonical owner. The next release generates new-owner URLs without
 changing the legacy updater fallback compiled into existing clients.
 
-The first eligible proxy container publication creates
-`ghcr.io/mapleprivacylabs/maple-proxy`. GitHub creates new packages privately;
-make that package public in its settings, retain Maple Actions write access,
-and rerun only the proxy publisher if anonymous verification stops there. Do
+The first eligible proxy container publication initializes
+`ghcr.io/mapleprivacylabs/maple-proxy` with a manual `Publish proxy container`
+run from `master` and `bootstrap_only=true`. This validates the current release
+and uploads only content-addressed images, without version or alias tags. It
+does not treat failed package enumeration as an empty inventory. GitHub creates
+new packages privately; make that package public in its settings, retain Maple
+Actions write access, then rerun only the proxy publisher with both manual
+inputs disabled. For read-only API diagnosis, use `diagnostics_only=true`;
+its success reports completed observations, not publication readiness. Do
 not create another release, change proxy versions, or overwrite exact tags to
 repair package visibility. Existing old-namespace images receive no updates.
 

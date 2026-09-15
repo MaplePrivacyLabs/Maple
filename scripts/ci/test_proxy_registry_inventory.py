@@ -128,6 +128,47 @@ class ProxyRegistryInventoryTests(unittest.TestCase):
             inventory.diagnose("", get=get)
         self.assertFalse(get.calls)
 
+    def test_bootstrap_admits_only_digest_preparation_without_an_inventory(self):
+        for previous in ("0.3.3", "0.4.0"):
+            get = FakeGet(inventory.Response(404))
+            result = inventory.prepare_bootstrap(TOKEN, "0.4.0", previous, "0.3.3", get=get)
+            self.assertEqual(result, {
+                "name": inventory.IMAGE, "proxy_version": "0.4.0",
+                "bootstrap_only": True, "metadata_status": 404,
+            })
+            self.assertNotIn("tags", result)
+            self.assertNotIn("publish", result)
+            self.assertEqual(get.calls, [(inventory.PACKAGE_URL, TOKEN)])
+
+    def test_bootstrap_rejects_missing_invalid_rollback_and_baseline_versions(self):
+        invalid = (
+            ("", "0.3.3", "0.3.3"), ("0.4.0", "", "0.3.3"),
+            ("0.4.0", "0.3.3", ""), ("v0.4.0", "0.3.3", "0.3.3"),
+            ("0.04.0", "0.3.3", "0.3.3"), ("0.4.0-beta", "0.3.3", "0.3.3"),
+            ("0.4.0\n", "0.3.3", "0.3.3"), (TOKEN, "0.3.3", "0.3.3"),
+            ("0.4.0", "0.5.0", "0.3.3"), ("0.3.3", "0.3.3", "0.3.3"),
+            ("9" * 129 + ".0.0", "0.3.3", "0.3.3"),
+        )
+        for versions in invalid:
+            get = FakeGet()
+            with self.subTest(versions=versions), self.assertRaises(inventory.InventoryError) as result:
+                inventory.prepare_bootstrap(TOKEN, *versions, get=get)
+            self.assertFalse(get.calls)
+            self.assertNotIn(TOKEN, str(result.exception))
+
+    def test_bootstrap_denies_readable_package_and_other_metadata_failures(self):
+        for status in (200, 301, 400, 401, 403, 429, 500, 503):
+            get = FakeGet(inventory.Response(status, PACKAGE))
+            with self.subTest(status=status), self.assertRaises(inventory.InventoryError):
+                inventory.prepare_bootstrap(TOKEN, "0.4.0", "0.3.3", "0.3.3", get=get)
+            self.assertEqual(len(get.calls), 1)
+        with self.assertRaises(inventory.InventoryError):
+            inventory.prepare_bootstrap(TOKEN, "0.4.0", "0.3.3", "0.3.3", get=FakeGet(inventory.InventoryError("request failed")))
+        get = FakeGet()
+        with self.assertRaises(inventory.InventoryError):
+            inventory.prepare_bootstrap("", "0.4.0", "0.3.3", "0.3.3", get=get)
+        self.assertFalse(get.calls)
+
     def test_missing_package_checks_all_readable_package_pages(self):
         get = FakeGet(
             inventory.Response(404),
@@ -290,6 +331,43 @@ class ProxyRegistryInventoryTests(unittest.TestCase):
                 else:
                     diagnose.assert_not_called()
                 self.assertNotIn(TOKEN, captured.getvalue())
+
+    def test_bootstrap_cli_requires_canonical_manual_master_and_isolates_admission(self):
+        environment = {
+            "GITHUB_REPOSITORY": inventory.REPOSITORY,
+            "GITHUB_REPOSITORY_ID": str(inventory.REPOSITORY_ID),
+            "GITHUB_REPOSITORY_OWNER_ID": str(inventory.OWNER_ID),
+            "IMAGE_NAME": inventory.IMAGE,
+            "REGISTRY": "ghcr.io",
+            "GH_TOKEN": TOKEN,
+            "GITHUB_EVENT_NAME": "workflow_dispatch",
+            "GITHUB_REF": "refs/heads/master",
+        }
+        overrides = (
+            {}, {"GITHUB_EVENT_NAME": "workflow_run"}, {"GITHUB_EVENT_NAME": "pull_request"},
+            {"GITHUB_REF": "refs/heads/feature"}, {"GITHUB_REF": "refs/tags/v3.4.0"},
+            {"GITHUB_REPOSITORY_ID": "0"}, {"GITHUB_REPOSITORY_OWNER_ID": "0"},
+            {"GITHUB_REPOSITORY": "other/Maple"}, {"IMAGE_NAME": "other/maple-proxy"},
+            {"REGISTRY": "other.invalid"},
+        )
+        for override in overrides:
+            captured = io.StringIO()
+            with self.subTest(override=override), patch.dict(os.environ, dict(environment, **override), clear=True), patch.object(sys, "argv", ["inventory", "--prepare-bootstrap", "0.4.0", "0.3.3", "0.3.3"]), patch.object(inventory, "prepare_bootstrap", return_value={"bootstrap_only": True}) as bootstrap, patch.object(inventory, "inventory") as admission, patch.object(inventory, "diagnose") as diagnose, contextlib.redirect_stdout(captured), contextlib.redirect_stderr(captured):
+                self.assertEqual(inventory.main(), 1 if override else 0)
+                admission.assert_not_called()
+                diagnose.assert_not_called()
+                if override:
+                    bootstrap.assert_not_called()
+                else:
+                    bootstrap.assert_called_once_with(TOKEN, "0.4.0", "0.3.3", "0.3.3")
+                self.assertNotIn(TOKEN, captured.getvalue())
+
+    def test_bootstrap_cli_cannot_combine_modes(self):
+        for mode in ("--diagnose", "--require-public"):
+            with self.subTest(mode=mode), patch.object(sys, "argv", ["inventory", "--prepare-bootstrap", "0.4.0", "0.3.3", "0.3.3", mode]), patch.object(inventory, "prepare_bootstrap") as bootstrap, contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as result:
+                inventory.main()
+            self.assertEqual(result.exception.code, 2)
+            bootstrap.assert_not_called()
 
 
 if __name__ == "__main__":

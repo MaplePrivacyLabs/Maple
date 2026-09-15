@@ -125,6 +125,31 @@ def diagnose(token: str, *, get=get_json) -> dict:
     return {"diagnostic_only": True, "probes": results}
 
 
+def prepare_bootstrap(token: str, version: str, previous_version: str, baseline: str, *, get=get_json) -> dict:
+    """Authorize only additive digest pushes, never infer an empty inventory.
+
+    A metadata 404 can also hide a package this token cannot read. The explicit
+    bootstrap operation creates no version or alias tags; registry permissions
+    remain the final authority for the digest pushes. Ordinary publication must
+    subsequently pass the complete canonical public-package inventory checks.
+    """
+    if not token:
+        raise InventoryError("Proxy digest bootstrap requires the workflow token")
+    parsed = []
+    for value in (version, previous_version, baseline):
+        if not isinstance(value, str) or len(value) > 128 or not re.fullmatch(r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)", value):
+            raise InventoryError("Proxy digest bootstrap requires three canonical X.Y.Z versions")
+        parsed.append(tuple(int(component) for component in value.split(".")))
+    if parsed[0] < parsed[1]:
+        raise InventoryError("Proxy digest bootstrap cannot roll back the previous release version")
+    if version == baseline:
+        raise InventoryError("Proxy digest bootstrap cannot publish the unbackfilled baseline")
+    response = get(PACKAGE_URL, token)
+    if response.status != 404:
+        raise InventoryError(f"Proxy digest bootstrap requires unavailable package metadata (HTTP {response.status})")
+    return {"name": IMAGE, "proxy_version": version, "bootstrap_only": True, "metadata_status": 404}
+
+
 def require_public(metadata: object) -> None:
     if not isinstance(metadata, dict):
         raise InventoryError("Invalid package metadata")
@@ -220,6 +245,7 @@ def main() -> int:
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--require-public", action="store_true")
     mode.add_argument("--diagnose", action="store_true", help="report fixed read-only metadata probes; does not validate publication")
+    mode.add_argument("--prepare-bootstrap", nargs=3, metavar=("VERSION", "PREVIOUS_VERSION", "BASELINE"), help="prepare additive digest-only bootstrap; never admits version or alias tags")
     args = parser.parse_args()
     try:
         if (
@@ -231,7 +257,12 @@ def main() -> int:
         ):
             raise InventoryError("Proxy package inventory must run for the canonical repository and image")
         token = os.environ.get("GH_TOKEN", "")
-        result = diagnose(token) if args.diagnose else inventory(token, public_only=args.require_public)
+        if args.prepare_bootstrap:
+            if os.environ.get("GITHUB_EVENT_NAME") != "workflow_dispatch" or os.environ.get("GITHUB_REF") != "refs/heads/master":
+                raise InventoryError("Proxy digest bootstrap requires manual dispatch from master")
+            result = prepare_bootstrap(token, *args.prepare_bootstrap)
+        else:
+            result = diagnose(token) if args.diagnose else inventory(token, public_only=args.require_public)
         print(json.dumps(result, sort_keys=True))
     except InventoryError as error:
         print(f"Proxy package inventory failed: {error}", file=sys.stderr)

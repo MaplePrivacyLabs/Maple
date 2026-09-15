@@ -339,10 +339,14 @@ Maple repository transfer. The release-following publisher builds the eligible
 proxy version from a successful stable Maple Release and verifies its exact tag,
 platforms, provenance, and aliases. The first publication in this namespace must
 complete and the package must be public before the commands below will work.
-GitHub creates new packages privately. Once the first image exists, set the new
-package to public in GitHub package settings, retain Maple Actions write access,
-and rerun only the container publisher if anonymous verification was blocked.
-The retry verifies an existing exact version rather than overwriting it.
+GitHub creates new packages privately. For the first publication, manually run
+`Publish proxy container` from `master` with `bootstrap_only` enabled. It validates
+the current release and uploads its AMD64/ARM64 images by digest, creating the
+package without writing version or alias tags. Set the package to public in
+GitHub package settings, retain Maple Actions write access, then rerun only this
+publisher with `bootstrap_only` disabled. The normal run requires readable,
+canonical public package metadata and a complete anonymous tag inventory before
+writing tags. A retry verifies an existing exact version rather than overwriting it.
 
 The old `ghcr.io/opensecretcloud/maple-proxy` package remains available at its
 existing versions but receives no new publications. Existing deployments must
@@ -490,6 +494,12 @@ HTTP status and JSON shape from fixed GitHub package endpoints, without exposing
 response bodies or credentials. A successful diagnostic run only means the
 observations completed; it does not validate publication. All build and publish
 jobs are skipped in this mode. Leave this input disabled for a normal retry.
+GitHub can return HTTP 400 for organization-wide container listing with the
+repository workflow token, even with `packages: read`. Bootstrap avoids that
+first-package dependency without treating denied inventory as empty or adding a
+personal access token. Bootstrap refuses an already-readable package; ordinary
+retries handle existing packages. If both inputs are enabled, diagnostics takes
+precedence and nothing is uploaded.
 
 `proxy/Cargo.lock`, `sdk/rust/Cargo.lock`, and
 `apps/maple-research/frontend/src-tauri/Cargo.lock` remain separate lockfiles. Runtime dependency

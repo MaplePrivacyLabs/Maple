@@ -493,6 +493,9 @@ check("workflow_dispatch" in proxy_publish_on, "Proxy container publisher must s
 diagnostic_input = proxy_publish_on.get("workflow_dispatch", {}).get("inputs", {}).get("diagnostics_only", {})
 check(diagnostic_input.get("type") == "boolean" and diagnostic_input.get("default") is False,
       "Proxy diagnostics must be an explicit boolean opt-in")
+bootstrap_input = proxy_publish_on.get("workflow_dispatch", {}).get("inputs", {}).get("bootstrap_only", {})
+check(bootstrap_input.get("type") == "boolean" and bootstrap_input.get("default") is False,
+      "Proxy bootstrap must be an explicit boolean opt-in")
 proxy_publish_workflow_run = proxy_publish_on.get("workflow_run", {})
 check(
     proxy_publish_workflow_run.get("workflows") == ["Release"]
@@ -555,6 +558,22 @@ check(
     "Proxy preparation must read package metadata without package write permission",
 )
 prepare_runs = "\n".join(str(step.get("run", "")) for step in prepare.get("steps", []))
+plan_step = next(step for step in prepare["steps"] if step.get("id") == "plan")
+check(plan_step.get("env", {}).get("BOOTSTRAP_ONLY") ==
+      "${{ github.event_name == 'workflow_dispatch' && inputs.bootstrap_only }}",
+      "Proxy bootstrap must require manual dispatch")
+bootstrap_start = prepare_runs.index('if [ "${BOOTSTRAP_ONLY}" = "true" ]; then')
+bootstrap_end = prepare_runs.index("\nfi", bootstrap_start)
+bootstrap_run = prepare_runs[bootstrap_start:bootstrap_end]
+for required_control in (
+    "proxy_registry_inventory.py --prepare-bootstrap",
+    'echo "bootstrap=true"', 'echo "publish=false"', 'echo "reconcile=false"', "exit 0",
+):
+    check(required_control in bootstrap_run, f"Proxy bootstrap is missing: {required_control}")
+check(bootstrap_start > prepare_runs.index("proxy container runtime inputs changed without a proxy version bump"),
+      "Bootstrap must retain release and runtime version validation")
+check(bootstrap_end < prepare_runs.index("plan-proxy-container-publish.sh"),
+      "Bootstrap must exit without inventing an empty inventory for the publication planner")
 for required_control in (
     "repos/${REPOSITORY}/releases/latest",
     "repos/${REPOSITORY}/releases?per_page=100",
@@ -579,8 +598,8 @@ check(
 container_build = container_jobs["build"]
 check(needs(container_build) == ["prepare"], "Proxy container builds must need the validated plan")
 check(
-    container_build.get("if") == "needs.prepare.outputs.publish == 'true'",
-    "Proxy container builds must skip unchanged versions",
+    container_build.get("if") == "needs.prepare.outputs.publish == 'true' || needs.prepare.outputs.bootstrap == 'true'",
+    "Proxy container builds must require publication or explicit digest-only bootstrap",
 )
 check(
     container_build.get("permissions") == {"contents": "read", "packages": "write"},
@@ -611,6 +630,8 @@ check(
     "push-by-digest=true" in str(build_with.get("outputs", "")),
     "Proxy container platforms must publish only by digest before the manifest",
 )
+check("tags" not in build_with and "--tag" not in str(build_with),
+      "Digest-only builds must never write named tags")
 check(
     build_with.get("provenance") == "mode=max" and build_with.get("sbom") is False,
     "Proxy container platforms must publish max-mode provenance without an SBOM",
@@ -646,6 +667,8 @@ check(
     "Proxy finalizer must observe both the optional build and exact publication",
 )
 finalize_if = str(container_finalize.get("if", ""))
+check("bootstrap" not in finalize_if,
+      "Bootstrap must never enable exact-image verification or alias publication")
 for required_gate in (
     "always()",
     "needs.prepare.outputs.publish == 'true'",
