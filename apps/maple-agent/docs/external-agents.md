@@ -71,6 +71,12 @@ so teardown reaches every descendant. It is killed when the runtime stops,
 on logout, and when its task is deleted. Threads are not ephemeral, so
 `codex resume` works from a terminal afterwards.
 
+On macOS, Settings, external-agent tools, and the task's shell tool share the
+runtime's recovered interactive login-shell PATH. The shell tool can still
+execute commands with bash; it must not substitute bash's startup PATH for
+the user's login-shell search path. Maple does not change the process-global
+PATH or the user's shell configuration.
+
 The handshake reports the reserved client name `codex_app_server_daemon`,
 the same non-originating name Paseo uses.
 
