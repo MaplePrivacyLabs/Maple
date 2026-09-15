@@ -1,11 +1,14 @@
 use hmac::{Hmac, Mac};
-use sha2::Sha256;
+use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use crate::encrypt::{
     decrypt_aead_v1, derive_key, derive_key_with_salt, encrypt_aead_v1, AeadKey, CanonicalBytes,
     EncryptError,
 };
+use crate::models::user_seed_wrappings::NewUserSeedWrapping;
+use crate::models::users::User;
+use crate::recovery_code::RecoveryCode;
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -22,12 +25,22 @@ const OAUTH_AUTH_BINDING_DOMAIN: &str = "os.oauth-auth-binding.v1";
 const OAUTH_LOOKUP_DOMAIN: &str = "os.oauth-lookup.v1";
 const SEED_WRAP_DOMAIN: &str = "os.seed-wrap.v1";
 
+const RECOVERY_LOOKUP_DOMAIN: &str = "os.recovery-lookup.v1";
+const RECOVERY_AUTH_BINDING_DOMAIN: &str = "os.recovery-auth-binding.v1";
+
 pub const SEED_WRAP_VERSION_V1: i16 = 1;
+// BIP-39 supports at most 24 English words, each at most eight ASCII bytes,
+// separated by 23 spaces. AES-GCM adds a 12-byte nonce and 16-byte tag.
+pub const MAX_RECOVERY_SEED_BYTES: usize = 24 * 8 + 23;
+pub const MIN_RECOVERY_ENVELOPE_BYTES: usize = 12 + 16;
+pub const MAX_RECOVERY_ENVELOPE_BYTES: usize =
+    MAX_RECOVERY_SEED_BYTES + MIN_RECOVERY_ENVELOPE_BYTES;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CredentialKind {
     Password,
     OAuth,
+    Recovery,
 }
 
 impl CredentialKind {
@@ -35,6 +48,7 @@ impl CredentialKind {
         match self {
             CredentialKind::Password => "password",
             CredentialKind::OAuth => "oauth",
+            CredentialKind::Recovery => "recovery",
         }
     }
 }
@@ -179,6 +193,106 @@ pub fn password_reset_code_mac(
     hmac_with_root_domain_key(root_key, PASSWORD_RESET_CODE_MAC_INFO, &facts.into_bytes())
 }
 
+pub fn compute_recovery_auth_binding(
+    root_key: &[u8],
+    project_id: i32,
+    user_uuid: Uuid,
+    recovery_secret: &[u8; 32],
+) -> Result<AuthBinding, EncryptError> {
+    let secret_hash = Sha256::digest(recovery_secret);
+    let mut facts = CanonicalBytes::new(RECOVERY_AUTH_BINDING_DOMAIN);
+    facts
+        .append_i32(project_id)
+        .append_uuid(user_uuid)
+        .append_bytes(&secret_hash);
+
+    Ok(AuthBinding(hmac_with_root_domain_key(
+        root_key,
+        AUTH_BINDING_MAC_INFO,
+        &facts.into_bytes(),
+    )?))
+}
+
+pub fn recovery_credential_lookup_hash(
+    root_key: &[u8],
+    project_id: i32,
+    user_uuid: Uuid,
+) -> Result<CredentialLookupHash, EncryptError> {
+    let mut facts = CanonicalBytes::new(RECOVERY_LOOKUP_DOMAIN);
+    facts.append_i32(project_id).append_uuid(user_uuid);
+
+    Ok(CredentialLookupHash(hmac_with_root_domain_key(
+        root_key,
+        CREDENTIAL_LOOKUP_MAC_INFO,
+        &facts.into_bytes(),
+    )?))
+}
+
+// NOTE: recovery wraps are sealed and opened through the generic seed-wrap
+// path (`encrypt_seed_v1` / `decrypt_seed_v1` with `CredentialKind::Recovery`
+// and a recovery-specific `AuthBinding` that incorporates the recovery
+// secret). The recovery reset completion opens the stored wrap through
+// `decrypt_seed_v1` with `compute_recovery_auth_binding`; there is no
+// separate recovery-wrap key/AAD envelope representation.
+
+pub fn new_recovery_seed_wrapping(
+    root_key: &[u8],
+    user: &User,
+    code: &RecoveryCode,
+    seed: &[u8],
+) -> Result<NewUserSeedWrapping, EncryptError> {
+    let auth_binding =
+        compute_recovery_auth_binding(root_key, user.project_id, user.uuid, code.secret_bytes())?;
+
+    let seed_enc = encrypt_seed_v1(
+        root_key,
+        seed,
+        user.uuid,
+        user.project_id,
+        CredentialKind::Recovery,
+        &auth_binding,
+    )?;
+
+    let credential_lookup_hash =
+        recovery_credential_lookup_hash(root_key, user.project_id, user.uuid)?;
+
+    let wrapping = NewUserSeedWrapping::new(
+        user.uuid,
+        CredentialKind::Recovery.as_str(),
+        credential_lookup_hash.as_bytes().to_vec(),
+        SEED_WRAP_VERSION_V1,
+        seed_enc,
+    );
+
+    verify_recovery_seed_wrapping(root_key, user, code, seed, &wrapping)?;
+    Ok(wrapping)
+}
+
+pub fn verify_recovery_seed_wrapping(
+    root_key: &[u8],
+    user: &User,
+    code: &RecoveryCode,
+    seed: &[u8],
+    wrapping: &NewUserSeedWrapping,
+) -> Result<(), EncryptError> {
+    let auth_binding =
+        compute_recovery_auth_binding(root_key, user.project_id, user.uuid, code.secret_bytes())?;
+    let decrypted_seed = decrypt_seed_v1(
+        root_key,
+        &wrapping.seed_enc,
+        user.uuid,
+        user.project_id,
+        CredentialKind::Recovery,
+        &auth_binding,
+    )?;
+
+    if decrypted_seed != seed {
+        return Err(EncryptError::BadData);
+    }
+
+    Ok(())
+}
+
 pub fn encrypt_seed_v1(
     root_key: &[u8],
     plaintext_seed: &[u8],
@@ -187,6 +301,10 @@ pub fn encrypt_seed_v1(
     credential_kind: CredentialKind,
     auth_binding: &AuthBinding,
 ) -> Result<Vec<u8>, EncryptError> {
+    if credential_kind == CredentialKind::Recovery && plaintext_seed.len() > MAX_RECOVERY_SEED_BYTES
+    {
+        return Err(EncryptError::BadData);
+    }
     let aead_key = derive_seed_wrap_aead_key(root_key, auth_binding)?;
     let aad = seed_wrap_aad_v1(user_uuid, project_id, credential_kind, auth_binding);
     encrypt_aead_v1(&aead_key, plaintext_seed, &aad)
@@ -200,6 +318,11 @@ pub fn decrypt_seed_v1(
     credential_kind: CredentialKind,
     auth_binding: &AuthBinding,
 ) -> Result<Vec<u8>, EncryptError> {
+    if credential_kind == CredentialKind::Recovery
+        && encrypted_seed.len() > MAX_RECOVERY_ENVELOPE_BYTES
+    {
+        return Err(EncryptError::BadData);
+    }
     let aead_key = derive_seed_wrap_aead_key(root_key, auth_binding)?;
     let aad = seed_wrap_aad_v1(user_uuid, project_id, credential_kind, auth_binding);
     decrypt_aead_v1(&aead_key, encrypted_seed, &aad)
@@ -703,5 +826,554 @@ mod tests {
         .unwrap();
 
         assert_eq!(seed.to_vec(), decrypted);
+    }
+
+    // Recovery wrapping helpers
+    fn recovery_code_fixture(secret: [u8; 32]) -> RecoveryCode {
+        RecoveryCode {
+            secret: zeroize::Zeroizing::new(secret),
+        }
+    }
+
+    #[test]
+    fn recovery_credential_kind_as_str() {
+        assert_eq!(CredentialKind::Recovery.as_str(), "recovery");
+    }
+
+    #[test]
+    fn credential_kind_as_str_round_trip() {
+        let kinds = [
+            CredentialKind::Password,
+            CredentialKind::OAuth,
+            CredentialKind::Recovery,
+        ];
+        for kind in kinds {
+            let s = kind.as_str();
+            let parsed = match s {
+                "password" => CredentialKind::Password,
+                "oauth" => CredentialKind::OAuth,
+                "recovery" => CredentialKind::Recovery,
+                other => panic!("unexpected credential_kind: {}", other),
+            };
+            assert_eq!(kind, parsed, "round-trip failed for {:?}", kind);
+        }
+    }
+
+    #[test]
+    fn recovery_wrap_round_trip() {
+        let code = recovery_code_fixture([0xABu8; 32]);
+        let auth_binding =
+            compute_recovery_auth_binding(&ROOT_KEY, PROJECT_ID, USER_UUID, code.secret_bytes())
+                .unwrap();
+        let seed = b"recovery test seed bytes";
+
+        let encrypted = encrypt_seed_v1(
+            &ROOT_KEY,
+            seed,
+            USER_UUID,
+            PROJECT_ID,
+            CredentialKind::Recovery,
+            &auth_binding,
+        )
+        .unwrap();
+
+        let decrypted = decrypt_seed_v1(
+            &ROOT_KEY,
+            &encrypted,
+            USER_UUID,
+            PROJECT_ID,
+            CredentialKind::Recovery,
+            &auth_binding,
+        )
+        .unwrap();
+
+        assert_eq!(seed.to_vec(), decrypted);
+    }
+
+    #[test]
+    fn recovery_wrap_rejects_wrong_code() {
+        let victim_code = recovery_code_fixture([0xABu8; 32]);
+        let attacker_code = recovery_code_fixture([0xCDu8; 32]);
+        let victim_binding = compute_recovery_auth_binding(
+            &ROOT_KEY,
+            PROJECT_ID,
+            USER_UUID,
+            victim_code.secret_bytes(),
+        )
+        .unwrap();
+        let attacker_binding = compute_recovery_auth_binding(
+            &ROOT_KEY,
+            PROJECT_ID,
+            USER_UUID,
+            attacker_code.secret_bytes(),
+        )
+        .unwrap();
+        let seed = b"recovery test seed";
+
+        let encrypted = encrypt_seed_v1(
+            &ROOT_KEY,
+            seed,
+            USER_UUID,
+            PROJECT_ID,
+            CredentialKind::Recovery,
+            &victim_binding,
+        )
+        .unwrap();
+
+        assert!(decrypt_seed_v1(
+            &ROOT_KEY,
+            &encrypted,
+            USER_UUID,
+            PROJECT_ID,
+            CredentialKind::Recovery,
+            &attacker_binding,
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn recovery_wrap_rejects_wrong_root_key() {
+        let code = recovery_code_fixture([0xABu8; 32]);
+        let binding =
+            compute_recovery_auth_binding(&ROOT_KEY, PROJECT_ID, USER_UUID, code.secret_bytes())
+                .unwrap();
+        let seed = b"recovery test seed";
+
+        let encrypted = encrypt_seed_v1(
+            &ROOT_KEY,
+            seed,
+            USER_UUID,
+            PROJECT_ID,
+            CredentialKind::Recovery,
+            &binding,
+        )
+        .unwrap();
+
+        let wrong_root = [0xFFu8; 32];
+        assert!(decrypt_seed_v1(
+            &wrong_root,
+            &encrypted,
+            USER_UUID,
+            PROJECT_ID,
+            CredentialKind::Recovery,
+            &binding,
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn recovery_wrap_rejects_wrong_user() {
+        let code = recovery_code_fixture([0xABu8; 32]);
+        let binding =
+            compute_recovery_auth_binding(&ROOT_KEY, PROJECT_ID, USER_UUID, code.secret_bytes())
+                .unwrap();
+        let seed = b"recovery test seed";
+
+        let encrypted = encrypt_seed_v1(
+            &ROOT_KEY,
+            seed,
+            USER_UUID,
+            PROJECT_ID,
+            CredentialKind::Recovery,
+            &binding,
+        )
+        .unwrap();
+
+        assert!(decrypt_seed_v1(
+            &ROOT_KEY,
+            &encrypted,
+            ATTACKER_UUID,
+            PROJECT_ID,
+            CredentialKind::Recovery,
+            &binding,
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn recovery_wrap_rejects_wrong_project() {
+        let code = recovery_code_fixture([0xABu8; 32]);
+        let binding =
+            compute_recovery_auth_binding(&ROOT_KEY, PROJECT_ID, USER_UUID, code.secret_bytes())
+                .unwrap();
+        let seed = b"recovery test seed";
+
+        let encrypted = encrypt_seed_v1(
+            &ROOT_KEY,
+            seed,
+            USER_UUID,
+            PROJECT_ID,
+            CredentialKind::Recovery,
+            &binding,
+        )
+        .unwrap();
+
+        assert!(decrypt_seed_v1(
+            &ROOT_KEY,
+            &encrypted,
+            USER_UUID,
+            PROJECT_ID + 1,
+            CredentialKind::Recovery,
+            &binding,
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn recovery_wrap_rejects_wrong_credential_kind() {
+        let code = recovery_code_fixture([0xABu8; 32]);
+        let recovery_binding =
+            compute_recovery_auth_binding(&ROOT_KEY, PROJECT_ID, USER_UUID, code.secret_bytes())
+                .unwrap();
+        let password_binding = compute_password_auth_binding(
+            &ROOT_KEY,
+            PROJECT_ID,
+            USER_UUID,
+            PasswordLoginIdentifierKind::Email,
+            "alice@example.com",
+            PASSWORD_VERIFIER,
+        )
+        .unwrap();
+        let seed = b"recovery test seed";
+
+        let encrypted = encrypt_seed_v1(
+            &ROOT_KEY,
+            seed,
+            USER_UUID,
+            PROJECT_ID,
+            CredentialKind::Recovery,
+            &recovery_binding,
+        )
+        .unwrap();
+
+        assert!(decrypt_seed_v1(
+            &ROOT_KEY,
+            &encrypted,
+            USER_UUID,
+            PROJECT_ID,
+            CredentialKind::Password,
+            &password_binding,
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn recovery_wrap_rejects_tampered_nonce() {
+        let code = recovery_code_fixture([0xABu8; 32]);
+        let binding =
+            compute_recovery_auth_binding(&ROOT_KEY, PROJECT_ID, USER_UUID, code.secret_bytes())
+                .unwrap();
+        let seed = b"recovery test seed";
+
+        let mut encrypted = encrypt_seed_v1(
+            &ROOT_KEY,
+            seed,
+            USER_UUID,
+            PROJECT_ID,
+            CredentialKind::Recovery,
+            &binding,
+        )
+        .unwrap();
+
+        encrypted[0] ^= 0xFF;
+        assert!(decrypt_seed_v1(
+            &ROOT_KEY,
+            &encrypted,
+            USER_UUID,
+            PROJECT_ID,
+            CredentialKind::Recovery,
+            &binding,
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn recovery_wrap_rejects_tampered_ciphertext() {
+        let code = recovery_code_fixture([0xABu8; 32]);
+        let binding =
+            compute_recovery_auth_binding(&ROOT_KEY, PROJECT_ID, USER_UUID, code.secret_bytes())
+                .unwrap();
+        let seed = b"recovery test seed";
+
+        let mut encrypted = encrypt_seed_v1(
+            &ROOT_KEY,
+            seed,
+            USER_UUID,
+            PROJECT_ID,
+            CredentialKind::Recovery,
+            &binding,
+        )
+        .unwrap();
+
+        encrypted[13] ^= 0xFF;
+        assert!(decrypt_seed_v1(
+            &ROOT_KEY,
+            &encrypted,
+            USER_UUID,
+            PROJECT_ID,
+            CredentialKind::Recovery,
+            &binding,
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn recovery_wrap_rejects_tampered_tag() {
+        let code = recovery_code_fixture([0xABu8; 32]);
+        let binding =
+            compute_recovery_auth_binding(&ROOT_KEY, PROJECT_ID, USER_UUID, code.secret_bytes())
+                .unwrap();
+        let seed = b"recovery test seed";
+
+        let mut encrypted = encrypt_seed_v1(
+            &ROOT_KEY,
+            seed,
+            USER_UUID,
+            PROJECT_ID,
+            CredentialKind::Recovery,
+            &binding,
+        )
+        .unwrap();
+
+        let last = encrypted.len() - 1;
+        encrypted[last] ^= 0xFF;
+        assert!(decrypt_seed_v1(
+            &ROOT_KEY,
+            &encrypted,
+            USER_UUID,
+            PROJECT_ID,
+            CredentialKind::Recovery,
+            &binding,
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn recovery_wrap_rejects_wrong_aad_version() {
+        let code = recovery_code_fixture([0xABu8; 32]);
+        let binding =
+            compute_recovery_auth_binding(&ROOT_KEY, PROJECT_ID, USER_UUID, code.secret_bytes())
+                .unwrap();
+        let seed = b"recovery test seed";
+
+        let aead_key = derive_seed_wrap_aead_key(&ROOT_KEY, &binding).unwrap();
+        let mut wrong_aad = CanonicalBytes::new(SEED_WRAP_DOMAIN);
+        wrong_aad
+            .append_uuid(USER_UUID)
+            .append_i32(PROJECT_ID)
+            .append_str(CredentialKind::Recovery.as_str())
+            .append_i16(99)
+            .append_bytes(binding.as_bytes());
+        let wrong_aad = wrong_aad.into_bytes();
+
+        let encrypted = encrypt_aead_v1(&aead_key, seed, &wrong_aad).unwrap();
+
+        let correct_aad =
+            seed_wrap_aad_v1(USER_UUID, PROJECT_ID, CredentialKind::Recovery, &binding);
+        assert!(decrypt_aead_v1(&aead_key, &encrypted, &correct_aad).is_err());
+    }
+
+    #[test]
+    fn recovery_wrap_rejects_oversized_envelope() {
+        let code = recovery_code_fixture([0xABu8; 32]);
+        let binding =
+            compute_recovery_auth_binding(&ROOT_KEY, PROJECT_ID, USER_UUID, code.secret_bytes())
+                .unwrap();
+        let seed = b"recovery test seed";
+
+        let mut encrypted = encrypt_seed_v1(
+            &ROOT_KEY,
+            seed,
+            USER_UUID,
+            PROJECT_ID,
+            CredentialKind::Recovery,
+            &binding,
+        )
+        .unwrap();
+
+        encrypted.push(0xFF);
+        assert!(decrypt_seed_v1(
+            &ROOT_KEY,
+            &encrypted,
+            USER_UUID,
+            PROJECT_ID,
+            CredentialKind::Recovery,
+            &binding,
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn recovery_wrap_rejects_authenticated_oversized_plaintext() {
+        let binding =
+            compute_recovery_auth_binding(&ROOT_KEY, PROJECT_ID, USER_UUID, &[1; 32]).unwrap();
+        let seed = vec![b'a'; MAX_RECOVERY_SEED_BYTES + 1];
+        let key = derive_seed_wrap_aead_key(&ROOT_KEY, &binding).unwrap();
+        let aad = seed_wrap_aad_v1(USER_UUID, PROJECT_ID, CredentialKind::Recovery, &binding);
+        let oversized = encrypt_aead_v1(&key, &seed, &aad).unwrap();
+        assert!(decrypt_seed_v1(
+            &ROOT_KEY,
+            &oversized,
+            USER_UUID,
+            PROJECT_ID,
+            CredentialKind::Recovery,
+            &binding
+        )
+        .is_err());
+        assert!(encrypt_seed_v1(
+            &ROOT_KEY,
+            &seed,
+            USER_UUID,
+            PROJECT_ID,
+            CredentialKind::Recovery,
+            &binding
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn recovery_wrap_rejects_undersized_envelope() {
+        let code = recovery_code_fixture([0xABu8; 32]);
+        let binding =
+            compute_recovery_auth_binding(&ROOT_KEY, PROJECT_ID, USER_UUID, code.secret_bytes())
+                .unwrap();
+        let seed = b"recovery test seed";
+
+        let encrypted = encrypt_seed_v1(
+            &ROOT_KEY,
+            seed,
+            USER_UUID,
+            PROJECT_ID,
+            CredentialKind::Recovery,
+            &binding,
+        )
+        .unwrap();
+
+        let truncated = &encrypted[..12];
+        assert!(decrypt_seed_v1(
+            &ROOT_KEY,
+            truncated,
+            USER_UUID,
+            PROJECT_ID,
+            CredentialKind::Recovery,
+            &binding,
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn recovery_credential_lookup_hash_is_stable() {
+        let hash1 = recovery_credential_lookup_hash(&ROOT_KEY, PROJECT_ID, USER_UUID).unwrap();
+        let hash2 = recovery_credential_lookup_hash(&ROOT_KEY, PROJECT_ID, USER_UUID).unwrap();
+        assert_eq!(hash1, hash2);
+    }
+
+    #[test]
+    fn recovery_credential_lookup_hash_is_scoped_to_user_and_project() {
+        let base = recovery_credential_lookup_hash(&ROOT_KEY, PROJECT_ID, USER_UUID).unwrap();
+        let other_user =
+            recovery_credential_lookup_hash(&ROOT_KEY, PROJECT_ID, ATTACKER_UUID).unwrap();
+        let other_project =
+            recovery_credential_lookup_hash(&ROOT_KEY, PROJECT_ID + 1, USER_UUID).unwrap();
+        assert_ne!(base, other_user);
+        assert_ne!(base, other_project);
+    }
+
+    #[test]
+    fn recovery_auth_binding_changes_with_secret() {
+        let base =
+            compute_recovery_auth_binding(&ROOT_KEY, PROJECT_ID, USER_UUID, &[0xABu8; 32]).unwrap();
+        let changed_secret =
+            compute_recovery_auth_binding(&ROOT_KEY, PROJECT_ID, USER_UUID, &[0xCDu8; 32]).unwrap();
+        assert_ne!(base, changed_secret);
+    }
+
+    #[test]
+    fn recovery_password_oauth_domain_separation() {
+        let code = recovery_code_fixture([0xABu8; 32]);
+        let recovery_binding =
+            compute_recovery_auth_binding(&ROOT_KEY, PROJECT_ID, USER_UUID, code.secret_bytes())
+                .unwrap();
+        let password_binding = compute_password_auth_binding(
+            &ROOT_KEY,
+            PROJECT_ID,
+            USER_UUID,
+            PasswordLoginIdentifierKind::Email,
+            "alice@example.com",
+            PASSWORD_VERIFIER,
+        )
+        .unwrap();
+        let seed = b"domain separation test";
+
+        let encrypted = encrypt_seed_v1(
+            &ROOT_KEY,
+            seed,
+            USER_UUID,
+            PROJECT_ID,
+            CredentialKind::Recovery,
+            &recovery_binding,
+        )
+        .unwrap();
+
+        assert!(decrypt_seed_v1(
+            &ROOT_KEY,
+            &encrypted,
+            USER_UUID,
+            PROJECT_ID,
+            CredentialKind::Password,
+            &password_binding,
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn new_recovery_seed_wrapping_round_trip() {
+        let user: User = serde_json::from_str(
+            r#"{
+                "id": 1,
+                "uuid": "2f4f7d9c-1cf8-4c0c-8c1a-5e9b3e8bde12",
+                "name": null,
+                "email": null,
+                "password_enc": null,
+                "created_at": "2024-01-01T00:00:00Z",
+                "updated_at": "2024-01-01T00:00:00Z",
+                "project_id": 42
+            }"#,
+        )
+        .unwrap();
+        let code = recovery_code_fixture([0xABu8; 32]);
+        let seed = b"new recovery wrapping test seed";
+
+        let wrapping = new_recovery_seed_wrapping(&ROOT_KEY, &user, &code, seed).unwrap();
+        assert_eq!(wrapping.user_id, user.uuid);
+        assert_eq!(wrapping.credential_kind, "recovery");
+        assert_eq!(wrapping.wrapping_version, SEED_WRAP_VERSION_V1);
+
+        verify_recovery_seed_wrapping(&ROOT_KEY, &user, &code, seed, &wrapping).unwrap();
+    }
+
+    #[test]
+    fn verify_recovery_seed_wrapping_rejects_wrong_code() {
+        let user: User = serde_json::from_str(
+            r#"{
+                "id": 1,
+                "uuid": "2f4f7d9c-1cf8-4c0c-8c1a-5e9b3e8bde12",
+                "name": null,
+                "email": null,
+                "password_enc": null,
+                "created_at": "2024-01-01T00:00:00Z",
+                "updated_at": "2024-01-01T00:00:00Z",
+                "project_id": 42
+            }"#,
+        )
+        .unwrap();
+        let code = recovery_code_fixture([0xABu8; 32]);
+        let wrong_code = recovery_code_fixture([0xCDu8; 32]);
+        let seed = b"verify wrong code test seed";
+
+        let wrapping = new_recovery_seed_wrapping(&ROOT_KEY, &user, &code, seed).unwrap();
+        assert!(
+            verify_recovery_seed_wrapping(&ROOT_KEY, &user, &wrong_code, seed, &wrapping).is_err()
+        );
     }
 }

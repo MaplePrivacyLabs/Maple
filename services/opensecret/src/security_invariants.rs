@@ -3,7 +3,14 @@ use syn::visit::{self, Visit};
 
 const REQUEST_TIME_SCAN_ROOTS: &[&str] = &["src/main.rs", "src/web"];
 
-const SENSITIVE_LOG_IDENTIFIERS: &[&str] = &["session_key", "refresh_token", "alphanumeric_code"];
+const SENSITIVE_LOG_IDENTIFIERS: &[&str] = &[
+    "session_key",
+    "refresh_token",
+    "alphanumeric_code",
+    "recovery_code",
+    "current_password",
+    "plaintext_seed",
+];
 
 const SENSITIVE_LOG_MESSAGES: &[&str] = &[
     "session key:",
@@ -483,7 +490,7 @@ fn destructive_password_reset_wipes_user_key_encrypted_storage_roots() {
         "password_reset_requests::id.eq(reset_request.id)",
         "password_reset_requests::user_id.eq(user_id)",
         "password_reset_requests::is_reset.eq(false)",
-        "password_reset_requests::expiration_time.gt(diesel::dsl::now)",
+        "clock_timestamp()",
         "if consumed_reset_count != 1",
         "DBError::PasswordResetRequestNotFound",
         "password_reset_requests::id.ne(reset_request.id)",
@@ -600,6 +607,7 @@ fn user_password_reset_uses_mac_lookup_and_destructive_reseed() {
     let contents = fs::read_to_string(&main_source).expect("main source should be readable");
     let create_body = extract_function_body(&contents, "async fn create_password_reset_request");
     let confirm_body = extract_function_body(&contents, "async fn confirm_password_reset");
+    let proof_body = extract_function_body(&contents, "fn verify_password_reset_proof");
 
     for required_pattern in [
         "user.password_enc.is_some()",
@@ -613,10 +621,23 @@ fn user_password_reset_uses_mac_lookup_and_destructive_reseed() {
         );
     }
 
+    // The proof itself is a read-only check shared with the v2 options route:
+    // MAC lookup, password-backed eligibility, expiration, and the client
+    // secret comparison all live in `verify_password_reset_proof`.
     for required_pattern in [
+        "user.get_email().is_none()",
         "user.password_enc.is_none()",
         "password_reset_code_mac(",
         "get_password_reset_request_by_user_id_and_code(user.uuid, reset_code_mac.to_vec())",
+    ] {
+        assert!(
+            proof_body.contains(required_pattern),
+            "the shared reset proof must contain `{required_pattern}`"
+        );
+    }
+
+    for required_pattern in [
+        "self.verify_password_reset_proof(",
         "generate_twelve_word_seed",
         "verify_new_password_seed_wrapping_for_user(",
         "complete_destructive_password_reset(",
@@ -1155,4 +1176,558 @@ fn assert_patterns_in_order(source: &str, patterns: &[&str]) {
             .unwrap_or_else(|| panic!("expected `{pattern}` after offset {search_offset}"));
         search_offset += relative_index + pattern.len();
     }
+}
+
+const RECOVERY_MANAGEMENT_HANDLERS: &[&str] = &[
+    "recovery_status",
+    "enroll_recovery",
+    "rotate_recovery",
+    "disable_recovery",
+];
+
+#[test]
+fn recovery_management_routes_require_jwt_and_v2_transport() {
+    let protected_routes =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("src/web/protected_routes.rs");
+    let contents =
+        fs::read_to_string(&protected_routes).expect("protected routes source should be readable");
+
+    let router_body = extract_function_body(&contents, "pub fn recovery_router");
+
+    for (path, layer) in [
+        ("/protected/recovery-code", "decrypt_request::<()>"),
+        (
+            "/protected/recovery-code/enroll",
+            "decrypt_request::<EnrollRecoveryRequest>",
+        ),
+        (
+            "/protected/recovery-code/rotate",
+            "decrypt_request::<RotateRecoveryRequest>",
+        ),
+        (
+            "/protected/recovery-code",
+            "decrypt_request::<DisableRecoveryRequest>",
+        ),
+    ] {
+        assert!(
+            router_body.contains(&format!("\"{path}\"")) && router_body.contains(layer),
+            "recovery route `{path}` must carry its encrypted-request layer (`{layer}`)"
+        );
+    }
+
+    for route in [
+        "recovery_status",
+        "enroll_recovery",
+        "rotate_recovery",
+        "disable_recovery",
+    ] {
+        assert!(
+            router_body.contains(route),
+            "recovery sub-router must wire `{route}`"
+        );
+    }
+
+    // The v2-transport gate is part of the recovery sub-router itself, so v1
+    // sessions are rejected before user JWT validation touches the database.
+    assert!(
+        router_body.contains("from_fn(require_transport_v2)"),
+        "the recovery sub-router must apply the v2-transport gate"
+    );
+    assert!(
+        router_body.contains("from_fn_with_state(app_state.clone(), validate_jwt)"),
+        "the recovery sub-router must apply the user-JWT middleware"
+    );
+
+    // The application router merges the recovery router outside the shared
+    // protected-routes JWT layer, so the JWT middleware is not stacked twice.
+    let main_contents =
+        fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/main.rs"))
+            .expect("main source should be readable");
+    assert!(
+        main_contents.contains("recovery_router(app_state.clone())"),
+        "application routes must merge the dedicated recovery sub-router"
+    );
+}
+
+#[test]
+fn recovery_handlers_enforce_transport_and_user_guards_before_any_logic() {
+    let protected_routes =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("src/web/protected_routes.rs");
+    let contents =
+        fs::read_to_string(&protected_routes).expect("protected routes source should be readable");
+
+    for handler in RECOVERY_MANAGEMENT_HANDLERS {
+        let signature = format!("pub async fn {handler}(");
+        let body = extract_function_body(&contents, &signature);
+
+        let do_recovery_work =
+            body.contains("encrypt_response") || body.contains("db.get_recovery_wrap");
+        if !do_recovery_work {
+            continue;
+        }
+
+        let guard_index = body
+            .find("require_v2_transport_session(&transport_session)?;")
+            .unwrap_or_else(|| panic!("{handler} must call the v2-transport guard first"));
+        let logic_index = body
+            .find("db.")
+            .unwrap_or_else(|| body.rfind("await").expect("handler should await work"));
+        assert!(
+            guard_index < logic_index,
+            "{handler} must reject non-v2 transports before opening or writing recovery state"
+        );
+    }
+}
+
+#[test]
+fn recovery_stepup_gates_before_seed_open_and_insert() {
+    let protected_routes =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("src/web/protected_routes.rs");
+    let contents =
+        fs::read_to_string(&protected_routes).expect("protected routes source should be readable");
+
+    let enroll_body = extract_function_body(&contents, "pub async fn enroll_recovery(");
+    let rotate_body = extract_function_body(&contents, "pub async fn rotate_recovery(");
+    let disable_body = extract_function_body(&contents, "pub async fn disable_recovery(");
+
+    for (name, body) in [
+        ("enroll", enroll_body),
+        ("rotate", rotate_body),
+        ("disable", disable_body),
+    ] {
+        let user_guard = body
+            .find("require_email_password_user(&user)?;")
+            .expect("{name} must reject guest and OAuth-only users first");
+        let password_guard = body
+            .find("require_current_password(&data, &user, request.current_password)")
+            .expect("{name} must verify the current password before any seed or recovery work");
+        assert!(
+            user_guard < password_guard,
+            "{name} must gate eligibility before password step-up"
+        );
+    }
+
+    // The step-up must complete before any seed material is opened, and the
+    // wrap must be sealed and verified before any database write.
+    let enroll_password_guard = enroll_body
+        .find("require_current_password(&data, &user, request.current_password)")
+        .expect("enroll must verify the current password");
+    let enroll_seed_open = enroll_body
+        .find("seed_for_recovery_management(&data, &user, &auth_context)")
+        .expect("enroll must open the enrolled seed through the signed auth context");
+    let enroll_seal = enroll_body
+        .find("new_recovery_seed_wrapping(")
+        .expect("enroll must seal a recovery wrap");
+    let enroll_insert = enroll_body
+        .find("insert_recovery_wrap_if_absent")
+        .expect("enroll must insert the recovery wrap");
+    assert!(
+        enroll_password_guard < enroll_seed_open,
+        "enroll must verify the password before opening the seed"
+    );
+    assert!(
+        enroll_seed_open < enroll_seal,
+        "enroll must open the seed before sealing the recovery wrap"
+    );
+    assert!(
+        enroll_seal < enroll_insert,
+        "enroll must seal and verify the wrap before any database work"
+    );
+
+    let rotate_password_guard = rotate_body
+        .find("require_current_password(&data, &user, request.current_password)")
+        .expect("rotate must verify the current password");
+    let rotate_seed_open = rotate_body
+        .find("seed_for_recovery_management(&data, &user, &auth_context)")
+        .expect("rotate must open the enrolled seed through the signed auth context");
+    let rotate_seal = rotate_body
+        .find("new_recovery_seed_wrapping(")
+        .expect("rotate must seal a replacement wrap");
+    let rotate_cas = rotate_body
+        .find("replace_recovery_wrap_if_unchanged")
+        .expect("rotate must CAS the replacement wrap");
+    assert!(
+        rotate_password_guard < rotate_seed_open,
+        "rotate must verify the password before opening the seed"
+    );
+    assert!(
+        rotate_seed_open < rotate_seal,
+        "rotate must open the seed before sealing the replacement wrap"
+    );
+    assert!(
+        rotate_seal < rotate_cas,
+        "rotate must seal and verify the replacement before any database work"
+    );
+
+    // Disablement deletes through the idempotent helper only.
+    assert!(
+        disable_body.contains("delete_recovery_wrap_for_user(&user)"),
+        "disable must delete the wrap through the idempotent helper"
+    );
+}
+
+#[test]
+fn password_reset_v2_options_requires_v2_transport_and_shared_readonly_proof() {
+    let login_routes = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/web/login_routes.rs");
+    let contents =
+        fs::read_to_string(&login_routes).expect("login route source should be readable");
+
+    let router_body = extract_function_body(&contents, "pub fn router");
+    assert!(
+        router_body.contains(".merge(password_reset_v2_router("),
+        "the login router must merge the v2 options sub-router"
+    );
+    // The sub-router keeps its typed state; only the login router erases it.
+    assert_patterns_in_order(
+        router_body,
+        &[
+            ".merge(password_reset_v2_router(app_state.clone()))",
+            ".with_state(app_state)",
+        ],
+    );
+
+    let sub_router_body = extract_function_body(&contents, "fn password_reset_v2_router");
+    assert!(
+        sub_router_body.contains("\"/password-reset/v2/options\"")
+            && sub_router_body.contains("decrypt_request::<PasswordResetV2OptionsRequest>"),
+        "the options sub-router must wire the route with its encrypted-request layer"
+    );
+    assert!(
+        !sub_router_body.contains(".with_state("),
+        "the options sub-router must keep its typed state until the login router erases it"
+    );
+    // The v2-transport gate must be the outermost layer on the sub-router:
+    // the route is declared with its encrypted-request layer, and the
+    // v2-transport gate is applied after it, so a v1 session is rejected
+    // before any request body is decrypted or proof is verified.
+    assert!(
+        sub_router_body.contains("from_fn(require_transport_v2)"),
+        "the options sub-router must apply the v2-transport gate"
+    );
+    assert_patterns_in_order(
+        sub_router_body,
+        &[
+            "post(password_reset_v2_options)",
+            "decrypt_request::<PasswordResetV2OptionsRequest>",
+            ".route_layer(from_fn(require_transport_v2))",
+        ],
+    );
+
+    let handler_body = extract_function_body(&contents, "pub async fn password_reset_v2_options");
+    let guard_index = handler_body
+        .find("require_v2_transport_session(&transport_session)?;")
+        .expect("the v2 options handler must call the v2-transport guard first");
+    let proof_index = handler_body
+        .find("verify_password_reset_proof(")
+        .expect("the v2 options handler must reuse the shared proof verification");
+    let reveal_index = handler_body
+        .find("recovery_wrap_exists")
+        .expect("the v2 options handler must reveal recovery enrollment");
+    assert!(
+        guard_index < proof_index,
+        "the v2 options handler must reject non-v2 transports before proof verification"
+    );
+    assert!(
+        proof_index < reveal_index,
+        "the v2 options handler must reveal recovery enrollment only after the proof"
+    );
+
+    // The options route is read-only: no reset consumption, no destructive
+    // work, and no recovery mutation. It may only disclose after verification.
+    for forbidden_pattern in [
+        "mark_as_reset",
+        "is_reset",
+        "complete_destructive_password_reset",
+        "complete_preserving_password_reset",
+        "delete_recovery_wrap_for_user",
+        "insert_recovery_wrap_if_absent",
+        "replace_recovery_wrap_if_unchanged",
+        "create_password_reset_request",
+        "diesel::update",
+    ] {
+        assert!(
+            !handler_body.contains(forbidden_pattern),
+            "the v2 options route is read-only and must not mutate reset or recovery state via `{forbidden_pattern}`"
+        );
+    }
+
+    // Proof logic is shared with the legacy confirm route so the two reset
+    // flows cannot drift apart, and the application router must merge the
+    // login router that carries the v2 options route.
+    let main_contents =
+        fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/main.rs"))
+            .expect("main source should be readable");
+    let confirm_body = extract_function_body(&main_contents, "async fn confirm_password_reset");
+    assert!(
+        confirm_body.contains("self.verify_password_reset_proof("),
+        "the legacy confirm route must reuse the shared proof verification"
+    );
+    assert!(
+        main_contents.contains(".merge(login_routes(app_state.clone()))"),
+        "application routes must merge the login router"
+    );
+}
+
+#[test]
+fn password_reset_v2_complete_requires_v2_transport_and_guarded_completion() {
+    let login_routes = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/web/login_routes.rs");
+    let contents =
+        fs::read_to_string(&login_routes).expect("login route source should be readable");
+
+    let router_body = extract_function_body(&contents, "pub fn router");
+    assert!(
+        router_body.contains(".merge(password_reset_v2_router("),
+        "the login router must merge the v2 reset sub-router carrying the completion route"
+    );
+
+    let sub_router_body = extract_function_body(&contents, "fn password_reset_v2_router");
+    assert!(
+        sub_router_body.contains("\"/password-reset/v2/complete\"")
+            && sub_router_body.contains("decrypt_request::<CompletePasswordResetV2Request>"),
+        "the completion sub-router must wire the route with its encrypted-request layer"
+    );
+    // The v2-transport gate must be the outermost layer on the sub-router so
+    // a v1 session is rejected before any request body is decrypted or proof
+    // is verified.
+    assert_patterns_in_order(
+        sub_router_body,
+        &[
+            "post(password_reset_v2_complete)",
+            "decrypt_request::<CompletePasswordResetV2Request>",
+            ".route_layer(from_fn(require_transport_v2))",
+        ],
+    );
+
+    let handler_body = extract_function_body(&contents, "pub async fn password_reset_v2_complete");
+    let guard_index = handler_body
+        .find("require_v2_transport_session(&transport_session)?;")
+        .expect("the completion handler must call the v2-transport guard first");
+    let acknowledge_index = handler_body
+        .find("acknowledge_data_loss")
+        .expect("the completion handler must gate destructive reset on an explicit acknowledgment");
+    let project_index = handler_body
+        .find("get_org_project_by_client_id")
+        .expect("the completion handler must scope the proof to a project");
+    let proof_index = handler_body
+        .find("verify_password_reset_proof(")
+        .expect("the completion handler must reuse the shared proof verification");
+    assert!(
+        guard_index < acknowledge_index,
+        "the completion handler must reject non-v2 transports before mode dispatch"
+    );
+    assert!(
+        acknowledge_index < project_index,
+        "the completion handler must require the destructive acknowledgment before any account lookup"
+    );
+    assert!(
+        project_index < proof_index,
+        "the completion handler must verify the reset proof before any completion work"
+    );
+
+    // Destructive completion reuses the legacy destructive reset path
+    // unchanged; preserving completion flows through the dedicated
+    // seed-preserving orchestration. Tokens are issued only after either
+    // path succeeds.
+    let destructive_index = handler_body
+        .find("data.confirm_password_reset(")
+        .expect("destructive completion must reuse the legacy destructive reset path");
+    let preserving_index = handler_body
+        .find("complete_preserving_password_reset_v2(")
+        .expect("preserving completion must use the seed-preserving orchestration");
+    assert!(
+        proof_index < destructive_index && proof_index < preserving_index,
+        "both completion modes must run after the shared proof verification"
+    );
+    let tokens_index = handler_body
+        .find("NewToken::new_with_auth_context")
+        .expect("the completion handler must issue tokens after completion");
+    assert!(
+        destructive_index < tokens_index && preserving_index < tokens_index,
+        "tokens must be issued only after a completion mode succeeds"
+    );
+
+    // Seed-preserving orchestration order: parse before any database work,
+    // open through the shared seed-wrap envelope, consume only on AEAD
+    // failure, validate the seed, seal and verify the replacement password
+    // wrap before the transaction, and verify after commit.
+    let main_contents =
+        fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/main.rs"))
+            .expect("main source should be readable");
+    let preserving_body = extract_function_body(
+        &main_contents,
+        "async fn complete_preserving_password_reset_v2",
+    );
+    let parse_index = preserving_body
+        .find("RecoveryCode::parse(")
+        .expect("preserving completion must parse the recovery code");
+    let wrap_index = preserving_body
+        .find("get_recovery_wrap(user.uuid)")
+        .expect("preserving completion must load the enrolled wrap");
+    let binding_index = preserving_body
+        .find("compute_recovery_auth_binding(")
+        .expect("preserving completion must derive the recovery auth binding");
+    let open_index = preserving_body
+        .find("decrypt_seed_v1(")
+        .expect("preserving completion must open the wrap through decrypt_seed_v1");
+    let consume_index = preserving_body
+        .find("consume_selected_password_reset_request")
+        .expect("a well-formed code that fails AEAD must consume the selected request");
+    let mnemonic_index = preserving_body
+        .find("plaintext_user_seed_to_mnemonic(")
+        .expect("preserving completion must validate the opened seed");
+    let seal_index = preserving_body
+        .find("new_password_seed_wrapping_for_user(")
+        .expect("preserving completion must seal the replacement password wrap");
+    let commit_index = preserving_body
+        .find("complete_preserving_password_reset(")
+        .expect("preserving completion must run the guarded transaction");
+    let post_verify_index = preserving_body
+        .find("verify_seed_wrap_for_auth_context")
+        .expect("preserving completion must verify the new credential after commit");
+    assert!(
+        parse_index < wrap_index,
+        "a malformed code must be rejected before any database work"
+    );
+    assert!(wrap_index < binding_index && binding_index < open_index);
+    assert!(
+        open_index < consume_index,
+        "only an opened wrap that fails AEAD may consume the selected request"
+    );
+    assert!(
+        open_index < mnemonic_index,
+        "the opened seed must be validated before any mutation"
+    );
+    assert!(
+        mnemonic_index < seal_index && seal_index < commit_index,
+        "the replacement wrap must be sealed and verified before the transaction"
+    );
+    assert!(
+        commit_index < post_verify_index,
+        "the new credential must be verified after the transaction commits"
+    );
+
+    // The preserving transaction locks the user row first, rechecks the
+    // unchanged predicates, and only then mutates credentials.
+    let db_contents = fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/db.rs"))
+        .expect("DB source should be readable");
+    let implementation_start = db_contents
+        .rfind("fn complete_preserving_password_reset")
+        .expect("preserving reset implementation signature should exist");
+    let db_body = extract_function_body(
+        &db_contents[implementation_start..],
+        "fn complete_preserving_password_reset",
+    );
+    assert_patterns_in_order(
+        db_body,
+        &[
+            "users::table",
+            "for_update()",
+            "password_reset_requests::id.eq(reset_request.id)",
+            "password_reset_requests::hashed_secret",
+            "password_reset_requests::is_reset.eq(false)",
+            "clock_timestamp()",
+            "if consumed_reset_count != 1",
+            "DBError::PasswordResetRequestNotFound",
+            "password_reset_requests::id.ne(reset_request.id)",
+            "UserSeedWrapping::get_recovery_for_user(conn, user.uuid)",
+            "current.id == recovery_wrap.id",
+            "current.seed_enc == recovery_wrap.seed_enc",
+            "DBError::StaleCredentialState",
+            "users::password_enc.eq(Some(new_password_enc))",
+            "CredentialKind::Password.as_str()",
+            "new_wrapping.insert(conn)",
+        ],
+    );
+    assert!(
+        !db_body.contains("diesel::delete(user_seed_wrappings::table"),
+        "preserving reset must not delete every seed wrap; only the password credential is replaced"
+    );
+
+    // The standalone consume helper keeps the same guarded predicate so the
+    // AEAD-failure path cannot consume a request that already moved on.
+    let consume_start = db_contents
+        .rfind("fn consume_selected_password_reset_request")
+        .expect("guarded consume implementation signature should exist");
+    let consume_body = extract_function_body(
+        &db_contents[consume_start..],
+        "fn consume_selected_password_reset_request",
+    );
+    for required_pattern in [
+        "password_reset_requests::id.eq(request.id)",
+        "password_reset_requests::user_id.eq(user.uuid)",
+        "password_reset_requests::hashed_secret",
+        "password_reset_requests::is_reset.eq(false)",
+        "clock_timestamp()",
+        "if consumed_count != 1",
+        "DBError::PasswordResetRequestNotFound",
+    ] {
+        assert!(
+            consume_body.contains(required_pattern),
+            "the guarded consume helper must contain `{required_pattern}`"
+        );
+    }
+}
+
+#[test]
+fn legacy_password_reset_confirm_rejects_recovery_code_before_any_lookup() {
+    let login_routes = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/web/login_routes.rs");
+    let contents =
+        fs::read_to_string(&login_routes).expect("login route source should be readable");
+
+    // The legacy confirm payload carries a presence-aware `recovery_code`
+    // marker: the old-client shape (field absent) keeps deserializing, and
+    // every present form — a value, an empty string, or an explicit `null` —
+    // stays observable for the handler guard.
+    let payload_body = extract_function_body(&contents, "pub struct PasswordResetConfirmPayload");
+    assert!(
+        payload_body.contains(
+            "#[serde(default, deserialize_with = \"deserialize_recovery_code_presence\")]"
+        ) && payload_body.contains("recovery_code: Option<Option<String>>"),
+        "the legacy confirm payload must carry the presence-aware recovery_code field"
+    );
+    let deserializer_body =
+        extract_function_body(&contents, "fn deserialize_recovery_code_presence");
+    assert!(
+        deserializer_body.contains("Option::<String>::deserialize(deserializer).map(Some)"),
+        "the recovery_code deserializer must preserve field presence, including an explicit null"
+    );
+
+    // The guard must be the first statement of the legacy confirm handler:
+    // recovery material is rejected before project, user, reset-request, or
+    // recovery lookup.
+    let handler_body = extract_function_body(&contents, "pub async fn password_reset_confirm");
+    let guard_index = handler_body
+        .find("if payload.recovery_code.is_some()")
+        .expect("the legacy confirm handler must reject any recovery_code presence");
+    let db_index = handler_body
+        .find("data.db")
+        .expect("the legacy confirm handler must reach the database only after the guard");
+    assert!(
+        guard_index < db_index,
+        "the legacy confirm handler must reject recovery_code before any database lookup"
+    );
+
+    // The legacy endpoint stays purely destructive: it must not parse,
+    // inspect, or mutate recovery state, and it must keep reusing the
+    // unchanged destructive completion.
+    for forbidden_pattern in [
+        "RecoveryCode::",
+        "get_recovery_wrap",
+        "recovery_wrap_exists",
+        "compute_recovery_auth_binding",
+        "decrypt_seed_v1",
+        "complete_preserving_password_reset",
+        "insert_recovery_wrap_if_absent",
+        "replace_recovery_wrap_if_unchanged",
+        "delete_recovery_wrap_for_user",
+    ] {
+        assert!(
+            !handler_body.contains(forbidden_pattern),
+            "the legacy destructive reset must not touch recovery material via `{forbidden_pattern}`"
+        );
+    }
+    assert!(
+        handler_body.contains("data.confirm_password_reset("),
+        "the legacy confirm handler must keep routing through the unchanged destructive completion"
+    );
 }

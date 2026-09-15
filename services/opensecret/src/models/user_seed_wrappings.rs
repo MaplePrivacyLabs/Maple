@@ -1,4 +1,7 @@
 use crate::models::schema::user_seed_wrappings;
+use crate::seed_wrapping::{
+    CredentialKind, MAX_RECOVERY_ENVELOPE_BYTES, MIN_RECOVERY_ENVELOPE_BYTES,
+};
 use chrono::{DateTime, Utc};
 use diesel::prelude::*;
 use diesel::upsert::excluded;
@@ -9,6 +12,26 @@ use uuid::Uuid;
 pub enum UserSeedWrappingError {
     #[error("Database error: {0}")]
     DatabaseError(#[from] diesel::result::Error),
+    #[error("Invalid stored recovery wrapping")]
+    InvalidRecoveryWrapping,
+}
+
+diesel::define_sql_function! {
+    fn octet_length(value: diesel::sql_types::Binary) -> diesel::sql_types::Integer;
+}
+
+/// SQL returns NULL for invalid-sized fields instead of transferring their
+/// contents. This projection must be validated before it becomes a seed wrap.
+#[derive(Queryable)]
+struct RecoveryWrappingRow {
+    id: i64,
+    user_id: Uuid,
+    credential_kind: String,
+    credential_lookup_hash: Option<Vec<u8>>,
+    wrapping_version: i16,
+    seed_enc: Option<Vec<u8>>,
+    created_at: DateTime<Utc>,
+    updated_at: DateTime<Utc>,
 }
 
 #[derive(Queryable, Identifiable, Clone, Debug)]
@@ -25,6 +48,68 @@ pub struct UserSeedWrapping {
 }
 
 impl UserSeedWrapping {
+    /// Recovery has a single active slot. Bound both binary fields in the same
+    /// query snapshot, and reject invalid sizes or duplicate slots as storage
+    /// integrity failures, not as an absent wrap or a wrong recovery code.
+    pub fn get_recovery_for_user(
+        conn: &mut PgConnection,
+        lookup_user_id: Uuid,
+    ) -> Result<Option<Self>, UserSeedWrappingError> {
+        use diesel::dsl::case_when;
+        use user_seed_wrappings as w;
+
+        let mut rows = w::table
+            .filter(w::user_id.eq(lookup_user_id))
+            .filter(w::credential_kind.eq(CredentialKind::Recovery.as_str()))
+            .select((
+                w::id,
+                w::user_id,
+                w::credential_kind,
+                case_when(
+                    octet_length(w::credential_lookup_hash).eq(32),
+                    w::credential_lookup_hash,
+                ),
+                w::wrapping_version,
+                case_when(
+                    octet_length(w::seed_enc).between(
+                        MIN_RECOVERY_ENVELOPE_BYTES as i32,
+                        MAX_RECOVERY_ENVELOPE_BYTES as i32,
+                    ),
+                    w::seed_enc,
+                ),
+                w::created_at,
+                w::updated_at,
+            ))
+            .limit(2)
+            .load::<RecoveryWrappingRow>(conn)?;
+        if rows.len() > 1 {
+            return Err(UserSeedWrappingError::InvalidRecoveryWrapping);
+        }
+        let Some(row) = rows.pop() else {
+            return Ok(None);
+        };
+        let credential_lookup_hash = row
+            .credential_lookup_hash
+            .filter(|hash| hash.len() == 32)
+            .ok_or(UserSeedWrappingError::InvalidRecoveryWrapping)?;
+        let seed_enc = row
+            .seed_enc
+            .filter(|seed| {
+                (MIN_RECOVERY_ENVELOPE_BYTES..=MAX_RECOVERY_ENVELOPE_BYTES).contains(&seed.len())
+            })
+            .ok_or(UserSeedWrappingError::InvalidRecoveryWrapping)?;
+        Ok(Some(Self {
+            id: row.id,
+            user_id: row.user_id,
+            credential_kind: row.credential_kind,
+            credential_lookup_hash,
+            wrapping_version: row.wrapping_version,
+            seed_enc,
+            created_at: row.created_at,
+            updated_at: row.updated_at,
+        }))
+    }
+
     pub fn get_for_user_and_kind(
         conn: &mut PgConnection,
         lookup_user_id: Uuid,
