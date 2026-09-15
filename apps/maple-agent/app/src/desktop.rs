@@ -356,9 +356,15 @@ pub fn run() {
 
     // One read of settings.json for the whole startup: the backend, the
     // theme, the window geometry, and the root view all take it from here.
+    // Name the resolved file so a launcher with its own XDG_CONFIG_HOME
+    // makes itself visible: settings that look unsaved usually live in a
+    // different root than the one this launch reads.
     let startup_settings = crate::settings::load_settings();
     log::debug!(
-        "startup: settings loaded at {} ms",
+        "startup: settings loaded from {} at {} ms",
+        crate::backend::app_config_root()
+            .join("settings.json")
+            .display(),
         crate::startup_elapsed()
     );
     let backend = Arc::new(

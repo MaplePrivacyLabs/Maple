@@ -19,7 +19,7 @@ use crate::ui::icons::icon;
 use crate::ui::text_input::TextInput;
 
 use crate::backend::AgentBackend;
-use crate::settings::{self, AppSettings, UsageSummary};
+use crate::settings::{self, AppSettings, PermissionMode, UsageSummary};
 use crate::shortcuts::{
     ShortcutConflict, ShortcutConflictKind, ShortcutContextOverlap, ShortcutOverrides,
     ShortcutSnapshot,
@@ -87,6 +87,28 @@ impl Section {
     ];
 }
 
+/// One multi-value General row that selects from a dropdown instead of
+/// toggling.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum SettingMenu {
+    Permission,
+    Appearance,
+    Voice,
+    SpeechSpeed,
+}
+
+impl SettingMenu {
+    /// Stable id fragment for the popup panel and its rows.
+    fn id(self) -> &'static str {
+        match self {
+            Self::Permission => "permission",
+            Self::Appearance => "appearance",
+            Self::Voice => "voice",
+            Self::SpeechSpeed => "speech-speed",
+        }
+    }
+}
+
 pub struct SettingsScreen {
     /// Backend-call bridges retained for thread-affinity; see
     /// [`crate::ui::task::call`].
@@ -97,6 +119,11 @@ pub struct SettingsScreen {
     /// `settings.theme` parsed once; render only reads the label.
     theme: theme::Preference,
     section: Section,
+    /// The multi-value row whose dropdown is open, if any.
+    open_menu: Option<SettingMenu>,
+    /// Highlighted option inside the open dropdown; keyboard picking
+    /// (Application Vim or focus) starts on the saved value.
+    menu_selected: Option<usize>,
     account: AccountState,
     billing: BillingState,
     api_keys: ApiKeysState,
@@ -256,6 +283,8 @@ impl SettingsScreen {
             theme: theme::Preference::parse(&settings.theme),
             settings,
             section,
+            open_menu: None,
+            menu_selected: None,
             account: AccountState::new(application_vim_enabled, application_focus.clone(), cx),
             billing: BillingState::new(),
             api_keys: ApiKeysState::new(application_vim_enabled, application_focus.clone(), cx),
@@ -708,9 +737,139 @@ impl SettingsScreen {
         cx.notify();
     }
 
-    fn toggle_permission_default(&mut self, cx: &mut Context<Self>) {
-        let next = self.settings.default_permission_mode.next();
-        self.edit_setting(move |settings| settings.default_permission_mode = next, cx);
+    /// Open or close one row's dropdown. Opening a row closes another
+    /// open one; the highlight starts on the saved value so activating
+    /// twice keeps it.
+    pub(super) fn toggle_setting_menu(&mut self, menu: SettingMenu, cx: &mut Context<Self>) {
+        if self.open_menu == Some(menu) {
+            self.close_setting_menu(cx);
+        } else {
+            self.open_menu = Some(menu);
+            self.menu_selected = Some(
+                self.menu_options(menu)
+                    .iter()
+                    .position(|option| option.current)
+                    .unwrap_or(0),
+            );
+            cx.notify();
+        }
+    }
+
+    pub(super) fn close_setting_menu(&mut self, cx: &mut Context<Self>) {
+        if self.open_menu.take().is_some() {
+            self.menu_selected = None;
+            cx.notify();
+        }
+    }
+
+    /// The choices a dropdown offers, in display order. Render and pick
+    /// share this order, so an index means the same option in both.
+    fn menu_options(&self, menu: SettingMenu) -> Vec<SettingOption> {
+        match menu {
+            SettingMenu::Permission => [PermissionMode::SmartApprove, PermissionMode::Auto]
+                .iter()
+                .map(|&mode| SettingOption {
+                    label: mode.label().to_string(),
+                    current: self.settings.default_permission_mode == mode,
+                })
+                .collect(),
+            SettingMenu::Appearance => [
+                theme::Preference::System,
+                theme::Preference::Dark,
+                theme::Preference::Light,
+            ]
+            .iter()
+            .map(|&preference| SettingOption {
+                label: preference.label().to_string(),
+                current: self.theme == preference,
+            })
+            .collect(),
+            SettingMenu::Voice => settings::TTS_VOICES
+                .iter()
+                .map(|(id, label)| SettingOption {
+                    label: label.to_string(),
+                    current: *id == self.settings.tts_voice,
+                })
+                .collect(),
+            SettingMenu::SpeechSpeed => settings::TTS_SPEEDS
+                .iter()
+                .map(|&speed| SettingOption {
+                    label: format!("{speed:.1}\u{d7}"),
+                    current: (speed - self.settings.tts_speed).abs() < 0.01,
+                })
+                .collect(),
+        }
+    }
+
+    /// The saved value shown on the dropdown's trigger button.
+    fn menu_value(&self, menu: SettingMenu) -> String {
+        match menu {
+            SettingMenu::Permission => self.settings.default_permission_mode.label().to_string(),
+            SettingMenu::Appearance => self.theme.label().to_string(),
+            SettingMenu::Voice => settings::tts_voice_label(&self.settings.tts_voice).to_string(),
+            SettingMenu::SpeechSpeed => format!("{:.1}\u{d7}", self.settings.tts_speed),
+        }
+    }
+
+    /// Apply the option at `index`: an absolute set, so the local copy
+    /// and the file end in the same state whatever the file held.
+    pub(super) fn pick_setting_option(
+        &mut self,
+        menu: SettingMenu,
+        index: usize,
+        cx: &mut Context<Self>,
+    ) {
+        match menu {
+            SettingMenu::Permission => {
+                let Some(mode) = [PermissionMode::SmartApprove, PermissionMode::Auto].get(index)
+                else {
+                    return;
+                };
+                let mode = *mode;
+                self.edit_setting(move |settings| settings.default_permission_mode = mode, cx);
+            }
+            SettingMenu::Appearance => {
+                let Some(preference) = [
+                    theme::Preference::System,
+                    theme::Preference::Dark,
+                    theme::Preference::Light,
+                ]
+                .get(index) else {
+                    return;
+                };
+                self.choose_theme(*preference, cx);
+            }
+            SettingMenu::Voice => {
+                let Some((id, _)) = settings::TTS_VOICES.get(index) else {
+                    return;
+                };
+                let id = id.to_string();
+                self.edit_setting(move |settings| settings.tts_voice = id, cx);
+            }
+            SettingMenu::SpeechSpeed => {
+                let Some(speed) = settings::TTS_SPEEDS.get(index) else {
+                    return;
+                };
+                let speed = *speed;
+                self.edit_setting(move |settings| settings.tts_speed = speed, cx);
+            }
+        }
+        self.close_setting_menu(cx);
+    }
+
+    /// Move the dropdown highlight for Application Vim's j/k, wrapping
+    /// around the list the way dropdown menus do.
+    pub(super) fn move_setting_menu_selection(&mut self, direction: isize, count: usize) {
+        let Some(menu) = self.open_menu else {
+            return;
+        };
+        let len = self.menu_options(menu).len();
+        if len == 0 {
+            return;
+        }
+        let current = self.menu_selected.unwrap_or(0) as isize;
+        let next = (current + direction * count.max(1) as isize).rem_euclid(len as isize);
+        self.menu_selected = Some(next as usize);
     }
 
     fn toggle_web_default(&mut self, cx: &mut Context<Self>) {
@@ -718,16 +877,15 @@ impl SettingsScreen {
         self.edit_setting(move |settings| settings.default_web_enabled = next, cx);
     }
 
-    fn cycle_theme(&mut self, cx: &mut Context<Self>) {
-        let next = self.theme.next();
-        self.theme = next;
+    fn choose_theme(&mut self, preference: theme::Preference, cx: &mut Context<Self>) {
+        self.theme = preference;
         self.edit_setting(
-            move |settings| settings.theme = next.as_str().to_string(),
+            move |settings| settings.theme = preference.as_str().to_string(),
             cx,
         );
         // The root view resolves the palette on its next render and
         // refreshes every view when it changed.
-        crate::ui::theme::apply_preference(next, cx);
+        crate::ui::theme::apply_preference(preference, cx);
     }
 
     fn toggle_tool_details(&mut self, cx: &mut Context<Self>) {
@@ -752,26 +910,85 @@ impl SettingsScreen {
         }
     }
 
+    /// Build one multi-value row: the saved value sits in a pebble button
+    /// that opens a dropdown of every choice. Picking one applies and
+    /// persists it; clicking away dismisses.
+    fn setting_menu_row(
+        &self,
+        title: &str,
+        description: &str,
+        menu: SettingMenu,
+        cx: &mut Context<Self>,
+    ) -> gpui::Stateful<Div> {
+        let open = self.open_menu == Some(menu);
+        let highlighted = self.menu_selected;
+        let options = self.menu_options(menu);
+        let mut row = widgets::card_row()
+            .id(setting_row_id(title))
+            .flex()
+            .items_center()
+            .justify_between()
+            .gap_4()
+            .child(setting_copy(title, description))
+            .child(
+                widgets::secondary_button(gpui::SharedString::from(format!(
+                    "setting-value-{}",
+                    title.to_lowercase().replace(' ', "-")
+                )))
+                .flex_none()
+                .py_1p5()
+                .gap_1()
+                .on_click(cx.listener(move |this, _event, _window, cx| {
+                    this.toggle_setting_menu(menu, cx);
+                }))
+                .child(self.menu_value(menu))
+                .child(icon("chevron-down", px(12.), theme::text_muted())),
+            );
+        if open {
+            let mut panel = widgets::popup_panel(
+                gpui::SharedString::from(format!("setting-menu-{}", menu.id())),
+                px(260.),
+            )
+            .absolute()
+            .top(px(42.))
+            .right_0()
+            .max_h(px(320.))
+            .overflow_y_scroll()
+            .on_mouse_down_out(cx.listener(|this, _event, _window, cx| {
+                this.close_setting_menu(cx);
+            }));
+            for (index, option) in options.iter().enumerate() {
+                let selected = highlighted == Some(index);
+                panel = panel.child(
+                    widgets::menu_row(
+                        gpui::SharedString::from(format!("setting-menu-{}-{index}", menu.id())),
+                        true,
+                    )
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .gap_2()
+                    .when(selected, |row| {
+                        row.bg(gpui::rgb(theme::bg_sidebar_row_selected()))
+                    })
+                    .on_click(cx.listener(move |this, _event, _window, cx| {
+                        this.pick_setting_option(menu, index, cx);
+                    }))
+                    .child(option.label.clone())
+                    .when(option.current, |row| {
+                        row.child(icon("check", px(14.), theme::accent()))
+                    }),
+                );
+            }
+            row = row.child(gpui::deferred(panel));
+        }
+        row
+    }
+
     fn toggle_reduce_motion(&mut self, cx: &mut Context<Self>) {
         let next = !self.settings.reduce_motion;
         self.edit_setting(move |settings| settings.reduce_motion = next, cx);
         cx.set_reduce_motion(next);
-    }
-
-    fn cycle_tts_voice(&mut self, cx: &mut Context<Self>) {
-        let next = next_cyclic(&settings::TTS_VOICES, |(id, _)| {
-            *id == self.settings.tts_voice
-        })
-        .0
-        .to_string();
-        self.edit_setting(move |settings| settings.tts_voice = next, cx);
-    }
-
-    fn cycle_tts_speed(&mut self, cx: &mut Context<Self>) {
-        let next = *next_cyclic(&settings::TTS_SPEEDS, |speed| {
-            (*speed - self.settings.tts_speed).abs() < 0.01
-        });
-        self.edit_setting(move |settings| settings.tts_speed = next, cx);
     }
 
     fn toggle_tool_summaries(&mut self, cx: &mut Context<Self>) {
@@ -974,6 +1191,8 @@ impl SettingsScreen {
         if section != Section::Shortcuts {
             self.stop_shortcut_recording();
         }
+        // A dropdown belongs to the pane that opened it.
+        self.close_setting_menu(cx);
         self.section = section;
         if self.settings.application_vim_enabled {
             self.application_vim.section = section;
@@ -1184,13 +1403,11 @@ impl SettingsScreen {
                         let mode = self.settings.default_permission_mode;
                         self.application_target(
                             || SettingsTarget::General(GeneralTarget::Permission),
-                            setting_row(
+                            self.setting_menu_row(
                                 "Default permission mode",
                                 mode.note(),
-                                mode.label(),
-                                cx.listener(|this, _event, _window, cx| {
-                                    this.toggle_permission_default(cx);
-                                }),
+                                SettingMenu::Permission,
+                                cx,
                             ),
                         )
                     })
@@ -1208,13 +1425,11 @@ impl SettingsScreen {
                     ))
                     .child(self.application_target(
                         || SettingsTarget::General(GeneralTarget::Appearance),
-                        setting_row(
+                        self.setting_menu_row(
                             "Appearance",
                             "Follow the system theme, or force dark or light.",
-                            self.theme.label(),
-                            cx.listener(|this, _event, _window, cx| {
-                                this.cycle_theme(cx);
-                            }),
+                            SettingMenu::Appearance,
+                            cx,
                         ),
                     ))
                     .child(self.application_target(
@@ -1290,25 +1505,20 @@ impl SettingsScreen {
                     .child(section_title("Voice"))
                     .child(self.application_target(
                         || SettingsTarget::General(GeneralTarget::Voice),
-                        setting_row(
+                        self.setting_menu_row(
                             "Speech voice",
-                            "The voice that reads messages aloud. Click to move to \
-                             the next voice.",
-                            settings::tts_voice_label(&self.settings.tts_voice),
-                            cx.listener(|this, _event, _window, cx| {
-                                this.cycle_tts_voice(cx);
-                            }),
+                            "The voice that reads messages aloud.",
+                            SettingMenu::Voice,
+                            cx,
                         ),
                     ))
                     .child(self.application_target(
                         || SettingsTarget::General(GeneralTarget::SpeechSpeed),
-                        setting_row(
+                        self.setting_menu_row(
                             "Speech speed",
                             "How fast messages are read aloud.",
-                            &format!("{:.1}×", self.settings.tts_speed),
-                            cx.listener(|this, _event, _window, cx| {
-                                this.cycle_tts_speed(cx);
-                            }),
+                            SettingMenu::SpeechSpeed,
+                            cx,
                         ),
                     ));
             }
@@ -2567,14 +2777,6 @@ fn pill_button(
         .child(label)
 }
 
-/// The item after the one `is_current` matches, wrapping at the end. An
-/// unknown current value restarts from the second item, as the settings
-/// rows always did.
-fn next_cyclic<T>(items: &[T], is_current: impl Fn(&T) -> bool) -> &T {
-    let current = items.iter().position(is_current).unwrap_or(0);
-    &items[(current + 1) % items.len()]
-}
-
 /// Whether saving a server as `name` would clash with another server.
 /// Servers are matched by name, so a rename onto an existing name would
 /// have added a second entry instead of replacing the original.
@@ -2748,33 +2950,11 @@ fn setting_row_id(title: &str) -> gpui::SharedString {
     ))
 }
 
-/// A multi-value setting: the current value sits in a pebble pill that
-/// cycles to the next choice on click.
-fn setting_row(
-    title: &str,
-    description: &str,
-    value: &str,
-    on_click: impl Fn(&gpui::ClickEvent, &mut Window, &mut App) + 'static,
-) -> gpui::Stateful<Div> {
-    widgets::card_row()
-        .id(setting_row_id(title))
-        .flex()
-        .items_center()
-        .justify_between()
-        .gap_4()
-        .child(setting_copy(title, description))
-        .child(
-            widgets::secondary_button(gpui::SharedString::from(format!(
-                "setting-value-{}",
-                title.to_lowercase().replace(' ', "-")
-            )))
-            .flex_none()
-            .py_1p5()
-            .gap_1()
-            .on_click(on_click)
-            .child(value.to_string())
-            .child(icon("chevron-down", px(12.), theme::text_muted())),
-        )
+/// One dropdown choice as data: the label shown in the menu and whether
+/// it is the saved value.
+struct SettingOption {
+    label: String,
+    current: bool,
 }
 
 /// An on/off setting with a switch. The whole row is the click target.
@@ -2975,14 +3155,6 @@ mod tests {
                 AgentIntegrationPermissionKind::ScreenRecording,
                 screen_recording,
             )
-    }
-
-    #[test]
-    fn next_cyclic_wraps_and_restarts_on_unknown() {
-        let items = ["a", "b", "c"];
-        assert_eq!(*next_cyclic(&items, |item| *item == "a"), "b");
-        assert_eq!(*next_cyclic(&items, |item| *item == "c"), "a");
-        assert_eq!(*next_cyclic(&items, |item| *item == "zzz"), "b");
     }
 
     #[test]

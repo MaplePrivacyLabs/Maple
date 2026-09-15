@@ -73,8 +73,8 @@ pub struct AppSettings {
     pub tts_speed: f32,
 }
 
-/// Voxtral voice ids with their labels, in the order the settings row
-/// cycles through them. Mirrors the Maple web app.
+/// Voxtral voice ids with their labels, in the order the settings menu
+/// lists them. Mirrors the Maple web app.
 pub const TTS_VOICES: [(&str, &str); 20] = [
     ("neutral_female", "Neutral — Female"),
     ("neutral_male", "Neutral — Male"),
@@ -98,9 +98,8 @@ pub const TTS_VOICES: [(&str, &str); 20] = [
     ("pt_male", "Portuguese-accented — Male"),
 ];
 
-/// Speech speeds the settings row cycles through.
+/// Speech speeds the settings menu offers.
 pub const TTS_SPEEDS: [f32; 6] = [0.8, 1.0, 1.2, 1.5, 1.8, 2.0];
-
 const DEFAULT_TTS_VOICE: &str = "casual_female";
 const DEFAULT_TTS_SPEED: f32 = 1.0;
 
@@ -182,14 +181,6 @@ impl PermissionMode {
         match self {
             Self::SmartApprove => "Confirm each gated tool call",
             Self::Auto => "Approve every tool call without asking",
-        }
-    }
-
-    /// The next choice in the settings cycle.
-    pub fn next(self) -> Self {
-        match self {
-            Self::SmartApprove => Self::Auto,
-            Self::Auto => Self::SmartApprove,
         }
     }
 }
@@ -297,8 +288,38 @@ impl Default for AppSettings {
     }
 }
 
+#[cfg(not(test))]
 fn settings_file() -> PathBuf {
     crate::backend::app_config_root().join("settings.json")
+}
+
+#[cfg(test)]
+fn settings_file() -> PathBuf {
+    test_settings_file()
+}
+
+/// Under `cargo test`, the settings file must never resolve to the
+/// developer's real settings.json: background writes queued by widget
+/// tests would silently rewrite it, and a test process killed mid-write
+/// would litter the real config directory with abandoned temp files.
+/// Tests that verify the on-disk resolution set XDG_CONFIG_HOME
+/// explicitly; every other test lands in a per-process scratch root.
+#[cfg(test)]
+fn test_settings_file() -> PathBuf {
+    static SCRATCH: std::sync::LazyLock<PathBuf> = std::sync::LazyLock::new(|| {
+        std::env::temp_dir().join(format!("maple-gpui-test-config-{}", std::process::id()))
+    });
+    if let Some(base) = std::env::var_os("XDG_CONFIG_HOME") {
+        // Resolve from the captured value, not a second read: another
+        // test may restore the variable in between.
+        let base = PathBuf::from(base);
+        if base.is_absolute() {
+            return base
+                .join(crate::backend::APP_DIR_NAME)
+                .join("settings.json");
+        }
+    }
+    SCRATCH.join("settings.json")
 }
 
 pub fn load_settings() -> AppSettings {
@@ -320,6 +341,12 @@ pub fn load_settings() -> AppSettings {
         AppSettings::default()
     })
 }
+
+/// Serializes tests that swap `XDG_CONFIG_HOME` process-wide: while a swap
+/// is live, no other test may resolve or write the settings file. Shared
+/// with the chat screen's persisted-defaults test.
+#[cfg(test)]
+pub(crate) static SETTINGS_IO_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
 
 /// Record the window state for the next launch. Runs on the UI thread at
 /// quit and waits for the write, so updates queued earlier also land.
@@ -573,13 +600,6 @@ mod tests {
     }
 
     #[test]
-    fn permission_mode_cycles_between_both_choices() {
-        let start = PermissionMode::default();
-        assert_eq!(start.next(), PermissionMode::Auto);
-        assert_eq!(start.next().next(), start);
-    }
-
-    #[test]
     fn default_settings_keep_the_on_disk_permission_string() {
         let json = serde_json::to_value(AppSettings::default()).expect("serialize");
         assert_eq!(json["default_permission_mode"], "smart_approve");
@@ -603,6 +623,59 @@ mod tests {
             .remove("application_vim_enabled");
         let settings: AppSettings = serde_json::from_value(json).expect("deserialize old file");
         assert!(!settings.application_vim_enabled);
+    }
+
+    /// A queued background change must land on disk and survive a reload:
+    /// this is the contract every settings control relies on.
+    #[test]
+    fn queued_updates_reach_disk_and_survive_a_reload() {
+        let _guard = SETTINGS_IO_LOCK.lock();
+        let dir = std::env::temp_dir().join(format!(
+            "maple-gpui-settings-roundtrip-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let previous = std::env::var_os("XDG_CONFIG_HOME");
+        unsafe { std::env::set_var("XDG_CONFIG_HOME", &dir) };
+
+        update_settings_in_background(|settings| settings.tts_voice = "neutral_male".into());
+        // A second queued change must not lose the first: both go through
+        // the writer thread in order.
+        update_settings_in_background(|settings| settings.tts_speed = 1.5);
+        update_settings_and_wait(|_| {});
+
+        let reloaded = load_settings();
+        match previous {
+            Some(value) => unsafe { std::env::set_var("XDG_CONFIG_HOME", value) },
+            None => unsafe { std::env::remove_var("XDG_CONFIG_HOME") },
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+
+        assert_eq!(reloaded.tts_voice, "neutral_male");
+        assert!((reloaded.tts_speed - 1.5).abs() < 0.01);
+    }
+
+    /// Without an explicit XDG_CONFIG_HOME, a test build must resolve the
+    /// settings file outside the developer's real config directory, or
+    /// background writes from widget tests would rewrite it.
+    #[test]
+    fn unit_tests_never_resolve_the_real_settings_file() {
+        let _guard = SETTINGS_IO_LOCK.lock();
+        let previous = std::env::var_os("XDG_CONFIG_HOME");
+        unsafe { std::env::remove_var("XDG_CONFIG_HOME") };
+
+        let path = settings_file();
+
+        if let Some(value) = previous {
+            unsafe { std::env::set_var("XDG_CONFIG_HOME", value) };
+        }
+
+        assert!(
+            !path.starts_with(dirs::config_dir().unwrap_or_default()),
+            "test resolution must not touch the real config root: {}",
+            path.display()
+        );
     }
 
     #[test]

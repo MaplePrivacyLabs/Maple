@@ -1616,7 +1616,12 @@ impl ChatScreen {
             title: None,
             model: None,
             context_limit: None,
-            mode: None,
+            // Persist the composer's mode — the saved default until the
+            // user picks one for this task — so the created row, its
+            // summary, and the chip agree. `None` would fall back to the
+            // runtime's SmartApprove startup default, and adopting that
+            // summary would reset the chip to Ask First.
+            mode: Some(self.permission_mode.as_str().to_string()),
             mcp_server_names: None,
             system_prompt: None,
         })
