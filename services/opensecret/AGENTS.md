@@ -33,9 +33,14 @@ Cargo, Nix, and `just` commands from `services/opensecret/`, using its own
 Local provider credentials are declared in `secretspec.toml` and resolved by
 native SecretSpec commands in the explicit `just local-secrets-check` and
 run recipes. The `opensecret_local` alias and its BWS project ID are committed
-in the manifest; each machine stores its own machine token with
-`just local-secrets-login`, or exports `BWS_ACCESS_TOKEN` with
-`SECRETSPEC_PROVIDER=opensecret_local_headless` when it has no keyring. Never
+in the manifest. Every Maple repository's manifest uses the project name
+`maple`, so one keyring item per machine serves them all: a machine stores its
+BWS machine-account token once (`just local-secrets-login` here, or any other
+Maple repository's login recipe) and needs no per-repository login, user-level
+alias or `SECRETSPEC_PROVIDER`; BWS project grants decide what it may read.
+Headless VMs and containers export `BWS_ACCESS_TOKEN` with
+`SECRETSPEC_PROVIDER=opensecret_local_headless` instead. Signing keeps its own
+project name and token. Never
 retrieve credentials in shell hooks or copy them into generated `.env` files. Continuum
 receives its own key; the backend receives Tinfoil and Kagi. A workspace manager
 owns ports, databases and generated local authentication, not these provider
