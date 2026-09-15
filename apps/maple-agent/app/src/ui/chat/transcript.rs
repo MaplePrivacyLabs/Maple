@@ -504,7 +504,15 @@ fn render_thinking(
             px(14.),
             theme::text_muted(),
         ))
-        .child(div().line_clamp(1).text_ellipsis_middle().child(title));
+        .child(
+            div()
+                // Same prose-summary rule as the tool card title.
+                .min_w_0()
+                .flex_1()
+                .truncate()
+                .debug_selector(|| "thinking-title".to_string())
+                .child(title),
+        );
     let card = div()
         .px_3()
         .py_2()
@@ -865,6 +873,7 @@ fn render_tool(
     });
     let card = div()
         .id(gpui::SharedString::from(format!("tool-toggle-{item_id}")))
+        .debug_selector(|| "tool-card".to_string())
         .role(gpui::Role::DisclosureTriangle)
         .aria_label(title.clone())
         .aria_expanded(details)
@@ -896,11 +905,18 @@ fn render_tool(
                 .items_center()
                 .child(
                     div()
+                        // The summary is prose: it grows to fill the row
+                        // and ellipsizes at the row's end. Without min_w_0
+                        // the flex item collapses to its longest word and
+                        // the old middle-ellipsis cut mid-sentence inside
+                        // a sliver while the row sat empty.
+                        .min_w_0()
+                        .flex_1()
                         .text_sm()
                         .font_weight(gpui::FontWeight::SEMIBOLD)
                         .text_color(gpui::rgb(theme::text_primary()))
-                        .line_clamp(1)
-                        .text_ellipsis_middle()
+                        .truncate()
+                        .debug_selector(|| "tool-title".to_string())
                         .child(title),
                 )
                 .when(running, |header| {
@@ -916,7 +932,6 @@ fn render_tool(
                         .text_color(gpui::rgb(status_color))
                         .child(label),
                 )
-                .child(div().flex_1())
                 .child(icon(
                     if details {
                         "chevron-down"

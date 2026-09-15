@@ -3497,4 +3497,87 @@ mod state_tests {
              (menu {menu:?}, chips {chips:?})"
         );
     }
+
+    /// Tool-card and thinking-row summaries must claim their row's width
+    /// before any ellipsis: the title grows to fill the row (`flex_1` +
+    /// `min_w_0`) and truncates at its end, never collapsing to its
+    /// longest word while the row sits empty.
+    #[gpui::test]
+    fn test_tool_summary_title_fills_the_row(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        struct ChatHost {
+            chat: Entity<ChatScreen>,
+        }
+        impl Render for ChatHost {
+            fn render(
+                &mut self,
+                _window: &mut Window,
+                _cx: &mut Context<Self>,
+            ) -> impl IntoElement {
+                // Same shape as the production root: a definite-size
+                // flex column, so the transcript column stretches.
+                div()
+                    .w(px(1200.))
+                    .h(px(800.))
+                    .flex()
+                    .flex_col()
+                    .child(self.chat.clone())
+            }
+        }
+
+        let summary = "Searched the whole repository for existing middle-truncation \
+                       helpers and found none of them anywhere in the tree at all";
+        let chat = cx.new(|cx| {
+            let _guard = SETTINGS_LOCK.lock();
+            let backend = std::sync::Arc::new(
+                crate::backend::AgentBackend::new("http://127.0.0.1:9".to_string(), String::new())
+                    .expect("backend"),
+            );
+            crate::desktop::register_key_bindings(cx);
+            let mut chat = ChatScreen::new_without_start(backend, "user".to_string(), cx);
+            chat.selected_session = Some("s1".to_string());
+            chat.booting = false;
+            chat.replace_timeline(vec![
+                AgentTimelineItem {
+                    status: Some("completed".to_string()),
+                    title: Some("Terminal: cargo test".to_string()),
+                    ..item("tool-1", "tool", None)
+                },
+                AgentTimelineItem {
+                    role: Some("thought".to_string()),
+                    title: Some("Thinking".to_string()),
+                    text: Some("long reasoning text".to_string()),
+                    status: Some("completed".to_string()),
+                    ..item("think-1", "thinking", None)
+                },
+            ]);
+            chat.tool_summaries
+                .insert("tool-1".to_string(), SharedString::from(summary));
+            chat.tool_summaries
+                .insert("think-1".to_string(), SharedString::from(summary));
+            chat
+        });
+
+        let (_host, cx) = cx.add_window_view(|_window, _cx| ChatHost { chat: chat.clone() });
+        cx.simulate_resize(gpui::size(px(1200.), px(800.)));
+
+        let card = cx.debug_bounds("tool-card").expect("the tool card renders");
+        let tool_title = cx
+            .debug_bounds("tool-title")
+            .expect("the tool card title renders");
+        let thinking_title = cx
+            .debug_bounds("thinking-title")
+            .expect("the thinking row title renders");
+
+        assert!(
+            tool_title.size.width > card.size.width * 0.75,
+            "a summary too long for the row must claim the row's width \
+             before truncating (title {tool_title:?}, card {card:?})"
+        );
+        assert!(
+            thinking_title.size.width > card.size.width * 0.75,
+            "a thinking summary too long for its row must claim the row's \
+             width before truncating (title {thinking_title:?}, card {card:?})"
+        );
+    }
 }
