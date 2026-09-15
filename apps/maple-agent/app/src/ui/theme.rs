@@ -47,15 +47,6 @@ impl Preference {
             Self::Light => "Light",
         }
     }
-
-    /// The next choice in the settings cycle.
-    pub fn next(self) -> Self {
-        match self {
-            Self::System => Self::Dark,
-            Self::Dark => Self::Light,
-            Self::Light => Self::System,
-        }
-    }
 }
 
 static PREFERENCE: AtomicU8 = AtomicU8::new(0);

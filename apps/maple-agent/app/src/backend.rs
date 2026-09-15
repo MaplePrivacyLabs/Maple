@@ -154,7 +154,7 @@ impl AgentEventSink for ChannelEventSink {
     }
 }
 
-const APP_DIR_NAME: &str = "maple-gpui";
+pub(crate) const APP_DIR_NAME: &str = "maple-gpui";
 
 /// Maple's public OpenSecret project id. The backend rejects unknown
 /// client ids, so this must match the registered project.

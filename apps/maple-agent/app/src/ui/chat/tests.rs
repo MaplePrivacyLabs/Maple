@@ -67,8 +67,9 @@ mod state_tests {
 
     /// Serializes constructions that read the settings file: the
     /// persisted-defaults test swaps XDG_CONFIG_HOME process-wide, so no
-    /// other test may read settings while the swap is live.
-    static SETTINGS_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
+    /// other test may resolve, read, or write settings while the swap is
+    /// live.
+    use crate::settings::SETTINGS_IO_LOCK as SETTINGS_LOCK;
 
     fn screen(cx: &mut TestAppContext) -> Entity<ChatScreen> {
         let _guard = SETTINGS_LOCK.lock();
@@ -2360,6 +2361,62 @@ mod state_tests {
             this.project_root = Some("/work/beta".to_string());
             let request = this.new_session_request().expect("explicit root request");
             assert_eq!(request.project_root.as_deref(), Some("/work/beta"));
+            assert_eq!(
+                request.mode.as_deref(),
+                Some("smart_approve"),
+                "a new task carries the composer's current mode"
+            );
+        });
+    }
+
+    /// A saved "Allow all" default must reach task creation: the created
+    /// row's mode is what the chip adopts and the first prompt sends, so a
+    /// None mode here would restart every task at Ask First.
+    #[gpui::test]
+    fn test_new_task_takes_the_saved_permission_default(cx: &mut TestAppContext) {
+        let _guard = SETTINGS_LOCK.lock();
+        let dir = std::env::temp_dir().join(format!(
+            "maple-gpui-test-permission-default-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let config = dir.join("maple-gpui");
+        std::fs::create_dir_all(&config).unwrap();
+        std::fs::write(
+            config.join("settings.json"),
+            r#"{"default_permission_mode":"auto"}"#,
+        )
+        .unwrap();
+        let previous = std::env::var_os("XDG_CONFIG_HOME");
+        unsafe { std::env::set_var("XDG_CONFIG_HOME", &dir) };
+        cx.executor().allow_parking();
+        let screen = cx.new(|cx| {
+            ChatScreen::new_inner(
+                std::sync::Arc::new(
+                    crate::backend::AgentBackend::new(
+                        "http://127.0.0.1:9".to_string(),
+                        String::new(),
+                    )
+                    .expect("backend"),
+                ),
+                "user".to_string(),
+                cx,
+            )
+        });
+        match previous {
+            Some(value) => unsafe { std::env::set_var("XDG_CONFIG_HOME", value) },
+            None => unsafe { std::env::remove_var("XDG_CONFIG_HOME") },
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+
+        screen.update(cx, |this, _cx| {
+            this.project_root = Some("/work/beta".to_string());
+            let request = this.new_session_request().expect("explicit root request");
+            assert_eq!(
+                request.mode.as_deref(),
+                Some("auto"),
+                "the saved default must be persisted onto the new task"
+            );
         });
     }
 

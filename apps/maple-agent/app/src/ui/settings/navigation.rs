@@ -11,7 +11,8 @@ use super::account::AccountTarget;
 use super::api_keys::ApiKeysTarget;
 use super::billing::BillingTarget;
 use super::{
-    Section, SettingsScreen, integration_can_setup, integration_can_toggle, integration_is_visible,
+    Section, SettingMenu, SettingsScreen, integration_can_setup, integration_can_toggle,
+    integration_is_visible,
 };
 use crate::ui::application_vim::{self, CountOutcome, CountState, SpatialDirection};
 
@@ -365,9 +366,9 @@ impl SettingsScreen {
 
     fn activate_general_target(&mut self, target: GeneralTarget, cx: &mut Context<Self>) {
         match target {
-            GeneralTarget::Permission => self.toggle_permission_default(cx),
+            GeneralTarget::Permission => self.toggle_setting_menu(SettingMenu::Permission, cx),
             GeneralTarget::Web => self.toggle_web_default(cx),
-            GeneralTarget::Appearance => self.cycle_theme(cx),
+            GeneralTarget::Appearance => self.toggle_setting_menu(SettingMenu::Appearance, cx),
             GeneralTarget::ToolDetails => self.toggle_tool_details(cx),
             GeneralTarget::Notifications => self.toggle_desktop_notifications(cx),
             GeneralTarget::ReduceMotion => self.toggle_reduce_motion(cx),
@@ -377,8 +378,8 @@ impl SettingsScreen {
                 let enabled = !self.settings.application_vim_enabled;
                 self.set_application_vim_enabled(enabled, cx);
             }
-            GeneralTarget::Voice => self.cycle_tts_voice(cx),
-            GeneralTarget::SpeechSpeed => self.cycle_tts_speed(cx),
+            GeneralTarget::Voice => self.toggle_setting_menu(SettingMenu::Voice, cx),
+            GeneralTarget::SpeechSpeed => self.toggle_setting_menu(SettingMenu::SpeechSpeed, cx),
         }
     }
 
@@ -400,6 +401,11 @@ impl SettingsScreen {
         if self.shortcut_recorder.is_some() {
             self.stop_shortcut_recording();
             cx.notify();
+            return;
+        }
+        // An open dropdown closes before Escape leaves Settings.
+        if self.open_menu.is_some() {
+            self.close_setting_menu(cx);
             return;
         }
         self.close(cx);
@@ -432,24 +438,53 @@ impl SettingsScreen {
             return;
         }
         match command {
-            SettingsApplicationCommand::Next => {
+            SettingsApplicationCommand::Next | SettingsApplicationCommand::Previous => {
                 let count = self.application_vim.count.take();
-                self.move_application_selection(1, count, window, cx);
+                // While a dropdown is open, j/k move its highlight instead
+                // of the row selection.
+                if self.open_menu.is_some() {
+                    let direction = match command {
+                        SettingsApplicationCommand::Next => 1,
+                        _ => -1,
+                    };
+                    self.move_setting_menu_selection(direction, count);
+                    cx.notify();
+                    return;
+                }
+                self.move_application_selection(
+                    match command {
+                        SettingsApplicationCommand::Next => 1,
+                        _ => -1,
+                    },
+                    count,
+                    window,
+                    cx,
+                );
             }
-            SettingsApplicationCommand::Previous => {
-                let count = self.application_vim.count.take();
-                self.move_application_selection(-1, count, window, cx);
-            }
-            SettingsApplicationCommand::First => {
+            SettingsApplicationCommand::First | SettingsApplicationCommand::Last => {
                 self.application_vim.count.clear();
-                self.select_application_edge(true, window, cx);
-            }
-            SettingsApplicationCommand::Last => {
-                self.application_vim.count.clear();
-                self.select_application_edge(false, window, cx);
+                if self.open_menu.is_some() {
+                    self.shortcut_notice = Some(
+                        "Application Vim first/last is not available in a dropdown".to_string(),
+                    );
+                    cx.notify();
+                    return;
+                }
+                self.select_application_edge(
+                    matches!(command, SettingsApplicationCommand::First),
+                    window,
+                    cx,
+                );
             }
             SettingsApplicationCommand::Activate => {
                 self.application_vim.count.clear();
+                // While a dropdown is open, Enter picks the highlighted
+                // option instead of activating the row.
+                if let Some(menu) = self.open_menu {
+                    let index = self.menu_selected.unwrap_or(0);
+                    self.pick_setting_option(menu, index, cx);
+                    return;
+                }
                 self.activate_application_selection(window, cx);
             }
             SettingsApplicationCommand::Search => {
@@ -932,5 +967,163 @@ mod tests {
                     .all(|context| !context.contains("ApplicationVim"))
             );
         });
+    }
+
+    struct DropdownHost {
+        settings: Entity<SettingsScreen>,
+    }
+    impl Render for DropdownHost {
+        fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+            div().w(px(1200.)).h(px(800.)).child(self.settings.clone())
+        }
+    }
+
+    fn dropdown_screen(cx: &mut TestAppContext, application_vim: bool) -> Entity<SettingsScreen> {
+        cx.executor().allow_parking();
+        let backend = std::sync::Arc::new(
+            crate::backend::AgentBackend::new("http://127.0.0.1:9".to_string(), String::new())
+                .expect("backend"),
+        );
+        cx.new(|cx| {
+            SettingsScreen::new(
+                backend,
+                "user".to_string(),
+                crate::settings::AppSettings {
+                    application_vim_enabled: application_vim,
+                    ..Default::default()
+                },
+                crate::shortcuts::ShortcutSnapshot {
+                    generation: 1,
+                    rows: Vec::new(),
+                    last_error: None,
+                    compatibility_warning: None,
+                },
+                Section::General,
+                cx,
+            )
+        })
+    }
+
+    #[gpui::test]
+    fn dropdown_rows_select_highlight_and_close(cx: &mut TestAppContext) {
+        let settings = dropdown_screen(cx, false);
+        let (_host, cx) = cx.add_window_view(|_window, _cx| DropdownHost {
+            settings: settings.clone(),
+        });
+        cx.simulate_resize(gpui::size(px(1200.), px(800.)));
+
+        settings.update(cx, |this, cx| {
+            // Opening highlights the saved voice; a second toggle closes.
+            this.toggle_setting_menu(SettingMenu::Voice, cx);
+            assert_eq!(this.open_menu, Some(SettingMenu::Voice));
+            let saved = this
+                .menu_options(SettingMenu::Voice)
+                .iter()
+                .position(|option| option.current)
+                .expect("the saved voice is one of the options");
+            assert_eq!(this.menu_selected, Some(saved));
+
+            this.move_setting_menu_selection(1, 1);
+            assert_eq!(
+                this.menu_selected,
+                Some((saved + 1) % crate::settings::TTS_VOICES.len()),
+                "the highlight advances one option and wraps"
+            );
+
+            // Picking applies the highlighted option and closes the menu.
+            let picked = this.menu_selected.expect("highlighted");
+            this.pick_setting_option(SettingMenu::Voice, picked, cx);
+            assert_eq!(this.open_menu, None, "picking closes the dropdown");
+            assert_eq!(this.menu_selected, None);
+            assert_eq!(
+                this.settings.tts_voice,
+                crate::settings::TTS_VOICES[picked].0,
+                "the picked voice becomes the setting"
+            );
+
+            // Opening another row replaces the open one.
+            this.toggle_setting_menu(SettingMenu::Voice, cx);
+            this.toggle_setting_menu(SettingMenu::Appearance, cx);
+            assert_eq!(this.open_menu, Some(SettingMenu::Appearance));
+        });
+    }
+    #[gpui::test]
+    fn vim_activation_opens_picks_and_escapes_the_dropdown(cx: &mut TestAppContext) {
+        let settings = dropdown_screen(cx, true);
+        let (_host, cx) = cx.add_window_view(|_window, _cx| DropdownHost {
+            settings: settings.clone(),
+        });
+        cx.simulate_resize(gpui::size(px(1200.), px(800.)));
+
+        cx.update(|window, app| {
+            settings.update(app, |this, cx| {
+                // Enter on the speech-speed row opens its dropdown.
+                this.application_vim.region = SettingsRegion::Pane;
+                this.application_vim.target =
+                    Some(SettingsTarget::General(GeneralTarget::SpeechSpeed));
+                this.execute_application_vim(SettingsApplicationCommand::Activate, window, cx);
+                assert_eq!(this.open_menu, Some(SettingMenu::SpeechSpeed));
+
+                // j moves the menu highlight, not the row selection.
+                let before = this.menu_selected;
+                this.execute_application_vim(SettingsApplicationCommand::Next, window, cx);
+                assert_ne!(this.menu_selected, before);
+                assert_eq!(
+                    this.application_vim.target,
+                    Some(SettingsTarget::General(GeneralTarget::SpeechSpeed)),
+                    "the row selection must not move while the menu is open"
+                );
+
+                // Enter picks the highlighted option and closes the menu.
+                let picked = this.menu_selected.expect("highlighted");
+                this.execute_application_vim(SettingsApplicationCommand::Activate, window, cx);
+                assert_eq!(this.open_menu, None);
+                let expected = crate::settings::TTS_SPEEDS[picked];
+                assert!((this.settings.tts_speed - expected).abs() < 0.01);
+
+                // Escape while a menu is open closes it instead of leaving
+                // Settings.
+                this.toggle_setting_menu(SettingMenu::Voice, cx);
+                this.execute_application_vim(SettingsApplicationCommand::Escape, window, cx);
+                assert_eq!(this.open_menu, None);
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn picking_from_the_dropdown_persists_to_disk(cx: &mut TestAppContext) {
+        let _guard = crate::settings::SETTINGS_IO_LOCK.lock();
+        let dir = std::env::temp_dir().join(format!(
+            "maple-gpui-dropdown-persist-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let previous = std::env::var_os("XDG_CONFIG_HOME");
+        unsafe { std::env::set_var("XDG_CONFIG_HOME", &dir) };
+        let settings = dropdown_screen(cx, false);
+        let (_host, cx) = cx.add_window_view(|_window, _cx| DropdownHost {
+            settings: settings.clone(),
+        });
+        cx.simulate_resize(gpui::size(px(1200.), px(800.)));
+
+        settings.update(cx, |this, cx| {
+            this.toggle_setting_menu(SettingMenu::Appearance, cx);
+            this.pick_setting_option(SettingMenu::Appearance, 2, cx);
+        });
+        // Wait for the writer thread to flush the queued change.
+        crate::settings::update_settings_and_wait(|_| {});
+        let reloaded = crate::settings::load_settings();
+
+        match previous {
+            Some(value) => unsafe { std::env::set_var("XDG_CONFIG_HOME", value) },
+            None => unsafe { std::env::remove_var("XDG_CONFIG_HOME") },
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+
+        assert_eq!(
+            reloaded.theme, "light",
+            "a dropdown pick must reach the settings file"
+        );
     }
 }
