@@ -59,7 +59,7 @@ This app must feel instant. Treat frame time and UI-thread stalls as bugs.
 
 - Render functions run on every `cx.notify()`. Do not parse, sort, group,
   or clone collections inside `render_*`. Precompute when state changes
-  (see `rebuild_project_groups`, `MarkdownCache`) and read it in render.
+  (see `Sidebar::rebuild_sections`, `MarkdownCache`) and read it in render.
 - The transcript renders through `gpui::list` with `ListState`. Keep it
   that way: never emit all timeline items as plain children. When an item
   changes in place, call `list_state.remeasure_items(ix..ix + 1)`: it

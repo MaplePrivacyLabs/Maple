@@ -27,11 +27,13 @@ scripts/              One maintainer helper: screenshot.py takes a desktop
 
 ### Backend / frontend boundary
 
-`app/src/backend.rs` is the only file that imports `maple_agent`. It owns a
-private Tokio runtime and exposes an async facade (`AgentBackend`) plus one
-event stream. The UI talks to that facade only. This mirrors Maple's own
-edge-adapter pattern, so a future process split replaces the facade without
-touching UI code.
+`app/src/backend.rs` owns the runtime: it is the only file that drives
+`maple_agent`'s services, holding a private Tokio runtime and exposing an
+async facade (`AgentBackend`) plus one event stream. UI modules import data
+types from `maple_agent` (timeline items, session summaries) but talk to the
+running agent through that facade only. This mirrors Maple's own edge-adapter
+pattern, so a future process split replaces the facade without touching UI
+code.
 
 The runtime was originally copied from Research’s Tauri source (now
 `apps/maple-research/frontend/src-tauri/src`) (`agent.rs`,
