@@ -7,6 +7,15 @@ on:
     workflows: ["Release"]
     types: [completed]
   workflow_dispatch:
+    inputs:
+      diagnostics_only:
+        description: Inspect package API access without building or publishing
+        type: boolean
+        default: false
+      bootstrap_only:
+        description: Initialize the first package with untagged release images only
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -22,6 +31,28 @@ env:
   UNBACKFILLED_PROXY_BASELINE: 0.3.3
 
 jobs:
+  diagnose:
+    name: Diagnose proxy package access
+    if: >-
+      github.repository == 'MaplePrivacyLabs/Maple' &&
+      github.repository_id == '923138240' &&
+      github.repository_owner_id == '322649754' &&
+      github.ref_type == 'branch' &&
+      github.event_name == 'workflow_dispatch' && inputs.diagnostics_only
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+      - name: Inspect package API responses without publication
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 -I scripts/ci/proxy_registry_inventory.py --diagnose
+
   prepare:
     name: Validate proxy publication
     if: >-
@@ -29,6 +60,7 @@ jobs:
       github.repository_id == '923138240' &&
       github.repository_owner_id == '322649754' &&
       github.ref == 'refs/heads/master' &&
+      !(github.event_name == 'workflow_dispatch' && inputs.diagnostics_only) &&
       ((github.event_name == 'workflow_dispatch') ||
       (github.event_name == 'workflow_run' &&
         github.event.workflow_run.conclusion == 'success' &&
@@ -44,6 +76,7 @@ jobs:
     outputs:
       publish: ${{ steps.plan.outputs.publish }}
       reconcile: ${{ steps.plan.outputs.reconcile }}
+      bootstrap: ${{ steps.plan.outputs.bootstrap }}
       release_sha: ${{ steps.plan.outputs.release_sha }}
       release_tag: ${{ steps.plan.outputs.release_tag }}
       proxy_version: ${{ steps.plan.outputs.proxy_version }}
@@ -62,6 +95,7 @@ jobs:
           EXPECTED_RELEASE_TAG: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_branch || '' }}
           GH_TOKEN: ${{ github.token }}
           REPOSITORY: ${{ github.repository }}
+          BOOTSTRAP_ONLY: ${{ github.event_name == 'workflow_dispatch' && inputs.bootstrap_only }}
         run: |
           set -euo pipefail
 
@@ -159,6 +193,27 @@ jobs:
             esac
           fi
 
+          # Explicit first-package initialization only uploads by digest. It does
+          # not admit an empty inventory or authorize any version/alias tag.
+          if [ "${BOOTSTRAP_ONLY}" = "true" ]; then
+            python3 -I scripts/ci/proxy_registry_inventory.py --prepare-bootstrap \
+              "${proxy_version}" "${previous_proxy_version}" "${UNBACKFILLED_PROXY_BASELINE}"
+            {
+              echo "bootstrap=true"
+              echo "publish=false"
+              echo "reconcile=false"
+              echo "proxy_version=${proxy_version}"
+              echo "release_sha=${release_sha}"
+              echo "release_tag=${release_tag}"
+            } >>"${GITHUB_OUTPUT}"
+            {
+              echo "### Initialize proxy package"
+              echo "Upload the validated release images by digest only; no version or alias tags."
+              echo "After the builds finish, make the package public and rerun with bootstrap_only disabled."
+            } >>"${GITHUB_STEP_SUMMARY}"
+            exit 0
+          fi
+
           # Only authenticated package metadata can confirm initial creation.
           # Anonymous denial/network errors must never mean an empty registry.
           python3 -I scripts/ci/proxy_registry_inventory.py \
@@ -202,7 +257,7 @@ jobs:
   build:
     name: Build proxy container (${{ matrix.platform }})
     needs: prepare
-    if: needs.prepare.outputs.publish == 'true'
+    if: needs.prepare.outputs.publish == 'true' || needs.prepare.outputs.bootstrap == 'true'
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
     permissions:
