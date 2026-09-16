@@ -364,22 +364,22 @@ pub fn render_with(document: &Document, ctx: &RenderCtx) -> Div {
                     .collect();
                 let text_size = heading.map(super::typography::heading_size);
                 let weight = heading.map(|_| super::typography::emphasis_weight());
-                container.child(wrap_inline(
-                    rich_text::paragraph(
-                        text.clone(),
-                        rich_text::Inline {
-                            highlights,
-                            links: links.clone(),
-                            mono: mono_ranges(styles),
-                        },
-                        text_size,
-                        weight,
-                        ctx.for_block(block_offset),
-                        ctx,
-                    ),
-                    *in_quote,
-                    *list_depth,
-                ))
+                let mut paragraph = rich_text::paragraph(
+                    text.clone(),
+                    rich_text::Inline {
+                        highlights,
+                        links: links.clone(),
+                        mono: mono_ranges(styles),
+                    },
+                    text_size,
+                    weight,
+                    ctx.for_block(block_offset),
+                    ctx,
+                );
+                if heading.is_some() {
+                    paragraph = paragraph.text_color(gpui::rgb(theme::text_heading()));
+                }
+                container.child(wrap_inline(paragraph, *in_quote, *list_depth))
             }
             Block::Code {
                 code,

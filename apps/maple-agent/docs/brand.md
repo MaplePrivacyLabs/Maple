@@ -166,25 +166,29 @@ the dark background.
 
 | Token | Light | Dark | Kit source |
 |---|---|---|---|
-| `bg_app` | `#ffffff` | `#111114` | page white |
-| `bg_sidebar` | `#f7f7f9` Pebble 50 | `#1a1a1f` | Pebble for sidebars |
-| `bg_elevated` | `#ffffff` | `#232329` | |
-| `bg_sidebar_card`, `bg_tool_card` | `#fafafa` Neutral 50 | `#232329` / `#1a1a1f` | card fill |
-| `bg_sidebar_pill`, `bg_user_bubble`, row hover | `#e8e8ed` Pebble 100 | `#2b2b32` | secondary container |
-| row selected | `#d1d2dc` Pebble 200 | `#35363f` | |
-| `border` | `#e8e8ed` Pebble 100 | `#30313a` | hairline |
-| `text_primary` | `#171717` Neutral 900 | `#f7f7f9` Pebble 50 | |
+| `bg_app` | `#ffffff` | `#18181c` | page white; dark well is lifted off near-black so type does not bloom |
+| `bg_sidebar` | `#f7f7f9` Pebble 50 | `#1e1e24` | Pebble for sidebars |
+| `bg_elevated`, `bg_user_bubble`, `bg_sidebar_card` | `#ffffff` / `#e8e8ed` | `#27272e` | cards sit a step above the well |
+| `bg_tool_card`, `bg_sidebar_chrome` | `#fafafa` / `#ffffff` | `#1e1e24` | |
+| `bg_input` | `#ffffff` | `#1c1c22` | distinct from the well |
+| `bg_code_block` | `#f7f7f9` | `#141416` | recessed vs the well |
+| `bg_sidebar_pill`, row hover | `#e8e8ed` Pebble 100 | `#32323a` | |
+| row selected | `#d1d2dc` Pebble 200 | `#3a3a44` | |
+| `border` | `#e8e8ed` Pebble 100 | `#3a3a44` | hairline |
+| `border_subtle` | `#f1f1f4` | `#2c2c34` | |
+| `text_primary` | `#171717` Neutral 900 | `#d1d2dc` Pebble 200 | body; dark is grey, not Pebble 50, ~12:1 on the well |
+| `text_heading` | `#171717` | `#e8e8ed` Pebble 100 | markdown headings, one step brighter than body |
 | `text_secondary` | `#525252` Neutral 600 | `#babccb` Pebble 300 | |
-| `text_muted` | `#a3a3a3` Neutral 400 | `#757689` Pebble 600 | |
+| `text_muted` | `#a3a3a3` Neutral 400 | `#9c9dab` Pebble 400 | AA on well and elevated |
 | `accent` | `#ff9771` Maple 500 | same | primary |
 | `accent_hover` | `#f67d57` Maple 600 | `#ffa88a` Maple 400 | |
-| `on_accent` | `#f7f7f9` | same | on primary |
+| `on_accent` | `#f7f7f9` | same | on primary (stays bright so coral stays readable) |
 | `accent_container`, `permission_fill` | `#ffe8e0` Maple 100 | `#3a2118` / `#2a1a14` | primary container |
 | `link` | `#9e7469` Bark 500 | `#c29a8d` Bark 300 | tertiary |
 | `status_success` | `#7b8f4a` | `#8fa35a` | success |
 | `status_warning` | `#d4a35a` | same | warning |
 | `status_error` | `#d05e41` | `#e07052` | error |
-| `display_text` | `#474854` Pebble 800 | `#babccb` Pebble 300 | heading colours |
+| `display_text` | `#474854` Pebble 800 | `#babccb` Pebble 300 | Array titles; large type can sit dimmer than body |
 
 The 60 / 30 / 10 rule maps to: workspace and transcript on `bg_app`;
 sidebar, settings navigation, popups, and hover fills on Pebble; coral only
