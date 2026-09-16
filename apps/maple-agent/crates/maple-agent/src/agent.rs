@@ -96,6 +96,7 @@ use transient_mcp::{TransientMcpConfig, TransientMcpRouter};
 pub use types::*;
 use web_permission::{
     OpenUrlPermissionRequest, WebPermissionClassifier, WebPermissionContext, WebPermissionOutcome,
+    web_search_request_id,
 };
 use web_tools::WebToolState;
 
@@ -6846,6 +6847,17 @@ async fn automatically_handle_permissions(
         let current_mode = selected_permission_mode(permission_modes, session_id)
             .await
             .to_string();
+        if let Some(request_id) = web_search_request_id(&current_mode, action).map(str::to_string) {
+            let permission = if cancel_token.is_cancelled() {
+                Permission::Cancel
+            } else {
+                log::info!("Auto-approved Agent Mode web search request {request_id}");
+                Permission::AllowOnce
+            };
+            deliver_tool_permission(agent, request_id.clone(), permission).await;
+            handled.insert(request_id);
+            continue;
+        }
         if let Some(request) =
             OpenUrlPermissionRequest::from_action(&current_mode, action, web_permission_context)
         {
@@ -14368,6 +14380,9 @@ mod tests {
             // effects and both are always allowed. read stays in ask_before:
             // under smart_approve Maple's read-only automation approves
             // benign local reads and still prompts for secret paths.
+            // web_search also stays in ask_before so Maple sees the
+            // ActionRequired and auto-approves it without a classifier;
+            // Goose annotations must not skip that Maple-owned path.
             let expected = if matches!(tool, "todo_write" | "request_user_input") {
                 goose::config::permission::PermissionLevel::AlwaysAllow
             } else {

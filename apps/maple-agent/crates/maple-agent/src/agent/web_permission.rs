@@ -1,6 +1,7 @@
 use super::shell_permission::classifier::{Classifier, ClassifierOutcome, read_only_confirmation};
 use super::web_tools::{
-    Keep, OPEN_URL_TOOL_NAME, bounded_chars, normalize_public_https_url, validate_purpose,
+    Keep, OPEN_URL_TOOL_NAME, WEB_SEARCH_TOOL_NAME, bounded_chars, normalize_public_https_url,
+    validate_purpose,
 };
 use goose::agents::Agent;
 use goose::conversation::message::ActionRequired;
@@ -89,6 +90,16 @@ impl OpenUrlPermissionRequest {
     pub(crate) fn url(&self) -> &str {
         &self.url
     }
+}
+
+/// Auto-approve plain `web_search` confirmations in Read only mode.
+///
+/// The query leaves the machine, but Maple treats search as always allowed
+/// under both Ask first and Allow all. Goose security warnings (`prompt`)
+/// still fall through to the user.
+pub(crate) fn web_search_request_id<'a>(mode: &str, action: &'a ActionRequired) -> Option<&'a str> {
+    let (id, _) = read_only_confirmation(mode, action, WEB_SEARCH_TOOL_NAME)?;
+    Some(id)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -188,15 +199,38 @@ mod tests {
     }
 
     #[test]
-    fn only_plain_read_only_web_actions_are_eligible() {
-        let context = WebPermissionContext::from_user_prompt("task");
-        // Web search sends the query off-machine. Read only mode has no
-        // auto-approval for it; the caller falls through to the prompt.
-        let search = action(
-            super::super::web_tools::WEB_SEARCH_TOOL_NAME,
-            object!({ "query": "maple" }),
+    fn web_search_is_auto_approved_without_the_open_url_classifier() {
+        let search = action(WEB_SEARCH_TOOL_NAME, object!({ "query": "maple" }), None);
+        assert_eq!(
+            web_search_request_id(READ_ONLY_MODE, &search),
+            Some("request-1")
+        );
+        assert!(web_search_request_id("auto", &search).is_none());
+        assert!(
+            web_search_request_id(
+                READ_ONLY_MODE,
+                &action(
+                    WEB_SEARCH_TOOL_NAME,
+                    object!({ "query": "maple" }),
+                    Some("Security warning".to_string()),
+                )
+            )
+            .is_none()
+        );
+        let open = action(
+            OPEN_URL_TOOL_NAME,
+            object!({ "url": "https://example.com", "purpose": "Read the source" }),
             None,
         );
+        assert!(web_search_request_id(READ_ONLY_MODE, &open).is_none());
+    }
+
+    #[test]
+    fn only_plain_read_only_web_actions_are_eligible() {
+        let context = WebPermissionContext::from_user_prompt("task");
+        // Web search is auto-approved without a classifier; it is not an
+        // open_url fetch and must not enter that path.
+        let search = action(WEB_SEARCH_TOOL_NAME, object!({ "query": "maple" }), None);
         assert!(OpenUrlPermissionRequest::from_action(READ_ONLY_MODE, &search, &context).is_none());
 
         let open = action(
