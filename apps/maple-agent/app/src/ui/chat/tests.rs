@@ -1481,6 +1481,64 @@ mod state_tests {
         assert_eq!(branch(&plain), None);
     }
 
+    /// Issue #945: the branch watcher must ignore access-only HEAD events
+    /// (open, read, close). The branch read they trigger emits those same
+    /// events again under Linux inotify, looping at ~200% CPU while idle.
+    #[test]
+    fn test_head_watch_ignores_read_access_events() {
+        use notify::EventKind;
+        use notify::event::{
+            AccessKind, AccessMode, CreateKind, DataChange, Flag, MetadataKind, ModifyKind,
+            RemoveKind, RenameMode,
+        };
+
+        let head = std::path::PathBuf::from("/repo/.git/HEAD");
+        let event = |kind: EventKind| notify::Event::new(kind).add_path(head.clone());
+
+        // The read side of the loop, as emitted by Linux inotify.
+        for kind in [
+            EventKind::Access(AccessKind::Open(AccessMode::Read)),
+            EventKind::Access(AccessKind::Read),
+            EventKind::Access(AccessKind::Close(AccessMode::Read)),
+            EventKind::Access(AccessKind::Close(AccessMode::Write)),
+            EventKind::Access(AccessKind::Any),
+            EventKind::Access(AccessKind::Other),
+        ] {
+            assert!(!head_change_event(&event(kind)), "access {kind:?}");
+        }
+
+        // Real changes still refresh the label: in-place write, create,
+        // remove, and the rename pair of an atomic replacement, plus the
+        // unclassified kinds imprecise backends emit for real changes.
+        for kind in [
+            EventKind::Modify(ModifyKind::Data(DataChange::Content)),
+            EventKind::Modify(ModifyKind::Any),
+            EventKind::Modify(ModifyKind::Metadata(MetadataKind::Any)),
+            EventKind::Modify(ModifyKind::Name(RenameMode::From)),
+            EventKind::Modify(ModifyKind::Name(RenameMode::To)),
+            EventKind::Modify(ModifyKind::Name(RenameMode::Both)),
+            EventKind::Modify(ModifyKind::Name(RenameMode::Any)),
+            EventKind::Create(CreateKind::File),
+            EventKind::Create(CreateKind::Any),
+            EventKind::Remove(RemoveKind::File),
+            EventKind::Remove(RemoveKind::Any),
+            EventKind::Any,
+            EventKind::Other,
+        ] {
+            assert!(head_change_event(&event(kind)), "change {kind:?}");
+        }
+
+        // Unrelated paths never refresh, even with a change kind.
+        let unrelated =
+            notify::Event::new(EventKind::Modify(ModifyKind::Data(DataChange::Content)))
+                .add_path(std::path::PathBuf::from("/repo/.git/index"));
+        assert!(!head_change_event(&unrelated));
+
+        // A required rescan refreshes even without a HEAD path.
+        let event = notify::Event::new(EventKind::Other).set_flag(Flag::Rescan);
+        assert!(head_change_event(&event));
+    }
+
     #[gpui::test]
     fn test_escape_closes_root_menu(cx: &mut TestAppContext) {
         cx.executor().allow_parking();

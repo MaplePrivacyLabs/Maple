@@ -1344,11 +1344,7 @@ impl ChatScreen {
         let mut watcher =
             match notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
                 let Ok(event) = event else { return };
-                let touches_head = event
-                    .paths
-                    .iter()
-                    .any(|path| path.file_name().is_some_and(|name| name == "HEAD"));
-                if touches_head || event.need_rescan() {
+                if head_change_event(&event) {
                     tx.send(()).ok();
                 }
             }) {
@@ -4860,6 +4856,27 @@ fn git_branch(git_dir: &std::path::Path) -> Option<String> {
             .filter(|id| id.bytes().all(|byte| byte.is_ascii_hexdigit()))
             .map(str::to_string),
     }
+}
+
+/// True when a watcher event means the branch may have changed: a semantic
+/// change to a `HEAD` path (write, create, remove, or the rename pair of an
+/// atomic replacement), or a rescan the backend requires. Access-only events
+/// (open, read, close) are dropped: the branch read they would trigger emits
+/// those same events again under Linux inotify, looping the watcher at full
+/// CPU while idle (#945). Real writes still arrive as `Modify` on every
+/// backend, so no true change is lost; `Any`/`Other` stay forwarded for
+/// backends that cannot classify.
+fn head_change_event(event: &notify::Event) -> bool {
+    if event.need_rescan() {
+        return true;
+    }
+    if matches!(event.kind, notify::EventKind::Access(_)) {
+        return false;
+    }
+    event
+        .paths
+        .iter()
+        .any(|path| path.file_name().is_some_and(|name| name == "HEAD"))
 }
 
 /// Last path component of a project root, for chips and the sidebar.
