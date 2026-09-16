@@ -4474,38 +4474,51 @@ mod tests {
     }
 
     #[cfg(unix)]
+    async fn wait_for_shell_started(path: &std::path::Path) {
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while !path.exists() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("shell should start before the test proceeds");
+    }
+
+    #[cfg(unix)]
     #[tokio::test]
     async fn shell_cancellation_kills_the_unix_process_group() {
         let temp = TestDir::new();
+        let started = temp.path().join("cancelled-shell-started");
         let sentinel = temp.path().join("cancelled-descendant-survived");
         let command = format!(
-            "(sleep 1; printf survived > '{}') & sleep 5",
-            sentinel.display()
+            "(sleep 2; printf survived > '{}') & printf started > '{}'; sleep 5",
+            sentinel.display(),
+            started.display()
         );
         let cancel_token = CancellationToken::new();
         let cancellation = cancel_token.clone();
-        let cancel_task = tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_millis(100)).await;
-            cancellation.cancel();
-        });
         let tool_context = empty_tool_context_snapshot();
-        let result = run_bounded_shell(
-            ShellParams {
-                command,
-                timeout_secs: Some(4),
-            },
-            None,
-            std::env::var("PATH").ok().as_deref(),
-            None,
-            &tool_context,
-            cancel_token,
-        )
-        .await;
-        cancel_task.await.unwrap();
+        let task = tokio::spawn(async move {
+            run_bounded_shell(
+                ShellParams {
+                    command,
+                    timeout_secs: Some(4),
+                },
+                None,
+                std::env::var("PATH").ok().as_deref(),
+                None,
+                &tool_context,
+                cancellation,
+            )
+            .await
+        });
+        wait_for_shell_started(&started).await;
+        cancel_token.cancel();
+        let result = task.await.unwrap();
         assert_eq!(result.is_error, Some(true));
         assert!(text(&result).contains("Command cancelled"));
 
-        tokio::time::sleep(Duration::from_secs(1)).await;
+        tokio::time::sleep(Duration::from_millis(2500)).await;
         assert!(
             !sentinel.exists(),
             "cancelled descendant survived process-group termination"
@@ -4516,35 +4529,36 @@ mod tests {
     #[tokio::test]
     async fn tool_context_revocation_kills_the_unix_process_group() {
         let temp = TestDir::new();
+        let started = temp.path().join("revoked-shell-started");
         let sentinel = temp.path().join("revoked-context-descendant-survived");
         let command = format!(
-            "(sleep 1; printf survived > '{}') & sleep 5",
-            sentinel.display()
+            "(sleep 2; printf survived > '{}') & printf started > '{}'; sleep 5",
+            sentinel.display(),
+            started.display()
         );
         let shared_context = test_tool_context(BTreeMap::new(), BTreeSet::new(), false);
         let tool_context = shared_context.snapshot();
-        let revocation = tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_millis(100)).await;
-            shared_context.revoke();
+        let task = tokio::spawn(async move {
+            run_bounded_shell(
+                ShellParams {
+                    command,
+                    timeout_secs: Some(4),
+                },
+                None,
+                std::env::var("PATH").ok().as_deref(),
+                None,
+                &tool_context,
+                CancellationToken::new(),
+            )
+            .await
         });
-
-        let result = run_bounded_shell(
-            ShellParams {
-                command,
-                timeout_secs: Some(4),
-            },
-            None,
-            std::env::var("PATH").ok().as_deref(),
-            None,
-            &tool_context,
-            CancellationToken::new(),
-        )
-        .await;
-        revocation.await.unwrap();
+        wait_for_shell_started(&started).await;
+        shared_context.revoke();
+        let result = task.await.unwrap();
         assert_eq!(result.is_error, Some(true));
         assert!(text(&result).contains("Command cancelled"));
 
-        tokio::time::sleep(Duration::from_secs(1)).await;
+        tokio::time::sleep(Duration::from_millis(2500)).await;
         assert!(
             !sentinel.exists(),
             "revoked tool-context descendant survived process-group termination"
@@ -4604,13 +4618,7 @@ mod tests {
             .await
         });
 
-        tokio::time::timeout(Duration::from_secs(2), async {
-            while !started.exists() {
-                tokio::time::sleep(Duration::from_millis(10)).await;
-            }
-        })
-        .await
-        .expect("shell should start before forced task abort");
+        wait_for_shell_started(&started).await;
         task.abort();
         assert!(task.await.unwrap_err().is_cancelled());
 
