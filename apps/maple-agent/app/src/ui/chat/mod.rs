@@ -1843,6 +1843,13 @@ impl ChatScreen {
             });
         }
         self.set_application_vim_enabled(settings.application_vim_enabled, cx);
+        crate::ui::typography::apply(
+            crate::ui::typography::ChatFontFamily::parse(&settings.chat_font_family),
+            settings.chat_font_size,
+        );
+        if !self.timeline.is_empty() {
+            self.list_state.remeasure_items(0..self.timeline.len());
+        }
         // Settings is a different mounted entity, so its focus handle becomes
         // stale when Chat is restored even when no preference changed. This
         // handoff is intentionally cross-mode: Application Vim returns to its
@@ -4706,7 +4713,7 @@ impl ChatScreen {
                         column.child(
                             div()
                                 .mb_6()
-                                .font_family(crate::assets::FONT_DISPLAY)
+                                .font_family(crate::assets::FONT_DISPLAY_WIDE)
                                 .text_size(px(36.))
                                 .line_height(px(48.))
                                 .text_color(gpui::rgb(theme::display_text()))

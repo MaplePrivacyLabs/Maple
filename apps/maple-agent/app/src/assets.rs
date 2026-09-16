@@ -64,17 +64,28 @@ pub const FONTS: &[&[u8]] = &[
     include_bytes!("../assets/fonts/Manrope-SemiBold.ttf"),
     include_bytes!("../assets/fonts/Manrope-Bold.ttf"),
     include_bytes!("../assets/fonts/Array-Regular.otf"),
-    include_bytes!("../assets/fonts/GeistMono-Regular.ttf"),
-    include_bytes!("../assets/fonts/GeistMono-Medium.ttf"),
+    include_bytes!("../assets/fonts/Array-Wide.otf"),
+    include_bytes!("../assets/fonts/Geist-Variable.ttf"),
+    include_bytes!("../assets/fonts/Geist-Italic.ttf"),
+    include_bytes!("../assets/fonts/GeistMono-Variable.ttf"),
 ];
 
-/// Body font for the whole app (brand kit: `--font-body`).
+/// Body font for chrome (brand kit: `--font-body`).
 pub const FONT_BODY: &str = "Manrope";
 /// Display font for headings (brand kit: `--font-display`).
 pub const FONT_DISPLAY: &str = "Array";
+/// Wide cut of Array, used for the empty-state hero to match the web app.
+pub const FONT_DISPLAY_WIDE: &str = "Array Wide";
 /// Code font (brand kit: `--font-mono`). Bundled, so every platform
 /// renders code the same way.
 pub const FONT_MONO: &str = "Geist Mono";
+/// Optional chat reading face. Variable, so Regular through Bold match.
+pub const FONT_GEIST: &str = "Geist";
+/// Platform UI font. GPUI maps this to SF Pro on macOS, Segoe UI on
+/// Windows, and the desktop default elsewhere.
+pub const FONT_SYSTEM: &str = ".SystemUIFont";
+/// Preferred system serif; `typography` adds Georgia / Times fallbacks.
+pub const FONT_SERIF: &str = "New York";
 
 pub struct Assets;
 

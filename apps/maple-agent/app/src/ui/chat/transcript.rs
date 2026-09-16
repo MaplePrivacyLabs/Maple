@@ -23,6 +23,7 @@ use crate::ui::motion;
 use crate::ui::rich_text::{self, RenderCtx};
 use crate::ui::text_input::TextInput;
 use crate::ui::theme;
+use crate::ui::typography;
 use crate::ui::widgets;
 
 impl ChatScreen {
@@ -330,7 +331,7 @@ fn render_message(item: &AgentTimelineItem, revision: u64, transcript: &Transcri
             .items_end()
             .gap_0p5()
             .child(
-                div()
+                typography::chat_reading(div())
                     .max_w(gpui::relative(0.75))
                     .px_4()
                     .py_2()
@@ -415,7 +416,7 @@ fn render_message(item: &AgentTimelineItem, revision: u64, transcript: &Transcri
                     .children(copy),
             )
     } else {
-        div()
+        typography::chat_reading(div())
             .group(group.clone())
             .max_w_full()
             .pr_2()
@@ -529,8 +530,7 @@ fn render_thinking(
         return card;
     }
     card.child(
-        div()
-            .text_sm()
+        typography::chat_reading(div())
             .text_color(gpui::rgb(theme::text_secondary()))
             .child(markdown::render_with(
                 &transcript
@@ -1035,10 +1035,9 @@ fn render_tool(
     }
     if !has_summary && let Some(output) = &derived.output_text {
         payload = payload.child(
-            div()
+            typography::chat_reading(div())
                 .mt_1()
                 .w_full()
-                .text_sm()
                 .text_color(gpui::rgb(theme::text_secondary()))
                 .child(markdown::render(&transcript.markdown_cache.get(
                     &item.id,

@@ -195,18 +195,26 @@ selected menu items, and primary buttons.
 
 | Role | Family | Constant |
 |---|---|---|
-| Display headings (empty-state hero, settings pane titles) | Array Regular | `assets::FONT_DISPLAY` |
-| Everything else | Manrope | `assets::FONT_BODY` |
+| Display headings (settings pane titles) | Array Regular | `assets::FONT_DISPLAY` |
+| Empty-state hero | Array Wide | `assets::FONT_DISPLAY_WIDE` |
+| Chrome (sidebar, buttons, settings) | Manrope 14 px | `assets::FONT_BODY` |
+| Chat and composer (default) | System UI, 15 px, line-height 1.65 | `assets::FONT_SYSTEM` |
+| Chat option: Maple | Manrope | `assets::FONT_BODY` |
+| Chat option: Geist | Geist Sans | `assets::FONT_GEIST` |
+| Chat option: Serif | New York / Georgia / Times | `assets::FONT_SERIF` |
 | Code, diffs, tool output, keycaps | Geist Mono | `assets::FONT_MONO` |
 
-All three are bundled in `app/assets/fonts` and registered at startup, so
-code renders the same on every platform. Array is licensed under the ITF
-Free Font License, which allows embedding in the app but not
-redistributing the font file on its own; Manrope and Geist Mono are OFL.
+Fonts are bundled in `app/assets/fonts` and registered at startup, so
+code and optional chat faces render the same on every platform. Array is
+licensed under the ITF Free Font License, which allows embedding in the
+app but not redistributing the font file on its own; Manrope and Geist
+are OFL. The system and serif faces are not bundled.
 
-The app's chrome runs smaller than the kit's marketing scale: chrome text
-is 14 px, chat text 15 px, the hero heading 36 / 48 px in Array, settings
-section titles 26 / 32 px in Array.
+Chat family and size are user settings (`chat_font_family`,
+`chat_font_size`, 13–18 px). Markdown emphasis and headings use SemiBold
+(600), not Bold (700). Heading sizes are ems of the live chat size.
+The hero heading is 36 / 48 px in Array Wide; settings section titles
+are 26 / 32 px in Array Regular.
 
 ### Shape
 

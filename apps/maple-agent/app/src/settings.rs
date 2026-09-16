@@ -65,6 +65,12 @@ pub struct AppSettings {
     /// Color theme: "system", "dark", or "light".
     #[serde(default = "default_theme")]
     pub theme: String,
+    /// Chat reading face: "system", "manrope", "geist", or "serif".
+    #[serde(default = "default_chat_font_family")]
+    pub chat_font_family: String,
+    /// Chat reading size in px, clamped to 13–18.
+    #[serde(default = "default_chat_font_size")]
+    pub chat_font_size: u8,
     /// Text-to-speech voice id; see [`TTS_VOICES`].
     #[serde(default = "default_tts_voice")]
     pub tts_voice: String,
@@ -246,6 +252,14 @@ fn default_theme() -> String {
     "system".to_string()
 }
 
+fn default_chat_font_family() -> String {
+    "system".to_string()
+}
+
+fn default_chat_font_size() -> u8 {
+    15
+}
+
 fn default_web_enabled() -> bool {
     true
 }
@@ -282,6 +296,8 @@ impl Default for AppSettings {
             harness_instructions: String::new(),
             window: None,
             theme: default_theme(),
+            chat_font_family: default_chat_font_family(),
+            chat_font_size: default_chat_font_size(),
             tts_voice: default_tts_voice(),
             tts_speed: default_tts_speed(),
         }
@@ -623,6 +639,17 @@ mod tests {
             .remove("application_vim_enabled");
         let settings: AppSettings = serde_json::from_value(json).expect("deserialize old file");
         assert!(!settings.application_vim_enabled);
+    }
+
+    #[test]
+    fn existing_settings_files_default_chat_reading_to_system_15() {
+        let mut json = serde_json::to_value(AppSettings::default()).expect("serialize");
+        let object = json.as_object_mut().expect("settings object");
+        object.remove("chat_font_family");
+        object.remove("chat_font_size");
+        let settings: AppSettings = serde_json::from_value(json).expect("deserialize old file");
+        assert_eq!(settings.chat_font_family, "system");
+        assert_eq!(settings.chat_font_size, 15);
     }
 
     /// A queued background change must land on disk and survive a reload:

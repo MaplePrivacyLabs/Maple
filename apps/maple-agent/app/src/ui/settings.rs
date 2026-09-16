@@ -93,6 +93,8 @@ impl Section {
 pub(super) enum SettingMenu {
     Permission,
     Appearance,
+    ChatFont,
+    ChatSize,
     Voice,
     SpeechSpeed,
 }
@@ -103,6 +105,8 @@ impl SettingMenu {
         match self {
             Self::Permission => "permission",
             Self::Appearance => "appearance",
+            Self::ChatFont => "chat-font",
+            Self::ChatSize => "chat-size",
             Self::Voice => "voice",
             Self::SpeechSpeed => "speech-speed",
         }
@@ -784,6 +788,24 @@ impl SettingsScreen {
                 current: self.theme == preference,
             })
             .collect(),
+            SettingMenu::ChatFont => crate::ui::typography::ChatFontFamily::ALL
+                .iter()
+                .map(|&family| SettingOption {
+                    label: family.label().to_string(),
+                    current: crate::ui::typography::ChatFontFamily::parse(
+                        &self.settings.chat_font_family,
+                    ) == family,
+                })
+                .collect(),
+            SettingMenu::ChatSize => (crate::ui::typography::CHAT_FONT_SIZE_MIN
+                ..=crate::ui::typography::CHAT_FONT_SIZE_MAX)
+                .map(|size| SettingOption {
+                    label: format!("{size} px"),
+                    current: crate::ui::typography::clamp_chat_font_size(
+                        self.settings.chat_font_size,
+                    ) == size,
+                })
+                .collect(),
             SettingMenu::Voice => settings::TTS_VOICES
                 .iter()
                 .map(|(id, label)| SettingOption {
@@ -806,6 +828,15 @@ impl SettingsScreen {
         match menu {
             SettingMenu::Permission => self.settings.default_permission_mode.label().to_string(),
             SettingMenu::Appearance => self.theme.label().to_string(),
+            SettingMenu::ChatFont => {
+                crate::ui::typography::ChatFontFamily::parse(&self.settings.chat_font_family)
+                    .label()
+                    .to_string()
+            }
+            SettingMenu::ChatSize => format!(
+                "{} px",
+                crate::ui::typography::clamp_chat_font_size(self.settings.chat_font_size)
+            ),
             SettingMenu::Voice => settings::tts_voice_label(&self.settings.tts_voice).to_string(),
             SettingMenu::SpeechSpeed => format!("{:.1}\u{d7}", self.settings.tts_speed),
         }
@@ -838,6 +869,19 @@ impl SettingsScreen {
                     return;
                 };
                 self.choose_theme(*preference, cx);
+            }
+            SettingMenu::ChatFont => {
+                let Some(family) = crate::ui::typography::ChatFontFamily::ALL.get(index) else {
+                    return;
+                };
+                self.choose_chat_font(*family, cx);
+            }
+            SettingMenu::ChatSize => {
+                let size = crate::ui::typography::CHAT_FONT_SIZE_MIN.saturating_add(index as u8);
+                if size > crate::ui::typography::CHAT_FONT_SIZE_MAX {
+                    return;
+                }
+                self.choose_chat_font_size(size, cx);
             }
             SettingMenu::Voice => {
                 let Some((id, _)) = settings::TTS_VOICES.get(index) else {
@@ -886,6 +930,26 @@ impl SettingsScreen {
         // The root view resolves the palette on its next render and
         // refreshes every view when it changed.
         crate::ui::theme::apply_preference(preference, cx);
+    }
+
+    fn choose_chat_font(
+        &mut self,
+        family: crate::ui::typography::ChatFontFamily,
+        cx: &mut Context<Self>,
+    ) {
+        let size = crate::ui::typography::clamp_chat_font_size(self.settings.chat_font_size);
+        crate::ui::typography::apply(family, size);
+        self.edit_setting(
+            move |settings| settings.chat_font_family = family.as_str().to_string(),
+            cx,
+        );
+    }
+
+    fn choose_chat_font_size(&mut self, size: u8, cx: &mut Context<Self>) {
+        let size = crate::ui::typography::clamp_chat_font_size(size);
+        let family = crate::ui::typography::ChatFontFamily::parse(&self.settings.chat_font_family);
+        crate::ui::typography::apply(family, size);
+        self.edit_setting(move |settings| settings.chat_font_size = size, cx);
     }
 
     fn toggle_tool_details(&mut self, cx: &mut Context<Self>) {
@@ -1429,6 +1493,28 @@ impl SettingsScreen {
                             "Appearance",
                             "Follow the system theme, or force dark or light.",
                             SettingMenu::Appearance,
+                            cx,
+                        ),
+                    ))
+                    .child(section_title("Chat appearance"))
+                    .child(self.application_target(
+                        || SettingsTarget::General(GeneralTarget::ChatFont),
+                        self.setting_menu_row(
+                            "Chat font",
+                            crate::ui::typography::ChatFontFamily::parse(
+                                &self.settings.chat_font_family,
+                            )
+                            .note(),
+                            SettingMenu::ChatFont,
+                            cx,
+                        ),
+                    ))
+                    .child(self.application_target(
+                        || SettingsTarget::General(GeneralTarget::ChatSize),
+                        self.setting_menu_row(
+                            "Text size",
+                            "Size of conversation and composer text. Chrome stays 14 px.",
+                            SettingMenu::ChatSize,
                             cx,
                         ),
                     ))
