@@ -15,6 +15,8 @@ use crate::ui::widgets;
 /// crosses the event boundary; the token snapshot stays inside the backend.
 pub struct LoginSucceeded(pub String);
 
+const EMPTY_CREDENTIALS_ERROR: &str = "Enter your email and password";
+
 /// How the OAuth completion step is presented.
 enum OAuthFlow {
     Idle,
@@ -96,7 +98,7 @@ impl LoginScreen {
             return;
         }
         if email.trim().is_empty() || password.is_empty() {
-            self.error = Some("Enter your email and password".to_string());
+            self.error = Some(EMPTY_CREDENTIALS_ERROR.to_string());
             cx.notify();
             return;
         }
@@ -396,8 +398,85 @@ fn field(label: &str, input: Entity<TextInput>) -> Div {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gpui::TestAppContext;
+    use gpui::{Focusable, TestAppContext, px, size};
     use std::{cell::RefCell, rc::Rc};
+
+    struct LoginHost {
+        screen: Entity<LoginScreen>,
+    }
+
+    impl Render for LoginHost {
+        fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+            div().size_full().child(self.screen.clone())
+        }
+    }
+
+    #[gpui::test]
+    fn tab_reaches_password_and_enter_submits(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        let backend =
+            Arc::new(AgentBackend::new("http://127.0.0.1:9".to_string(), String::new()).unwrap());
+        let screen = cx.new(|cx| {
+            crate::desktop::register_key_bindings(cx);
+            LoginScreen::new(backend, cx)
+        });
+        let (_host, cx) = cx.add_window_view(|_window, _cx| LoginHost {
+            screen: screen.clone(),
+        });
+        cx.simulate_resize(size(px(900.), px(700.)));
+        let (email_focus, password_focus) = cx.update(|_window, app| {
+            let screen = screen.read(app);
+            (
+                screen.email_input.read(app).focus_handle(app),
+                screen.password_input.read(app).focus_handle(app),
+            )
+        });
+        cx.update(|window, app| window.focus(&email_focus, app));
+        cx.simulate_input("user@example.com");
+        cx.simulate_keystrokes("tab");
+        cx.update(|window, _app| {
+            assert!(
+                password_focus.is_focused(window),
+                "tab from the email field must focus the password field"
+            );
+        });
+        cx.simulate_keystrokes("shift-tab");
+        cx.update(|window, _app| {
+            assert!(
+                email_focus.is_focused(window),
+                "shift-tab from the password field must return to the email field"
+            );
+        });
+        cx.simulate_keystrokes("tab");
+        // Enter on an empty password reaches the submit path without a
+        // backend call, so its validation error is the deterministic proof
+        // that Enter submits from this field.
+        cx.simulate_keystrokes("enter");
+        cx.update(|_window, app| {
+            let screen = screen.read(app);
+            assert!(!screen.busy);
+            assert_eq!(
+                screen.error.as_deref(),
+                Some(EMPTY_CREDENTIALS_ERROR),
+                "enter in the empty password field must submit"
+            );
+        });
+        // With both fields filled the submit clears that error and starts
+        // the backend call. `simulate_keystrokes` runs until parked, so the
+        // unreachable backend may already have answered; either the call is
+        // still in flight or it failed with a backend message.
+        cx.simulate_input("hunter2");
+        cx.simulate_keystrokes("enter");
+        cx.update(|_window, app| {
+            let screen = screen.read(app);
+            assert_eq!(screen.password_input.read(app).text(), "hunter2");
+            assert_ne!(screen.error.as_deref(), Some(EMPTY_CREDENTIALS_ERROR));
+            assert!(
+                screen.busy || screen.error.is_some(),
+                "enter in the filled password field must start the sign-in"
+            );
+        });
+    }
 
     #[gpui::test]
     fn oauth_committed_success_is_delivered_when_back_precedes_ui_receipt(cx: &mut TestAppContext) {

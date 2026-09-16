@@ -322,8 +322,14 @@ impl TextInput {
     }
 
     /// Give this input an explicit position in the tab order.
+    ///
+    /// The order lives on the focus handle, not only on the element: gpui
+    /// applies an element's `tab_index` only to a focus handle it creates
+    /// itself, and this input tracks its own handle. Without this the handle
+    /// stays a non-tab-stop and `window.focus_next` skips the input.
     pub fn with_tab_index(mut self, index: isize) -> Self {
         self.tab_index = Some(index);
+        self.focus_handle = self.focus_handle.clone().tab_index(index).tab_stop(true);
         self
     }
 
