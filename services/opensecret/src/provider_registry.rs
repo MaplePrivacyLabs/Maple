@@ -6,8 +6,8 @@
 //! separate Router v1 configuration.
 
 use crate::model_config::{
-    DEEPSEEK_V4_1_FLASH_MODEL_ID, GLM_5_3_FLASH_MODEL_ID, GLM_5_3_MODEL_ID, KIMI_K2_6_MODEL_ID,
-    KIMI_K3_MODEL_ID, QUICK_MODEL_ID,
+    DEEPSEEK_V4_1_FLASH_MODEL_ID, GLM_5_3_FLASH_MODEL_ID, GLM_5_3_MODEL_ID, KIMI_K3_MODEL_ID,
+    QUICK_MODEL_ID,
 };
 
 pub(crate) const SHADOW_ROUTING_POLICY_VERSION: &str = "routing-v2-weighted-v2";
@@ -64,10 +64,42 @@ pub(crate) struct ModelRouteSpec {
     pub(crate) enabled: bool,
 }
 
+/// Which health gates can exclude a route during Router v2 selection and probe claim.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum FailoverPolicy {
+    /// Transport failures, 503/529, and 429 all fail over to another same-model route.
+    AllGates,
+    /// Only 429 and 503/529 fail over. Timeouts and stream errors stay on the selected provider.
+    CapacityGates,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct CompletionModelSpec {
     pub(crate) public_model_id: &'static str,
     pub(crate) routes: &'static [ModelRouteSpec],
+    pub(crate) failover: FailoverPolicy,
+}
+
+const fn completion_model(
+    public_model_id: &'static str,
+    routes: &'static [ModelRouteSpec],
+) -> CompletionModelSpec {
+    CompletionModelSpec {
+        public_model_id,
+        routes,
+        failover: FailoverPolicy::AllGates,
+    }
+}
+
+const fn completion_model_capacity_failover(
+    public_model_id: &'static str,
+    routes: &'static [ModelRouteSpec],
+) -> CompletionModelSpec {
+    CompletionModelSpec {
+        public_model_id,
+        routes,
+        failover: FailoverPolicy::CapacityGates,
+    }
 }
 
 #[derive(Debug)]
@@ -136,15 +168,6 @@ const KIMI_K3_ROUTES: &[ModelRouteSpec] = &[ModelRouteSpec {
     enabled: true,
 }];
 
-const KIMI_K2_6_ROUTES: &[ModelRouteSpec] = &[ModelRouteSpec {
-    provider: ProviderId::Continuum,
-    provider_model_id: "kimi-k2.6",
-    response_model_id: KIMI_K2_6_MODEL_ID,
-    rate_limit_scope: RateLimitScope::ProviderAccount,
-    weight: 100,
-    enabled: true,
-}];
-
 const GLM_5_3_ROUTES: &[ModelRouteSpec] = &[
     ModelRouteSpec {
         provider: ProviderId::Continuum,
@@ -164,14 +187,29 @@ const GLM_5_3_ROUTES: &[ModelRouteSpec] = &[
     },
 ];
 
-const GLM_5_3_FLASH_ROUTES: &[ModelRouteSpec] = &[ModelRouteSpec {
-    provider: ProviderId::Tinfoil,
-    provider_model_id: GLM_5_3_FLASH_MODEL_ID,
-    response_model_id: GLM_5_3_FLASH_MODEL_ID,
-    rate_limit_scope: RateLimitScope::ProviderModel,
-    weight: 100,
-    enabled: true,
-}];
+// Provider weights are 70 Tinfoil / 30 Continuum. Route weights 27 and 7 make
+// Flash's effective split 70*27 : 30*7 = 1890 : 210, exactly 90% / 10%.
+const GLM_5_3_FLASH_TINFOIL_ROUTE_WEIGHT: u16 = 27;
+const GLM_5_3_FLASH_CONTINUUM_ROUTE_WEIGHT: u16 = 7;
+
+const GLM_5_3_FLASH_ROUTES: &[ModelRouteSpec] = &[
+    ModelRouteSpec {
+        provider: ProviderId::Continuum,
+        provider_model_id: "glm-5.3-flash",
+        response_model_id: GLM_5_3_FLASH_MODEL_ID,
+        rate_limit_scope: RateLimitScope::ProviderAccount,
+        weight: GLM_5_3_FLASH_CONTINUUM_ROUTE_WEIGHT,
+        enabled: true,
+    },
+    ModelRouteSpec {
+        provider: ProviderId::Tinfoil,
+        provider_model_id: GLM_5_3_FLASH_MODEL_ID,
+        response_model_id: GLM_5_3_FLASH_MODEL_ID,
+        rate_limit_scope: RateLimitScope::ProviderModel,
+        weight: GLM_5_3_FLASH_TINFOIL_ROUTE_WEIGHT,
+        enabled: true,
+    },
+];
 
 const DEEPSEEK_V4_1_FLASH_ROUTES: &[ModelRouteSpec] = &[ModelRouteSpec {
     provider: ProviderId::Tinfoil,
@@ -201,42 +239,14 @@ const GPT_OSS_SAFEGUARD_120B_ROUTES: &[ModelRouteSpec] = &[ModelRouteSpec {
 }];
 
 const COMPLETION_MODELS: &[CompletionModelSpec] = &[
-    CompletionModelSpec {
-        public_model_id: QUICK_MODEL_ID,
-        routes: GPT_OSS_120B_ROUTES,
-    },
-    CompletionModelSpec {
-        public_model_id: "gemma4-31b",
-        routes: GEMMA4_31B_ROUTES,
-    },
-    CompletionModelSpec {
-        public_model_id: KIMI_K3_MODEL_ID,
-        routes: KIMI_K3_ROUTES,
-    },
-    CompletionModelSpec {
-        public_model_id: KIMI_K2_6_MODEL_ID,
-        routes: KIMI_K2_6_ROUTES,
-    },
-    CompletionModelSpec {
-        public_model_id: GLM_5_3_MODEL_ID,
-        routes: GLM_5_3_ROUTES,
-    },
-    CompletionModelSpec {
-        public_model_id: GLM_5_3_FLASH_MODEL_ID,
-        routes: GLM_5_3_FLASH_ROUTES,
-    },
-    CompletionModelSpec {
-        public_model_id: DEEPSEEK_V4_1_FLASH_MODEL_ID,
-        routes: DEEPSEEK_V4_1_FLASH_ROUTES,
-    },
-    CompletionModelSpec {
-        public_model_id: "llama3-3-70b",
-        routes: LLAMA3_3_70B_ROUTES,
-    },
-    CompletionModelSpec {
-        public_model_id: "gpt-oss-safeguard-120b",
-        routes: GPT_OSS_SAFEGUARD_120B_ROUTES,
-    },
+    completion_model(QUICK_MODEL_ID, GPT_OSS_120B_ROUTES),
+    completion_model("gemma4-31b", GEMMA4_31B_ROUTES),
+    completion_model(KIMI_K3_MODEL_ID, KIMI_K3_ROUTES),
+    completion_model(GLM_5_3_MODEL_ID, GLM_5_3_ROUTES),
+    completion_model_capacity_failover(GLM_5_3_FLASH_MODEL_ID, GLM_5_3_FLASH_ROUTES),
+    completion_model(DEEPSEEK_V4_1_FLASH_MODEL_ID, DEEPSEEK_V4_1_FLASH_ROUTES),
+    completion_model("llama3-3-70b", LLAMA3_3_70B_ROUTES),
+    completion_model("gpt-oss-safeguard-120b", GPT_OSS_SAFEGUARD_120B_ROUTES),
 ];
 
 pub(crate) static PROVIDER_REGISTRY: ProviderRegistry = ProviderRegistry {
@@ -296,7 +306,6 @@ mod tests {
                 QUICK_MODEL_ID,
                 "gemma4-31b",
                 KIMI_K3_MODEL_ID,
-                KIMI_K2_6_MODEL_ID,
                 GLM_5_3_MODEL_ID,
                 GLM_5_3_FLASH_MODEL_ID,
                 DEEPSEEK_V4_1_FLASH_MODEL_ID,
@@ -357,12 +366,6 @@ mod tests {
                     KIMI_K3_MODEL_ID
                 ),
                 (
-                    KIMI_K2_6_MODEL_ID,
-                    ProviderId::Continuum,
-                    "kimi-k2.6",
-                    KIMI_K2_6_MODEL_ID
-                ),
-                (
                     GLM_5_3_MODEL_ID,
                     ProviderId::Continuum,
                     "glm-5.3",
@@ -373,6 +376,12 @@ mod tests {
                     ProviderId::Tinfoil,
                     GLM_5_3_MODEL_ID,
                     GLM_5_3_MODEL_ID
+                ),
+                (
+                    GLM_5_3_FLASH_MODEL_ID,
+                    ProviderId::Continuum,
+                    "glm-5.3-flash",
+                    GLM_5_3_FLASH_MODEL_ID
                 ),
                 (
                     GLM_5_3_FLASH_MODEL_ID,
@@ -438,6 +447,11 @@ mod tests {
                 && *scope == RateLimitScope::ProviderModel
         }));
         assert!(scopes.iter().any(|(provider, model, scope)| {
+            *provider == ProviderId::Continuum
+                && *model == "glm-5.3-flash"
+                && *scope == RateLimitScope::ProviderAccount
+        }));
+        assert!(scopes.iter().any(|(provider, model, scope)| {
             *provider == ProviderId::Tinfoil
                 && *model == GLM_5_3_FLASH_MODEL_ID
                 && *scope == RateLimitScope::ProviderModel
@@ -445,5 +459,37 @@ mod tests {
         assert!(!scopes.iter().any(|(_, model, _)| {
             *model == "glm-5-2" || *model == "glm-5.2" || *model == "deepseek-v4-flash"
         }));
+    }
+
+    #[test]
+    fn glm_flash_uses_a_ten_percent_continuum_split_and_capacity_only_failover() {
+        let flash = PROVIDER_REGISTRY
+            .completion_model(GLM_5_3_FLASH_MODEL_ID)
+            .expect("Flash model");
+        assert_eq!(flash.failover, FailoverPolicy::CapacityGates);
+        assert_eq!(
+            flash
+                .routes
+                .iter()
+                .map(|route| (route.provider, route.weight))
+                .collect::<Vec<_>>(),
+            vec![
+                (ProviderId::Continuum, GLM_5_3_FLASH_CONTINUUM_ROUTE_WEIGHT),
+                (ProviderId::Tinfoil, GLM_5_3_FLASH_TINFOIL_ROUTE_WEIGHT),
+            ]
+        );
+
+        let tinfoil =
+            u32::from(PROVIDERS[0].weight) * u32::from(GLM_5_3_FLASH_TINFOIL_ROUTE_WEIGHT);
+        let continuum =
+            u32::from(PROVIDERS[1].weight) * u32::from(GLM_5_3_FLASH_CONTINUUM_ROUTE_WEIGHT);
+        assert_eq!(tinfoil, 1890);
+        assert_eq!(continuum, 210);
+        assert_eq!(continuum * 100 / (tinfoil + continuum), 10);
+
+        let glm = PROVIDER_REGISTRY
+            .completion_model(GLM_5_3_MODEL_ID)
+            .expect("GLM 5.3");
+        assert_eq!(glm.failover, FailoverPolicy::AllGates);
     }
 }

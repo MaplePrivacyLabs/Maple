@@ -37,7 +37,8 @@ describe("Agent Mode model defaults", () => {
     expect(migrateAgentModelPreference("  glm-5-2  ")).toBeNull();
     expect(migrateAgentModelPreference("deepseek-v4-flash")).toBeNull();
     expect(migrateAgentModelPreference(null)).toBeNull();
-    expect(migrateAgentModelPreference("kimi-k2-6")).toBe("kimi-k2-6");
+    expect(migrateAgentModelPreference("kimi-k2-6")).toBe("glm-5-3-flash");
+    expect(migrateAgentModelPreference("kimi-k2.6")).toBe("glm-5-3-flash");
     expect(migrateAgentModelPreference(POWERFUL_MODEL_ALIAS)).toBe(POWERFUL_MODEL_ALIAS);
   });
 

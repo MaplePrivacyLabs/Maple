@@ -1003,7 +1003,7 @@ mod tests {
     fn test_prompt_budget_uses_model_context_window() {
         assert_eq!(prompt_token_budget("llama3-3-70b"), 131_072);
         assert_eq!(prompt_token_budget("glm-5-3"), 262_144);
-        assert_eq!(prompt_token_budget("glm-5-3-flash"), 1_048_576);
+        assert_eq!(prompt_token_budget("glm-5-3-flash"), 262_144);
         assert_eq!(prompt_token_budget("deepseek-v4-1-flash"), 1_048_576);
     }
 
@@ -1797,7 +1797,7 @@ mod tests {
         ];
 
         let (messages, total_tokens) =
-            build_prompt_from_chat_messages(msgs, "kimi-k2-6").expect("build prompt");
+            build_prompt_from_chat_messages(msgs, "kimi-k3").expect("build prompt");
 
         assert_eq!(messages[1]["tool_calls"][0]["id"], "functions.web_search:0");
         assert_eq!(messages[2]["tool_call_id"], "functions.web_search:0");
@@ -1828,12 +1828,12 @@ mod tests {
             }),
         ];
 
-        normalize_tool_call_ids_for_model(&mut messages, "kimi-k2-6");
+        normalize_tool_call_ids_for_model(&mut messages, "kimi-k3");
         assert_eq!(messages[0]["tool_calls"][0]["id"], "functions.read_image:0");
         assert_eq!(messages[1]["tool_call_id"], "functions.read_image:0");
 
         let normalized_once = messages.clone();
-        normalize_tool_call_ids_for_model(&mut messages, "kimi-k2-6");
+        normalize_tool_call_ids_for_model(&mut messages, "kimi-k3");
         assert_eq!(messages, normalized_once);
     }
 
@@ -1897,7 +1897,7 @@ mod tests {
         ];
 
         let (messages, total_tokens) =
-            build_prompt_from_chat_messages(msgs, "kimi-k2-6").expect("build prompt");
+            build_prompt_from_chat_messages(msgs, "kimi-k3").expect("build prompt");
 
         assert_eq!(messages[1]["role"], ROLE_ASSISTANT);
         assert_eq!(messages[1]["content"], "");

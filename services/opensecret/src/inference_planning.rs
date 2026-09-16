@@ -300,8 +300,9 @@ mod tests {
         assert_eq!(plan.selected.public_model_id, GLM_5_3_FLASH_MODEL_ID);
         assert_eq!(plan.selected.provider_model_id, GLM_5_3_FLASH_MODEL_ID);
         assert_eq!(plan.selected.provider, ProviderId::Tinfoil);
-        assert_eq!(plan.selected.bucket, None);
-        assert_eq!(plan.decision, PlanDecision::FixedRoute);
+        assert_eq!(plan.selected.bucket, Some(73));
+        assert_eq!(plan.decision, PlanDecision::StaticBucket);
+        assert_eq!(plan.eligible_routes.len(), 2);
     }
 
     #[test]
@@ -386,7 +387,7 @@ mod tests {
     }
 
     #[test]
-    fn flash_is_a_distinct_tinfoil_only_model_not_a_glm_5_3_fallback() {
+    fn flash_is_a_distinct_dual_provider_model_not_a_glm_5_3_fallback() {
         let intent = intent(GLM_5_3_FLASH_MODEL_ID, GLM_5_3_FLASH_MODEL_ID);
         let plan = plan_completion_route(
             &PROVIDER_REGISTRY,
@@ -397,14 +398,53 @@ mod tests {
         )
         .expect("Flash route");
 
-        assert_eq!(plan.selected.provider, ProviderId::Tinfoil);
         assert_eq!(plan.selected.public_model_id, GLM_5_3_FLASH_MODEL_ID);
-        assert_eq!(plan.selected.provider_model_id, GLM_5_3_FLASH_MODEL_ID);
-        assert_eq!(plan.eligible_routes.len(), 1);
+        assert_eq!(plan.eligible_routes.len(), 2);
+        assert_eq!(
+            plan.eligible_routes
+                .iter()
+                .map(|route| (route.provider, route.provider_model_id.as_str()))
+                .collect::<Vec<_>>(),
+            vec![
+                (ProviderId::Continuum, "glm-5.3-flash"),
+                (ProviderId::Tinfoil, GLM_5_3_FLASH_MODEL_ID),
+            ]
+        );
         assert!(plan
             .eligible_routes
             .iter()
             .all(|route| route.public_model_id == GLM_5_3_FLASH_MODEL_ID));
+    }
+
+    #[test]
+    fn flash_split_sends_ten_percent_of_accounts_to_continuum() {
+        for (bucket, expected) in [
+            (0u8, ProviderId::Continuum),
+            (9, ProviderId::Continuum),
+            (10, ProviderId::Tinfoil),
+            (99, ProviderId::Tinfoil),
+        ] {
+            let intent = InferenceIntent::new(
+                Uuid::from_u128(u128::from(bucket)),
+                GLM_5_3_FLASH_MODEL_ID,
+                GLM_5_3_FLASH_MODEL_ID,
+                ModelPlan::Paid,
+                crate::inference::InferenceSurface::Responses,
+                crate::inference::WorkloadClass::Interactive,
+            );
+            let plan = plan_completion_route(
+                &PROVIDER_REGISTRY,
+                RoutePlanningInput {
+                    intent: &intent,
+                    configured_providers: ConfiguredProviders::all(),
+                },
+            )
+            .expect("Flash plan");
+
+            assert_eq!(plan.selected.provider, expected, "bucket {bucket}");
+            assert_eq!(plan.selected.bucket, Some(bucket));
+            assert_eq!(plan.decision, PlanDecision::StaticBucket);
+        }
     }
 
     #[test]
@@ -423,17 +463,19 @@ mod tests {
             ))
         );
 
-        let kimi = intent("kimi-k2-6", "kimi-k2-6");
-        let tinfoil_only = ConfiguredProviders::none().with_provider(ProviderId::Tinfoil);
+        let glm_flash = intent(GLM_5_3_FLASH_MODEL_ID, GLM_5_3_FLASH_MODEL_ID);
+        let none = ConfiguredProviders::none();
         assert_eq!(
             plan_completion_route(
                 &PROVIDER_REGISTRY,
                 RoutePlanningInput {
-                    intent: &kimi,
-                    configured_providers: tinfoil_only,
+                    intent: &glm_flash,
+                    configured_providers: none,
                 },
             ),
-            Err(RoutePlanningError::NoEligibleRoute("kimi-k2-6".to_string()))
+            Err(RoutePlanningError::NoEligibleRoute(
+                GLM_5_3_FLASH_MODEL_ID.to_string()
+            ))
         );
     }
 }

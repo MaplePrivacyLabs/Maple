@@ -18,6 +18,7 @@ pub const AGENT_FEATURE_FLAG_KEY: &str = "agent";
 pub const PAID_POWERFUL_GLM_5_3_ALIAS_FLAG_KEY: &str = "model-alias.paid.powerful.glm-5-3";
 pub const PAID_MODEL_ALIAS_FLAG_KEYS: &[&str] = &[PAID_POWERFUL_GLM_5_3_ALIAS_FLAG_KEY];
 pub const GLM_5_3_TINFOIL_FLAG_KEY: &str = "provider-routing.glm-5-3.tinfoil";
+pub const GLM_5_3_FLASH_CONTINUUM_FLAG_KEY: &str = "provider-routing.glm-5-3-flash.continuum";
 pub const INFERENCE_ROUTER_V2_FLAG_KEY: &str = "inference.router-v2";
 
 #[derive(Debug, thiserror::Error)]

@@ -118,7 +118,6 @@ pub const GLM_5_3_MODEL_ID: &str = "glm-5-3";
 pub const GLM_5_3_FLASH_MODEL_ID: &str = "glm-5-3-flash";
 pub const POWERFUL_MODEL_ID: &str = GLM_5_3_MODEL_ID;
 pub const KIMI_K3_MODEL_ID: &str = "kimi-k3";
-pub const KIMI_K2_6_MODEL_ID: &str = "kimi-k2-6";
 pub const DEEPSEEK_V4_1_FLASH_MODEL_ID: &str = "deepseek-v4-1-flash";
 
 const FREE_MODEL_ALIAS_TARGETS: ModelAliasTargets = ModelAliasTargets {
@@ -550,7 +549,7 @@ const MODEL_CONFIGS: &[ModelConfigEntry] = &[
         GLM_5_3_FLASH_MODEL_ID,
         "GLM-5.3 Flash",
         "GLM-5.3 Flash",
-        "Fast multimodal reasoning and tool-use model with a 1M-token context window.",
+        "Fast multimodal reasoning and tool-use model.",
         ModelAccessTier::Pro,
         ModelCapabilities::chat(true, true),
         &["New"],
@@ -558,7 +557,8 @@ const MODEL_CONFIGS: &[ModelConfigEntry] = &[
         true,
         false,
         25,
-        1_048_576,
+        // Shared window: Continuum supports 262,144; Tinfoil supports 1,048,576.
+        262_144,
     )
     .with_catalog_metadata(ModelCatalogMetadata::new(
         &["text", "image"],
@@ -586,21 +586,6 @@ const MODEL_CONFIGS: &[ModelConfigEntry] = &[
         Some("2.8T"),
         Some("104B"),
     )),
-    ModelConfigEntry::new(
-        "kimi-k2-6",
-        "Kimi K2.6",
-        "Kimi K2.6",
-        "Powerful model for deeper thinking and analysis.",
-        ModelAccessTier::Pro,
-        ModelCapabilities::chat(true, true),
-        &[],
-        true,
-        true,
-        false,
-        40,
-        262_144,
-    )
-    .with_catalog_provider("continuum", "kimi-k2.6"),
     ModelConfigEntry::new(
         GLM_5_3_MODEL_ID,
         "GLM 5.3",
@@ -891,10 +876,9 @@ mod tests {
         assert_eq!(model_context_window("llama3-3-70b"), 131_072);
         assert_eq!(model_context_window("gpt-oss-120b"), 131_072);
         assert_eq!(model_context_window("gpt-oss-safeguard-120b"), 131_072);
-        assert_eq!(model_context_window("kimi-k2-6"), 262_144);
         assert_eq!(model_context_window("gemma4-31b"), 262_144);
         assert_eq!(model_context_window("glm-5-3"), 262_144);
-        assert_eq!(model_context_window("glm-5-3-flash"), 1_048_576);
+        assert_eq!(model_context_window("glm-5-3-flash"), 262_144);
         assert_eq!(model_context_window("kimi-k3"), 262_144);
         assert_eq!(model_context_window("deepseek-v4-1-flash"), 1_048_576);
         assert_eq!(model_context_window(AUTO_QUICK_MODEL_ID), 131_072);
@@ -907,7 +891,6 @@ mod tests {
             "llama3-3-70b",
             "gpt-oss-120b",
             "gpt-oss-safeguard-120b",
-            "kimi-k2-6",
             "gemma4-31b",
             "glm-5-3",
             "glm-5-3-flash",
@@ -1030,6 +1013,7 @@ mod tests {
         assert_eq!(resolve_completion_model_id("voxtral-small-24b"), None);
         assert_eq!(resolve_completion_model_id("quick"), None);
         assert_eq!(resolve_completion_model_id("kimi-k2-5"), None);
+        assert_eq!(resolve_completion_model_id("kimi-k2-6"), None);
         assert_eq!(resolve_completion_model_id("kimi-k3"), Some("kimi-k3"));
         assert_eq!(resolve_completion_model_id("glm-5-3"), Some("glm-5-3"));
         assert_eq!(
@@ -1059,6 +1043,7 @@ mod tests {
             Some("gpt-oss-safeguard-120b")
         );
         assert_eq!(resolve_public_model_id("kimi-k2-5"), None);
+        assert_eq!(resolve_public_model_id("kimi-k2-6"), None);
         assert_eq!(resolve_public_model_id("kimi-k3"), Some("kimi-k3"));
         assert_eq!(resolve_public_model_id("glm-5-3"), Some("glm-5-3"));
         assert_eq!(
@@ -1249,7 +1234,6 @@ mod tests {
             let targets = ModelAliasTargets::for_plan(plan);
             for model in [
                 QUICK_MODEL_ID,
-                "kimi-k2-6",
                 KIMI_K3_MODEL_ID,
                 GLM_5_3_MODEL_ID,
                 GLM_5_3_FLASH_MODEL_ID,
@@ -1302,7 +1286,6 @@ mod tests {
         for model in [
             "gemma4-31b",
             "kimi-k3",
-            "kimi-k2-6",
             "glm-5-3",
             "glm-5-3-flash",
             "deepseek-v4-1-flash",
@@ -1379,13 +1362,14 @@ mod tests {
     }
 
     #[test]
-    fn test_catalog_keeps_kimi_k2_6_selectable_through_continuum() {
+    fn test_catalog_removes_deprecated_kimi_k2_6() {
         let catalog = model_catalog_response(ModelAliasTargets::default());
-        let kimi = catalog_model(&catalog, "kimi-k2-6");
+        let openai_models = openai_models_response();
 
-        assert_eq!(kimi["provider"], "continuum");
-        assert_eq!(kimi["provider_id"], "kimi-k2.6");
-        assert_eq!(resolve_completion_model_id("kimi-k2-6"), Some("kimi-k2-6"));
+        assert!(!has_model(&catalog, "kimi-k2-6"));
+        assert!(!has_model(&openai_models, "kimi-k2-6"));
+        assert_eq!(resolve_completion_model_id("kimi-k2-6"), None);
+        assert_eq!(resolve_public_model_id("kimi-k2-6"), None);
     }
 
     #[test]
@@ -1417,7 +1401,7 @@ mod tests {
     }
 
     #[test]
-    fn test_catalog_adds_glm_5_3_flash_through_tinfoil_with_image_and_1m_context() {
+    fn test_catalog_adds_glm_5_3_flash_through_tinfoil_with_image_and_shared_256k_context() {
         let catalog = model_catalog_response(ModelAliasTargets::for_plan(ModelPlan::Paid));
         let glm = catalog_model(&catalog, GLM_5_3_FLASH_MODEL_ID);
 
@@ -1425,7 +1409,7 @@ mod tests {
         assert_eq!(glm["provider_id"], GLM_5_3_FLASH_MODEL_ID);
         assert_eq!(glm["display_name"], "GLM-5.3 Flash");
         assert_eq!(glm["access"], "pro");
-        assert_eq!(glm["context_window"], 1_048_576);
+        assert_eq!(glm["context_window"], 262_144);
         assert_eq!(glm["input_modalities"], json!(["text", "image"]));
         assert_eq!(glm["output_modalities"], json!(["text"]));
         assert_eq!(glm["capabilities"]["vision"], true);

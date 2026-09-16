@@ -1097,7 +1097,7 @@ mod tests {
     #[test]
     fn test_apply_responses_model_defaults_preserves_kimi_reasoning_history() {
         let mut chat_request = json!({
-            "model": "kimi-k2-6",
+            "model": "kimi-k3",
             "chat_template_kwargs": {
                 "foo": "bar"
             }
@@ -1105,8 +1105,8 @@ mod tests {
 
         apply_responses_model_defaults(
             &mut chat_request,
-            crate::model_config::model_config("kimi-k2-6").responses,
-            "kimi-k2-6",
+            crate::model_config::model_config("kimi-k3").responses,
+            "kimi-k3",
         );
 
         assert_eq!(
@@ -1156,7 +1156,7 @@ mod tests {
 
     #[test]
     fn test_model_turn_request_does_not_retain_raw_input_or_metadata() {
-        let mut request = responses_request_for_model("kimi-k2-6");
+        let mut request = responses_request_for_model("kimi-k3");
         request.input = InputMessage::Messages(vec![MessageInput {
             role: "user".to_string(),
             content: MessageContent::Parts(vec![MessageContentPart::InputImage {
@@ -1816,7 +1816,7 @@ mod tests {
 
     #[test]
     fn test_build_model_turn_request_preserves_explicit_sampling_values() {
-        let mut body = responses_request_for_model("kimi-k2-6");
+        let mut body = responses_request_for_model("kimi-k3");
         body.temperature = Some(0.5);
         body.top_p = Some(0.75);
 
@@ -1894,7 +1894,7 @@ mod tests {
 
     #[test]
     fn test_build_model_turn_request_applies_reasoning_history_template_kwargs() {
-        let kimi = responses_request_for_model("kimi-k2-6");
+        let kimi = responses_request_for_model("kimi-k3");
         let kimi_request =
             build_model_turn_request(&kimi, &[json!({"role": "user", "content": "hello"})], false);
         assert_eq!(
@@ -1985,7 +1985,7 @@ mod tests {
 
     #[test]
     fn test_build_model_turn_request_includes_tools_when_web_search_is_enabled() {
-        let mut body = responses_request_for_model("kimi-k2-6");
+        let mut body = responses_request_for_model("kimi-k3");
         body.tool_choice = Some("auto".to_string());
         body.tools = Some(json!([{ "type": "web_search" }]));
 

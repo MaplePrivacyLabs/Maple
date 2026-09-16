@@ -44,6 +44,9 @@ export function migrateAgentModelPreference(
   if (!model || model === PREVIOUS_RECOMMENDED_AGENT_MODEL || model === "deepseek-v4-flash") {
     return null;
   }
+  if (model === "kimi-k2-6" || model === "kimi-k2.6") {
+    return "glm-5-3-flash";
+  }
   return model;
 }
 

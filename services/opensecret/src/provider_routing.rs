@@ -7,8 +7,10 @@ use crate::inference_planning::{
     plan_completion_route, ConfiguredProviders, ProviderPreference, RoutePlan, RoutePlanningError,
     RoutePlanningInput,
 };
-use crate::model_config::{resolve_completion_model_id, resolve_public_model_id, GLM_5_3_MODEL_ID};
-use crate::os_flags::GLM_5_3_TINFOIL_FLAG_KEY;
+use crate::model_config::{
+    resolve_completion_model_id, resolve_public_model_id, GLM_5_3_FLASH_MODEL_ID, GLM_5_3_MODEL_ID,
+};
+use crate::os_flags::{GLM_5_3_FLASH_CONTINUUM_FLAG_KEY, GLM_5_3_TINFOIL_FLAG_KEY};
 use crate::provider_registry::{
     ProviderId, ProviderRegistry, RouteSelectionSource, PROVIDER_REGISTRY,
 };
@@ -171,14 +173,6 @@ const PROVIDERS: &[ProviderConfig] = &[
     },
 ];
 
-const KIMI_K2_6_ROUTES: &[ModelProviderRoute] = &[ModelProviderRoute {
-    provider: ProviderId::Continuum,
-    provider_model_id: "kimi-k2.6",
-    weight: 100,
-    enabled: true,
-    requires_explicit_preference: false,
-}];
-
 const GLM_5_3_ROUTES: &[ModelProviderRoute] = &[
     ModelProviderRoute {
         provider: ProviderId::Continuum,
@@ -199,13 +193,26 @@ const GLM_5_3_ROUTES: &[ModelProviderRoute] = &[
     },
 ];
 
-const MODEL_ROUTES: &[ModelRoutingConfig] = &[
-    ModelRoutingConfig {
-        public_model_id: "kimi-k2-6",
-        routes: KIMI_K2_6_ROUTES,
-        provider_flag: None,
-        default_provider: Some(ProviderId::Continuum),
+const GLM_5_3_FLASH_ROUTES: &[ModelProviderRoute] = &[
+    ModelProviderRoute {
+        // V1 opts accounts into Continuum explicitly; absent/failed flag lookups
+        // keep Flash on Tinfoil. V2 uses its separate weighted registry.
+        provider: ProviderId::Continuum,
+        provider_model_id: "glm-5.3-flash",
+        weight: 100,
+        enabled: true,
+        requires_explicit_preference: true,
     },
+    ModelProviderRoute {
+        provider: ProviderId::Tinfoil,
+        provider_model_id: GLM_5_3_FLASH_MODEL_ID,
+        weight: 100,
+        enabled: true,
+        requires_explicit_preference: false,
+    },
+];
+
+const MODEL_ROUTES: &[ModelRoutingConfig] = &[
     ModelRoutingConfig {
         public_model_id: GLM_5_3_MODEL_ID,
         routes: GLM_5_3_ROUTES,
@@ -215,6 +222,16 @@ const MODEL_ROUTES: &[ModelRoutingConfig] = &[
             disabled_provider: ProviderId::Continuum,
         }),
         default_provider: Some(ProviderId::Continuum),
+    },
+    ModelRoutingConfig {
+        public_model_id: GLM_5_3_FLASH_MODEL_ID,
+        routes: GLM_5_3_FLASH_ROUTES,
+        provider_flag: Some(ProviderRoutingFlag {
+            key: GLM_5_3_FLASH_CONTINUUM_FLAG_KEY,
+            enabled_provider: ProviderId::Continuum,
+            disabled_provider: ProviderId::Tinfoil,
+        }),
+        default_provider: Some(ProviderId::Tinfoil),
     },
 ];
 
@@ -439,7 +456,7 @@ impl ProviderRouter {
         let mut available_providers = ConfiguredProviders::none();
         let mut earliest_recovery = None;
         for ((provider, _), snapshot) in configured_routes.iter().zip(snapshots) {
-            match snapshot.effective {
+            match snapshot.for_failover(model.failover) {
                 ShadowDisposition::WouldOpen { remaining } => {
                     let remaining = ceil_retry_after(remaining);
                     earliest_recovery = Some(
@@ -787,7 +804,7 @@ mod tests {
     use crate::model_config::{
         ModelAliasTargets, ModelPlan, PaidModelAliasOverrides, AUTO_POWERFUL_MODEL_ID,
         AUTO_QUICK_MODEL_ID, DEEPSEEK_V4_1_FLASH_MODEL_ID, GLM_5_3_FLASH_MODEL_ID,
-        GLM_5_3_MODEL_ID, KIMI_K2_6_MODEL_ID, KIMI_K3_MODEL_ID, QUICK_MODEL_ID,
+        GLM_5_3_MODEL_ID, KIMI_K3_MODEL_ID, QUICK_MODEL_ID,
     };
     use crate::os_flags::PAID_POWERFUL_GLM_5_3_ALIAS_FLAG_KEY;
     use std::collections::HashMap;
@@ -1528,14 +1545,14 @@ mod tests {
     }
 
     #[test]
-    fn continuum_account_429_blocks_kimi_and_keeps_glm_on_tinfoil() {
+    fn continuum_account_429_blocks_continuum_glm_flash_and_keeps_glm_on_tinfoil() {
         let router = ProviderRouter::default();
         let proxy_router = proxy_router_with_both_providers();
         router.observe_attempt_terminal(
             &capacity_terminal(
                 ProviderId::Continuum,
-                KIMI_K2_6_MODEL_ID,
-                "kimi-k2.6",
+                GLM_5_3_FLASH_MODEL_ID,
+                "glm-5.3-flash",
                 429,
                 Duration::from_secs(60),
             ),
@@ -1550,17 +1567,79 @@ mod tests {
             .expect("Tinfoil GLM after Continuum account limit");
         assert_eq!(glm.provider, ProviderId::Tinfoil);
 
-        let kimi_error = router
+        let flash = router
             .select_active_completion_route(
                 &proxy_router,
-                &intent(KIMI_K2_6_MODEL_ID, KIMI_K2_6_MODEL_ID),
+                &intent(GLM_5_3_FLASH_MODEL_ID, GLM_5_3_FLASH_MODEL_ID),
             )
-            .expect_err("Kimi shares the open Continuum account scope");
-        assert!(matches!(
-            kimi_error,
-            ProviderRoutingError::CapacityUnavailable { model, .. }
-                if model == KIMI_K2_6_MODEL_ID
-        ));
+            .expect("Flash still has a healthy Tinfoil route");
+        assert_eq!(flash.provider, ProviderId::Tinfoil);
+        assert_eq!(flash.public_model_id, GLM_5_3_FLASH_MODEL_ID);
+    }
+
+    #[test]
+    fn flash_tinfoil_429_fails_over_to_continuum() {
+        let router = ProviderRouter::default();
+        let proxy_router = proxy_router_with_both_providers();
+        router.observe_attempt_terminal(
+            &capacity_terminal(
+                ProviderId::Tinfoil,
+                GLM_5_3_FLASH_MODEL_ID,
+                GLM_5_3_FLASH_MODEL_ID,
+                429,
+                Duration::from_secs(60),
+            ),
+            ShadowObservationMode::Update,
+        );
+
+        let selected = router
+            .select_active_completion_route(
+                &proxy_router,
+                &InferenceIntent::new(
+                    uuid_for_bucket(50),
+                    GLM_5_3_FLASH_MODEL_ID,
+                    GLM_5_3_FLASH_MODEL_ID,
+                    ModelPlan::Paid,
+                    InferenceSurface::Responses,
+                    WorkloadClass::Interactive,
+                ),
+            )
+            .expect("Flash capacity failover");
+        assert_eq!(selected.provider, ProviderId::Continuum);
+        assert_eq!(selected.provider_model_id, "glm-5.3-flash");
+        assert_eq!(selected.selection_source, RouteSelectionSource::Fallback);
+    }
+
+    #[test]
+    fn flash_tinfoil_timeouts_do_not_fail_over_to_continuum() {
+        let router = ProviderRouter::default();
+        let proxy_router = proxy_router_with_both_providers();
+        let failure = || {
+            route_failure_terminal(
+                ProviderId::Tinfoil,
+                GLM_5_3_FLASH_MODEL_ID,
+                GLM_5_3_FLASH_MODEL_ID,
+            )
+        };
+        for _ in 0..3 {
+            router.observe_attempt_terminal(&failure(), ShadowObservationMode::Update);
+        }
+
+        let selected = router
+            .select_active_completion_route(
+                &proxy_router,
+                &InferenceIntent::new(
+                    uuid_for_bucket(50),
+                    GLM_5_3_FLASH_MODEL_ID,
+                    GLM_5_3_FLASH_MODEL_ID,
+                    ModelPlan::Paid,
+                    InferenceSurface::Responses,
+                    WorkloadClass::Interactive,
+                ),
+            )
+            .expect("Flash stays on Tinfoil after transport failures");
+        assert_eq!(selected.provider, ProviderId::Tinfoil);
+        assert_eq!(selected.provider_model_id, GLM_5_3_FLASH_MODEL_ID);
     }
 
     #[test]
@@ -1594,13 +1673,7 @@ mod tests {
         let proxy_router = proxy_router_with_both_providers();
 
         for (provider, public_model, provider_model) in [
-            (
-                ProviderId::Tinfoil,
-                GLM_5_3_FLASH_MODEL_ID,
-                GLM_5_3_FLASH_MODEL_ID,
-            ),
             (ProviderId::Tinfoil, KIMI_K3_MODEL_ID, KIMI_K3_MODEL_ID),
-            (ProviderId::Continuum, KIMI_K2_6_MODEL_ID, "kimi-k2.6"),
             (ProviderId::Tinfoil, QUICK_MODEL_ID, QUICK_MODEL_ID),
         ] {
             let router = ProviderRouter::default();
@@ -1665,21 +1738,98 @@ mod tests {
     }
 
     #[test]
-    fn test_alias_and_single_provider_models_have_no_provider_routing_flag() {
+    fn test_single_provider_models_have_no_provider_routing_flag() {
         let router = ProviderRouter::default();
 
-        assert_eq!(
-            router.provider_routing_flag_for_completion_model("kimi-k2-6"),
-            None
-        );
         assert_eq!(
             router.provider_routing_flag_for_completion_model("gpt-oss-120b"),
             None
         );
         assert_eq!(
-            router.provider_routing_flag_for_completion_model(GLM_5_3_FLASH_MODEL_ID),
+            router.provider_routing_flag_for_completion_model("deepseek-v4-1-flash"),
             None
         );
+    }
+
+    #[test]
+    fn glm_flash_v1_flag_is_opt_in_and_v2_ignores_it() {
+        let router = ProviderRouter::default();
+        let proxies = proxy_router_with_both_providers();
+        let flag = router
+            .provider_routing_flag_for_completion_model(GLM_5_3_FLASH_MODEL_ID)
+            .expect("Flash legacy provider flag");
+        assert_eq!(flag.key(), GLM_5_3_FLASH_CONTINUUM_FLAG_KEY);
+
+        // Missing/unavailable/timed-out lookups all yield None at the shared
+        // flag call site. False must preserve Tinfoil just like None.
+        for enabled in [None, Some(false), Some(true)] {
+            let preference = enabled.map(|value| flag.preference_for(value));
+            let expected_legacy = if enabled == Some(true) {
+                ProviderId::Continuum
+            } else {
+                ProviderId::Tinfoil
+            };
+            for bucket in 0..100 {
+                let mut request = intent(GLM_5_3_FLASH_MODEL_ID, GLM_5_3_FLASH_MODEL_ID);
+                request.account_uuid = uuid_for_bucket(bucket);
+                for (mode, expected) in [
+                    (InferenceRoutingMode::Legacy, expected_legacy),
+                    (
+                        InferenceRoutingMode::V2,
+                        if bucket < 10 {
+                            ProviderId::Continuum
+                        } else {
+                            ProviderId::Tinfoil
+                        },
+                    ),
+                ] {
+                    let selected = router
+                        .select_completion_route_for_mode(&proxies, &request, preference, mode)
+                        .expect("Flash route");
+                    assert_eq!(selected.provider, expected);
+                    assert_eq!(selected.public_model_id, GLM_5_3_FLASH_MODEL_ID);
+                    assert_eq!(selected.response_model_id, GLM_5_3_FLASH_MODEL_ID);
+                    assert_eq!(
+                        selected.provider_model_id,
+                        match expected {
+                            ProviderId::Continuum => "glm-5.3-flash",
+                            ProviderId::Tinfoil => GLM_5_3_FLASH_MODEL_ID,
+                        }
+                    );
+                    assert_eq!(
+                        selected.bucket,
+                        match mode {
+                            InferenceRoutingMode::Legacy => None,
+                            InferenceRoutingMode::V2 => Some(bucket),
+                        }
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn glm_flash_v1_enabled_flag_falls_back_when_continuum_is_not_configured() {
+        let router = ProviderRouter::default();
+        let proxies = ProxyRouter::new(
+            "https://api.openai.com".to_string(),
+            Some("synthetic-openai-key".to_string()),
+            "http://tinfoil.example.com".to_string(),
+        );
+        let flag = router
+            .provider_routing_flag_for_completion_model(GLM_5_3_FLASH_MODEL_ID)
+            .unwrap();
+        let selected = router
+            .select_completion_route_with_preference(
+                &proxies,
+                uuid_for_bucket(0),
+                GLM_5_3_FLASH_MODEL_ID,
+                Some(flag.preference_for(true)),
+            )
+            .expect("configured Tinfoil fallback");
+        assert_eq!(selected.provider, ProviderId::Tinfoil);
+        assert_eq!(selected.selection_source, RouteSelectionSource::Fallback);
+        assert_eq!(selected.proxy.api_key, None);
     }
 
     #[test]
@@ -1696,28 +1846,6 @@ mod tests {
             flag.preference_for(true).source(),
             RouteSelectionSource::FeatureFlag
         );
-    }
-
-    #[test]
-    fn test_kimi_always_uses_continuum() {
-        let router = ProviderRouter::default();
-        let proxy_router = proxy_router_with_both_providers();
-
-        for bucket in [0, 29, 30, 69, 70, 99] {
-            let selected = router
-                .select_completion_route(&proxy_router, uuid_for_bucket(bucket), "kimi-k2-6")
-                .expect("route");
-
-            assert_eq!(selected.proxy.provider_name, "continuum");
-            assert_eq!(selected.public_model_id, "kimi-k2-6");
-            assert_eq!(selected.provider_model_id, "kimi-k2.6");
-            assert_eq!(selected.response_model_id, "kimi-k2-6");
-            assert_eq!(selected.bucket, None);
-            assert_eq!(
-                selected.selection_source,
-                RouteSelectionSource::DefaultProvider
-            );
-        }
     }
 
     #[test]
@@ -1832,22 +1960,35 @@ mod tests {
     }
 
     #[test]
-    fn test_kimi_has_no_tinfoil_fallback_when_continuum_proxy_is_missing() {
+    fn test_removed_kimi_k2_6_is_unsupported() {
         let router = ProviderRouter::default();
-        let proxy_router = ProxyRouter::new(
-            "https://api.openai.com".to_string(),
-            None,
-            "http://tinfoil.example.com".to_string(),
-        );
+        let proxy_router = proxy_router_with_both_providers();
 
         let error = router
             .select_completion_route(&proxy_router, uuid_for_bucket(1), "kimi-k2-6")
-            .expect_err("no eligible Kimi route");
+            .expect_err("deprecated Kimi K2.6 is no longer a public model");
 
         assert_eq!(
             error,
-            ProviderRoutingError::NoEligibleRoute("kimi-k2-6".to_string())
+            ProviderRoutingError::UnsupportedModel("kimi-k2-6".to_string())
         );
+    }
+
+    #[test]
+    fn test_router_v2_glm_flash_uses_weighted_continuum_and_tinfoil_routes() {
+        let router = ProviderRouter::default();
+        let proxy_router = proxy_router_with_both_providers();
+
+        let selected = router
+            .select_active_completion_route(
+                &proxy_router,
+                &intent(GLM_5_3_FLASH_MODEL_ID, GLM_5_3_FLASH_MODEL_ID),
+            )
+            .expect("Flash v2 route");
+        assert_eq!(selected.provider, ProviderId::Continuum);
+        assert_eq!(selected.public_model_id, GLM_5_3_FLASH_MODEL_ID);
+        assert_eq!(selected.provider_model_id, "glm-5.3-flash");
+        assert_eq!(selected.response_model_id, GLM_5_3_FLASH_MODEL_ID);
     }
 
     #[test]
@@ -1986,15 +2127,6 @@ mod tests {
             "https://api.openai.com".to_string(),
             None,
             "http://tinfoil.example.com".to_string(),
-        );
-
-        let error = router
-            .select_completion_route(&proxy_router, uuid_for_bucket(50), "kimi-k2-6")
-            .expect_err("no eligible Kimi route");
-
-        assert_eq!(
-            error,
-            ProviderRoutingError::NoEligibleRoute("kimi-k2-6".to_string())
         );
 
         let error = router
