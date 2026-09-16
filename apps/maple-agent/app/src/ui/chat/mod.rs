@@ -4713,7 +4713,7 @@ impl ChatScreen {
                         column.child(
                             div()
                                 .mb_6()
-                                .font_family(crate::assets::FONT_DISPLAY_WIDE)
+                                .font_family(crate::assets::FONT_DISPLAY)
                                 .text_size(px(36.))
                                 .line_height(px(48.))
                                 .text_color(gpui::rgb(theme::display_text()))

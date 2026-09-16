@@ -10,7 +10,7 @@
 
 use std::sync::Arc;
 
-use gpui::{Div, ElementId, SharedString, div, prelude::*, px};
+use gpui::{Div, ElementId, SharedString, div, prelude::*, px, relative};
 use pulldown_cmark::{Alignment, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 
 use super::rich_text::{self, Highlights, Links, RenderCtx};
@@ -377,7 +377,9 @@ pub fn render_with(document: &Document, ctx: &RenderCtx) -> Div {
                     ctx,
                 );
                 if heading.is_some() {
-                    paragraph = paragraph.text_color(gpui::rgb(theme::text_heading()));
+                    paragraph = paragraph
+                        .text_color(gpui::rgb(theme::text_heading()))
+                        .line_height(relative(1.25));
                 }
                 container.child(wrap_inline(paragraph, *in_quote, *list_depth))
             }

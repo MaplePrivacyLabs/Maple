@@ -64,31 +64,32 @@ pub const FONTS: &[&[u8]] = &[
     include_bytes!("../assets/fonts/Manrope-SemiBold.ttf"),
     include_bytes!("../assets/fonts/Manrope-Bold.ttf"),
     include_bytes!("../assets/fonts/Array-Regular.otf"),
-    include_bytes!("../assets/fonts/Array-Wide.otf"),
-    include_bytes!("../assets/fonts/Geist-Variable.ttf"),
+    include_bytes!("../assets/fonts/Geist-Regular.ttf"),
+    include_bytes!("../assets/fonts/Geist-Medium.ttf"),
+    include_bytes!("../assets/fonts/Geist-SemiBold.ttf"),
+    include_bytes!("../assets/fonts/Geist-Bold.ttf"),
     include_bytes!("../assets/fonts/Geist-Italic.ttf"),
-    include_bytes!("../assets/fonts/GeistMono-Variable.ttf"),
+    include_bytes!("../assets/fonts/GeistMono-Regular.ttf"),
+    include_bytes!("../assets/fonts/GeistMono-Medium.ttf"),
+    include_bytes!("../assets/fonts/GeistMono-SemiBold.ttf"),
 ];
 
 /// Body font for chrome (brand kit: `--font-body`).
 pub const FONT_BODY: &str = "Manrope";
 /// Display font for headings (brand kit: `--font-display`).
 pub const FONT_DISPLAY: &str = "Array";
-/// Wide cut of Array, used for the empty-state hero to match the web app.
-pub const FONT_DISPLAY_WIDE: &str = "Array Wide";
-/// Code font (brand kit: `--font-mono`). Bundled, so every platform
-/// renders code the same way.
+/// Code font (brand kit: `--font-mono`). Bundled static Regular / Medium
+/// / SemiBold, so markdown strong and inline code keep their weight.
 pub const FONT_MONO: &str = "Geist Mono";
-/// Optional chat reading face. Variable, so Regular through Bold match.
+/// Optional chat reading face. Bundled static Regular through Bold;
+/// gpui/font-kit does not apply variable `wght` axes.
 pub const FONT_GEIST: &str = "Geist";
 /// Platform UI font. GPUI maps this to SF Pro on macOS, Segoe UI on
 /// Windows, and the desktop default elsewhere.
 pub const FONT_SYSTEM: &str = ".SystemUIFont";
-/// Named SF Pro Text. Distinct from `.SystemUIFont` so a mapping miss
-/// still has a real family to try.
-pub const FONT_SF_PRO: &str = "SF Pro Text";
-/// Preferred system serif; `typography` adds Georgia / Times fallbacks.
-pub const FONT_SERIF: &str = "New York";
+/// Chat serif option. Georgia is installed on stock macOS; New York is
+/// not, and gpui fallbacks cannot rescue a missing primary family.
+pub const FONT_SERIF: &str = "Georgia";
 
 pub struct Assets;
 

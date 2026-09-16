@@ -256,9 +256,9 @@ pub fn scrollbar_thumb_active() -> gpui::Rgba {
 /// Placeholder text in inputs.
 pub fn placeholder() -> gpui::Hsla {
     if is_light() {
-        gpui::hsla(0., 0., 0., 0.35)
+        gpui::hsla(0., 0., 0., 0.55)
     } else {
-        gpui::hsla(0., 0., 1., 0.4)
+        gpui::hsla(0., 0., 1., 0.5)
     }
 }
 

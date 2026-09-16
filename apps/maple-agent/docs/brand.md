@@ -200,26 +200,29 @@ selected menu items, and primary buttons.
 | Role | Family | Constant |
 |---|---|---|
 | Display headings (settings pane titles) | Array Regular | `assets::FONT_DISPLAY` |
-| Empty-state hero | Array Wide | `assets::FONT_DISPLAY_WIDE` |
+| Empty-state hero | Array Regular | `assets::FONT_DISPLAY` |
 | Chrome (sidebar, buttons, settings) | Manrope 14 px | `assets::FONT_BODY` |
 | Chat and composer (default) | System UI, 14 px, line-height 1.65 | `assets::FONT_SYSTEM` |
-| Chat option: SF Pro | SF Pro Text | `assets::FONT_SF_PRO` |
 | Chat option: Maple | Manrope | `assets::FONT_BODY` |
-| Chat option: Geist | Geist Sans | `assets::FONT_GEIST` |
-| Chat option: Serif | New York / Georgia / Times | `assets::FONT_SERIF` |
-| Code, diffs, tool output, keycaps | Geist Mono | `assets::FONT_MONO` |
+| Chat option: Geist | Geist Sans (static Regular–Bold) | `assets::FONT_GEIST` |
+| Chat option: Serif | Georgia | `assets::FONT_SERIF` |
+| Code, diffs, tool output, keycaps | Geist Mono (static Regular / Medium / SemiBold) | `assets::FONT_MONO` |
 
 Fonts are bundled in `app/assets/fonts` and registered at startup, so
 code and optional chat faces render the same on every platform. Array is
 licensed under the ITF Free Font License, which allows embedding in the
-app but not redistributing the font file on its own; Manrope and Geist
-are OFL. The system and serif faces are not bundled.
+app but not redistributing the font file on its own, and forbids
+renaming; the Wide cut therefore cannot be selected (gpui has no stretch
+and the file's family name is `Array`). Manrope and Geist are OFL. The
+system and serif faces are not bundled. gpui/font-kit does not apply
+variable `wght` axes, so Geist and Geist Mono ship as static instances.
 
 Chat family and size are user settings (`chat_font_family`,
-`chat_font_size`, 13–18 px, default 14). Markdown emphasis and headings use SemiBold
-(600), not Bold (700). Heading sizes are ems of the live chat size.
-The hero heading is 36 / 48 px in Array Wide; settings section titles
-are 26 / 32 px in Array Regular.
+`chat_font_size`, 13–18 px, default 14). Retired `"sf-pro"` values map to
+System; `.SystemUIFont` already is SF Pro on macOS. Markdown emphasis and
+headings use SemiBold (600), not Bold (700). Heading sizes are ems of the
+live chat size, at 1.25 line-height. The hero heading is 36 / 48 px in
+Array Regular; settings section titles are 26 / 32 px in Array Regular.
 
 ### Shape
 

@@ -279,6 +279,8 @@ impl Render for MapleApp {
             .flex()
             .flex_col()
             .font_family(crate::assets::FONT_BODY)
+            // Chrome default 14 px (`text_sm`). Chat reading size is set
+            // on transcript/composer via `typography::chat_reading`.
             .text_sm()
             .child(titlebar)
             .child(match &self.screen {

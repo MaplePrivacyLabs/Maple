@@ -890,7 +890,11 @@ impl SettingsScreen {
                     .rounded(theme::RADIUS_MD)
                     .border_1()
                     .border_color(gpui::rgb(theme::border()))
-                    .bg(gpui::rgb(theme::bg_app()))
+                    .bg(gpui::rgb(if theme::is_light() {
+                        theme::bg_sidebar()
+                    } else {
+                        theme::bg_app()
+                    }))
                     .px_3()
                     .py_3()
                     .flex()
@@ -1743,7 +1747,7 @@ impl SettingsScreen {
                     Some(plan) => plan_card(plan),
                     None => div()
                         .text_sm()
-                        .text_color(gpui::rgb(theme::text_faint()))
+                        .text_color(gpui::rgb(theme::text_muted()))
                         .child("Plan usage unavailable"),
                 });
                 pane = pane.child(section_title("Usage"));
@@ -1766,7 +1770,7 @@ impl SettingsScreen {
                 } else {
                     pane = pane.child(
                         div()
-                            .text_color(gpui::rgb(theme::text_faint()))
+                            .text_color(gpui::rgb(theme::text_muted()))
                             .child("Loading usage…"),
                     );
                 }
@@ -1902,7 +1906,7 @@ impl SettingsScreen {
             pane = pane.child(
                 div()
                     .text_sm()
-                    .text_color(gpui::rgb(theme::text_faint()))
+                    .text_color(gpui::rgb(theme::text_muted()))
                     .child("No shortcuts match this search."),
             );
         } else {
@@ -2104,7 +2108,7 @@ impl SettingsScreen {
                     .child(
                         div()
                             .text_xs()
-                            .text_color(gpui::rgb(theme::text_faint()))
+                            .text_color(gpui::rgb(theme::text_muted()))
                             .child(format!("Default: {}", row.default_sequence)),
                     ),
             )
@@ -2251,7 +2255,7 @@ impl SettingsScreen {
                 pane = pane.child(
                     div()
                         .text_sm()
-                        .text_color(gpui::rgb(theme::text_faint()))
+                        .text_color(gpui::rgb(theme::text_muted()))
                         .child("Detecting integrations…"),
                 );
             }
@@ -2268,7 +2272,7 @@ impl SettingsScreen {
                     pane = pane.child(
                         div()
                             .text_sm()
-                            .text_color(gpui::rgb(theme::text_faint()))
+                            .text_color(gpui::rgb(theme::text_muted()))
                             .child("No supported integrations detected on this device."),
                     );
                 }
@@ -2313,7 +2317,7 @@ impl SettingsScreen {
             None => {
                 pane = pane.child(
                     div()
-                        .text_color(gpui::rgb(theme::text_faint()))
+                        .text_color(gpui::rgb(theme::text_muted()))
                         .child("Loading custom MCP servers…"),
                 );
             }
@@ -2321,7 +2325,7 @@ impl SettingsScreen {
                 pane = pane.child(
                     div()
                         .text_sm()
-                        .text_color(gpui::rgb(theme::text_faint()))
+                        .text_color(gpui::rgb(theme::text_muted()))
                         .child("No custom MCP servers configured."),
                 );
             }

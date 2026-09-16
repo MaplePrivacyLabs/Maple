@@ -66,6 +66,7 @@ pub struct AppSettings {
     #[serde(default = "default_theme")]
     pub theme: String,
     /// Chat reading face: "system", "manrope", "geist", or "serif".
+    /// Retired `"sf-pro"` values parse as `"system"`.
     #[serde(default = "default_chat_font_family")]
     pub chat_font_family: String,
     /// Chat reading size in px, clamped to 13–18.
