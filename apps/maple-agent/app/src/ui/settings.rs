@@ -93,6 +93,8 @@ impl Section {
 pub(super) enum SettingMenu {
     Permission,
     Appearance,
+    ChatFont,
+    ChatSize,
     Voice,
     SpeechSpeed,
 }
@@ -103,6 +105,8 @@ impl SettingMenu {
         match self {
             Self::Permission => "permission",
             Self::Appearance => "appearance",
+            Self::ChatFont => "chat-font",
+            Self::ChatSize => "chat-size",
             Self::Voice => "voice",
             Self::SpeechSpeed => "speech-speed",
         }
@@ -784,6 +788,24 @@ impl SettingsScreen {
                 current: self.theme == preference,
             })
             .collect(),
+            SettingMenu::ChatFont => crate::ui::typography::ChatFontFamily::ALL
+                .iter()
+                .map(|&family| SettingOption {
+                    label: family.label().to_string(),
+                    current: crate::ui::typography::ChatFontFamily::parse(
+                        &self.settings.chat_font_family,
+                    ) == family,
+                })
+                .collect(),
+            SettingMenu::ChatSize => (crate::ui::typography::CHAT_FONT_SIZE_MIN
+                ..=crate::ui::typography::CHAT_FONT_SIZE_MAX)
+                .map(|size| SettingOption {
+                    label: format!("{size} px"),
+                    current: crate::ui::typography::clamp_chat_font_size(
+                        self.settings.chat_font_size,
+                    ) == size,
+                })
+                .collect(),
             SettingMenu::Voice => settings::TTS_VOICES
                 .iter()
                 .map(|(id, label)| SettingOption {
@@ -806,9 +828,113 @@ impl SettingsScreen {
         match menu {
             SettingMenu::Permission => self.settings.default_permission_mode.label().to_string(),
             SettingMenu::Appearance => self.theme.label().to_string(),
+            SettingMenu::ChatFont => {
+                crate::ui::typography::ChatFontFamily::parse(&self.settings.chat_font_family)
+                    .label()
+                    .to_string()
+            }
+            SettingMenu::ChatSize => format!(
+                "{} px",
+                crate::ui::typography::clamp_chat_font_size(self.settings.chat_font_size)
+            ),
             SettingMenu::Voice => settings::tts_voice_label(&self.settings.tts_voice).to_string(),
             SettingMenu::SpeechSpeed => format!("{:.1}\u{d7}", self.settings.tts_speed),
         }
+    }
+
+    /// The trigger label, drawn in the selected chat face when this is
+    /// the font picker so System vs Manrope is visible before leaving
+    /// Settings.
+    fn menu_value_label(&self, menu: SettingMenu) -> gpui::AnyElement {
+        let label = div().child(self.menu_value(menu));
+        if menu == SettingMenu::ChatFont {
+            crate::ui::typography::with_family(
+                label,
+                crate::ui::typography::ChatFontFamily::parse(&self.settings.chat_font_family),
+            )
+            .into_any_element()
+        } else {
+            label.into_any_element()
+        }
+    }
+
+    fn chat_appearance_preview(&self) -> Div {
+        let family = crate::ui::typography::ChatFontFamily::parse(&self.settings.chat_font_family);
+        let size = crate::ui::typography::clamp_chat_font_size(self.settings.chat_font_size);
+        let speaker = |name: &'static str| {
+            div()
+                .text_xs()
+                .font_family(crate::assets::FONT_BODY)
+                .font_weight(gpui::FontWeight::MEDIUM)
+                .text_color(gpui::rgb(theme::text_muted()))
+                .child(name)
+        };
+        // The settings pane and user bubbles both sit on elevated fills in
+        // dark mode. Recess a real chat well (`bg_app`) so assistant text
+        // and the user bubble separate from the card, matching the transcript.
+        widgets::card_row()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .child(
+                div()
+                    .text_xs()
+                    .font_family(crate::assets::FONT_BODY)
+                    .font_weight(gpui::FontWeight::MEDIUM)
+                    .text_color(gpui::rgb(theme::text_muted()))
+                    .child(format!("Live preview · {} · {size} px", family.label())),
+            )
+            .child(
+                div()
+                    .w_full()
+                    .rounded(theme::RADIUS_MD)
+                    .border_1()
+                    .border_color(gpui::rgb(theme::border()))
+                    .bg(gpui::rgb(if theme::is_light() {
+                        theme::bg_sidebar()
+                    } else {
+                        theme::bg_app()
+                    }))
+                    .px_3()
+                    .py_3()
+                    .flex()
+                    .flex_col()
+                    .gap_2()
+                    .child(
+                        crate::ui::typography::chat_reading(div())
+                            .max_w(gpui::relative(0.82))
+                            .flex()
+                            .flex_col()
+                            .gap_1()
+                            .text_color(gpui::rgb(theme::text_primary()))
+                            .child(speaker("Assistant"))
+                            .child(
+                                "Clear, comfortable text makes longer conversations easier to follow.",
+                            )
+                            .child(
+                                div()
+                                    .font_weight(crate::ui::typography::emphasis_weight())
+                                    .child("Bold should look crisp, not blurry."),
+                            ),
+                    )
+                    .child(
+                        div().w_full().flex().justify_end().child(
+                            crate::ui::typography::chat_reading(div())
+                                .px_3()
+                                .py_2()
+                                .rounded(theme::RADIUS_MD)
+                                .bg(gpui::rgb(theme::bg_user_bubble()))
+                                .border_1()
+                                .border_color(gpui::rgb(theme::user_bubble_border()))
+                                .flex()
+                                .flex_col()
+                                .gap_1()
+                                .text_color(gpui::rgb(theme::text_primary()))
+                                .child(speaker("You"))
+                                .child("This size feels just right."),
+                        ),
+                    ),
+            )
     }
 
     /// Apply the option at `index`: an absolute set, so the local copy
@@ -838,6 +964,19 @@ impl SettingsScreen {
                     return;
                 };
                 self.choose_theme(*preference, cx);
+            }
+            SettingMenu::ChatFont => {
+                let Some(family) = crate::ui::typography::ChatFontFamily::ALL.get(index) else {
+                    return;
+                };
+                self.choose_chat_font(*family, cx);
+            }
+            SettingMenu::ChatSize => {
+                let size = crate::ui::typography::CHAT_FONT_SIZE_MIN.saturating_add(index as u8);
+                if size > crate::ui::typography::CHAT_FONT_SIZE_MAX {
+                    return;
+                }
+                self.choose_chat_font_size(size, cx);
             }
             SettingMenu::Voice => {
                 let Some((id, _)) = settings::TTS_VOICES.get(index) else {
@@ -886,6 +1025,26 @@ impl SettingsScreen {
         // The root view resolves the palette on its next render and
         // refreshes every view when it changed.
         crate::ui::theme::apply_preference(preference, cx);
+    }
+
+    fn choose_chat_font(
+        &mut self,
+        family: crate::ui::typography::ChatFontFamily,
+        cx: &mut Context<Self>,
+    ) {
+        let size = crate::ui::typography::clamp_chat_font_size(self.settings.chat_font_size);
+        crate::ui::typography::apply(family, size);
+        self.edit_setting(
+            move |settings| settings.chat_font_family = family.as_str().to_string(),
+            cx,
+        );
+    }
+
+    fn choose_chat_font_size(&mut self, size: u8, cx: &mut Context<Self>) {
+        let size = crate::ui::typography::clamp_chat_font_size(size);
+        let family = crate::ui::typography::ChatFontFamily::parse(&self.settings.chat_font_family);
+        crate::ui::typography::apply(family, size);
+        self.edit_setting(move |settings| settings.chat_font_size = size, cx);
     }
 
     fn toggle_tool_details(&mut self, cx: &mut Context<Self>) {
@@ -941,7 +1100,7 @@ impl SettingsScreen {
                 .on_click(cx.listener(move |this, _event, _window, cx| {
                     this.toggle_setting_menu(menu, cx);
                 }))
-                .child(self.menu_value(menu))
+                .child(self.menu_value_label(menu))
                 .child(icon("chevron-down", px(12.), theme::text_muted())),
             );
         if open {
@@ -959,26 +1118,30 @@ impl SettingsScreen {
             }));
             for (index, option) in options.iter().enumerate() {
                 let selected = highlighted == Some(index);
-                panel = panel.child(
-                    widgets::menu_row(
-                        gpui::SharedString::from(format!("setting-menu-{}-{index}", menu.id())),
-                        true,
-                    )
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .gap_2()
-                    .when(selected, |row| {
-                        row.bg(gpui::rgb(theme::bg_sidebar_row_selected()))
-                    })
-                    .on_click(cx.listener(move |this, _event, _window, cx| {
-                        this.pick_setting_option(menu, index, cx);
-                    }))
-                    .child(option.label.clone())
-                    .when(option.current, |row| {
-                        row.child(icon("check", px(14.), theme::accent()))
-                    }),
-                );
+                let mut option_row = widgets::menu_row(
+                    gpui::SharedString::from(format!("setting-menu-{}-{index}", menu.id())),
+                    true,
+                )
+                .flex()
+                .items_center()
+                .justify_between()
+                .gap_2()
+                .when(selected, |row| {
+                    row.bg(gpui::rgb(theme::bg_sidebar_row_selected()))
+                })
+                .on_click(cx.listener(move |this, _event, _window, cx| {
+                    this.pick_setting_option(menu, index, cx);
+                }))
+                .child(option.label.clone())
+                .when(option.current, |row| {
+                    row.child(icon("check", px(14.), theme::accent()))
+                });
+                if menu == SettingMenu::ChatFont
+                    && let Some(family) = crate::ui::typography::ChatFontFamily::ALL.get(index)
+                {
+                    option_row = crate::ui::typography::with_family(option_row, *family);
+                }
+                panel = panel.child(option_row);
             }
             row = row.child(gpui::deferred(panel));
         }
@@ -1432,6 +1595,29 @@ impl SettingsScreen {
                             cx,
                         ),
                     ))
+                    .child(section_title("Chat appearance"))
+                    .child(self.application_target(
+                        || SettingsTarget::General(GeneralTarget::ChatFont),
+                        self.setting_menu_row(
+                            "Chat font",
+                            crate::ui::typography::ChatFontFamily::parse(
+                                &self.settings.chat_font_family,
+                            )
+                            .note(),
+                            SettingMenu::ChatFont,
+                            cx,
+                        ),
+                    ))
+                    .child(self.application_target(
+                        || SettingsTarget::General(GeneralTarget::ChatSize),
+                        self.setting_menu_row(
+                            "Text size",
+                            "Size of conversation and composer text. Sidebar and buttons stay Manrope.",
+                            SettingMenu::ChatSize,
+                            cx,
+                        ),
+                    ))
+                    .child(self.chat_appearance_preview())
                     .child(self.application_target(
                         || SettingsTarget::General(GeneralTarget::ToolDetails),
                         toggle_row(
@@ -1561,7 +1747,7 @@ impl SettingsScreen {
                     Some(plan) => plan_card(plan),
                     None => div()
                         .text_sm()
-                        .text_color(gpui::rgb(theme::text_faint()))
+                        .text_color(gpui::rgb(theme::text_muted()))
                         .child("Plan usage unavailable"),
                 });
                 pane = pane.child(section_title("Usage"));
@@ -1584,7 +1770,7 @@ impl SettingsScreen {
                 } else {
                     pane = pane.child(
                         div()
-                            .text_color(gpui::rgb(theme::text_faint()))
+                            .text_color(gpui::rgb(theme::text_muted()))
                             .child("Loading usage…"),
                     );
                 }
@@ -1720,7 +1906,7 @@ impl SettingsScreen {
             pane = pane.child(
                 div()
                     .text_sm()
-                    .text_color(gpui::rgb(theme::text_faint()))
+                    .text_color(gpui::rgb(theme::text_muted()))
                     .child("No shortcuts match this search."),
             );
         } else {
@@ -1922,7 +2108,7 @@ impl SettingsScreen {
                     .child(
                         div()
                             .text_xs()
-                            .text_color(gpui::rgb(theme::text_faint()))
+                            .text_color(gpui::rgb(theme::text_muted()))
                             .child(format!("Default: {}", row.default_sequence)),
                     ),
             )
@@ -2069,7 +2255,7 @@ impl SettingsScreen {
                 pane = pane.child(
                     div()
                         .text_sm()
-                        .text_color(gpui::rgb(theme::text_faint()))
+                        .text_color(gpui::rgb(theme::text_muted()))
                         .child("Detecting integrations…"),
                 );
             }
@@ -2086,7 +2272,7 @@ impl SettingsScreen {
                     pane = pane.child(
                         div()
                             .text_sm()
-                            .text_color(gpui::rgb(theme::text_faint()))
+                            .text_color(gpui::rgb(theme::text_muted()))
                             .child("No supported integrations detected on this device."),
                     );
                 }
@@ -2131,7 +2317,7 @@ impl SettingsScreen {
             None => {
                 pane = pane.child(
                     div()
-                        .text_color(gpui::rgb(theme::text_faint()))
+                        .text_color(gpui::rgb(theme::text_muted()))
                         .child("Loading custom MCP servers…"),
                 );
             }
@@ -2139,7 +2325,7 @@ impl SettingsScreen {
                 pane = pane.child(
                     div()
                         .text_sm()
-                        .text_color(gpui::rgb(theme::text_faint()))
+                        .text_color(gpui::rgb(theme::text_muted()))
                         .child("No custom MCP servers configured."),
                 );
             }

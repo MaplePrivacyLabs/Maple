@@ -127,26 +127,30 @@ fn palette() -> &'static Palette {
 
 tokens! {
     // Surfaces. Light: white page, neutral-50 cards, pebble-50 sidebar.
-    // Dark: near-black page with pebble-tinted chrome.
-    bg_app: 0x111114, 0xffffff;
-    bg_sidebar: 0x1a1a1f, 0xf7f7f9;
-    bg_elevated: 0x232329, 0xffffff;
-    bg_sidebar_card: 0x232329, 0xfafafa;
-    bg_sidebar_pill: 0x2b2b32, 0xe8e8ed;
-    bg_input: 0x18181c, 0xffffff;
-    bg_user_bubble: 0x232329, 0xe8e8ed;
-    bg_code_block: 0x0c0c0e, 0xf7f7f9;
-    bg_tool_card: 0x1a1a1f, 0xfafafa;
+    // Dark: lifted well (not near-black) with pebble-tinted chrome so
+    // body type does not bloom. Depth is app < sidebar < elevated.
+    bg_app: 0x18181c, 0xffffff;
+    bg_sidebar: 0x1e1e24, 0xf7f7f9;
+    bg_elevated: 0x27272e, 0xffffff;
+    bg_sidebar_card: 0x27272e, 0xfafafa;
+    bg_sidebar_pill: 0x32323a, 0xe8e8ed;
+    bg_input: 0x1c1c22, 0xffffff;
+    bg_user_bubble: 0x27272e, 0xe8e8ed;
+    bg_code_block: 0x141416, 0xf7f7f9;
+    bg_tool_card: 0x1e1e24, 0xfafafa;
 
-    // Hairlines. pebble-100 on light; pebble-900-ish on dark.
-    border: 0x30313a, 0xe8e8ed;
-    border_subtle: 0x232329, 0xf1f1f4;
+    // Hairlines. pebble-100 on light; a step above each dark surface.
+    border: 0x3a3a44, 0xe8e8ed;
+    border_subtle: 0x2c2c34, 0xf1f1f4;
 
-    // Text. Light: neutral-900 / 600 / 400 / 300. Dark: pebble-50 / 300 / 600 / 800.
-    text_primary: 0xf7f7f9, 0x171717;
+    // Text. Light: neutral-900 / 600 / 400 / 300.
+    // Dark body is Pebble 200 (~12:1 on the well), not Pebble 50, so
+    // Regular and SemiBold stay distinct. Headings sit one step brighter.
+    text_primary: 0xd1d2dc, 0x171717;
+    text_heading: 0xe8e8ed, 0x171717;
     text_secondary: 0xbabccb, 0x525252;
-    text_muted: 0x757689, 0xa3a3a3;
-    text_faint: 0x474854, 0xd4d4d4;
+    text_muted: 0x9c9dab, 0xa3a3a3;
+    text_faint: 0x5e5f6e, 0xd4d4d4;
 
     /// Maple coral (maple-500): send button, focus, caret, permission prompts.
     accent: 0xff9771, 0xff9771;
@@ -172,13 +176,13 @@ tokens! {
     permission_fill: 0x2a1a14, 0xffe8e0;
     permission_border: 0x784a38, 0xffbaa2;
 
-    user_bubble_border: 0x30313a, 0xe8e8ed;
+    user_bubble_border: 0x3a3a44, 0xe8e8ed;
 
     /// Sidebar chrome: segmented toggle track, row hover, selected row
     /// (pebble-100 / pebble-200 on light).
-    bg_sidebar_chrome: 0x1a1a1f, 0xffffff;
-    bg_sidebar_row_hover: 0x2b2b32, 0xe8e8ed;
-    bg_sidebar_row_selected: 0x35363f, 0xd1d2dc;
+    bg_sidebar_chrome: 0x1e1e24, 0xffffff;
+    bg_sidebar_row_hover: 0x32323a, 0xe8e8ed;
+    bg_sidebar_row_selected: 0x3a3a44, 0xd1d2dc;
 
     /// Display headings (Array face): pebble-300 on dark, pebble-800 on
     /// light, as the brand kit sets its section titles.
@@ -189,8 +193,8 @@ tokens! {
     send_bottom: 0xe8633d, 0xe8633d;
 
     /// Title bar control buttons.
-    bg_title_control: 0x30313a, 0xe8e8ed;
-    bg_title_control_hover: 0x3d3e48, 0xd1d2dc;
+    bg_title_control: 0x3a3a44, 0xe8e8ed;
+    bg_title_control_hover: 0x474854, 0xd1d2dc;
 
     /// Text input caret; near the primary text color of each palette.
     text_cursor: 0xf7f7f9, 0x171717;
@@ -252,9 +256,9 @@ pub fn scrollbar_thumb_active() -> gpui::Rgba {
 /// Placeholder text in inputs.
 pub fn placeholder() -> gpui::Hsla {
     if is_light() {
-        gpui::hsla(0., 0., 0., 0.35)
+        gpui::hsla(0., 0., 0., 0.55)
     } else {
-        gpui::hsla(0., 0., 1., 0.3)
+        gpui::hsla(0., 0., 1., 0.5)
     }
 }
 

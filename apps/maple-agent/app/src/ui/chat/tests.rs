@@ -3412,6 +3412,7 @@ mod state_tests {
             this.application_vim_enabled = true;
             this.screen_focus_pending = false;
 
+            let _typography = crate::ui::typography::APPLY_LOCK.lock();
             this.apply_defaults(&settings, cx);
 
             assert!(
@@ -3433,6 +3434,7 @@ mod state_tests {
             this.application_vim_enabled = false;
             this.screen_focus_pending = false;
 
+            let _typography = crate::ui::typography::APPLY_LOCK.lock();
             this.apply_defaults(&settings, cx);
 
             assert!(

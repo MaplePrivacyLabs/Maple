@@ -13,7 +13,7 @@ use std::sync::Arc;
 
 use gpui::{
     App, Bounds, ClipboardEntry, ClipboardItem, ContentMask, Context, CursorStyle, Element,
-    ElementId, ElementInputHandler, Entity, EntityInputHandler, FocusHandle, Focusable,
+    ElementId, ElementInputHandler, Entity, EntityInputHandler, FocusHandle, Focusable, Font,
     GlobalElementId, InteractiveElement, LayoutId, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
     PaintQuad, Pixels, SharedString, Style, Subscription, TextAlign, TextRun, UTF16Selection,
     UnderlineStyle, Window, WrappedLine, actions, div, fill, point, prelude::*, px, relative, rgb,
@@ -96,9 +96,10 @@ pub struct TextInput {
     /// (expanded composer).
     fill_height: bool,
     max_lines: usize,
-    /// Last (text, wrap width) -> row count, so layout does not re-shape
-    /// unchanged text every frame.
-    measure_cache: Option<(SharedString, Pixels, usize)>,
+    /// Last (text, wrap width, font, size, line-height) -> row count, so
+    /// layout does not re-shape unchanged text every frame, and a chat
+    /// face/size change does not keep a stale row count.
+    measure_cache: Option<(SharedString, Pixels, Font, Pixels, Pixels, usize)>,
     /// Shaped lines from the last prepaint with the inputs they came
     /// from; reused while nothing that affects shaping has changed.
     shape_cache: Option<ShapeCache>,
@@ -1939,17 +1940,28 @@ impl Element for TextElement {
                 _ => None,
             });
             let cache_width = width.unwrap_or(px(0.));
-            if let Some((cached_text, cached_width, rows)) = input.measure_cache.as_ref()
+            let style = window.text_style();
+            let font_size = style.font_size.to_pixels(window.rem_size());
+            let font = style.font();
+            if let Some((
+                cached_text,
+                cached_width,
+                cached_font,
+                cached_font_size,
+                cached_line_height,
+                rows,
+            )) = input.measure_cache.as_ref()
                 && *cached_text == text
                 && *cached_width == cache_width
+                && *cached_font == font
+                && *cached_font_size == font_size
+                && *cached_line_height == line_height
             {
                 return size(cache_width, line_height * *rows as f32);
             }
-            let style = window.text_style();
-            let font_size = style.font_size.to_pixels(window.rem_size());
             let run = TextRun {
                 len: text.len(),
-                font: style.font(),
+                font: font.clone(),
                 color: style.color,
                 background_color: None,
                 underline: None,
@@ -1967,7 +1979,7 @@ impl Element for TextElement {
                 .unwrap_or(1)
                 .clamp(1, input.max_lines);
             entity.update(cx, |input, _| {
-                input.measure_cache = Some((text, cache_width, rows));
+                input.measure_cache = Some((text, cache_width, font, font_size, line_height, rows));
             });
             size(cache_width, line_height * rows as f32)
         });

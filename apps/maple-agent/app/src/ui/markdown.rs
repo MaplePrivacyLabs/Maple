@@ -10,7 +10,7 @@
 
 use std::sync::Arc;
 
-use gpui::{Div, ElementId, SharedString, div, prelude::*, px};
+use gpui::{Div, ElementId, SharedString, div, prelude::*, px, relative};
 use pulldown_cmark::{Alignment, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 
 use super::rich_text::{self, Highlights, Links, RenderCtx};
@@ -45,7 +45,7 @@ impl InlineStyle {
             fade_out: None,
         };
         if self.bold {
-            style.font_weight = Some(gpui::FontWeight::BOLD);
+            style.font_weight = Some(super::typography::emphasis_weight());
         }
         if self.italic {
             style.font_style = Some(gpui::FontStyle::Italic);
@@ -145,8 +145,7 @@ pub enum Block {
         styles: InlineStyles,
         /// Clickable link ranges with destinations, byte ranges into `text`.
         links: Links,
-        text_size: Option<gpui::Pixels>,
-        weight: Option<gpui::FontWeight>,
+        heading: Option<HeadingLevel>,
         in_quote: bool,
         list_depth: usize,
     },
@@ -201,8 +200,7 @@ impl Document {
                 text: SharedString::new(source),
                 styles: Arc::from([]),
                 links: Arc::from([]),
-                text_size: None,
-                weight: None,
+                heading: None,
                 in_quote: false,
                 list_depth: 0,
             }],
@@ -317,8 +315,7 @@ fn mono_ranges(styles: &InlineStyles) -> rich_text::Mono {
 
 fn text_block(
     paragraph: Paragraph,
-    text_size: Option<gpui::Pixels>,
-    weight: Option<gpui::FontWeight>,
+    heading: Option<HeadingLevel>,
     in_quote: bool,
     list_depth: usize,
 ) -> Block {
@@ -327,20 +324,9 @@ fn text_block(
         text,
         styles,
         links,
-        text_size,
-        weight,
+        heading,
         in_quote,
         list_depth,
-    }
-}
-
-fn heading_size(level: HeadingLevel) -> gpui::Pixels {
-    match level {
-        HeadingLevel::H1 => px(21.),
-        HeadingLevel::H2 => px(18.),
-        HeadingLevel::H3 => px(16.),
-        HeadingLevel::H4 => px(15.),
-        HeadingLevel::H5 | HeadingLevel::H6 => px(14.),
     }
 }
 
@@ -366,33 +352,36 @@ pub fn render_with(document: &Document, ctx: &RenderCtx) -> Div {
                 text,
                 styles,
                 links,
-                text_size,
-                weight,
+                heading,
                 in_quote,
                 list_depth,
             } => {
-                // Resolve the palette now; documents are cached across
-                // theme switches and must not keep stale colors.
+                // Resolve the palette and heading metrics now; documents
+                // are cached across theme and chat-size switches.
                 let highlights: Highlights = styles
                     .iter()
                     .map(|(range, style)| (range.clone(), style.highlight()))
                     .collect();
-                container.child(wrap_inline(
-                    rich_text::paragraph(
-                        text.clone(),
-                        rich_text::Inline {
-                            highlights,
-                            links: links.clone(),
-                            mono: mono_ranges(styles),
-                        },
-                        *text_size,
-                        *weight,
-                        ctx.for_block(block_offset),
-                        ctx,
-                    ),
-                    *in_quote,
-                    *list_depth,
-                ))
+                let text_size = heading.map(super::typography::heading_size);
+                let weight = heading.map(|_| super::typography::emphasis_weight());
+                let mut paragraph = rich_text::paragraph(
+                    text.clone(),
+                    rich_text::Inline {
+                        highlights,
+                        links: links.clone(),
+                        mono: mono_ranges(styles),
+                    },
+                    text_size,
+                    weight,
+                    ctx.for_block(block_offset),
+                    ctx,
+                );
+                if heading.is_some() {
+                    paragraph = paragraph
+                        .text_color(gpui::rgb(theme::text_heading()))
+                        .line_height(relative(1.25));
+                }
+                container.child(wrap_inline(paragraph, *in_quote, *list_depth))
             }
             Block::Code {
                 code,
@@ -539,7 +528,7 @@ pub fn parse(source: &str) -> Document {
         () => {
             let taken = paragraph.take();
             if !taken.is_empty() {
-                blocks.push(text_block(taken, None, None, in_quote, list_counters.len()));
+                blocks.push(text_block(taken, None, in_quote, list_counters.len()));
             }
         };
     }
@@ -631,8 +620,7 @@ pub fn parse(source: &str) -> Document {
                     if !taken.is_empty() {
                         blocks.push(text_block(
                             taken,
-                            Some(heading_size(level)),
-                            Some(gpui::FontWeight::BOLD),
+                            Some(level),
                             in_quote,
                             list_counters.len(),
                         ));
@@ -753,7 +741,7 @@ pub fn parse(source: &str) -> Document {
     // Flush any trailing content outside a closing tag (defensive).
     if !paragraph.is_empty() && code_block_text.is_none() {
         let taken = paragraph.take();
-        blocks.push(text_block(taken, None, None, false, 0));
+        blocks.push(text_block(taken, None, false, 0));
     }
     Document { blocks }
 }
@@ -1100,6 +1088,34 @@ mod tests {
                 |block| matches!(block, Block::Code { label, .. } if label.as_ref() == "CODE")
             )
         );
+    }
+
+    #[test]
+    fn headings_keep_their_level_and_strong_is_not_bold() {
+        let document = parse("# Title\n\n**loud**");
+        let Block::Text { heading, .. } = &document.blocks[0] else {
+            panic!("expected a heading block");
+        };
+        assert_eq!(*heading, Some(HeadingLevel::H1));
+        let Block::Text {
+            styles, heading, ..
+        } = &document.blocks[1]
+        else {
+            panic!("expected a body block");
+        };
+        assert_eq!(*heading, None);
+        assert!(styles.iter().any(|(_, style)| style.bold));
+        let highlight = styles
+            .iter()
+            .find(|(_, style)| style.bold)
+            .unwrap()
+            .1
+            .highlight();
+        assert_eq!(
+            highlight.font_weight,
+            Some(crate::ui::typography::emphasis_weight())
+        );
+        assert_ne!(highlight.font_weight, Some(gpui::FontWeight::BOLD));
     }
 
     /// Serializes tests that flip the process-global theme, and pairs with

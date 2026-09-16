@@ -166,25 +166,29 @@ the dark background.
 
 | Token | Light | Dark | Kit source |
 |---|---|---|---|
-| `bg_app` | `#ffffff` | `#111114` | page white |
-| `bg_sidebar` | `#f7f7f9` Pebble 50 | `#1a1a1f` | Pebble for sidebars |
-| `bg_elevated` | `#ffffff` | `#232329` | |
-| `bg_sidebar_card`, `bg_tool_card` | `#fafafa` Neutral 50 | `#232329` / `#1a1a1f` | card fill |
-| `bg_sidebar_pill`, `bg_user_bubble`, row hover | `#e8e8ed` Pebble 100 | `#2b2b32` | secondary container |
-| row selected | `#d1d2dc` Pebble 200 | `#35363f` | |
-| `border` | `#e8e8ed` Pebble 100 | `#30313a` | hairline |
-| `text_primary` | `#171717` Neutral 900 | `#f7f7f9` Pebble 50 | |
+| `bg_app` | `#ffffff` | `#18181c` | page white; dark well is lifted off near-black so type does not bloom |
+| `bg_sidebar` | `#f7f7f9` Pebble 50 | `#1e1e24` | Pebble for sidebars |
+| `bg_elevated`, `bg_user_bubble`, `bg_sidebar_card` | `#ffffff` / `#e8e8ed` | `#27272e` | cards sit a step above the well |
+| `bg_tool_card`, `bg_sidebar_chrome` | `#fafafa` / `#ffffff` | `#1e1e24` | |
+| `bg_input` | `#ffffff` | `#1c1c22` | distinct from the well |
+| `bg_code_block` | `#f7f7f9` | `#141416` | recessed vs the well |
+| `bg_sidebar_pill`, row hover | `#e8e8ed` Pebble 100 | `#32323a` | |
+| row selected | `#d1d2dc` Pebble 200 | `#3a3a44` | |
+| `border` | `#e8e8ed` Pebble 100 | `#3a3a44` | hairline |
+| `border_subtle` | `#f1f1f4` | `#2c2c34` | |
+| `text_primary` | `#171717` Neutral 900 | `#d1d2dc` Pebble 200 | body; dark is grey, not Pebble 50, ~12:1 on the well |
+| `text_heading` | `#171717` | `#e8e8ed` Pebble 100 | markdown headings, one step brighter than body |
 | `text_secondary` | `#525252` Neutral 600 | `#babccb` Pebble 300 | |
-| `text_muted` | `#a3a3a3` Neutral 400 | `#757689` Pebble 600 | |
+| `text_muted` | `#a3a3a3` Neutral 400 | `#9c9dab` Pebble 400 | AA on well and elevated |
 | `accent` | `#ff9771` Maple 500 | same | primary |
 | `accent_hover` | `#f67d57` Maple 600 | `#ffa88a` Maple 400 | |
-| `on_accent` | `#f7f7f9` | same | on primary |
+| `on_accent` | `#f7f7f9` | same | on primary (stays bright so coral stays readable) |
 | `accent_container`, `permission_fill` | `#ffe8e0` Maple 100 | `#3a2118` / `#2a1a14` | primary container |
 | `link` | `#9e7469` Bark 500 | `#c29a8d` Bark 300 | tertiary |
 | `status_success` | `#7b8f4a` | `#8fa35a` | success |
 | `status_warning` | `#d4a35a` | same | warning |
 | `status_error` | `#d05e41` | `#e07052` | error |
-| `display_text` | `#474854` Pebble 800 | `#babccb` Pebble 300 | heading colours |
+| `display_text` | `#474854` Pebble 800 | `#babccb` Pebble 300 | Array titles; large type can sit dimmer than body |
 
 The 60 / 30 / 10 rule maps to: workspace and transcript on `bg_app`;
 sidebar, settings navigation, popups, and hover fills on Pebble; coral only
@@ -195,18 +199,30 @@ selected menu items, and primary buttons.
 
 | Role | Family | Constant |
 |---|---|---|
-| Display headings (empty-state hero, settings pane titles) | Array Regular | `assets::FONT_DISPLAY` |
-| Everything else | Manrope | `assets::FONT_BODY` |
-| Code, diffs, tool output, keycaps | Geist Mono | `assets::FONT_MONO` |
+| Display headings (settings pane titles) | Array Regular | `assets::FONT_DISPLAY` |
+| Empty-state hero | Array Regular | `assets::FONT_DISPLAY` |
+| Chrome (sidebar, buttons, settings) | Manrope 14 px | `assets::FONT_BODY` |
+| Chat and composer (default) | System UI, 14 px, line-height 1.65 | `assets::FONT_SYSTEM` |
+| Chat option: Maple | Manrope | `assets::FONT_BODY` |
+| Chat option: Geist | Geist Sans (static Regular–Bold) | `assets::FONT_GEIST` |
+| Chat option: Serif | Georgia | `assets::FONT_SERIF` |
+| Code, diffs, tool output, keycaps | Geist Mono (static Regular / Medium / SemiBold) | `assets::FONT_MONO` |
 
-All three are bundled in `app/assets/fonts` and registered at startup, so
-code renders the same on every platform. Array is licensed under the ITF
-Free Font License, which allows embedding in the app but not
-redistributing the font file on its own; Manrope and Geist Mono are OFL.
+Fonts are bundled in `app/assets/fonts` and registered at startup, so
+code and optional chat faces render the same on every platform. Array is
+licensed under the ITF Free Font License, which allows embedding in the
+app but not redistributing the font file on its own, and forbids
+renaming; the Wide cut therefore cannot be selected (gpui has no stretch
+and the file's family name is `Array`). Manrope and Geist are OFL. The
+system and serif faces are not bundled. gpui/font-kit does not apply
+variable `wght` axes, so Geist and Geist Mono ship as static instances.
 
-The app's chrome runs smaller than the kit's marketing scale: chrome text
-is 14 px, chat text 15 px, the hero heading 36 / 48 px in Array, settings
-section titles 26 / 32 px in Array.
+Chat family and size are user settings (`chat_font_family`,
+`chat_font_size`, 13–18 px, default 14). Retired `"sf-pro"` values map to
+System; `.SystemUIFont` already is SF Pro on macOS. Markdown emphasis and
+headings use SemiBold (600), not Bold (700). Heading sizes are ems of the
+live chat size, at 1.25 line-height. The hero heading is 36 / 48 px in
+Array Regular; settings section titles are 26 / 32 px in Array Regular.
 
 ### Shape
 

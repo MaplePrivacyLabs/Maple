@@ -965,7 +965,7 @@ impl ChatScreen {
                     .pb_2()
                     .when(expanded, |row| row.flex_1().min_h_0())
                     .child(
-                        div()
+                        crate::ui::typography::chat_reading(div())
                             .flex_1()
                             .min_w_0()
                             .when(expanded, |cell| cell.h_full())

@@ -213,6 +213,10 @@ impl MapleApp {
     fn close_settings(&mut self, updated: crate::settings::AppSettings, cx: &mut Context<Self>) {
         self.settings = updated;
         ui::theme::apply_preference(ui::theme::Preference::parse(&self.settings.theme), cx);
+        ui::typography::apply(
+            ui::typography::ChatFontFamily::parse(&self.settings.chat_font_family),
+            self.settings.chat_font_size,
+        );
         if let Some(chat) = self.parked_chat.take() {
             let settings = self.settings.clone();
             chat.update(cx, |chat, cx| chat.apply_defaults(&settings, cx));
@@ -275,6 +279,9 @@ impl Render for MapleApp {
             .flex()
             .flex_col()
             .font_family(crate::assets::FONT_BODY)
+            // Chrome default 14 px (`text_sm`). Chat reading size is set
+            // on transcript/composer via `typography::chat_reading`.
+            .text_sm()
             .child(titlebar)
             .child(match &self.screen {
                 Screen::Restoring => restoring_view().into_any_element(),
@@ -395,6 +402,10 @@ pub fn run() {
                 cx,
             );
             ui::theme::apply_preference(ui::theme::Preference::parse(&startup_settings.theme), cx);
+            ui::typography::apply(
+                ui::typography::ChatFontFamily::parse(&startup_settings.chat_font_family),
+                startup_settings.chat_font_size,
+            );
             ui::menus::install(cx);
             // A click on a notification brings the app forward and shows
             // the task it was about (tags are `task:<session id>`; see
