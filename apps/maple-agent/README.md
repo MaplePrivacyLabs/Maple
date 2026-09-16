@@ -102,8 +102,10 @@ Cargo manifests and lockfile; Research has an independent dependency graph.
   Chat sidebar and transcript rows, modal choices, and Settings controls. It is
   independent of composer Vim and leaves ordinary text fields unchanged.
 - Projects (working directories) with pinned and recent roots, rename,
-  open in the file manager, and remove. Projects that provide skills ask
-  for a trust decision before their guidance loads.
+  open in the file manager, and remove. The home directory and the
+  directory the app was launched from are trusted by default. Other
+  projects that provide skills ask once for a trust decision before
+  their guidance loads.
 - Sessions grouped by project, with rename, archive, and restore.
 - Settings: General (default permission mode, web tools, appearance,
   tool call details, desktop notifications, tool call summaries, composer Vim,

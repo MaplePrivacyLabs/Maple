@@ -3016,8 +3016,8 @@ mod state_tests {
             ChatScreen::new(backend, "user".to_string(), cx)
         });
         chat.update(cx, |this, _cx| {
-            // The real constructor bootstraps and may ask to trust the
-            // machine's home directory; that modal would take the keys.
+            // The real constructor bootstraps and may open the project-trust
+            // dialog; that modal would take the keys.
             this.trust_prompts = false;
             this.selected_session = Some("s1".to_string());
             this.replace_timeline(vec![user_item("u1", "hello")]);

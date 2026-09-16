@@ -278,8 +278,7 @@ pub struct ChatScreen {
     /// A dialog just opened; the next render moves focus into it.
     dialog_focus_pending: bool,
     /// Whether the project-trust question may open its dialog. Tests that
-    /// drive typing turn it off, since the dialog rightly takes focus and
-    /// the machine's home directory decides whether it appears.
+    /// drive typing turn it off, since the dialog rightly takes focus.
     trust_prompts: bool,
     /// The menu was just opened and still needs the focus.
     root_menu_focus_pending: bool,
