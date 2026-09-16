@@ -764,12 +764,14 @@ pub(crate) enum AgentHostEventPolicy {
     Suppress,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug)]
 pub(super) enum DesktopSendDisposition {
     /// Desktop send: stage onto the live run when one exists, otherwise start.
     StageOrStart,
     /// ACP and other exclusive surfaces must not join another run.
     StartOnly,
+    /// Internal, model-only completion: steer or start through Desktop admission.
+    BackgroundCompletion(Box<Message>),
 }
 
 impl AgentHostEventPolicy {

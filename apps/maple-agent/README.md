@@ -72,7 +72,8 @@ Cargo manifests and lockfile; Research has an independent dependency graph.
   subagents that work now show above the composer with the tool each one
   runs and how long it has worked. A subagent that runs in the background
   keeps its row after the turn ends, and Maple tells the task when it
-  finishes: into the running turn, or into the next one.
+  finishes, with a bounded result in the running turn or a new turn Maple
+  starts automatically. The task can use `load` to retrieve any truncated output.
 - External agents: a task can hand work to the Codex CLI installed on
   this computer with the `agent_start`, `agent_send`, `agent_status`,
   `agent_cancel`, and `list_agent_providers` tools, once Codex is enabled

@@ -87,8 +87,13 @@ impl Harness {
             String::new(),
         ));
         let host = ExternalAgentHost {
+            runtime: AgentRuntimeHandle {
+                service: service.clone(),
+                user_id: Arc::from("fixture-user"),
+                account_scope: Arc::from("scope"),
+                generation: 0,
+            },
             service: service.clone(),
-            account_scope: Arc::from("scope"),
             session_manager: Arc::new(SessionManager::new(history)),
             permission_modes: Arc::new(Mutex::new(HashMap::new())),
             project_root: project.clone(),
@@ -609,11 +614,22 @@ async fn cancelling_the_run_interrupts_the_turn_and_shutdown_kills_the_process()
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn background_turn_reports_its_end_into_the_transcript() {
     let harness = Harness::new("approve");
-    harness.set_mode("session-4", GooseMode::Auto).await;
+    let session = harness
+        .host
+        .session_manager
+        .create_session(
+            harness.project.clone(),
+            "Background output test".into(),
+            SessionType::User,
+            GooseMode::Auto,
+        )
+        .await
+        .unwrap();
+    harness.set_mode(&session.id, GooseMode::Auto).await;
     let result = harness
         .registry
         .start(
-            harness.call("session-4", "row-4"),
+            harness.call(&session.id, "row-4"),
             AgentStartParams {
                 provider: "codex".into(),
                 prompt: "Work in the background".into(),
@@ -662,7 +678,7 @@ async fn background_turn_reports_its_end_into_the_transcript() {
     let status = harness
         .registry
         .status(
-            &harness.call("session-4", "row-4b"),
+            &harness.call(&session.id, "row-4b"),
             AgentRefParams {
                 provider: "codex".into(),
                 agent_id: "codex-1".into(),
@@ -670,6 +686,37 @@ async fn background_turn_reports_its_end_into_the_transcript() {
         )
         .await;
     assert!(result_text(&status).contains("Done: accept"));
+    // This harness has no running parent runtime, so the completion falls
+    // back to history. The actual result must still be included exactly once.
+    tokio::time::timeout(WAIT, async {
+        loop {
+            let saved = harness
+                .host
+                .session_manager
+                .get_session(&session.id, true)
+                .await
+                .unwrap();
+            let messages = saved.conversation.as_ref().unwrap().messages();
+            let results = messages
+                .iter()
+                .filter(|message| {
+                    !message.is_user_visible() && message.as_concat_text().contains("Done: accept")
+                })
+                .collect::<Vec<_>>();
+            if !results.is_empty() {
+                assert_eq!(results.len(), 1);
+                assert!(
+                    results[0]
+                        .as_concat_text()
+                        .contains("without fetching it again")
+                );
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
     harness.registry.shutdown_all(Duration::from_secs(5)).await;
 }
 

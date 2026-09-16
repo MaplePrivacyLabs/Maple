@@ -279,7 +279,7 @@ fn completion_guidance(activity: &ExternalAgentActivity) -> String {
 
 fn background_guidance() -> String {
     format!(
-        "The agent works in the background. Maple will tell you when it finishes; continue with other work and do not poll {AGENT_STATUS_TOOL}. Use {AGENT_STATUS_TOOL} only when the user asks how it is going."
+        "The agent works in the background. Maple will deliver its result when it finishes; continue with other work and do not poll {AGENT_STATUS_TOOL}. Use {AGENT_STATUS_TOOL} only when the user asks how it is going."
     )
 }
 
@@ -319,8 +319,8 @@ fn subagent_row_id(agent_id: &str) -> String {
 /// What Maple needs from the runtime to host external agents.
 #[derive(Clone)]
 pub(super) struct ExternalAgentHost {
+    pub(super) runtime: AgentRuntimeHandle,
     pub(super) service: MapleAgentService,
-    pub(super) account_scope: Arc<str>,
     pub(super) session_manager: Arc<SessionManager>,
     pub(super) permission_modes: SessionPermissionModes,
     pub(super) project_root: PathBuf,
@@ -1632,9 +1632,48 @@ impl ExternalAgent {
     /// A background turn ended: leave the result in the transcript and
     /// tell the model, into the turn that is running or the next one.
     async fn report_background_turn_end(&self, outcome: TurnOutcome) {
+        if self.host.lifetime.is_cancelled() {
+            return;
+        }
         let activity = self.activity().await;
         let result_text = render_activity(&activity, &completion_guidance(&activity));
         let row_id = self.last_row_id().await;
+        let for_model = background_result_message(
+            &format!("external agent {} ({})", self.agent_id, codex::PROVIDER_ID),
+            outcome.status(),
+            &result_text,
+            &format!(
+                "Use {AGENT_STATUS_TOOL}(provider: \"{}\", agent_id: \"{}\") only if you need to inspect its current state again.",
+                codex::PROVIDER_ID,
+                self.agent_id
+            ),
+        );
+        let delivered = self
+            .host
+            .runtime
+            .send_background_completion(
+                &self.session_id,
+                for_model.clone(),
+                self.host.lifetime.clone(),
+            )
+            .await
+            .is_ok();
+        // Serialize these durable notices with logout and task deletion too.
+        let _runtime_guard = self.host.service.runtime_lifecycle.lock().await;
+        let _session_guard = self.host.service.session_lifecycle.lock().await;
+        if self.host.lifetime.is_cancelled() || self.host.runtime.verify_generation().await.is_err()
+        {
+            return;
+        }
+        if !delivered {
+            // A rejected start can still be read on the next explicit user send.
+            // The visible notice below must not claim that a run was scheduled.
+            let _ = self
+                .host
+                .session_manager
+                .add_message(&self.session_id, &for_model)
+                .await;
+        }
         let notice = Message::assistant()
             .with_system_notification_with_data(
                 SystemNotificationType::InlineMessage,
@@ -1662,13 +1701,18 @@ impl ExternalAgent {
             .with_system_notification(
                 SystemNotificationType::InlineMessage,
                 format!(
-                    "External agent {} ({}) {}. The task will read its result next.",
+                    "External agent {} ({}) {}. {}",
                     self.agent_id,
                     codex::PROVIDER_NAME,
                     match outcome {
                         TurnOutcome::Completed => "finished",
                         TurnOutcome::Failed => "failed",
                         TurnOutcome::Cancelled => "was interrupted",
+                    },
+                    if delivered {
+                        "The result was delivered to the task."
+                    } else {
+                        "The task could not be resumed. Send a message to read its result."
                     }
                 ),
             )
@@ -1695,40 +1739,6 @@ impl ExternalAgent {
                     },
                 );
             }
-        }
-
-        let for_model = Message::user()
-            .with_text(format!(
-                "External agent {} ({}) {}. Call {AGENT_STATUS_TOOL}(provider: \"{}\", agent_id: \"{}\") to read its result, then carry on.",
-                self.agent_id,
-                codex::PROVIDER_ID,
-                match outcome {
-                    TurnOutcome::Completed => "finished",
-                    TurnOutcome::Failed => "failed",
-                    TurnOutcome::Cancelled => "was interrupted",
-                },
-                codex::PROVIDER_ID,
-                self.agent_id,
-            ))
-            // The user did not write this; it belongs to the model's view
-            // of the conversation only.
-            .with_visibility(false, true)
-            .with_generated_id();
-        if steer_into_desktop_run(
-            &self.host.service,
-            &self.host.account_scope,
-            &self.session_id,
-            &for_model,
-        )
-        .await
-        .is_err()
-            && let Err(error) = self
-                .host
-                .session_manager
-                .add_message(&self.session_id, &for_model)
-                .await
-        {
-            log::warn!("Failed to tell the task about its external agent: {error}");
         }
     }
 
