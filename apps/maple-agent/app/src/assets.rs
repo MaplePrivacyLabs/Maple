@@ -84,6 +84,9 @@ pub const FONT_GEIST: &str = "Geist";
 /// Platform UI font. GPUI maps this to SF Pro on macOS, Segoe UI on
 /// Windows, and the desktop default elsewhere.
 pub const FONT_SYSTEM: &str = ".SystemUIFont";
+/// Named SF Pro Text. Distinct from `.SystemUIFont` so a mapping miss
+/// still has a real family to try.
+pub const FONT_SF_PRO: &str = "SF Pro Text";
 /// Preferred system serif; `typography` adds Georgia / Times fallbacks.
 pub const FONT_SERIF: &str = "New York";
 

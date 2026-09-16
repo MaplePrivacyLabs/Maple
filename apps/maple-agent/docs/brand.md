@@ -198,7 +198,8 @@ selected menu items, and primary buttons.
 | Display headings (settings pane titles) | Array Regular | `assets::FONT_DISPLAY` |
 | Empty-state hero | Array Wide | `assets::FONT_DISPLAY_WIDE` |
 | Chrome (sidebar, buttons, settings) | Manrope 14 px | `assets::FONT_BODY` |
-| Chat and composer (default) | System UI, 15 px, line-height 1.65 | `assets::FONT_SYSTEM` |
+| Chat and composer (default) | System UI, 14 px, line-height 1.65 | `assets::FONT_SYSTEM` |
+| Chat option: SF Pro | SF Pro Text | `assets::FONT_SF_PRO` |
 | Chat option: Maple | Manrope | `assets::FONT_BODY` |
 | Chat option: Geist | Geist Sans | `assets::FONT_GEIST` |
 | Chat option: Serif | New York / Georgia / Times | `assets::FONT_SERIF` |
@@ -211,7 +212,7 @@ app but not redistributing the font file on its own; Manrope and Geist
 are OFL. The system and serif faces are not bundled.
 
 Chat family and size are user settings (`chat_font_family`,
-`chat_font_size`, 13–18 px). Markdown emphasis and headings use SemiBold
+`chat_font_size`, 13–18 px, default 14). Markdown emphasis and headings use SemiBold
 (600), not Bold (700). Heading sizes are ems of the live chat size.
 The hero heading is 36 / 48 px in Array Wide; settings section titles
 are 26 / 32 px in Array Regular.

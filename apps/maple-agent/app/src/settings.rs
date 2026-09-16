@@ -257,7 +257,7 @@ fn default_chat_font_family() -> String {
 }
 
 fn default_chat_font_size() -> u8 {
-    15
+    14
 }
 
 fn default_web_enabled() -> bool {
@@ -642,14 +642,14 @@ mod tests {
     }
 
     #[test]
-    fn existing_settings_files_default_chat_reading_to_system_15() {
+    fn existing_settings_files_default_chat_reading_to_system_14() {
         let mut json = serde_json::to_value(AppSettings::default()).expect("serialize");
         let object = json.as_object_mut().expect("settings object");
         object.remove("chat_font_family");
         object.remove("chat_font_size");
         let settings: AppSettings = serde_json::from_value(json).expect("deserialize old file");
         assert_eq!(settings.chat_font_family, "system");
-        assert_eq!(settings.chat_font_size, 15);
+        assert_eq!(settings.chat_font_size, 14);
     }
 
     /// A queued background change must land on disk and survive a reload:

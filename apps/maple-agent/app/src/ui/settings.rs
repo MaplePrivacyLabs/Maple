@@ -842,6 +842,76 @@ impl SettingsScreen {
         }
     }
 
+    /// The trigger label, drawn in the selected chat face when this is
+    /// the font picker so System vs Manrope is visible before leaving
+    /// Settings.
+    fn menu_value_label(&self, menu: SettingMenu) -> gpui::AnyElement {
+        let label = div().child(self.menu_value(menu));
+        if menu == SettingMenu::ChatFont {
+            crate::ui::typography::with_family(
+                label,
+                crate::ui::typography::ChatFontFamily::parse(&self.settings.chat_font_family),
+            )
+            .into_any_element()
+        } else {
+            label.into_any_element()
+        }
+    }
+
+    fn chat_appearance_preview(&self) -> Div {
+        let family = crate::ui::typography::ChatFontFamily::parse(&self.settings.chat_font_family);
+        let size = crate::ui::typography::clamp_chat_font_size(self.settings.chat_font_size);
+        div()
+            .w_full()
+            .rounded(theme::RADIUS_MD)
+            .border_1()
+            .border_color(gpui::rgb(theme::border_subtle()))
+            .bg(gpui::rgb(theme::bg_elevated()))
+            .p_4()
+            .flex()
+            .flex_col()
+            .gap_3()
+            .child(
+                div()
+                    .text_xs()
+                    .font_weight(gpui::FontWeight::MEDIUM)
+                    .text_color(gpui::rgb(theme::text_muted()))
+                    .child(format!("Live preview · {} · {size} px", family.label())),
+            )
+            .child(
+                crate::ui::typography::chat_reading(div())
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .child(
+                        div()
+                            .text_xs()
+                            .font_weight(gpui::FontWeight::MEDIUM)
+                            .text_color(gpui::rgb(theme::text_muted()))
+                            .child("Assistant"),
+                    )
+                    .child("Clear, comfortable text makes longer conversations easier to follow.")
+                    .child(
+                        div()
+                            .font_weight(crate::ui::typography::emphasis_weight())
+                            .child("Bold should look crisp, not blurry."),
+                    ),
+            )
+            .child(
+                div().flex().justify_end().child(
+                    crate::ui::typography::chat_reading(div())
+                        .max_w(gpui::relative(0.88))
+                        .px_3()
+                        .py_2()
+                        .rounded(theme::RADIUS_MD)
+                        .bg(gpui::rgb(theme::bg_user_bubble()))
+                        .border_1()
+                        .border_color(gpui::rgb(theme::user_bubble_border()))
+                        .child("This size feels just right."),
+                ),
+            )
+    }
+
     /// Apply the option at `index`: an absolute set, so the local copy
     /// and the file end in the same state whatever the file held.
     pub(super) fn pick_setting_option(
@@ -1005,7 +1075,7 @@ impl SettingsScreen {
                 .on_click(cx.listener(move |this, _event, _window, cx| {
                     this.toggle_setting_menu(menu, cx);
                 }))
-                .child(self.menu_value(menu))
+                .child(self.menu_value_label(menu))
                 .child(icon("chevron-down", px(12.), theme::text_muted())),
             );
         if open {
@@ -1023,26 +1093,30 @@ impl SettingsScreen {
             }));
             for (index, option) in options.iter().enumerate() {
                 let selected = highlighted == Some(index);
-                panel = panel.child(
-                    widgets::menu_row(
-                        gpui::SharedString::from(format!("setting-menu-{}-{index}", menu.id())),
-                        true,
-                    )
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .gap_2()
-                    .when(selected, |row| {
-                        row.bg(gpui::rgb(theme::bg_sidebar_row_selected()))
-                    })
-                    .on_click(cx.listener(move |this, _event, _window, cx| {
-                        this.pick_setting_option(menu, index, cx);
-                    }))
-                    .child(option.label.clone())
-                    .when(option.current, |row| {
-                        row.child(icon("check", px(14.), theme::accent()))
-                    }),
-                );
+                let mut option_row = widgets::menu_row(
+                    gpui::SharedString::from(format!("setting-menu-{}-{index}", menu.id())),
+                    true,
+                )
+                .flex()
+                .items_center()
+                .justify_between()
+                .gap_2()
+                .when(selected, |row| {
+                    row.bg(gpui::rgb(theme::bg_sidebar_row_selected()))
+                })
+                .on_click(cx.listener(move |this, _event, _window, cx| {
+                    this.pick_setting_option(menu, index, cx);
+                }))
+                .child(option.label.clone())
+                .when(option.current, |row| {
+                    row.child(icon("check", px(14.), theme::accent()))
+                });
+                if menu == SettingMenu::ChatFont
+                    && let Some(family) = crate::ui::typography::ChatFontFamily::ALL.get(index)
+                {
+                    option_row = crate::ui::typography::with_family(option_row, *family);
+                }
+                panel = panel.child(option_row);
             }
             row = row.child(gpui::deferred(panel));
         }
@@ -1513,11 +1587,12 @@ impl SettingsScreen {
                         || SettingsTarget::General(GeneralTarget::ChatSize),
                         self.setting_menu_row(
                             "Text size",
-                            "Size of conversation and composer text. Chrome stays 14 px.",
+                            "Size of conversation and composer text. Sidebar and buttons stay Manrope.",
                             SettingMenu::ChatSize,
                             cx,
                         ),
                     ))
+                    .child(self.chat_appearance_preview())
                     .child(self.application_target(
                         || SettingsTarget::General(GeneralTarget::ToolDetails),
                         toggle_row(
