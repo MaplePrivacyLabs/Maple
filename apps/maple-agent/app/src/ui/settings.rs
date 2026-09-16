@@ -861,54 +861,75 @@ impl SettingsScreen {
     fn chat_appearance_preview(&self) -> Div {
         let family = crate::ui::typography::ChatFontFamily::parse(&self.settings.chat_font_family);
         let size = crate::ui::typography::clamp_chat_font_size(self.settings.chat_font_size);
-        div()
-            .w_full()
-            .rounded(theme::RADIUS_MD)
-            .border_1()
-            .border_color(gpui::rgb(theme::border_subtle()))
-            .bg(gpui::rgb(theme::bg_elevated()))
-            .p_4()
+        let speaker = |name: &'static str| {
+            div()
+                .text_xs()
+                .font_family(crate::assets::FONT_BODY)
+                .font_weight(gpui::FontWeight::MEDIUM)
+                .text_color(gpui::rgb(theme::text_muted()))
+                .child(name)
+        };
+        // The settings pane and user bubbles both sit on elevated fills in
+        // dark mode. Recess a real chat well (`bg_app`) so assistant text
+        // and the user bubble separate from the card, matching the transcript.
+        widgets::card_row()
             .flex()
             .flex_col()
-            .gap_3()
+            .gap_2()
             .child(
                 div()
                     .text_xs()
+                    .font_family(crate::assets::FONT_BODY)
                     .font_weight(gpui::FontWeight::MEDIUM)
                     .text_color(gpui::rgb(theme::text_muted()))
                     .child(format!("Live preview · {} · {size} px", family.label())),
             )
             .child(
-                crate::ui::typography::chat_reading(div())
+                div()
+                    .w_full()
+                    .rounded(theme::RADIUS_MD)
+                    .border_1()
+                    .border_color(gpui::rgb(theme::border()))
+                    .bg(gpui::rgb(theme::bg_app()))
+                    .px_3()
+                    .py_3()
                     .flex()
                     .flex_col()
-                    .gap_1()
+                    .gap_2()
                     .child(
-                        div()
-                            .text_xs()
-                            .font_weight(gpui::FontWeight::MEDIUM)
-                            .text_color(gpui::rgb(theme::text_muted()))
-                            .child("Assistant"),
+                        crate::ui::typography::chat_reading(div())
+                            .max_w(gpui::relative(0.82))
+                            .flex()
+                            .flex_col()
+                            .gap_1()
+                            .text_color(gpui::rgb(theme::text_primary()))
+                            .child(speaker("Assistant"))
+                            .child(
+                                "Clear, comfortable text makes longer conversations easier to follow.",
+                            )
+                            .child(
+                                div()
+                                    .font_weight(crate::ui::typography::emphasis_weight())
+                                    .child("Bold should look crisp, not blurry."),
+                            ),
                     )
-                    .child("Clear, comfortable text makes longer conversations easier to follow.")
                     .child(
-                        div()
-                            .font_weight(crate::ui::typography::emphasis_weight())
-                            .child("Bold should look crisp, not blurry."),
+                        div().w_full().flex().justify_end().child(
+                            crate::ui::typography::chat_reading(div())
+                                .px_3()
+                                .py_2()
+                                .rounded(theme::RADIUS_MD)
+                                .bg(gpui::rgb(theme::bg_user_bubble()))
+                                .border_1()
+                                .border_color(gpui::rgb(theme::user_bubble_border()))
+                                .flex()
+                                .flex_col()
+                                .gap_1()
+                                .text_color(gpui::rgb(theme::text_primary()))
+                                .child(speaker("You"))
+                                .child("This size feels just right."),
+                        ),
                     ),
-            )
-            .child(
-                div().flex().justify_end().child(
-                    crate::ui::typography::chat_reading(div())
-                        .max_w(gpui::relative(0.88))
-                        .px_3()
-                        .py_2()
-                        .rounded(theme::RADIUS_MD)
-                        .bg(gpui::rgb(theme::bg_user_bubble()))
-                        .border_1()
-                        .border_color(gpui::rgb(theme::user_bubble_border()))
-                        .child("This size feels just right."),
-                ),
             )
     }
 
