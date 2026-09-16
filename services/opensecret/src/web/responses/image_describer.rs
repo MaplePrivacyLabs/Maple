@@ -49,8 +49,8 @@ pub struct ImageDescriptionCandidate {
 pub const IMAGE_DESCRIPTION_CANDIDATES: [ImageDescriptionCandidate; 3] = [
     ImageDescriptionCandidate {
         provider: ImageDescriptionProvider::Continuum,
-        public_model_id: "kimi-k2-6",
-        provider_model_id: "kimi-k2.6",
+        public_model_id: "glm-5-3-flash",
+        provider_model_id: "glm-5.3-flash",
     },
     ImageDescriptionCandidate {
         provider: ImageDescriptionProvider::Tinfoil,
@@ -135,10 +135,10 @@ pub fn build_image_description_request(
     // control explicit rather than assuming one generic reasoning knob.
     request["include_reasoning"] = json!(false);
     match candidate.provider_model_id {
-        // Kimi K2.6's vLLM template uses `thinking`; `enable_thinking` is not
-        // the native switch and is ignored by some deployed template versions.
-        "kimi-k2.6" => {
-            request["chat_template_kwargs"] = json!({ "thinking": false });
+        // GLM-5.3-Flash reasoning cannot be switched off. `low` is the cheapest
+        // Privatemode/Continuum effort that still produces an image description.
+        "glm-5.3-flash" | "glm-5-3-flash" => {
+            request["reasoning_effort"] = json!("low");
         }
         // Gemma 4 uses vLLM's `enable_thinking` template switch.
         "gemma4-31b" => {
@@ -514,10 +514,13 @@ mod tests {
             IMAGE_DESCRIPTION_CANDIDATES[0].provider.as_str(),
             "continuum"
         );
-        assert_eq!(IMAGE_DESCRIPTION_CANDIDATES[0].public_model_id, "kimi-k2-6");
+        assert_eq!(
+            IMAGE_DESCRIPTION_CANDIDATES[0].public_model_id,
+            "glm-5-3-flash"
+        );
         assert_eq!(
             IMAGE_DESCRIPTION_CANDIDATES[0].provider_model_id,
-            "kimi-k2.6"
+            "glm-5.3-flash"
         );
         assert_eq!(IMAGE_DESCRIPTION_CANDIDATES[1].provider.as_str(), "tinfoil");
         assert_eq!(
@@ -539,18 +542,15 @@ mod tests {
     }
 
     #[test]
-    fn continuum_kimi_request_disables_thinking_and_uses_provider_managed_cache_fields() {
+    fn continuum_glm_flash_request_uses_low_reasoning_effort() {
         let request = build_image_description_request(IMAGE_DESCRIPTION_CANDIDATES[0], input())
             .expect("request");
 
-        assert_eq!(request["model"], "kimi-k2-6");
+        assert_eq!(request["model"], "glm-5-3-flash");
         assert_eq!(request["stream"], false);
         assert_eq!(request["include_reasoning"], false);
-        assert_eq!(request["chat_template_kwargs"]["thinking"], false);
-        assert!(request["chat_template_kwargs"]
-            .get("enable_thinking")
-            .is_none());
-        assert!(request.get("reasoning_effort").is_none());
+        assert_eq!(request["reasoning_effort"], "low");
+        assert!(request.get("chat_template_kwargs").is_none());
         assert!(request.get("cache_salt").is_none());
         assert_eq!(
             request["messages"][1]["content"][1]["image_url"]["url"],

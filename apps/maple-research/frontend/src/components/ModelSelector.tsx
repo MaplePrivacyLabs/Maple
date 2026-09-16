@@ -53,7 +53,7 @@ function isSelectableChatModel(model: OpenSecretModel): boolean {
 
 const FALLBACK_ALIAS_TARGETS = {
   [QUICK_MODEL_ALIAS]: "gpt-oss-120b",
-  [POWERFUL_MODEL_ALIAS]: "kimi-k2-6"
+  [POWERFUL_MODEL_ALIAS]: "glm-5-3"
 } as const;
 
 function buildFallbackModelAliases(models: OpenSecretModel[]): OpenSecretModelAlias[] {

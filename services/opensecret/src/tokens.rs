@@ -49,10 +49,9 @@ mod tests {
         assert_eq!(model_max_ctx("llama3-3-70b"), 131_072);
         assert_eq!(model_max_ctx("gpt-oss-120b"), 131_072);
         assert_eq!(model_max_ctx("gpt-oss-safeguard-120b"), 131_072);
-        assert_eq!(model_max_ctx("kimi-k2-6"), 262_144);
         assert_eq!(model_max_ctx("gemma4-31b"), 262_144);
         assert_eq!(model_max_ctx("glm-5-3"), 262_144);
-        assert_eq!(model_max_ctx("glm-5-3-flash"), 1_048_576);
+        assert_eq!(model_max_ctx("glm-5-3-flash"), 262_144);
         assert_eq!(model_max_ctx("kimi-k3"), 262_144);
         assert_eq!(model_max_ctx("deepseek-v4-1-flash"), 1_048_576);
         assert_eq!(model_max_ctx("auto:quick"), 131_072);

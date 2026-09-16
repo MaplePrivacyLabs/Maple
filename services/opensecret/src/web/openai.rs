@@ -6408,7 +6408,7 @@ mod tests {
     fn applies_tinfoil_user_cache_secret_and_overwrites_client_value() {
         let user_uuid = Uuid::from_u128(42);
         let mut body = serde_json::Map::from_iter([
-            ("model".to_string(), json!("kimi-k2-6")),
+            ("model".to_string(), json!("glm-5-3-flash")),
             ("cache_salt".to_string(), json!("user-supplied")),
             ("user_cache_secret".to_string(), json!("client-controlled")),
             ("messages".to_string(), json!([])),
@@ -6421,7 +6421,7 @@ mod tests {
             &CompletionCachePolicy::LegacyV1,
         );
 
-        assert_eq!(body.get("model"), Some(&json!("kimi-k2-6")));
+        assert_eq!(body.get("model"), Some(&json!("glm-5-3-flash")));
         assert_eq!(body.get("messages"), Some(&json!([])));
         assert!(!body.contains_key(PROVIDER_MANAGED_CACHE_SALT_FIELD));
         assert_eq!(
@@ -6683,7 +6683,7 @@ mod tests {
             BigDecimal::from_str("0.001").unwrap(),
             true,
             "continuum".to_string(),
-            "kimi-k2-6".to_string(),
+            "glm-5-3-flash".to_string(),
         );
 
         assert_eq!(event.input_tokens, 100);
@@ -6691,7 +6691,7 @@ mod tests {
         assert_eq!(event.cached_input_tokens, Some(42));
         assert!(event.is_api_request);
         assert_eq!(event.provider_name, "continuum");
-        assert_eq!(event.model_name, "kimi-k2-6");
+        assert_eq!(event.model_name, "glm-5-3-flash");
     }
 
     #[test]
@@ -6708,7 +6708,7 @@ mod tests {
             ("tinfoil", "kimi-k3"),
             ("tinfoil", "glm-5-3"),
             ("tinfoil", "glm-5-3-flash"),
-            ("continuum", "kimi-k2-6"),
+            ("continuum", "glm-5-3-flash"),
             ("continuum", "glm-5-3"),
         ] {
             let event = build_usage_event(
@@ -6731,7 +6731,7 @@ mod tests {
     #[test]
     fn provider_model_ids_are_canonicalized_in_client_responses() {
         for (provider_model, public_model) in [
-            ("kimi-k2.6", "kimi-k2-6"),
+            ("glm-5.3-flash", "glm-5-3-flash"),
             ("glm-5.3", "glm-5-3"),
             ("kimi-k3", "kimi-k3"),
             ("glm-5-3-flash", "glm-5-3-flash"),

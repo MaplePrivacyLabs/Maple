@@ -6,7 +6,9 @@
 //! create a probe herd.
 
 use super::{AttemptFailureKind, AttemptTerminal, RouteKey};
-use crate::provider_registry::{ProviderId, ProviderRegistry, RateLimitScope, PROVIDER_REGISTRY};
+use crate::provider_registry::{
+    FailoverPolicy, ProviderId, ProviderRegistry, RateLimitScope, PROVIDER_REGISTRY,
+};
 use std::collections::{HashMap, VecDeque};
 #[cfg(test)]
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -62,6 +64,17 @@ pub(crate) struct ShadowRouteSnapshot {
     pub(crate) deployment_capacity: ShadowDisposition,
     pub(crate) rate_limit_capacity: ShadowDisposition,
     pub(crate) effective: ShadowDisposition,
+}
+
+impl ShadowRouteSnapshot {
+    pub(crate) fn for_failover(self, policy: FailoverPolicy) -> ShadowDisposition {
+        match policy {
+            FailoverPolicy::AllGates => self.effective,
+            FailoverPolicy::CapacityGates => {
+                strongest_disposition([self.deployment_capacity, self.rate_limit_capacity])
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -241,6 +254,7 @@ impl Drop for ProbeLease {
 pub(crate) struct ShadowHealthState {
     policy: ShadowHealthPolicy,
     rate_limit_pools: HashMap<RouteKey, CapacityPoolKey>,
+    failover_policies: HashMap<RouteKey, FailoverPolicy>,
     inner: Arc<Mutex<ShadowHealthInner>>,
     #[cfg(test)]
     observation_count: AtomicUsize,
@@ -261,6 +275,7 @@ impl ShadowHealthState {
         let mut route_health = HashMap::new();
         let mut capacity = HashMap::new();
         let mut rate_limit_pools = HashMap::new();
+        let mut failover_policies = HashMap::new();
 
         for model in registry.completion_models() {
             for route in model.routes {
@@ -279,13 +294,17 @@ impl ShadowHealthState {
                 route_health.entry(route_key.clone()).or_default();
                 capacity.entry(deployment_pool).or_default();
                 capacity.entry(rate_limit_pool.clone()).or_default();
-                rate_limit_pools.entry(route_key).or_insert(rate_limit_pool);
+                rate_limit_pools
+                    .entry(route_key.clone())
+                    .or_insert(rate_limit_pool);
+                failover_policies.entry(route_key).or_insert(model.failover);
             }
         }
 
         Self {
             policy,
             rate_limit_pools,
+            failover_policies,
             inner: Arc::new(Mutex::new(ShadowHealthInner {
                 route_health,
                 capacity,
@@ -365,8 +384,15 @@ impl ShadowHealthState {
         };
 
         let deployment_pool = CapacityPoolKey::ProviderModel(route.clone());
+        let failover = self
+            .failover_policies
+            .get(route)
+            .copied()
+            .unwrap_or(FailoverPolicy::AllGates);
         let mut gates = Vec::with_capacity(3);
-        gates.push(ProbeGateKey::RouteHealth(route.clone()));
+        if failover == FailoverPolicy::AllGates {
+            gates.push(ProbeGateKey::RouteHealth(route.clone()));
+        }
         gates.push(ProbeGateKey::Capacity(deployment_pool.clone()));
         if rate_limit_pool != &deployment_pool {
             gates.push(ProbeGateKey::Capacity(rate_limit_pool.clone()));
@@ -1226,7 +1252,7 @@ mod tests {
         let now = Instant::now();
         let k3 = route(ProviderId::Tinfoil, "kimi-k3", "kimi-k3");
         let quick = route(ProviderId::Tinfoil, "gpt-oss-120b", "gpt-oss-120b");
-        let k2 = route(ProviderId::Continuum, "kimi-k2-6", "kimi-k2.6");
+        let k2 = route(ProviderId::Continuum, "glm-5-3-flash", "glm-5.3-flash");
         let glm_continuum = route(ProviderId::Continuum, "glm-5-3", "glm-5.3");
         let glm_tinfoil = route(ProviderId::Tinfoil, "glm-5-3", "glm-5-3");
         let glm_flash = route(ProviderId::Tinfoil, "glm-5-3-flash", "glm-5-3-flash");
@@ -1771,7 +1797,7 @@ mod tests {
     fn shared_continuum_account_gate_allows_one_probe_across_models() {
         let state = Arc::new(ShadowHealthState::with_policy(test_policy()));
         let start = Instant::now();
-        let k2 = route(ProviderId::Continuum, "kimi-k2-6", "kimi-k2.6");
+        let k2 = route(ProviderId::Continuum, "glm-5-3-flash", "glm-5.3-flash");
         let glm = route(ProviderId::Continuum, "glm-5-3", "glm-5.3");
         state.observe_terminal_at(
             &failed(
@@ -1871,9 +1897,31 @@ mod tests {
     }
 
     #[test]
+    fn glm_flash_probe_skips_the_route_health_gate() {
+        let state = ShadowHealthState::with_policy(test_policy());
+        let now = Instant::now();
+        let flash = route(ProviderId::Tinfoil, "glm-5-3-flash", "glm-5-3-flash");
+        let glm = route(ProviderId::Tinfoil, "glm-5-3", "glm-5-3");
+        open_route_at(&state, &flash, now);
+        open_route_at(&state, &glm, now);
+
+        match state.try_claim_probe_at(&flash.route_key(), now) {
+            ProbeClaimResult::Ready(None) => {}
+            other => panic!("Flash should ignore route-health circuits, got {other:?}"),
+        }
+        match state.try_claim_probe_at(&glm.route_key(), now) {
+            ProbeClaimResult::Rejected {
+                reason: ProbeRejectionReason::CircuitOpen,
+                ..
+            } => {}
+            other => panic!("GLM 5.3 should still fence route-health, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn composite_probe_claims_are_all_or_none_and_deduplicate_capacity_gates() {
         let start = Instant::now();
-        let k2 = route(ProviderId::Continuum, "kimi-k2-6", "kimi-k2.6");
+        let k2 = route(ProviderId::Continuum, "glm-5-3", "glm-5.3");
 
         let composite = ShadowHealthState::with_policy(test_policy());
         open_route_at(&composite, &k2, start);
@@ -1956,7 +2004,7 @@ mod tests {
     #[test]
     fn successful_probe_heals_claimed_gates_and_resets_route_watch() {
         let start = Instant::now();
-        let k2 = route(ProviderId::Continuum, "kimi-k2-6", "kimi-k2.6");
+        let k2 = route(ProviderId::Continuum, "glm-5-3", "glm-5.3");
         let state = ShadowHealthState::with_policy(test_policy());
         open_route_at(&state, &k2, start);
         for status in [503, 429] {
@@ -2079,7 +2127,7 @@ mod tests {
             }
         );
 
-        let k2 = route(ProviderId::Continuum, "kimi-k2-6", "kimi-k2.6");
+        let k2 = route(ProviderId::Continuum, "glm-5-3-flash", "glm-5.3-flash");
         let glm = route(ProviderId::Continuum, "glm-5-3", "glm-5.3");
         let account_limit = ShadowHealthState::with_policy(test_policy());
         account_limit.observe_terminal_at(
