@@ -443,7 +443,17 @@ impl ExternalAgentRegistry {
         Ok(candidate)
     }
 
-    pub(crate) async fn list_providers(&self, call: &ExternalAgentCall) -> CallToolResult {
+    pub(crate) async fn list_providers(
+        &self,
+        call: &ExternalAgentCall,
+        providers: &[String],
+    ) -> CallToolResult {
+        if !providers
+            .iter()
+            .any(|provider| provider == codex::PROVIDER_ID)
+        {
+            return text_result("No external agent providers are enabled for this task.");
+        }
         let detection = codex::detect(call.login_path.as_deref()).await;
         let mut out = String::new();
         let _ = writeln!(out, "Agent providers available to this task:");

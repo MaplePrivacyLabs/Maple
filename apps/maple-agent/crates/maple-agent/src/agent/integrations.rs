@@ -18,6 +18,7 @@ pub(super) const CUA_DRIVER_INTEGRATION_ID: &str = "cua-driver";
 /// talk about the integration in an error.
 pub(super) const CUA_DRIVER_NAME: &str = "Computer use (CUA)";
 pub(super) const CUA_DRIVER_MCP_NAME: &str = "cua-driver";
+#[cfg(embedded_cua)]
 pub(super) const CUA_DRIVER_DESCRIPTION: &str =
     "Let models view and control desktop applications using CUA built into Maple.";
 /// What the Integrations page shows. The catalog owns this copy so the page
@@ -33,6 +34,101 @@ pub(super) const CODEX_INTEGRATION_ID: &str = "codex";
 const CODEX_CARD_NAME: &str = "Codex";
 const CODEX_CARD_DESCRIPTION: &str =
     "Let a task hand work to the Codex CLI installed on this computer, with its own account.";
+/// Provider metadata shared by Settings, task selection, and tool admission.
+/// Add a descriptor and the provider's detection/transport adapter to extend
+/// delegation; task persistence and the composer need no provider-specific code.
+pub(super) struct ExternalAgentIntegration {
+    pub(super) id: &'static str,
+    pub(super) name: &'static str,
+    pub(super) description: &'static str,
+    project: fn(&IntegrationDetections, Option<&StoredIntegration>) -> AgentIntegration,
+}
+
+pub(super) const EXTERNAL_AGENT_INTEGRATIONS: &[ExternalAgentIntegration] =
+    &[ExternalAgentIntegration {
+        id: CODEX_INTEGRATION_ID,
+        name: CODEX_CARD_NAME,
+        description: CODEX_CARD_DESCRIPTION,
+        project: |detections, stored| codex_public(&detections.codex, stored),
+    }];
+
+pub(super) fn external_agent_selection(id: &str) -> Option<&'static ExternalAgentIntegration> {
+    EXTERNAL_AGENT_INTEGRATIONS
+        .iter()
+        .find(|entry| entry.id == id)
+}
+
+#[derive(Default, Serialize, Deserialize)]
+struct TaskIntegrationOverrides {
+    enabled: std::collections::BTreeMap<String, bool>,
+}
+
+impl ExtensionState for TaskIntegrationOverrides {
+    const EXTENSION_NAME: &'static str = "maple_integrations";
+    const VERSION: &'static str = "1";
+}
+
+fn session_external_agent_enabled(
+    stored: &StoredIntegrationRegistry,
+    session: &Session,
+    id: &str,
+) -> bool {
+    // Missing metadata is inheritance, including tasks created before this
+    // integration existed. Never snapshot an inherited false into old tasks.
+    TaskIntegrationOverrides::from_extension_data(&session.extension_data)
+        .and_then(|state| state.enabled.get(id).copied())
+        .unwrap_or_else(|| {
+            stored
+                .integrations
+                .iter()
+                .any(|entry| entry.id == id && entry.enabled)
+        })
+}
+
+pub(super) fn session_external_agent_providers(
+    stored: &StoredIntegrationRegistry,
+    session: &Session,
+    desktop: bool,
+) -> Vec<String> {
+    if !desktop || session.session_type != SessionType::User {
+        return Vec::new();
+    }
+    EXTERNAL_AGENT_INTEGRATIONS
+        .iter()
+        .filter(|entry| session_external_agent_enabled(stored, session, entry.id))
+        .map(|entry| entry.id.to_string())
+        .collect()
+}
+
+pub(super) async fn persist_task_integration_override(
+    manager: &SessionManager,
+    session_id: &str,
+    id: &str,
+    enabled: bool,
+) -> Result<Session, String> {
+    let session = manager
+        .get_session(session_id, false)
+        .await
+        .map_err(|error| format!("Failed to load Agent task: {error}"))?;
+    let mut state =
+        TaskIntegrationOverrides::from_extension_data(&session.extension_data).unwrap_or_default();
+    state.enabled.insert(id.to_string(), enabled);
+    let mut data = session.extension_data;
+    state
+        .to_extension_data(&mut data)
+        .map_err(|error| format!("Failed to save task integration: {error}"))?;
+    manager
+        .update(session_id)
+        .extension_data(data)
+        .apply()
+        .await
+        .map_err(|error| format!("Failed to save task integration: {error}"))?;
+    manager
+        .get_session(session_id, false)
+        .await
+        .map_err(|error| format!("Failed to reload Agent task: {error}"))
+}
+
 /// Frontmatter line that marks a skill file as Maple's, so disabling the
 /// integration removes only what enabling it wrote.
 const EXTERNAL_AGENT_SKILL_MARKER: &str = "maple: external-agents";
@@ -91,18 +187,6 @@ impl StoredIntegrationRegistry {
             .iter_mut()
             .find(|entry| entry.id == CUA_DRIVER_INTEGRATION_ID)
     }
-
-    fn codex(&self) -> Option<&StoredIntegration> {
-        self.integrations
-            .iter()
-            .find(|entry| entry.id == CODEX_INTEGRATION_ID)
-    }
-
-    fn codex_mut(&mut self) -> Option<&mut StoredIntegration> {
-        self.integrations
-            .iter_mut()
-            .find(|entry| entry.id == CODEX_INTEGRATION_ID)
-    }
 }
 
 /// Everything discovered about the curated integrations on this device.
@@ -156,9 +240,13 @@ fn codex_public(
 /// Whether tasks of this account may delegate to external agents. Read
 /// on a path that must keep working, so an unusable file reads as off.
 pub(super) fn external_agents_enabled(paths: &AgentPathLayout, user_id: &str) -> bool {
-    stored_integrations_for_read(paths, user_id)
-        .codex()
-        .is_some_and(|entry| entry.enabled)
+    let stored = stored_integrations_for_read(paths, user_id);
+    EXTERNAL_AGENT_INTEGRATIONS.iter().any(|provider| {
+        stored
+            .integrations
+            .iter()
+            .any(|entry| entry.id == provider.id && entry.enabled)
+    })
 }
 
 /// The slash commands for the skills Maple installed in the account's
@@ -363,7 +451,11 @@ pub(super) async fn detect_integrations(codex_search_path: Option<&str>) -> Inte
 /// The integrations Maple curates. Every entry point that accepts an
 /// integration id checks it here so they cannot disagree.
 pub(super) fn require_known_integration(id: &str) -> Result<(), String> {
-    if matches!(id.trim(), CUA_DRIVER_INTEGRATION_ID | CODEX_INTEGRATION_ID) {
+    if id.trim() == CUA_DRIVER_INTEGRATION_ID
+        || EXTERNAL_AGENT_INTEGRATIONS
+            .iter()
+            .any(|entry| entry.id == id.trim())
+    {
         return Ok(());
     }
     Err(format!("Unknown integration '{}'", id.trim()))
@@ -375,10 +467,17 @@ pub(super) fn project_integrations(
     detections: &IntegrationDetections,
 ) -> Result<Vec<AgentIntegration>, String> {
     let stored = load_stored_integrations(paths, user_id)?;
-    Ok(vec![
-        detections.cua.public(stored.cua()),
-        codex_public(&detections.codex, stored.codex()),
-    ])
+    let mut cards = vec![detections.cua.public(stored.cua())];
+    cards.extend(EXTERNAL_AGENT_INTEGRATIONS.iter().map(|provider| {
+        (provider.project)(
+            detections,
+            stored
+                .integrations
+                .iter()
+                .find(|entry| entry.id == provider.id),
+        )
+    }));
+    Ok(cards)
 }
 
 pub(super) fn set_integration_default(
@@ -388,8 +487,11 @@ pub(super) fn set_integration_default(
     detections: &IntegrationDetections,
 ) -> Result<Vec<AgentIntegration>, String> {
     require_known_integration(&request.id)?;
-    if request.id.trim() == CODEX_INTEGRATION_ID {
-        set_codex_default(paths, user_id, request.enabled, &detections.codex)?;
+    if let Some(provider) = EXTERNAL_AGENT_INTEGRATIONS
+        .iter()
+        .find(|entry| entry.id == request.id.trim())
+    {
+        set_external_agent_default(paths, user_id, request.enabled, provider, detections)?;
     } else {
         set_cua_default(paths, user_id, request.enabled, &detections.cua)?;
     }
@@ -398,37 +500,52 @@ pub(super) fn set_integration_default(
 
 /// Enabling needs a usable installation; disabling never fails on the
 /// installation, so a removed Codex can still be switched off.
-fn set_codex_default(
+fn set_external_agent_default(
     paths: &AgentPathLayout,
     user_id: &str,
     enabled: bool,
-    detection: &CodexDetection,
+    provider: &ExternalAgentIntegration,
+    detections: &IntegrationDetections,
 ) -> Result<(), String> {
     let mut stored = load_stored_integrations(paths, user_id)?;
     if enabled {
-        if detection.executable.is_none() {
-            return Err(
-                "Install the Codex CLI and make sure `codex` is on your PATH before enabling it"
-                    .to_string(),
-            );
+        let card = (provider.project)(detections, None);
+        if card.availability != AgentIntegrationAvailability::Available {
+            return Err(card
+                .detail
+                .unwrap_or_else(|| format!("Set up {} in Integrations first", provider.name)));
         }
-        if let Some(problem) = &detection.problem {
-            return Err(problem.clone());
-        }
-        match stored.codex_mut() {
-            Some(entry) => entry.enabled = true,
-            None => stored.integrations.push(StoredIntegration {
-                id: CODEX_INTEGRATION_ID.to_string(),
-                enabled: true,
-                backend: AgentIntegrationBackend::Embedded,
-                external_server: None,
-            }),
-        }
-    } else if let Some(entry) = stored.codex_mut() {
-        entry.enabled = false;
+    }
+    match stored
+        .integrations
+        .iter_mut()
+        .find(|entry| entry.id == provider.id)
+    {
+        Some(entry) => entry.enabled = enabled,
+        None if enabled => stored.integrations.push(StoredIntegration {
+            id: provider.id.to_string(),
+            enabled,
+            backend: AgentIntegrationBackend::Embedded,
+            external_server: None,
+        }),
+        None => {}
     }
     save_stored_integrations(paths, user_id, &stored)?;
-    sync_external_agent_skills(paths, user_id, enabled)
+    sync_external_agent_skills(paths, user_id, external_agents_enabled(paths, user_id))
+}
+
+pub(super) fn project_task_provider_availability(
+    rows: &mut [AgentSessionMcpServer],
+    detections: &IntegrationDetections,
+) {
+    for row in rows {
+        if row.kind == AgentSessionIntegrationKind::ExternalAgent
+            && let Some(provider) = external_agent_selection(&row.name)
+        {
+            let card = (provider.project)(detections, None);
+            row.available = card.availability == AgentIntegrationAvailability::Available;
+        }
+    }
 }
 
 fn set_cua_default(
@@ -684,26 +801,48 @@ pub(super) fn project_session_mcp_servers(
     let active_external = session_mcp_extension_keys(session)
         .iter()
         .any(|name| is_cua_key(name));
-    let Some(backend) = session_cua_backend(stored, session) else {
+    if session.session_type == SessionType::User {
+        servers.extend(
+            EXTERNAL_AGENT_INTEGRATIONS
+                .iter()
+                .map(|entry| AgentSessionMcpServer {
+                    name: entry.id.to_string(),
+                    kind: AgentSessionIntegrationKind::ExternalAgent,
+                    display_name: entry.name.to_string(),
+                    description: entry.description.to_string(),
+                    transport: "external_agent".to_string(),
+                    enabled: session_external_agent_enabled(stored, session, entry.id),
+                    // Installation is checked before enabling and again at launch.
+                    available: true,
+                }),
+        );
+    }
+    let backend = session_cua_backend(stored, session);
+    if backend.is_none() && session.session_type != SessionType::User {
         return Ok(servers);
-    };
+    }
     let stored = stored.cua();
     let enabled = match backend {
-        AgentIntegrationBackend::Embedded => state.is_some_and(|state| state.enabled),
-        AgentIntegrationBackend::External => active_external,
+        Some(AgentIntegrationBackend::Embedded) => state.is_some_and(|state| state.enabled),
+        Some(AgentIntegrationBackend::External) => active_external,
+        None => false,
     };
     let available = match backend {
-        AgentIntegrationBackend::Embedded => embedded_cua_ready(),
-        AgentIntegrationBackend::External => {
+        Some(AgentIntegrationBackend::Embedded) => embedded_cua_ready(),
+        Some(AgentIntegrationBackend::External) => {
             active_external || stored.is_some_and(|entry| entry.external_server.is_some())
         }
+        None => false,
     };
     servers.push(AgentSessionMcpServer {
         name: CUA_DRIVER_MCP_NAME.to_string(),
-        description: CUA_DRIVER_DESCRIPTION.to_string(),
+        kind: AgentSessionIntegrationKind::Mcp,
+        display_name: CUA_DRIVER_CARD_NAME.to_string(),
+        description: CUA_DRIVER_CARD_DESCRIPTION.to_string(),
         transport: match backend {
-            AgentIntegrationBackend::Embedded => "embedded",
-            AgentIntegrationBackend::External => "stdio",
+            Some(AgentIntegrationBackend::Embedded) => "embedded",
+            Some(AgentIntegrationBackend::External) => "stdio",
+            None => "unconfigured",
         }
         .to_string(),
         enabled,
@@ -1165,6 +1304,279 @@ mod tests {
             }
         }))
         .unwrap()
+    }
+
+    fn codex_registry(enabled: bool) -> StoredIntegrationRegistry {
+        StoredIntegrationRegistry {
+            version: INTEGRATIONS_FILE_VERSION,
+            integrations: vec![StoredIntegration {
+                id: CODEX_INTEGRATION_ID.to_string(),
+                enabled,
+                backend: AgentIntegrationBackend::Embedded,
+                external_server: None,
+            }],
+        }
+    }
+
+    #[tokio::test]
+    async fn old_task_inherits_providers_until_explicitly_overridden() {
+        let temp = tempfile::tempdir().unwrap();
+        let manager = SessionManager::new(temp.path().join("sessions"));
+        let session = manager
+            .create_session(
+                temp.path().to_path_buf(),
+                "Old task".into(),
+                SessionType::User,
+                GooseMode::SmartApprove,
+            )
+            .await
+            .unwrap();
+        assert!(
+            session_external_agent_providers(&codex_registry(false), &session, true).is_empty()
+        );
+        assert_eq!(
+            session_external_agent_providers(&codex_registry(true), &session, true),
+            ["codex"]
+        );
+        assert!(
+            session_external_agent_providers(&codex_registry(true), &session, false).is_empty()
+        );
+        let acp = Session {
+            session_type: SessionType::Acp,
+            ..session.clone()
+        };
+        assert!(session_external_agent_providers(&codex_registry(true), &acp, true).is_empty());
+        let disabled = persist_task_integration_override(&manager, &session.id, "codex", false)
+            .await
+            .unwrap();
+        assert!(
+            session_external_agent_providers(&codex_registry(true), &disabled, true).is_empty()
+        );
+        let enabled = persist_task_integration_override(&manager, &session.id, "codex", true)
+            .await
+            .unwrap();
+        assert_eq!(
+            session_external_agent_providers(&codex_registry(false), &enabled, true),
+            ["codex"]
+        );
+        drop(manager);
+        let manager = SessionManager::new(temp.path().join("sessions"));
+        let restored = manager.get_session(&session.id, false).await.unwrap();
+        assert_eq!(
+            session_external_agent_providers(&codex_registry(false), &restored, true),
+            ["codex"]
+        );
+    }
+
+    #[test]
+    fn composer_lists_native_integrations_without_prior_setup() {
+        let session = Session {
+            session_type: SessionType::User,
+            ..Session::default()
+        };
+        let rows =
+            project_session_mcp_servers(&StoredIntegrationRegistry::default(), &[], &session)
+                .unwrap();
+        assert!(rows.iter().any(|row| row.name == "codex"
+            && row.kind == AgentSessionIntegrationKind::ExternalAgent
+            && row.display_name == "Codex"
+            && !row.enabled));
+        assert!(
+            rows.iter()
+                .any(|row| row.name == CUA_DRIVER_MCP_NAME && !row.enabled && !row.available)
+        );
+        let temp = tempfile::tempdir().unwrap();
+        let mut custom = stored_cua_server(temp.path(), false);
+        custom.name = "codex".to_string();
+        let rows = project_session_mcp_servers(&codex_registry(true), &[custom], &session).unwrap();
+        let codex_rows = rows
+            .iter()
+            .filter(|row| row.name == "codex")
+            .collect::<Vec<_>>();
+        assert_eq!(codex_rows.len(), 2);
+        assert!(
+            codex_rows
+                .iter()
+                .any(|row| row.kind == AgentSessionIntegrationKind::Mcp && !row.enabled)
+        );
+        assert!(
+            codex_rows
+                .iter()
+                .any(|row| row.kind == AgentSessionIntegrationKind::ExternalAgent && row.enabled)
+        );
+        let legacy_request: AgentSetSessionMcpServerRequest = serde_json::from_value(json!({
+            "sessionId": "s1", "name": "codex", "enabled": true,
+        }))
+        .unwrap();
+        assert_eq!(legacy_request.kind, AgentSessionIntegrationKind::Mcp);
+        assert!(external_agent_selection("unknown").is_none());
+        assert_eq!(external_agent_selection("codex").unwrap().id, "codex");
+    }
+
+    /// Exercise the actual run-boundary wiring and Goose tool cache, including
+    /// a cold Agent with the old persisted developer extension. No inference or
+    /// external process is needed to inspect the model-facing tool catalog.
+    #[tokio::test]
+    async fn resumed_task_refreshes_external_tools_on_every_run() {
+        let fixture =
+            super::super::test_support::started_agent_runtime("integration-refresh").await;
+        let service = &fixture.handle.service;
+        let user = fixture.handle.user_id.as_ref();
+        let paths = &service.host.paths;
+        let (manager, transport, web_state) = {
+            let runtime = service.inner.lock().await;
+            let runtime = runtime.as_ref().unwrap();
+            (
+                runtime.session_manager.clone(),
+                runtime.maple_api_session.clone(),
+                runtime.web_tool_state.clone(),
+            )
+        };
+        let session = manager
+            .create_session(
+                fixture.project_root.clone(),
+                "Before Codex".into(),
+                SessionType::User,
+                GooseMode::SmartApprove,
+            )
+            .await
+            .unwrap();
+        let registry = Arc::new(ExternalAgentRegistry::new(ExternalAgentHost {
+            service: service.clone(),
+            account_scope: fixture.handle.account_scope.clone(),
+            session_manager: manager.clone(),
+            permission_modes: Arc::new(Mutex::new(HashMap::new())),
+            project_root: fixture.project_root.clone(),
+            lifetime: CancellationToken::new(),
+        }));
+        let config = GooseAgentConfig::new(
+            manager.clone(),
+            Arc::new(PermissionManager::new(fixture.root.join("permissions"))),
+            None,
+            GooseMode::SmartApprove,
+            true,
+            GoosePlatform::GooseDesktop,
+        );
+        let mut agent = Arc::new(Agent::with_config(config.clone()));
+        let context = SharedAgentToolContext::new(AgentToolContextSpec::default());
+        // Old task before enable, cached task after enable, cold restore after
+        // enable, explicit off, explicit on despite default off, and ACP lease.
+        for (default, override_value, cold, desktop, expected) in [
+            (false, None, false, true, false),
+            (true, None, true, true, true),
+            (false, None, false, true, false),
+            (true, None, false, true, true),
+            (true, Some(false), true, true, false),
+            (false, Some(true), true, true, true),
+            (true, None, false, false, false),
+        ] {
+            save_stored_integrations(paths, user, &codex_registry(default)).unwrap();
+            if let Some(enabled) = override_value {
+                persist_task_integration_override(&manager, &session.id, "codex", enabled)
+                    .await
+                    .unwrap();
+            }
+            let session = manager.get_session(&session.id, false).await.unwrap();
+            if cold {
+                agent = Arc::new(Agent::with_config(config.clone()));
+                // Restore the exact extension snapshot from the previous run.
+                if let Some(state) = goose::session::EnabledExtensionsState::from_extension_data(
+                    &session.extension_data,
+                ) {
+                    for extension in state.extensions {
+                        agent.add_extension(extension, &session.id).await.unwrap();
+                    }
+                }
+            }
+            let (configured, errors) = finish_session_agent(
+                PreparedSessionAgent {
+                    agent: agent.clone(),
+                    mcp_errors: Vec::new(),
+                },
+                AgentSkillsScope {
+                    paths,
+                    user_id: user,
+                },
+                &manager,
+                &transport,
+                SessionAgentConfiguration {
+                    web_tool_state: &web_state,
+                    session: &session,
+                    model: DEFAULT_AGENT_MODEL,
+                    context_limit: None,
+                    mode: DEFAULT_GOOSE_MODE,
+                    primary_model_supports_vision: false,
+                    tool_context: &context,
+                    allow_embedded_cua: desktop,
+                    external_agents: Some(&registry),
+                    host_search_path: None,
+                },
+            )
+            .await
+            .unwrap();
+            assert!(errors.is_empty());
+            let tools = configured
+                .extension_manager
+                .get_prefixed_tools(&session.id, None)
+                .await
+                .unwrap();
+            for name in external_agents::EXTERNAL_AGENT_TOOLS {
+                assert_eq!(
+                    tools.iter().any(|tool| tool.name.as_ref() == name),
+                    expected,
+                    "{name}: default={default}, override={override_value:?}, cold={cold}, desktop={desktop}"
+                );
+            }
+        }
+        let rows = fixture
+            .handle
+            .set_session_mcp_server_enabled(AgentSetSessionMcpServerRequest {
+                session_id: session.id.clone(),
+                name: "codex".to_string(),
+                kind: AgentSessionIntegrationKind::ExternalAgent,
+                enabled: false,
+            })
+            .await
+            .unwrap();
+        assert!(
+            rows.iter()
+                .any(|row| row.kind == AgentSessionIntegrationKind::ExternalAgent && !row.enabled)
+        );
+        let stored_task = manager.get_session(&session.id, false).await.unwrap();
+        assert!(
+            session_external_agent_providers(&codex_registry(true), &stored_task, true).is_empty()
+        );
+        // A future provider selected alongside an installed but unselected
+        // Codex must not grant Codex access through forged tool arguments.
+        use goose::agents::mcp_client::McpClientTrait;
+        let client = MapleDeveloperClient::new(
+            agent.extension_manager.get_context().clone(),
+            false,
+            transport,
+            web_state,
+            context,
+        )
+        .unwrap()
+        .with_external_agents(Some(registry), vec!["future-provider".to_string()]);
+        for name in [
+            external_agents::AGENT_START_TOOL,
+            external_agents::AGENT_SEND_TOOL,
+            external_agents::AGENT_STATUS_TOOL,
+            external_agents::AGENT_CANCEL_TOOL,
+        ] {
+            let result = client
+                .call_tool(
+                    &goose::agents::ToolCallContext::new(session.id.clone(), None, None),
+                    name,
+                    Some(rmcp::object!({"provider": "codex"})),
+                    CancellationToken::new(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(result.is_error, Some(true));
+            assert!(format!("{:?}", result.content).contains("not enabled for this task"));
+        }
+        let _ = fs::remove_dir_all(&fixture.root);
     }
 
     #[test]

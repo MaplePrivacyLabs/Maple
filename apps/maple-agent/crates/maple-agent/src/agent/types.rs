@@ -445,10 +445,21 @@ pub(super) fn audio_error_detail(body: &[u8]) -> Option<String> {
         .filter(|detail| !detail.is_empty())
 }
 
+/// The selection domain is separate from the user-controlled MCP name.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentSessionIntegrationKind {
+    #[default]
+    Mcp,
+    ExternalAgent,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentSessionMcpServer {
     pub name: String,
+    pub kind: AgentSessionIntegrationKind,
+    pub display_name: String,
     pub description: String,
     pub transport: String,
     pub enabled: bool,
@@ -459,6 +470,8 @@ pub struct AgentSessionMcpServer {
 #[serde(rename_all = "camelCase")]
 pub struct AgentSetSessionMcpServerRequest {
     pub session_id: String,
+    #[serde(default)]
+    pub kind: AgentSessionIntegrationKind,
     pub name: String,
     pub enabled: bool,
 }

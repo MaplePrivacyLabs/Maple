@@ -2236,7 +2236,7 @@ impl SettingsScreen {
                 div()
                     .text_sm()
                     .text_color(gpui::rgb(theme::text_muted()))
-                    .child("Connect Maple with apps and tools. Enabled integrations are available to new tasks."),
+                    .child("Set integration defaults here. Choose integrations for each task in the composer."),
             );
 
         if let Some(notice) = &self.integration_notice {

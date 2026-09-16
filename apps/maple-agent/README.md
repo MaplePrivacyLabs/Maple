@@ -163,8 +163,11 @@ documented in [`docs/embedded-cua.md`](docs/embedded-cua.md).
 Settings > Integrations also lists the Codex CLI when `codex` is on the PATH
 (the login shell's PATH on macOS). The card shows the installed version and
 whether Codex is signed in; Maple never runs Codex's sign-in itself. The
-toggle is off by default. Enabling it gives new runs the external-agent
-tools and installs the `handoff`, `committee`, and `advisor` skills into the
+toggle is off by default. The composer lists Codex alongside CUA and custom
+MCP servers, with an independent choice for each task. Tasks without an
+explicit Codex choice inherit the Settings default on every run, including
+older tasks; composer overrides survive relaunches. Enabling it gives runs
+the external-agent tools and installs the `handoff`, `committee`, and `advisor` skills into the
 account's Goose skills directory; disabling removes only the files Maple
 wrote. Codex needs version 0.143 or newer. See
 [`docs/external-agents.md`](docs/external-agents.md).

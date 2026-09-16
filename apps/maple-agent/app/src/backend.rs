@@ -1722,6 +1722,7 @@ impl AgentBackend {
         user_id: &str,
         session_id: &str,
         name: &str,
+        kind: maple_agent::agent::AgentSessionIntegrationKind,
         enabled: bool,
     ) -> Result<Vec<maple_agent::agent::AgentSessionMcpServer>, String> {
         self.service
@@ -1730,6 +1731,7 @@ impl AgentBackend {
             .set_session_mcp_server_enabled(maple_agent::agent::AgentSetSessionMcpServerRequest {
                 session_id: session_id.to_string(),
                 name: name.to_string(),
+                kind,
                 enabled,
             })
             .await

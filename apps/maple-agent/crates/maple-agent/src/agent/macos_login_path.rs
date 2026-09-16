@@ -331,7 +331,9 @@ for raw_line in sys.stdin:
             "the fixture must not resolve through the GUI-style PATH"
         );
 
-        let paths = query_login_shell_search_paths(&shell, Duration::from_secs(2))
+        // This checks PATH resolution, not shell startup latency. Allow for process
+        // scheduling on busy CI runners; dedicated tests below cover timeouts.
+        let paths = query_login_shell_search_paths(&shell, Duration::from_secs(10))
             .await
             .unwrap();
         assert_eq!(paths[0], command_bin.to_string_lossy());
