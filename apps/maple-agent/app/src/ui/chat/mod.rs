@@ -2296,7 +2296,13 @@ impl ChatScreen {
         );
     }
 
-    fn toggle_session_mcp(&mut self, name: String, enabled: bool, cx: &mut Context<Self>) {
+    fn toggle_session_mcp(
+        &mut self,
+        name: String,
+        kind: maple_agent::agent::AgentSessionIntegrationKind,
+        enabled: bool,
+        cx: &mut Context<Self>,
+    ) {
         let Some(session_id) = self.selected_session.clone() else {
             return;
         };
@@ -2306,7 +2312,7 @@ impl ChatScreen {
         self.call(
             async move {
                 backend
-                    .set_session_mcp_server_enabled(&user_id, &target, &name, enabled)
+                    .set_session_mcp_server_enabled(&user_id, &target, &name, kind, enabled)
                     .await
             },
             cx,

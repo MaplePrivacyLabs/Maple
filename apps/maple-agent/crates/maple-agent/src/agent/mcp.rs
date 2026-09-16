@@ -586,6 +586,8 @@ pub(super) fn session_mcp_servers(
         .iter()
         .map(|server| AgentSessionMcpServer {
             name: server.name.clone(),
+            kind: AgentSessionIntegrationKind::Mcp,
+            display_name: server.name.clone(),
             description: server.description.clone(),
             transport: match server.transport {
                 AgentMcpTransport::Stdio { .. } => "stdio",
@@ -604,6 +606,8 @@ pub(super) fn session_mcp_servers(
         let transport = mcp_transport_label(config)?;
         (!configured_keys.contains(&config.key())).then(|| AgentSessionMcpServer {
             name: config.name(),
+            kind: AgentSessionIntegrationKind::Mcp,
+            display_name: config.name(),
             description: mcp_extension_description(config),
             transport: transport.to_string(),
             enabled: true,

@@ -309,6 +309,7 @@ impl ChatScreen {
             return Some(Self::menu_overlay(menu));
         }
         if self.mcp_menu_open {
+            menu = menu.max_h(px(320.)).overflow_y_scroll();
             menu = menu.child(
                 div()
                     .px_3()
@@ -331,22 +332,24 @@ impl ChatScreen {
             }
             for server in &self.session_mcp {
                 let name = server.name.clone();
-                let display_name = if matches!(name.as_str(), "cua-driver" | "cua_driver") {
-                    "Cua".to_string()
-                } else {
-                    name.clone()
-                };
+                let display_name = server.display_name.clone();
                 let enabled = server.enabled;
+                let kind = server.kind;
                 let available = server.available;
-                let row_id = gpui::SharedString::from(format!("mcp-{name}"));
-                let switch_id = gpui::SharedString::from(format!("mcp-toggle-{name}"));
+                let row_id = gpui::SharedString::from(format!("mcp-{kind:?}-{name}"));
+                let switch_id = gpui::SharedString::from(format!("mcp-toggle-{kind:?}-{name}"));
                 menu = menu.child(
                     widgets::menu_row(row_id, true)
                         .flex()
                         .items_center()
                         .gap_3()
                         .on_click(cx.listener(move |this, _event, _window, cx| {
-                            this.toggle_session_mcp(name.clone(), !enabled, cx);
+                            if available || enabled {
+                                this.toggle_session_mcp(name.clone(), kind, !enabled, cx);
+                            } else {
+                                this.mcp_menu_open = false;
+                                cx.emit(OpenSettingsSection(Section::Integrations));
+                            }
                         }))
                         .child(
                             div()
@@ -377,7 +380,7 @@ impl ChatScreen {
                                         div()
                                             .text_xs()
                                             .text_color(gpui::rgb(theme::status_warning()))
-                                            .child("Not available in this task"),
+                                            .child("Set up in Settings → Integrations"),
                                     )
                                 }),
                         )

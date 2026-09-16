@@ -67,6 +67,16 @@ Shared Cargo intermediates belong to other worktrees too. Preserve inherited
 build settings; use only this component's `just clean-local` for authorized
 cleanup. Do not run raw `cargo clean` against the shared cache.
 
+## Task integrations
+
+For composer integrations and external providers, read
+`apps/maple-agent/docs/external-agents.md`. Keep provider metadata in the
+runtime catalog and pass typed selection kinds through the UI bridge so
+user-controlled MCP names cannot shadow provider IDs. Preserve inherited
+defaults for tasks without overrides and CUA's existing backend metadata.
+Exercise warm and cold session tool catalogs and ACP exclusion when changing
+run-boundary admission.
+
 ## Security and publication
 
 Apply `$review-maple-security`'s trust-boundary and evidence methodology to the

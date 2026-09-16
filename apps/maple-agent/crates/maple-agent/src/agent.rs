@@ -4105,6 +4105,9 @@ impl AgentRuntimeHandle {
         let state = &self.service;
         let user_id = self.user_id.as_ref();
         let account_scope = self.account_scope.as_ref();
+        // CLI discovery may spawn a process. Do it outside the lifecycle
+        // fence so opening the composer cannot hold up Stop or logout.
+        let detections = detect_integrations(self.tool_search_path().as_deref()).await;
         let _runtime_lifecycle_guard = state.runtime_lifecycle.lock().await;
         self.verify_generation().await?;
         let session_manager = {
@@ -4128,7 +4131,9 @@ impl AgentRuntimeHandle {
                 .map_err(|error| format!("Failed to load MCP servers: {error}"))?
                 .mcp_servers,
         )?;
-        project_session_mcp_servers(&stored_integrations, &configured, &session)
+        let mut rows = project_session_mcp_servers(&stored_integrations, &configured, &session)?;
+        project_task_provider_availability(&mut rows, &detections);
+        Ok(rows)
     }
 
     pub async fn set_session_mcp_server_enabled(
@@ -4138,6 +4143,9 @@ impl AgentRuntimeHandle {
         let state = &self.service;
         let user_id = self.user_id.as_ref();
         let account_scope = self.account_scope.as_ref();
+        // Discovery is shared by admission and the returned selector rows,
+        // and must not hold the runtime fence while a CLI probe runs.
+        let detected = detect_integrations(self.tool_search_path().as_deref()).await;
         let _runtime_lifecycle_guard = state.runtime_lifecycle.lock().await;
         self.verify_generation().await?;
         self.ensure_accepting_new_work()?;
@@ -4186,6 +4194,40 @@ impl AgentRuntimeHandle {
             .get_session(&session_id, false)
             .await
             .map_err(|error| format!("Failed to load Agent task: {error}"))?;
+        let project_rows = |session: &Session| -> Result<Vec<AgentSessionMcpServer>, String> {
+            let mut rows = project_session_mcp_servers(&stored_integrations, &configured, session)?;
+            project_task_provider_availability(&mut rows, &detected);
+            Ok(rows)
+        };
+        // Native provider IDs and user-controlled MCP names are independent.
+        if request.kind == AgentSessionIntegrationKind::ExternalAgent {
+            let provider = external_agent_selection(request.name.trim())
+                .ok_or_else(|| "Unknown external agent integration".to_string())?;
+            if session.session_type != SessionType::User {
+                return Err("External agents are available only in desktop tasks".to_string());
+            }
+            if request.enabled {
+                let integrations = project_integrations(&state.host.paths, user_id, &detected)?;
+                let integration = integrations
+                    .iter()
+                    .find(|entry| entry.id == provider.id)
+                    .ok_or_else(|| "Unknown external agent integration".to_string())?;
+                if integration.availability != AgentIntegrationAvailability::Available {
+                    return Err(integration.detail.clone().unwrap_or_else(|| {
+                        "Set up this integration in Settings before enabling it".to_string()
+                    }));
+                }
+                sync_external_agent_skills(&state.host.paths, user_id, true)?;
+            }
+            let refreshed = persist_task_integration_override(
+                session_manager.as_ref(),
+                &session_id,
+                provider.id,
+                request.enabled,
+            )
+            .await?;
+            return project_rows(&refreshed);
+        }
         let session_mcp_keys = session_mcp_extension_keys(&session);
         let manager_result = get_or_create_session_agent(
             &agent_manager,
@@ -4264,7 +4306,7 @@ impl AgentRuntimeHandle {
                 .get_session(&session_id, false)
                 .await
                 .map_err(|error| format!("Failed to reload Agent task: {error}"))?;
-            return project_session_mcp_servers(&stored_integrations, &configured, &refreshed);
+            return project_rows(&refreshed);
         }
         // Preflight Skills restoration before detaching the working client or changing persisted MCP
         // state. Reattaching this prepared client after the mutation cannot fail.
@@ -4339,7 +4381,7 @@ impl AgentRuntimeHandle {
             .get_session(&session_id, false)
             .await
             .map_err(|error| format!("Failed to reload Agent task: {error}"))?;
-        project_session_mcp_servers(&stored_integrations, &configured, &refreshed)
+        project_rows(&refreshed)
     }
 
     pub async fn delete_session(&self, session_id: String) -> Result<(), String> {
@@ -8558,6 +8600,19 @@ async fn finish_session_agent(
         agent,
         mut mcp_errors,
     } = prepared;
+    let selected_external_providers = session_external_agent_providers(
+        &stored_integrations_for_read(skills_scope.paths, skills_scope.user_id),
+        session,
+        allow_embedded_cua,
+    );
+    // A task override can keep delegation enabled after the device default
+    // was disabled (and removed Maple's skills), including after a restart.
+    if !selected_external_providers.is_empty()
+        && let Err(error) =
+            sync_external_agent_skills(skills_scope.paths, skills_scope.user_id, true)
+    {
+        log::warn!("External agent skills were not reconciled: {error}");
+    }
     let skills_client =
         prepare_transient_skills_client(skills_scope.paths, skills_scope.user_id, &agent, session)?;
     install_maple_provider(&agent, maple_api_session, session, model, context_limit).await?;
@@ -8601,19 +8656,10 @@ async fn finish_session_agent(
     .with_attachment_store(attachment_store)
     .with_web_enabled(session_web_enabled(session))
     .with_desktop_ui_tools(session.session_type != SessionType::Acp)
-    // External agents are a desktop feature: their approvals and progress
-    // go to the desktop, and the toggle in Integrations decides whether a
-    // task may delegate at all. The toggle is read at every agent build,
-    // so it takes effect at the next run.
-    .with_external_agents(
-        external_agents
-            .filter(|_| {
-                session.session_type != SessionType::Acp
-                    && allow_embedded_cua
-                    && external_agents_enabled(skills_scope.paths, skills_scope.user_id)
-            })
-            .cloned(),
-    );
+    // Re-read inherited defaults and explicit task choices at every run,
+    // including cold restores. The driving surface remains the authority:
+    // leasing a desktop task to ACP must remove desktop-only capabilities.
+    .with_external_agents(external_agents.cloned(), selected_external_providers);
     agent
         .extension_manager
         .add_client(

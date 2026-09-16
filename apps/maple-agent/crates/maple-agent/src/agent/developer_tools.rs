@@ -164,6 +164,7 @@ pub(crate) struct MapleDeveloperClient {
     /// The external agents (Codex) this session may delegate to. `None`
     /// leaves the `agent_*` tools out of the catalog.
     external_agents: Option<Arc<ExternalAgentRegistry>>,
+    external_agent_providers: Vec<String>,
     /// The host's recovered search path, shared with integration discovery.
     host_search_path: Option<String>,
     #[cfg(not(windows))]
@@ -200,6 +201,7 @@ impl MapleDeveloperClient {
             web_enabled: true,
             desktop_ui_tools: true,
             external_agents: None,
+            external_agent_providers: Vec::new(),
             host_search_path: None,
             #[cfg(not(windows))]
             login_path_probe: ShellTool::new(true)?,
@@ -231,8 +233,10 @@ impl MapleDeveloperClient {
     pub(super) fn with_external_agents(
         mut self,
         registry: Option<Arc<ExternalAgentRegistry>>,
+        providers: Vec<String>,
     ) -> Self {
-        self.external_agents = registry;
+        self.external_agents = registry.filter(|_| !providers.is_empty());
+        self.external_agent_providers = providers;
         self
     }
 
@@ -804,6 +808,23 @@ impl McpClientTrait for MapleDeveloperClient {
                     "External agents are not enabled for this task.",
                 ));
             };
+            if name != LIST_AGENT_PROVIDERS_TOOL {
+                let provider = arguments
+                    .as_ref()
+                    .and_then(|args| args.get("provider"))
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default()
+                    .trim();
+                if !self
+                    .external_agent_providers
+                    .iter()
+                    .any(|allowed| allowed == provider)
+                {
+                    return Ok(error_result(
+                        "That external agent is not enabled for this task.",
+                    ));
+                }
+            }
             let call = self.external_agent_call(ctx, cancel_token).await;
             let result = match name {
                 AGENT_START_TOOL => match Self::parse_args::<AgentStartParams>(arguments) {
@@ -822,7 +843,11 @@ impl McpClientTrait for MapleDeveloperClient {
                     Ok(params) => registry.cancel_tool(&call, params).await,
                     Err(error) => error_result(error),
                 },
-                _ => registry.list_providers(&call).await,
+                _ => {
+                    registry
+                        .list_providers(&call, &self.external_agent_providers)
+                        .await
+                }
             };
             return Ok(result);
         }
