@@ -1385,27 +1385,20 @@ impl AgentBackend {
     /// their persisted working directories and may keep running under other
     /// roots while the UI moves between projects.
     ///
-    /// The root is trusted when no decision is saved yet, as the runtime
-    /// does for the root it starts under: this app treats choosing a
-    /// directory as the choice. A saved "do not trust" answer stays.
+    /// Choosing a folder does not record a trust decision. Home and the
+    /// process launch directory are already trusted with no saved answer;
+    /// every other root keeps `None` until the one-time prompt. A saved
+    /// "do not trust" answer stays.
     pub async fn select_project_root(
         &self,
         user_id: &str,
         path: String,
     ) -> Result<AgentProjectRootRegistration, String> {
-        let handle = self.service.handle_for_user(user_id).await?;
-        let registration = handle.save_recent_project_root(path).await?;
-        let root = registration.project_root.clone();
-        match handle.get_project_trust(root.clone()).await {
-            Ok(status) if status.available && status.decision.is_none() => {
-                if let Err(error) = handle.set_project_trust(root, true).await {
-                    log::warn!("Cannot trust selected project root: {error}");
-                }
-            }
-            Ok(_) => {}
-            Err(error) => log::warn!("Cannot read project trust: {error}"),
-        }
-        Ok(registration)
+        self.service
+            .handle_for_user(user_id)
+            .await?
+            .save_recent_project_root(path)
+            .await
     }
 
     pub async fn list_sessions(

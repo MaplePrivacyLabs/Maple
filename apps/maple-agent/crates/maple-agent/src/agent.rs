@@ -2276,18 +2276,11 @@ async fn start_runtime_for_user(
 
     let project_root = resolve_project_root(request.project_root.as_deref(), &agent_config)
         .map_err(|e| format!("Failed to resolve Agent Mode project root: {e}"))?;
-    // Trust the root the desktop user explicitly launched under so its
-    // project-local skills load without a separate prompt. Maple's Tauri app
-    // asks first; this app treats launching in a directory as the choice.
-    // A saved "do not trust" answer stays as it is.
-    if project_trust_status(&agent_config, &project_root, true)
-        .decision
-        .is_none()
-    {
-        apply_project_trust(&mut agent_config, &project_root, true);
-        save_agent_config_inner(&state.host.paths, user_id, &agent_config)
-            .map_err(|error| error.to_string())?;
-    }
+    // Home and the process launch directory are trusted with no saved
+    // decision, so a first GUI launch (usually from home) and `maple acp`
+    // started in a repo do not prompt. Other roots stay undecided until the
+    // UI or ACP client records a one-time answer. A saved "do not trust"
+    // answer stays as it is.
     let model = request
         .model
         .unwrap_or_else(|| agent_config.default_model.clone());
@@ -9167,6 +9160,55 @@ fn save_removed_project_roots_inner(
     write_device_local_json_file(&path, roots)
 }
 
+fn home_dir() -> Option<PathBuf> {
+    std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute())
+}
+
+fn canonical_dir(path: &Path) -> Option<PathBuf> {
+    path.canonicalize().ok().filter(|path| path.is_dir())
+}
+
+fn launch_dir() -> Option<PathBuf> {
+    std::env::current_dir()
+        .ok()
+        .and_then(|path| canonical_dir(&path))
+}
+
+fn is_filesystem_root(path: &Path) -> bool {
+    path.parent().is_none()
+}
+
+fn paths_are_same_dir(left: &Path, right: &Path) -> bool {
+    if left == right {
+        return true;
+    }
+    match (canonical_dir(left), canonical_dir(right)) {
+        (Some(left), Some(right)) => left == right,
+        _ => false,
+    }
+}
+
+/// Home, and the directory the process was started in, are trusted until
+/// the user records a different answer. The filesystem root is never
+/// implicit: a GUI launched from the Dock often has cwd `/`.
+fn is_implicitly_trusted_project_root(project_root: &Path) -> bool {
+    if let Some(home) = home_dir().and_then(|path| canonical_dir(&path))
+        && paths_are_same_dir(project_root, &home)
+    {
+        return true;
+    }
+    if let Some(launch) = launch_dir()
+        && !is_filesystem_root(&launch)
+        && paths_are_same_dir(project_root, &launch)
+    {
+        return true;
+    }
+    false
+}
+
 fn project_trust_status(
     config: &AgentConfig,
     project_root: &Path,
@@ -9177,7 +9219,8 @@ fn project_trust_status(
         .project_trust
         .iter()
         .find(|entry| entry.path == path)
-        .map(|entry| entry.trusted);
+        .map(|entry| entry.trusted)
+        .or_else(|| is_implicitly_trusted_project_root(project_root).then_some(true));
     AgentProjectTrustStatus {
         path,
         decision,
@@ -12678,6 +12721,47 @@ mod tests {
         assert_eq!(status.decision, Some(true));
         assert!(status.available);
         let _ = fs::remove_dir_all(test_root);
+    }
+
+    #[test]
+    fn project_trust_defaults_home_and_launch_dir_to_trusted_without_a_saved_decision() {
+        let config = AgentConfig::default();
+        if let Some(home) = home_dir().and_then(|path| canonical_dir(&path)) {
+            assert_eq!(
+                project_trust_status(&config, &home, true).decision,
+                Some(true)
+            );
+        }
+        if let Some(launch) = launch_dir().filter(|path| !is_filesystem_root(path)) {
+            assert_eq!(
+                project_trust_status(&config, &launch, true).decision,
+                Some(true)
+            );
+        }
+
+        let other = recent_roots_test_dir("home-trust-other");
+        fs::create_dir_all(&other).unwrap();
+        let other = normalize_project_root(&other).unwrap();
+        assert_eq!(project_trust_status(&config, &other, true).decision, None);
+        let _ = fs::remove_dir_all(&other);
+    }
+
+    #[test]
+    fn project_trust_keeps_an_explicit_untrust_for_home() {
+        let Some(home) = home_dir().and_then(|path| canonical_dir(&path)) else {
+            return;
+        };
+        let mut config = AgentConfig::default();
+        apply_project_trust(&mut config, &home, false);
+        assert_eq!(
+            project_trust_status(&config, &home, true).decision,
+            Some(false)
+        );
+        apply_project_trust(&mut config, &home, true);
+        assert_eq!(
+            project_trust_status(&config, &home, true).decision,
+            Some(true)
+        );
     }
 
     #[test]
