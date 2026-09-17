@@ -10,7 +10,7 @@ use crate::model_config::{
     QUICK_MODEL_ID,
 };
 
-pub(crate) const SHADOW_ROUTING_POLICY_VERSION: &str = "routing-v2-weighted-v2";
+pub(crate) const SHADOW_ROUTING_POLICY_VERSION: &str = "routing-v2-weighted-v3";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) enum ProviderId {
@@ -187,18 +187,14 @@ const GLM_5_3_ROUTES: &[ModelRouteSpec] = &[
     },
 ];
 
-// Provider weights are 70 Tinfoil / 30 Continuum. Route weights 27 and 7 make
-// Flash's effective split 70*27 : 30*7 = 1890 : 210, exactly 90% / 10%.
-const GLM_5_3_FLASH_TINFOIL_ROUTE_WEIGHT: u16 = 27;
-const GLM_5_3_FLASH_CONTINUUM_ROUTE_WEIGHT: u16 = 7;
-
+// Equal model-route weights retain the provider split: 70% Tinfoil / 30% Continuum.
 const GLM_5_3_FLASH_ROUTES: &[ModelRouteSpec] = &[
     ModelRouteSpec {
         provider: ProviderId::Continuum,
         provider_model_id: "glm-5.3-flash",
         response_model_id: GLM_5_3_FLASH_MODEL_ID,
         rate_limit_scope: RateLimitScope::ProviderAccount,
-        weight: GLM_5_3_FLASH_CONTINUUM_ROUTE_WEIGHT,
+        weight: 100,
         enabled: true,
     },
     ModelRouteSpec {
@@ -206,7 +202,7 @@ const GLM_5_3_FLASH_ROUTES: &[ModelRouteSpec] = &[
         provider_model_id: GLM_5_3_FLASH_MODEL_ID,
         response_model_id: GLM_5_3_FLASH_MODEL_ID,
         rate_limit_scope: RateLimitScope::ProviderModel,
-        weight: GLM_5_3_FLASH_TINFOIL_ROUTE_WEIGHT,
+        weight: 100,
         enabled: true,
     },
 ];
@@ -462,7 +458,7 @@ mod tests {
     }
 
     #[test]
-    fn glm_flash_uses_a_ten_percent_continuum_split_and_capacity_only_failover() {
+    fn glm_flash_uses_a_thirty_percent_continuum_split_and_capacity_only_failover() {
         let flash = PROVIDER_REGISTRY
             .completion_model(GLM_5_3_FLASH_MODEL_ID)
             .expect("Flash model");
@@ -473,19 +469,21 @@ mod tests {
                 .iter()
                 .map(|route| (route.provider, route.weight))
                 .collect::<Vec<_>>(),
-            vec![
-                (ProviderId::Continuum, GLM_5_3_FLASH_CONTINUUM_ROUTE_WEIGHT),
-                (ProviderId::Tinfoil, GLM_5_3_FLASH_TINFOIL_ROUTE_WEIGHT),
-            ]
+            vec![(ProviderId::Continuum, 100), (ProviderId::Tinfoil, 100)]
         );
 
-        let tinfoil =
-            u32::from(PROVIDERS[0].weight) * u32::from(GLM_5_3_FLASH_TINFOIL_ROUTE_WEIGHT);
-        let continuum =
-            u32::from(PROVIDERS[1].weight) * u32::from(GLM_5_3_FLASH_CONTINUUM_ROUTE_WEIGHT);
-        assert_eq!(tinfoil, 1890);
-        assert_eq!(continuum, 210);
-        assert_eq!(continuum * 100 / (tinfoil + continuum), 10);
+        let effective_weight = |provider| {
+            let route = flash
+                .routes
+                .iter()
+                .find(|route| route.provider == provider)
+                .unwrap();
+            u32::from(PROVIDER_REGISTRY.provider(provider).unwrap().weight)
+                * u32::from(route.weight)
+        };
+        let tinfoil = effective_weight(ProviderId::Tinfoil);
+        let continuum = effective_weight(ProviderId::Continuum);
+        assert_eq!(continuum * 100 / (tinfoil + continuum), 30);
 
         let glm = PROVIDER_REGISTRY
             .completion_model(GLM_5_3_MODEL_ID)
