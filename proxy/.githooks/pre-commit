@@ -1,0 +1,14 @@
+#!/bin/sh
+# Proxy pre-commit checks. Runs from proxy/ inside the proxy flake.
+# CI equivalent: proxy-rust.yml (the proxy-rust job; the native release
+# rehearsal and cargo-deny stay in CI).
+
+set -u
+. "${MAPLE_HOOK_REPO_ROOT:?}/.githooks/lib/common.sh"
+hook_require cargo cargo-machete
+
+hook_run cargo fmt --all -- --check
+hook_run cargo clippy --locked --all-targets --all-features -- -D warnings
+hook_run cargo test --locked --all-features
+hook_run env RUSTDOCFLAGS="-D warnings" cargo doc --locked --no-deps --all-features
+hook_run cargo machete

@@ -1,0 +1,18 @@
+#!/bin/sh
+# Updates Worker pre-commit checks. Runs from the repository root inside the
+# root flake's ci shell.
+# CI equivalent: updates-tests.yml (`bun run check`), minus the wrangler
+# dry-run deploy.
+
+set -u
+. "${MAPLE_HOOK_REPO_ROOT:?}/.githooks/lib/common.sh"
+hook_require bun
+
+cd "$MAPLE_HOOK_REPO_ROOT/services/updates" || exit 1
+export WRANGLER_SEND_METRICS=false
+if [ ! -d node_modules ]; then
+    hook_run bun install --frozen-lockfile --ignore-scripts
+fi
+hook_run bun run format:check
+hook_run bun run typecheck
+hook_run bun run test

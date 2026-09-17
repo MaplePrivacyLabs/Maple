@@ -845,7 +845,8 @@ class EifComparisonCommandTests(unittest.TestCase):
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertIn(f"EIF/PCR approval match ({mode})", result.stdout)
                 trace = json.loads((self.root / "trace").read_text())
-                self.assertEqual(trace["cwd"], str(self.component))
+                # macOS resolves /tmp to /private/tmp; compare canonical paths.
+                self.assertEqual(Path(trace["cwd"]).resolve(), self.component.resolve())
                 self.assertEqual(trace["args"][:4], [
                     "build", "--no-update-lock-file", "--print-build-logs", "--out-link",
                 ])

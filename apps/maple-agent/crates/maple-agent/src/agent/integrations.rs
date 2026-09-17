@@ -1443,7 +1443,7 @@ mod tests {
             .unwrap();
         let registry = Arc::new(ExternalAgentRegistry::new(ExternalAgentHost {
             service: service.clone(),
-            account_scope: fixture.handle.account_scope.clone(),
+            runtime: fixture.handle.clone(),
             session_manager: manager.clone(),
             permission_modes: Arc::new(Mutex::new(HashMap::new())),
             project_root: fixture.project_root.clone(),

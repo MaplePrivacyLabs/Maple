@@ -1,0 +1,19 @@
+#!/bin/sh
+# GPUI Agent pre-commit checks. Runs from apps/maple-agent inside its own flake.
+# CI equivalent: agent-ci.yml (`just ci`). The default tier runs one clippy
+# pass and the workspace tests; MAPLE_HOOK_FULL=1 runs the complete `just ci`
+# (every feature-set clippy plus the headless tests).
+
+set -u
+. "${MAPLE_HOOK_REPO_ROOT:?}/.githooks/lib/common.sh"
+hook_require cargo
+
+if [ "${MAPLE_HOOK_FULL:-0}" = "1" ]; then
+    hook_require just
+    hook_run just ci
+    exit 0
+fi
+
+hook_run cargo fmt --all -- --check
+hook_run cargo clippy --workspace --all-targets --locked -- -D warnings
+hook_run cargo test --workspace --locked

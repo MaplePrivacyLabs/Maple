@@ -706,6 +706,7 @@
             python3 scripts/ci/test_change_detection.py
             python3 scripts/ci/test_agent_change_detection.py
             python3 scripts/ci/test_opensecret_change_detection.py
+            python3 scripts/ci/test_hook_change_detection.py
             touch "$out"
           '';
 

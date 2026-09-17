@@ -20,7 +20,7 @@ AGENT_INERT_FILES = frozenset(
         ".gitignore",
     }
 )
-AGENT_INERT_PREFIXES = ("docs/",)
+AGENT_INERT_PREFIXES = ("docs/", ".githooks/")
 SHARED_INPUTS = frozenset(
     {
         "flake.nix",

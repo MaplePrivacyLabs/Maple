@@ -1,43 +1,29 @@
 #!/bin/sh
-# Pre-commit hook for OpenSecret SDK
-# Runs checks on the Rust SDK if changes are detected
+# SDK pre-commit checks. Runs from sdk/ inside the SDK flake; the orchestrator
+# sets MAPLE_HOOK_SELECTED to sdk_rust and/or sdk_ts.
+# CI equivalents: sdk-rust.yml and sdk-typescript.yml. Integration suites
+# (sdk-integration.yml, sdk/src/lib/test/integration/, sdk/rust/tests/) need a
+# live backend and never run here.
 
-set -e
+set -u
+. "${MAPLE_HOOK_REPO_ROOT:?}/.githooks/lib/common.sh"
 
-echo "🔍 Running pre-commit checks..."
-
-# Check if there are changes in the rust directory
-if git diff --cached --name-only | grep -q "^rust/"; then
-    echo "📦 Rust changes detected, running Rust checks..."
-
-    cd rust
-
-    echo "📝 Checking formatting..."
-    if ! cargo fmt --all --check; then
-        echo "❌ Format check failed. Run 'cd rust && cargo fmt' to fix."
-        exit 1
+if hook_selected sdk_ts; then
+    hook_require bun
+    if [ ! -d node_modules ]; then
+        hook_run bun install --frozen-lockfile --ignore-scripts
     fi
-
-    echo "🔧 Running clippy..."
-    if ! cargo clippy --locked --all-targets --all-features -- -D warnings; then
-        echo "❌ Clippy check failed. Fix the warnings above."
-        exit 1
-    fi
-
-    echo "✅ Running cargo check..."
-    if ! cargo check --locked --all-features; then
-        echo "❌ Cargo check failed."
-        exit 1
-    fi
-
-    echo "🧪 Running tests..."
-    if ! cargo test --locked --all-features; then
-        echo "❌ Tests failed."
-        exit 1
-    fi
-
-    cd ..
+    hook_run bun run format:check
+    hook_run bun run build
+    hook_run env VITE_OPEN_SECRET_API_URL=http://127.0.0.1:3000 VITE_OPEN_SECRET_PCR_ENVIRONMENT=development \
+        bun test src/lib/test/*.test.ts --timeout 30000
 fi
 
-echo "✨ All pre-commit checks passed!"
-exit 0
+if hook_selected sdk_rust; then
+    hook_require cargo
+    cd rust || exit 1
+    hook_run cargo fmt --all -- --check
+    hook_run cargo clippy --locked --all-targets --all-features -- -D warnings
+    hook_run cargo test --locked --all-features --lib
+    hook_run env RUSTDOCFLAGS="-D warnings" cargo doc --locked --no-deps --all-features
+fi

@@ -1,0 +1,38 @@
+#!/bin/sh
+# Research app pre-commit checks. Runs from the repository root inside the
+# root flake's ci shell (the orchestrator sets MAPLE_HOOK_SELECTED to
+# research_frontend and/or research_rust).
+# CI equivalents: frontend-tests.yml (scripts/ci/frontend.sh) and
+# rust-tests.yml (scripts/ci/rust.sh).
+
+set -u
+. "${MAPLE_HOOK_REPO_ROOT:?}/.githooks/lib/common.sh"
+
+FRONTEND_DIR="$MAPLE_HOOK_REPO_ROOT/apps/maple-research/frontend"
+TAURI_DIR="$FRONTEND_DIR/src-tauri"
+
+if hook_selected research_frontend; then
+    hook_require bun
+    # CI wipes node_modules and reinstalls; locally only install when missing,
+    # or when the SDK is linked by path and must be rebuilt.
+    sdk_pin=$(bun --no-env-file -p 'require(process.argv[1]).dependencies["@mapleai/sdk"]' "$FRONTEND_DIR/package.json")
+    if [ ! -d "$FRONTEND_DIR/node_modules" ] || [ "$sdk_pin" = "file:../../../sdk" ]; then
+        hook_run "$MAPLE_HOOK_REPO_ROOT/scripts/prepare-frontend-deps.sh"
+    fi
+    export MAPLE_FRONTEND_DEPS_PREPARED=1
+    cd "$FRONTEND_DIR" || exit 1
+    hook_run bun run format:check
+    hook_run bun run lint
+    hook_run bun run typecheck
+    hook_run bun run test
+fi
+
+if hook_selected research_rust; then
+    hook_require cargo
+    cd "$TAURI_DIR" || exit 1
+    hook_run sh -c 'cargo metadata --locked --format-version 1 >/dev/null'
+    hook_run cargo fmt --check
+    # CI (rust-tests.yml) runs no Clippy for src-tauri, and `-D warnings` fails on
+    # the vendored patches/ crates, so the hook matches CI: format and tests only.
+    hook_run ./scripts/run-with-desktop-onnxruntime.sh cargo test --locked --all-targets
+fi
