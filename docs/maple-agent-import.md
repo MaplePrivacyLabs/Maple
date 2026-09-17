@@ -35,10 +35,10 @@ preserves upstream history rather than flattening it into a squash commit.
 - Root CI replaces the inactive nested workflows. PR builds use read-only
   tokens and no signing/deployment credentials. Shared Rust runtime changes
   select both consuming applications.
-- OpenSecret Workspaces provides `bin/maple-agent`, private environment and
-  isolated config/data. Legacy GPUI checkouts retain their existing launcher
-  and state. Both use the workspace proxy reservation; only one proxy process
-  may own that port.
+- An external workspace manager may provide a launcher, service configuration,
+  and isolated config/data. Preserve its selected paths and lifecycle rather
+  than borrowing a legacy GPUI checkout's state. Only one proxy process may
+  own the selected port.
 - Agent discovers only stable `maple-agent-vX.Y.Z` releases and displays a
   link. It cannot mistake Research's `vX.Y.Z` releases for Agent updates.
   Incomplete or failed release scans suppress the banner.

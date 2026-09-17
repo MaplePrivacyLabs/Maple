@@ -120,9 +120,10 @@ release version.
 
 `just publish-npm VERSION` and `just publish-cargo VERSION` dispatch validation
 in GitHub Actions with `mode=trusted` and `dry_run=true`. They do not publish
-locally. Initial publication also runs in Actions, using the guide's one-time
-bootstrap procedure. Normal publication uses registry trusted publishing and
-the protected `sdk-npm` or `sdk-crates` environment.
+locally. Initial publication also runs in Actions under the guide's restricted
+`bootstrap` mode; registry credentials and environment administration are
+separately operator-owned. Normal publication uses registry trusted publishing
+and the protected `sdk-npm` or `sdk-crates` environment.
 
 Setting `dry_run=false` authorizes an external production mutation; do that
 only with explicit authority for the exact package, version, registry, and

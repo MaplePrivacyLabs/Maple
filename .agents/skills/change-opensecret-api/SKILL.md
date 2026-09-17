@@ -36,6 +36,12 @@ module as the authority for inner session/decryption middleware. Use
 `src/web/responses/` for Responses, conversations, tools, persistence, and
 events.
 
+For Transport V2, also trace `src/transport_v2/gateway.rs` and
+`src/transport_v2/session.rs` from the mounted routes in `src/main.rs`.
+V1 and V2 transport coexist; establish which path the actual SDK invokes.
+Transport V2 and Router V2 are separate mechanisms, so a transport version
+does not establish the selected inference router.
+
 ## Preserve transport and identity boundaries
 
 - OpenAI-shaped describes the decrypted payload, not a plaintext wire API.

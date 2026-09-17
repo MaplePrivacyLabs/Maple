@@ -30,10 +30,11 @@ prefer independently pinned published versions, allow local links during active
 development, and review the actual SDK source before a client release. SDK
 publication and upgrading a consumer are separate decisions.
 
-The backend import does not change TEE deployment or introduce EIF publication
-through GitHub Actions. Preserve the manual signed-PCR compatibility procedure
-in [the backend guide](services/opensecret/docs/pcr-compatibility.md) and the
-existing `OpenSecretCloud/opensecret` raw URLs used by installed clients.
+The `OpenSecret EIF release` workflow builds and attests artifacts and can sign
+PCR approvals behind its protected environment. It creates no GitHub Release
+or tag and does not deploy. Preserve the manual signed-PCR compatibility
+procedure in [the backend guide](services/opensecret/docs/pcr-compatibility.md)
+and the existing `OpenSecretCloud/opensecret` raw URLs used by installed clients.
 
 ## Start safely
 
@@ -160,6 +161,14 @@ release work, and report the tag and commit before publishing.
 - `$release-maple`: version preparation, preflight, and authorized publication.
 
 ## Maintaining this guidance
+
+This repository is public. Keep guides and skills self-contained for public
+contributors: implementation contracts, development, tests, and public CI
+behavior belong here. Do not name or link private repositories, or add
+company-specific fleet, credential administration, deployment, or rollout
+procedures. Those belong in their owning operational documentation. Existing
+OSS Nitro deployment guidance remains in place. An external workspace manager
+may own local state; describe that ownership without requiring a private tool.
 
 Treat guides and skills as living operational documentation, not infallible
 rules. Re-check prescriptive language against current source, tooling, and

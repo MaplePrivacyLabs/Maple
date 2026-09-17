@@ -124,7 +124,7 @@ next.
 
 ## Run a release
 
-After the one-time setup below:
+After the publishing environment and registry trust are configured:
 
 1. Open [Maple Actions](https://github.com/MaplePrivacyLabs/Maple/actions) and
    select the npm or Rust SDK publishing workflow. Choose **Run workflow** on
@@ -132,7 +132,7 @@ After the one-time setup below:
 2. Enter the exact version committed for that SDK, keep `mode=trusted`, and
    set `dry_run=false`. This single run builds and validates the package before
    requesting publishing approval.
-3. The CTO reviews that run's package and source commit, then approves the
+3. An authorized reviewer checks that run's package and source commit, then approves the
    pending `sdk-npm` or `sdk-crates` environment. Check the completed run's
    registry verification and package URL.
 
@@ -166,99 +166,18 @@ gh workflow run sdk-publish-rust.yml --repo MaplePrivacyLabs/Maple --ref master 
 GitHub also exposes the same workflow inputs through its workflow-dispatch API.
 See [manually running a workflow](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/manually-run-a-workflow).
 
-## GitHub environment setup
+## Publishing modes
 
-Create the repository environments `sdk-npm` and `sdk-crates` with these
-settings before any real publish:
+Normal publication uses `mode=trusted` with the registry's configured GitHub
+identity and the protected `sdk-npm` or `sdk-crates` environment. No long-lived
+registry publishing token is needed for that mode. Administrators configure
+registry trust, environment protections, and any bootstrap credentials through
+their separate operating procedure.
 
-- Allow deployments from the branch `master` only; do not allow tags.
-- Require reviewer `AnthonyRonning` (GitHub user ID `101225832`, the CTO).
-- Allow that reviewer to approve a run they started, so the CTO can release
-  without depending on another team member.
-- Disable administrator bypass of the environment's protection rules.
-
-The registry trust must name the exact environment from the table above.
-Keep the repository's protected `master` review and CTO bypass policy. Normal
-trusted publishing needs no stored npm or crates.io publishing token.
-
-## First publication, entirely in Actions
-
-A new package needs one bootstrap publication before configuring its registry
-trusted publisher. Do this separately for npm and crates.io. The workflow's
-`bootstrap` mode is restricted to a package that does not yet exist in its
-registry; it cannot publish subsequent versions.
-
-First merge the workflows, configure the protected environments, and run a
-`mode=bootstrap`, `dry_run=true` validation for the chosen package and version.
-Do this before creating the temporary bootstrap token.
-The intended first versions are `@mapleai/sdk@3.5.2` and `maple-sdk@3.6.2`.
-Merging these workflows or running a dry run does not publish either package.
-
-### npm bootstrap
-
-1. Use the verified npm account that owns the `mapleai` organization, with 2FA
-   enabled. Create a granular access token with read/write access to the
-   `@mapleai` package scope, no organization administration permissions,
-   **Bypass 2FA** enabled, and a one-day expiry. Scope access is needed because
-   the new `@mapleai/sdk` package does not yet exist to select individually.
-   See [npm access-token creation](https://docs.npmjs.com/creating-and-viewing-access-tokens/).
-2. Store the token as the **environment secret** `NPM_BOOTSTRAP_TOKEN` in
-   `sdk-npm` through GitHub Settings → Environments → sdk-npm. The CLI
-   alternative prompts for the value without including it in command history:
-
-   ```sh
-   gh secret set NPM_BOOTSTRAP_TOKEN --repo MaplePrivacyLabs/Maple --env sdk-npm
-   ```
-
-3. When the exact first version and commit are approved for publication, run
-   `sdk-publish-npm.yml` on `master` with `mode=bootstrap` and `dry_run=false`.
-   Review and approve its environment. Confirm the package appears at the URL
-   reported by the run.
-4. In the new npm package's settings, add the GitHub trusted publisher with
-   organization `MaplePrivacyLabs`, repository `Maple`, workflow filename
-   `sdk-publish-npm.yml`, and environment `sdk-npm`. Under **Allowed actions**,
-   explicitly permit direct `npm publish`; new configurations may otherwise
-   allow only staged publication.
-5. Revoke the bootstrap token in npm and delete `NPM_BOOTSTRAP_TOKEN` from
-   `sdk-npm`. Set package publishing access to **Require two-factor
-   authentication and disallow tokens**. Trusted publishing continues to work
-   under that setting. Subsequent runs use `mode=trusted`.
-
-The workflow's npm trusted publication includes provenance. See
-[npm trusted publishing](https://docs.npmjs.com/trusted-publishers/) for the
-registry settings and provider requirements.
-
-After bootstrap and trust configuration, the first successful trusted run
-establishes that npm accepts this repository's OIDC identity. Preserve the
-existing repository-wide OIDC subject configuration; Windows signing shares it.
-
-### crates.io bootstrap
-
-1. Use the GitHub-linked crates.io account and verify its work email. Create
-   a token restricted to the exact crate `maple-sdk`, with **publish-new**
-   permission only and the shortest practical expiry. No owner-management or
-   existing-version publication permission is needed for bootstrap.
-2. Store it as the **environment secret** `CRATES_BOOTSTRAP_TOKEN` in
-   `sdk-crates`, using the GitHub UI or the interactive CLI prompt:
-
-   ```sh
-   gh secret set CRATES_BOOTSTRAP_TOKEN --repo MaplePrivacyLabs/Maple --env sdk-crates
-   ```
-
-3. When the exact first version and commit are approved for publication, run
-   `sdk-publish-rust.yml` on `master` with `mode=bootstrap` and `dry_run=false`.
-   Review and approve its environment, then confirm the published crate and
-   checksum reported by the run.
-4. In the crate's trusted-publishing settings, add organization
-   `MaplePrivacyLabs`, repository `Maple`, workflow filename
-   `sdk-publish-rust.yml`, and environment `sdk-crates`. Enable the crate's
-   trusted-publishing-only setting.
-5. Revoke the bootstrap token in crates.io and delete `CRATES_BOOTSTRAP_TOKEN`
-   from `sdk-crates`. Subsequent runs use `mode=trusted`.
-
-See [crates.io trusted publishing](https://crates.io/docs/trusted-publishing).
-Never paste bootstrap tokens into chat, commits, logs, workflow inputs, or
-repository variables. They are temporary protected environment secrets.
+`mode=bootstrap` is restricted to a package that does not yet exist in its
+registry. It cannot publish later versions or replace an existing publication.
+The workflow validates this distinction; a dry run is not proof of registry
+trust or permission to publish.
 
 ## Publishing trust boundary
 

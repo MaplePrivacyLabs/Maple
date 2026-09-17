@@ -21,13 +21,19 @@ inventories:
 
 - `src/model_config.rs`: canonical public IDs, aliases, capabilities, limits,
   visibility, and access.
-- `src/provider_routing.rs` and `src/os_flags.rs`: eligible routes and backend
-  selection policy.
+- `src/provider_registry.rs` and `src/inference_planning.rs`: V2 route topology,
+  deterministic planning, and eligible same-model providers.
+- `src/provider_routing.rs` and `src/os_flags.rs`: V1/V2 dispatch, V1 provider
+  preferences, and integration with V2 health-aware selection.
+- `src/inference.rs` and `src/inference/health.rs`: inference intent and IDs,
+  typed outcomes, capacity/circuit state, snapshots, and probe leases.
 - `src/proxy_config.rs`: provider endpoints and credentials.
 - `src/provider_client.rs`: standard and attested transport, headers,
   streaming, and retry decisions.
 - `src/web/openai.rs` and `src/web/responses/`: route-specific request
-  rewriting, canonical response projection, tools, and usage.
+  rewriting, shared preparation/execution, pinning, canonical response
+  projection, tools, and usage. `responses/image_describer.rs` owns the image
+  model candidates; its callers use the shared executor.
 - `src/web/web_routes.rs` and `src/kagi.rs`: public web contracts and the
   Kagi search/extract adapter.
 
@@ -53,6 +59,28 @@ pinned consumers define the contract.
 When billing or feature flags affect the path, treat them only as configured
 external HTTP APIs. Keep their credentials backend-only and test the changed
 call site's unavailable, timeout, denial, fallback, and success semantics.
+
+## Preserve routing context
+
+Router V1 evaluates provider preferences; Router V2 does not consume those V1
+preferences. Keep image and title helpers on the request's appropriate routing
+context. A helper candidate identifies a public model; resolve its provider
+through shared routing rather than pinning an independently guessed provider.
+
+Trace alias resolution separately from provider selection. Current V2 failover
+stays within the resolved public model; an Auto alias alone does not implement
+cross-model failover. Do not infer inactive behavior from historical `Shadow`
+type names: active V2 selection consumes health snapshots.
+
+Preserve first-send claim handling and later-turn pinning. A claim lost before
+the first send may select another same-model provider; later Responses tool
+turns remain pinned and may fail locally. Neither permits replaying an upstream
+attempt with an ambiguous outcome. Rebuild provider-specific request fields
+when a permitted pre-send selection changes the route.
+
+Validate the affected combinations of V1/V2, explicit/Auto model, Responses/
+Chat Completions, and main/title/image execution. Keep live rollout percentages,
+account allocations, and operator procedures out of this public skill.
 
 ## Preserve transport and retry safety
 

@@ -21,8 +21,9 @@ commit, external effect, and authority provided by the user.
   branch for native Cloudflare builds by default; when repository variable
   `MAPLE_PAGES_PRODUCTION_ENABLED=true`, `Publish Pages` uploads the verified
   existing release web artifact instead. Read
-  [the Pages deployment guide](../../../docs/pages-deployments.md) before changing
-  its mode, protected environments, or Cloudflare build controls.
+  [the Pages publisher architecture](../../../docs/pages-deployments.md) for
+  its source contract. Mode activation, environment administration, and
+  Cloudflare build controls belong to a separately authorized operator procedure.
 - The same Maple GitHub Release receives four native `maple-proxy` archives and
   their checksum manifest. Never create a separate proxy Release or proxy tag;
   `/releases/latest` must continue to identify the Maple application release.

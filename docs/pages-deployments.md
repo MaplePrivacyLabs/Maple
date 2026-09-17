@@ -1,22 +1,16 @@
-# Maple-owned Pages deployments
+# Pages publisher architecture
 
-Maple can publish prebuilt static assets to the existing Cloudflare Pages project
-`maple` (`maple-ca8.pages.dev`). Production remains `trymaple.ai`; its production
-branch remains `pages-production`. This does not move DNS, the `www` marketing
-site, or the updater Worker. This path does not need a Cloudflare GitHub App.
-Cloudflare supports Wrangler uploads to an existing Git-integrated project after
-automatic builds are disabled; this does not convert the project's type.
-See [Cloudflare's Git integration guidance](https://developers.cloudflare.com/pages/configuration/git-integration/#disable-automatic-deployments).
+The repository builds and publishes static web assets through separate build
+and credential-bearing publisher workflows. This document describes their
+source contract and contributor validation. Live activation, environment
+administration, cutover, and recovery are operator procedures outside this
+public guide.
 
-Both repository variables
-`MAPLE_PAGES_PREVIEW_ENABLED` and `MAPLE_PAGES_PRODUCTION_ENABLED` must equal the
-literal string `true` to enable their respective jobs. Keep both owned publishers
-enabled with Cloudflare's native automatic builds disabled. A missing/false
-variable disables its owned publisher; it does not
-reenable Cloudflare's native builds. A false production flag also reactivates
-the legacy GitHub branch promoter, as described under recovery below. Changing
-flags, secrets, Cloudflare settings, or production needs an authorized operator
-action; merging source alone does not change those settings.
+`MAPLE_PAGES_PREVIEW_ENABLED` and `MAPLE_PAGES_PRODUCTION_ENABLED` must equal
+the literal string `true` for their respective jobs. A missing/false production
+variable also enables the legacy branch-promoter job; it does not itself
+configure Cloudflare's native builds. Merging source does not establish live
+publisher settings or deployed state.
 
 ## Build and destination contract
 
@@ -88,56 +82,7 @@ and browser smoke remain necessary. Do not enter production credentials into
 an unreviewed preview. The publisher's token boundary is separate from browser
 trust in the application being previewed.
 
-## Operator prerequisites
-
-1. Create GitHub environments `pages-preview` and `pages-production`. Restrict
-   each to the exact **branch** `master` using selected deployment branches/tags;
-   allow no tags, PR refs, or wildcard branches. Protect master review and writes.
-   Configure any required reviewers before placing credentials in the environment.
-2. Create dedicated CI tokens with **Account → Cloudflare Pages → Edit**, limited
-   to the intended CF account. Do not grant DNS, Workers Scripts, or Access
-   permissions, and do not reuse the machine's broader BWS operations token.
-   Set environment secrets `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` in
-   each environment. [Cloudflare's CI credential guide](https://developers.cloudflare.com/pages/how-to/use-direct-upload-with-continuous-integration/#generate-an-api-token)
-3. Pages Edit is account-scoped, not restricted to one project or preview branch.
-   Separate preview/production tokens help rotation and auditing but do not create
-   CF project isolation. The trusted publisher enforces its target and branch.
-4. Verify project identity, production branch, current successful production
-   deployment ID/SHA, and Access coverage for `*.maple-ca8.pages.dev`. Record the
-   previous successful production deployment ID in the cutover evidence.
-5. Review branch-protection requirements that expect the Cloudflare App check.
-   The new path reports GitHub deployments, workflow results, and a PR preview
-   comment; it does not impersonate the old Cloudflare App check.
-
-## Staged activation
-
-Use this sequence when configuring the publishers or deliberately repeating a
-cutover. Routine previews and releases use the build/destination contract above.
-
-1. Run offline validation, then merge the reviewed implementation with both flags
-   absent/false. Retain evidence of the current production deployment.
-2. Enable only `MAPLE_PAGES_PREVIEW_ENABLED=true`. Trigger a current internal PR
-   build and a qualifying master build. Inspect the immutable deployment URLs
-   reported by `Publish Pages`; native previews can still exist during the pilot.
-   Verify Access requires the intended identity, assets load, login/chat work,
-   and browser requests select development API, flags, billing, and PCR history.
-3. In an authorized quiet window, pause releases and wait for existing production
-   writers to finish. In the existing Pages project's branch controls, disable
-   automatic production deployments and set automatic preview deployments to
-   None. Keep `pages-production` as the production branch and preserve domains.
-4. Set `MAPLE_PAGES_PRODUCTION_ENABLED=true`. This disables the legacy
-   `Promote Pages production` job; both paths share the `pages-production`
-   concurrency group. `Publish Pages` refuses a production upload if Cloudflare
-   still reports automatic production deployments enabled.
-5. Manually dispatch `Publish Pages` **from master** to publish the current stable
-   release's existing artifact. No new Release or native rebuild is required.
-   Verify deployment SHA, active canonical deployment ID, production ref, and
-   browser production settings/PCR history; exercise login and chat.
-6. Record the deployment and smoke-test evidence in the owning operations
-   runbook. After any repository transfer, separately verify the destination
-   organization's runner/environment access and publisher repository identity.
-
-## Verification and recovery
+## Verification semantics
 
 CI verifies the Cloudflare deployment's successful stage, environment, project,
 branch, URL, and commit; production also verifies the active canonical deployment.
@@ -154,21 +99,11 @@ production/preview URL. Branch policies, reviewers, wait timers, and secrets sti
 apply; custom deployment-protection GitHub Apps are incompatible with this mode
 and make the job fail. See [GitHub's environment-without-deployment rules](https://docs.github.com/en/actions/how-tos/deploy/configure-and-manage-deployments/control-deployments#using-environments-without-deployments).
 
-GitHub and Cloudflare do not provide an atomic transaction here. If the source
-changes during upload, or later ref/status reporting fails, the new deployment
-can already be active even though the workflow fails. Inspect Cloudflare's actual
-deployment ID, commit and canonical state before retrying. Publish the newly
-eligible source, or use the recorded previous successful **production** deployment
-as an explicitly authorized [Cloudflare rollback target](https://developers.cloudflare.com/pages/configuration/rollbacks/).
-Preview deployments cannot be production rollback targets. Never force-rewind
-`pages-production`, recreate a Release, or change DNS to repair publication.
-
-For a hold, disable the appropriate owned-publisher flag and inspect/drain any
-already running job; a flag change does not cancel an upload in progress. Keep
-native builds disabled while investigating. Disabling the production flag
-reactivates the legacy branch promoter, so native builds must remain off until
-an intentional handback. Never reenable native publishing while the owned
-publisher is enabled. A CF rollback does not change the GitHub release or ref.
+GitHub and Cloudflare do not provide an atomic transaction. An upload can
+be active even when later source/ref/status checks fail. A workflow failure
+therefore does not by itself establish that the previous deployment is still
+serving. Deployment-state checks and authenticated application smoke are
+separate evidence.
 
 Offline checks from the repository root (use the host system for a local check):
 
