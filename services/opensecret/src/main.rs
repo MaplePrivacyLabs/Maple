@@ -15,7 +15,7 @@ use crate::model_config::{ModelAliasTargets, ModelPlan, PaidModelAliasOverrides}
 use crate::models::account_deletion::{AccountDeletionError, NewAccountDeletionRequest};
 use crate::models::email_verification::{EmailVerificationError, NewEmailVerification};
 use crate::models::oauth::{NewUserOAuthConnection, OAuthError};
-use crate::models::password_reset::NewPasswordResetRequest;
+use crate::models::password_reset::{NewPasswordResetRequest, PasswordResetRequest};
 use crate::models::platform_password_reset::NewPlatformPasswordResetRequest;
 use crate::models::platform_users::PlatformUser;
 use crate::sqs::SqsEventPublisher;
@@ -24,7 +24,7 @@ use crate::web::platform_login_routes;
 use crate::web::{
     conversation_projects_routes, conversations_routes, health_routes, instructions_routes,
     login_routes, native_handoff_routes, oauth_routes, openai_models_routes, openai_routes,
-    protected_routes, responses_routes, web_routes,
+    protected_routes, recovery_router, responses_routes, web_routes,
 };
 use crate::{attestation_routes::SessionState, web::platform_routes};
 use bounded_ttl_cache::BoundedTtlCache;
@@ -33,15 +33,19 @@ use lease_aware_cache::{CacheLease, InsertError as SessionInsertError, LeaseAwar
 use crate::jwt::{AuthContext, AuthMethod};
 use crate::models::user_seed_wrappings::{NewUserSeedWrapping, UserSeedWrappingError};
 use crate::seed_wrapping::{
-    compute_oauth_auth_binding, compute_password_auth_binding, decrypt_seed_v1, encrypt_seed_v1,
-    normalize_email_login_identifier, normalize_guest_login_identifier,
-    oauth_credential_lookup_hash, password_credential_lookup_hash, password_reset_code_mac,
-    AuthBinding, CredentialKind, PasswordLoginIdentifierKind, SEED_WRAP_VERSION_V1,
+    compute_oauth_auth_binding, compute_password_auth_binding, compute_recovery_auth_binding,
+    decrypt_seed_v1, encrypt_seed_v1, normalize_email_login_identifier,
+    normalize_guest_login_identifier, oauth_credential_lookup_hash,
+    password_credential_lookup_hash, password_reset_code_mac, AuthBinding, CredentialKind,
+    PasswordLoginIdentifierKind, SEED_WRAP_VERSION_V1,
 };
 use crate::{
     aws_credentials::AwsCredentialError,
     models::enclave_secrets::NewEnclaveSecret,
-    private_key::{generate_twelve_word_seed, plaintext_user_seed_to_key},
+    private_key::{
+        generate_twelve_word_seed, plaintext_user_seed_to_key, plaintext_user_seed_to_mnemonic,
+    },
+    recovery_code::RecoveryCode,
 };
 use crate::{
     billing::{BillingClient, ChatBillingAccess},
@@ -122,6 +126,7 @@ mod provider_client;
 mod provider_registry;
 mod provider_routing;
 mod proxy_config;
+mod recovery_code;
 mod secret_cache_maintenance;
 #[cfg(test)]
 mod security_invariants;
@@ -134,6 +139,13 @@ mod web;
 
 #[cfg(test)]
 mod aead_db_tamper_tests;
+#[cfg(test)]
+#[path = "recovery_smoke.rs"]
+mod local_flow_smoke;
+#[cfg(test)]
+mod recovery_db_tests;
+#[cfg(test)]
+mod recovery_route_tests;
 
 use apple_signin::AppleJwtVerifier;
 use inference_planning::ProviderPreference;
@@ -293,6 +305,12 @@ pub enum Error {
 
     #[error("Invalid password reset request")]
     InvalidPasswordResetRequest,
+
+    #[error("Invalid recovery code")]
+    InvalidRecoveryCode,
+
+    #[error("Recovery is not enrolled")]
+    RecoveryNotEnrolled,
 
     #[error("Account deletion request expired")]
     AccountDeletionExpired,
@@ -2453,17 +2471,24 @@ impl AppState {
         Ok(alphanumeric_code)
     }
 
-    async fn confirm_password_reset(
+    /// Verifies an existing password reset proof without consuming it.
+    ///
+    /// The same proof check shared by the legacy destructive confirm route and
+    /// the v2 options route: the alphanumeric code must MAC to an active,
+    /// unexpired reset request for the addressed user, and the client reset
+    /// secret must match the stored hash. Read-only by contract — callers own
+    /// every mutation, so repeated proof submission stays safe until the
+    /// request expires or is consumed by a completion.
+    fn verify_password_reset_proof(
         &self,
         email: String,
         alphanumeric_code: String,
         plaintext_secret: String,
-        new_password: String,
         project_id: i32,
-    ) -> Result<(), Error> {
-        let user = self.db.get_user_by_email(email.clone(), project_id)?;
+    ) -> Result<(User, PasswordResetRequest), Error> {
+        let user = self.db.get_user_by_email(email, project_id)?;
 
-        // Verify user has an email
+        // Only password-backed email users enter the reset proof flow.
         if user.get_email().is_none() || user.password_enc.is_none() {
             return Err(Error::UserNotFound);
         }
@@ -2475,74 +2500,203 @@ impl AppState {
 
         let reset_request = self
             .db
-            .get_password_reset_request_by_user_id_and_code(user.uuid, reset_code_mac.to_vec())?;
+            .get_password_reset_request_by_user_id_and_code(user.uuid, reset_code_mac.to_vec())?
+            .ok_or(Error::InvalidPasswordResetRequest)?;
 
-        if let Some(reset_request) = reset_request {
-            if reset_request.is_expired() {
-                warn!("Password reset expired for user: {}", user.uuid);
-                return Err(Error::PasswordResetExpired);
-            }
-
-            // Hash the plaintext secret again for comparison
-            let hashed_plaintext = generate_reset_hash(plaintext_secret.clone());
-
-            // Compare the hashed values using constant-time comparison
-            if hashed_plaintext
-                .as_bytes()
-                .ct_eq(reset_request.hashed_secret.as_bytes())
-                .into()
-            {
-                let user_seed_words =
-                    generate_twelve_word_seed(self.aws_credential_manager.clone())
-                        .await?
-                        .to_string();
-                let (password_hash, encrypted_password) =
-                    self.encrypt_user_password_verifier(new_password).await?;
-                let new_wrapping = self.new_password_seed_wrapping_for_user(
-                    &user,
-                    &password_hash,
-                    user_seed_words.as_bytes(),
-                )?;
-                self.verify_new_password_seed_wrapping_for_user(
-                    &user,
-                    &password_hash,
-                    user_seed_words.as_bytes(),
-                    &new_wrapping,
-                )?;
-
-                self.db.complete_destructive_password_reset(
-                    &user,
-                    &reset_request,
-                    encrypted_password,
-                    new_wrapping,
-                )?;
-
-                // Send confirmation email in the background
-                let app_state = self.clone();
-                let user_email = user.email.clone();
-                tokio::spawn(async move {
-                    if let Err(e) = send_password_reset_confirmation_email(
-                        &app_state,
-                        project_id,
-                        user_email.expect("We checked email had to exist above"),
-                    )
-                    .await
-                    {
-                        error!("Failed to send password reset confirmation email: {:?}", e);
-                    }
-                });
-
-                Ok(())
-            } else {
-                warn!(
-                    "Password verification failed for user {}. Hashes do not match.",
-                    user.uuid
-                );
-                Err(Error::InvalidPasswordResetSecret)
-            }
-        } else {
-            Err(Error::InvalidPasswordResetRequest)
+        if reset_request.is_expired() {
+            warn!("Password reset expired for user: {}", user.uuid);
+            return Err(Error::PasswordResetExpired);
         }
+
+        // Hash the plaintext secret again for comparison
+        let hashed_plaintext = generate_reset_hash(plaintext_secret);
+
+        // Compare the hashed values using constant-time comparison
+        if hashed_plaintext
+            .as_bytes()
+            .ct_eq(reset_request.hashed_secret.as_bytes())
+            .into()
+        {
+            Ok((user, reset_request))
+        } else {
+            warn!(
+                "Password verification failed for user {}. Hashes do not match.",
+                user.uuid
+            );
+            Err(Error::InvalidPasswordResetSecret)
+        }
+    }
+
+    async fn confirm_password_reset(
+        &self,
+        email: String,
+        alphanumeric_code: String,
+        plaintext_secret: String,
+        new_password: String,
+        project_id: i32,
+    ) -> Result<AuthContext, Error> {
+        let (user, reset_request) = self.verify_password_reset_proof(
+            email,
+            alphanumeric_code,
+            plaintext_secret,
+            project_id,
+        )?;
+
+        let user_seed_words = generate_twelve_word_seed(self.aws_credential_manager.clone())
+            .await?
+            .to_string();
+        let (password_hash, encrypted_password) =
+            self.encrypt_user_password_verifier(new_password).await?;
+        let new_wrapping = self.new_password_seed_wrapping_for_user(
+            &user,
+            &password_hash,
+            user_seed_words.as_bytes(),
+        )?;
+        self.verify_new_password_seed_wrapping_for_user(
+            &user,
+            &password_hash,
+            user_seed_words.as_bytes(),
+            &new_wrapping,
+        )?;
+
+        let new_auth_context = self.password_auth_context_for_user(&user, &password_hash)?;
+
+        self.db.complete_destructive_password_reset(
+            &user,
+            &reset_request,
+            encrypted_password,
+            new_wrapping,
+        )?;
+
+        // Send confirmation email in the background
+        let app_state = self.clone();
+        let user_email = user.email.clone();
+        tokio::spawn(async move {
+            if let Err(e) = send_password_reset_confirmation_email(
+                &app_state,
+                project_id,
+                user_email.expect("We checked email had to exist above"),
+            )
+            .await
+            {
+                error!("Failed to send password reset confirmation email: {:?}", e);
+            }
+        });
+
+        Ok(new_auth_context)
+    }
+
+    /// Seed-preserving recovery reset completion (V2): opens the enrolled seed
+    /// with the submitted recovery code and installs a new password credential
+    /// over that same seed, consuming the selected reset request without
+    /// touching the recovery wrap or any seed-key-encrypted data.
+    ///
+    /// Failure contract:
+    /// - A malformed or checksum-invalid code is rejected before any database
+    ///   work; the reset request stays usable.
+    /// - A well-formed code that fails to open the wrap consumes exactly the
+    ///   selected reset request (one recovery-code guess per emailed code)
+    ///   and fails closed; nothing else changes.
+    /// - A commit-time race (concurrent completion, password change,
+    ///   disablement, or rotation) fails the whole completion without writing
+    ///   anything.
+    async fn complete_preserving_password_reset_v2(
+        &self,
+        user: &User,
+        reset_request: &PasswordResetRequest,
+        recovery_code_input: &str,
+        new_password: String,
+    ) -> Result<AuthContext, Error> {
+        // Reject malformed input before any database work; the reset request
+        // remains usable for a corrected or destructive attempt.
+        let recovery_code = RecoveryCode::parse(recovery_code_input).map_err(|e| {
+            debug!("Recovery code rejected as malformed: {}", e);
+            Error::InvalidRecoveryCode
+        })?;
+
+        let recovery_wrap = self
+            .db
+            .get_recovery_wrap(user.uuid)
+            .map_err(Error::from)?
+            .ok_or(Error::RecoveryNotEnrolled)?;
+
+        if recovery_wrap.wrapping_version != SEED_WRAP_VERSION_V1 {
+            return Err(Error::RecoveryNotEnrolled);
+        }
+
+        // Open the stored wrap with a recovery-secret auth binding through
+        // the same `decrypt_seed_v1` envelope path that sealed it. The AEAD
+        // tag is the only correctness check for the submitted code.
+        let recovery_auth_binding = compute_recovery_auth_binding(
+            &self.enclave_key,
+            user.project_id,
+            user.uuid,
+            recovery_code.secret_bytes(),
+        )
+        .map_err(|e| Error::EncryptionError(e.to_string()))?;
+        let plaintext_seed = match decrypt_seed_v1(
+            &self.enclave_key,
+            &recovery_wrap.seed_enc,
+            user.uuid,
+            user.project_id,
+            CredentialKind::Recovery,
+            &recovery_auth_binding,
+        ) {
+            Ok(seed) => seed,
+            Err(_) => {
+                // Anti-brute-force: a well-formed code that fails AEAD burns
+                // only the selected reset request. Nothing else changes.
+                self.db
+                    .consume_selected_password_reset_request(user, reset_request)
+                    .map_err(Error::from)?;
+                return Err(Error::AuthenticationError);
+            }
+        };
+
+        // The opened seed must be a valid mnemonic before any mutation: an
+        // inconsistent wrap must not fall through to a reseed.
+        plaintext_user_seed_to_mnemonic(&plaintext_seed).map_err(|e| {
+            error!("Recovery wrap opened to an invalid seed: {:?}", e);
+            Error::EncryptionError("Recovery wrap did not contain a valid seed".to_string())
+        })?;
+
+        // Seal and verify the new password wrap over the exact opened seed
+        // before entering the transaction.
+        let (password_hash, encrypted_password) =
+            self.encrypt_user_password_verifier(new_password).await?;
+        let new_wrapping =
+            self.new_password_seed_wrapping_for_user(user, &password_hash, &plaintext_seed)?;
+        let new_auth_context = self.password_auth_context_for_user(user, &password_hash)?;
+
+        self.db
+            .complete_preserving_password_reset(
+                user,
+                reset_request,
+                &recovery_wrap,
+                encrypted_password,
+                new_wrapping,
+            )
+            .map_err(Error::from)?;
+
+        self.verify_seed_wrap_for_auth_context(user, &new_auth_context)?;
+
+        // Send confirmation email in the background
+        let app_state = self.clone();
+        let project_id = user.project_id;
+        let user_email = user.email.clone();
+        tokio::spawn(async move {
+            if let Err(e) = send_password_reset_confirmation_email(
+                &app_state,
+                project_id,
+                user_email.expect("Preserving reset proof verified the email exists"),
+            )
+            .await
+            {
+                error!("Failed to send password reset confirmation email: {:?}", e);
+            }
+        });
+
+        Ok(new_auth_context)
     }
 
     fn generate_alphanumeric_code(&self) -> String {
@@ -3829,6 +3983,7 @@ async fn retrieve_kagi_api_key(
 fn application_routes(app_state: Arc<AppState>) -> Router<()> {
     protected_routes(app_state.clone())
         .route_layer(from_fn_with_state(app_state.clone(), validate_jwt))
+        .merge(recovery_router(app_state.clone()))
         .merge(login_routes(app_state.clone()))
         .merge(
             openai_routes(app_state.clone())

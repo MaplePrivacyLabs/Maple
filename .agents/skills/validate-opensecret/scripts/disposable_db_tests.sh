@@ -95,8 +95,8 @@ cleanup() {
   rm -rf -- "$workdir"
 
   if [ "$status" -eq 0 ] && [ "$tests_passed" -eq 1 ]; then
-    printf 'Disposable-DB evidence: %s AEAD/database tests and %s OAuth database tests passed; no tests skipped; temporary cluster removed.\n' \
-      "$aead_count" "$oauth_count"
+    printf 'Disposable-DB evidence: %s AEAD/database tests, %s OAuth database tests, and %s recovery tests passed; no tests skipped; temporary cluster removed.\n' \
+      "$aead_count" "$oauth_count" "$recovery_count"
   fi
   exit "$status"
 }
@@ -128,6 +128,7 @@ createdb -h "$pgsockets" -p "$pgport" -U "$admin_user" \
 
 export DATABASE_URL="postgres://opensecret_user:password@127.0.0.1:${pgport}/${test_database}"
 export AEAD_TAMPER_TEST_DATABASE_URL="$DATABASE_URL"
+export RECOVERY_TEST_DATABASE_URL="$DATABASE_URL"
 
 assert_database_identity() {
   local db_identity
@@ -182,6 +183,12 @@ oauth_count="$(awk '/^web::oauth_routes::tests::db_.*: test$/ { count++ }
   END { print count + 0 }' "$workdir/oauth-tests.list")"
 test "$oauth_count" -gt 0
 
+cargo test --locked --all-features recovery \
+  -- --ignored --list | tee "$workdir/recovery-tests.list"
+recovery_count="$(awk '/^.*: test$/ { count++ }
+  END { print count + 0 }' "$workdir/recovery-tests.list")"
+test "$recovery_count" -gt 0
+
 cargo test --locked --all-features aead_db_tamper_tests \
   -- --ignored --test-threads=1 --nocapture 2>&1 | tee "$workdir/aead-tests.log"
 if grep -qi 'skipping:' "$workdir/aead-tests.log"; then
@@ -199,6 +206,15 @@ if grep -qi 'skipping:' "$workdir/oauth-tests.log"; then
 fi
 grep -Eq "test result: ok\\. ${oauth_count} passed; 0 failed; 0 ignored;" \
   "$workdir/oauth-tests.log"
+
+cargo test --locked --all-features recovery \
+  -- --ignored --test-threads=1 --nocapture 2>&1 | tee "$workdir/recovery-tests.log"
+if grep -qi 'skipping:' "$workdir/recovery-tests.log"; then
+  printf 'Recovery database test output contained a skip marker\n' >&2
+  exit 1
+fi
+grep -Eq "test result: ok\\. ${recovery_count} passed; 0 failed; 0 ignored;" \
+  "$workdir/recovery-tests.log"
 
 assert_database_identity
 assert_migration_count

@@ -32,6 +32,59 @@ For concurrent live checkouts, choose distinct `PGDATA`, `PGSOCKETS`, `PGPORT`,
 running migrations or destructive tests; never assume that a responding port
 belongs to the current checkout.
 
+## Recovery credential smoke
+
+From this component, run:
+
+```sh
+bash scripts/test-recovery-flow.sh
+```
+
+Nix must be installed, but no manual shell setup is needed. The script enters
+the pinned component Nix shell with the normal stateful hooks disabled, builds
+this checkout, creates and migrates a private PostgreSQL cluster, and starts
+the backend on an available loopback port. It runs the encrypted-HTTP client in
+`src/recovery_smoke.rs`, preserving existing `.env`, PostgreSQL, and application
+processes. Successful runs remove owned temporary state. Failed runs stop owned
+processes and report the location of retained private logs and database files.
+
+Coverage includes account creation, enrollment, preserving recovery, code reuse,
+rotation, disablement, re-enrollment, destructive reset, legacy compatibility,
+token lifecycle, invalid proof/code/payload scenarios, encrypted response
+framing, and a scan of owned backend logs for generated secrets. It also injects
+invalid stored recovery hash/envelope sizes and checks that recovery lookup and
+completion return sanitized server errors without consuming the reset proof or
+changing credentials. Restoring the fixture lets the same proof complete.
+
+For an already running **disposable local backend**, set these environment
+variables and run `bash scripts/test-recovery-flow.sh --existing`:
+
+| Variable | Requirement |
+| --- | --- |
+| `RECOVERY_SMOKE_URL` | Backend URL using `http://127.0.0.1` and its port. |
+| `RECOVERY_SMOKE_DATABASE_URL` | Fully migrated PostgreSQL database on `127.0.0.1`, named `opensecret_recovery_*`. |
+| `ENCLAVE_SECRET_MOCK` | Matching local backend mock enclave secret. |
+| `RECOVERY_SMOKE_LOG` | Optional backend log path to enable secret-leak assertions. |
+
+Existing-backend mode modifies and deletes only its newly registered test users;
+it does not start or stop that backend/database. Use `--help` for usage.
+
+### Evidence limits
+
+The real `/password-reset/request` route creates each reset row. Without email
+credentials, the client replaces only its new test user's reset-code MAC with
+a random known email-code fixture. The backend-created secret hash, proof
+verification, completion, encryption, and persistence paths are exercised;
+email delivery is not tested.
+
+The client uses the backend's transport-v2 crypto/envelope primitives with local
+mock attestation and transcript checks. It does not verify Nitro certificates
+or exercise SDK/GUI integration. Production attestation/PCRs, external provider
+delivery, deployed rate limits, and production log hygiene require separate
+evidence. The migration down/up check runs before recovery enrollment; it does
+not establish populated rollback safety, since the down migration rejects
+existing recovery rows.
+
 ## Logging
 
 `APP_MODE=local` writes line-buffered tracing to stdout so redirected `cargo run`
