@@ -52,10 +52,10 @@ unlocked or credential-bearing fetch.
 
 ## Launch the exact workspace
 
-If OpenSecret Workspaces owns this checkout, use its generated
-`bin/maple-agent` and `env/maple-agent.sh`. They select local/hosted services,
-private XDG config/data, an isolated development bundle ID, and the shared
-proxy reservation. Agent does not load dotenv files. Do not copy production
+If an external workspace manager owns this checkout, use its documented
+launcher and generated environment. Preserve its local/hosted service choices,
+isolated XDG config/data, development bundle ID, and shared proxy reservation.
+Agent does not load dotenv files. Do not copy production
 credentials into source or silently use the legacy GPUI state directory.
 
 For macOS app-identity checks, source the managed environment and run

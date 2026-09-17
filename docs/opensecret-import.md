@@ -64,11 +64,11 @@ transfer automatically; follow the
 [cache validation policy](../services/opensecret/docs/nitro-deploy.md#binary-caches-and-cold-run-validation).
 Backend-only changes do not select Research or Agent application packaging.
 
-The companion OpenSecret Workspaces change supports Maple-only compositions
-through `services/opensecret/`. An explicitly included standalone `opensecret`
-checkout continues to own the backend for existing mixed workspaces. Use the
-manager's environment and lifecycle commands; do not move its generated
-configuration by hand. See the [component guide](../services/opensecret/AGENTS.md)
+An external workspace manager may own local backend selection, generated
+configuration, and process lifecycle. Follow that environment's recorded paths
+and lifecycle commands; do not move its generated configuration by hand.
+The backend component is `services/opensecret/`.
+See the [component guide](../services/opensecret/AGENTS.md)
 and root `$develop-opensecret` / `$validate-opensecret` skills.
 
 ## Signed PCR compatibility and cutover
@@ -80,9 +80,9 @@ against the public key pinned by both SDKs. PCR1/PCR2 are present in the JSON
 but are not covered by those signatures; this import preserves that format.
 
 Keep `OpenSecretCloud/opensecret` at its current name, public, writable, and
-unarchived. Installed clients still request its raw history URLs. Retain the
-old source and outstanding branches until a separate retirement decision;
-removing that code is unnecessary for manual compatibility publication.
+unarchived. Installed clients still request its raw history URLs. Its current
+default branch is a compatibility mirror; backend implementation lives here.
+Historical source, issues, and branches do not create a second active backend.
 
 Current TypeScript and Rust SDK defaults read the canonical histories under
 `MaplePrivacyLabs/Maple/master/services/opensecret/`. The SDK package names are
@@ -99,6 +99,10 @@ policy. Operator builds run from `services/opensecret/`; verify the selected
 checkout and commit on each deployment host rather than assuming a merged
 source change migrated that host.
 
-GitHub does not sign PCR entries, create EIF releases, or deploy OpenSecret here. The
-copy helper does not commit or push. Sigstore and the legacy compatibility
-sunset remain separate decisions. There is no automatic expiry of the legacy files.
+The separate `OpenSecret EIF release` workflow builds and attests a candidate
+and can sign new PCR entries behind its protected approval environment. It
+pushes an approval branch for review; it creates no GitHub Release or tag and
+does not deploy. Ordinary CI remains read-only with respect to approvals.
+The copy helper does not commit or push. The signing-key transition and legacy
+compatibility sunset remain separate decisions; legacy files do not expire
+automatically.
