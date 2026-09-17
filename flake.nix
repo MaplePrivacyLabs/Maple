@@ -680,8 +680,9 @@
           '';
 
           workflows = pkgs.runCommand "maple-github-workflows-check" {
-            nativeBuildInputs = [ pkgs.actionlint ];
+            nativeBuildInputs = with pkgs; [ actionlint python3 yq-go ];
             src = ./.github/workflows;
+            tests = ./scripts/ci/test_codeql_workflow.py;
           } ''
             cd "$src"
             # actionlint 1.7.10 predates GitHub's supported concurrency.queue key.
@@ -695,6 +696,10 @@
                 actionlint -config-file ${./.github/actionlint.yaml} -ignore 'unexpected key "queue" for "concurrency" section' "$workflow"
               fi
             done
+            mkdir -p "$TMPDIR/repo/.github/workflows" "$TMPDIR/repo/scripts/ci"
+            cp -R . "$TMPDIR/repo/.github/workflows/"
+            cp "$tests" "$TMPDIR/repo/scripts/ci/test_codeql_workflow.py"
+            python3 "$TMPDIR/repo/scripts/ci/test_codeql_workflow.py"
             touch "$out"
           '';
 
