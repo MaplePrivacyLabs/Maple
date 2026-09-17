@@ -1,16 +1,19 @@
 //! Markdown parsing for agent messages: pulldown-cmark events resolved into
 //! block-level structures that callers cache per message. Rendering is in
 //! [`super::rich_text`], which turns blocks into interactive elements
-//! (clickable links, drag selection, copyable code blocks).
+//! (clickable links, drag selection, copyable code blocks), and in
+//! [`table`], which lays tables out by their measured content.
 //!
 //! Parsing and element building are separate steps: [`parse`] produces a
 //! [`Document`] of resolved blocks that callers cache per message, and
 //! [`render`] turns it into elements each frame. Parsing is the expensive
 //! part; rendering from blocks is a handful of allocations.
 
+pub mod table;
+
 use std::sync::Arc;
 
-use gpui::{Div, ElementId, SharedString, div, prelude::*, px, relative};
+use gpui::{Div, SharedString, div, prelude::*, px, relative};
 use pulldown_cmark::{Alignment, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 
 use super::rich_text::{self, Highlights, Links, RenderCtx};
@@ -136,6 +139,17 @@ pub struct TableCell {
     pub links: Links,
 }
 
+impl TableCell {
+    /// A cell with nothing in it, holding its column open.
+    fn empty() -> Self {
+        Self {
+            text: SharedString::new_static(""),
+            styles: Arc::from([]),
+            links: Arc::from([]),
+        }
+    }
+}
+
 /// One parsed block. Text blocks keep inline styles as flags; colors are
 /// resolved at render time so cached documents follow theme changes.
 #[derive(Clone)]
@@ -158,13 +172,14 @@ pub enum Block {
         list_depth: usize,
     },
     Table {
-        /// Rows of cells; the first row is the header.
+        /// Rows of cells; the first row is the header. Every row holds
+        /// as many cells as the delimiter row has columns.
         rows: Arc<[Arc<[TableCell]>]>,
         /// Per-column alignment from the delimiter row.
         alignments: Arc<[ColumnAlign]>,
-        /// Per-column width weight from the longest cell text, computed
-        /// once here rather than on every frame.
-        column_weights: Arc<[usize]>,
+        /// Column widths measured from the cells' shaped text, filled by
+        /// the first layout and reused by every frame after it.
+        metrics: Arc<table::TableMetrics>,
         in_quote: bool,
         list_depth: usize,
     },
@@ -402,11 +417,17 @@ pub fn render_with(document: &Document, ctx: &RenderCtx) -> Div {
             Block::Table {
                 rows,
                 alignments,
-                column_weights,
+                metrics,
                 in_quote,
                 list_depth,
             } => container.child(wrap_inline(
-                table_element(rows, alignments, column_weights, block_offset, ctx),
+                table::TableElement::new(
+                    Arc::clone(rows),
+                    Arc::clone(alignments),
+                    Arc::clone(metrics),
+                    block_offset,
+                    ctx,
+                ),
                 *in_quote,
                 *list_depth,
             )),
@@ -483,6 +504,22 @@ fn find_bare_urls(text: &str) -> Vec<std::ops::Range<usize>> {
         }
     }
     ranges
+}
+
+/// Whether inline HTML is a `<br>` tag, in any of its spellings.
+fn is_line_break_tag(html: &str) -> bool {
+    let Some(inner) = html
+        .trim()
+        .strip_prefix('<')
+        .and_then(|rest| rest.strip_suffix('>'))
+    else {
+        return false;
+    };
+    inner
+        .trim()
+        .trim_end_matches('/')
+        .trim_end()
+        .eq_ignore_ascii_case("br")
 }
 
 /// Parse markdown into resolved blocks.
@@ -667,9 +704,17 @@ pub fn parse(source: &str) -> Document {
                 }
                 TagEnd::TableHead | TagEnd::TableRow => {
                     if let Some(builder) = table.as_mut() {
-                        builder
-                            .rows
-                            .push(Arc::from(std::mem::take(&mut builder.row)));
+                        // Every row holds the delimiter row's column
+                        // count: a short row (a table still streaming
+                        // in) gets empty cells and a long one loses the
+                        // excess, as GFM specifies.
+                        let mut row = std::mem::take(&mut builder.row);
+                        let columns = builder.alignments.len();
+                        if columns > 0 {
+                            row.truncate(columns);
+                            row.resize_with(columns, TableCell::empty);
+                        }
+                        builder.rows.push(Arc::from(row));
                     }
                 }
                 TagEnd::Table => {
@@ -677,9 +722,9 @@ pub fn parse(source: &str) -> Document {
                         && !builder.rows.is_empty()
                     {
                         blocks.push(Block::Table {
-                            column_weights: table_weights(&builder.rows),
                             rows: Arc::from(builder.rows),
                             alignments: Arc::from(builder.alignments),
+                            metrics: Arc::default(),
                             in_quote,
                             list_depth: list_counters.len(),
                         });
@@ -703,6 +748,13 @@ pub fn parse(source: &str) -> Document {
                 let start = paragraph.text.len();
                 let mut style = current_style(&inline_flags);
                 style.code = true;
+                // Inside a table, pulldown-cmark leaves the escape on a
+                // pipe in a code span; the cell shows the pipe alone.
+                let chunk: std::borrow::Cow<'_, str> = if table.is_some() && chunk.contains("\\|") {
+                    chunk.replace("\\|", "|").into()
+                } else {
+                    chunk.as_ref().into()
+                };
                 paragraph.push(&chunk, style);
                 if let Some(url) = link_stack.last().cloned() {
                     let end = paragraph.text.len();
@@ -719,6 +771,13 @@ pub fn parse(source: &str) -> Document {
                 blocks.push(Block::Rule);
             }
             Event::InlineHtml(html) => {
+                // `<br>` is the tag chat models lean on to break a line
+                // inside a table cell; it becomes a newline. Other inline
+                // HTML shows as its source.
+                if is_line_break_tag(&html) {
+                    paragraph.push("\n", InlineStyle::default());
+                    continue;
+                }
                 let start = paragraph.text.len();
                 paragraph.push(&html, current_style(&inline_flags));
                 if let Some(url) = link_stack.last().cloned() {
@@ -744,114 +803,6 @@ pub fn parse(source: &str) -> Document {
         blocks.push(text_block(taken, None, false, 0));
     }
     Document { blocks }
-}
-
-/// Longest cell text a column's width weight counts; keeps one huge
-/// cell from starving the other columns.
-const TABLE_WEIGHT_CAP: usize = 60;
-
-/// Per-column width weights: the longest cell text of each column, so a
-/// short column does not take the same space as a prose column.
-fn table_weights(rows: &[Arc<[TableCell]>]) -> Arc<[usize]> {
-    let mut weights: Vec<usize> = Vec::new();
-    for row in rows {
-        for (col_ix, cell) in row.iter().enumerate() {
-            if weights.len() <= col_ix {
-                weights.push(1);
-            }
-            let len = cell.text.chars().count().clamp(1, TABLE_WEIGHT_CAP);
-            weights[col_ix] = weights[col_ix].max(len);
-        }
-    }
-    Arc::from(weights)
-}
-
-/// Build a table: bordered rows of flex cells sized by `weights`. Each
-/// cell is its own selectable paragraph at `base_offset` plus its cell
-/// index, and the tree exposes rows and cells to assistive technology.
-fn table_element(
-    rows: &Arc<[Arc<[TableCell]>]>,
-    alignments: &[ColumnAlign],
-    weights: &[usize],
-    base_offset: usize,
-    ctx: &RenderCtx,
-) -> gpui::Stateful<Div> {
-    let total: usize = weights.iter().sum::<usize>().max(1);
-    let columns = weights.len();
-
-    let border = gpui::rgb(theme::border_subtle());
-    let mut table = div()
-        .id(ElementId::NamedInteger("table".into(), base_offset as u64))
-        .role(gpui::Role::Table)
-        .aria_row_count(rows.len())
-        .aria_column_count(columns)
-        .w_full()
-        .my_1()
-        .rounded(theme::RADIUS_SM)
-        .border_1()
-        .border_color(border)
-        .overflow_hidden()
-        .flex()
-        .flex_col();
-    let mut ordinal = base_offset;
-    for (row_ix, row) in rows.iter().enumerate() {
-        let header = row_ix == 0;
-        let mut line = div().flex().w_full();
-        if header {
-            line = line.bg(gpui::rgb(theme::bg_code_block()));
-        }
-        if row_ix + 1 < rows.len() {
-            line = line.border_b_1().border_color(border);
-        }
-        for (col_ix, cell) in row.iter().enumerate() {
-            // Resolve the palette now, like text blocks: cached
-            // documents must not keep stale colors.
-            let highlights: Highlights = cell
-                .styles
-                .iter()
-                .map(|(range, style)| (range.clone(), style.highlight()))
-                .collect();
-            let weight = weights.get(col_ix).copied().unwrap_or(1);
-            let mut cell_div = div()
-                .id(ElementId::NamedInteger("cell".into(), ordinal as u64))
-                .role(if header {
-                    gpui::Role::ColumnHeader
-                } else {
-                    gpui::Role::Cell
-                })
-                .aria_row_index(row_ix + 1)
-                .aria_column_index(col_ix + 1)
-                .flex_grow(1.)
-                .flex_basis(gpui::relative(weight as f32 / total as f32))
-                .min_w(px(0.))
-                .px_2()
-                .py_1()
-                .overflow_hidden();
-            match alignments.get(col_ix) {
-                Some(ColumnAlign::Center) => cell_div = cell_div.text_center(),
-                Some(ColumnAlign::Right) => cell_div = cell_div.text_right(),
-                _ => {}
-            }
-            if col_ix > 0 {
-                cell_div = cell_div.border_l_1().border_color(border);
-            }
-            line = line.child(cell_div.child(rich_text::paragraph(
-                cell.text.clone(),
-                rich_text::Inline {
-                    highlights,
-                    links: cell.links.clone(),
-                    mono: mono_ranges(&cell.styles),
-                },
-                None,
-                header.then_some(gpui::FontWeight::SEMIBOLD),
-                ctx.for_block(ordinal),
-                ctx,
-            )));
-            ordinal += 1;
-        }
-        table = table.child(line);
-    }
-    table
 }
 
 /// Apply list indentation and blockquote chrome to an inner block.
@@ -1169,5 +1120,57 @@ mod tests {
         assert_eq!(light, expected_light);
         assert_eq!(dark, expected_dark);
         assert_ne!(light, dark, "inline code color must change with the theme");
+    }
+
+    #[test]
+    fn br_tags_break_lines() {
+        let document = parse("| a |\n| --- |\n| one<br>two<BR/>three<br />four |");
+        let Block::Table { rows, .. } = &document.blocks[0] else {
+            panic!("expected a table block");
+        };
+        assert_eq!(rows[1][0].text.as_ref(), "one\ntwo\nthree\nfour");
+
+        let document = parse("line<br>break, not <b>bold</b>");
+        let Block::Text { text, .. } = &document.blocks[0] else {
+            panic!("expected a text block");
+        };
+        assert_eq!(text.as_ref(), "line\nbreak, not <b>bold</b>");
+    }
+
+    #[test]
+    fn escaped_pipes_in_table_cells_show_as_pipes() {
+        let document = parse("| a | b |\n| --- | --- |\n| x \\| y | `p \\| q` |");
+        let Block::Table { rows, .. } = &document.blocks[0] else {
+            panic!("expected a table block");
+        };
+        assert_eq!(rows[1][0].text.as_ref(), "x | y");
+        assert_eq!(rows[1][1].text.as_ref(), "p | q");
+        assert!(rows[1][1].styles.iter().any(|(_, style)| style.code));
+
+        // Outside a table the backslash is part of the code span.
+        let document = parse("`p \\| q`");
+        let Block::Text { text, .. } = &document.blocks[0] else {
+            panic!("expected a text block");
+        };
+        assert_eq!(text.as_ref(), "p \\| q");
+    }
+
+    #[test]
+    fn rows_hold_exactly_the_header_column_count() {
+        let document = parse("| a | b | c |\n| --- | --- | --- |\n| 1 |\n| 1 | 2 | 3 | 4 |");
+        let Block::Table {
+            rows, alignments, ..
+        } = &document.blocks[0]
+        else {
+            panic!("expected a table block");
+        };
+        assert_eq!(alignments.len(), 3);
+        assert_eq!(rows.len(), 3);
+        assert!(rows.iter().all(|row| row.len() == 3));
+        assert_eq!(rows[1][0].text.as_ref(), "1");
+        assert_eq!(rows[1][1].text.as_ref(), "");
+        assert_eq!(rows[2][2].text.as_ref(), "3");
+        // Selection ordinals count the padded cells too.
+        assert_eq!(document.blocks[0].ordinal_count(), 9);
     }
 }
