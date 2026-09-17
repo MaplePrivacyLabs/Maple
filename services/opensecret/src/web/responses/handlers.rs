@@ -25,11 +25,11 @@ use crate::{
         encryption_middleware::{decrypt_request, encrypt_response, Decrypted, TransportSession},
         openai::{
             ensure_completion_model_access, finish_started_completion,
-            get_chat_completion_response, get_chat_completion_response_for_expected_route,
+            get_bounded_chat_completion_response, get_chat_completion_response,
             prepare_completion_request, start_chat_completion_response_for_execution,
             BillingContext, CompletionCachePolicy, CompletionChunk, CompletionExecutionContext,
             CompletionExecutionError, InferenceRoutingContext, PinnedCompletionRequest,
-            ServerSelectedCompletionRoute, StartedCompletion,
+            StartedCompletion,
         },
         openai_auth::AuthMethod,
         responses::{
@@ -39,9 +39,9 @@ use crate::{
             error_mapping,
             image_describer::{
                 describe_image_with_fallback, ImageDescriptionAttemptError,
-                ImageDescriptionAttemptExecutor, ImageDescriptionCandidate, ImageDescriptionError,
-                ImageDescriptionFailureClass, ImageDescriptionInput,
-                RetryNonTerminalImageDescriptionFallbackPolicy,
+                ImageDescriptionAttemptExecutor, ImageDescriptionAttemptResponse,
+                ImageDescriptionCandidate, ImageDescriptionError, ImageDescriptionFailureClass,
+                ImageDescriptionInput, RetryNonTerminalImageDescriptionFallbackPolicy,
             },
             prompt_token_budget, storage_task, tools, ContentPartBuilder, DeletedObjectResponse,
             MessageContent, MessageContentConverter, MessageContentPart, OutputItemBuilder,
@@ -3498,7 +3498,7 @@ impl ImageDescriptionAttemptExecutor for ResponsesImageDescriptionExecutor<'_> {
         &self,
         candidate: ImageDescriptionCandidate,
         request: Value,
-    ) -> Result<Vec<u8>, ImageDescriptionAttemptError> {
+    ) -> Result<ImageDescriptionAttemptResponse, ImageDescriptionAttemptError> {
         if request.get("model").and_then(Value::as_str) != Some(candidate.public_model_id) {
             return Err(ImageDescriptionAttemptError::new(
                 ImageDescriptionFailureClass::Terminal,
@@ -3509,36 +3509,34 @@ impl ImageDescriptionAttemptExecutor for ResponsesImageDescriptionExecutor<'_> {
         let headers = HeaderMap::new();
         let billing_context =
             BillingContext::new(AuthMethod::Jwt, candidate.public_model_id.to_string());
-        let mut completion = get_chat_completion_response_for_expected_route(
+        let mut completion = get_bounded_chat_completion_response(
             self.state,
             self.user,
             request,
             &headers,
             CompletionExecutionContext::new(billing_context, self.routing, self.cache_policy),
-            ServerSelectedCompletionRoute {
-                provider_name: candidate.provider.as_str(),
-                provider_model_id: candidate.provider_model_id,
-            },
         )
         .await
         .map_err(image_description_execution_error)?;
 
-        if completion.metadata.provider_name != candidate.provider.as_str()
-            || completion.metadata.model_name != candidate.public_model_id
-        {
+        if completion.metadata.model_name != candidate.public_model_id {
             return Err(ImageDescriptionAttemptError::new(
                 ImageDescriptionFailureClass::Terminal,
-                "descriptor response did not use the fixed provider/model route",
+                "descriptor response did not use the fixed public model",
             ));
         }
 
         match completion.stream.recv().await {
             Some(CompletionChunk::FullResponse(response)) => {
-                serde_json::to_vec(&response).map_err(|_| {
+                let body = serde_json::to_vec(&response).map_err(|_| {
                     ImageDescriptionAttemptError::new(
                         ImageDescriptionFailureClass::InvalidResponse,
                         "descriptor response could not be serialized",
                     )
+                })?;
+                Ok(ImageDescriptionAttemptResponse {
+                    body,
+                    provider: completion.metadata.provider_name,
                 })
             }
             Some(CompletionChunk::Terminal(AttemptTerminal::Failed { failure, .. })) => {
@@ -3612,7 +3610,6 @@ async fn describe_images(
                 for failure in error.attempts() {
                     warn!(
                         image_index,
-                        provider = failure.candidate.provider.as_str(),
                         model = failure.candidate.public_model_id,
                         failure_class = ?failure.error.class,
                         "Responses image description attempt failed: {}",
@@ -3625,7 +3622,7 @@ async fn describe_images(
 
         debug!(
             image_index,
-            provider = outcome.candidate.provider.as_str(),
+            provider = outcome.provider,
             model = outcome.candidate.public_model_id,
             attempts = outcome.attempt_count,
             "Responses image description completed"

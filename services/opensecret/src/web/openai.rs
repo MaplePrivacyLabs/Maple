@@ -2010,7 +2010,6 @@ fn claim_completion_turn(
     provider_router: &ProviderRouter,
     proxy_router: &ProxyRouter,
     pinned: &PinnedCompletionRequest,
-    allow_replan: bool,
 ) -> Result<ClaimedProviderTurn, ApiError> {
     if pinned.routing_mode() == InferenceRoutingMode::Legacy {
         return Ok(ClaimedProviderTurn {
@@ -2041,9 +2040,6 @@ fn claim_completion_turn(
                     reason
                 );
                 let local_error = probe_api_error(retry_after);
-                if !allow_replan {
-                    return Err(local_error);
-                }
                 excluded_routes.insert(route_key);
                 route = match replan_completion_route_excluding(
                     provider_router,
@@ -2240,17 +2236,15 @@ pub(crate) async fn start_chat_completion_response_for_execution(
     .await
 }
 
-/// Run an entitled completion only if routing resolves to the server-selected
-/// provider and provider model. The constraint is checked before any request is
-/// serialized or sent; all ordinary plan, cache-field, and billing behavior is
-/// otherwise shared with [`get_chat_completion_response`].
-pub(crate) async fn get_chat_completion_response_for_expected_route(
+/// Run an entitled internal completion with a bounded response body. Provider
+/// selection follows the request's ordinary V1 or V2 routing policy; plan checks,
+/// provider-managed fields, and billing are shared with other completions.
+pub(crate) async fn get_bounded_chat_completion_response(
     state: &Arc<AppState>,
     user: &User,
     body: Value,
     headers: &HeaderMap,
     execution: CompletionExecutionContext<'_>,
-    route: ServerSelectedCompletionRoute<'_>,
 ) -> Result<CompletionStream, CompletionExecutionError> {
     let routing = execution.routing;
     let public_model_id = body
@@ -2269,10 +2263,7 @@ pub(crate) async fn get_chat_completion_response_for_expected_route(
     let pinned = prepare_completion_request(state, user, intent, routing)
         .await
         .map_err(|error| {
-            error!(
-                "Failed to prepare server-selected completion route: expected_provider={}, expected_provider_model={}, error={error:?}",
-                route.provider_name, route.provider_model_id
-            );
+            error!("Failed to prepare bounded internal completion route: {error:?}");
             CompletionExecutionError::Request(ApiError::ServiceUnavailable)
         })?;
 
@@ -2284,10 +2275,6 @@ pub(crate) async fn get_chat_completion_response_for_expected_route(
         execution,
         &pinned,
         CompletionExecutionOptions {
-            exact_route: Some(ExactCompletionRoute {
-                provider_name: route.provider_name.to_string(),
-                provider_model_id: route.provider_model_id.to_string(),
-            }),
             non_streaming_body_limit: Some(MAX_BOUNDED_PROVIDER_RESPONSE_BYTES),
         },
     )
@@ -2295,29 +2282,8 @@ pub(crate) async fn get_chat_completion_response_for_expected_route(
     finish_started_completion(state, user, started).await
 }
 
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct ServerSelectedCompletionRoute<'a> {
-    pub provider_name: &'a str,
-    pub provider_model_id: &'a str,
-}
-
-struct ExactCompletionRoute {
-    provider_name: String,
-    provider_model_id: String,
-}
-
-fn completion_route_matches_exact_constraint(
-    route: &SelectedProviderRoute,
-    expected: &ExactCompletionRoute,
-) -> bool {
-    route.provider.as_str() == expected.provider_name
-        && route.proxy.provider_name == expected.provider_name
-        && route.provider_model_id == expected.provider_model_id
-}
-
 #[derive(Default)]
 struct CompletionExecutionOptions {
-    exact_route: Option<ExactCompletionRoute>,
     non_streaming_body_limit: Option<usize>,
 }
 
@@ -2384,35 +2350,11 @@ async fn get_chat_completion_response_with_options(
     }
 
     ensure_completion_model_access(pinned.public_model_id(), pinned.intent.model_plan)?;
-    if let Some(expected_route) = &options.exact_route {
-        let prepared_route = pinned.selected_route();
-        if !completion_route_matches_exact_constraint(prepared_route, expected_route) {
-            error!(
-                "Completion route did not match the server-selected constraint: request_id={}, public_model={}, expected_provider={}, expected_provider_model={}, selected_provider={}, selected_proxy_provider={}, selected_provider_model={}",
-                pinned.intent.request_id,
-                prepared_route.public_model_id,
-                expected_route.provider_name,
-                expected_route.provider_model_id,
-                prepared_route.provider.as_str(),
-                prepared_route.proxy.provider_name,
-                prepared_route.provider_model_id
-            );
-            return Err(CompletionExecutionError::Request(
-                ApiError::ServiceUnavailable,
-            ));
-        }
-    }
-
     let ClaimedProviderTurn {
         route: selected_route,
         probe,
-    } = claim_completion_turn(
-        &state.provider_router,
-        &state.proxy_router,
-        pinned,
-        options.exact_route.is_none(),
-    )
-    .map_err(CompletionExecutionError::from)?;
+    } = claim_completion_turn(&state.provider_router, &state.proxy_router, pinned)
+        .map_err(CompletionExecutionError::from)?;
     if selected_route.public_model_id != body_model_name {
         error!(
             "Probe recovery changed the prepared public model: request_id={}, prepared_model={}, selected_model={}",
@@ -2426,24 +2368,6 @@ async fn get_chat_completion_response_with_options(
         ));
     }
     ensure_completion_model_access(&selected_route.public_model_id, pinned.intent.model_plan)?;
-    if let Some(expected_route) = &options.exact_route {
-        if !completion_route_matches_exact_constraint(&selected_route, expected_route) {
-            error!(
-                "Claimed completion route did not match the server-selected constraint: request_id={}, public_model={}, expected_provider={}, expected_provider_model={}, selected_provider={}, selected_proxy_provider={}, selected_provider_model={}",
-                pinned.intent.request_id,
-                selected_route.public_model_id,
-                expected_route.provider_name,
-                expected_route.provider_model_id,
-                selected_route.provider.as_str(),
-                selected_route.proxy.provider_name,
-                selected_route.provider_model_id
-            );
-            drop(probe);
-            return Err(CompletionExecutionError::Request(
-                ApiError::ServiceUnavailable,
-            ));
-        }
-    }
     let route_identity = selected_route.identity();
     let execution = pinned.begin_execution();
     modified_body.insert(
@@ -4195,37 +4119,6 @@ mod tests {
         )
     }
 
-    #[test]
-    fn exact_completion_constraint_checks_typed_and_transport_route() {
-        let pinned = pinned_test_completion();
-        let matching = ExactCompletionRoute {
-            provider_name: "tinfoil".to_string(),
-            provider_model_id: "glm-5-3".to_string(),
-        };
-        assert!(completion_route_matches_exact_constraint(
-            &pinned.route,
-            &matching
-        ));
-
-        let wrong_provider = ExactCompletionRoute {
-            provider_name: "continuum".to_string(),
-            provider_model_id: "glm-5.3".to_string(),
-        };
-        assert!(!completion_route_matches_exact_constraint(
-            &pinned.route,
-            &wrong_provider
-        ));
-
-        let wrong_model = ExactCompletionRoute {
-            provider_name: "tinfoil".to_string(),
-            provider_model_id: "gemma4-31b".to_string(),
-        };
-        assert!(!completion_route_matches_exact_constraint(
-            &pinned.route,
-            &wrong_model
-        ));
-    }
-
     fn probe_test_proxy_router() -> ProxyRouter {
         ProxyRouter::new(
             "http://continuum.example.com".to_string(),
@@ -4305,7 +4198,7 @@ mod tests {
         );
         let winning_probe = open_and_claim_probe_at_boundary(&provider_router, &intent, &route);
 
-        let claimed = claim_completion_turn(&provider_router, &proxy_router, &pinned, true)
+        let claimed = claim_completion_turn(&provider_router, &proxy_router, &pinned)
             .expect("legacy routing ignores Router v2 recovery state");
 
         assert_eq!(claimed.route.identity(), route.identity());
@@ -4334,7 +4227,7 @@ mod tests {
             PinnedCompletionRequest::new(intent.clone(), route.clone(), InferenceRoutingMode::V2);
         let winning_probe = open_and_claim_probe_at_boundary(&provider_router, &intent, &route);
 
-        let claimed = claim_completion_turn(&provider_router, &proxy_router, &pinned, true)
+        let claimed = claim_completion_turn(&provider_router, &proxy_router, &pinned)
             .expect("loser should replan before sending");
 
         assert_eq!(
@@ -4367,7 +4260,7 @@ mod tests {
             PinnedCompletionRequest::new(intent.clone(), route.clone(), InferenceRoutingMode::V2);
         let winning_probe = open_and_claim_probe_at_boundary(&provider_router, &intent, &route);
 
-        let error = claim_completion_turn(&provider_router, &proxy_router, &pinned, true)
+        let error = claim_completion_turn(&provider_router, &proxy_router, &pinned)
             .expect_err("a singleton route has no same-model fallback");
 
         assert!(matches!(error, ApiError::InferenceCapacity { .. }));
@@ -4376,24 +4269,49 @@ mod tests {
     }
 
     #[test]
-    fn exact_route_probe_loser_does_not_replan() {
-        let provider_router = ProviderRouter::default();
+    fn image_flash_probe_loser_replans_to_same_model_on_either_provider() {
         let proxy_router = probe_test_proxy_router();
-        let pinned = pinned_glm_5_3_completion(&provider_router, &proxy_router);
-        let route = pinned.route.clone();
-        let winning_probe =
-            open_and_claim_probe_at_boundary(&provider_router, pinned.intent(), &route);
-        let alternate = provider_router
-            .select_active_completion_route(&proxy_router, pinned.intent())
-            .expect("same-model alternate remains eligible");
-        assert_eq!(alternate.provider, ProviderId::Tinfoil);
+        for (bucket, first_provider, alternate, alternate_model) in [
+            (
+                0,
+                ProviderId::Continuum,
+                ProviderId::Tinfoil,
+                "glm-5-3-flash",
+            ),
+            (
+                99,
+                ProviderId::Tinfoil,
+                ProviderId::Continuum,
+                "glm-5.3-flash",
+            ),
+        ] {
+            let provider_router = ProviderRouter::default();
+            let model = crate::web::responses::image_describer::IMAGE_DESCRIPTION_CANDIDATES[0]
+                .public_model_id;
+            let intent = InferenceIntent::new(
+                Uuid::from_u128(bucket),
+                model,
+                model,
+                ModelPlan::Paid,
+                InferenceSurface::Internal,
+                WorkloadClass::Interactive,
+            );
+            let route = provider_router
+                .select_active_completion_route(&proxy_router, &intent)
+                .expect("initial image route");
+            assert_eq!(route.provider, first_provider);
+            let winning_probe = open_and_claim_probe_at_boundary(&provider_router, &intent, &route);
+            let pinned = PinnedCompletionRequest::new(intent, route, InferenceRoutingMode::V2);
 
-        let error = claim_completion_turn(&provider_router, &proxy_router, &pinned, false)
-            .expect_err("an exact route must not move to another provider");
-
-        assert!(matches!(error, ApiError::InferenceCapacity { .. }));
-        assert!(pinned.finalized_route.get().is_none());
-        drop(winning_probe);
+            let claimed = claim_completion_turn(&provider_router, &proxy_router, &pinned)
+                .expect("image helper can use the same-model alternate before sending");
+            assert_eq!(claimed.route.public_model_id, model);
+            assert_eq!(claimed.route.response_model_id, model);
+            assert_eq!(claimed.route.provider, alternate);
+            assert_eq!(claimed.route.provider_model_id, alternate_model);
+            assert!(claimed.probe.is_none());
+            drop(winning_probe);
+        }
     }
 
     #[test]
@@ -4435,12 +4353,12 @@ mod tests {
         let pinned = pinned_glm_5_3_completion(&provider_router, &proxy_router);
         let route = pinned.route.clone();
 
-        let first = claim_completion_turn(&provider_router, &proxy_router, &pinned, true)
+        let first = claim_completion_turn(&provider_router, &proxy_router, &pinned)
             .expect("first turn finalizes the route");
         assert_eq!(first.route.provider, ProviderId::Continuum);
         assert!(first.probe.is_none());
 
-        let healthy_later = claim_completion_turn(&provider_router, &proxy_router, &pinned, true)
+        let healthy_later = claim_completion_turn(&provider_router, &proxy_router, &pinned)
             .expect("healthy later turn remains pinned");
         assert_eq!(healthy_later.route.identity(), route.identity());
         assert!(healthy_later.probe.is_none());
@@ -4451,7 +4369,7 @@ mod tests {
             .select_active_completion_route(&proxy_router, pinned.intent())
             .expect("same-model alternate remains eligible");
         assert_eq!(alternate.provider, ProviderId::Tinfoil);
-        let error = claim_completion_turn(&provider_router, &proxy_router, &pinned, true)
+        let error = claim_completion_turn(&provider_router, &proxy_router, &pinned)
             .expect_err("later turn must not bypass another recovery probe");
         assert!(matches!(error, ApiError::InferenceCapacity { .. }));
         assert_eq!(pinned.selected_route().identity(), route.identity());
@@ -4963,9 +4881,8 @@ mod tests {
             let provider_client = &provider_client;
             let pinned = &pinned;
             async move {
-                let claimed =
-                    claim_completion_turn(provider_router_ref, proxy_router_ref, pinned, true)
-                        .expect("healthy pinned turn is admitted");
+                let claimed = claim_completion_turn(provider_router_ref, proxy_router_ref, pinned)
+                    .expect("healthy pinned turn is admitted");
                 assert!(claimed.probe.is_none());
                 let trace = try_provider(
                     provider_client,
@@ -5020,7 +4937,7 @@ mod tests {
             public_completion_error(&external_error, &external_failure),
         );
 
-        let error = claim_completion_turn(&provider_router, &proxy_router, &pinned, true)
+        let error = claim_completion_turn(&provider_router, &proxy_router, &pinned)
             .expect_err("later tool turn must not bypass an open pinned route");
         assert!(matches!(error, ApiError::InferenceCapacity { .. }));
         assert_eq!(pinned.selected_route().provider, ProviderId::Continuum);
