@@ -464,6 +464,14 @@ a release build. `just ci` is the full local format, lint, build and test gate;
 `just release` separately validates the optimized binary. PR jobs have no
 signing or publishing credentials. See the root agent guide for shared checks.
 
+The independent `.github/workflows/agent-supply-chain.yml` lane checks Agent's
+locked dependency graph against current RustSec advisories and the repository's
+malicious-crate denylist on dependency changes and daily. It uses the component's
+`deny.toml`, scans all features, and has no signing or publishing credentials.
+Vulnerabilities, unsoundness and unmaintained-crate advisories block this lane;
+no advisory exceptions are inherited from other components. Findings require
+review and a separate dependency fix rather than suppression during import.
+
 ## Update and release boundary
 
 The launch check accepts only stable `maple-agent-vX.Y.Z` releases and selects
