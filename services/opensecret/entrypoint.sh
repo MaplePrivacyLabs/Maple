@@ -432,13 +432,13 @@ echo "127.0.0.19 kds-proxy.tinfoil.sh" >> /etc/hosts
 echo "127.0.0.25 atc.tinfoil.sh" >> /etc/hosts
 echo "127.0.0.33 inference.tinfoil.sh" >> /etc/hosts
 # New Tinfoil router domains
-echo "127.0.0.34 router-0.tinfoil.dev" >> /etc/hosts
-echo "127.0.0.35 router-1.tinfoil.dev" >> /etc/hosts
-echo "127.0.0.36 router-2.tinfoil.dev" >> /etc/hosts
-echo "127.0.0.37 router-3.tinfoil.dev" >> /etc/hosts
-echo "127.0.0.38 router-4.tinfoil.dev" >> /etc/hosts
-echo "127.0.0.39 router-5.tinfoil.dev" >> /etc/hosts
-# Legacy Tinfoil router domains (deprecated upstream naming, kept during migration)
+echo "127.0.0.34 router-0.tinfoil.sh" >> /etc/hosts
+echo "127.0.0.35 router-1.tinfoil.sh" >> /etc/hosts
+echo "127.0.0.36 router-2.tinfoil.sh" >> /etc/hosts
+echo "127.0.0.37 router-3.tinfoil.sh" >> /etc/hosts
+echo "127.0.0.38 router-4.tinfoil.sh" >> /etc/hosts
+echo "127.0.0.39 router-5.tinfoil.sh" >> /etc/hosts
+# Legacy Tinfoil router domains (retained for discovery and fallback)
 echo "127.0.0.26 router.inf4.tinfoil.sh" >> /etc/hosts
 echo "127.0.0.27 router.inf5.tinfoil.sh" >> /etc/hosts
 echo "127.0.0.28 router.inf6.tinfoil.sh" >> /etc/hosts
@@ -567,7 +567,7 @@ run_forever tf_tinfoil_router_4 python3 /app/traffic_forwarder.py 127.0.0.38 443
 log "Starting Tinfoil Router 5 traffic forwarder"
 run_forever tf_tinfoil_router_5 python3 /app/traffic_forwarder.py 127.0.0.39 443 3 8047 &
 
-# Legacy Tinfoil router endpoints (deprecated upstream naming, kept during migration)
+# Legacy Tinfoil router endpoints (retained for discovery and fallback)
 log "Starting Tinfoil Router Inf4 traffic forwarder"
 run_forever tf_tinfoil_router_inf4 python3 /app/traffic_forwarder.py 127.0.0.26 443 3 8034 &
 
@@ -805,7 +805,7 @@ else
     log "Tinfoil Router 5 connection failed"
 fi
 
-# Legacy Tinfoil router endpoints (deprecated upstream naming, kept during migration)
+# Legacy Tinfoil router endpoints (retained for discovery and fallback)
 log "Testing connection to Tinfoil Router Inf4:"
 if timeout 5 bash -c '</dev/tcp/127.0.0.26/443'; then
     log "Tinfoil Router Inf4 connection successful"

@@ -1189,13 +1189,13 @@ Add these lines:
 - {address: atc.tinfoil.sh, port: 443}
 - {address: inference.tinfoil.sh, port: 443}
 # New router naming (preferred)
-- {address: router-0.tinfoil.dev, port: 443}
-- {address: router-1.tinfoil.dev, port: 443}
-- {address: router-2.tinfoil.dev, port: 443}
-- {address: router-3.tinfoil.dev, port: 443}
-- {address: router-4.tinfoil.dev, port: 443}
-- {address: router-5.tinfoil.dev, port: 443}
-# Legacy router naming (deprecated, keep during migration)
+- {address: router-0.tinfoil.sh, port: 443}
+- {address: router-1.tinfoil.sh, port: 443}
+- {address: router-2.tinfoil.sh, port: 443}
+- {address: router-3.tinfoil.sh, port: 443}
+- {address: router-4.tinfoil.sh, port: 443}
+- {address: router-5.tinfoil.sh, port: 443}
+# Additional router naming (retain for discovery and fallback)
 - {address: router.inf4.tinfoil.sh, port: 443}
 - {address: router.inf5.tinfoil.sh, port: 443}
 - {address: router.inf6.tinfoil.sh, port: 443}
@@ -1214,7 +1214,47 @@ Restart the nitro vsock proxy service:
 sudo systemctl restart nitro-enclaves-vsock-proxy.service
 ```
 
-Keep both the new `router-*.tinfoil.dev` entries and the legacy `router.inf*.tinfoil.sh` entries enabled until Tinfoil finishes the cutover.
+### Migrating numbered routers from `.dev` to `.sh`
+
+Replace the numbered `router-0` through `router-5` `.tinfoil.dev` destinations
+with their `.tinfoil.sh` equivalents in both the parent-host allowlist and the
+six systemd units below. Preserve the VSOCK ports (8042–8047), unit names, and
+enclave loopback addresses. Keep `inference.tinfoil.sh` and the existing
+`router.inf*.tinfoil.sh` entries and services, including `router.inf6.tinfoil.sh`.
+
+The in-process SDK queries `https://atc.tinfoil.sh/routers?platform=snp`, tries
+returned routers in order, and falls back to attesting `inference.tinfoil.sh`.
+OpenSecret bounds each discovery attempt to 30 seconds and retries discovery
+in the background if unavailable. A DNS/TCP/TLS connection failure triggers
+rediscovery and one request retry; ambiguous sends and interrupted streams are
+not replayed. Treat fallback as recovery, not a guarantee of error-free cutover.
+
+For existing hosts, coordinate the update with the normal authorized rollout:
+
+1. Inspect and back up each parent's actual allowlist and router unit files;
+   confirm the running EIF and that the retained fallback proxy services work.
+   Check the current ATC response rather than assuming its router list is fixed.
+2. On a drained development parent, update the allowlist and numbered router
+   unit destinations. Run `systemctl daemon-reload`, restart the affected proxy
+   services, and verify their status. Preserve the fallback services throughout.
+3. Deploy the development EIF containing the matching `entrypoint.sh` hostname
+   mappings, built and approved beforehand through the normal
+   [PCR compatibility procedure](pcr-compatibility.md). Check
+   attested provider connectivity through the enclave and an encrypted client
+   request; a process health check alone does not prove Tinfoil connectivity.
+   Return the validated parent to traffic, then repeat on the other development
+   parent.
+4. Apply the validated parent configuration and approved production EIF to
+   production one drained parent at a time. Verify provider connectivity, client
+   behavior, and the expected PCR before returning each parent to traffic.
+
+Parent configuration and EIF rollout are separate operations. The standard EIF
+rollout does not install these outbound proxy unit changes, and updating this
+document does not change running hosts. An old EIF still maps `.dev` names while
+the updated proxies connect to `.sh` destinations; do not rely on those numbered
+routes during that intermediate state. Retained fallback routes support the
+transition. Keep backups and the prior approved EIF for coordinated rollback;
+restoring an old `.dev` destination does not restore an endpoint retired upstream.
 
 All Tinfoil `vsock-proxy` services below should use an elevated worker count. The AWS `vsock-proxy` default is 4 simultaneous connections, which is too low for long-lived streaming completions plus health checks. Start with `--num_workers 128` on production-sized instances, and keep `LimitNOFILE` high enough for the additional sockets.
 
@@ -1336,7 +1376,7 @@ After=network.target
 
 [Service]
 User=root
-ExecStart=/usr/bin/vsock-proxy --num_workers 128 8042 router-0.tinfoil.dev 443
+ExecStart=/usr/bin/vsock-proxy --num_workers 128 8042 router-0.tinfoil.sh 443
 Restart=always
 LimitNOFILE=65536
 
@@ -1357,7 +1397,7 @@ After=network.target
 
 [Service]
 User=root
-ExecStart=/usr/bin/vsock-proxy --num_workers 128 8043 router-1.tinfoil.dev 443
+ExecStart=/usr/bin/vsock-proxy --num_workers 128 8043 router-1.tinfoil.sh 443
 Restart=always
 LimitNOFILE=65536
 
@@ -1378,7 +1418,7 @@ After=network.target
 
 [Service]
 User=root
-ExecStart=/usr/bin/vsock-proxy --num_workers 128 8044 router-2.tinfoil.dev 443
+ExecStart=/usr/bin/vsock-proxy --num_workers 128 8044 router-2.tinfoil.sh 443
 Restart=always
 LimitNOFILE=65536
 
@@ -1399,7 +1439,7 @@ After=network.target
 
 [Service]
 User=root
-ExecStart=/usr/bin/vsock-proxy --num_workers 128 8045 router-3.tinfoil.dev 443
+ExecStart=/usr/bin/vsock-proxy --num_workers 128 8045 router-3.tinfoil.sh 443
 Restart=always
 LimitNOFILE=65536
 
@@ -1420,7 +1460,7 @@ After=network.target
 
 [Service]
 User=root
-ExecStart=/usr/bin/vsock-proxy --num_workers 128 8046 router-4.tinfoil.dev 443
+ExecStart=/usr/bin/vsock-proxy --num_workers 128 8046 router-4.tinfoil.sh 443
 Restart=always
 LimitNOFILE=65536
 
@@ -1441,7 +1481,7 @@ After=network.target
 
 [Service]
 User=root
-ExecStart=/usr/bin/vsock-proxy --num_workers 128 8047 router-5.tinfoil.dev 443
+ExecStart=/usr/bin/vsock-proxy --num_workers 128 8047 router-5.tinfoil.sh 443
 Restart=always
 LimitNOFILE=65536
 
@@ -1449,9 +1489,9 @@ LimitNOFILE=65536
 WantedBy=multi-user.target
 ```
 
-The following legacy services use the deprecated `router.inf*.tinfoil.sh` naming. Keep them enabled during migration.
+The following services use the `router.inf*.tinfoil.sh` naming. Keep them enabled; Tinfoil still advertises endpoints in this family, including `router.inf6.tinfoil.sh`.
 
-#### Tinfoil Router Inf4 (deprecated)
+#### Tinfoil Router Inf4 (retained)
 ```sh
 sudo vim /etc/systemd/system/vsock-tinfoil-router-inf4.service
 ```
@@ -1472,7 +1512,7 @@ LimitNOFILE=65536
 WantedBy=multi-user.target
 ```
 
-#### Tinfoil Router Inf5 (deprecated)
+#### Tinfoil Router Inf5 (retained)
 ```sh
 sudo vim /etc/systemd/system/vsock-tinfoil-router-inf5.service
 ```
@@ -1493,7 +1533,7 @@ LimitNOFILE=65536
 WantedBy=multi-user.target
 ```
 
-#### Tinfoil Router Inf6 (deprecated)
+#### Tinfoil Router Inf6 (retained)
 ```sh
 sudo vim /etc/systemd/system/vsock-tinfoil-router-inf6.service
 ```
@@ -1514,7 +1554,7 @@ LimitNOFILE=65536
 WantedBy=multi-user.target
 ```
 
-#### Tinfoil Router Inf7 (deprecated)
+#### Tinfoil Router Inf7 (retained)
 ```sh
 sudo vim /etc/systemd/system/vsock-tinfoil-router-inf7.service
 ```
@@ -1535,7 +1575,7 @@ LimitNOFILE=65536
 WantedBy=multi-user.target
 ```
 
-#### Tinfoil Router Inf8 (deprecated)
+#### Tinfoil Router Inf8 (retained)
 ```sh
 sudo vim /etc/systemd/system/vsock-tinfoil-router-inf8.service
 ```
@@ -1556,7 +1596,7 @@ LimitNOFILE=65536
 WantedBy=multi-user.target
 ```
 
-#### Tinfoil Router Inf9 (deprecated)
+#### Tinfoil Router Inf9 (retained)
 ```sh
 sudo vim /etc/systemd/system/vsock-tinfoil-router-inf9.service
 ```
@@ -1577,7 +1617,7 @@ LimitNOFILE=65536
 WantedBy=multi-user.target
 ```
 
-#### Tinfoil Router Inf10 (deprecated)
+#### Tinfoil Router Inf10 (retained)
 ```sh
 sudo vim /etc/systemd/system/vsock-tinfoil-router-inf10.service
 ```
