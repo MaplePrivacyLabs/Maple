@@ -1,8 +1,12 @@
+use crate::inference::auto_model::ModelAvailability;
 use crate::inference::health::{
     ProbeClaimResult, ProbeLease, ShadowDisposition, ShadowHealthState, ShadowObservationMode,
     ShadowObservationReport, ShadowRouteSnapshot, MIN_CAPACITY_COOLDOWN,
 };
-use crate::inference::{AttemptTerminal, InferenceIntent, RouteIdentity, RouteKey};
+use crate::inference::sticky_routes::{StickyRoute, StickyRouteMemory};
+use crate::inference::{
+    AttemptTerminal, InferenceIntent, InferenceSurface, RouteIdentity, RouteKey,
+};
 use crate::inference_planning::{
     plan_completion_route, ConfiguredProviders, ProviderPreference, RoutePlan, RoutePlanningError,
     RoutePlanningInput,
@@ -12,10 +16,10 @@ use crate::model_config::{
 };
 use crate::os_flags::{GLM_5_3_FLASH_CONTINUUM_FLAG_KEY, GLM_5_3_TINFOIL_FLAG_KEY};
 use crate::provider_registry::{
-    ProviderId, ProviderRegistry, RouteSelectionSource, PROVIDER_REGISTRY,
+    CompletionModelSpec, ProviderId, ProviderRegistry, RouteSelectionSource, PROVIDER_REGISTRY,
 };
 use crate::proxy_config::{canonicalize_tinfoil_model, ProxyConfig, ProxyRouter};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 use uuid::Uuid;
 
@@ -150,6 +154,8 @@ pub(crate) struct ProviderRouter {
     config: &'static ProviderRoutingConfig,
     registry: &'static ProviderRegistry,
     shadow_health: ShadowHealthState,
+    /// Router v2 per-account route memory. Never consulted by Router v1.
+    sticky_routes: StickyRouteMemory,
 }
 
 #[derive(Debug, Clone)]
@@ -246,6 +252,7 @@ impl Default for ProviderRouter {
             config: &DEFAULT_PROVIDER_ROUTING_CONFIG,
             registry: &PROVIDER_REGISTRY,
             shadow_health: ShadowHealthState::new(&PROVIDER_REGISTRY),
+            sticky_routes: StickyRouteMemory::default(),
         }
     }
 }
@@ -394,24 +401,119 @@ impl ProviderRouter {
             RoutePlanningInput {
                 intent,
                 configured_providers,
+                remembered_provider: self.remembered_provider_for(intent),
             },
         )
     }
 
-    fn select_health_aware_route(
+    /// Returns the account's remembered Router v2 route for a surface and
+    /// selector while the entry is live.
+    pub(crate) fn sticky_route(
+        &self,
+        account_uuid: Uuid,
+        surface: InferenceSurface,
+        selector: &str,
+    ) -> Option<StickyRoute> {
+        self.sticky_routes.lookup(account_uuid, surface, selector)
+    }
+
+    /// Remembers the route a provider just accepted for a Router v2 logical
+    /// request so the account keeps its warmed provider cache afterwards.
+    pub(crate) fn remember_route(&self, intent: &InferenceIntent, route: &SelectedProviderRoute) {
+        self.sticky_routes.record(
+            intent.account_uuid,
+            intent.surface,
+            &intent.requested_model_id,
+            StickyRoute {
+                public_model_id: route.public_model_id.clone(),
+                provider: route.provider,
+                provider_model_id: route.provider_model_id.clone(),
+            },
+        );
+    }
+
+    /// The remembered provider for exactly this intent's public model, which the
+    /// planner may prefer over the weighted bucket among eligible routes.
+    fn remembered_provider_for(&self, intent: &InferenceIntent) -> Option<ProviderId> {
+        self.sticky_routes
+            .lookup(
+                intent.account_uuid,
+                intent.surface,
+                &intent.requested_model_id,
+            )
+            .filter(|route| route.public_model_id == intent.public_model_id)
+            .map(|route| route.provider)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn sticky_routes(&self) -> &StickyRouteMemory {
+        &self.sticky_routes
+    }
+
+    /// Evaluates every candidate model's configured routes under one health
+    /// snapshot, applying each model's own failover policy. This is the planning
+    /// input for Auto model selection; it claims nothing and permits nothing.
+    pub(crate) fn model_availability(
         &self,
         proxy_router: &ProxyRouter,
-        intent: &InferenceIntent,
-        excluded_routes: &HashSet<RouteKey>,
-    ) -> Result<SelectedProviderRoute, ProviderRoutingError> {
-        let model = self
-            .registry
-            .completion_model(&intent.public_model_id)
-            .ok_or_else(|| {
-                ProviderRoutingError::UnsupportedModel(intent.public_model_id.clone())
-            })?;
+        public_model_ids: &[&str],
+    ) -> HashMap<String, ModelAvailability> {
+        let no_exclusions = HashSet::new();
+        let candidates = public_model_ids
+            .iter()
+            .map(|public_model_id| {
+                let configured = self
+                    .registry
+                    .completion_model(public_model_id)
+                    .map(|model| {
+                        (
+                            model,
+                            self.configured_route_keys(proxy_router, model, &no_exclusions),
+                        )
+                    })
+                    .filter(|(_, routes)| !routes.is_empty());
+                (public_model_id.to_string(), configured)
+            })
+            .collect::<Vec<_>>();
+        let route_groups = candidates
+            .iter()
+            .map(|(_, configured)| {
+                configured
+                    .as_ref()
+                    .map(|(_, routes)| routes.iter().map(|(_, key)| key.clone()).collect())
+                    .unwrap_or_default()
+            })
+            .collect::<Vec<Vec<RouteKey>>>();
+        let snapshots = self.shadow_health.snapshot_route_groups(&route_groups);
 
-        let configured_routes = model
+        candidates
+            .into_iter()
+            .zip(snapshots)
+            .map(|((public_model_id, configured), snapshots)| {
+                let availability = match (configured, snapshots) {
+                    (None, _) => ModelAvailability::NotConfigured,
+                    (Some(_), None) => ModelAvailability::Unavailable {
+                        retry_after: MIN_CAPACITY_COOLDOWN,
+                    },
+                    (Some((model, routes)), Some(snapshots)) => {
+                        match available_providers_for_model(model, &routes, &snapshots) {
+                            Ok(providers) => ModelAvailability::Available(providers),
+                            Err(retry_after) => ModelAvailability::Unavailable { retry_after },
+                        }
+                    }
+                };
+                (public_model_id, availability)
+            })
+            .collect()
+    }
+
+    fn configured_route_keys(
+        &self,
+        proxy_router: &ProxyRouter,
+        model: &CompletionModelSpec,
+        excluded_routes: &HashSet<RouteKey>,
+    ) -> Vec<(ProviderId, RouteKey)> {
+        model
             .routes
             .iter()
             .filter_map(|route| {
@@ -433,8 +535,23 @@ impl ProviderRouter {
                 }
                 Some((route.provider, route_key))
             })
-            .collect::<Vec<_>>();
+            .collect()
+    }
 
+    fn select_health_aware_route(
+        &self,
+        proxy_router: &ProxyRouter,
+        intent: &InferenceIntent,
+        excluded_routes: &HashSet<RouteKey>,
+    ) -> Result<SelectedProviderRoute, ProviderRoutingError> {
+        let model = self
+            .registry
+            .completion_model(&intent.public_model_id)
+            .ok_or_else(|| {
+                ProviderRoutingError::UnsupportedModel(intent.public_model_id.clone())
+            })?;
+
+        let configured_routes = self.configured_route_keys(proxy_router, model, excluded_routes);
         if configured_routes.is_empty() {
             return Err(ProviderRoutingError::NoEligibleRoute(
                 intent.public_model_id.clone(),
@@ -452,44 +569,20 @@ impl ProviderRouter {
                 model: intent.public_model_id.clone(),
                 retry_after: MIN_CAPACITY_COOLDOWN,
             })?;
-
-        let mut available_providers = ConfiguredProviders::none();
-        let mut earliest_recovery = None;
-        for ((provider, _), snapshot) in configured_routes.iter().zip(snapshots) {
-            match snapshot.for_failover(model.failover) {
-                ShadowDisposition::WouldOpen { remaining } => {
-                    let remaining = ceil_retry_after(remaining);
-                    earliest_recovery = Some(
-                        earliest_recovery
-                            .map_or(remaining, |current: Duration| current.min(remaining)),
-                    );
-                }
-                ShadowDisposition::ProbeInFlight { retry_after } => {
-                    let retry_after = ceil_retry_after(retry_after);
-                    earliest_recovery = Some(
-                        earliest_recovery
-                            .map_or(retry_after, |current: Duration| current.min(retry_after)),
-                    );
-                }
-                disposition if route_is_available_for_new_request(disposition) => {
-                    available_providers = available_providers.with_provider(*provider);
-                }
-                _ => unreachable!("WouldOpen is handled above"),
-            }
-        }
-
-        if available_providers == ConfiguredProviders::none() {
-            return Err(ProviderRoutingError::CapacityUnavailable {
-                model: intent.public_model_id.clone(),
-                retry_after: earliest_recovery.unwrap_or(MIN_CAPACITY_COOLDOWN),
-            });
-        }
+        let available_providers =
+            available_providers_for_model(model, &configured_routes, &snapshots).map_err(
+                |retry_after| ProviderRoutingError::CapacityUnavailable {
+                    model: intent.public_model_id.clone(),
+                    retry_after,
+                },
+            )?;
 
         let plan = plan_completion_route(
             self.registry,
             RoutePlanningInput {
                 intent,
                 configured_providers: available_providers,
+                remembered_provider: self.remembered_provider_for(intent),
             },
         )
         .map_err(provider_routing_error_from_plan)?;
@@ -776,6 +869,45 @@ fn ceil_retry_after(duration: Duration) -> Duration {
     Duration::from_secs(seconds)
 }
 
+/// Providers of one model whose routes may take a new request, under the
+/// model's own failover policy. `Err` carries the earliest bounded recovery
+/// hint when every configured route is open or probing.
+fn available_providers_for_model(
+    model: &CompletionModelSpec,
+    configured_routes: &[(ProviderId, RouteKey)],
+    snapshots: &[ShadowRouteSnapshot],
+) -> Result<ConfiguredProviders, Duration> {
+    debug_assert_eq!(configured_routes.len(), snapshots.len());
+    let mut available_providers = ConfiguredProviders::none();
+    let mut earliest_recovery = None;
+    for ((provider, _), snapshot) in configured_routes.iter().zip(snapshots) {
+        match snapshot.for_failover(model.failover) {
+            ShadowDisposition::WouldOpen { remaining } => {
+                let remaining = ceil_retry_after(remaining);
+                earliest_recovery = Some(
+                    earliest_recovery.map_or(remaining, |current: Duration| current.min(remaining)),
+                );
+            }
+            ShadowDisposition::ProbeInFlight { retry_after } => {
+                let retry_after = ceil_retry_after(retry_after);
+                earliest_recovery = Some(
+                    earliest_recovery
+                        .map_or(retry_after, |current: Duration| current.min(retry_after)),
+                );
+            }
+            disposition if route_is_available_for_new_request(disposition) => {
+                available_providers = available_providers.with_provider(*provider);
+            }
+            _ => unreachable!("WouldOpen is handled above"),
+        }
+    }
+
+    if available_providers == ConfiguredProviders::none() {
+        return Err(earliest_recovery.unwrap_or(MIN_CAPACITY_COOLDOWN));
+    }
+    Ok(available_providers)
+}
+
 fn route_is_available_for_new_request(disposition: ShadowDisposition) -> bool {
     !matches!(
         disposition,
@@ -798,8 +930,8 @@ mod tests {
     use super::*;
     use crate::inference::health::{ShadowDisposition, ShadowObservationMode};
     use crate::inference::{
-        AttemptFailure, AttemptFailureKind, AttemptStage, AttemptTerminal, InferenceSurface,
-        ReplaySafety, WorkloadClass,
+        AttemptFailure, AttemptFailureKind, AttemptStage, AttemptTerminal, ReplaySafety,
+        WorkloadClass,
     };
     use crate::model_config::{
         ModelAliasTargets, ModelPlan, PaidModelAliasOverrides, AUTO_POWERFUL_MODEL_ID,
@@ -2137,5 +2269,367 @@ mod tests {
             error,
             ProviderRoutingError::NoEligibleRoute(GLM_5_3_MODEL_ID.to_string())
         );
+    }
+
+    fn open_route_with_capacity_failure(
+        router: &ProviderRouter,
+        provider: ProviderId,
+        public_model: &str,
+        provider_model: &str,
+        status: u16,
+        retry_after_seconds: u64,
+    ) {
+        router.observe_attempt_terminal(
+            &capacity_terminal(
+                provider,
+                public_model,
+                provider_model,
+                status,
+                Duration::from_secs(retry_after_seconds),
+            ),
+            ShadowObservationMode::Update,
+        );
+    }
+
+    fn open_route_with_transport_failures(
+        router: &ProviderRouter,
+        provider: ProviderId,
+        public_model: &str,
+        provider_model: &str,
+    ) {
+        for _ in 0..3 {
+            router.observe_attempt_terminal(
+                &route_failure_terminal(provider, public_model, provider_model),
+                ShadowObservationMode::Update,
+            );
+        }
+    }
+
+    #[test]
+    fn model_availability_applies_each_models_failover_policy_from_one_snapshot() {
+        use crate::inference::auto_model::ModelAvailability;
+        let router = ProviderRouter::default();
+        let proxy_router = proxy_router_with_both_providers();
+        let candidates = [
+            DEEPSEEK_V4_1_FLASH_MODEL_ID,
+            GLM_5_3_FLASH_MODEL_ID,
+            GLM_5_3_MODEL_ID,
+            KIMI_K3_MODEL_ID,
+            "unknown-model",
+        ];
+
+        let healthy = router.model_availability(&proxy_router, &candidates);
+        assert_eq!(
+            healthy[DEEPSEEK_V4_1_FLASH_MODEL_ID],
+            ModelAvailability::Available(
+                ConfiguredProviders::none().with_provider(ProviderId::Tinfoil)
+            )
+        );
+        assert_eq!(
+            healthy[GLM_5_3_FLASH_MODEL_ID],
+            ModelAvailability::Available(ConfiguredProviders::all())
+        );
+        assert_eq!(
+            healthy[GLM_5_3_MODEL_ID],
+            ModelAvailability::Available(ConfiguredProviders::all())
+        );
+        assert_eq!(healthy["unknown-model"], ModelAvailability::NotConfigured);
+
+        // Transport failures open the route-health gate. DeepSeek (all gates)
+        // becomes unavailable; GLM Flash (capacity gates) stays available on
+        // the same provider because its policy ignores that gate.
+        open_route_with_transport_failures(
+            &router,
+            ProviderId::Tinfoil,
+            DEEPSEEK_V4_1_FLASH_MODEL_ID,
+            DEEPSEEK_V4_1_FLASH_MODEL_ID,
+        );
+        open_route_with_transport_failures(
+            &router,
+            ProviderId::Tinfoil,
+            GLM_5_3_FLASH_MODEL_ID,
+            GLM_5_3_FLASH_MODEL_ID,
+        );
+        open_route_with_transport_failures(
+            &router,
+            ProviderId::Continuum,
+            GLM_5_3_FLASH_MODEL_ID,
+            "glm-5.3-flash",
+        );
+        let after_transport = router.model_availability(&proxy_router, &candidates);
+        assert!(matches!(
+            after_transport[DEEPSEEK_V4_1_FLASH_MODEL_ID],
+            ModelAvailability::Unavailable { retry_after } if retry_after == Duration::from_secs(30)
+        ));
+        assert_eq!(
+            after_transport[GLM_5_3_FLASH_MODEL_ID],
+            ModelAvailability::Available(ConfiguredProviders::all()),
+            "capacity-only failover must not cross models on transport health"
+        );
+        // The same snapshot drives the single-model selector.
+        let flash_intent = intent(GLM_5_3_FLASH_MODEL_ID, GLM_5_3_FLASH_MODEL_ID);
+        assert!(router
+            .select_active_completion_route(&proxy_router, &flash_intent)
+            .is_ok());
+        let deepseek_intent = intent(DEEPSEEK_V4_1_FLASH_MODEL_ID, DEEPSEEK_V4_1_FLASH_MODEL_ID);
+        assert!(matches!(
+            router.select_active_completion_route(&proxy_router, &deepseek_intent),
+            Err(ProviderRoutingError::CapacityUnavailable { .. })
+        ));
+
+        // A Continuum 429 opens the provider-account pool: GLM keeps only its
+        // Tinfoil route, and GLM Flash loses Continuum through the same pool.
+        open_route_with_capacity_failure(
+            &router,
+            ProviderId::Continuum,
+            GLM_5_3_MODEL_ID,
+            "glm-5.3",
+            429,
+            60,
+        );
+        let after_429 = router.model_availability(&proxy_router, &candidates);
+        assert_eq!(
+            after_429[GLM_5_3_MODEL_ID],
+            ModelAvailability::Available(
+                ConfiguredProviders::none().with_provider(ProviderId::Tinfoil)
+            )
+        );
+        assert_eq!(
+            after_429[GLM_5_3_FLASH_MODEL_ID],
+            ModelAvailability::Available(
+                ConfiguredProviders::none().with_provider(ProviderId::Tinfoil)
+            )
+        );
+
+        // A 503 on the remaining Tinfoil GLM route leaves GLM fully unavailable
+        // with the earliest bounded recovery.
+        open_route_with_capacity_failure(
+            &router,
+            ProviderId::Tinfoil,
+            GLM_5_3_MODEL_ID,
+            GLM_5_3_MODEL_ID,
+            503,
+            45,
+        );
+        let after_503 = router.model_availability(&proxy_router, &candidates);
+        assert!(matches!(
+            after_503[GLM_5_3_MODEL_ID],
+            ModelAvailability::Unavailable { retry_after } if retry_after == Duration::from_secs(45)
+        ));
+        assert_eq!(
+            after_503[KIMI_K3_MODEL_ID],
+            ModelAvailability::Available(
+                ConfiguredProviders::none().with_provider(ProviderId::Tinfoil)
+            )
+        );
+
+        // Without a Continuum proxy, Continuum routes are not configured at all.
+        let tinfoil_only = ProxyRouter::new(
+            "https://api.openai.com".to_string(),
+            None,
+            "http://tinfoil.example.com".to_string(),
+        );
+        let without_continuum = ProviderRouter::default()
+            .model_availability(&tinfoil_only, &[GLM_5_3_FLASH_MODEL_ID, GLM_5_3_MODEL_ID]);
+        assert_eq!(
+            without_continuum[GLM_5_3_FLASH_MODEL_ID],
+            ModelAvailability::Available(
+                ConfiguredProviders::none().with_provider(ProviderId::Tinfoil)
+            )
+        );
+    }
+
+    #[test]
+    fn remembered_same_model_provider_is_preferred_only_while_eligible() {
+        use crate::inference::sticky_routes::StickyRoute;
+        let router = ProviderRouter::default();
+        let proxy_router = proxy_router_with_both_providers();
+        // Bucket 0 lands on Continuum for GLM 5.3 by weight.
+        let glm = intent(GLM_5_3_MODEL_ID, GLM_5_3_MODEL_ID);
+        let baseline = router
+            .select_active_completion_route(&proxy_router, &glm)
+            .expect("baseline GLM route");
+        assert_eq!(baseline.provider, ProviderId::Continuum);
+        assert_eq!(baseline.selection_source, RouteSelectionSource::StaticSplit);
+
+        // The account previously executed GLM on Tinfoil (for example after a
+        // Continuum capacity failure that has since healed).
+        router.remember_route(
+            &glm,
+            &SelectedProviderRoute {
+                provider: ProviderId::Tinfoil,
+                proxy: proxy_router.get_tinfoil_proxy(),
+                public_model_id: GLM_5_3_MODEL_ID.to_string(),
+                provider_model_id: GLM_5_3_MODEL_ID.to_string(),
+                response_model_id: GLM_5_3_MODEL_ID.to_string(),
+                bucket: None,
+                selection_source: RouteSelectionSource::Fallback,
+            },
+        );
+        let sticky = router
+            .select_active_completion_route(&proxy_router, &glm)
+            .expect("sticky GLM route");
+        assert_eq!(sticky.provider, ProviderId::Tinfoil);
+        assert_eq!(sticky.provider_model_id, GLM_5_3_MODEL_ID);
+        assert_eq!(sticky.public_model_id, GLM_5_3_MODEL_ID);
+        assert_eq!(sticky.selection_source, RouteSelectionSource::Sticky);
+        assert_eq!(sticky.bucket, None);
+
+        // A different account with the same bucket keeps its weighted route.
+        let mut other = intent(GLM_5_3_MODEL_ID, GLM_5_3_MODEL_ID);
+        other.account_uuid = uuid_for_bucket(100);
+        assert_eq!(
+            router
+                .select_active_completion_route(&proxy_router, &other)
+                .expect("other account")
+                .provider,
+            ProviderId::Continuum
+        );
+
+        // The memory is keyed by surface as well: the same account's Chat
+        // Completions requests for the same selector keep their weighted route.
+        let mut chat = intent(GLM_5_3_MODEL_ID, GLM_5_3_MODEL_ID);
+        chat.surface = InferenceSurface::ChatCompletions;
+        assert_eq!(
+            router
+                .select_active_completion_route(&proxy_router, &chat)
+                .expect("chat surface")
+                .selection_source,
+            RouteSelectionSource::StaticSplit
+        );
+
+        // The memory is keyed by selector: the same account's Auto Powerful
+        // requests (which resolve to GLM today) are not affected by an
+        // explicit-GLM memory, and vice versa.
+        let auto_powerful = intent(AUTO_POWERFUL_MODEL_ID, GLM_5_3_MODEL_ID);
+        assert_eq!(
+            router
+                .select_active_completion_route(&proxy_router, &auto_powerful)
+                .expect("auto powerful")
+                .selection_source,
+            RouteSelectionSource::StaticSplit
+        );
+
+        // A remembered route for another public model is ignored.
+        router.sticky_routes().record(
+            glm.account_uuid,
+            glm.surface,
+            GLM_5_3_MODEL_ID,
+            StickyRoute {
+                public_model_id: GLM_5_3_FLASH_MODEL_ID.to_string(),
+                provider: ProviderId::Tinfoil,
+                provider_model_id: GLM_5_3_FLASH_MODEL_ID.to_string(),
+            },
+        );
+        assert_eq!(
+            router
+                .select_active_completion_route(&proxy_router, &glm)
+                .expect("foreign sticky model ignored")
+                .selection_source,
+            RouteSelectionSource::StaticSplit
+        );
+
+        // Excluded routes (a lost first-send claim) beat the memory.
+        router.remember_route(&glm, &sticky);
+        let excluded = HashSet::from([sticky.identity().route_key()]);
+        let replanned = router
+            .select_active_completion_route_excluding(&proxy_router, &glm, &excluded)
+            .expect("replan without the sticky route");
+        assert_eq!(replanned.provider, ProviderId::Continuum);
+
+        // An opened sticky route falls back to weighted selection among the
+        // remaining eligible providers.
+        open_route_with_capacity_failure(
+            &router,
+            ProviderId::Tinfoil,
+            GLM_5_3_MODEL_ID,
+            GLM_5_3_MODEL_ID,
+            429,
+            60,
+        );
+        let after_open = router
+            .select_active_completion_route(&proxy_router, &glm)
+            .expect("Continuum remains eligible");
+        assert_eq!(after_open.provider, ProviderId::Continuum);
+        // The planner reports the existing same-model fallback identity, not
+        // a sticky choice, once the remembered provider is excluded by health.
+        assert_eq!(after_open.selection_source, RouteSelectionSource::Fallback);
+    }
+
+    #[test]
+    fn remembered_route_equal_to_the_weighted_bucket_keeps_its_static_identity() {
+        let router = ProviderRouter::default();
+        let proxy_router = proxy_router_with_both_providers();
+        let glm = intent(GLM_5_3_MODEL_ID, GLM_5_3_MODEL_ID);
+        let baseline = router
+            .select_active_completion_route(&proxy_router, &glm)
+            .expect("baseline");
+        router.remember_route(&glm, &baseline);
+
+        let again = router
+            .select_active_completion_route(&proxy_router, &glm)
+            .expect("same route");
+        assert_eq!(again.identity(), baseline.identity());
+        assert_eq!(again.selection_source, RouteSelectionSource::StaticSplit);
+        assert_eq!(again.bucket, Some(0));
+    }
+
+    #[test]
+    fn remembered_routes_expire_after_the_idle_window_and_never_reach_router_v1() {
+        use crate::inference::sticky_routes::{StickyRoute, STICKY_ROUTE_IDLE_TTL};
+        let router = ProviderRouter::default();
+        let proxy_router = proxy_router_with_both_providers();
+        let glm = intent(GLM_5_3_MODEL_ID, GLM_5_3_MODEL_ID);
+        let recorded_at = std::time::Instant::now() - STICKY_ROUTE_IDLE_TTL;
+        router.sticky_routes().record_at(
+            glm.account_uuid,
+            glm.surface,
+            GLM_5_3_MODEL_ID,
+            StickyRoute {
+                public_model_id: GLM_5_3_MODEL_ID.to_string(),
+                provider: ProviderId::Tinfoil,
+                provider_model_id: GLM_5_3_MODEL_ID.to_string(),
+            },
+            recorded_at,
+        );
+
+        // Idle for the full window: weighted policy resumes.
+        let v2 = router
+            .select_completion_route_for_mode(&proxy_router, &glm, None, InferenceRoutingMode::V2)
+            .expect("v2 route");
+        assert_eq!(v2.provider, ProviderId::Continuum);
+        assert_eq!(v2.selection_source, RouteSelectionSource::StaticSplit);
+
+        // A fresh memory would steer Router v2, but Router v1 keeps its
+        // default-provider behavior regardless.
+        router.remember_route(&glm, &v2);
+        router.sticky_routes().record(
+            glm.account_uuid,
+            glm.surface,
+            GLM_5_3_MODEL_ID,
+            StickyRoute {
+                public_model_id: GLM_5_3_MODEL_ID.to_string(),
+                provider: ProviderId::Tinfoil,
+                provider_model_id: GLM_5_3_MODEL_ID.to_string(),
+            },
+        );
+        let legacy = router
+            .select_completion_route_for_mode(
+                &proxy_router,
+                &glm,
+                None,
+                InferenceRoutingMode::Legacy,
+            )
+            .expect("legacy route");
+        assert_eq!(legacy.provider, ProviderId::Continuum);
+        assert_eq!(
+            legacy.selection_source,
+            RouteSelectionSource::DefaultProvider
+        );
+        let v2_sticky = router
+            .select_completion_route_for_mode(&proxy_router, &glm, None, InferenceRoutingMode::V2)
+            .expect("v2 sticky route");
+        assert_eq!(v2_sticky.provider, ProviderId::Tinfoil);
+        assert_eq!(v2_sticky.selection_source, RouteSelectionSource::Sticky);
     }
 }

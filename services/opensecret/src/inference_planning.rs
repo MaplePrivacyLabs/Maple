@@ -2,8 +2,10 @@
 //!
 //! The plan describes route identity and ordered same-model candidates without
 //! naming or invoking an executable endpoint. Router v2 applies the configured
-//! weights after filtering providers through one health snapshot. Legacy
-//! provider flags and default-provider preferences are not planner inputs.
+//! weights after filtering providers through one health snapshot, preferring
+//! the account's remembered provider for the same model when it is still
+//! eligible. Legacy provider flags and default-provider preferences are not
+//! planner inputs.
 
 use crate::inference::{InferenceIntent, RouteIdentity};
 use crate::provider_registry::{
@@ -83,6 +85,9 @@ impl ConfiguredProviders {
 pub(crate) struct RoutePlanningInput<'a> {
     pub(crate) intent: &'a InferenceIntent,
     pub(crate) configured_providers: ConfiguredProviders,
+    /// The provider this account last executed the same public model on.
+    /// Preferred over the weighted bucket only among eligible routes.
+    pub(crate) remembered_provider: Option<ProviderId>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -98,6 +103,9 @@ pub(crate) struct RouteCandidate {
 pub(crate) enum PlanDecision {
     FixedRoute,
     StaticBucket,
+    /// The account's remembered provider was eligible and differed from its
+    /// weighted bucket; the warmed route wins.
+    RememberedRoute,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -199,6 +207,28 @@ pub(crate) fn plan_completion_route(
     let bucket = stable_account_bucket(input.intent.account_uuid);
     let selected = select_weighted_route(bucket, &eligible_routes)
         .ok_or_else(|| RoutePlanningError::NoEligibleRoute(model.public_model_id.to_string()))?;
+
+    // Provider prompt caches make the route the account last used materially
+    // cheaper than an otherwise equivalent one. When it differs from the
+    // weighted choice and is still eligible, keep it.
+    if let Some(remembered) = input
+        .remembered_provider
+        .filter(|provider| *provider != selected.candidate.provider)
+        .and_then(|provider| {
+            eligible_routes
+                .iter()
+                .find(|route| route.candidate.provider == provider)
+        })
+    {
+        return Ok(build_plan(
+            remembered,
+            &eligible_routes,
+            RouteSelectionSource::Sticky,
+            None,
+            PlanDecision::RememberedRoute,
+        ));
+    }
+
     Ok(build_plan(
         selected,
         &eligible_routes,
@@ -292,6 +322,7 @@ mod tests {
             RoutePlanningInput {
                 intent: &intent,
                 configured_providers: ConfiguredProviders::all(),
+                remembered_provider: None,
             },
         )
         .expect("shadow route");
@@ -313,6 +344,7 @@ mod tests {
             RoutePlanningInput {
                 intent: &intent,
                 configured_providers: ConfiguredProviders::all(),
+                remembered_provider: None,
             },
         )
         .expect("GLM 5.3 Tinfoil plan");
@@ -340,6 +372,7 @@ mod tests {
         let input = RoutePlanningInput {
             intent: &intent,
             configured_providers: ConfiguredProviders::all(),
+            remembered_provider: None,
         };
 
         let first = plan_completion_route(&PROVIDER_REGISTRY, input).expect("first plan");
@@ -372,6 +405,7 @@ mod tests {
             RoutePlanningInput {
                 intent: &intent,
                 configured_providers: configured,
+                remembered_provider: None,
             },
         )
         .expect("Tinfoil fallback plan");
@@ -394,6 +428,7 @@ mod tests {
             RoutePlanningInput {
                 intent: &intent,
                 configured_providers: ConfiguredProviders::all(),
+                remembered_provider: None,
             },
         )
         .expect("Flash route");
@@ -443,6 +478,7 @@ mod tests {
                     RoutePlanningInput {
                         intent: &intent,
                         configured_providers: ConfiguredProviders::all(),
+                        remembered_provider: None,
                     },
                 )
                 .expect("Flash plan");
@@ -473,6 +509,7 @@ mod tests {
                 RoutePlanningInput {
                     intent: &unknown,
                     configured_providers: ConfiguredProviders::all(),
+                    remembered_provider: None,
                 },
             ),
             Err(RoutePlanningError::UnsupportedModel(
@@ -488,11 +525,79 @@ mod tests {
                 RoutePlanningInput {
                     intent: &glm_flash,
                     configured_providers: none,
+                    remembered_provider: None,
                 },
             ),
             Err(RoutePlanningError::NoEligibleRoute(
                 GLM_5_3_FLASH_MODEL_ID.to_string()
             ))
+        );
+    }
+
+    #[test]
+    fn remembered_provider_beats_the_bucket_only_when_eligible_and_different() {
+        let intent = intent(GLM_5_3_MODEL_ID, GLM_5_3_MODEL_ID);
+        // Bucket 73 lands on Tinfoil by weight.
+        let weighted = plan_completion_route(
+            &PROVIDER_REGISTRY,
+            RoutePlanningInput {
+                intent: &intent,
+                configured_providers: ConfiguredProviders::all(),
+                remembered_provider: None,
+            },
+        )
+        .expect("weighted plan");
+        assert_eq!(weighted.selected.provider, ProviderId::Tinfoil);
+        assert_eq!(weighted.decision, PlanDecision::StaticBucket);
+
+        let remembered = plan_completion_route(
+            &PROVIDER_REGISTRY,
+            RoutePlanningInput {
+                intent: &intent,
+                configured_providers: ConfiguredProviders::all(),
+                remembered_provider: Some(ProviderId::Continuum),
+            },
+        )
+        .expect("remembered plan");
+        assert_eq!(remembered.selected.provider, ProviderId::Continuum);
+        assert_eq!(remembered.selected.provider_model_id, "glm-5.3");
+        assert_eq!(remembered.selected.public_model_id, GLM_5_3_MODEL_ID);
+        assert_eq!(
+            remembered.selected.selection_source,
+            RouteSelectionSource::Sticky
+        );
+        assert_eq!(remembered.selected.bucket, None);
+        assert_eq!(remembered.decision, PlanDecision::RememberedRoute);
+        assert_eq!(remembered.eligible_routes, weighted.eligible_routes);
+
+        // Equal to the bucket: the weighted identity is kept.
+        let same = plan_completion_route(
+            &PROVIDER_REGISTRY,
+            RoutePlanningInput {
+                intent: &intent,
+                configured_providers: ConfiguredProviders::all(),
+                remembered_provider: Some(ProviderId::Tinfoil),
+            },
+        )
+        .expect("same plan");
+        assert_eq!(same, weighted);
+
+        // Not eligible (health or configuration excluded it): ignored.
+        let excluded = plan_completion_route(
+            &PROVIDER_REGISTRY,
+            RoutePlanningInput {
+                intent: &intent,
+                configured_providers: ConfiguredProviders::none()
+                    .with_provider(ProviderId::Tinfoil),
+                remembered_provider: Some(ProviderId::Continuum),
+            },
+        )
+        .expect("excluded plan");
+        assert_eq!(excluded.selected.provider, ProviderId::Tinfoil);
+        assert_eq!(excluded.decision, PlanDecision::FixedRoute);
+        assert_eq!(
+            excluded.selected.selection_source,
+            RouteSelectionSource::Fallback
         );
     }
 }

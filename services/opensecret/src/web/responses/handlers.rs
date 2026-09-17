@@ -6,6 +6,7 @@ use crate::{
     db::DBError,
     encrypt::{decrypt_content, decrypt_string, encrypt_with_key},
     inference::{
+        auto_model::{AutoModelDecision, AutoModelRequirements, PromptTokenEstimate},
         AttemptFailure, AttemptFailureKind, AttemptTerminal, InferenceIntent, InferenceSurface,
         ReplaySafety, WorkloadClass,
     },
@@ -26,10 +27,11 @@ use crate::{
         openai::{
             ensure_completion_model_access, finish_started_completion,
             get_bounded_chat_completion_response, get_chat_completion_response,
-            prepare_completion_request, start_chat_completion_response_for_execution,
-            BillingContext, CompletionCachePolicy, CompletionChunk, CompletionExecutionContext,
-            CompletionExecutionError, InferenceRoutingContext, PinnedCompletionRequest,
-            StartedCompletion,
+            prepare_completion_request, resolve_inference_model,
+            start_chat_completion_response_for_execution, BillingContext, CompletionCachePolicy,
+            CompletionChunk, CompletionExecutionContext, CompletionExecutionError,
+            InferenceRoutingContext, ModelResolutionRequest, PinnedCompletionRequest,
+            ResolvedInferenceModel, StartedCompletion,
         },
         openai_auth::AuthMethod,
         responses::{
@@ -588,12 +590,13 @@ mod tests {
         append_streamed_tool_calls, apply_responses_model_defaults,
         assistant_turn_finished_with_tool_call, build_internal_system_prompt_for_now,
         build_model_turn_request, build_provider_tools, consume_assistant_turn,
-        final_assistant_finish_reason, finalize_first_model_tool_call,
+        ensure_prompt_fits_model, final_assistant_finish_reason, finalize_first_model_tool_call,
         forward_authoritative_response_terminal, has_streamed_tool_call_entries, image_attachments,
         image_description_access, image_description_api_error,
         image_description_attempt_failure_class, maple_kagi_web_search_prompt,
-        model_turn_request_without_user_payload, reserve_response_message_uuid_with_check,
-        resolve_responses_model, resolve_responses_sampling, response_cancellation_ack_decision,
+        model_turn_request_without_user_payload, normalize_responses_input,
+        reserve_response_message_uuid_with_check, resolve_responses_model,
+        resolve_responses_sampling, response_cancellation_ack_decision,
         response_execution_for_status, responses_pre_persistence_api_error, run_response_worker,
         send_storage_message, wait_for_local_response_execution_quiescence, web_search_is_selected,
         web_search_tool_turn_limit, web_search_tool_turn_limit_error,
@@ -1152,6 +1155,81 @@ mod tests {
             metadata: None,
             stream: true,
         }
+    }
+
+    #[test]
+    fn normalized_input_is_model_independent_and_the_budget_check_uses_the_final_model() {
+        use crate::model_config::{DEEPSEEK_V4_1_FLASH_MODEL_ID, GLM_5_3_FLASH_MODEL_ID};
+        use crate::web::responses::prompt_token_budget;
+
+        let mut request = responses_request_for_model("auto:quick");
+        request.input = InputMessage::Messages(vec![MessageInput {
+            role: "user".to_string(),
+            content: MessageContent::Parts(vec![
+                MessageContentPart::InputText {
+                    text: "Describe the attached diagram".to_string(),
+                },
+                MessageContentPart::InputImage {
+                    image_url: Some(format!("data:image/png;base64,{}", "A".repeat(100_000))),
+                    file_id: None,
+                    detail: Some("high".to_string()),
+                },
+            ]),
+        }]);
+
+        let normalized = normalize_responses_input(Uuid::nil(), &request).expect("normalized");
+        assert_eq!(normalized.image_attachments.len(), 1);
+        assert_eq!(normalized.image_attachments[0].content_index, 1);
+        assert!(normalized.user_message_tokens > 0);
+        assert!(
+            normalized.user_message_tokens < 1_000,
+            "raw image bytes are described by the helper, not counted for the main model"
+        );
+        assert!(matches!(
+            normalized.message_content,
+            MessageContent::Parts(ref parts) if parts.len() == 2
+        ));
+
+        // A message that only DeepSeek's window can hold makes GLM Flash an
+        // incompatible alternate; the check is against each model's literal
+        // window and nothing smaller.
+        let flash_window = prompt_token_budget(GLM_5_3_FLASH_MODEL_ID);
+        assert!(ensure_prompt_fits_model(
+            Uuid::nil(),
+            flash_window,
+            DEEPSEEK_V4_1_FLASH_MODEL_ID,
+            "user message"
+        )
+        .is_ok());
+        assert!(matches!(
+            ensure_prompt_fits_model(
+                Uuid::nil(),
+                flash_window,
+                GLM_5_3_FLASH_MODEL_ID,
+                "user message"
+            ),
+            Err(ApiError::MessageExceedsContextLimit)
+        ));
+        assert!(ensure_prompt_fits_model(
+            Uuid::nil(),
+            flash_window - 1,
+            GLM_5_3_FLASH_MODEL_ID,
+            "prompt"
+        )
+        .is_ok());
+
+        let mut with_file = responses_request_for_model("auto:quick");
+        with_file.input = InputMessage::Messages(vec![MessageInput {
+            role: "user".to_string(),
+            content: MessageContent::Parts(vec![MessageContentPart::InputFile {
+                filename: "notes.pdf".to_string(),
+                file_data: "data:application/pdf;base64,AAAA".to_string(),
+            }]),
+        }]);
+        assert!(matches!(
+            normalize_responses_input(Uuid::nil(), &with_file),
+            Err(ApiError::BadRequest)
+        ));
     }
 
     #[test]
@@ -3847,29 +3925,26 @@ fn spawn_title_generation_task(
     });
 }
 
-/// Phase 1: Validate and normalize input
+/// Request input after normalization and before key retrieval or the model
+/// decision. `user_message_tokens` counts what the main model receives.
+#[derive(Clone)]
+struct NormalizedInput {
+    message_content: MessageContent,
+    image_attachments: Vec<ImageAttachment>,
+    user_message_tokens: i32,
+}
+
+/// Phase 1a: Normalize input
 ///
-/// Performs all input validation and normalization without any side effects.
-/// Ensures the request is valid before proceeding.
-///
-/// Operations:
-/// - Gets user encryption key
+/// Pure validation of the caller's input, independent of the model that will
+/// execute the request:
 /// - Normalizes message content to Parts format
 /// - Validates no unsupported features (file uploads)
-/// - Extracts bounded image attachments, counts model-visible tokens, and encrypts content
-/// - Generates assistant message UUID
-async fn validate_and_normalize_input(
-    state: &Arc<AppState>,
-    user: &User,
-    auth_context: &AuthContext,
+/// - Extracts bounded image attachments and counts model-visible tokens
+fn normalize_responses_input(
+    user_uuid: Uuid,
     body: &ResponsesCreateRequest,
-) -> Result<PreparedRequest, ApiError> {
-    // Get user's encryption key
-    let user_key = state
-        .get_user_key(user, auth_context, None, None)
-        .await
-        .map_err(|_| error_mapping::map_key_retrieval_error())?;
-
+) -> Result<NormalizedInput, ApiError> {
     // Normalize input to our standard format (validates unsupported features like file_id)
     let normalized_messages = body.input.clone().normalize()?;
 
@@ -3880,7 +3955,7 @@ async fn validate_and_normalize_input(
                 if matches!(part, MessageContentPart::InputFile { .. }) {
                     error!(
                         "User {} attempted to use unsupported file upload feature",
-                        user.uuid
+                        user_uuid
                     );
                     return Err(ApiError::BadRequest);
                 }
@@ -3912,17 +3987,78 @@ async fn validate_and_normalize_input(
         token_count as i32
     };
 
-    // Validate that the user message doesn't exceed the context budget
-    // Even if we drop everything else, we need to fit at least the user's message
-    let ctx_budget = prompt_token_budget(&body.model);
+    Ok(NormalizedInput {
+        message_content,
+        image_attachments,
+        user_message_tokens,
+    })
+}
 
-    if user_message_tokens as usize >= ctx_budget {
+/// A prompt component must fit the executing model's literal context window.
+/// This is the only imposed token ceiling; it is the model's advertised
+/// window, not an output cap.
+fn ensure_prompt_fits_model(
+    user_uuid: Uuid,
+    tokens: usize,
+    model: &str,
+    scope: &'static str,
+) -> Result<(), ApiError> {
+    let ctx_budget = prompt_token_budget(model);
+    if tokens >= ctx_budget {
         error!(
-            "User message too large for user {}: {} tokens exceeds budget {} for model {}",
-            user.uuid, user_message_tokens, ctx_budget, body.model
+            "Responses {} too large for user {}: {} tokens exceeds budget {} for model {}",
+            scope, user_uuid, tokens, ctx_budget, model
         );
         return Err(ApiError::MessageExceedsContextLimit);
     }
+    Ok(())
+}
+
+/// Makes the resolved model the executing model for every later
+/// model-dependent step; `body.model` is written only here.
+fn apply_resolved_model(
+    body: &mut ResponsesCreateRequest,
+    resolved_model: &ResolvedInferenceModel,
+) {
+    if resolved_model.public_model_id() != body.model {
+        debug!(
+            "Auto model selection resolved responses model {} to {}",
+            body.model,
+            resolved_model.public_model_id()
+        );
+        body.model = resolved_model.public_model_id().to_string();
+    }
+}
+
+/// Phase 1b: Validate the model budget and prepare storage material
+///
+/// Runs after the executing model is final, so the budget check and every
+/// later model-dependent step agree on `body.model`.
+///
+/// Operations:
+/// - Validates the user message fits the model's context budget
+/// - Encrypts content and generates the assistant message UUID
+async fn prepare_request_storage(
+    user: &User,
+    user_key: SecretKey,
+    body: &ResponsesCreateRequest,
+    normalized: NormalizedInput,
+    user_message_id: Uuid,
+) -> Result<PreparedRequest, ApiError> {
+    let NormalizedInput {
+        message_content,
+        image_attachments,
+        user_message_tokens,
+    } = normalized;
+
+    // Validate that the user message doesn't exceed the context budget
+    // Even if we drop everything else, we need to fit at least the user's message
+    ensure_prompt_fits_model(
+        user.uuid,
+        user_message_tokens as usize,
+        &body.model,
+        "user message",
+    )?;
 
     // Serialize the MessageContent for storage
     let content_for_storage = serde_json::to_string(&message_content).map_err(|e| {
@@ -3943,7 +4079,7 @@ async fn validate_and_normalize_input(
         image_attachments,
         user_message_tokens,
         content_enc,
-        user_message_id: response_message_uuid(body),
+        user_message_id,
         assistant_message_id,
     })
 }
@@ -3954,9 +4090,10 @@ async fn validate_and_normalize_input(
 /// before any database writes occur.
 ///
 /// Operations:
-/// - Fetches conversation and existing messages
+/// - Reads the owned conversation's existing messages
 /// - Builds prompt context with new user message (not yet persisted)
 /// - Checks billing quota and token limits
+#[allow(clippy::too_many_arguments)]
 async fn build_context_and_check_billing(
     state: &Arc<AppState>,
     user: &User,
@@ -3965,21 +4102,10 @@ async fn build_context_and_check_billing(
     image_descriptions: &[ImageDescriptionToolPair],
     billing_access: Option<ChatBillingAccess>,
     model_plan: ModelPlan,
+    conversation: &crate::models::responses::Conversation,
+    web_search_enabled: bool,
 ) -> Result<BuiltContext, ApiError> {
-    let web_search_enabled = select_web_search(state.as_ref(), user.uuid, body);
     let internal_system_prompt = build_internal_system_prompt(web_search_enabled, model_plan);
-
-    // Extract conversation ID from the required conversation parameter
-    let conv_uuid = match &body.conversation {
-        ConversationParam::String(id) | ConversationParam::Object { id } => *id,
-    };
-
-    // Get the conversation
-    debug!("Using specified conversation: {}", conv_uuid);
-    let conversation = state
-        .db
-        .get_conversation_by_uuid_and_user(conv_uuid, user.uuid)
-        .map_err(error_mapping::map_conversation_error)?;
 
     // Build the conversation context from all persisted messages
     // Pass instructions from request (if provided) to override default user instructions
@@ -4015,16 +4141,7 @@ async fn build_context_and_check_billing(
     total_prompt_tokens = total_prompt_tokens.saturating_add(image_description_tokens);
     normalize_tool_call_ids_for_model(&mut prompt_messages, &body.model);
 
-    if total_prompt_tokens >= prompt_token_budget(&body.model) {
-        error!(
-            "Responses prompt too large for user {}: {} tokens exceeds budget {} for model {}",
-            user.uuid,
-            total_prompt_tokens,
-            prompt_token_budget(&body.model),
-            body.model
-        );
-        return Err(ApiError::MessageExceedsContextLimit);
-    }
+    ensure_prompt_fits_model(user.uuid, total_prompt_tokens, &body.model, "prompt")?;
 
     trace!(
         "Built prompt with {} total tokens, {} messages (including new user message)",
@@ -4063,7 +4180,7 @@ async fn build_context_and_check_billing(
     }
 
     Ok(BuiltContext {
-        conversation,
+        conversation: conversation.clone(),
         prompt_messages: Arc::new(prompt_messages),
         total_prompt_tokens,
         web_search_enabled,
@@ -5220,28 +5337,140 @@ async fn create_response_stream(
         body.store
     );
 
-    // Phase 1: Validate and normalize input
-    let prepared = validate_and_normalize_input(&state, &user, &auth_context, &body).await?;
+    // Phase 1: Validate and normalize input, then bind the checks that do not
+    // depend on the executing model: the user key, conversation ownership, the
+    // usage gate, and the caller's message against the tier's own model. Only
+    // then may Router v2 Auto choose another approved model of the tier; the
+    // budget check, both context builds, history formatting, persistence, and
+    // route pinning all read `body.model` after that decision.
+    let normalized = normalize_responses_input(user.uuid, &body)?;
+    let user_key = state
+        .get_user_key(&user, &auth_context, None, None)
+        .await
+        .map_err(|_| error_mapping::map_key_retrieval_error())?;
+    let conv_uuid = match &body.conversation {
+        ConversationParam::String(id) | ConversationParam::Object { id } => *id,
+    };
+    debug!("Using specified conversation: {}", conv_uuid);
+    let mut conversation = state
+        .db
+        .get_conversation_by_uuid_and_user(conv_uuid, user.uuid)
+        .map_err(error_mapping::map_conversation_error)?;
+    if billing_access.is_some_and(|access| !access.can_use()) {
+        error!("Usage limit reached for user: {}", user.uuid);
+        return Err(ApiError::UsageLimitReached);
+    }
+    // A message the tier's own model cannot hold keeps its existing error;
+    // health never changes that answer.
+    let alias_target = body.model.clone();
+    ensure_prompt_fits_model(
+        user.uuid,
+        normalized.user_message_tokens as usize,
+        &alias_target,
+        "user message",
+    )?;
+    let web_search_enabled = select_web_search(state.as_ref(), user.uuid, &body);
+
+    // The tokens every turn must hold regardless of history truncation: the
+    // caller's message, the system prompt that is never dropped, inline
+    // instructions, and the caller's own output limit.
+    let required_prompt_tokens = (normalized.user_message_tokens as usize)
+        .saturating_add(count_tokens(&build_internal_system_prompt(
+            web_search_enabled,
+            model_plan,
+        )))
+        .saturating_add(body.instructions.as_deref().map(count_tokens).unwrap_or(0))
+        .saturating_add(
+            body.max_output_tokens
+                .and_then(|tokens| usize::try_from(tokens).ok())
+                .unwrap_or(0),
+        );
+    let resolve_model = |excluded_model_id: Option<&str>| {
+        resolve_inference_model(
+            &state.provider_router,
+            &state.proxy_router,
+            ModelResolutionRequest {
+                account_uuid: user.uuid,
+                surface: InferenceSurface::Responses,
+                requested_model_id: &requested_model,
+                alias_target: &alias_target,
+                model_plan,
+                routing_mode: routing.mode(),
+                excluded_model_id,
+            },
+            || AutoModelRequirements {
+                // The main model never receives raw images; the paid helper
+                // below describes them as tool output for any text model.
+                vision: false,
+                // Persisted tool-call ids are normalized per model when the
+                // context is built, so Kimi history compatibility is not a
+                // request property here.
+                kimi_tool_history_compatible: true,
+                prompt_tokens: PromptTokenEstimate::Known(required_prompt_tokens),
+            },
+        )
+    };
+    let mut resolved_model = resolve_model(None)?;
+    apply_resolved_model(&mut body, &resolved_model);
+
     // Reserve the caller-visible message UUID before any descriptor or main-model
     // provider work. The database check catches completed prior requests, while
     // the enclave-local reservation closes the same-enclave check/insert race.
     // It remains held until the atomic request persistence commit below.
-    let _message_uuid_reservation =
-        reserve_response_message_uuid(&state, prepared.user_message_id)?;
-    let image_access = image_description_access(&prepared.image_attachments, billing_access)?;
+    let user_message_id = response_message_uuid(&body);
+    let _message_uuid_reservation = reserve_response_message_uuid(&state, user_message_id)?;
+    let image_access = image_description_access(&normalized.image_attachments, billing_access)?;
 
-    // Phase 2a: Validate conversation ownership, base context, and quota before
-    // making any user-billed descriptor calls.
-    let base_context = build_context_and_check_billing(
-        &state,
-        &user,
-        &body,
-        &prepared,
-        &[],
-        billing_access,
-        model_plan,
-    )
-    .await?;
+    // Phase 1b/2a: Validate the model budget and base context before making any
+    // user-billed descriptor calls. The context builder keeps the system prompt
+    // and the conversation's first user turn regardless of truncation, so an
+    // Auto alternate can still overflow here; that earns one bounded second
+    // decision without it, before any billed helper or provider work.
+    let mut model_reselected = false;
+    let mut normalized = Some(normalized);
+    let (prepared, base_context) = loop {
+        let alternate_may_overflow = !model_reselected
+            && resolved_model
+                .auto_decision()
+                .is_some_and(AutoModelDecision::changed_model);
+        let input = if alternate_may_overflow {
+            normalized.clone().expect("normalized input is present")
+        } else {
+            normalized.take().expect("normalized input is present")
+        };
+        let outcome = async {
+            let prepared =
+                prepare_request_storage(&user, user_key, &body, input, user_message_id).await?;
+            let base_context = build_context_and_check_billing(
+                &state,
+                &user,
+                &body,
+                &prepared,
+                &[],
+                billing_access,
+                model_plan,
+                &conversation,
+                web_search_enabled,
+            )
+            .await?;
+            Ok::<_, ApiError>((prepared, base_context))
+        }
+        .await;
+        match outcome {
+            Ok(ready) => break ready,
+            Err(ApiError::MessageExceedsContextLimit) if alternate_may_overflow => {
+                model_reselected = true;
+                let overflowed = resolved_model.public_model_id().to_string();
+                info!(
+                    "Responses Auto alternate cannot hold this conversation; deciding again without it: selector={}, model={}",
+                    requested_model, overflowed
+                );
+                resolved_model = resolve_model(Some(&overflowed))?;
+                apply_resolved_model(&mut body, &resolved_model);
+            }
+            Err(error) => return Err(error),
+        }
+    };
 
     // Phase 2b: Describe all current-turn images before any database write or
     // SSE response. A complete cascade failure therefore leaves no partial chat.
@@ -5259,40 +5488,110 @@ async fn create_response_stream(
         }
         None => Vec::new(),
     };
+    let descriptions_done = !image_descriptions.is_empty();
 
-    // Rebuild with enough reserved room for the persisted descriptions so
-    // historical context can be truncated instead of rejecting a valid turn.
-    let context = if image_descriptions.is_empty() {
-        base_context
+    // Phase 2c: Rebuild with enough reserved room for the persisted descriptions
+    // so historical context can be truncated instead of rejecting a valid turn,
+    // then pin the user's main route so it observes the latest local routing
+    // state. If the chosen model lost its routes while the helpers ran, or an
+    // Auto alternate cannot hold the descriptions, take the same bounded second
+    // decision; descriptions are model-independent and are never repeated. Any
+    // capacity result after billed helper work is not replay safe.
+    let mut context = if image_descriptions.is_empty() {
+        Some(base_context)
     } else {
-        build_context_and_check_billing(
-            &state,
-            &user,
-            &body,
-            &prepared,
-            &image_descriptions,
-            billing_access,
-            model_plan,
-        )
-        .await?
+        None
     };
-
-    // Descriptor attempts are independent internal requests. Pin the user's
-    // main Responses route only after preprocessing so it observes the latest
-    // local routing state, then fail before persistence if no route is usable.
-    let inference_intent = InferenceIntent::new(
-        user.uuid,
-        requested_model,
-        body.model.clone(),
-        model_plan,
-        InferenceSurface::Responses,
-        WorkloadClass::Interactive,
-    );
-    let pinned_completion = prepare_completion_request(&state, &user, inference_intent, routing)
-        .await
-        .map_err(|error| {
-            responses_pre_persistence_api_error(error.into(), !image_descriptions.is_empty())
-        })?;
+    let (context, pinned_completion) = loop {
+        let built = match context.take() {
+            Some(built) => built,
+            None => {
+                // The helpers took time; re-establish that the conversation
+                // still exists and is owned before reading and writing it.
+                conversation = state
+                    .db
+                    .get_conversation_by_uuid_and_user(conv_uuid, user.uuid)
+                    .map_err(error_mapping::map_conversation_error)?;
+                match build_context_and_check_billing(
+                    &state,
+                    &user,
+                    &body,
+                    &prepared,
+                    &image_descriptions,
+                    billing_access,
+                    model_plan,
+                    &conversation,
+                    web_search_enabled,
+                )
+                .await
+                {
+                    Ok(built) => built,
+                    Err(ApiError::MessageExceedsContextLimit)
+                        if !model_reselected
+                            && resolved_model
+                                .auto_decision()
+                                .is_some_and(AutoModelDecision::changed_model) =>
+                    {
+                        model_reselected = true;
+                        let overflowed = resolved_model.public_model_id().to_string();
+                        info!(
+                            "Responses Auto alternate cannot hold the described images; deciding again without it: selector={}, model={}",
+                            requested_model, overflowed
+                        );
+                        resolved_model = resolve_model(Some(&overflowed)).map_err(|error| {
+                            responses_pre_persistence_api_error(error.into(), descriptions_done)
+                        })?;
+                        apply_resolved_model(&mut body, &resolved_model);
+                        ensure_prompt_fits_model(
+                            user.uuid,
+                            prepared.user_message_tokens as usize,
+                            &body.model,
+                            "user message",
+                        )?;
+                        continue;
+                    }
+                    Err(error) => return Err(error),
+                }
+            }
+        };
+        let inference_intent = resolved_model.intent(
+            user.uuid,
+            &requested_model,
+            model_plan,
+            InferenceSurface::Responses,
+            WorkloadClass::Interactive,
+        );
+        match prepare_completion_request(&state, &user, inference_intent, routing).await {
+            Ok(pinned) => break (built, pinned),
+            Err(ApiError::InferenceCapacity { .. })
+                if !model_reselected && resolved_model.auto_decision().is_some() =>
+            {
+                model_reselected = true;
+                let lost = resolved_model.public_model_id().to_string();
+                info!(
+                    "Responses Auto model lost its routes before pinning; deciding again without it: selector={}, model={}",
+                    requested_model, lost
+                );
+                resolved_model = resolve_model(Some(&lost)).map_err(|error| {
+                    responses_pre_persistence_api_error(error.into(), descriptions_done)
+                })?;
+                apply_resolved_model(&mut body, &resolved_model);
+                ensure_prompt_fits_model(
+                    user.uuid,
+                    prepared.user_message_tokens as usize,
+                    &body.model,
+                    "user message",
+                )?;
+                // `context` is empty: the next iteration rebuilds it for the new model.
+            }
+            Err(error) => {
+                return Err(responses_pre_persistence_api_error(
+                    error.into(),
+                    descriptions_done,
+                ))
+            }
+        }
+    };
 
     // Start only the first provider request before persistence. Only locally
     // proven pre-send/pre-acceptance capacity failures can authorize replay:
