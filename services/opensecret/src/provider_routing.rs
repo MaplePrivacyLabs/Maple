@@ -1776,7 +1776,7 @@ mod tests {
                     (InferenceRoutingMode::Legacy, expected_legacy),
                     (
                         InferenceRoutingMode::V2,
-                        if bucket < 10 {
+                        if bucket < 30 {
                             ProviderId::Continuum
                         } else {
                             ProviderId::Tinfoil

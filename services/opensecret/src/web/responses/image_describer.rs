@@ -2,7 +2,7 @@
 //!
 //! This module deliberately owns only provider-independent policy and wire-format
 //! construction. The handler supplies an [`ImageDescriptionAttemptExecutor`]
-//! that selects the exact transport represented by each candidate, accounts for
+//! that routes each candidate through the request's V1 or V2 policy, accounts for
 //! every provider response it consumes, and returns a bounded response body.
 
 use async_trait::async_trait;
@@ -25,42 +25,19 @@ pub const IMAGE_DESCRIPTION_USER_PROMPT: &str =
     "Describe this image in enough factual detail for another model to reason about it without receiving the image itself.";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ImageDescriptionProvider {
-    Continuum,
-    Tinfoil,
-}
-
-impl ImageDescriptionProvider {
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Continuum => "continuum",
-            Self::Tinfoil => "tinfoil",
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ImageDescriptionCandidate {
-    pub provider: ImageDescriptionProvider,
     pub public_model_id: &'static str,
-    pub provider_model_id: &'static str,
 }
 
 pub const IMAGE_DESCRIPTION_CANDIDATES: [ImageDescriptionCandidate; 3] = [
     ImageDescriptionCandidate {
-        provider: ImageDescriptionProvider::Continuum,
         public_model_id: "glm-5-3-flash",
-        provider_model_id: "glm-5.3-flash",
     },
     ImageDescriptionCandidate {
-        provider: ImageDescriptionProvider::Tinfoil,
         public_model_id: "gemma4-31b",
-        provider_model_id: "gemma4-31b",
     },
     ImageDescriptionCandidate {
-        provider: ImageDescriptionProvider::Tinfoil,
         public_model_id: "kimi-k3",
-        provider_model_id: "kimi-k3",
     },
 ];
 
@@ -131,13 +108,13 @@ pub fn build_image_description_request(
     });
 
     // Image description is a bounded preprocessing operation. These models use
-    // different native chat-template switches, so keep each provider/model
+    // different native chat-template switches, so keep each model's
     // control explicit rather than assuming one generic reasoning knob.
     request["include_reasoning"] = json!(false);
-    match candidate.provider_model_id {
+    match candidate.public_model_id {
         // GLM-5.3-Flash reasoning cannot be switched off. `low` is the cheapest
-        // Privatemode/Continuum effort that still produces an image description.
-        "glm-5.3-flash" | "glm-5-3-flash" => {
+        // effort supported by both Tinfoil and Continuum.
+        "glm-5-3-flash" => {
             request["reasoning_effort"] = json!("low");
         }
         // Gemma 4 uses vLLM's `enable_thinking` template switch.
@@ -285,9 +262,9 @@ impl ImageDescriptionAttemptError {
 /// Provider integration seam for a single fixed candidate.
 ///
 /// Implementations must submit `candidate.public_model_id` through the ordinary
-/// completion path and verify that the selected route is `candidate.provider`
-/// with the fixed provider model mapping. They must not accept caller-supplied
-/// routing fields. They are also responsible for accounting usage for every
+/// completion path, which owns provider selection and upstream model mapping.
+/// They must not accept caller-supplied routing fields. They are also responsible
+/// for accounting usage for every
 /// accepted provider response, even when this module later rejects the response
 /// and falls through to another candidate.
 #[async_trait]
@@ -296,7 +273,14 @@ pub trait ImageDescriptionAttemptExecutor: Send + Sync {
         &self,
         candidate: ImageDescriptionCandidate,
         request: Value,
-    ) -> Result<Vec<u8>, ImageDescriptionAttemptError>;
+    ) -> Result<ImageDescriptionAttemptResponse, ImageDescriptionAttemptError>;
+}
+
+/// A bounded body and the provider reported by the completion path.
+/// The body contains image-derived content and must never be logged.
+pub struct ImageDescriptionAttemptResponse {
+    pub body: Vec<u8>,
+    pub provider: String,
 }
 
 pub trait ImageDescriptionFallbackPolicy: Send + Sync {
@@ -352,6 +336,7 @@ impl ImageDescriptionError {
 pub struct ImageDescriptionOutcome {
     pub description: String,
     pub candidate: ImageDescriptionCandidate,
+    pub provider: String,
     pub attempt_count: usize,
 }
 
@@ -389,11 +374,12 @@ where
         let attempt_result = timeout(attempt_timeout, executor.execute(candidate, request)).await;
 
         let failure = match attempt_result {
-            Ok(Ok(response_body)) => match parse_image_description_response(&response_body) {
+            Ok(Ok(response)) => match parse_image_description_response(&response.body) {
                 Ok(description) => {
                     return Ok(ImageDescriptionOutcome {
                         description,
                         candidate,
+                        provider: response.provider,
                         attempt_count: attempts.len() + 1,
                     });
                 }
@@ -437,6 +423,7 @@ mod tests {
     struct FakeExecutor {
         planned: Mutex<VecDeque<PlannedAttempt>>,
         observed: Mutex<Vec<(ImageDescriptionCandidate, Value)>>,
+        provider: &'static str,
     }
 
     impl FakeExecutor {
@@ -444,6 +431,7 @@ mod tests {
             Self {
                 planned: Mutex::new(planned.into()),
                 observed: Mutex::new(Vec::new()),
+                provider: "tinfoil",
             }
         }
 
@@ -463,7 +451,7 @@ mod tests {
             &self,
             candidate: ImageDescriptionCandidate,
             request: Value,
-        ) -> Result<Vec<u8>, ImageDescriptionAttemptError> {
+        ) -> Result<ImageDescriptionAttemptResponse, ImageDescriptionAttemptError> {
             self.observed
                 .lock()
                 .expect("observed lock")
@@ -475,13 +463,17 @@ mod tests {
                 .pop_front()
                 .expect("planned attempt");
 
-            match planned {
+            let result = match planned {
                 PlannedAttempt::Return(result) => result,
                 PlannedAttempt::Delay(duration, result) => {
                     tokio::time::sleep(duration).await;
                     result
                 }
-            }
+            };
+            result.map(|body| ImageDescriptionAttemptResponse {
+                body,
+                provider: self.provider.to_string(),
+            })
         }
     }
 
@@ -511,24 +503,72 @@ mod tests {
     fn candidate_order_and_ids_are_fixed() {
         assert_eq!(IMAGE_DESCRIPTION_ATTEMPT_TIMEOUT_SECS, 15);
         assert_eq!(
-            IMAGE_DESCRIPTION_CANDIDATES[0].provider.as_str(),
-            "continuum"
+            IMAGE_DESCRIPTION_CANDIDATES.map(|candidate| candidate.public_model_id),
+            ["glm-5-3-flash", "gemma4-31b", "kimi-k3"]
         );
-        assert_eq!(
-            IMAGE_DESCRIPTION_CANDIDATES[0].public_model_id,
-            "glm-5-3-flash"
+    }
+
+    #[tokio::test]
+    async fn flash_accepts_both_providers_selected_by_v1_or_v2_without_model_fallback() {
+        use crate::{
+            inference::{InferenceIntent, InferenceSurface, WorkloadClass},
+            model_config::ModelPlan,
+            provider_routing::{InferenceRoutingMode, ProviderRouter},
+            proxy_config::ProxyRouter,
+        };
+        let router = ProviderRouter::default();
+        let proxies = ProxyRouter::new(
+            "http://continuum.example.com".to_string(),
+            None,
+            "http://tinfoil.example.com".to_string(),
         );
-        assert_eq!(
-            IMAGE_DESCRIPTION_CANDIDATES[0].provider_model_id,
-            "glm-5.3-flash"
-        );
-        assert_eq!(IMAGE_DESCRIPTION_CANDIDATES[1].provider.as_str(), "tinfoil");
-        assert_eq!(
-            IMAGE_DESCRIPTION_CANDIDATES[1].provider_model_id,
-            "gemma4-31b"
-        );
-        assert_eq!(IMAGE_DESCRIPTION_CANDIDATES[2].provider.as_str(), "tinfoil");
-        assert_eq!(IMAGE_DESCRIPTION_CANDIDATES[2].provider_model_id, "kimi-k3");
+        let candidate = IMAGE_DESCRIPTION_CANDIDATES[0];
+        let flag = router
+            .provider_routing_flag_for_completion_model(candidate.public_model_id)
+            .expect("legacy Flash provider flag");
+        for mode in [InferenceRoutingMode::Legacy, InferenceRoutingMode::V2] {
+            for enabled in [None, Some(false), Some(true)] {
+                for bucket in [0, 9, 10, 29, 30, 99] {
+                    let intent = InferenceIntent::new(
+                        uuid::Uuid::from_u128(bucket),
+                        candidate.public_model_id,
+                        candidate.public_model_id,
+                        ModelPlan::Paid,
+                        InferenceSurface::Internal,
+                        WorkloadClass::Interactive,
+                    );
+                    let route = router
+                        .select_completion_route_for_mode(
+                            &proxies,
+                            &intent,
+                            enabled.map(|value| flag.preference_for(value)),
+                            mode,
+                        )
+                        .expect("ordinary image-helper route");
+                    let expected = match mode {
+                        InferenceRoutingMode::Legacy if enabled == Some(true) => "continuum",
+                        InferenceRoutingMode::V2 if bucket < 30 => "continuum",
+                        _ => "tinfoil",
+                    };
+                    assert_eq!(route.provider.as_str(), expected);
+                    let mut executor = FakeExecutor::new(vec![PlannedAttempt::Return(Ok(
+                        successful_response("A red square."),
+                    ))]);
+                    executor.provider = route.provider.as_str();
+                    let outcome = describe_image_with_fallback(
+                        &executor,
+                        &RetryNonTerminalImageDescriptionFallbackPolicy,
+                        input(),
+                    )
+                    .await
+                    .expect("either routed provider can describe the image");
+                    assert_eq!(outcome.candidate, candidate);
+                    assert_eq!(outcome.provider, expected);
+                    assert_eq!(outcome.attempt_count, 1);
+                    assert_eq!(executor.observed_candidates(), [candidate]);
+                }
+            }
+        }
     }
 
     #[test]
@@ -542,7 +582,7 @@ mod tests {
     }
 
     #[test]
-    fn continuum_glm_flash_request_uses_low_reasoning_effort() {
+    fn glm_flash_request_uses_low_reasoning_effort() {
         let request = build_image_description_request(IMAGE_DESCRIPTION_CANDIDATES[0], input())
             .expect("request");
 
