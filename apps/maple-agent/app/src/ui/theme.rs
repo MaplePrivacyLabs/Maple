@@ -235,6 +235,17 @@ pub fn overlay_hover() -> gpui::Hsla {
     }
 }
 
+/// Alternate-row tint in markdown tables: a whisper of the hover overlay,
+/// so a long table reads row by row without stripes competing with the
+/// text.
+pub fn table_stripe() -> gpui::Hsla {
+    if is_light() {
+        gpui::hsla(0., 0., 0., 0.025)
+    } else {
+        gpui::hsla(0., 0., 1., 0.03)
+    }
+}
+
 /// Scrollbar thumb over the transcript.
 pub fn scrollbar_thumb() -> gpui::Rgba {
     if is_light() {
