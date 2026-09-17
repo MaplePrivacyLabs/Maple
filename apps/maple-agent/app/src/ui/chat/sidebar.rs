@@ -872,7 +872,12 @@ impl Sidebar {
         {
             suffix += 1;
         }
-        if prefix + suffix < old.len() || prefix + suffix < self.entries.len() {
+        if old.is_empty() {
+            // An empty first layout can anchor at item 0. Splicing into
+            // 0..0 shifts that anchor past every inserted row, so initialize
+            // the first contents at the top instead of preserving it.
+            self.list.reset(self.entries.len());
+        } else if prefix + suffix < old.len() || prefix + suffix < self.entries.len() {
             self.list.splice(
                 prefix..old.len() - suffix,
                 self.entries.len() - prefix - suffix,
