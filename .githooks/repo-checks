@@ -1,0 +1,29 @@
+#!/bin/sh
+# Repository-level pre-commit checks: workflow lint and CI script unit tests.
+# Runs from the repository root inside the root flake's ci shell.
+# CI equivalent: repository-checks.yml (nix flake check), minus the slow
+# release-gates and toolchain checks.
+
+set -u
+. "${MAPLE_HOOK_REPO_ROOT:?}/.githooks/lib/common.sh"
+
+workflows=$(hook_staged_matching '^\.github/workflows/.*\.ya?ml$')
+if [ -n "$workflows" ]; then
+    hook_require actionlint
+    for workflow in $workflows; do
+        if [ "$workflow" = ".github/workflows/pages-publish.yml" ]; then
+            hook_run actionlint -config-file .github/actionlint.yaml \
+                -ignore 'unexpected key "deployment" for "environment" section' "$workflow"
+        else
+            hook_run actionlint -config-file .github/actionlint.yaml \
+                -ignore 'unexpected key "queue" for "concurrency" section' "$workflow"
+        fi
+    done
+fi
+
+if [ -n "$(hook_staged_matching '^(scripts/ci/|\.github/workflows/|flake\.(nix|lock)$)')" ]; then
+    hook_require python3
+    hook_run python3 -I -m unittest discover -s scripts/ci -p 'test_*.py'
+fi
+
+hook_log "Reminder: run 'nix flake check --no-update-lock-file' before pushing flake, workflow, or release changes."

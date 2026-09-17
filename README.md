@@ -40,6 +40,10 @@ just desktop-dev        # Research Tauri application, including Agent Mode
 just agent-dev          # GPUI Agent app, using its own pinned component shell
 ```
 
+`./setup-hooks.sh` enables the pre-commit hook, which runs the format, lint,
+and unit-test checks for the components whose files are staged inside their
+pinned Nix shells (see the [root agent guide](AGENTS.md#pre-commit-hook)).
+
 Follow the [Research setup guide](apps/maple-research/README.md#quick-start) to
 configure `apps/maple-research/frontend/.env.local` before starting the app.
 Preserve existing configuration and externally managed workspace resources.

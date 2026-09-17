@@ -95,5 +95,9 @@ class AgentChangeDetectionTests(unittest.TestCase):
             self.assertEqual(result.stdout, expected)
 
 
+    def test_component_hook_scripts_do_not_select_agent(self) -> None:
+        self.assertFalse(affects_agent("apps/maple-agent/.githooks/pre-commit"))
+
+
 if __name__ == "__main__":
     unittest.main()

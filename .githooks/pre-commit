@@ -1,107 +1,133 @@
 #!/bin/sh
+# Maple monorepo pre-commit hook.
+#
+# Classifies the staged paths with scripts/ci/hook_change_detection.py and runs
+# each selected component's own .githooks/pre-commit inside that component's
+# Nix flake, so the tools match CI. Without Nix the same commands run from PATH
+# with a warning. Only fast, hermetic checks run here (format, lint, type
+# checks, unit tests); integration suites, cargo-deny, nix flake check and
+# packaging stay in CI.
+#
+# Environment:
+#   MAPLE_HOOK_SKIP=1     skip everything (same as git commit --no-verify)
+#   MAPLE_HOOK_FULL=1     run the slower CI-complete variants where they exist
+#   MAPLE_HOOK_NO_NIX=1   run from PATH even when Nix is installed
+#   MAPLE_HOOK_ONLY=a,b   restrict to the listed components (debugging aid)
 
-echo "Running pre-commit hook..."
+set -u
 
-REPO_ROOT=$(git rev-parse --show-toplevel)
-STAGED_FILES=$(git diff --cached --name-only)
-NEEDS_TOOLCHAIN=0
+REPO_ROOT=$(git rev-parse --show-toplevel) || exit 1
+. "$REPO_ROOT/.githooks/lib/common.sh"
 
-find_nix() {
-    if command -v nix >/dev/null 2>&1; then
-        command -v nix
-        return
+if [ "${MAPLE_HOOK_SKIP:-0}" = "1" ]; then
+    hook_log "MAPLE_HOOK_SKIP=1; skipping checks."
+    exit 0
+fi
+# Component checks may run git themselves (the scripts/ci tests build fixture
+# repositories). Never let a nested commit re-enter this hook.
+if [ "${MAPLE_HOOK_RUNNING:-0}" = "1" ]; then
+    exit 0
+fi
+export MAPLE_HOOK_RUNNING=1
+
+STAGED_FILE=$(mktemp "${TMPDIR:-/tmp}/maple-hook-staged.XXXXXX") || exit 1
+trap 'rm -f "$STAGED_FILE"' EXIT INT TERM
+git diff --cached --name-only --diff-filter=ACMR > "$STAGED_FILE"
+
+if [ ! -s "$STAGED_FILE" ]; then
+    hook_log "No added or modified files staged; nothing to check."
+    exit 0
+fi
+
+PYTHON=""
+for candidate in python3 /usr/bin/python3 /run/current-system/sw/bin/python3; do
+    if command -v "$candidate" >/dev/null 2>&1; then
+        PYTHON=$(command -v "$candidate")
+        break
     fi
+done
+[ -n "$PYTHON" ] || hook_fail "python3 is required to classify staged paths (it is in every Maple Nix shell)."
 
-    for candidate in /nix/var/nix/profiles/default/bin/nix "$HOME/.nix-profile/bin/nix"; do
-        if [ -x "$candidate" ]; then
-            printf '%s\n' "$candidate"
-            return
-        fi
-    done
+SELECTED=$(git diff --cached --name-only -z --diff-filter=ACMR \
+    | "$PYTHON" "$REPO_ROOT/scripts/ci/hook_change_detection.py" --selected) \
+    || hook_fail "hook_change_detection.py failed."
+SELECTED=$(printf '%s\n' "$SELECTED" | tr '\n' ' ')
+
+if [ -n "${MAPLE_HOOK_ONLY:-}" ]; then
+    SELECTED=$(printf '%s' "$MAPLE_HOOK_ONLY" | tr ',' ' ')
+fi
+
+if [ -z "$(printf '%s' "$SELECTED" | tr -d ' ')" ]; then
+    hook_log "Staged files select no component checks (docs, guides, or hook metadata only)."
+    exit 0
+fi
+hook_log "Selected components: $SELECTED"
+
+NIX_BIN=""
+if [ "${MAPLE_HOOK_NO_NIX:-0}" != "1" ]; then
+    NIX_BIN=$(hook_find_nix) || NIX_BIN=""
+fi
+if [ -z "$NIX_BIN" ]; then
+    hook_log "WARNING: Nix not found; running checks with tools from PATH. Results may differ from CI."
+fi
+
+GIT_ENV_UNSET="-u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE -u GIT_PREFIX -u GIT_COMMON_DIR -u GIT_OBJECT_DIRECTORY -u GIT_ALTERNATE_OBJECT_DIRECTORIES -u GIT_NAMESPACE"
+export MAPLE_HOOK_REPO_ROOT="$REPO_ROOT"
+export MAPLE_HOOK_STAGED="$STAGED_FILE"
+export MAPLE_HOOK_SELECTED="$SELECTED"
+export MAPLE_HOOK_FULL="${MAPLE_HOOK_FULL:-0}"
+
+# run_component NAME DIR FLAKE_REF SCRIPT [ENV=VALUE ...]
+#   DIR is where the script and `nix develop` run; FLAKE_REF is relative to DIR.
+run_component() {
+    name=$1; dir=$2; flake_ref=$3; script=$4
+    shift 4
+    hook_log "=== $name ==="
+    started=$(date +%s)
+    # Git exports GIT_INDEX_FILE, GIT_DIR, and friends to hooks. They must not
+    # leak into the checks: nested git commands (for example the scripts/ci
+    # tests' fixture repositories) would otherwise operate on this checkout.
+    # shellcheck disable=SC2086 # GIT_ENV_UNSET is a deliberate word list
+    if [ -n "$NIX_BIN" ]; then
+        (cd "$dir" && env $GIT_ENV_UNSET "$NIX_BIN" develop --no-update-lock-file "$flake_ref" \
+            -c env MAPLE_HOOK_IN_NIX=1 "$@" sh "$script")
+    else
+        # shellcheck disable=SC2086
+        (cd "$dir" && env $GIT_ENV_UNSET MAPLE_HOOK_IN_NIX=0 "$@" sh "$script")
+    fi
+    status=$?
+    hook_log "=== $name finished in $(( $(date +%s) - started ))s ==="
+    [ "$status" -eq 0 ] || exit "$status"
 }
 
-# Prefer the pinned toolchain whenever Nix is available. GUI applications on
-# macOS may not inherit the shell PATH, so also check the standard Nix paths.
-if [ "${MAPLE_HOOK_NIX_BOOTSTRAPPED:-0}" != "1" ] \
-    && [ -f "$REPO_ROOT/flake.nix" ]; then
-    NIX_BIN=$(find_nix)
-    if [ -n "$NIX_BIN" ]; then
-        echo "Entering the Maple Nix CI shell for pinned hook tools..."
-        exec "$NIX_BIN" develop --no-update-lock-file "$REPO_ROOT#ci" -c env MAPLE_HOOK_NIX_BOOTSTRAPPED=1 \
-            "$REPO_ROOT/.githooks/pre-commit"
-    fi
+if hook_selected repo; then
+    run_component repo "$REPO_ROOT" ".#ci" "$REPO_ROOT/.githooks/repo-checks"
+fi
+if hook_selected research_frontend || hook_selected research_rust; then
+    run_component maple-research "$REPO_ROOT" ".#ci" "$REPO_ROOT/apps/maple-research/.githooks/pre-commit"
+fi
+if hook_selected updates; then
+    run_component updates "$REPO_ROOT" ".#ci" "$REPO_ROOT/services/updates/.githooks/pre-commit"
+fi
+if hook_selected sdk_rust || hook_selected sdk_ts; then
+    run_component sdk "$REPO_ROOT/sdk" "." "$REPO_ROOT/sdk/.githooks/pre-commit"
+fi
+if hook_selected proxy; then
+    run_component proxy "$REPO_ROOT/proxy" "." "$REPO_ROOT/proxy/.githooks/pre-commit"
+fi
+if hook_selected agent; then
+    run_component maple-agent "$REPO_ROOT/apps/maple-agent" "." "$REPO_ROOT/apps/maple-agent/.githooks/pre-commit"
+fi
+if hook_selected opensecret; then
+    for submodule in nitro-toolkit privatemode-public; do
+        if [ ! -e "$REPO_ROOT/services/opensecret/$submodule/.git" ]; then
+            hook_fail "services/opensecret/$submodule is not checked out; CI would fail. Run: git submodule update --init --recursive"
+        fi
+    done
+    run_component opensecret "$REPO_ROOT/services/opensecret" ".?submodules=1" \
+        "$REPO_ROOT/services/opensecret/.githooks/pre-commit" \
+        OPENSECRET_DEV_POSTGRES=0 OPENSECRET_DEV_ENV=0 OPENSECRET_DEV_CONTAINERS=0
 fi
 
-if ! command -v bun >/dev/null 2>&1; then
-    NEEDS_TOOLCHAIN=1
-fi
-
-if echo "$STAGED_FILES" | grep -Eq '^apps/maple-research/frontend/src-tauri/.*\.(rs|toml|lock)$' \
-    && ! command -v cargo >/dev/null 2>&1; then
-    NEEDS_TOOLCHAIN=1
-fi
-
-if [ "$NEEDS_TOOLCHAIN" -eq 1 ]; then
-    if [ "${MAPLE_HOOK_NIX_BOOTSTRAPPED:-0}" = "1" ]; then
-        echo "Error: Maple's Nix development shell did not provide the required tools."
-        exit 1
-    fi
-
-    NIX_BIN=$(find_nix)
-    if [ -n "$NIX_BIN" ] && [ -f "$REPO_ROOT/flake.nix" ]; then
-        echo "Required tools are not on PATH; entering the Maple Nix development shell..."
-        exec "$NIX_BIN" develop --no-update-lock-file "$REPO_ROOT#ci" -c env MAPLE_HOOK_NIX_BOOTSTRAPPED=1 \
-            "$REPO_ROOT/.githooks/pre-commit"
-    fi
-
-    echo "Error: This hook requires bun, plus cargo for staged Rust changes."
-    echo "Install the missing tools or run the commit from 'nix develop --no-update-lock-file'."
-    exit 1
-fi
-
-# Navigate to frontend directory from repo root
-cd "$REPO_ROOT/apps/maple-research/frontend" || exit 1
-
-# Run prettier check
-echo "Checking code formatting with Prettier..."
-if ! bun run format:check; then
-    echo ""
-    echo "Error: Code formatting issues found! Please run 'bun run format' to fix formatting issues."
-    echo "Run 'cd apps/maple-research/frontend && bun run format:check' to see the formatting issues."
-    exit 1
-fi
-
-# Run the build command
-echo "Running bun build..."
-if ! bun run build; then
-    echo ""
-    echo "Error: Build failed! Please fix the build errors before committing."
-    echo "Run 'cd apps/maple-research/frontend && bun run build' to see the errors."
-    exit 1
-fi
-
-# Run unit tests
-echo "Running bun test..."
-if ! bun run test; then
-    echo ""
-    echo "Error: Unit tests failed! Please fix failing tests before committing."
-    echo "Run 'cd apps/maple-research/frontend && bun run test' to see the failures."
-    exit 1
-fi
-
-# Run Rust unit tests only when relevant Rust/Tauri files are staged
-if echo "$STAGED_FILES" | grep -Eq '^apps/maple-research/frontend/src-tauri/.*\.(rs|toml|lock)$'; then
-    echo "Running Rust unit tests..."
-    cd "$REPO_ROOT/apps/maple-research/frontend/src-tauri" || exit 1
-    if ! cargo test --locked --all-targets; then
-        echo ""
-        echo "Error: Rust tests failed! Please fix the test failures before committing."
-        echo "Run 'cd apps/maple-research/frontend/src-tauri && cargo test --locked --all-targets' to see the errors."
-        exit 1
-    fi
-else
-    echo "No staged Rust changes detected; skipping Rust unit tests."
-fi
-
-echo "All checks passed! Proceeding with commit..."
+hook_log "All selected checks passed."
 exit 0

@@ -12,7 +12,9 @@ layout, prerequisites, and command line modes.
 
 `just` lists the recipes. `just ci` runs the same checks as CI (format,
 clippy with `-D warnings` for every feature set, tests). Run it before a
-commit.
+commit. The repository pre-commit hook (`.githooks/pre-commit` here) runs
+format, one workspace clippy pass, and the workspace tests when Agent files
+are staged; `MAPLE_HOOK_FULL=1` runs the full `just ci`.
 
 Build and test through `just` or `nix develop` so this checkout shares
 Cargo intermediates with other maple-gpui worktrees

@@ -135,5 +135,9 @@ class OpenSecretChangeDetectionTests(unittest.TestCase):
                 self.assertFalse(affects_agent(path))
 
 
+    def test_component_hook_scripts_select_nothing(self):
+        self.assert_routes(["services/opensecret/.githooks/pre-commit"])
+
+
 if __name__ == "__main__":
     unittest.main()

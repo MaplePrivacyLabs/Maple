@@ -78,6 +78,10 @@ nix develop --no-update-lock-file -c bash -lc '
 
 Run focused tests while iterating, then match the root path-scoped workflows:
 `sdk-typescript.yml`, `sdk-rust.yml`, and `sdk-supply-chain.yml` as applicable.
+The repository pre-commit hook runs `sdk/.githooks/pre-commit` in this shell
+when SDK files are staged: the Rust format, Clippy, `--lib` tests, and docs,
+and the TypeScript format, build, and top-level unit tests. It never runs the
+integration suites or cargo-deny.
 When the change reaches backend behavior, authentication, or the encrypted wire
 contract, also match `sdk-integration.yml`. It starts disposable PostgreSQL and
 the in-tree `services/opensecret/` backend from the same checkout, then tests

@@ -195,7 +195,7 @@ nix flake check --no-update-lock-file
 
 This validates pinned tool versions, GitHub Actions syntax, and release metadata. Run it for changes to `flake.nix`, `flake.lock`, workflows, CI scripts, or release configuration. It is not a substitute for product tests.
 
-Do not cite the pre-commit hook as complete proof: it omits frontend lint and Rust format/Clippy, and its Rust tests depend on staged file patterns.
+Do not cite the pre-commit hook as complete proof: it runs only the format, lint, type-check, and unit-test lanes for the components whose files are staged, and never the integration suites, cargo-deny, `nix flake check`, or packaging.
 
 ## Build the affected platform
 

@@ -1,0 +1,14 @@
+#!/bin/sh
+# OpenSecret backend pre-commit checks. Runs from services/opensecret inside
+# its own flake with OPENSECRET_DEV_POSTGRES/ENV/CONTAINERS=0 so the dev shell
+# does not start PostgreSQL, containers, or rewrite .env.
+# CI equivalent: the `rust` job of opensecret-ci.yml. The nix build, cargo-deny
+# audit, EIF, and PCR checks stay in CI.
+
+set -u
+. "${MAPLE_HOOK_REPO_ROOT:?}/.githooks/lib/common.sh"
+hook_require cargo
+
+hook_run cargo fmt --all -- --check
+hook_run cargo clippy --locked --all-targets --all-features -- -D warnings
+hook_run cargo test --locked --all-features

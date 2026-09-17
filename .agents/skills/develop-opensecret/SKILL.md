@@ -33,6 +33,12 @@ signed-PCR publication contract.
 OPENSECRET_DEV_CONTAINERS=0 nix develop --no-update-lock-file '.?submodules=1'
 ```
 
+The repository pre-commit hook runs `cargo fmt --check`, Clippy, and
+`cargo test` through `.githooks/pre-commit` in this shell with
+`OPENSECRET_DEV_POSTGRES=0 OPENSECRET_DEV_ENV=0 OPENSECRET_DEV_CONTAINERS=0`
+when backend files are staged. It refuses to run when the submodules are not
+checked out; the nix build, cargo-deny, EIF, and PCR checks stay in CI.
+
 The shell may reuse a PostgreSQL listener, start `.pgdata`, and create `.env`
 when absent. On Linux, container setup also changes user-level state unless
 disabled. Read `docs/dev-shell.md` for controls and concurrent-checkout

@@ -204,8 +204,11 @@ MAPLE_WEB_ENVIRONMENT=pr nix develop --no-update-lock-file .#ci -c ./scripts/ci/
 nix flake check --no-update-lock-file
 ```
 
-The pre-commit hook is useful but is not full CI parity. Unit tests, a web
-build, a native package build, and a GUI smoke test are different evidence.
+The pre-commit hook runs the Research format, lint, type-check, and unit-test
+lanes (and the src-tauri format, Clippy, and tests) when their files are staged;
+see the [root guide](../../AGENTS.md#pre-commit-hook). It is not full CI
+parity. Unit tests, a web build, a native package build, and a GUI smoke test
+are different evidence.
 This repository has no general checked-in browser, packaged-app, or
 React-to-Tauri-command integration harness; never claim those checks prove
 runtime integration. A privileged IPC change requires a manual exact-app smoke

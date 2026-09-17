@@ -24,6 +24,7 @@ class ChangeDetectionTests(unittest.TestCase):
         self.assert_routes(["sdk/src/lib/test/integration/web.test.ts"])
         self.assert_routes(["services/updates/src/index.ts"])
         self.assert_routes([".githooks/pre-commit", "justfile", "apps/maple-research/zapstore.yaml"])
+        self.assert_routes(["apps/maple-research/.githooks/pre-commit", "proxy/.githooks/pre-commit", "sdk/.githooks/pre-commit"])
 
     def test_agent_component_does_not_trigger_research_packaging(self) -> None:
         for path in (

@@ -28,7 +28,7 @@ EIF_CI_INPUTS = frozenset({
 })
 # Shell test inputs consumed directly by the component flake, not Cargo.
 NIX_TEST_INPUTS = frozenset({"tests/entrypoint_entropy_preflight.sh"})
-BACKEND_INERT_PREFIXES = ("docs/", ".agents/", ".github/")
+BACKEND_INERT_PREFIXES = ("docs/", ".agents/", ".github/", ".githooks/")
 SHARED_INPUTS = frozenset({
     ".gitmodules",
     ".github/workflows/opensecret-change-detection.yml",

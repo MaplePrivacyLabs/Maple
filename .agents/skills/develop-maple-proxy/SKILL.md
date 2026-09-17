@@ -47,6 +47,9 @@ nix develop --no-update-lock-file ./proxy -c bash -lc '
 '
 ```
 
+The repository pre-commit hook runs exactly these commands through
+`proxy/.githooks/pre-commit` in the proxy shell when proxy files are staged.
+
 For Rust SDK or dependency-wiring changes, also prove Research resolves one
 SDK from its selected source and the in-tree proxy:
 

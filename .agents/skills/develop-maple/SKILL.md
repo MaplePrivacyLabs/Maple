@@ -143,7 +143,7 @@ cargo fmt --check
 ./scripts/run-with-desktop-onnxruntime.sh cargo test --locked --all-targets
 ```
 
-There is no `just test` recipe. The pre-commit hook is useful but does not replace ESLint, Clippy, CI-equivalent checks, or runtime smoke testing.
+There is no `just test` recipe. The pre-commit hook (`./setup-hooks.sh`) runs the Research format, ESLint, type-check, and unit-test lanes plus src-tauri format, Clippy, and tests when their files are staged, but it does not replace packaging checks or runtime smoke testing.
 
 Before handoff, run `git diff --check`, inspect the complete diff and status, and invoke `$validate-maple` when the risk or requested proof exceeds these focused checks.
 

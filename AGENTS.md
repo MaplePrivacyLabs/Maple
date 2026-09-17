@@ -89,8 +89,25 @@ unit tests, web/native packages, exact-app runtime smoke, and live deployment
 are separate evidence. Do not claim one proves another.
 
 Run `nix flake check --no-update-lock-file` for flake, workflow, CI-script, or
-release-configuration changes, plus the affected component checks. The
-pre-commit hook is useful but does not establish full CI parity.
+release-configuration changes, plus the affected component checks.
+
+### Pre-commit hook
+
+`./setup-hooks.sh` installs `.githooks/pre-commit`. It classifies staged paths
+with `scripts/ci/hook_change_detection.py` and runs each affected component's
+own `.githooks/pre-commit` inside that component's Nix flake, so the tools match
+CI: the root `.#ci` shell for Research, `services/updates/`, and repository
+checks; the component flakes for `apps/maple-agent/`, `sdk/`, `proxy/`, and
+`services/opensecret?submodules=1`. Without Nix it runs the same commands from
+`PATH` and warns that results may differ. It runs formatters, Clippy/ESLint,
+type checks, and unit tests for the components whose files are staged; shared
+crates do not fan out to their consumers. It never runs integration suites,
+cargo-deny, `nix flake check`, or packaging. `MAPLE_HOOK_FULL=1` runs the
+slower CI-complete variants (for example the Agent's full `just ci`);
+`MAPLE_HOOK_SKIP=1` or `git commit --no-verify` bypasses it. The hook is a fast
+local gate before the GitHub Actions cycle, not full CI parity. Keep the
+classifier, its table-driven tests, and the component scripts in step with the
+workflows when a lane changes.
 
 `scripts/ci/change_detection.py` routes expensive app packaging. It conservatively
 selects Research frontend builds for TypeScript SDK runtime inputs and desktop

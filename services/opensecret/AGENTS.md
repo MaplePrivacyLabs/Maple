@@ -18,7 +18,9 @@ component unless explicitly labeled as monorepo-root paths.
    system toolchains merely to bypass the repository environment.
 3. Remember that `nix develop` has stateful PostgreSQL, `.env`, and Linux
    container hooks. Use `docs/dev-shell.md` for controls and give concurrent
-   checkouts distinct state and ports.
+   checkouts distinct state and ports. The repository pre-commit hook runs
+   `.githooks/pre-commit` (format, Clippy, `cargo test`) in this shell with
+   those hooks disabled when backend files are staged.
 4. Run `just diesel-migration-run-local` before the backend. Startup does not
    run Diesel schema migrations; `src/migrations.rs` is separate
    application-data migration logic.
