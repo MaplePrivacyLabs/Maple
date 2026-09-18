@@ -1,10 +1,13 @@
 use crate::model_config::{ModelPlan, AUTO_POWERFUL_MODEL_ID, AUTO_QUICK_MODEL_ID};
 use crate::provider_registry::{ProviderId, RouteSelectionSource};
+use auto_model::{AutoModelDecision, AutoModelReason};
 use std::fmt;
 use std::time::Duration;
 use uuid::Uuid;
 
+pub(crate) mod auto_model;
 pub(crate) mod health;
+pub(crate) mod sticky_routes;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ModelSelectionMode {
@@ -25,9 +28,19 @@ impl ModelSelectionMode {
     pub(crate) const fn is_auto(self) -> bool {
         matches!(self, Self::AutoQuick | Self::AutoPowerful)
     }
+
+    /// The public alias string for an Auto mode, the inverse of
+    /// [`Self::from_requested_model`].
+    pub(crate) const fn alias(self) -> Option<&'static str> {
+        match self {
+            Self::AutoQuick => Some(AUTO_QUICK_MODEL_ID),
+            Self::AutoPowerful => Some(AUTO_POWERFUL_MODEL_ID),
+            Self::Explicit => None,
+        }
+    }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum InferenceSurface {
     ChatCompletions,
     Responses,
@@ -67,8 +80,14 @@ inference_id!(InferenceAttemptId);
 pub(crate) struct InferenceIntent {
     pub(crate) request_id: InferenceRequestId,
     pub(crate) account_uuid: Uuid,
+    /// The caller's selector: an Auto alias or an explicit public model.
     pub(crate) requested_model_id: String,
+    /// The model this logical request executes. Provider planning, context
+    /// preparation, persistence, and usage all use this identity.
     pub(crate) public_model_id: String,
+    /// The Router v2 Auto decision that produced `public_model_id`, when one
+    /// ran. Explicit selections and Router v1 requests carry none.
+    pub(crate) auto_model: Option<AutoModelDecision>,
     pub(crate) selection_mode: ModelSelectionMode,
     pub(crate) model_plan: ModelPlan,
     pub(crate) surface: InferenceSurface,
@@ -91,10 +110,35 @@ impl InferenceIntent {
             selection_mode: ModelSelectionMode::from_requested_model(&requested_model_id),
             requested_model_id,
             public_model_id: public_model_id.into(),
+            auto_model: None,
             model_plan,
             surface,
             workload_class,
         }
+    }
+
+    /// Applies a finished Router v2 Auto model decision. The chosen model
+    /// becomes the executed identity while the decision stays visible as
+    /// intent metadata.
+    pub(crate) fn with_auto_model_decision(mut self, decision: AutoModelDecision) -> Self {
+        debug_assert_eq!(decision.selector, self.requested_model_id);
+        self.public_model_id = decision.chosen_model_id.to_string();
+        self.auto_model = Some(decision);
+        self
+    }
+
+    /// The model the selector resolves to when healthy. Differs from
+    /// `public_model_id` only after an Auto decision chose an alternate.
+    pub(crate) fn preferred_model_id(&self) -> &str {
+        self.auto_model
+            .as_ref()
+            .map_or(self.public_model_id.as_str(), |decision| {
+                decision.preferred_model_id
+            })
+    }
+
+    pub(crate) fn auto_model_reason(&self) -> Option<AutoModelReason> {
+        self.auto_model.as_ref().map(|decision| decision.reason)
     }
 
     pub(crate) fn begin_execution(&self) -> InferenceExecution {

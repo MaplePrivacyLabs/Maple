@@ -918,8 +918,43 @@ fn attach_reasoning_to_assistant_message(message: &mut Value, reasoning: Option<
         .or_insert_with(|| Value::String(String::new()));
 }
 
-fn model_uses_kimi_tool_call_ids(model: &str) -> bool {
+const KIMI_TOOL_CALL_ID_PREFIX: &str = "functions.";
+
+/// Kimi models require tool-call ids in the form produced by
+/// [`kimi_tool_call_id`]; this predicate is the single definition of which
+/// public models that applies to.
+pub(crate) fn model_uses_kimi_tool_call_ids(model: &str) -> bool {
     model.to_ascii_lowercase().contains("kimi")
+}
+
+fn kimi_tool_call_id(function_name: &str, index: usize) -> String {
+    format!("{KIMI_TOOL_CALL_ID_PREFIX}{function_name}:{index}")
+}
+
+/// Whether every assistant tool call in a prompt already uses the id form
+/// that `normalize_tool_call_ids_for_kimi` produces. Chat Completions forwards
+/// caller history unchanged, so a Kimi alternate is compatible only when the
+/// history is already in this form.
+pub(crate) fn tool_call_ids_are_kimi_compatible(messages: &[Value]) -> bool {
+    messages
+        .iter()
+        .filter(|message| message.get("role").and_then(Value::as_str) == Some(ROLE_ASSISTANT))
+        .filter_map(|message| message.get("tool_calls").and_then(Value::as_array))
+        .flatten()
+        .all(|tool_call| {
+            tool_call
+                .get("id")
+                .and_then(Value::as_str)
+                .is_some_and(is_kimi_tool_call_id)
+        })
+}
+
+fn is_kimi_tool_call_id(id: &str) -> bool {
+    id.strip_prefix(KIMI_TOOL_CALL_ID_PREFIX)
+        .and_then(|rest| rest.rsplit_once(':'))
+        .is_some_and(|(name, index)| {
+            !name.is_empty() && !index.is_empty() && index.bytes().all(|byte| byte.is_ascii_digit())
+        })
 }
 
 /// Apply provider-required tool-call ID normalization to an already-built prompt.
@@ -960,7 +995,7 @@ fn normalize_tool_call_ids_for_kimi(messages: &mut [Value]) {
                         continue;
                     };
 
-                    let kimi_id = format!("functions.{function_name}:{next_tool_call_index}");
+                    let kimi_id = kimi_tool_call_id(function_name, next_tool_call_index);
                     next_tool_call_index += 1;
                     original_to_kimi_id.insert(original_id.to_string(), kimi_id.clone());
 
@@ -2199,5 +2234,111 @@ mod tests {
             total_tokens,
             budget
         );
+    }
+
+    #[test]
+    fn kimi_tool_call_id_compatibility_matches_the_normalized_form() {
+        let kimi_history = vec![
+            json!({"role": "user", "content": "search"}),
+            json!({"role": "assistant", "tool_calls": [
+                {"id": "functions.web_search:0", "type": "function", "function": {"name": "web_search", "arguments": "{}"}}
+            ]}),
+            json!({"role": "tool", "tool_call_id": "functions.web_search:0", "content": "ok"}),
+        ];
+        assert!(tool_call_ids_are_kimi_compatible(&kimi_history));
+
+        let foreign_history = vec![json!({"role": "assistant", "tool_calls": [
+            {"id": "call_abc123", "type": "function", "function": {"name": "web_search", "arguments": "{}"}}
+        ]})];
+        assert!(!tool_call_ids_are_kimi_compatible(&foreign_history));
+
+        let mixed_history = vec![json!({"role": "assistant", "tool_calls": [
+            {"id": "functions.web_search:0", "type": "function", "function": {"name": "web_search", "arguments": "{}"}},
+            {"id": "call_abc123", "type": "function", "function": {"name": "open_urls", "arguments": "{}"}}
+        ]})];
+        assert!(!tool_call_ids_are_kimi_compatible(&mixed_history));
+
+        // Histories without assistant tool calls are compatible with any model.
+        let plain = vec![
+            json!({"role": "user", "content": "hi"}),
+            json!({"role": "assistant", "content": "hello"}),
+        ];
+        assert!(tool_call_ids_are_kimi_compatible(&plain));
+        assert!(tool_call_ids_are_kimi_compatible(&[]));
+
+        // A tool call without an id is not a valid Kimi id either.
+        let missing_id = vec![
+            json!({"role": "assistant", "tool_calls": [{"type": "function", "function": {"name": "x", "arguments": "{}"}}]}),
+        ];
+        assert!(!tool_call_ids_are_kimi_compatible(&missing_id));
+
+        assert!(is_kimi_tool_call_id(&kimi_tool_call_id("web_search", 0)));
+        assert!(is_kimi_tool_call_id(&kimi_tool_call_id(
+            "developer__shell",
+            12
+        )));
+        for (id, expected) in [
+            ("functions.shell:1", true),
+            ("functions.developer__shell:22", true),
+            ("functions.:1", false),
+            ("functions.shell:", false),
+            ("functions.shell:one", false),
+            ("shell:1", false),
+            ("functions.shell", false),
+        ] {
+            assert_eq!(is_kimi_tool_call_id(id), expected, "{id}");
+        }
+    }
+
+    #[test]
+    fn history_that_fits_deepseek_is_truncated_by_the_existing_contract_for_glm_flash() {
+        // A DeepSeek-sized conversation: 450k tokens fits DeepSeek's 1M window
+        // but not GLM Flash's 256k window. Token counts are supplied directly
+        // so the test does not tokenize megabytes of text.
+        let history = || {
+            vec![
+                create_chat_msg(ROLE_USER, "first question", Some(50_000)),
+                create_chat_msg(ROLE_ASSISTANT, "first answer", Some(100_000)),
+                create_chat_msg(ROLE_USER, "second question", Some(100_000)),
+                create_chat_msg(ROLE_ASSISTANT, "second answer", Some(100_000)),
+                create_chat_msg(ROLE_USER, "latest question", Some(100_000)),
+            ]
+        };
+        let deepseek_budget = prompt_token_budget("deepseek-v4-1-flash");
+        let flash_budget = prompt_token_budget("glm-5-3-flash");
+        assert!(flash_budget < 450_000 && 450_000 < deepseek_budget);
+
+        let (deepseek_prompt, deepseek_tokens) =
+            build_prompt_from_chat_messages(history(), "deepseek-v4-1-flash")
+                .expect("DeepSeek prompt");
+        assert_eq!(deepseek_prompt.len(), 5);
+        assert_eq!(deepseek_tokens, 450_000);
+        assert!(!deepseek_prompt
+            .iter()
+            .any(|message| message["content"]
+                == "[Previous messages truncated due to context limits]"));
+
+        // The fallback model receives the same lawful middle truncation that an
+        // explicit GLM Flash request would: first user turn, marker, newest
+        // tail that fits, and the latest user message always present.
+        let (flash_prompt, flash_tokens) =
+            build_prompt_from_chat_messages(history(), "glm-5-3-flash").expect("Flash prompt");
+        assert!(
+            flash_tokens <= flash_budget,
+            "{flash_tokens} > {flash_budget}"
+        );
+        assert_eq!(flash_prompt.first().unwrap()["content"], "first question");
+        assert_eq!(
+            flash_prompt[1]["content"],
+            "[Previous messages truncated due to context limits]"
+        );
+        assert_eq!(flash_prompt.last().unwrap()["content"], "latest question");
+        assert_eq!(flash_prompt.last().unwrap()["role"], ROLE_USER);
+        assert!(flash_prompt.len() < deepseek_prompt.len());
+
+        let (explicit_prompt, explicit_tokens) =
+            build_prompt_from_chat_messages(history(), "glm-5-3-flash").expect("explicit Flash");
+        assert_eq!(explicit_prompt, flash_prompt);
+        assert_eq!(explicit_tokens, flash_tokens);
     }
 }

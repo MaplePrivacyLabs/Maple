@@ -62,7 +62,7 @@ where
         self.insert_evicting_at(key, value, Instant::now())
     }
 
-    fn insert_evicting_at(&mut self, key: K, value: V, now: Instant) -> InsertOutcome {
+    pub(crate) fn insert_evicting_at(&mut self, key: K, value: V, now: Instant) -> InsertOutcome {
         let expires_at = now
             .checked_add(self.ttl)
             .expect("bounded cache TTL must fit in Instant");
@@ -94,6 +94,27 @@ where
         debug_assert!(previous.is_none());
         debug_assert!(self.entries.len() <= self.entries.capacity());
         outcome
+    }
+
+    /// Returns a live value without consuming it. Reads do not change the
+    /// recency order, so LRU order keeps matching expiry order as
+    /// [`Self::retire_expired_at`] requires. An expired entry is removed
+    /// instead of returned.
+    #[cfg(test)]
+    pub(crate) fn get_live(&mut self, key: &K) -> Option<&V> {
+        self.get_live_at(key, Instant::now())
+    }
+
+    pub(crate) fn get_live_at(&mut self, key: &K, now: Instant) -> Option<&V> {
+        if self
+            .entries
+            .peek(key)
+            .is_some_and(|entry| entry.expires_at <= now)
+        {
+            drop(self.entries.pop(key));
+            return None;
+        }
+        self.entries.peek(key).map(|entry| &entry.value)
     }
 
     /// Removes a value exactly once and returns it only while its TTL is live.
@@ -148,7 +169,7 @@ where
     }
 
     #[cfg(test)]
-    fn len(&self) -> usize {
+    pub(crate) fn len(&self) -> usize {
         self.entries.len()
     }
 }
@@ -463,5 +484,47 @@ mod tests {
             cache.take_live_at(&(128 * 12 - 1), start),
             Some(128 * 12 - 1)
         );
+    }
+
+    #[test]
+    fn get_live_returns_without_consuming_and_drops_expired_entries() {
+        let start = Instant::now();
+        let mut cache = cache(2, Duration::from_secs(60));
+        cache.insert_evicting_at(1, "one", start);
+
+        assert_eq!(
+            cache.get_live_at(&1, start + Duration::from_secs(59)),
+            Some(&"one")
+        );
+        assert_eq!(
+            cache.get_live_at(&1, start + Duration::from_secs(59)),
+            Some(&"one")
+        );
+        assert_eq!(cache.get_live_at(&1, start + Duration::from_secs(60)), None);
+        assert_eq!(cache.len(), 0);
+        assert_eq!(cache.get_live(&1), None);
+    }
+
+    #[test]
+    fn get_live_does_not_reorder_entries_so_oldest_expiry_is_still_retired_first() {
+        let start = Instant::now();
+        let mut cache = cache(3, Duration::from_secs(60));
+        cache.insert_evicting_at(1, 1u8, start);
+        cache.insert_evicting_at(2, 2u8, start + Duration::from_secs(10));
+        cache.insert_evicting_at(3, 3u8, start + Duration::from_secs(20));
+
+        // Reading the oldest entry must not move it to the front.
+        assert_eq!(
+            cache.get_live_at(&1, start + Duration::from_secs(30)),
+            Some(&1u8)
+        );
+        let retired = cache.retire_expired_at(start + Duration::from_secs(65));
+        assert_eq!(retired.removed_count(), 1);
+        assert_eq!(cache.get_live_at(&1, start + Duration::from_secs(65)), None);
+        assert_eq!(
+            cache.get_live_at(&2, start + Duration::from_secs(65)),
+            Some(&2u8)
+        );
+        assert_eq!(cache.len(), 2);
     }
 }

@@ -1,8 +1,13 @@
+use crate::inference::auto_model::{
+    auto_model_candidates, select_auto_model, AutoModelDecision, AutoModelError,
+    AutoModelRequirements, AutoModelSelectionInput, ExcludedAutoCandidate, ModelAvailability,
+    PromptTokenEstimate, AUTO_MODEL_POLICY_VERSION,
+};
 use crate::inference::health::{ProbeClaimResult, ProbeLease, ShadowObservationMode};
 use crate::inference::{
     AttemptFailure, AttemptFailureKind, AttemptOutcome, AttemptStage, AttemptTerminal,
     CompletionEvidence, InferenceAttempt, InferenceExecution, InferenceIntent, InferenceSurface,
-    ReplaySafety, WorkloadClass,
+    ModelSelectionMode, ReplaySafety, WorkloadClass,
 };
 use crate::inference_planning::{RoutePlan, RoutePlanningError};
 use crate::model_config::{
@@ -26,11 +31,13 @@ use crate::provider_routing::{
 };
 use crate::proxy_config::{ProxyConfig, ProxyRouter};
 use crate::sqs::UsageEvent;
+use crate::tokens::count_tokens;
 use crate::web::audio_utils::{merge_transcriptions, AudioSplitter, TINFOIL_MAX_SIZE};
 use crate::web::encryption_middleware::{
     decrypt_request, encrypt_response, Decrypted, TransportSession,
 };
 use crate::web::openai_auth::AuthMethod;
+use crate::web::responses::context_builder::tool_call_ids_are_kimi_compatible;
 use crate::web::responses::{ResponseExecution, ResponseExecutionTaskGuard};
 use crate::{ApiError, AppState};
 use axum::http::{header, HeaderMap, HeaderName, StatusCode};
@@ -310,7 +317,7 @@ impl MessageLogMetadata {
     fn record_content_part(&mut self, part: &Value) {
         match part.get("type").and_then(Value::as_str) {
             Some("text") | Some("input_text") => self.text_parts += 1,
-            Some("image_url") | Some("input_image") => {
+            _ if is_image_part(part) => {
                 self.image_parts += 1;
                 match image_part_url(part) {
                     Some(url) if url.starts_with("data:") => self.image_data_url_parts += 1,
@@ -1558,6 +1565,341 @@ pub fn models_router(app_state: Arc<AppState>) -> Router<()> {
         .with_state(app_state)
 }
 
+/// The model identity a logical request executes, fixed before any
+/// model-dependent preparation.
+#[derive(Debug, Clone)]
+pub(crate) enum ResolvedInferenceModel {
+    /// Router v1 requests and explicit selections: the alias target as is.
+    Explicit(String),
+    /// A Router v2 Auto decision; the chosen model is the executed identity.
+    Auto(AutoModelDecision),
+}
+
+impl ResolvedInferenceModel {
+    pub(crate) fn public_model_id(&self) -> &str {
+        match self {
+            Self::Explicit(model) => model,
+            Self::Auto(decision) => decision.chosen_model_id,
+        }
+    }
+
+    pub(crate) fn auto_decision(&self) -> Option<&AutoModelDecision> {
+        match self {
+            Self::Explicit(_) => None,
+            Self::Auto(decision) => Some(decision),
+        }
+    }
+
+    pub(crate) fn intent(
+        &self,
+        account_uuid: Uuid,
+        requested_model_id: &str,
+        model_plan: ModelPlan,
+        surface: InferenceSurface,
+        workload_class: WorkloadClass,
+    ) -> InferenceIntent {
+        let intent = InferenceIntent::new(
+            account_uuid,
+            requested_model_id,
+            self.public_model_id().to_string(),
+            model_plan,
+            surface,
+            workload_class,
+        );
+        match self {
+            Self::Explicit(_) => intent,
+            Self::Auto(decision) => intent.with_auto_model_decision(decision.clone()),
+        }
+    }
+}
+
+/// Request identity for model resolution, captured at an authenticated
+/// inference entrypoint after alias resolution.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ModelResolutionRequest<'a> {
+    pub(crate) account_uuid: Uuid,
+    pub(crate) surface: InferenceSurface,
+    pub(crate) requested_model_id: &'a str,
+    pub(crate) alias_target: &'a str,
+    pub(crate) model_plan: ModelPlan,
+    pub(crate) routing_mode: InferenceRoutingMode,
+    /// An Auto candidate that already failed this request's model-dependent
+    /// preparation or lost its routes before any send; the bounded second
+    /// decision never returns to it and carries its cause forward.
+    pub(crate) excluded: Option<&'a ExcludedAutoCandidate>,
+}
+
+/// Whether a request reaches the Router v2 Auto model stage at all.
+fn needs_auto_model_decision(requested_model_id: &str, routing_mode: InferenceRoutingMode) -> bool {
+    routing_mode == InferenceRoutingMode::V2
+        && ModelSelectionMode::from_requested_model(requested_model_id).is_auto()
+}
+
+/// Resolves the public model a logical request executes.
+///
+/// Router v1 and explicit selections keep the alias target exactly. Router v2
+/// Auto selectors may move to another approved model of the same tier when the
+/// preferred model has no eligible provider route, evaluated from one health
+/// snapshot together with the account's remembered route. This runs before
+/// context assembly, persistence, and route pinning, contacts no provider, and
+/// claims no health gate; the same-model planner and first-send claim follow.
+/// `requirements` is only evaluated when the Auto stage actually runs, so
+/// callers can defer request inspection.
+pub(crate) fn resolve_inference_model<'a>(
+    provider_router: &ProviderRouter,
+    proxy_router: &ProxyRouter,
+    request: ModelResolutionRequest<'_>,
+    requirements: impl FnOnce() -> AutoModelRequirements<'a>,
+) -> Result<ResolvedInferenceModel, ApiError> {
+    if !needs_auto_model_decision(request.requested_model_id, request.routing_mode) {
+        return Ok(ResolvedInferenceModel::Explicit(
+            request.alias_target.to_string(),
+        ));
+    }
+    let mode = ModelSelectionMode::from_requested_model(request.requested_model_id);
+    let requirements = requirements();
+    let candidates = auto_model_candidates(mode, request.model_plan).unwrap_or_default();
+    let availability = provider_router.model_availability(proxy_router, &candidates);
+    let sticky = provider_router.sticky_route(
+        request.account_uuid,
+        request.surface,
+        request.requested_model_id,
+    );
+    let lookup = |model: &str| {
+        availability
+            .get(model)
+            .copied()
+            .unwrap_or(ModelAvailability::NotConfigured)
+    };
+    let selection = select_auto_model(AutoModelSelectionInput {
+        mode,
+        plan: request.model_plan,
+        sticky_model_id: sticky.as_ref().map(|route| route.public_model_id.as_str()),
+        excluded: request.excluded,
+        requirements,
+        availability: &lookup,
+    });
+
+    match selection {
+        Ok(decision) => {
+            if decision.changed_model() {
+                info!(
+                    "Auto model selection chose an alternate model: selector={}, surface={:?}, plan={:?}, preferred_model={}, chosen_model={}, reason={}, rejected={:?}, policy_version={}",
+                    decision.selector,
+                    request.surface,
+                    request.model_plan,
+                    decision.preferred_model_id,
+                    decision.chosen_model_id,
+                    decision.reason.as_str(),
+                    decision.rejected,
+                    decision.policy_version
+                );
+            } else {
+                debug!(
+                    "Auto model selection kept the preferred model: selector={}, surface={:?}, plan={:?}, preferred_model={}, reason={}, rejected={:?}, policy_version={}",
+                    decision.selector,
+                    request.surface,
+                    request.model_plan,
+                    decision.preferred_model_id,
+                    decision.reason.as_str(),
+                    decision.rejected,
+                    decision.policy_version
+                );
+            }
+            Ok(ResolvedInferenceModel::Auto(decision))
+        }
+        Err(AutoModelError::PreferredModelDenied) => {
+            // An alias never grants access to its paid target.
+            error!(
+                "Paid completion model requested without entitlement: {}",
+                request.alias_target
+            );
+            Err(ApiError::ModelNotAvailableOnPlan)
+        }
+        Err(AutoModelError::PreferredModelNotConfigured) => {
+            error!(
+                "Auto tier's preferred model has no configured Router v2 route: selector={}, preferred_model={}",
+                request.requested_model_id, request.alias_target
+            );
+            Err(ApiError::InternalServerError)
+        }
+        Err(AutoModelError::NoEligibleCandidate {
+            selector,
+            preferred_model_id,
+            retry_after: Some(retry_after),
+            rejected,
+        }) => {
+            debug!(
+                "Auto model selection found no eligible candidate: selector={}, surface={:?}, plan={:?}, preferred_model={}, rejected={:?}, retry_after_seconds={}, policy_version={}",
+                selector,
+                request.surface,
+                request.model_plan,
+                preferred_model_id,
+                rejected,
+                retry_after.as_secs(),
+                AUTO_MODEL_POLICY_VERSION
+            );
+            // Nothing has been sent or persisted, so the established capacity
+            // contract applies unchanged. Surfaces that already performed
+            // billed helper work downgrade replay safety themselves.
+            Err(ApiError::InferenceCapacity {
+                status: StatusCode::SERVICE_UNAVAILABLE,
+                retry_after: Some(retry_after),
+                client_replay_safe: true,
+            })
+        }
+        Err(AutoModelError::NoEligibleCandidate {
+            selector,
+            preferred_model_id,
+            retry_after: None,
+            rejected,
+        }) => {
+            // No candidate was rejected for health, so waiting cannot help:
+            // the tier is misconfigured or incompatible with this request.
+            error!(
+                "Auto model tier has no configured or compatible candidate: selector={}, surface={:?}, plan={:?}, preferred_model={}, rejected={:?}, policy_version={}",
+                selector,
+                request.surface,
+                request.model_plan,
+                preferred_model_id,
+                rejected,
+                AUTO_MODEL_POLICY_VERSION
+            );
+            Err(ApiError::InternalServerError)
+        }
+        Err(AutoModelError::NotAuto) => {
+            error!("Auto model policy rejected a Router v2 selector");
+            Err(ApiError::InternalServerError)
+        }
+    }
+}
+
+/// Requirements a Router v2 Auto alternate must satisfy for a Chat Completions
+/// body. Chat forwards the caller's messages and tool schemas unchanged, so an
+/// alternate must accept them as they are.
+struct ChatAutoRequirements<'a> {
+    messages: Option<&'a Vec<Value>>,
+    tools: Option<&'a Value>,
+    /// The caller's own output limit, reserved alongside the prompt.
+    max_tokens: usize,
+}
+
+impl<'a> ChatAutoRequirements<'a> {
+    fn from_body(body: &'a Value) -> Self {
+        let caller_limit = |field: &str| {
+            body.get(field)
+                .and_then(Value::as_u64)
+                .and_then(|tokens| usize::try_from(tokens).ok())
+                .unwrap_or(0)
+        };
+        Self {
+            messages: body.get("messages").and_then(Value::as_array),
+            tools: body.get("tools"),
+            max_tokens: caller_limit("max_tokens").max(caller_limit("max_completion_tokens")),
+        }
+    }
+
+    fn requirements<'b>(&'b self, exact: &'b dyn Fn() -> usize) -> AutoModelRequirements<'b> {
+        AutoModelRequirements {
+            vision: chat_messages_include_images(self.messages),
+            kimi_tool_history_compatible: self
+                .messages
+                .is_none_or(|messages| tool_call_ids_are_kimi_compatible(messages)),
+            prompt_tokens: PromptTokenEstimate::Bounded {
+                upper_bound: chat_prompt_text_bytes(self.messages, self.tools)
+                    .saturating_add(self.max_tokens),
+                exact,
+            },
+        }
+    }
+
+    fn exact_tokens(&self) -> usize {
+        estimate_chat_prompt_tokens(self.messages, self.tools).saturating_add(self.max_tokens)
+    }
+}
+
+fn is_image_part(part: &Value) -> bool {
+    matches!(
+        part.get("type").and_then(Value::as_str),
+        Some("image_url" | "input_image")
+    )
+}
+
+/// Whether any Chat Completions message carries an image part that the main
+/// model would receive directly. Chat forwards images to the provider.
+fn chat_messages_include_images(messages: Option<&Vec<Value>>) -> bool {
+    messages.is_some_and(|messages| {
+        messages.iter().any(|message| {
+            message
+                .get("content")
+                .and_then(Value::as_array)
+                .is_some_and(|parts| parts.iter().any(is_image_part))
+        })
+    })
+}
+
+/// Applies `measure` to every text the model receives from a Chat Completions
+/// prompt: message text, text parts, reasoning, tool-call names and arguments,
+/// and the tool schema array. Image parts are excluded because their provider
+/// token cost is model-specific.
+fn measure_chat_prompt_text(
+    messages: Option<&Vec<Value>>,
+    tools: Option<&Value>,
+    measure: &dyn Fn(&str) -> usize,
+) -> usize {
+    let mut total = tools.map(|tools| measure(&tools.to_string())).unwrap_or(0);
+    let Some(messages) = messages else {
+        return total;
+    };
+    for message in messages {
+        match message.get("content") {
+            Some(Value::String(text)) => total += measure(text),
+            Some(Value::Array(parts)) => {
+                total += parts
+                    .iter()
+                    .filter_map(|part| part.get("text").and_then(Value::as_str))
+                    .map(measure)
+                    .sum::<usize>();
+            }
+            _ => {}
+        }
+        if let Some(reasoning) = message.get("reasoning").and_then(Value::as_str) {
+            total += measure(reasoning);
+        }
+        if let Some(calls) = message.get("tool_calls").and_then(Value::as_array) {
+            for call in calls {
+                let function = call.get("function");
+                if let Some(name) = function
+                    .and_then(|function| function.get("name"))
+                    .and_then(Value::as_str)
+                {
+                    total += measure(name);
+                }
+                match function.and_then(|function| function.get("arguments")) {
+                    Some(Value::String(arguments)) => total += measure(arguments),
+                    Some(other) => total += measure(&other.to_string()),
+                    None => {}
+                }
+            }
+        }
+    }
+    total
+}
+
+/// Byte length of the prompt text. Byte-level BPE never produces more tokens
+/// than bytes, so this bounds the exact count without tokenizing.
+fn chat_prompt_text_bytes(messages: Option<&Vec<Value>>, tools: Option<&Value>) -> usize {
+    measure_chat_prompt_text(messages, tools, &str::len)
+}
+
+/// Exact token count of the prompt text with the completion tokenizer. Only
+/// decides whether an Auto alternate whose window is smaller than the
+/// preferred model's can take the request; it never limits what the caller
+/// sends to the chosen model.
+fn estimate_chat_prompt_tokens(messages: Option<&Vec<Value>>, tools: Option<&Value>) -> usize {
+    measure_chat_prompt_text(messages, tools, &count_tokens)
+}
+
 async fn proxy_openai(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -1612,40 +1954,104 @@ async fn proxy_openai(
     } else {
         ModelAliasTargets::for_plan(model_plan)
     };
-    let model_name = alias_targets.resolve(&requested_model_name).to_string();
-    let intent = InferenceIntent::new(
-        user.uuid,
-        requested_model_name.clone(),
-        model_name.clone(),
-        model_plan,
-        InferenceSurface::ChatCompletions,
-        WorkloadClass::Interactive,
-    );
-    let pinned_completion = prepare_completion_request(&state, &user, intent, routing).await?;
-    if requested_model_name != model_name {
-        debug!(
-            "Resolved chat model {} to {}",
-            requested_model_name, model_name
+    let alias_target = alias_targets.resolve(&requested_model_name).to_string();
+    let billing_context = BillingContext::new(auth_method, requested_model_name.clone());
+
+    // Router v2 Auto may choose another approved model of the tier before the
+    // route is pinned. The body is only inspected when that stage runs. If the
+    // chosen model then loses its routes before any send, at route preparation
+    // or at the first-send claim, decide once more with it excluded; a second
+    // failure is returned as is. Nothing here ever replays a provider attempt.
+    let mut excluded: Option<ExcludedAutoCandidate> = None;
+    let mut reselected = false;
+    let completion = loop {
+        let chat_requirements = ChatAutoRequirements::from_body(&body);
+        let exact = || chat_requirements.exact_tokens();
+        let resolved_model = resolve_inference_model(
+            &state.provider_router,
+            &state.proxy_router,
+            ModelResolutionRequest {
+                account_uuid: user.uuid,
+                surface: InferenceSurface::ChatCompletions,
+                requested_model_id: &requested_model_name,
+                alias_target: &alias_target,
+                model_plan,
+                routing_mode: routing.mode(),
+                excluded: excluded.as_ref(),
+            },
+            || chat_requirements.requirements(&exact),
+        )?;
+        let can_reselect = !reselected && resolved_model.auto_decision().is_some();
+        let model_name = resolved_model.public_model_id().to_string();
+        let intent = resolved_model.intent(
+            user.uuid,
+            &requested_model_name,
+            model_plan,
+            InferenceSurface::ChatCompletions,
+            WorkloadClass::Interactive,
         );
-        body.as_object_mut()
+        let pinned_completion = match prepare_completion_request(&state, &user, intent, routing)
+            .await
+        {
+            Ok(pinned) => pinned,
+            Err(ApiError::InferenceCapacity { retry_after, .. }) if can_reselect => {
+                reselected = true;
+                info!(
+                    "Chat Auto model lost its routes before send; deciding again without it: selector={}, model={}, retry_after_seconds={:?}",
+                    requested_model_name,
+                    model_name,
+                    retry_after.map(|hint| hint.as_secs())
+                );
+                excluded = Some(ExcludedAutoCandidate::unavailable(model_name, retry_after));
+                continue;
+            }
+            Err(error) => return Err(error),
+        };
+        if requested_model_name != model_name {
+            debug!(
+                "Resolved chat model {} to {}",
+                requested_model_name, model_name
+            );
+        }
+        let mut request_body = if can_reselect {
+            body.clone()
+        } else {
+            std::mem::take(&mut body)
+        };
+        request_body
+            .as_object_mut()
             .expect("model was read from a JSON object")
             .insert("model".to_string(), json!(model_name));
-    }
 
-    // Create billing context
-    let billing_context = BillingContext::new(auth_method, requested_model_name);
-
-    // Get the completion stream - billing happens automatically inside!
-    let completion = get_chat_completion_response(
-        &state,
-        &user,
-        body,
-        &headers,
-        CompletionExecutionContext::new(billing_context, routing, &cache_policy),
-        &pinned_completion,
-    )
-    .await
-    .map_err(CompletionExecutionError::into_pre_persistence_api_error)?;
+        match get_chat_completion_response(
+            &state,
+            &user,
+            request_body,
+            &headers,
+            CompletionExecutionContext::new(billing_context.clone(), routing, &cache_policy),
+            &pinned_completion,
+        )
+        .await
+        {
+            Ok(completion) => break completion,
+            // A `Request` failure precedes any provider attempt by construction.
+            Err(CompletionExecutionError::Request(ApiError::InferenceCapacity {
+                retry_after,
+                ..
+            })) if can_reselect => {
+                reselected = true;
+                info!(
+                    "Chat Auto model lost its first-send claim; deciding again without it: selector={}, model={}, retry_after_seconds={:?}",
+                    requested_model_name,
+                    model_name,
+                    retry_after.map(|hint| hint.as_secs())
+                );
+                excluded = Some(ExcludedAutoCandidate::unavailable(model_name, retry_after));
+                continue;
+            }
+            Err(error) => return Err(error.into_pre_persistence_api_error()),
+        }
+    };
 
     debug!(
         "Received completion stream: request_id={}, execution_id={}, attempt_id={}, provider={}, streaming={}",
@@ -1920,7 +2326,7 @@ pub(crate) async fn prepare_completion_request(
     };
 
     debug!(
-        "Pinned inference route: request_id={}, routing_mode={:?}, selection_mode={:?}, auto={}, surface={:?}, workload={:?}, requested_model={}, public_model={}, provider={}, provider_model={}, bucket={:?}, source={:?}",
+        "Pinned inference route: request_id={}, routing_mode={:?}, selection_mode={:?}, auto={}, surface={:?}, workload={:?}, requested_model={}, preferred_model={}, public_model={}, auto_model_reason={:?}, provider={}, provider_model={}, bucket={:?}, source={:?}",
         intent.request_id,
         routing.mode(),
         intent.selection_mode,
@@ -1928,7 +2334,9 @@ pub(crate) async fn prepare_completion_request(
         intent.surface,
         intent.workload_class,
         intent.requested_model_id,
+        intent.preferred_model_id(),
         route.public_model_id,
+        intent.auto_model_reason().map(|reason| reason.as_str()),
         route.provider.as_str(),
         route.provider_model_id,
         route.bucket,
@@ -2067,6 +2475,19 @@ fn claim_completion_turn(
             .get()
             .expect("failed OnceLock set means another route was finalized");
         return claim_finalized_completion_turn(provider_router, pinned, route);
+    }
+}
+
+/// Remembers the route once the provider has accepted the request, which is
+/// when its prompt cache is warmed for this account. A route whose send never
+/// starts earns no memory. Router v1 keeps no memory at all.
+fn remember_started_route(
+    provider_router: &ProviderRouter,
+    pinned: &PinnedCompletionRequest,
+    route: &SelectedProviderRoute,
+) {
+    if pinned.routing_mode() == InferenceRoutingMode::V2 {
+        provider_router.remember_route(&pinned.intent, route);
     }
 }
 
@@ -2478,6 +2899,7 @@ async fn get_chat_completion_response_with_options(
                     },
                     ShadowObservationMode::Update,
                 );
+                remember_started_route(&state.provider_router, pinned, &selected_route);
                 info!(
                     "Inference response started: request_id={}, execution_id={}, attempt_id={}",
                     attempt.request_id, attempt.execution_id, attempt.attempt_id
@@ -6932,5 +7354,922 @@ mod tests {
             .take_final_usage(StreamUsageFinalization::ProviderDone)
             .expect("explicit [DONE] should finalize the latest usage");
         assert_usage(usage, 80, 3, None);
+    }
+
+    fn auto_requirements() -> AutoModelRequirements<'static> {
+        AutoModelRequirements {
+            vision: false,
+            kimi_tool_history_compatible: true,
+            prompt_tokens: PromptTokenEstimate::Known(16),
+        }
+    }
+
+    fn resolve_for_test(
+        provider_router: &ProviderRouter,
+        proxy_router: &ProxyRouter,
+        account: Uuid,
+        surface: InferenceSurface,
+        requested: &str,
+        plan: ModelPlan,
+        mode: InferenceRoutingMode,
+    ) -> Result<ResolvedInferenceModel, ApiError> {
+        resolve_excluding_for_test(
+            provider_router,
+            proxy_router,
+            account,
+            surface,
+            requested,
+            plan,
+            mode,
+            None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn resolve_excluding_for_test(
+        provider_router: &ProviderRouter,
+        proxy_router: &ProxyRouter,
+        account: Uuid,
+        surface: InferenceSurface,
+        requested: &str,
+        plan: ModelPlan,
+        mode: InferenceRoutingMode,
+        excluded: Option<&ExcludedAutoCandidate>,
+    ) -> Result<ResolvedInferenceModel, ApiError> {
+        let alias_target = ModelAliasTargets::for_router_v2(plan).resolve(requested);
+        resolve_inference_model(
+            provider_router,
+            proxy_router,
+            ModelResolutionRequest {
+                account_uuid: account,
+                surface,
+                requested_model_id: requested,
+                alias_target,
+                model_plan: plan,
+                routing_mode: mode,
+                excluded,
+            },
+            auto_requirements,
+        )
+    }
+
+    fn model_dispatching_tinfoil_mock(
+        count_by_model: Arc<std::sync::Mutex<Vec<String>>>,
+    ) -> Router {
+        Router::new().route(
+            "/v1/chat/completions",
+            post(move |Json(body): Json<Value>| {
+                let count_by_model = Arc::clone(&count_by_model);
+                async move {
+                    let model = body["model"].as_str().unwrap_or_default().to_string();
+                    count_by_model
+                        .lock()
+                        .expect("model log lock")
+                        .push(model.clone());
+                    if model == crate::model_config::DEEPSEEK_V4_1_FLASH_MODEL_ID {
+                        return axum::http::Response::builder()
+                            .status(StatusCode::SERVICE_UNAVAILABLE)
+                            .header(header::RETRY_AFTER, "40")
+                            .body(axum::body::Body::empty())
+                            .expect("mock DeepSeek 503");
+                    }
+                    axum::http::Response::builder()
+                        .status(StatusCode::OK)
+                        .header(header::CONTENT_TYPE, "application/json")
+                        .body(axum::body::Body::from(format!(
+                            r#"{{"model":"{model}","choices":[{{"message":{{"role":"assistant","content":"ok"}}}}],"usage":{{"prompt_tokens":3,"completion_tokens":1}}}}"#
+                        )))
+                        .expect("mock success")
+                }
+            }),
+        )
+    }
+
+    #[tokio::test]
+    async fn auto_quick_outage_moves_the_next_request_to_glm_flash_without_replaying() {
+        use crate::inference::auto_model::{AutoCandidateRejection, AutoModelReason};
+        use crate::inference::sticky_routes::StickyRoute;
+        use crate::model_config::{
+            AUTO_POWERFUL_MODEL_ID, AUTO_QUICK_MODEL_ID, DEEPSEEK_V4_1_FLASH_MODEL_ID,
+            GLM_5_3_FLASH_MODEL_ID, QUICK_MODEL_ID,
+        };
+
+        let sent_models = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let (tinfoil_url, tinfoil_server) =
+            start_mock_provider(model_dispatching_tinfoil_mock(Arc::clone(&sent_models))).await;
+        let continuum_count = Arc::new(AtomicUsize::new(0));
+        let continuum_app = {
+            let count = Arc::clone(&continuum_count);
+            Router::new().route(
+                "/v1/chat/completions",
+                post(move || {
+                    let count = Arc::clone(&count);
+                    async move {
+                        count.fetch_add(1, Ordering::SeqCst);
+                        StatusCode::OK
+                    }
+                }),
+            )
+        };
+        let (continuum_url, continuum_server) = start_mock_provider(continuum_app).await;
+        let provider_client =
+            ProviderClient::for_test(tinfoil_url.clone()).expect("test provider client");
+        let proxy_router = ProxyRouter::new(continuum_url, None, tinfoil_url);
+        let provider_router = ProviderRouter::default();
+        // Bucket 50 keeps GLM Flash on Tinfoil so one mock observes every send.
+        let account = Uuid::from_u128(50);
+        let surface = InferenceSurface::ChatCompletions;
+        let plan = ModelPlan::Paid;
+        let sent_to = |model: &str| {
+            sent_models
+                .lock()
+                .expect("model log")
+                .iter()
+                .filter(|sent| sent.as_str() == model)
+                .count()
+        };
+
+        // 1. Healthy: Auto Quick keeps DeepSeek and that request discovers the outage.
+        let first = resolve_for_test(
+            &provider_router,
+            &proxy_router,
+            account,
+            surface,
+            AUTO_QUICK_MODEL_ID,
+            plan,
+            InferenceRoutingMode::V2,
+        )
+        .expect("healthy resolution");
+        assert_eq!(first.public_model_id(), DEEPSEEK_V4_1_FLASH_MODEL_ID);
+        let first_decision = first.auto_decision().cloned().expect("auto decision");
+        assert_eq!(first_decision.reason, AutoModelReason::Primary);
+        let first_intent = first.intent(
+            account,
+            AUTO_QUICK_MODEL_ID,
+            plan,
+            surface,
+            WorkloadClass::Interactive,
+        );
+        assert_eq!(first_intent.requested_model_id, AUTO_QUICK_MODEL_ID);
+        assert_eq!(
+            first_intent.preferred_model_id(),
+            DEEPSEEK_V4_1_FLASH_MODEL_ID
+        );
+        assert_eq!(first_intent.public_model_id, DEEPSEEK_V4_1_FLASH_MODEL_ID);
+        assert_eq!(
+            first_intent.auto_model_reason(),
+            Some(AutoModelReason::Primary)
+        );
+        let first_baseline = provider_router.shadow_completion_plan(&proxy_router, &first_intent);
+        let first_route = select_prepared_completion_route(
+            &provider_router,
+            &proxy_router,
+            &first_intent,
+            first_baseline,
+        )
+        .expect("DeepSeek route");
+        assert_eq!(first_route.provider, ProviderId::Tinfoil);
+        let first_pinned = PinnedCompletionRequest::new(
+            first_intent.clone(),
+            first_route,
+            InferenceRoutingMode::V2,
+        );
+        let first_claim = claim_completion_turn(&provider_router, &proxy_router, &first_pinned)
+            .expect("first claim");
+        let first_trace = try_provider(
+            &provider_client,
+            &first_claim.route.proxy,
+            json!({
+                "model": first_claim.route.provider_model_id,
+                "messages": [{"role": "user", "content": "one"}]
+            })
+            .to_string(),
+            &HeaderMap::new(),
+        )
+        .await;
+        let first_error = match first_trace.result {
+            Err(error) => error,
+            Ok(_) => panic!("mock DeepSeek unexpectedly succeeded"),
+        };
+        let first_failure = attempt_failure_from_provider_error(&first_error);
+        assert_eq!(first_failure.kind, AttemptFailureKind::CapacityRejected);
+        assert_eq!(first_failure.status, Some(503));
+        let surfaced = public_completion_error(&first_error, &first_failure);
+        let _ = failed_completion_execution(
+            &provider_router,
+            first_intent
+                .begin_execution()
+                .begin_attempt(first_claim.route.identity()),
+            first_failure,
+            surfaced,
+        );
+        drop(first_claim);
+        // The discovering request made exactly one send, was not replayed to
+        // the alternate model, and earned no route memory.
+        assert_eq!(sent_to(DEEPSEEK_V4_1_FLASH_MODEL_ID), 1);
+        assert_eq!(sent_to(GLM_5_3_FLASH_MODEL_ID), 0);
+        assert_eq!(
+            provider_router.sticky_route(account, surface, AUTO_QUICK_MODEL_ID),
+            None
+        );
+
+        // 2. The next Auto Quick request chooses GLM Flash before any send.
+        let second = resolve_for_test(
+            &provider_router,
+            &proxy_router,
+            account,
+            surface,
+            AUTO_QUICK_MODEL_ID,
+            plan,
+            InferenceRoutingMode::V2,
+        )
+        .expect("fallback resolution");
+        assert_eq!(second.public_model_id(), GLM_5_3_FLASH_MODEL_ID);
+        let second_decision = second.auto_decision().cloned().expect("auto decision");
+        assert_eq!(second_decision.reason, AutoModelReason::HealthFallback);
+        assert_eq!(
+            second_decision.preferred_model_id,
+            DEEPSEEK_V4_1_FLASH_MODEL_ID
+        );
+        assert!(matches!(
+            second_decision.rejected.as_slice(),
+            [(model, AutoCandidateRejection::Unavailable { retry_after })]
+                if *model == DEEPSEEK_V4_1_FLASH_MODEL_ID && *retry_after == Duration::from_secs(40)
+        ));
+        let second_intent = second.intent(
+            account,
+            AUTO_QUICK_MODEL_ID,
+            plan,
+            surface,
+            WorkloadClass::Interactive,
+        );
+        assert_eq!(
+            second_intent.preferred_model_id(),
+            DEEPSEEK_V4_1_FLASH_MODEL_ID
+        );
+        assert_eq!(second_intent.public_model_id, GLM_5_3_FLASH_MODEL_ID);
+        assert_eq!(
+            second_intent.auto_model_reason(),
+            Some(AutoModelReason::HealthFallback)
+        );
+        let second_baseline = provider_router.shadow_completion_plan(&proxy_router, &second_intent);
+        let second_route = select_prepared_completion_route(
+            &provider_router,
+            &proxy_router,
+            &second_intent,
+            second_baseline,
+        )
+        .expect("GLM Flash route");
+        assert_eq!(second_route.public_model_id, GLM_5_3_FLASH_MODEL_ID);
+        assert_eq!(second_route.provider, ProviderId::Tinfoil);
+        assert_eq!(second_route.provider_model_id, GLM_5_3_FLASH_MODEL_ID);
+        let second_pinned = PinnedCompletionRequest::new(
+            second_intent.clone(),
+            second_route.clone(),
+            InferenceRoutingMode::V2,
+        );
+        let second_claim = claim_completion_turn(&provider_router, &proxy_router, &second_pinned)
+            .expect("GLM Flash claim");
+        assert_eq!(second_pinned.public_model_id(), GLM_5_3_FLASH_MODEL_ID);
+        // A claim is not a warmed cache: nothing is remembered before the send.
+        assert_eq!(
+            provider_router.sticky_route(account, surface, AUTO_QUICK_MODEL_ID),
+            None
+        );
+        let second_trace = try_provider(
+            &provider_client,
+            &second_claim.route.proxy,
+            json!({
+                "model": second_claim.route.provider_model_id,
+                "messages": [{"role": "user", "content": "two"}]
+            })
+            .to_string(),
+            &HeaderMap::new(),
+        )
+        .await;
+        let response = second_trace.result.expect("mock GLM Flash succeeds");
+        // The executor remembers the route when the provider accepts the send.
+        remember_started_route(&provider_router, &second_pinned, &second_claim.route);
+        assert_eq!(
+            provider_router.sticky_route(account, surface, AUTO_QUICK_MODEL_ID),
+            Some(StickyRoute {
+                public_model_id: GLM_5_3_FLASH_MODEL_ID.to_string(),
+                provider: ProviderId::Tinfoil,
+                provider_model_id: GLM_5_3_FLASH_MODEL_ID.to_string(),
+            })
+        );
+        let second_attempt = second_intent
+            .begin_execution()
+            .begin_attempt(second_claim.route.identity());
+        let canonical = read_non_streaming_completion_response(
+            response,
+            &second_claim.route.response_model_id,
+            &second_attempt,
+            None,
+        )
+        .await
+        .expect("canonical response");
+        assert_eq!(canonical["model"], GLM_5_3_FLASH_MODEL_ID);
+        assert_eq!(second_attempt.route.public_model_id, GLM_5_3_FLASH_MODEL_ID);
+        assert_eq!(sent_to(GLM_5_3_FLASH_MODEL_ID), 1);
+        assert_eq!(sent_to(DEEPSEEK_V4_1_FLASH_MODEL_ID), 1);
+        assert_eq!(continuum_count.load(Ordering::SeqCst), 0);
+        drop(second_claim);
+
+        // 3. An explicit DeepSeek request never changes model: it gets the
+        // established capacity contract with zero sends.
+        let explicit = resolve_for_test(
+            &provider_router,
+            &proxy_router,
+            account,
+            surface,
+            DEEPSEEK_V4_1_FLASH_MODEL_ID,
+            plan,
+            InferenceRoutingMode::V2,
+        )
+        .expect("explicit resolution");
+        assert!(explicit.auto_decision().is_none());
+        assert_eq!(explicit.public_model_id(), DEEPSEEK_V4_1_FLASH_MODEL_ID);
+        let explicit_intent = explicit.intent(
+            account,
+            DEEPSEEK_V4_1_FLASH_MODEL_ID,
+            plan,
+            surface,
+            WorkloadClass::Interactive,
+        );
+        assert_eq!(explicit_intent.auto_model_reason(), None);
+        assert_eq!(
+            explicit_intent.preferred_model_id(),
+            DEEPSEEK_V4_1_FLASH_MODEL_ID
+        );
+        let explicit_baseline =
+            provider_router.shadow_completion_plan(&proxy_router, &explicit_intent);
+        let error = select_prepared_completion_route(
+            &provider_router,
+            &proxy_router,
+            &explicit_intent,
+            explicit_baseline,
+        )
+        .expect_err("explicit DeepSeek stays unavailable");
+        assert!(matches!(
+            error,
+            ApiError::InferenceCapacity {
+                status: StatusCode::SERVICE_UNAVAILABLE,
+                client_replay_safe: true,
+                ..
+            }
+        ));
+        assert_eq!(sent_to(DEEPSEEK_V4_1_FLASH_MODEL_ID), 1);
+
+        // 4. While DeepSeek stays open the account keeps its remembered model
+        // on this surface; the other surface still decides for itself.
+        let fourth = resolve_for_test(
+            &provider_router,
+            &proxy_router,
+            account,
+            surface,
+            AUTO_QUICK_MODEL_ID,
+            plan,
+            InferenceRoutingMode::V2,
+        )
+        .expect("retained resolution");
+        assert_eq!(fourth.public_model_id(), GLM_5_3_FLASH_MODEL_ID);
+        assert_eq!(
+            fourth.auto_decision().expect("decision").reason,
+            AutoModelReason::RetainedHealthyChoice
+        );
+        let responses_surface = resolve_for_test(
+            &provider_router,
+            &proxy_router,
+            account,
+            InferenceSurface::Responses,
+            AUTO_QUICK_MODEL_ID,
+            plan,
+            InferenceRoutingMode::V2,
+        )
+        .expect("responses resolution");
+        assert_eq!(
+            responses_surface.auto_decision().expect("decision").reason,
+            AutoModelReason::HealthFallback
+        );
+
+        // 5. The account's Auto Powerful memory is untouched and Router v1
+        // never leaves the alias target even during the outage.
+        assert_eq!(
+            provider_router.sticky_route(account, surface, AUTO_POWERFUL_MODEL_ID),
+            None
+        );
+        let legacy = resolve_for_test(
+            &provider_router,
+            &proxy_router,
+            account,
+            surface,
+            AUTO_QUICK_MODEL_ID,
+            plan,
+            InferenceRoutingMode::Legacy,
+        )
+        .expect("legacy resolution");
+        assert_eq!(legacy.public_model_id(), DEEPSEEK_V4_1_FLASH_MODEL_ID);
+        assert!(legacy.auto_decision().is_none());
+
+        // 6. Free callers keep their entitlement errors and single target.
+        assert!(matches!(
+            resolve_for_test(
+                &provider_router,
+                &proxy_router,
+                account,
+                surface,
+                AUTO_POWERFUL_MODEL_ID,
+                ModelPlan::Free,
+                InferenceRoutingMode::V2,
+            ),
+            Err(ApiError::ModelNotAvailableOnPlan)
+        ));
+        let free_quick = resolve_for_test(
+            &provider_router,
+            &proxy_router,
+            account,
+            surface,
+            AUTO_QUICK_MODEL_ID,
+            ModelPlan::Free,
+            InferenceRoutingMode::V2,
+        )
+        .expect("free quick");
+        assert_eq!(free_quick.public_model_id(), QUICK_MODEL_ID);
+        assert_eq!(
+            free_quick.auto_decision().expect("decision").reason,
+            AutoModelReason::Primary
+        );
+
+        tinfoil_server.abort();
+        continuum_server.abort();
+    }
+
+    #[test]
+    fn auto_selection_with_every_candidate_open_returns_the_capacity_contract_without_sends() {
+        use crate::model_config::{
+            AUTO_QUICK_MODEL_ID, DEEPSEEK_V4_1_FLASH_MODEL_ID, GLM_5_3_FLASH_MODEL_ID,
+        };
+        let provider_router = ProviderRouter::default();
+        let proxy_router = probe_test_proxy_router();
+        let account = Uuid::from_u128(3);
+        let open =
+            |public_model: &str, provider_model: &str, provider: ProviderId, seconds: u64| {
+                let mut failure = AttemptFailure::new(
+                    AttemptFailureKind::CapacityRejected,
+                    AttemptStage::AwaitingResponse,
+                    ReplaySafety::NotProvenPreAcceptance,
+                );
+                failure.status = Some(503);
+                failure.retry_after = Some(Duration::from_secs(seconds));
+                let intent = InferenceIntent::new(
+                    account,
+                    public_model,
+                    public_model,
+                    ModelPlan::Paid,
+                    InferenceSurface::ChatCompletions,
+                    WorkloadClass::Interactive,
+                );
+                let route = crate::inference::RouteIdentity::new(
+                    provider,
+                    public_model,
+                    provider_model,
+                    public_model,
+                    crate::provider_registry::RouteSelectionSource::StaticSplit,
+                    None,
+                );
+                provider_router.observe_attempt_terminal(
+                    &AttemptTerminal::Failed {
+                        attempt: intent.begin_execution().begin_attempt(route),
+                        failure,
+                    },
+                    ShadowObservationMode::Update,
+                );
+            };
+        open(
+            DEEPSEEK_V4_1_FLASH_MODEL_ID,
+            DEEPSEEK_V4_1_FLASH_MODEL_ID,
+            ProviderId::Tinfoil,
+            90,
+        );
+        open(
+            GLM_5_3_FLASH_MODEL_ID,
+            GLM_5_3_FLASH_MODEL_ID,
+            ProviderId::Tinfoil,
+            50,
+        );
+        open(
+            GLM_5_3_FLASH_MODEL_ID,
+            "glm-5.3-flash",
+            ProviderId::Continuum,
+            70,
+        );
+
+        let resolve = || {
+            resolve_for_test(
+                &provider_router,
+                &proxy_router,
+                account,
+                InferenceSurface::ChatCompletions,
+                AUTO_QUICK_MODEL_ID,
+                ModelPlan::Paid,
+                InferenceRoutingMode::V2,
+            )
+        };
+        match resolve().expect_err("no eligible Quick candidate") {
+            ApiError::InferenceCapacity {
+                status,
+                retry_after,
+                client_replay_safe,
+            } => {
+                assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+                assert_eq!(retry_after, Some(Duration::from_secs(50)));
+                assert!(client_replay_safe);
+            }
+            other => panic!("unexpected error {other:?}"),
+        }
+        let response = resolve()
+            .expect_err("no eligible Quick candidate")
+            .into_response();
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(response.headers()[crate::CLIENT_REPLAY_HEADER], "safe");
+        assert_eq!(
+            response.headers()[crate::ERROR_CODE_HEADER],
+            crate::INFERENCE_CAPACITY_ERROR_CODE
+        );
+        assert_eq!(response.headers()[header::RETRY_AFTER], "50");
+        assert_eq!(
+            provider_router.sticky_routes().len(),
+            0,
+            "a failed decision records nothing"
+        );
+    }
+
+    #[test]
+    fn an_overflowing_remembered_alternate_yields_to_the_healthy_preferred_model() {
+        use crate::inference::auto_model::{AutoCandidateRejection, AutoModelReason};
+        use crate::inference::sticky_routes::StickyRoute;
+        use crate::model_config::{
+            AUTO_QUICK_MODEL_ID, DEEPSEEK_V4_1_FLASH_MODEL_ID, GLM_5_3_FLASH_MODEL_ID,
+        };
+        let provider_router = ProviderRouter::default();
+        let proxy_router = probe_test_proxy_router();
+        let account = Uuid::from_u128(21);
+        let surface = InferenceSurface::Responses;
+        provider_router.sticky_routes().record(
+            account,
+            surface,
+            AUTO_QUICK_MODEL_ID,
+            StickyRoute {
+                public_model_id: GLM_5_3_FLASH_MODEL_ID.to_string(),
+                provider: ProviderId::Tinfoil,
+                provider_model_id: GLM_5_3_FLASH_MODEL_ID.to_string(),
+            },
+        );
+
+        let first = resolve_for_test(
+            &provider_router,
+            &proxy_router,
+            account,
+            surface,
+            AUTO_QUICK_MODEL_ID,
+            ModelPlan::Paid,
+            InferenceRoutingMode::V2,
+        )
+        .expect("retained alternate");
+        assert_eq!(first.public_model_id(), GLM_5_3_FLASH_MODEL_ID);
+        assert_eq!(
+            first.auto_decision().expect("decision").reason,
+            AutoModelReason::RetainedHealthyChoice
+        );
+
+        // The Responses context builder could not hold the conversation on the
+        // alternate: the bounded second decision excludes it and the healthy
+        // preferred model takes the request instead of a capacity error.
+        let overflowed = ExcludedAutoCandidate::context_overflow(GLM_5_3_FLASH_MODEL_ID);
+        let second = resolve_excluding_for_test(
+            &provider_router,
+            &proxy_router,
+            account,
+            surface,
+            AUTO_QUICK_MODEL_ID,
+            ModelPlan::Paid,
+            InferenceRoutingMode::V2,
+            Some(&overflowed),
+        )
+        .expect("preferred model after overflow");
+        assert_eq!(second.public_model_id(), DEEPSEEK_V4_1_FLASH_MODEL_ID);
+        let decision = second.auto_decision().expect("decision");
+        assert_eq!(decision.reason, AutoModelReason::Primary);
+        assert_eq!(
+            decision.rejected,
+            vec![(
+                GLM_5_3_FLASH_MODEL_ID,
+                AutoCandidateRejection::ContextOverflow
+            )]
+        );
+        // The memory still names the alternate until a provider accepts the
+        // preferred model; it does not lock the account out on its own.
+        assert_eq!(
+            provider_router
+                .sticky_route(account, surface, AUTO_QUICK_MODEL_ID)
+                .map(|route| route.public_model_id),
+            Some(GLM_5_3_FLASH_MODEL_ID.to_string())
+        );
+    }
+
+    #[test]
+    fn reselection_without_an_alternate_keeps_the_capacity_contract_and_zero_sends() {
+        use crate::model_config::{
+            AUTO_QUICK_MODEL_ID, DEEPSEEK_V4_1_FLASH_MODEL_ID, GLM_5_3_FLASH_MODEL_ID,
+            QUICK_MODEL_ID,
+        };
+        let provider_router = ProviderRouter::default();
+        let proxy_router = probe_test_proxy_router();
+        let account = Uuid::from_u128(31);
+
+        for surface in [
+            InferenceSurface::ChatCompletions,
+            InferenceSurface::Responses,
+        ] {
+            // Free Quick: the sole candidate was chosen, then lost its route
+            // before the first send. The request's own capacity hint survives
+            // the bounded second decision; nothing was sent or remembered.
+            let lost =
+                ExcludedAutoCandidate::unavailable(QUICK_MODEL_ID, Some(Duration::from_secs(20)));
+            let error = resolve_excluding_for_test(
+                &provider_router,
+                &proxy_router,
+                account,
+                surface,
+                AUTO_QUICK_MODEL_ID,
+                ModelPlan::Free,
+                InferenceRoutingMode::V2,
+                Some(&lost),
+            )
+            .expect_err("no alternate for free quick");
+            match error {
+                ApiError::InferenceCapacity {
+                    status,
+                    retry_after,
+                    client_replay_safe,
+                } => {
+                    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+                    assert_eq!(retry_after, Some(Duration::from_secs(20)));
+                    assert!(client_replay_safe, "{surface:?}");
+                }
+                other => panic!("{surface:?}: unexpected error {other:?}"),
+            }
+            let response = resolve_excluding_for_test(
+                &provider_router,
+                &proxy_router,
+                account,
+                surface,
+                AUTO_QUICK_MODEL_ID,
+                ModelPlan::Free,
+                InferenceRoutingMode::V2,
+                Some(&lost),
+            )
+            .expect_err("no alternate for free quick")
+            .into_response();
+            assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+            assert_eq!(response.headers()[crate::CLIENT_REPLAY_HEADER], "safe");
+            assert_eq!(
+                response.headers()[crate::ERROR_CODE_HEADER],
+                crate::INFERENCE_CAPACITY_ERROR_CODE
+            );
+            assert_eq!(response.headers()[header::RETRY_AFTER], "20");
+
+            // Paid Quick whose only alternate cannot hold the request keeps the
+            // preferred model's capacity result and hint.
+            let flash_window = crate::model_config::model_context_window(GLM_5_3_FLASH_MODEL_ID);
+            let lost = ExcludedAutoCandidate::unavailable(
+                DEEPSEEK_V4_1_FLASH_MODEL_ID,
+                Some(Duration::from_secs(35)),
+            );
+            let error = resolve_inference_model(
+                &provider_router,
+                &proxy_router,
+                ModelResolutionRequest {
+                    account_uuid: account,
+                    surface,
+                    requested_model_id: AUTO_QUICK_MODEL_ID,
+                    alias_target: DEEPSEEK_V4_1_FLASH_MODEL_ID,
+                    model_plan: ModelPlan::Paid,
+                    routing_mode: InferenceRoutingMode::V2,
+                    excluded: Some(&lost),
+                },
+                || AutoModelRequirements {
+                    vision: false,
+                    kimi_tool_history_compatible: true,
+                    prompt_tokens: PromptTokenEstimate::Known(flash_window),
+                },
+            )
+            .expect_err("alternate is incompatible");
+            assert!(matches!(
+                error,
+                ApiError::InferenceCapacity {
+                    status: StatusCode::SERVICE_UNAVAILABLE,
+                    retry_after: Some(retry_after),
+                    client_replay_safe: true,
+                } if retry_after == Duration::from_secs(35)
+            ));
+
+            // A compatible alternate is still taken, exactly once.
+            let moved = resolve_excluding_for_test(
+                &provider_router,
+                &proxy_router,
+                account,
+                surface,
+                AUTO_QUICK_MODEL_ID,
+                ModelPlan::Paid,
+                InferenceRoutingMode::V2,
+                Some(&lost),
+            )
+            .expect("alternate takes the request");
+            assert_eq!(moved.public_model_id(), GLM_5_3_FLASH_MODEL_ID);
+        }
+        // The decision stage has no provider client and records nothing.
+        assert_eq!(provider_router.sticky_routes().len(), 0);
+    }
+
+    #[test]
+    fn started_routes_are_remembered_for_router_v2_only_and_per_surface() {
+        let provider_router = ProviderRouter::default();
+        let proxy_router = probe_test_proxy_router();
+        let intent = InferenceIntent::new(
+            Uuid::from_u128(11),
+            crate::model_config::AUTO_POWERFUL_MODEL_ID,
+            crate::model_config::GLM_5_3_MODEL_ID,
+            ModelPlan::Paid,
+            InferenceSurface::Responses,
+            WorkloadClass::Interactive,
+        );
+        let legacy_route = provider_router
+            .select_completion_route_with_preference(
+                &proxy_router,
+                intent.account_uuid,
+                &intent.public_model_id,
+                None,
+            )
+            .expect("legacy route");
+        let legacy_pinned = PinnedCompletionRequest::new(
+            intent.clone(),
+            legacy_route.clone(),
+            InferenceRoutingMode::Legacy,
+        );
+        remember_started_route(&provider_router, &legacy_pinned, &legacy_route);
+        assert_eq!(provider_router.sticky_routes().len(), 0);
+
+        let v2_route = provider_router
+            .select_active_completion_route(&proxy_router, &intent)
+            .expect("v2 route");
+        let v2_pinned = PinnedCompletionRequest::new(
+            intent.clone(),
+            v2_route.clone(),
+            InferenceRoutingMode::V2,
+        );
+        let claimed = claim_completion_turn(&provider_router, &proxy_router, &v2_pinned)
+            .expect("first v2 claim");
+        assert_eq!(
+            provider_router.sticky_route(
+                intent.account_uuid,
+                intent.surface,
+                crate::model_config::AUTO_POWERFUL_MODEL_ID
+            ),
+            None,
+            "claims do not warm caches"
+        );
+        remember_started_route(&provider_router, &v2_pinned, &claimed.route);
+        let remembered = provider_router
+            .sticky_route(
+                intent.account_uuid,
+                intent.surface,
+                crate::model_config::AUTO_POWERFUL_MODEL_ID,
+            )
+            .expect("remembered after the provider accepted the send");
+        assert_eq!(remembered.public_model_id, claimed.route.public_model_id);
+        assert_eq!(remembered.provider, claimed.route.provider);
+        assert_eq!(
+            remembered.provider_model_id,
+            claimed.route.provider_model_id
+        );
+        assert_eq!(
+            provider_router.sticky_route(
+                intent.account_uuid,
+                InferenceSurface::ChatCompletions,
+                crate::model_config::AUTO_POWERFUL_MODEL_ID
+            ),
+            None,
+            "memory is per surface"
+        );
+        assert_eq!(provider_router.sticky_routes().len(), 1);
+    }
+
+    #[test]
+    fn chat_auto_requirements_detect_images_and_measure_text_only() {
+        let body = json!({
+            "model": "auto:quick",
+            "max_tokens": 250,
+            "tools": [{"type": "function", "function": {"name": "web_search", "parameters": {"type": "object"}}}],
+            "messages": [
+                {"role": "system", "content": "You are terse."},
+                {"role": "user", "content": [
+                    {"type": "text", "text": "What is in this picture?"},
+                    {"type": "image_url", "image_url": {"url": format!("data:image/png;base64,{}", "A".repeat(200_000))}}
+                ]},
+                {"role": "assistant", "reasoning": "thinking", "tool_calls": [
+                    {"id": "call_1", "type": "function", "function": {"name": "web_search", "arguments": "{\"query\":\"cats\"}"}}
+                ]},
+                {"role": "tool", "tool_call_id": "call_1", "content": "results"}
+            ]
+        });
+        let chat = ChatAutoRequirements::from_body(&body);
+        assert_eq!(chat.max_tokens, 250);
+        let newer_limit =
+            json!({"model": "auto:quick", "max_completion_tokens": 900, "messages": []});
+        assert_eq!(
+            ChatAutoRequirements::from_body(&newer_limit).max_tokens,
+            900
+        );
+        assert!(chat_messages_include_images(chat.messages));
+        assert!(!chat_messages_include_images(Some(&vec![
+            json!({"role": "user", "content": [{"type": "text", "text": "hi"}]}),
+            json!({"role": "user", "content": "plain"}),
+        ])));
+        assert!(!chat_messages_include_images(None));
+
+        let bytes = chat_prompt_text_bytes(chat.messages, chat.tools);
+        let tokens = estimate_chat_prompt_tokens(chat.messages, chat.tools);
+        assert!(
+            tokens > 0 && bytes >= tokens,
+            "bytes {bytes} bound tokens {tokens}"
+        );
+        assert!(
+            bytes < 2_000,
+            "image data must not count toward the estimate: {bytes}"
+        );
+        let without_tools = chat_prompt_text_bytes(chat.messages, None);
+        assert!(
+            without_tools < bytes,
+            "tool schemas count toward the prompt"
+        );
+        assert_eq!(estimate_chat_prompt_tokens(None, None), 0);
+        assert_eq!(chat.exact_tokens(), tokens + 250);
+
+        let exact = || chat.exact_tokens();
+        let requirements = chat.requirements(&exact);
+        assert!(requirements.vision);
+        assert!(!requirements.kimi_tool_history_compatible);
+        match requirements.prompt_tokens {
+            PromptTokenEstimate::Bounded { upper_bound, exact } => {
+                assert_eq!(upper_bound, bytes + 250);
+                assert_eq!(exact(), tokens + 250);
+            }
+            PromptTokenEstimate::Known(_) => panic!("chat must use a bounded estimate"),
+        }
+
+        let plain = json!({"model": "auto:quick", "messages": [{"role": "user", "content": "hi"}]});
+        let plain_chat = ChatAutoRequirements::from_body(&plain);
+        let plain_exact = || plain_chat.exact_tokens();
+        let plain_requirements = plain_chat.requirements(&plain_exact);
+        assert!(!plain_requirements.vision);
+        assert!(plain_requirements.kimi_tool_history_compatible);
+        assert!(needs_auto_model_decision(
+            "auto:quick",
+            InferenceRoutingMode::V2
+        ));
+        assert!(!needs_auto_model_decision(
+            "auto:quick",
+            InferenceRoutingMode::Legacy
+        ));
+        assert!(!needs_auto_model_decision(
+            "glm-5-3",
+            InferenceRoutingMode::V2
+        ));
+        // Requirements are never evaluated for Router v1 or explicit selections.
+        let provider_router = ProviderRouter::default();
+        let proxy_router = probe_test_proxy_router();
+        let evaluated = std::cell::Cell::new(false);
+        let resolved = resolve_inference_model(
+            &provider_router,
+            &proxy_router,
+            ModelResolutionRequest {
+                account_uuid: Uuid::nil(),
+                surface: InferenceSurface::ChatCompletions,
+                requested_model_id: "auto:quick",
+                alias_target: crate::model_config::DEEPSEEK_V4_1_FLASH_MODEL_ID,
+                model_plan: ModelPlan::Paid,
+                routing_mode: InferenceRoutingMode::Legacy,
+                excluded: None,
+            },
+            || {
+                evaluated.set(true);
+                auto_requirements()
+            },
+        )
+        .expect("legacy");
+        assert!(resolved.auto_decision().is_none());
+        assert!(!evaluated.get());
     }
 }

@@ -33,6 +33,9 @@ pub(crate) enum RouteSelectionSource {
     FeatureFlag,
     DefaultProvider,
     Fallback,
+    /// Router v2 kept the account's remembered same-model provider instead of
+    /// its weighted bucket while that provider stays eligible.
+    Sticky,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

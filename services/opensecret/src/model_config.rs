@@ -682,6 +682,11 @@ fn model_entry(model: &str) -> Option<ModelConfigEntry> {
         .copied()
 }
 
+/// Catalog capabilities of a canonical public model, if it exists.
+pub(crate) fn model_capabilities(model: &str) -> Option<ModelCapabilities> {
+    model_entry(alias_target(model).unwrap_or(model)).map(|entry| entry.capabilities)
+}
+
 #[cfg(test)]
 pub(crate) fn enabled_api_completion_model_ids() -> impl Iterator<Item = &'static str> {
     MODEL_CONFIGS

@@ -363,6 +363,26 @@ impl ShadowHealthState {
             .collect()
     }
 
+    /// Point-in-time snapshots for several route groups under one lock. Each
+    /// group resolves independently, so a route unknown to the health state
+    /// voids only its own group rather than every candidate.
+    pub(crate) fn snapshot_route_groups(
+        &self,
+        groups: &[Vec<RouteKey>],
+    ) -> Vec<Option<Vec<ShadowRouteSnapshot>>> {
+        let inner = self.lock();
+        let now = Instant::now();
+        groups
+            .iter()
+            .map(|routes| {
+                routes
+                    .iter()
+                    .map(|route| self.snapshot_locked(&inner, route, now))
+                    .collect()
+            })
+            .collect()
+    }
+
     /// Atomically checks the route-health gate, deployment-capacity gate, and
     /// registry-declared rate-limit gate for one already-selected route.
     pub(crate) fn try_claim_probe(&self, route: &RouteKey) -> ProbeClaimResult {
