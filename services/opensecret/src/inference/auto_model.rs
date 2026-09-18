@@ -127,7 +127,7 @@ impl ExcludedAutoCandidate {
     }
 }
 
-/// Route availability for one public model under its own failover policy,
+/// Route availability for one public model under the shared route and capacity gates,
 /// taken from the same health snapshot as every other candidate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ModelAvailability {

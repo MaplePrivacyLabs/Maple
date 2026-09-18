@@ -39,3 +39,20 @@ logs appear immediately. When `RUST_LOG` is unset the default is
 `opensecret=debug` plus `axum_login`, `tower_sessions`, `sqlx=warn`, and
 `tower_http`. Override `RUST_LOG` to quiet or expand that set. Do not log
 secrets, tokens, decrypted bodies, or raw provider payloads.
+
+Non-success inference responses add `upstream_diagnostic` to the correlated
+`Inference attempt failed` warning. The diagnostic reader retains at most 8 KiB
+and waits at most 100 ms in total. It emits only allowlisted error codes/types
+and fixed summaries for recognized errors, never a raw message excerpt. Unknown
+text is suppressed; empty, truncated, invalid, interrupted, or timed-out bodies
+have explicit diagnostic states. HTTP status and safe retry hints remain the
+routing contract regardless of diagnostic availability. This applies to both
+standard and attested inference transports; it does not add retries.
+
+At INFO level, `Inference routing decision` records V2 alternate Auto choices
+and sticky/fallback provider choices after the send-time route claim. Join its
+request, execution and attempt IDs with response-start and terminal records;
+the decision alone proves neither success nor client receipt. It includes the
+selector mode, surface, workload, actual model/provider, reason/source and policy
+versions without an account identifier. Ordinary primary/weighted routing
+remains at DEBUG, so INFO-only logs are not a complete traffic denominator.

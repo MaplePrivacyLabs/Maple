@@ -451,7 +451,7 @@ impl ProviderRouter {
     }
 
     /// Evaluates every candidate model's configured routes under one health
-    /// snapshot, applying each model's own failover policy. This is the planning
+    /// snapshot, applying the shared route and capacity gates. This is the planning
     /// input for Auto model selection; it claims nothing and permits nothing.
     pub(crate) fn model_availability(
         &self,
@@ -465,13 +465,8 @@ impl ProviderRouter {
                 let configured = self
                     .registry
                     .completion_model(public_model_id)
-                    .map(|model| {
-                        (
-                            model,
-                            self.configured_route_keys(proxy_router, model, &no_exclusions),
-                        )
-                    })
-                    .filter(|(_, routes)| !routes.is_empty());
+                    .map(|model| self.configured_route_keys(proxy_router, model, &no_exclusions))
+                    .filter(|routes| !routes.is_empty());
                 (public_model_id.to_string(), configured)
             })
             .collect::<Vec<_>>();
@@ -480,7 +475,7 @@ impl ProviderRouter {
             .map(|(_, configured)| {
                 configured
                     .as_ref()
-                    .map(|(_, routes)| routes.iter().map(|(_, key)| key.clone()).collect())
+                    .map(|routes| routes.iter().map(|(_, key)| key.clone()).collect())
                     .unwrap_or_default()
             })
             .collect::<Vec<Vec<RouteKey>>>();
@@ -495,8 +490,8 @@ impl ProviderRouter {
                     (Some(_), None) => ModelAvailability::Unavailable {
                         retry_after: MIN_CAPACITY_COOLDOWN,
                     },
-                    (Some((model, routes)), Some(snapshots)) => {
-                        match available_providers_for_model(model, &routes, &snapshots) {
+                    (Some(routes), Some(snapshots)) => {
+                        match available_providers_for_model(&routes, &snapshots) {
                             Ok(providers) => ModelAvailability::Available(providers),
                             Err(retry_after) => ModelAvailability::Unavailable { retry_after },
                         }
@@ -569,13 +564,11 @@ impl ProviderRouter {
                 model: intent.public_model_id.clone(),
                 retry_after: MIN_CAPACITY_COOLDOWN,
             })?;
-        let available_providers =
-            available_providers_for_model(model, &configured_routes, &snapshots).map_err(
-                |retry_after| ProviderRoutingError::CapacityUnavailable {
-                    model: intent.public_model_id.clone(),
-                    retry_after,
-                },
-            )?;
+        let available_providers = available_providers_for_model(&configured_routes, &snapshots)
+            .map_err(|retry_after| ProviderRoutingError::CapacityUnavailable {
+                model: intent.public_model_id.clone(),
+                retry_after,
+            })?;
 
         let plan = plan_completion_route(
             self.registry,
@@ -869,11 +862,10 @@ fn ceil_retry_after(duration: Duration) -> Duration {
     Duration::from_secs(seconds)
 }
 
-/// Providers of one model whose routes may take a new request, under the
-/// model's own failover policy. `Err` carries the earliest bounded recovery
+/// Providers of one model whose routes may take a new request under the shared
+/// route and capacity gates. `Err` carries the earliest bounded recovery
 /// hint when every configured route is open or probing.
 fn available_providers_for_model(
-    model: &CompletionModelSpec,
     configured_routes: &[(ProviderId, RouteKey)],
     snapshots: &[ShadowRouteSnapshot],
 ) -> Result<ConfiguredProviders, Duration> {
@@ -881,7 +873,7 @@ fn available_providers_for_model(
     let mut available_providers = ConfiguredProviders::none();
     let mut earliest_recovery = None;
     for ((provider, _), snapshot) in configured_routes.iter().zip(snapshots) {
-        match snapshot.for_failover(model.failover) {
+        match snapshot.effective {
             ShadowDisposition::WouldOpen { remaining } => {
                 let remaining = ceil_retry_after(remaining);
                 earliest_recovery = Some(
@@ -1000,8 +992,22 @@ mod tests {
         public_model: &str,
         provider_model: &str,
     ) -> AttemptTerminal {
-        let failure = AttemptFailure::new(
+        route_failure_terminal_with_kind(
+            provider,
+            public_model,
+            provider_model,
             AttemptFailureKind::StreamTimeout,
+        )
+    }
+
+    fn route_failure_terminal_with_kind(
+        provider: ProviderId,
+        public_model: &str,
+        provider_model: &str,
+        kind: AttemptFailureKind,
+    ) -> AttemptTerminal {
+        let failure = AttemptFailure::new(
+            kind,
             AttemptStage::Stream,
             ReplaySafety::NotProvenPreAcceptance,
         );
@@ -1743,35 +1749,95 @@ mod tests {
     }
 
     #[test]
-    fn flash_tinfoil_timeouts_do_not_fail_over_to_continuum() {
-        let router = ProviderRouter::default();
+    fn flash_standard_failure_threshold_selects_the_alternate_in_both_directions() {
         let proxy_router = proxy_router_with_both_providers();
-        let failure = || {
-            route_failure_terminal(
+        for (bucket, provider, provider_model, alternate) in [
+            (
+                0,
+                ProviderId::Continuum,
+                "glm-5.3-flash",
+                ProviderId::Tinfoil,
+            ),
+            (
+                73,
                 ProviderId::Tinfoil,
                 GLM_5_3_FLASH_MODEL_ID,
-                GLM_5_3_FLASH_MODEL_ID,
-            )
-        };
-        for _ in 0..3 {
-            router.observe_attempt_terminal(&failure(), ShadowObservationMode::Update);
-        }
-
-        let selected = router
-            .select_active_completion_route(
-                &proxy_router,
-                &InferenceIntent::new(
-                    uuid_for_bucket(50),
-                    GLM_5_3_FLASH_MODEL_ID,
-                    GLM_5_3_FLASH_MODEL_ID,
-                    ModelPlan::Paid,
+                ProviderId::Continuum,
+            ),
+        ] {
+            for kind in [
+                AttemptFailureKind::ResponseStartTimeout,
+                AttemptFailureKind::Transport,
+                AttemptFailureKind::UpstreamStreamError,
+                AttemptFailureKind::StreamTimeout,
+            ] {
+                for surface in [
+                    InferenceSurface::ChatCompletions,
                     InferenceSurface::Responses,
-                    WorkloadClass::Interactive,
-                ),
-            )
-            .expect("Flash stays on Tinfoil after transport failures");
-        assert_eq!(selected.provider, ProviderId::Tinfoil);
-        assert_eq!(selected.provider_model_id, GLM_5_3_FLASH_MODEL_ID);
+                ] {
+                    for selector in [GLM_5_3_FLASH_MODEL_ID, AUTO_QUICK_MODEL_ID] {
+                        let router = ProviderRouter::default();
+                        let intent = InferenceIntent::new(
+                            uuid_for_bucket(bucket),
+                            selector,
+                            GLM_5_3_FLASH_MODEL_ID,
+                            ModelPlan::Paid,
+                            surface,
+                            WorkloadClass::Interactive,
+                        );
+                        let pinned = router
+                            .select_active_completion_route(&proxy_router, &intent)
+                            .expect("healthy Flash route");
+                        assert_eq!(pinned.provider, provider);
+                        for observed_failures in 1..=3 {
+                            router.observe_attempt_terminal(
+                                &route_failure_terminal_with_kind(
+                                    provider,
+                                    GLM_5_3_FLASH_MODEL_ID,
+                                    provider_model,
+                                    kind,
+                                ),
+                                ShadowObservationMode::Update,
+                            );
+                            let selected = router
+                                .select_active_completion_route(&proxy_router, &intent)
+                                .expect("a healthy Flash route remains");
+                            let expected = if observed_failures < 3 {
+                                provider
+                            } else {
+                                alternate
+                            };
+                            assert_eq!(selected.provider, expected,
+                                "{provider:?} {kind:?} {surface:?} {selector} failure {observed_failures}");
+                            assert_eq!(selected.public_model_id, GLM_5_3_FLASH_MODEL_ID);
+                            assert_eq!(selected.response_model_id, GLM_5_3_FLASH_MODEL_ID);
+                            if observed_failures == 3 {
+                                assert_eq!(
+                                    selected.selection_source,
+                                    RouteSelectionSource::Fallback
+                                );
+                            }
+                        }
+                        // A route prepared before the failure keeps its identity; its
+                        // send-time claim rejects it instead of sending on the open route.
+                        assert_eq!(pinned.provider, provider);
+                        assert!(matches!(
+                            router.try_claim_probe(&pinned.identity().route_key()),
+                            ProbeClaimResult::Rejected { .. }
+                        ));
+                        let legacy = router
+                            .select_completion_route_with_preference(
+                                &proxy_router,
+                                intent.account_uuid,
+                                GLM_5_3_FLASH_MODEL_ID,
+                                Some(ProviderPreference::feature_flag(provider)),
+                            )
+                            .expect("V1 remains independent of V2 health");
+                        assert_eq!(legacy.provider, provider);
+                    }
+                }
+            }
+        }
     }
 
     #[test]
@@ -2306,7 +2372,7 @@ mod tests {
     }
 
     #[test]
-    fn model_availability_applies_each_models_failover_policy_from_one_snapshot() {
+    fn model_availability_applies_all_gates_from_one_snapshot() {
         use crate::inference::auto_model::ModelAvailability;
         let router = ProviderRouter::default();
         let proxy_router = proxy_router_with_both_providers();
@@ -2335,9 +2401,8 @@ mod tests {
         );
         assert_eq!(healthy["unknown-model"], ModelAvailability::NotConfigured);
 
-        // Transport failures open the route-health gate. DeepSeek (all gates)
-        // becomes unavailable; GLM Flash (capacity gates) stays available on
-        // the same provider because its policy ignores that gate.
+        // Every model observes the same route-health gate. DeepSeek and Flash
+        // both become unavailable after all of their routes reach the threshold.
         open_route_with_transport_failures(
             &router,
             ProviderId::Tinfoil,
@@ -2361,24 +2426,26 @@ mod tests {
             after_transport[DEEPSEEK_V4_1_FLASH_MODEL_ID],
             ModelAvailability::Unavailable { retry_after } if retry_after == Duration::from_secs(30)
         ));
-        assert_eq!(
+        assert!(matches!(
             after_transport[GLM_5_3_FLASH_MODEL_ID],
-            ModelAvailability::Available(ConfiguredProviders::all()),
-            "capacity-only failover must not cross models on transport health"
-        );
+            ModelAvailability::Unavailable { retry_after } if retry_after == Duration::from_secs(30)
+        ));
         // The same snapshot drives the single-model selector.
         let flash_intent = intent(GLM_5_3_FLASH_MODEL_ID, GLM_5_3_FLASH_MODEL_ID);
-        assert!(router
-            .select_active_completion_route(&proxy_router, &flash_intent)
-            .is_ok());
+        assert!(matches!(
+            router.select_active_completion_route(&proxy_router, &flash_intent),
+            Err(ProviderRoutingError::CapacityUnavailable { model, retry_after })
+                if model == GLM_5_3_FLASH_MODEL_ID && retry_after == Duration::from_secs(30)
+        ));
         let deepseek_intent = intent(DEEPSEEK_V4_1_FLASH_MODEL_ID, DEEPSEEK_V4_1_FLASH_MODEL_ID);
         assert!(matches!(
             router.select_active_completion_route(&proxy_router, &deepseek_intent),
             Err(ProviderRoutingError::CapacityUnavailable { .. })
         ));
 
-        // A Continuum 429 opens the provider-account pool: GLM keeps only its
-        // Tinfoil route, and GLM Flash loses Continuum through the same pool.
+        // On fresh routes, a Continuum 429 opens the provider-account pool:
+        // GLM and GLM Flash both keep only their Tinfoil routes.
+        let router = ProviderRouter::default();
         open_route_with_capacity_failure(
             &router,
             ProviderId::Continuum,
@@ -2437,6 +2504,87 @@ mod tests {
                 ConfiguredProviders::none().with_provider(ProviderId::Tinfoil)
             )
         );
+    }
+
+    #[test]
+    fn auto_quick_uses_remaining_flash_route_then_rejects_both_open_routes() {
+        use crate::inference::auto_model::{
+            select_auto_model, AutoModelError, AutoModelRequirements, AutoModelSelectionInput,
+            PromptTokenEstimate,
+        };
+        use crate::inference::ModelSelectionMode;
+
+        let proxy_router = proxy_router_with_both_providers();
+        for (failed_provider, failed_model, remaining_provider, remaining_model) in [
+            (
+                ProviderId::Tinfoil,
+                GLM_5_3_FLASH_MODEL_ID,
+                ProviderId::Continuum,
+                "glm-5.3-flash",
+            ),
+            (
+                ProviderId::Continuum,
+                "glm-5.3-flash",
+                ProviderId::Tinfoil,
+                GLM_5_3_FLASH_MODEL_ID,
+            ),
+        ] {
+            let router = ProviderRouter::default();
+            open_route_with_transport_failures(
+                &router,
+                ProviderId::Tinfoil,
+                DEEPSEEK_V4_1_FLASH_MODEL_ID,
+                DEEPSEEK_V4_1_FLASH_MODEL_ID,
+            );
+            open_route_with_transport_failures(
+                &router,
+                failed_provider,
+                GLM_5_3_FLASH_MODEL_ID,
+                failed_model,
+            );
+            let choose = |sticky_model_id| {
+                let snapshot = router.model_availability(
+                    &proxy_router,
+                    &[DEEPSEEK_V4_1_FLASH_MODEL_ID, GLM_5_3_FLASH_MODEL_ID],
+                );
+                select_auto_model(AutoModelSelectionInput {
+                    mode: ModelSelectionMode::AutoQuick,
+                    plan: ModelPlan::Paid,
+                    sticky_model_id,
+                    excluded: None,
+                    requirements: AutoModelRequirements {
+                        vision: false,
+                        kimi_tool_history_compatible: true,
+                        prompt_tokens: PromptTokenEstimate::Known(0),
+                    },
+                    availability: &|model| snapshot[model],
+                })
+            };
+            // Both first selection and a remembered Flash model retain only
+            // the provider whose route-health gate is still eligible.
+            for sticky in [None, Some(GLM_5_3_FLASH_MODEL_ID)] {
+                let decision = choose(sticky).expect("Flash alternate remains eligible");
+                assert_eq!(decision.chosen_model_id, GLM_5_3_FLASH_MODEL_ID);
+                let selected = router
+                    .select_active_completion_route(
+                        &proxy_router,
+                        &intent(AUTO_QUICK_MODEL_ID, decision.chosen_model_id),
+                    )
+                    .expect("remaining Flash provider");
+                assert_eq!(selected.provider, remaining_provider);
+            }
+            open_route_with_transport_failures(
+                &router,
+                remaining_provider,
+                GLM_5_3_FLASH_MODEL_ID,
+                remaining_model,
+            );
+            for sticky in [None, Some(GLM_5_3_FLASH_MODEL_ID)] {
+                assert!(matches!(choose(sticky),
+                    Err(AutoModelError::NoEligibleCandidate { retry_after: Some(retry_after), .. })
+                        if retry_after == Duration::from_secs(30)));
+            }
+        }
     }
 
     #[test]

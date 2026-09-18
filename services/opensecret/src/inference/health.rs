@@ -6,9 +6,7 @@
 //! create a probe herd.
 
 use super::{AttemptFailureKind, AttemptTerminal, RouteKey};
-use crate::provider_registry::{
-    FailoverPolicy, ProviderId, ProviderRegistry, RateLimitScope, PROVIDER_REGISTRY,
-};
+use crate::provider_registry::{ProviderId, ProviderRegistry, RateLimitScope, PROVIDER_REGISTRY};
 use std::collections::{HashMap, VecDeque};
 #[cfg(test)]
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -64,17 +62,6 @@ pub(crate) struct ShadowRouteSnapshot {
     pub(crate) deployment_capacity: ShadowDisposition,
     pub(crate) rate_limit_capacity: ShadowDisposition,
     pub(crate) effective: ShadowDisposition,
-}
-
-impl ShadowRouteSnapshot {
-    pub(crate) fn for_failover(self, policy: FailoverPolicy) -> ShadowDisposition {
-        match policy {
-            FailoverPolicy::AllGates => self.effective,
-            FailoverPolicy::CapacityGates => {
-                strongest_disposition([self.deployment_capacity, self.rate_limit_capacity])
-            }
-        }
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -254,7 +241,6 @@ impl Drop for ProbeLease {
 pub(crate) struct ShadowHealthState {
     policy: ShadowHealthPolicy,
     rate_limit_pools: HashMap<RouteKey, CapacityPoolKey>,
-    failover_policies: HashMap<RouteKey, FailoverPolicy>,
     inner: Arc<Mutex<ShadowHealthInner>>,
     #[cfg(test)]
     observation_count: AtomicUsize,
@@ -275,7 +261,6 @@ impl ShadowHealthState {
         let mut route_health = HashMap::new();
         let mut capacity = HashMap::new();
         let mut rate_limit_pools = HashMap::new();
-        let mut failover_policies = HashMap::new();
 
         for model in registry.completion_models() {
             for route in model.routes {
@@ -297,14 +282,12 @@ impl ShadowHealthState {
                 rate_limit_pools
                     .entry(route_key.clone())
                     .or_insert(rate_limit_pool);
-                failover_policies.entry(route_key).or_insert(model.failover);
             }
         }
 
         Self {
             policy,
             rate_limit_pools,
-            failover_policies,
             inner: Arc::new(Mutex::new(ShadowHealthInner {
                 route_health,
                 capacity,
@@ -404,15 +387,8 @@ impl ShadowHealthState {
         };
 
         let deployment_pool = CapacityPoolKey::ProviderModel(route.clone());
-        let failover = self
-            .failover_policies
-            .get(route)
-            .copied()
-            .unwrap_or(FailoverPolicy::AllGates);
         let mut gates = Vec::with_capacity(3);
-        if failover == FailoverPolicy::AllGates {
-            gates.push(ProbeGateKey::RouteHealth(route.clone()));
-        }
+        gates.push(ProbeGateKey::RouteHealth(route.clone()));
         gates.push(ProbeGateKey::Capacity(deployment_pool.clone()));
         if rate_limit_pool != &deployment_pool {
             gates.push(ProbeGateKey::Capacity(rate_limit_pool.clone()));
@@ -1917,24 +1893,149 @@ mod tests {
     }
 
     #[test]
-    fn glm_flash_probe_skips_the_route_health_gate() {
-        let state = ShadowHealthState::with_policy(test_policy());
-        let now = Instant::now();
-        let flash = route(ProviderId::Tinfoil, "glm-5-3-flash", "glm-5-3-flash");
-        let glm = route(ProviderId::Tinfoil, "glm-5-3", "glm-5-3");
-        open_route_at(&state, &flash, now);
-        open_route_at(&state, &glm, now);
+    fn glm_flash_route_health_fences_sends_and_recovers_through_one_probe() {
+        for (provider, provider_model) in [
+            (ProviderId::Tinfoil, "glm-5-3-flash"),
+            (ProviderId::Continuum, "glm-5.3-flash"),
+        ] {
+            for kind in [
+                AttemptFailureKind::ResponseStartTimeout,
+                AttemptFailureKind::Transport,
+                AttemptFailureKind::UpstreamStreamError,
+                AttemptFailureKind::StreamTimeout,
+            ] {
+                let state = ShadowHealthState::with_policy(test_policy());
+                let now = Instant::now();
+                let flash = route(provider, "glm-5-3-flash", provider_model);
+                for count in 1..=3 {
+                    state.observe_terminal_at(
+                        &failed(flash.clone(), kind, None, None),
+                        ShadowObservationMode::Update,
+                        now,
+                    );
+                    if count < 3 {
+                        assert!(matches!(
+                            state.try_claim_probe_at(&flash.route_key(), now),
+                            ProbeClaimResult::Ready(None)
+                        ));
+                    }
+                }
+                assert!(matches!(
+                    state.try_claim_probe_at(&flash.route_key(), now),
+                    ProbeClaimResult::Rejected {
+                        reason: ProbeRejectionReason::CircuitOpen,
+                        ..
+                    }
+                ));
+                let boundary = now + test_policy().route_open_cooldown;
+                let lease = expect_probe(state.try_claim_probe_at(&flash.route_key(), boundary));
+                assert_eq!(lease.claim_count(), 1);
+                assert!(matches!(
+                    state.try_claim_probe_at(&flash.route_key(), boundary),
+                    ProbeClaimResult::Rejected {
+                        reason: ProbeRejectionReason::ProbeInFlight,
+                        ..
+                    }
+                ));
 
-        match state.try_claim_probe_at(&flash.route_key(), now) {
-            ProbeClaimResult::Ready(None) => {}
-            other => panic!("Flash should ignore route-health circuits, got {other:?}"),
+                // A failed recovery probe reopens the same route; it does not
+                // require another three failures or send another probe concurrently.
+                state.observe_terminal_with_probe_at(
+                    &failed(flash.clone(), kind, None, None),
+                    ShadowObservationMode::Update,
+                    Some(lease),
+                    boundary,
+                );
+                assert!(matches!(
+                    state.try_claim_probe_at(&flash.route_key(), boundary),
+                    ProbeClaimResult::Rejected {
+                        reason: ProbeRejectionReason::CircuitOpen,
+                        ..
+                    }
+                ));
+                let recovery = boundary + test_policy().route_open_cooldown;
+                let lease = expect_probe(state.try_claim_probe_at(&flash.route_key(), recovery));
+                state.observe_terminal_with_probe_at(
+                    &completed(flash.clone()),
+                    ShadowObservationMode::Update,
+                    Some(lease),
+                    recovery,
+                );
+                assert_eq!(
+                    state
+                        .snapshot_at(&flash.route_key(), recovery)
+                        .unwrap()
+                        .effective,
+                    ShadowDisposition::Healthy
+                );
+                assert!(matches!(
+                    state.try_claim_probe_at(&flash.route_key(), recovery),
+                    ProbeClaimResult::Ready(None)
+                ));
+            }
         }
-        match state.try_claim_probe_at(&glm.route_key(), now) {
-            ProbeClaimResult::Rejected {
-                reason: ProbeRejectionReason::CircuitOpen,
-                ..
-            } => {}
-            other => panic!("GLM 5.3 should still fence route-health, got {other:?}"),
+    }
+
+    #[test]
+    fn glm_flash_caller_errors_remain_neutral_and_success_resets_failure_streak() {
+        for (provider, provider_model) in [
+            (ProviderId::Tinfoil, "glm-5-3-flash"),
+            (ProviderId::Continuum, "glm-5.3-flash"),
+        ] {
+            let state = ShadowHealthState::with_policy(test_policy());
+            let now = Instant::now();
+            let flash = route(provider, "glm-5-3-flash", provider_model);
+            for _ in 0..4 {
+                for (kind, status) in [
+                    (AttemptFailureKind::HttpStatus, Some(400)),
+                    (AttemptFailureKind::ConsumerDropped, None),
+                ] {
+                    let report = state.observe_terminal_at(
+                        &failed(flash.clone(), kind, status, None),
+                        ShadowObservationMode::Update,
+                        now,
+                    );
+                    assert!(matches!(report.signal, ShadowSignal::Neutral { .. }));
+                    assert!(!report.mutated);
+                }
+            }
+            assert_eq!(
+                state
+                    .snapshot_at(&flash.route_key(), now)
+                    .unwrap()
+                    .effective,
+                ShadowDisposition::Healthy
+            );
+            for _ in 0..2 {
+                state.observe_terminal_at(
+                    &failed(flash.clone(), AttemptFailureKind::Transport, None, None),
+                    ShadowObservationMode::Update,
+                    now,
+                );
+            }
+            state.observe_terminal_at(
+                &completed(flash.clone()),
+                ShadowObservationMode::Update,
+                now,
+            );
+            state.observe_terminal_at(
+                &failed(flash.clone(), AttemptFailureKind::StreamTimeout, None, None),
+                ShadowObservationMode::Update,
+                now,
+            );
+            assert_eq!(
+                state
+                    .snapshot_at(&flash.route_key(), now)
+                    .unwrap()
+                    .effective,
+                ShadowDisposition::Watch {
+                    consecutive_failures: 1
+                }
+            );
+            assert!(matches!(
+                state.try_claim_probe_at(&flash.route_key(), now),
+                ProbeClaimResult::Ready(None)
+            ));
         }
     }
 
