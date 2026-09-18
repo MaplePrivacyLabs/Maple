@@ -79,6 +79,10 @@ export MAPLE_HOOK_FULL="${MAPLE_HOOK_FULL:-0}"
 
 # run_component NAME DIR FLAKE_REF SCRIPT [ENV=VALUE ...]
 #   DIR is where the script and `nix develop` run; FLAKE_REF is relative to DIR.
+#   ENV=VALUE pairs are set for `nix develop` itself, not only for the script:
+#   a flake's shellHook runs before the `-c` command, and the opensecret shell
+#   starts PostgreSQL and writes .env unless OPENSECRET_DEV_* tell it not to.
+#   `nix develop` passes its environment through, so the script sees them too.
 run_component() {
     name=$1; dir=$2; flake_ref=$3; script=$4
     shift 4
@@ -89,8 +93,8 @@ run_component() {
     # tests' fixture repositories) would otherwise operate on this checkout.
     # shellcheck disable=SC2086 # GIT_ENV_UNSET is a deliberate word list
     if [ -n "$NIX_BIN" ]; then
-        (cd "$dir" && env $GIT_ENV_UNSET "$NIX_BIN" develop --no-update-lock-file "$flake_ref" \
-            -c env MAPLE_HOOK_IN_NIX=1 "$@" sh "$script")
+        (cd "$dir" && env $GIT_ENV_UNSET "$@" "$NIX_BIN" develop --no-update-lock-file "$flake_ref" \
+            -c env MAPLE_HOOK_IN_NIX=1 sh "$script")
     else
         # shellcheck disable=SC2086
         (cd "$dir" && env $GIT_ENV_UNSET MAPLE_HOOK_IN_NIX=0 "$@" sh "$script")
