@@ -1,7 +1,7 @@
 use crate::inference::auto_model::{
     auto_model_candidates, select_auto_model, AutoModelDecision, AutoModelError,
-    AutoModelRequirements, AutoModelSelectionInput, ModelAvailability, PromptTokenEstimate,
-    AUTO_MODEL_POLICY_VERSION,
+    AutoModelRequirements, AutoModelSelectionInput, ExcludedAutoCandidate, ModelAvailability,
+    PromptTokenEstimate, AUTO_MODEL_POLICY_VERSION,
 };
 use crate::inference::health::{ProbeClaimResult, ProbeLease, ShadowObservationMode};
 use crate::inference::{
@@ -1625,8 +1625,8 @@ pub(crate) struct ModelResolutionRequest<'a> {
     pub(crate) routing_mode: InferenceRoutingMode,
     /// An Auto candidate that already failed this request's model-dependent
     /// preparation or lost its routes before any send; the bounded second
-    /// decision never returns to it.
-    pub(crate) excluded_model_id: Option<&'a str>,
+    /// decision never returns to it and carries its cause forward.
+    pub(crate) excluded: Option<&'a ExcludedAutoCandidate>,
 }
 
 /// Whether a request reaches the Router v2 Auto model stage at all.
@@ -1675,7 +1675,7 @@ pub(crate) fn resolve_inference_model<'a>(
         mode,
         plan: request.model_plan,
         sticky_model_id: sticky.as_ref().map(|route| route.public_model_id.as_str()),
-        excluded_model_id: request.excluded_model_id,
+        excluded: request.excluded,
         requirements,
         availability: &lookup,
     });
@@ -1962,7 +1962,7 @@ async fn proxy_openai(
     // chosen model then loses its routes before any send, at route preparation
     // or at the first-send claim, decide once more with it excluded; a second
     // failure is returned as is. Nothing here ever replays a provider attempt.
-    let mut excluded_model: Option<String> = None;
+    let mut excluded: Option<ExcludedAutoCandidate> = None;
     let mut reselected = false;
     let completion = loop {
         let chat_requirements = ChatAutoRequirements::from_body(&body);
@@ -1977,7 +1977,7 @@ async fn proxy_openai(
                 alias_target: &alias_target,
                 model_plan,
                 routing_mode: routing.mode(),
-                excluded_model_id: excluded_model.as_deref(),
+                excluded: excluded.as_ref(),
             },
             || chat_requirements.requirements(&exact),
         )?;
@@ -1994,13 +1994,15 @@ async fn proxy_openai(
             .await
         {
             Ok(pinned) => pinned,
-            Err(ApiError::InferenceCapacity { .. }) if can_reselect => {
+            Err(ApiError::InferenceCapacity { retry_after, .. }) if can_reselect => {
                 reselected = true;
                 info!(
-                    "Chat Auto model lost its routes before send; deciding again without it: selector={}, model={}",
-                    requested_model_name, model_name
+                    "Chat Auto model lost its routes before send; deciding again without it: selector={}, model={}, retry_after_seconds={:?}",
+                    requested_model_name,
+                    model_name,
+                    retry_after.map(|hint| hint.as_secs())
                 );
-                excluded_model = Some(model_name);
+                excluded = Some(ExcludedAutoCandidate::unavailable(model_name, retry_after));
                 continue;
             }
             Err(error) => return Err(error),
@@ -2033,15 +2035,18 @@ async fn proxy_openai(
         {
             Ok(completion) => break completion,
             // A `Request` failure precedes any provider attempt by construction.
-            Err(CompletionExecutionError::Request(ApiError::InferenceCapacity { .. }))
-                if can_reselect =>
-            {
+            Err(CompletionExecutionError::Request(ApiError::InferenceCapacity {
+                retry_after,
+                ..
+            })) if can_reselect => {
                 reselected = true;
                 info!(
-                    "Chat Auto model lost its first-send claim; deciding again without it: selector={}, model={}",
-                    requested_model_name, model_name
+                    "Chat Auto model lost its first-send claim; deciding again without it: selector={}, model={}, retry_after_seconds={:?}",
+                    requested_model_name,
+                    model_name,
+                    retry_after.map(|hint| hint.as_secs())
                 );
-                excluded_model = Some(model_name);
+                excluded = Some(ExcludedAutoCandidate::unavailable(model_name, retry_after));
                 continue;
             }
             Err(error) => return Err(error.into_pre_persistence_api_error()),
@@ -7389,7 +7394,7 @@ mod tests {
         requested: &str,
         plan: ModelPlan,
         mode: InferenceRoutingMode,
-        excluded_model_id: Option<&str>,
+        excluded: Option<&ExcludedAutoCandidate>,
     ) -> Result<ResolvedInferenceModel, ApiError> {
         let alias_target = ModelAliasTargets::for_router_v2(plan).resolve(requested);
         resolve_inference_model(
@@ -7402,7 +7407,7 @@ mod tests {
                 alias_target,
                 model_plan: plan,
                 routing_mode: mode,
-                excluded_model_id,
+                excluded,
             },
             auto_requirements,
         )
@@ -7941,6 +7946,7 @@ mod tests {
         // The Responses context builder could not hold the conversation on the
         // alternate: the bounded second decision excludes it and the healthy
         // preferred model takes the request instead of a capacity error.
+        let overflowed = ExcludedAutoCandidate::context_overflow(GLM_5_3_FLASH_MODEL_ID);
         let second = resolve_excluding_for_test(
             &provider_router,
             &proxy_router,
@@ -7949,7 +7955,7 @@ mod tests {
             AUTO_QUICK_MODEL_ID,
             ModelPlan::Paid,
             InferenceRoutingMode::V2,
-            Some(GLM_5_3_FLASH_MODEL_ID),
+            Some(&overflowed),
         )
         .expect("preferred model after overflow");
         assert_eq!(second.public_model_id(), DEEPSEEK_V4_1_FLASH_MODEL_ID);
@@ -7970,6 +7976,121 @@ mod tests {
                 .map(|route| route.public_model_id),
             Some(GLM_5_3_FLASH_MODEL_ID.to_string())
         );
+    }
+
+    #[test]
+    fn reselection_without_an_alternate_keeps_the_capacity_contract_and_zero_sends() {
+        use crate::model_config::{
+            AUTO_QUICK_MODEL_ID, DEEPSEEK_V4_1_FLASH_MODEL_ID, GLM_5_3_FLASH_MODEL_ID,
+            QUICK_MODEL_ID,
+        };
+        let provider_router = ProviderRouter::default();
+        let proxy_router = probe_test_proxy_router();
+        let account = Uuid::from_u128(31);
+
+        for surface in [
+            InferenceSurface::ChatCompletions,
+            InferenceSurface::Responses,
+        ] {
+            // Free Quick: the sole candidate was chosen, then lost its route
+            // before the first send. The request's own capacity hint survives
+            // the bounded second decision; nothing was sent or remembered.
+            let lost =
+                ExcludedAutoCandidate::unavailable(QUICK_MODEL_ID, Some(Duration::from_secs(20)));
+            let error = resolve_excluding_for_test(
+                &provider_router,
+                &proxy_router,
+                account,
+                surface,
+                AUTO_QUICK_MODEL_ID,
+                ModelPlan::Free,
+                InferenceRoutingMode::V2,
+                Some(&lost),
+            )
+            .expect_err("no alternate for free quick");
+            match error {
+                ApiError::InferenceCapacity {
+                    status,
+                    retry_after,
+                    client_replay_safe,
+                } => {
+                    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+                    assert_eq!(retry_after, Some(Duration::from_secs(20)));
+                    assert!(client_replay_safe, "{surface:?}");
+                }
+                other => panic!("{surface:?}: unexpected error {other:?}"),
+            }
+            let response = resolve_excluding_for_test(
+                &provider_router,
+                &proxy_router,
+                account,
+                surface,
+                AUTO_QUICK_MODEL_ID,
+                ModelPlan::Free,
+                InferenceRoutingMode::V2,
+                Some(&lost),
+            )
+            .expect_err("no alternate for free quick")
+            .into_response();
+            assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+            assert_eq!(response.headers()[crate::CLIENT_REPLAY_HEADER], "safe");
+            assert_eq!(
+                response.headers()[crate::ERROR_CODE_HEADER],
+                crate::INFERENCE_CAPACITY_ERROR_CODE
+            );
+            assert_eq!(response.headers()[header::RETRY_AFTER], "20");
+
+            // Paid Quick whose only alternate cannot hold the request keeps the
+            // preferred model's capacity result and hint.
+            let flash_window = crate::model_config::model_context_window(GLM_5_3_FLASH_MODEL_ID);
+            let lost = ExcludedAutoCandidate::unavailable(
+                DEEPSEEK_V4_1_FLASH_MODEL_ID,
+                Some(Duration::from_secs(35)),
+            );
+            let error = resolve_inference_model(
+                &provider_router,
+                &proxy_router,
+                ModelResolutionRequest {
+                    account_uuid: account,
+                    surface,
+                    requested_model_id: AUTO_QUICK_MODEL_ID,
+                    alias_target: DEEPSEEK_V4_1_FLASH_MODEL_ID,
+                    model_plan: ModelPlan::Paid,
+                    routing_mode: InferenceRoutingMode::V2,
+                    excluded: Some(&lost),
+                },
+                || AutoModelRequirements {
+                    vision: false,
+                    kimi_tool_history_compatible: true,
+                    prompt_tokens: PromptTokenEstimate::Known(flash_window),
+                },
+            )
+            .expect_err("alternate is incompatible");
+            assert!(matches!(
+                error,
+                ApiError::InferenceCapacity {
+                    status: StatusCode::SERVICE_UNAVAILABLE,
+                    retry_after: Some(retry_after),
+                    client_replay_safe: true,
+                } if retry_after == Duration::from_secs(35)
+            ));
+
+            // A compatible alternate is still taken, exactly once.
+            let moved = resolve_excluding_for_test(
+                &provider_router,
+                &proxy_router,
+                account,
+                surface,
+                AUTO_QUICK_MODEL_ID,
+                ModelPlan::Paid,
+                InferenceRoutingMode::V2,
+                Some(&lost),
+            )
+            .expect("alternate takes the request");
+            assert_eq!(moved.public_model_id(), GLM_5_3_FLASH_MODEL_ID);
+        }
+        // The decision stage has no provider client and records nothing.
+        assert_eq!(provider_router.sticky_routes().len(), 0);
     }
 
     #[test]
@@ -8140,7 +8261,7 @@ mod tests {
                 alias_target: crate::model_config::DEEPSEEK_V4_1_FLASH_MODEL_ID,
                 model_plan: ModelPlan::Paid,
                 routing_mode: InferenceRoutingMode::Legacy,
-                excluded_model_id: None,
+                excluded: None,
             },
             || {
                 evaluated.set(true);

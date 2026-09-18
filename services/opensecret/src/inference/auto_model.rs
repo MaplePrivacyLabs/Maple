@@ -12,6 +12,7 @@
 //! first-send probe claim, and plan access checks downstream.
 
 use super::ModelSelectionMode;
+use crate::inference::health::MIN_CAPACITY_COOLDOWN;
 use crate::inference_planning::ConfiguredProviders;
 use crate::model_config::{
     model_capabilities, model_context_window, ModelAliasTargets, ModelPlan, GLM_5_3_FLASH_MODEL_ID,
@@ -93,6 +94,39 @@ pub(crate) enum AutoCandidateRejection {
     IncompatibleToolHistory,
 }
 
+/// A candidate an earlier attempt of the same request already chose and must
+/// not return to. The cause is carried so the bounded second decision reports
+/// the right rejection and, for a lost route, the typed capacity result's own
+/// recovery hint rather than a configuration error.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ExcludedAutoCandidate {
+    pub(crate) model_id: String,
+    pub(crate) rejection: AutoCandidateRejection,
+}
+
+impl ExcludedAutoCandidate {
+    /// The candidate's context could not hold this request.
+    pub(crate) fn context_overflow(model_id: impl Into<String>) -> Self {
+        Self {
+            model_id: model_id.into(),
+            rejection: AutoCandidateRejection::ContextOverflow,
+        }
+    }
+
+    /// Every route of the candidate became unavailable after the first
+    /// decision's snapshot, at route preparation or at the first-send claim.
+    /// `retry_after` is the capacity result's hint; an absent hint falls back
+    /// to the minimum capacity cooldown.
+    pub(crate) fn unavailable(model_id: impl Into<String>, retry_after: Option<Duration>) -> Self {
+        Self {
+            model_id: model_id.into(),
+            rejection: AutoCandidateRejection::Unavailable {
+                retry_after: retry_after.unwrap_or(MIN_CAPACITY_COOLDOWN),
+            },
+        }
+    }
+}
+
 /// Route availability for one public model under its own failover policy,
 /// taken from the same health snapshot as every other candidate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -132,8 +166,8 @@ pub(crate) struct AutoModelSelectionInput<'a> {
     pub(crate) plan: ModelPlan,
     /// The account's remembered model for this selector, if any.
     pub(crate) sticky_model_id: Option<&'a str>,
-    /// A candidate that already failed this request's context build.
-    pub(crate) excluded_model_id: Option<&'a str>,
+    /// A candidate an earlier attempt of this request already chose and lost.
+    pub(crate) excluded: Option<&'a ExcludedAutoCandidate>,
     pub(crate) requirements: AutoModelRequirements<'a>,
     pub(crate) availability: &'a dyn Fn(&str) -> ModelAvailability,
 }
@@ -194,10 +228,11 @@ pub(crate) fn select_auto_model(
 
     // Order encodes the reason: a remembered alternate keeps its warmed route
     // while healthy, then the preferred model, then the remaining alternates.
+    let excluded_model = input.excluded.map(|excluded| excluded.model_id.as_str());
     let sticky = input
         .sticky_model_id
         .and_then(|sticky| candidates.iter().copied().find(|c| *c == sticky))
-        .filter(|sticky| *sticky != preferred && Some(*sticky) != input.excluded_model_id);
+        .filter(|sticky| *sticky != preferred && Some(*sticky) != excluded_model);
     let ordered = sticky
         .map(|sticky| (sticky, AutoModelReason::RetainedHealthyChoice))
         .into_iter()
@@ -215,16 +250,21 @@ pub(crate) fn select_auto_model(
     let mut rejected = Vec::new();
     let mut earliest_recovery: Option<Duration> = None;
     // A candidate excluded by an earlier attempt of this request is recorded
-    // up front so the second decision's log explains why it differs.
-    if let Some(excluded) = input
-        .excluded_model_id
-        .and_then(|excluded| candidates.iter().copied().find(|c| *c == excluded))
-    {
-        rejected.push((excluded, AutoCandidateRejection::ContextOverflow));
+    // up front with its own cause, so the second decision explains why it
+    // differs and a lost route keeps its capacity hint when nothing else
+    // remains.
+    if let Some(excluded) = input.excluded {
+        if let Some(candidate) = candidates.iter().copied().find(|c| *c == excluded.model_id) {
+            if let AutoCandidateRejection::Unavailable { retry_after } = excluded.rejection {
+                earliest_recovery =
+                    Some(earliest_recovery.map_or(retry_after, |current| current.min(retry_after)));
+            }
+            rejected.push((candidate, excluded.rejection));
+        }
     }
 
     for (candidate, reason) in ordered {
-        if Some(candidate) == input.excluded_model_id {
+        if Some(candidate) == excluded_model {
             continue;
         }
         match (input.availability)(candidate) {
@@ -364,7 +404,7 @@ mod tests {
         mode: ModelSelectionMode,
         plan: ModelPlan,
         sticky: Option<&str>,
-        excluded: Option<&str>,
+        excluded: Option<&ExcludedAutoCandidate>,
         requirements: AutoModelRequirements<'_>,
         table: &HashMap<&'static str, ModelAvailability>,
     ) -> Result<AutoModelDecision, AutoModelError> {
@@ -378,7 +418,7 @@ mod tests {
             mode,
             plan,
             sticky_model_id: sticky,
-            excluded_model_id: excluded,
+            excluded,
             requirements,
             availability: &lookup,
         })
@@ -686,7 +726,7 @@ mod tests {
             mode: ModelSelectionMode::AutoPowerful,
             plan: ModelPlan::Paid,
             sticky_model_id: Some(KIMI_K3_MODEL_ID),
-            excluded_model_id: None,
+            excluded: None,
             requirements: AutoModelRequirements {
                 vision: false,
                 kimi_tool_history_compatible: true,
@@ -865,11 +905,12 @@ mod tests {
 
         // ...and the healthy preferred model wins once it is excluded, even
         // though the memory still names it.
+        let overflowed = ExcludedAutoCandidate::context_overflow(GLM_5_3_FLASH_MODEL_ID);
         let second = select_excluding(
             ModelSelectionMode::AutoQuick,
             ModelPlan::Paid,
             Some(GLM_5_3_FLASH_MODEL_ID),
-            Some(GLM_5_3_FLASH_MODEL_ID),
+            Some(&overflowed),
             requirements(),
             &both_available,
         )
@@ -894,7 +935,7 @@ mod tests {
             ModelSelectionMode::AutoQuick,
             ModelPlan::Paid,
             None,
-            Some(GLM_5_3_FLASH_MODEL_ID),
+            Some(&overflowed),
             requirements(),
             &preferred_open,
         )
@@ -908,6 +949,121 @@ mod tests {
     }
 
     #[test]
+    fn a_candidate_that_lost_its_routes_keeps_the_capacity_result_and_its_hint() {
+        // Free Quick has a single candidate. The first decision chose it and
+        // its route then closed before the first send; the snapshot may not
+        // have caught up yet. The bounded second decision must report the
+        // capacity condition with the hint the request actually received,
+        // not a configuration error.
+        let free = availability(&[(QUICK_MODEL_ID, available())]);
+        let lost =
+            ExcludedAutoCandidate::unavailable(QUICK_MODEL_ID, Some(Duration::from_secs(20)));
+        assert_eq!(
+            select_excluding(
+                ModelSelectionMode::AutoQuick,
+                ModelPlan::Free,
+                None,
+                Some(&lost),
+                requirements(),
+                &free,
+            ),
+            Err(AutoModelError::NoEligibleCandidate {
+                selector: AUTO_QUICK_MODEL_ID,
+                preferred_model_id: QUICK_MODEL_ID,
+                retry_after: Some(Duration::from_secs(20)),
+                rejected: vec![(
+                    QUICK_MODEL_ID,
+                    AutoCandidateRejection::Unavailable {
+                        retry_after: Duration::from_secs(20),
+                    },
+                )],
+            })
+        );
+
+        // An absent hint falls back to the minimum cooldown.
+        let lost_without_hint = ExcludedAutoCandidate::unavailable(QUICK_MODEL_ID, None);
+        assert!(matches!(
+            select_excluding(
+                ModelSelectionMode::AutoQuick,
+                ModelPlan::Free,
+                None,
+                Some(&lost_without_hint),
+                requirements(),
+                &free,
+            ),
+            Err(AutoModelError::NoEligibleCandidate { retry_after: Some(retry_after), .. })
+                if retry_after == MIN_CAPACITY_COOLDOWN
+        ));
+
+        // Paid Quick whose alternate cannot hold the request: the preferred
+        // model's capacity result survives with both causes recorded.
+        let paid = availability(&[
+            (DEEPSEEK_V4_1_FLASH_MODEL_ID, available()),
+            (GLM_5_3_FLASH_MODEL_ID, available()),
+        ]);
+        let flash_window = model_context_window(GLM_5_3_FLASH_MODEL_ID);
+        let lost = ExcludedAutoCandidate::unavailable(
+            DEEPSEEK_V4_1_FLASH_MODEL_ID,
+            Some(Duration::from_secs(35)),
+        );
+        assert_eq!(
+            select_excluding(
+                ModelSelectionMode::AutoQuick,
+                ModelPlan::Paid,
+                None,
+                Some(&lost),
+                AutoModelRequirements {
+                    prompt_tokens: PromptTokenEstimate::Known(flash_window),
+                    ..requirements()
+                },
+                &paid,
+            ),
+            Err(AutoModelError::NoEligibleCandidate {
+                selector: AUTO_QUICK_MODEL_ID,
+                preferred_model_id: DEEPSEEK_V4_1_FLASH_MODEL_ID,
+                retry_after: Some(Duration::from_secs(35)),
+                rejected: vec![
+                    (
+                        DEEPSEEK_V4_1_FLASH_MODEL_ID,
+                        AutoCandidateRejection::Unavailable {
+                            retry_after: Duration::from_secs(35),
+                        },
+                    ),
+                    (
+                        GLM_5_3_FLASH_MODEL_ID,
+                        AutoCandidateRejection::IncompatibleContext {
+                            required: flash_window,
+                            available: flash_window,
+                        },
+                    ),
+                ],
+            })
+        );
+
+        // With a compatible alternate the second decision simply moves on.
+        let moved = select_excluding(
+            ModelSelectionMode::AutoQuick,
+            ModelPlan::Paid,
+            None,
+            Some(&lost),
+            requirements(),
+            &paid,
+        )
+        .expect("alternate takes the request");
+        assert_eq!(moved.chosen_model_id, GLM_5_3_FLASH_MODEL_ID);
+        assert_eq!(moved.reason, AutoModelReason::HealthFallback);
+        assert_eq!(
+            moved.rejected,
+            vec![(
+                DEEPSEEK_V4_1_FLASH_MODEL_ID,
+                AutoCandidateRejection::Unavailable {
+                    retry_after: Duration::from_secs(35),
+                },
+            )]
+        );
+    }
+
+    #[test]
     fn explicit_selectors_never_enter_the_policy() {
         let lookup = |_: &str| available();
         assert_eq!(
@@ -915,7 +1071,7 @@ mod tests {
                 mode: ModelSelectionMode::Explicit,
                 plan: ModelPlan::Paid,
                 sticky_model_id: None,
-                excluded_model_id: None,
+                excluded: None,
                 requirements: requirements(),
                 availability: &lookup,
             }),

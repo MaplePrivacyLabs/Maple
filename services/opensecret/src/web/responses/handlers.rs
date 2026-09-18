@@ -6,7 +6,9 @@ use crate::{
     db::DBError,
     encrypt::{decrypt_content, decrypt_string, encrypt_with_key},
     inference::{
-        auto_model::{AutoModelDecision, AutoModelRequirements, PromptTokenEstimate},
+        auto_model::{
+            AutoModelDecision, AutoModelRequirements, ExcludedAutoCandidate, PromptTokenEstimate,
+        },
         AttemptFailure, AttemptFailureKind, AttemptTerminal, InferenceIntent, InferenceSurface,
         ReplaySafety, WorkloadClass,
     },
@@ -728,6 +730,84 @@ mod tests {
                     client_replay_safe,
                     ..
                 } if client_replay_safe == expected_replay_safe
+            ));
+        }
+    }
+
+    #[test]
+    fn reselection_capacity_result_keeps_its_hint_and_helper_work_removes_replay_safety() {
+        use crate::inference::auto_model::ExcludedAutoCandidate;
+        use crate::model_config::{AUTO_QUICK_MODEL_ID, QUICK_MODEL_ID};
+        use crate::provider_routing::{InferenceRoutingMode, ProviderRouter};
+        use crate::proxy_config::ProxyRouter;
+        use crate::web::openai::{resolve_inference_model, ModelResolutionRequest};
+
+        // Free Quick lost its only route at pin time, after the image helper
+        // already performed billed work.
+        let provider_router = ProviderRouter::default();
+        let proxy_router = ProxyRouter::new(
+            "http://continuum.example.com".to_string(),
+            None,
+            "http://tinfoil.example.com".to_string(),
+        );
+        let lost =
+            ExcludedAutoCandidate::unavailable(QUICK_MODEL_ID, Some(Duration::from_secs(25)));
+        let error = resolve_inference_model(
+            &provider_router,
+            &proxy_router,
+            ModelResolutionRequest {
+                account_uuid: Uuid::nil(),
+                surface: InferenceSurface::Responses,
+                requested_model_id: AUTO_QUICK_MODEL_ID,
+                alias_target: QUICK_MODEL_ID,
+                model_plan: ModelPlan::Free,
+                routing_mode: InferenceRoutingMode::V2,
+                excluded: Some(&lost),
+            },
+            || crate::inference::auto_model::AutoModelRequirements {
+                vision: false,
+                kimi_tool_history_compatible: true,
+                prompt_tokens: crate::inference::auto_model::PromptTokenEstimate::Known(16),
+            },
+        )
+        .expect_err("no alternate for free quick");
+        assert!(matches!(
+            error,
+            ApiError::InferenceCapacity {
+                status: axum::http::StatusCode::SERVICE_UNAVAILABLE,
+                retry_after: Some(retry_after),
+                client_replay_safe: true,
+            } if retry_after == Duration::from_secs(25)
+        ));
+
+        for (descriptions_done, expected_replay_safe) in [(false, true), (true, false)] {
+            let error = resolve_inference_model(
+                &provider_router,
+                &proxy_router,
+                ModelResolutionRequest {
+                    account_uuid: Uuid::nil(),
+                    surface: InferenceSurface::Responses,
+                    requested_model_id: AUTO_QUICK_MODEL_ID,
+                    alias_target: QUICK_MODEL_ID,
+                    model_plan: ModelPlan::Free,
+                    routing_mode: InferenceRoutingMode::V2,
+                    excluded: Some(&lost),
+                },
+                || crate::inference::auto_model::AutoModelRequirements {
+                    vision: false,
+                    kimi_tool_history_compatible: true,
+                    prompt_tokens: crate::inference::auto_model::PromptTokenEstimate::Known(16),
+                },
+            )
+            .expect_err("no alternate for free quick");
+            assert!(matches!(
+                responses_pre_persistence_api_error(error.into(), descriptions_done),
+                ApiError::InferenceCapacity {
+                    retry_after: Some(retry_after),
+                    client_replay_safe,
+                    ..
+                } if retry_after == Duration::from_secs(25)
+                    && client_replay_safe == expected_replay_safe
             ));
         }
     }
@@ -5385,7 +5465,7 @@ async fn create_response_stream(
                 .and_then(|tokens| usize::try_from(tokens).ok())
                 .unwrap_or(0),
         );
-    let resolve_model = |excluded_model_id: Option<&str>| {
+    let resolve_model = |excluded: Option<&ExcludedAutoCandidate>| {
         resolve_inference_model(
             &state.provider_router,
             &state.proxy_router,
@@ -5396,7 +5476,7 @@ async fn create_response_stream(
                 alias_target: &alias_target,
                 model_plan,
                 routing_mode: routing.mode(),
-                excluded_model_id,
+                excluded,
             },
             || AutoModelRequirements {
                 // The main model never receives raw images; the paid helper
@@ -5460,12 +5540,13 @@ async fn create_response_stream(
             Ok(ready) => break ready,
             Err(ApiError::MessageExceedsContextLimit) if alternate_may_overflow => {
                 model_reselected = true;
-                let overflowed = resolved_model.public_model_id().to_string();
+                let excluded =
+                    ExcludedAutoCandidate::context_overflow(resolved_model.public_model_id());
                 info!(
                     "Responses Auto alternate cannot hold this conversation; deciding again without it: selector={}, model={}",
-                    requested_model, overflowed
+                    requested_model, excluded.model_id
                 );
-                resolved_model = resolve_model(Some(&overflowed))?;
+                resolved_model = resolve_model(Some(&excluded))?;
                 apply_resolved_model(&mut body, &resolved_model);
             }
             Err(error) => return Err(error),
@@ -5533,12 +5614,14 @@ async fn create_response_stream(
                                 .is_some_and(AutoModelDecision::changed_model) =>
                     {
                         model_reselected = true;
-                        let overflowed = resolved_model.public_model_id().to_string();
+                        let excluded = ExcludedAutoCandidate::context_overflow(
+                            resolved_model.public_model_id(),
+                        );
                         info!(
                             "Responses Auto alternate cannot hold the described images; deciding again without it: selector={}, model={}",
-                            requested_model, overflowed
+                            requested_model, excluded.model_id
                         );
-                        resolved_model = resolve_model(Some(&overflowed)).map_err(|error| {
+                        resolved_model = resolve_model(Some(&excluded)).map_err(|error| {
                             responses_pre_persistence_api_error(error.into(), descriptions_done)
                         })?;
                         apply_resolved_model(&mut body, &resolved_model);
@@ -5563,16 +5646,21 @@ async fn create_response_stream(
         );
         match prepare_completion_request(&state, &user, inference_intent, routing).await {
             Ok(pinned) => break (built, pinned),
-            Err(ApiError::InferenceCapacity { .. })
+            Err(ApiError::InferenceCapacity { retry_after, .. })
                 if !model_reselected && resolved_model.auto_decision().is_some() =>
             {
                 model_reselected = true;
-                let lost = resolved_model.public_model_id().to_string();
-                info!(
-                    "Responses Auto model lost its routes before pinning; deciding again without it: selector={}, model={}",
-                    requested_model, lost
+                let excluded = ExcludedAutoCandidate::unavailable(
+                    resolved_model.public_model_id(),
+                    retry_after,
                 );
-                resolved_model = resolve_model(Some(&lost)).map_err(|error| {
+                info!(
+                    "Responses Auto model lost its routes before pinning; deciding again without it: selector={}, model={}, retry_after_seconds={:?}",
+                    requested_model,
+                    excluded.model_id,
+                    retry_after.map(|hint| hint.as_secs())
+                );
+                resolved_model = resolve_model(Some(&excluded)).map_err(|error| {
                     responses_pre_persistence_api_error(error.into(), descriptions_done)
                 })?;
                 apply_resolved_model(&mut body, &resolved_model);
