@@ -2590,11 +2590,12 @@ impl Drop for AttemptObservationGuard {
             self.probe.take(),
         );
         warn!(
-            "Inference attempt abandoned before terminal processing: request_id={}, execution_id={}, attempt_id={}, stage={:?}",
+            "Inference attempt finalized on guard drop: request_id={}, execution_id={}, attempt_id={}, stage={:?}, known_provider_failure={}",
             self.attempt.request_id,
             self.attempt.execution_id,
             self.attempt.attempt_id,
-            self.stage
+            self.stage,
+            self.known_failure.is_some()
         );
     }
 }
@@ -2741,7 +2742,7 @@ fn log_selected_inference_route(pinned: &PinnedCompletionRequest, attempt: &Infe
         return;
     }
     info!(
-        "Inference routing decision: request_id={}, execution_id={}, attempt_id={}, routing_mode={:?}, selection_mode={:?}, surface={:?}, workload={:?}, preferred_model={}, public_model={}, provider={}, provider_model={}, auto_model_reason={:?}, source={:?}, routing_policy_version={}, auto_model_policy_version={:?}",
+        "Inference routing decision: request_id={}, execution_id={}, attempt_id={}, routing_mode={:?}, selection_mode={:?}, surface={:?}, workload={:?}, preferred_model={}, public_model={}, provider={}, provider_model={}, auto_model_reason={:?}, source={:?}, routing_policy_version={}, auto_model_policy_version={:?}, auto_rejected={:?}",
         attempt.request_id,
         attempt.execution_id,
         attempt.attempt_id,
@@ -2757,6 +2758,7 @@ fn log_selected_inference_route(pinned: &PinnedCompletionRequest, attempt: &Infe
         attempt.route.selection_source,
         SHADOW_ROUTING_POLICY_VERSION,
         pinned.intent.auto_model.as_ref().map(|decision| decision.policy_version),
+        pinned.intent.auto_model.as_ref().map(|decision| decision.rejected.as_slice()).unwrap_or_default(),
     );
 }
 
@@ -4519,7 +4521,16 @@ mod tests {
                 preferred_model_id: "glm-5-3",
                 chosen_model_id: "kimi-k3",
                 reason,
-                rejected: Vec::new(),
+                rejected: if reason == AutoModelReason::HealthFallback {
+                    vec![(
+                        "glm-5-3",
+                        crate::inference::auto_model::AutoCandidateRejection::Unavailable {
+                            retry_after: Duration::from_secs(30),
+                        },
+                    )]
+                } else {
+                    Vec::new()
+                },
                 policy_version: AUTO_MODEL_POLICY_VERSION,
             });
             let mut route = pinned.route.identity();
@@ -4530,6 +4541,12 @@ mod tests {
             assert!(logged.contains(reason.as_str()));
             assert!(logged.contains("public_model=kimi-k3"));
             assert!(logged.contains(AUTO_MODEL_POLICY_VERSION));
+            if reason == AutoModelReason::HealthFallback {
+                assert!(logged
+                    .contains("auto_rejected=[(\"glm-5-3\", Unavailable { retry_after: 30s })]"));
+            } else {
+                assert!(logged.contains("auto_rejected=[]"));
+            }
         }
         pinned.intent.auto_model = None;
         let mut route = pinned.route.identity();
@@ -5664,6 +5681,8 @@ mod tests {
                 assert!(logged.contains(&format!("status=Some({status})")));
                 assert!(logged.contains("retry_after_ms=Some(23000)"));
                 assert!(!logged.contains("kind=ConsumerDropped"));
+                assert!(logged.contains("Inference attempt finalized on guard drop:"));
+                assert!(logged.contains("known_provider_failure=true"));
                 assert!(matches!(
                     router.try_claim_probe(&route_key),
                     ProbeClaimResult::Rejected { .. }

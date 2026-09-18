@@ -53,6 +53,9 @@ At INFO level, `Inference routing decision` records V2 alternate Auto choices
 and sticky/fallback provider choices after the send-time route claim. Join its
 request, execution and attempt IDs with response-start and terminal records;
 the decision alone proves neither success nor client receipt. It includes the
-selector mode, surface, workload, actual model/provider, reason/source and policy
-versions without an account identifier. Ordinary primary/weighted routing
+selector mode, surface, workload, actual model/provider, reason/source, policy
+versions and skipped Auto candidates with their typed reasons and retry hints,
+without an account identifier. These are selection-time observations; a retained
+sticky choice can have no skipped candidates and does not establish the preferred
+model's health. Ordinary primary/weighted routing
 remains at DEBUG, so INFO-only logs are not a complete traffic denominator.
