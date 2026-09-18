@@ -10,7 +10,7 @@ use crate::model_config::{
     QUICK_MODEL_ID,
 };
 
-pub(crate) const SHADOW_ROUTING_POLICY_VERSION: &str = "routing-v2-weighted-v3";
+pub(crate) const SHADOW_ROUTING_POLICY_VERSION: &str = "routing-v2-weighted-v4";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) enum ProviderId {
@@ -67,20 +67,10 @@ pub(crate) struct ModelRouteSpec {
     pub(crate) enabled: bool,
 }
 
-/// Which health gates can exclude a route during Router v2 selection and probe claim.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum FailoverPolicy {
-    /// Transport failures, 503/529, and 429 all fail over to another same-model route.
-    AllGates,
-    /// Only 429 and 503/529 fail over. Timeouts and stream errors stay on the selected provider.
-    CapacityGates,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct CompletionModelSpec {
     pub(crate) public_model_id: &'static str,
     pub(crate) routes: &'static [ModelRouteSpec],
-    pub(crate) failover: FailoverPolicy,
 }
 
 const fn completion_model(
@@ -90,18 +80,6 @@ const fn completion_model(
     CompletionModelSpec {
         public_model_id,
         routes,
-        failover: FailoverPolicy::AllGates,
-    }
-}
-
-const fn completion_model_capacity_failover(
-    public_model_id: &'static str,
-    routes: &'static [ModelRouteSpec],
-) -> CompletionModelSpec {
-    CompletionModelSpec {
-        public_model_id,
-        routes,
-        failover: FailoverPolicy::CapacityGates,
     }
 }
 
@@ -242,7 +220,7 @@ const COMPLETION_MODELS: &[CompletionModelSpec] = &[
     completion_model("gemma4-31b", GEMMA4_31B_ROUTES),
     completion_model(KIMI_K3_MODEL_ID, KIMI_K3_ROUTES),
     completion_model(GLM_5_3_MODEL_ID, GLM_5_3_ROUTES),
-    completion_model_capacity_failover(GLM_5_3_FLASH_MODEL_ID, GLM_5_3_FLASH_ROUTES),
+    completion_model(GLM_5_3_FLASH_MODEL_ID, GLM_5_3_FLASH_ROUTES),
     completion_model(DEEPSEEK_V4_1_FLASH_MODEL_ID, DEEPSEEK_V4_1_FLASH_ROUTES),
     completion_model("llama3-3-70b", LLAMA3_3_70B_ROUTES),
     completion_model("gpt-oss-safeguard-120b", GPT_OSS_SAFEGUARD_120B_ROUTES),
@@ -461,11 +439,10 @@ mod tests {
     }
 
     #[test]
-    fn glm_flash_uses_a_thirty_percent_continuum_split_and_capacity_only_failover() {
+    fn glm_flash_retains_a_thirty_percent_continuum_split() {
         let flash = PROVIDER_REGISTRY
             .completion_model(GLM_5_3_FLASH_MODEL_ID)
             .expect("Flash model");
-        assert_eq!(flash.failover, FailoverPolicy::CapacityGates);
         assert_eq!(
             flash
                 .routes
@@ -487,10 +464,5 @@ mod tests {
         let tinfoil = effective_weight(ProviderId::Tinfoil);
         let continuum = effective_weight(ProviderId::Continuum);
         assert_eq!(continuum * 100 / (tinfoil + continuum), 30);
-
-        let glm = PROVIDER_REGISTRY
-            .completion_model(GLM_5_3_MODEL_ID)
-            .expect("GLM 5.3");
-        assert_eq!(glm.failover, FailoverPolicy::AllGates);
     }
 }

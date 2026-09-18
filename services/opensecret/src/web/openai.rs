@@ -1,5 +1,5 @@
 use crate::inference::auto_model::{
-    auto_model_candidates, select_auto_model, AutoModelDecision, AutoModelError,
+    auto_model_candidates, select_auto_model, AutoModelDecision, AutoModelError, AutoModelReason,
     AutoModelRequirements, AutoModelSelectionInput, ExcludedAutoCandidate, ModelAvailability,
     PromptTokenEstimate, AUTO_MODEL_POLICY_VERSION,
 };
@@ -24,7 +24,7 @@ use crate::provider_client::{
     ProviderClient, ProviderRequest, ProviderRequestError, ProviderResponse, ProviderSendTrace,
     UpstreamProviderError,
 };
-use crate::provider_registry::{ProviderId, SHADOW_ROUTING_POLICY_VERSION};
+use crate::provider_registry::{ProviderId, RouteSelectionSource, SHADOW_ROUTING_POLICY_VERSION};
 use crate::provider_routing::{
     compare_shadow_route, InferenceRoutingMode, ProviderRouter, ProviderRoutingError,
     SelectedProviderRoute, ShadowRouteComparison,
@@ -989,6 +989,7 @@ fn attempt_failure_from_provider_error(error: &ProviderRequestError) -> AttemptF
                 upstream.retry_after,
                 upstream.upstream_request_id.clone(),
             )
+            .with_upstream_diagnostic(upstream.diagnostic.clone())
         }
     }
 }
@@ -1123,7 +1124,7 @@ fn log_attempt_terminal(
             evidence
         ),
         AttemptTerminal::Failed { failure, .. } => warn!(
-            "Inference attempt failed: request_id={}, execution_id={}, attempt_id={}, provider={}, public_model={}, provider_model={}, kind={:?}, stage={:?}, replay_safety={:?}, status={:?}, retry_after_ms={:?}, upstream_request_id={:?}, upstream_code={:?}",
+            "Inference attempt failed: request_id={}, execution_id={}, attempt_id={}, provider={}, public_model={}, provider_model={}, kind={:?}, stage={:?}, replay_safety={:?}, status={:?}, retry_after_ms={:?}, upstream_request_id={:?}, upstream_code={:?}, upstream_diagnostic={:?}",
             attempt.request_id,
             attempt.execution_id,
             attempt.attempt_id,
@@ -1136,7 +1137,8 @@ fn log_attempt_terminal(
             failure.status,
             failure.retry_after.map(|duration| duration.as_millis()),
             failure.upstream_request_id,
-            failure.upstream_code
+            failure.upstream_code,
+            failure.upstream_diagnostic
         ),
     }
 }
@@ -1683,7 +1685,7 @@ pub(crate) fn resolve_inference_model<'a>(
     match selection {
         Ok(decision) => {
             if decision.changed_model() {
-                info!(
+                debug!(
                     "Auto model selection chose an alternate model: selector={}, surface={:?}, plan={:?}, preferred_model={}, chosen_model={}, reason={}, rejected={:?}, policy_version={}",
                     decision.selector,
                     request.surface,
@@ -2492,13 +2494,14 @@ fn remember_started_route(
 }
 
 /// Ensures cancellation or panic cannot make an in-flight attempt disappear
-/// from the terminal observation stream. Consumer cancellation is deliberately
-/// neutral for route health, but it must still be represented exactly once.
+/// from the terminal observation stream. Cancellation is neutral unless error
+/// headers have already established a provider failure; either is recorded once.
 struct AttemptObservationGuard {
     attempt: InferenceAttempt,
     provider_router: Arc<ProviderRouter>,
     stage: AttemptStage,
     probe: Option<ProbeLease>,
+    known_failure: Option<AttemptFailure>,
     armed: bool,
 }
 
@@ -2523,6 +2526,7 @@ impl AttemptObservationGuard {
             provider_router,
             stage,
             probe,
+            known_failure: None,
             armed: true,
         }
     }
@@ -2533,6 +2537,14 @@ impl AttemptObservationGuard {
 
     fn set_stage(&mut self, stage: AttemptStage) {
         self.stage = stage;
+    }
+
+    fn retain_known_upstream_failure(&mut self, upstream: &UpstreamProviderError) {
+        // Diagnostic collection may suspend after error headers. Cancellation
+        // must preserve that known provider outcome instead of making it neutral.
+        self.known_failure = Some(attempt_failure_from_provider_error(
+            &ProviderRequestError::Upstream(upstream.clone()),
+        ));
     }
 
     fn disarm(&mut self) {
@@ -2553,11 +2565,13 @@ impl AttemptObservationGuard {
     fn cancellation_terminal(&self) -> AttemptTerminal {
         AttemptTerminal::Failed {
             attempt: self.attempt.clone(),
-            failure: AttemptFailure::new(
-                AttemptFailureKind::ConsumerDropped,
-                self.stage,
-                ReplaySafety::NotProvenPreAcceptance,
-            ),
+            failure: self.known_failure.clone().unwrap_or_else(|| {
+                AttemptFailure::new(
+                    AttemptFailureKind::ConsumerDropped,
+                    self.stage,
+                    ReplaySafety::NotProvenPreAcceptance,
+                )
+            }),
         }
     }
 }
@@ -2576,15 +2590,17 @@ impl Drop for AttemptObservationGuard {
             self.probe.take(),
         );
         warn!(
-            "Inference attempt abandoned before terminal processing: request_id={}, execution_id={}, attempt_id={}, stage={:?}",
+            "Inference attempt finalized on guard drop: request_id={}, execution_id={}, attempt_id={}, stage={:?}, known_provider_failure={}",
             self.attempt.request_id,
             self.attempt.execution_id,
             self.attempt.attempt_id,
-            self.stage
+            self.stage,
+            self.known_failure.is_some()
         );
     }
 }
 
+#[cfg(test)]
 async fn await_attempt_result<T>(
     terminal_guard: AttemptObservationGuard,
     future: impl std::future::Future<Output = T>,
@@ -2706,6 +2722,44 @@ pub(crate) async fn get_bounded_chat_completion_response(
 #[derive(Default)]
 struct CompletionExecutionOptions {
     non_streaming_body_limit: Option<usize>,
+}
+
+/// Emit the route that actually won the send-time claim, not the provisional
+/// preparation choice. IDs join this decision to provider starts/terminals;
+/// it does not imply a successful fallback or client receipt.
+fn log_selected_inference_route(pinned: &PinnedCompletionRequest, attempt: &InferenceAttempt) {
+    if pinned.routing_mode() != InferenceRoutingMode::V2 {
+        return;
+    }
+    let auto_reason = pinned.intent.auto_model_reason();
+    if !matches!(
+        auto_reason,
+        Some(AutoModelReason::RetainedHealthyChoice | AutoModelReason::HealthFallback)
+    ) && !matches!(
+        attempt.route.selection_source,
+        RouteSelectionSource::Sticky | RouteSelectionSource::Fallback
+    ) {
+        return;
+    }
+    info!(
+        "Inference routing decision: request_id={}, execution_id={}, attempt_id={}, routing_mode={:?}, selection_mode={:?}, surface={:?}, workload={:?}, preferred_model={}, public_model={}, provider={}, provider_model={}, auto_model_reason={:?}, source={:?}, routing_policy_version={}, auto_model_policy_version={:?}, auto_rejected={:?}",
+        attempt.request_id,
+        attempt.execution_id,
+        attempt.attempt_id,
+        pinned.routing_mode(),
+        pinned.intent.selection_mode,
+        pinned.intent.surface,
+        pinned.intent.workload_class,
+        pinned.intent.preferred_model_id(),
+        attempt.route.public_model_id,
+        attempt.route.provider.as_str(),
+        attempt.route.provider_model_id,
+        auto_reason.map(|reason| reason.as_str()),
+        attempt.route.selection_source,
+        SHADOW_ROUTING_POLICY_VERSION,
+        pinned.intent.auto_model.as_ref().map(|decision| decision.policy_version),
+        pinned.intent.auto_model.as_ref().map(|decision| decision.rejected.as_slice()).unwrap_or_default(),
+    );
 }
 
 async fn get_chat_completion_response_with_options(
@@ -2863,21 +2917,17 @@ async fn get_chat_completion_response_with_options(
             request_log_metadata
         );
 
+        log_selected_inference_route(pinned, &attempt);
         terminal_guard.set_stage(AttemptStage::AwaitingResponse);
-        let (
-            ProviderSendTrace {
-                prior_failures,
-                result,
-            },
-            mut terminal_guard,
-        ) = await_attempt_result(
-            terminal_guard,
-            try_provider(
-                &state.provider_client,
-                &proxy_config,
-                request_body_json,
-                headers,
-            ),
+        let ProviderSendTrace {
+            prior_failures,
+            result,
+        } = try_provider_observing(
+            &state.provider_client,
+            &proxy_config,
+            request_body_json,
+            headers,
+            |upstream| terminal_guard.retain_known_upstream_failure(upstream),
         )
         .await;
 
@@ -4293,11 +4343,22 @@ where
 }
 
 /// Helper function to try a provider once
+#[cfg(test)]
 async fn try_provider(
     client: &ProviderClient,
     proxy_config: &ProxyConfig,
     body_json: String,
     headers: &HeaderMap,
+) -> ProviderSendTrace {
+    try_provider_observing(client, proxy_config, body_json, headers, |_| {}).await
+}
+
+async fn try_provider_observing(
+    client: &ProviderClient,
+    proxy_config: &ProxyConfig,
+    body_json: String,
+    headers: &HeaderMap,
+    observe_error_headers: impl FnOnce(&UpstreamProviderError),
 ) -> ProviderSendTrace {
     debug!("Making request to {}", proxy_config.provider_name);
 
@@ -4332,14 +4393,17 @@ async fn try_provider(
                     "Provider {} returned non-success status: {}",
                     proxy_config.provider_name, status
                 );
-                // The status and bounded safe headers are the complete routing
-                // contract. Never wait for or buffer an untrusted error body.
-                drop(response);
-                Err(ProviderRequestError::Upstream(UpstreamProviderError {
+                // Status and safe headers remain the routing contract even if
+                // this bounded, best-effort diagnostic read fails or times out.
+                let mut upstream = UpstreamProviderError {
                     status,
                     retry_after,
                     upstream_request_id,
-                }))
+                    diagnostic: None,
+                };
+                observe_error_headers(&upstream);
+                upstream.diagnostic = Some(response.error_diagnostic().await);
+                Err(ProviderRequestError::Upstream(upstream))
             }
         }
         Err(e) => {
@@ -4385,6 +4449,117 @@ mod tests {
     use super::*;
     use axum::Json;
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[derive(Clone, Default)]
+    struct CapturedLogs(Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl std::io::Write for CapturedLogs {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    fn capture_info_logs(f: impl FnOnce()) -> String {
+        let logs = CapturedLogs::default();
+        let writer = logs.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .with_ansi(false)
+            .without_time()
+            .with_max_level(tracing::Level::INFO)
+            .with_writer(move || writer.clone())
+            .finish();
+        tracing::subscriber::with_default(subscriber, f);
+        let bytes = logs.0.lock().unwrap().clone();
+        String::from_utf8(bytes).unwrap()
+    }
+
+    #[test]
+    fn routing_info_joins_actual_claimed_route_without_account_identity() {
+        let mut pinned = pinned_test_completion();
+        let account = Uuid::new_v4();
+        pinned.intent.account_uuid = account;
+        let execution = pinned.begin_execution();
+        let mut route = pinned.route.identity();
+        // The claim can choose another provider after the preparation log.
+        route.provider = ProviderId::Continuum;
+        route.provider_model_id = "glm-5.3".to_string();
+        route.selection_source = RouteSelectionSource::Fallback;
+        let attempt = execution.begin_attempt(route);
+        let logged = capture_info_logs(|| log_selected_inference_route(&pinned, &attempt));
+        for expected in [
+            format!("request_id={}", attempt.request_id),
+            format!("execution_id={}", attempt.execution_id),
+            format!("attempt_id={}", attempt.attempt_id),
+            "provider=continuum".to_string(),
+            "source=Fallback".to_string(),
+        ] {
+            assert!(logged.contains(&expected), "missing {expected}: {logged}");
+        }
+        assert!(!logged.contains(&account.to_string()));
+        assert!(!logged.contains("provider=tinfoil"));
+        assert!(!logged.contains("http://"));
+    }
+
+    #[test]
+    fn routing_info_covers_auto_and_sticky_but_not_primary_or_legacy() {
+        let mut pinned = pinned_test_completion();
+        let attempt = pinned
+            .begin_execution()
+            .begin_attempt(pinned.route.identity());
+        assert!(capture_info_logs(|| log_selected_inference_route(&pinned, &attempt)).is_empty());
+        for reason in [
+            AutoModelReason::HealthFallback,
+            AutoModelReason::RetainedHealthyChoice,
+        ] {
+            pinned.intent.auto_model = Some(AutoModelDecision {
+                selector: crate::model_config::AUTO_POWERFUL_MODEL_ID,
+                preferred_model_id: "glm-5-3",
+                chosen_model_id: "kimi-k3",
+                reason,
+                rejected: if reason == AutoModelReason::HealthFallback {
+                    vec![(
+                        "glm-5-3",
+                        crate::inference::auto_model::AutoCandidateRejection::Unavailable {
+                            retry_after: Duration::from_secs(30),
+                        },
+                    )]
+                } else {
+                    Vec::new()
+                },
+                policy_version: AUTO_MODEL_POLICY_VERSION,
+            });
+            let mut route = pinned.route.identity();
+            route.public_model_id = "kimi-k3".to_string();
+            route.provider_model_id = "kimi-k3".to_string();
+            let attempt = pinned.begin_execution().begin_attempt(route);
+            let logged = capture_info_logs(|| log_selected_inference_route(&pinned, &attempt));
+            assert!(logged.contains(reason.as_str()));
+            assert!(logged.contains("public_model=kimi-k3"));
+            assert!(logged.contains(AUTO_MODEL_POLICY_VERSION));
+            if reason == AutoModelReason::HealthFallback {
+                assert!(logged
+                    .contains("auto_rejected=[(\"glm-5-3\", Unavailable { retry_after: 30s })]"));
+            } else {
+                assert!(logged.contains("auto_rejected=[]"));
+            }
+        }
+        pinned.intent.auto_model = None;
+        let mut route = pinned.route.identity();
+        route.selection_source = RouteSelectionSource::Sticky;
+        let attempt = pinned.begin_execution().begin_attempt(route);
+        assert!(
+            capture_info_logs(|| log_selected_inference_route(&pinned, &attempt))
+                .contains("source=Sticky")
+        );
+        let legacy =
+            PinnedCompletionRequest::new(pinned.intent, pinned.route, InferenceRoutingMode::Legacy);
+        assert!(capture_info_logs(|| log_selected_inference_route(&legacy, &attempt)).is_empty());
+    }
 
     #[test]
     fn completion_error_payload_is_openai_shaped_json() {
@@ -5340,6 +5515,7 @@ mod tests {
             status: 429,
             retry_after: Some(Duration::from_secs(60)),
             upstream_request_id: None,
+            diagnostic: None,
         });
         let external_failure = attempt_failure_from_provider_error(&external_error);
         let external_intent = InferenceIntent::new(
@@ -5391,7 +5567,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn mock_provider_429_does_not_wait_for_pending_error_body() {
+    async fn mock_provider_429_bounds_diagnostic_wait_for_pending_error_body() {
         let app = Router::new().route(
             "/v1/chat/completions",
             post(|| async {
@@ -5406,7 +5582,7 @@ mod tests {
 
         let (trace, server) = timeout(Duration::from_secs(1), call_mock_provider(app))
             .await
-            .expect("429 classification must finish after headers without reading the body");
+            .expect("429 classification must survive the bounded diagnostic deadline");
         server.abort();
 
         let error = match trace.result {
@@ -5417,6 +5593,138 @@ mod tests {
         assert_eq!(failure.kind, AttemptFailureKind::CapacityRejected);
         assert_eq!(failure.status, Some(429));
         assert_eq!(failure.retry_after, Some(Duration::from_secs(23)));
+        assert_eq!(
+            failure
+                .upstream_diagnostic
+                .as_ref()
+                .unwrap()
+                .body_state
+                .as_str(),
+            "deadline_exceeded"
+        );
+    }
+
+    #[tokio::test]
+    async fn cancelling_error_diagnostics_keeps_known_capacity_failure_and_probe_outcome() {
+        for status in [429u16, 503, 529] {
+            for recovering in [false, true] {
+                let calls = Arc::new(AtomicUsize::new(0));
+                let counter = Arc::clone(&calls);
+                let app = Router::new().route(
+                    "/v1/chat/completions",
+                    post(move || {
+                        counter.fetch_add(1, Ordering::SeqCst);
+                        async move {
+                            let pending =
+                                futures::stream::pending::<Result<bytes::Bytes, std::io::Error>>();
+                            axum::http::Response::builder()
+                                .status(status)
+                                .header(header::RETRY_AFTER, "23")
+                                .body(axum::body::Body::from_stream(pending))
+                                .unwrap()
+                        }
+                    }),
+                );
+                let (base_url, server) = start_mock_provider(app).await;
+                let client = ProviderClient::for_test(base_url.clone()).unwrap();
+                let proxy = ProxyConfig {
+                    base_url,
+                    api_key: None,
+                    provider_name: "tinfoil".to_string(),
+                };
+                let router = Arc::new(ProviderRouter::default());
+                let pinned = pinned_test_completion();
+                let route_key = pinned.route.identity().route_key();
+                let probe = recovering.then(|| {
+                    open_and_claim_probe_at_boundary(&router, &pinned.intent, &pinned.route)
+                });
+                let initial_observations = router.shadow_observation_count();
+                let attempt = pinned
+                    .begin_execution()
+                    .begin_attempt(pinned.route.identity());
+                let request_id = attempt.request_id;
+                let guard_router = Arc::clone(&router);
+                let (known_tx, known_rx) = tokio::sync::oneshot::channel();
+                let mut future = Box::pin(async move {
+                    let mut guard = AttemptObservationGuard::new_with_probe(
+                        attempt,
+                        guard_router,
+                        AttemptStage::AwaitingResponse,
+                        probe,
+                    );
+                    let trace = try_provider_observing(
+                        &client,
+                        &proxy,
+                        "{}".to_string(),
+                        &HeaderMap::new(),
+                        |upstream| {
+                            guard.retain_known_upstream_failure(upstream);
+                            known_tx.send(()).unwrap();
+                        },
+                    )
+                    .await;
+                    (trace, guard)
+                });
+                tokio::select! {
+                    biased;
+                    _ = known_rx => {},
+                    _ = &mut future => panic!("diagnostic read should still be pending"),
+                    _ = sleep(Duration::from_secs(1)) => panic!("mock headers did not arrive"),
+                }
+                let logged = capture_info_logs(|| drop(future));
+                server.abort();
+                assert_eq!(calls.load(Ordering::SeqCst), 1);
+                assert_eq!(router.shadow_observation_count(), initial_observations + 1);
+                assert_eq!(logged.matches("Inference attempt failed:").count(), 1);
+                assert!(logged.contains(&format!("request_id={request_id}")));
+                assert!(logged.contains("kind=CapacityRejected"));
+                assert!(logged.contains(&format!("status=Some({status})")));
+                assert!(logged.contains("retry_after_ms=Some(23000)"));
+                assert!(!logged.contains("kind=ConsumerDropped"));
+                assert!(logged.contains("Inference attempt finalized on guard drop:"));
+                assert!(logged.contains("known_provider_failure=true"));
+                assert!(matches!(
+                    router.try_claim_probe(&route_key),
+                    ProbeClaimResult::Rejected { .. }
+                ));
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn upstream_diagnostic_reaches_correlated_terminal_but_not_public_error() {
+        let app = Router::new().route("/v1/chat/completions", post(|| async {
+            axum::http::Response::builder().status(400)
+                .body(axum::body::Body::from(r#"{"error":{"code":"unsupported_parameter","type":"invalid_request_error","message":"private-prompt-canary","param":"private-tool-canary"}}"#))
+                .unwrap()
+        }));
+        let (trace, server) = call_mock_provider(app).await;
+        server.abort();
+        assert!(trace.prior_failures.is_empty());
+        let error = trace.result.err().expect("mock HTTP400");
+        let failure = attempt_failure_from_provider_error(&error);
+        assert_eq!(failure.kind, AttemptFailureKind::HttpStatus);
+        assert_eq!(failure.replay_safety, ReplaySafety::NotProvenPreAcceptance);
+        assert_eq!(
+            failure.upstream_diagnostic.as_ref().unwrap().code,
+            Some("unsupported_parameter")
+        );
+        let public = public_completion_error(&error, &failure);
+        assert!(matches!(public, ApiError::InternalServerError));
+        let router = ProviderRouter::default();
+        let pinned = pinned_test_completion();
+        let attempt = pinned
+            .begin_execution()
+            .begin_attempt(pinned.route.identity());
+        let request_id = attempt.request_id;
+        let logged = capture_info_logs(|| {
+            let _ = failed_completion_execution(&router, attempt, failure, public);
+        });
+        assert!(logged.contains(&format!("request_id={request_id}")));
+        assert!(logged.contains("unsupported_parameter"));
+        assert!(logged.contains("upstream does not support a request parameter"));
+        assert!(!logged.contains("private-"));
+        assert_eq!(router.shadow_observation_count(), 1);
     }
 
     #[tokio::test]
@@ -5483,6 +5791,7 @@ mod tests {
             status: 429,
             retry_after: Some(Duration::from_secs(7)),
             upstream_request_id: None,
+            diagnostic: None,
         });
         let failure = attempt_failure_from_provider_error(&provider_error);
         let pinned = pinned_test_completion();
@@ -5586,6 +5895,7 @@ mod tests {
             status: 429,
             retry_after: Some(Duration::from_secs(40)),
             upstream_request_id: None,
+            diagnostic: None,
         });
         let first_failure = attempt_failure_from_provider_error(&first_error);
         let _ = failed_completion_execution(
@@ -5611,6 +5921,7 @@ mod tests {
             status: 503,
             retry_after: Some(Duration::from_secs(10)),
             upstream_request_id: None,
+            diagnostic: None,
         });
         let second_failure = attempt_failure_from_provider_error(&second_error);
         let _ = failed_completion_execution(
@@ -6191,6 +6502,7 @@ mod tests {
             status: 429,
             retry_after: Some(Duration::from_secs(60)),
             upstream_request_id: Some("request-123".to_string()),
+            diagnostic: None,
         });
         let failure = attempt_failure_from_provider_error(&upstream);
         assert_eq!(failure.kind, AttemptFailureKind::CapacityRejected);
@@ -6374,6 +6686,7 @@ mod tests {
                 status: upstream_status,
                 retry_after: Some(Duration::from_secs(7)),
                 upstream_request_id: None,
+                diagnostic: None,
             });
             let failure = attempt_failure_from_provider_error(&provider_error);
             assert_eq!(failure.kind, AttemptFailureKind::CapacityRejected);
@@ -6393,6 +6706,7 @@ mod tests {
             status: 500,
             retry_after: None,
             upstream_request_id: None,
+            diagnostic: None,
         });
         let failure = attempt_failure_from_provider_error(&generic);
         assert_eq!(failure.kind, AttemptFailureKind::HttpStatus);

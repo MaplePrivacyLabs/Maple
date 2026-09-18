@@ -71,7 +71,7 @@ Trace alias resolution separately from model selection and provider selection.
 Router V2 resolves an Auto alias to its tier's preferred model, then
 `src/inference/auto_model.rs` may choose another compiled candidate of that
 tier before context assembly, persistence, and route pinning when every route
-of the preferred model is unavailable under that model's own failover policy.
+of the preferred model is unavailable under the shared route and capacity gates.
 Explicit selections never change public model, and the chosen model still goes
 through the same-model provider planner and first-send claim. Before any
 provider send, a chosen Auto model that cannot hold the request or loses its

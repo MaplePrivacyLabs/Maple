@@ -13,6 +13,9 @@ use std::time::Duration;
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 
+mod diagnostics;
+pub use diagnostics::UpstreamDiagnostic;
+
 type StandardHttpClient = reqwest::Client;
 type TinfoilRefreshTask = JoinHandle<Result<SecureClientSnapshot, ProviderRequestError>>;
 
@@ -58,6 +61,7 @@ pub struct UpstreamProviderError {
     pub status: u16,
     pub retry_after: Option<Duration>,
     pub upstream_request_id: Option<String>,
+    pub diagnostic: Option<UpstreamDiagnostic>,
 }
 
 pub(crate) struct ProviderSendTrace {
@@ -158,6 +162,12 @@ impl ProviderResponse {
             Self::Tinfoil(response) => response.bytes().await.map_err(|error| error.to_string()),
             Self::Standard(response) => response.bytes().await.map_err(|error| error.to_string()),
         }
+    }
+
+    /// Best-effort metadata only: body reads are bounded independently of the
+    /// inference timeout and arbitrary provider text never leaves the reader.
+    pub async fn error_diagnostic(self) -> UpstreamDiagnostic {
+        diagnostics::read_error_diagnostic(self.bytes_stream()).await
     }
 
     pub fn bytes_stream(
@@ -1038,6 +1048,30 @@ mod tests {
             ProviderResponse::Standard(response).content_type(),
             Some("audio/flac")
         );
+    }
+
+    #[tokio::test]
+    async fn both_provider_response_variants_preserve_only_safe_error_diagnostics() {
+        for attested in [false, true] {
+            let response = axum::http::Response::builder()
+                .status(400)
+                .body(reqwest::Body::from(
+                    r#"{"error":{"code":"context_length_exceeded","type":"invalid_request_error","message":"private prompt and secret tool argument"}}"#,
+                ))
+                .unwrap()
+                .into();
+            let response = if attested {
+                ProviderResponse::Tinfoil(response)
+            } else {
+                ProviderResponse::Standard(response)
+            };
+            let diagnostic = response.error_diagnostic().await;
+            assert_eq!(diagnostic.code, Some("context_length_exceeded"));
+            assert_eq!(diagnostic.error_type, Some("invalid_request_error"));
+            let rendered = format!("{diagnostic:?}");
+            assert!(!rendered.contains("private prompt"));
+            assert!(!rendered.contains("secret tool argument"));
+        }
     }
 
     #[test]

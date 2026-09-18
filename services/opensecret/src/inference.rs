@@ -1,4 +1,5 @@
 use crate::model_config::{ModelPlan, AUTO_POWERFUL_MODEL_ID, AUTO_QUICK_MODEL_ID};
+use crate::provider_client::UpstreamDiagnostic;
 use crate::provider_registry::{ProviderId, RouteSelectionSource};
 use auto_model::{AutoModelDecision, AutoModelReason};
 use std::fmt;
@@ -257,8 +258,9 @@ pub(crate) struct AttemptFailure {
     pub(crate) replay_safety: ReplaySafety,
     pub(crate) status: Option<u16>,
     pub(crate) retry_after: Option<Duration>,
-    pub(crate) upstream_request_id: Option<String>,
+    pub(crate) upstream_request_id: Option<Box<str>>,
     pub(crate) upstream_code: Option<String>,
+    pub(crate) upstream_diagnostic: Option<Box<UpstreamDiagnostic>>,
 }
 
 impl AttemptFailure {
@@ -275,6 +277,7 @@ impl AttemptFailure {
             retry_after: None,
             upstream_request_id: None,
             upstream_code: None,
+            upstream_diagnostic: None,
         }
     }
 
@@ -286,12 +289,20 @@ impl AttemptFailure {
     ) -> Self {
         self.status = Some(status);
         self.retry_after = retry_after;
-        self.upstream_request_id = upstream_request_id;
+        self.upstream_request_id = upstream_request_id.map(String::into_boxed_str);
         self
     }
 
     pub(crate) fn with_upstream_code(mut self, upstream_code: Option<String>) -> Self {
         self.upstream_code = upstream_code;
+        self
+    }
+
+    pub(crate) fn with_upstream_diagnostic(
+        mut self,
+        diagnostic: Option<UpstreamDiagnostic>,
+    ) -> Self {
+        self.upstream_diagnostic = diagnostic.map(Box::new);
         self
     }
 
