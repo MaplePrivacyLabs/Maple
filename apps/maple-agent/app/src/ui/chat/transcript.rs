@@ -412,8 +412,8 @@ fn render_message(item: &AgentTimelineItem, revision: u64, transcript: &Transcri
                     .flex()
                     .items_center()
                     .gap_2()
-                    .children(copy)
-                    .child(timestamp_label(item, &group)),
+                    .child(timestamp_label(item, &group))
+                    .children(copy),
             )
     } else {
         typography::chat_reading(div())
