@@ -4209,6 +4209,12 @@ impl AgentRuntimeHandle {
                 return Err("External agents are available only in desktop tasks".to_string());
             }
             if request.enabled {
+                if !external_agent_enabled(&stored_integrations, provider.id) {
+                    return Err(
+                        "Enable this integration in Settings before selecting it for this task"
+                            .to_string(),
+                    );
+                }
                 let integrations = project_integrations(&state.host.paths, user_id, &detected)?;
                 let integration = integrations
                     .iter()
@@ -8814,8 +8820,7 @@ async fn finish_session_agent(
         session,
         allow_embedded_cua,
     );
-    // A task override can keep delegation enabled after the device default
-    // was disabled (and removed Maple's skills), including after a restart.
+    // Restore bundled skills for admitted providers, including after a restart.
     if !selected_external_providers.is_empty()
         && let Err(error) =
             sync_external_agent_skills(skills_scope.paths, skills_scope.user_id, true)
@@ -8865,7 +8870,7 @@ async fn finish_session_agent(
     .with_attachment_store(attachment_store)
     .with_web_enabled(session_web_enabled(session))
     .with_desktop_ui_tools(session.session_type != SessionType::Acp)
-    // Re-read inherited defaults and explicit task choices at every run,
+    // Re-read Settings gates and explicit task choices at every run,
     // including cold restores. The driving surface remains the authority:
     // leasing a desktop task to ACP must remove desktop-only capabilities.
     .with_external_agents(external_agents.cloned(), selected_external_providers);

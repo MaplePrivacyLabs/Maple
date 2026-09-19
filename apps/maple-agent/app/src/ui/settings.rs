@@ -2236,7 +2236,7 @@ impl SettingsScreen {
                 div()
                     .text_sm()
                     .text_color(gpui::rgb(theme::text_muted()))
-                    .child("Set integration defaults here. Choose integrations for each task in the composer."),
+                    .child("Manage integrations here. Enable coding agents to make them available in the composer, then select them for each task."),
             );
 
         if let Some(notice) = &self.integration_notice {
