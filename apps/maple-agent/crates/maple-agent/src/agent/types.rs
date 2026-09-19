@@ -316,6 +316,7 @@ pub struct AgentQuestionOption {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentQuestion {
+    pub multi_select: bool,
     pub id: String,
     pub header: String,
     pub question: String,

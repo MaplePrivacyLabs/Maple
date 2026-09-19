@@ -78,7 +78,7 @@ pub(crate) fn find_executable(search_path: Option<&str>) -> Option<PathBuf> {
     }
 }
 
-async fn probe_version(executable: &Path) -> Result<String, String> {
+pub(super) async fn probe_version(executable: &Path) -> Result<String, String> {
     let mut command = tokio::process::Command::new(executable);
     command
         .arg("--version")
@@ -546,6 +546,7 @@ pub(super) fn async_question_prompts(questions: &[AsyncQuestion]) -> Vec<AgentQu
         .iter()
         .enumerate()
         .map(|(index, question)| AgentQuestion {
+            multi_select: false,
             id: format!("q{index}"),
             header: format!("Question {}", index + 1),
             question: question.title.clone(),

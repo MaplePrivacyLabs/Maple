@@ -594,6 +594,7 @@ mod state_tests {
             session_id: "s1".to_string(),
             request_id: format!("req-{id}"),
             questions: vec![maple_agent::agent::AgentQuestion {
+                multi_select: false,
                 id: id.to_string(),
                 header: "Question".to_string(),
                 question: text.to_string(),
@@ -624,6 +625,7 @@ mod state_tests {
             session_id: "s1".to_string(),
             request_id: "q2".to_string(),
             questions: vec![maple_agent::agent::AgentQuestion {
+                multi_select: false,
                 id: "pick".to_string(),
                 header: "Pick".to_string(),
                 question: "Pick one".to_string(),
@@ -651,6 +653,172 @@ mod state_tests {
     }
 
     #[gpui::test]
+    fn test_multi_select_preserves_choices_notes_and_question_steps(cx: &mut TestAppContext) {
+        let screen = screen(cx);
+        screen.update(cx, |this, cx| {
+            let question = |id: &str, multi_select| maple_agent::agent::AgentQuestion {
+                id: id.into(),
+                header: "Choose".into(),
+                question: "Which options?".into(),
+                multi_select,
+                options: ["A", "B", "C"]
+                    .into_iter()
+                    .map(|label| maple_agent::agent::AgentQuestionOption {
+                        label: label.into(),
+                        description: String::new(),
+                    })
+                    .collect(),
+            };
+            this.handle_service_event(
+                AgentServiceEvent::Question {
+                    session_id: "s1".into(),
+                    request_id: "multi".into(),
+                    questions: vec![question("many", true), question("one", false)],
+                },
+                cx,
+            );
+            this.toggle_question_option(0, 1, cx);
+            this.toggle_question_option(0, 0, cx);
+            assert_eq!(this.question_selected[&0].picked, BTreeSet::from([0, 1]));
+            // Number shortcuts toggle without prematurely sending the answer.
+            this.pick_and_submit_question_option(0, cx);
+            assert_eq!(this.question_step, 0);
+            assert!(this.question_step_answers.is_empty());
+            assert_eq!(this.question_selected[&0].picked, BTreeSet::from([1]));
+            // Moving the Vim cursor must not check the options it passes.
+            this.focus_question_option(0, 2, cx);
+            this.focus_question_option(0, 0, cx);
+            assert_eq!(this.question_selected[&0].picked, BTreeSet::from([1]));
+            this.pick_and_submit_question_option(0, cx);
+            this.pending_question_input
+                .clone()
+                .unwrap()
+                .update(cx, |input, cx| input.set_text("  on Linux  ", cx));
+            this.submit_question(cx);
+            assert_eq!(this.question_step, 1);
+            assert!(this.question_selected.is_empty());
+            assert_eq!(
+                this.question_step_answers[&0],
+                ["A", "B", "Additional note: on Linux"]
+            );
+            this.toggle_question_option(1, 0, cx);
+            this.toggle_question_option(1, 2, cx);
+            let answer: serde_json::Value =
+                serde_json::from_str(&this.composed_question_answer(cx)).unwrap();
+            assert_eq!(
+                answer["answers"]["many"]["answers"],
+                serde_json::json!(["A", "B", "Additional note: on Linux"])
+            );
+            assert_eq!(
+                answer["answers"]["one"]["answers"],
+                serde_json::json!(["C"])
+            );
+        });
+    }
+
+    /// Run this ignored fixture alone on a private Linux desktop. It mounts
+    /// the real chat screen without credentials or a live inference request.
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[ignore = "interactive native question-card fixture; requires a private display"]
+    fn native_question_card_fixture() {
+        gpui_platform::application()
+            .with_assets(crate::assets::Assets)
+            .run(|cx| {
+                cx.text_system()
+                    .add_fonts(
+                        crate::assets::FONTS
+                            .iter()
+                            .map(|font| std::borrow::Cow::Borrowed(*font))
+                            .collect(),
+                    )
+                    .unwrap();
+                let _shortcuts =
+                    crate::shortcuts::ShortcutRuntime::bootstrap(&Default::default(), cx);
+                theme::apply_preference(
+                    theme::Preference::parse(&crate::settings::load_settings().theme),
+                    cx,
+                );
+                let backend = Arc::new(
+                    AgentBackend::new("http://127.0.0.1:9".into(), String::new()).unwrap(),
+                );
+                cx.open_window(
+                    gpui::WindowOptions {
+                        window_bounds: Some(gpui::WindowBounds::Windowed(gpui::Bounds::centered(
+                            None,
+                            gpui::size(px(1100.), px(800.)),
+                            cx,
+                        ))),
+                        titlebar: Some(gpui::TitlebarOptions {
+                            title: Some("Question card fixture".into()),
+                            ..Default::default()
+                        }),
+                        ..Default::default()
+                    },
+                    |window, cx| {
+                        theme::resolve(window.appearance());
+                        cx.new(|cx| {
+                            let mut chat =
+                                ChatScreen::new_mounted(backend, "fixture-user".into(), cx);
+                            chat.booting = false;
+                            chat.selected_session = Some("s1".into());
+                            chat.replace_timeline(vec![user_item(
+                                "prompt",
+                                "Choose which checks to run.",
+                            )]);
+                            chat.handle_service_event(
+                                AgentServiceEvent::Question {
+                                    session_id: "s1".into(),
+                                    request_id: "fixture".into(),
+                                    questions: [true, false]
+                                        .into_iter()
+                                        .enumerate()
+                                        .map(|(index, multi_select)| {
+                                            maple_agent::agent::AgentQuestion {
+                                                id: format!("q{index}"),
+                                                header: "Validation".into(),
+                                                multi_select,
+                                                question: if multi_select {
+                                                    "Which checks should run?"
+                                                } else {
+                                                    "Which check should run first?"
+                                                }
+                                                .into(),
+                                                options: [
+                                                    "Unit tests",
+                                                    "Integration tests",
+                                                    "Native UI checks",
+                                                ]
+                                                .into_iter()
+                                                .map(|label| {
+                                                    maple_agent::agent::AgentQuestionOption {
+                                                        label: label.into(),
+                                                        description: String::new(),
+                                                    }
+                                                })
+                                                .collect(),
+                                            }
+                                        })
+                                        .collect(),
+                                },
+                                cx,
+                            );
+                            chat
+                        })
+                    },
+                )
+                .unwrap();
+                cx.on_window_closed(|cx, _| {
+                    if cx.windows().is_empty() {
+                        cx.quit();
+                    }
+                })
+                .detach();
+                cx.activate(true);
+            });
+    }
+
+    #[gpui::test]
     fn test_question_typed_text_rides_along_with_picked_option(cx: &mut TestAppContext) {
         cx.executor().allow_parking();
         let screen = screen(cx);
@@ -658,6 +826,7 @@ mod state_tests {
             session_id: "s1".to_string(),
             request_id: "q3".to_string(),
             questions: vec![maple_agent::agent::AgentQuestion {
+                multi_select: false,
                 id: "pick".to_string(),
                 header: "Pick".to_string(),
                 question: "Pick one".to_string(),
@@ -689,6 +858,7 @@ mod state_tests {
             session_id: "s1".to_string(),
             request_id: "q4".to_string(),
             questions: vec![maple_agent::agent::AgentQuestion {
+                multi_select: false,
                 id: "pick".to_string(),
                 header: "Pick".to_string(),
                 question: "Pick one".to_string(),
@@ -703,7 +873,7 @@ mod state_tests {
             // Clicking the picked option again clears it; the typed text
             // then stands alone.
             this.toggle_question_option(0, 0, cx);
-            assert_eq!(this.question_selected.get(&0), Some(&0));
+            assert_eq!(this.question_selected[&0].picked, BTreeSet::from([0]));
             this.toggle_question_option(0, 0, cx);
             assert!(this.question_selected.is_empty());
             let input = this.pending_question_input.clone().expect("input exists");
@@ -853,6 +1023,7 @@ mod state_tests {
             request_id: "batch".to_string(),
             questions: vec![
                 maple_agent::agent::AgentQuestion {
+                    multi_select: false,
                     id: "first".to_string(),
                     header: "One".to_string(),
                     question: "First?".to_string(),
@@ -862,6 +1033,7 @@ mod state_tests {
                     }],
                 },
                 maple_agent::agent::AgentQuestion {
+                    multi_select: false,
                     id: "second".to_string(),
                     header: "Two".to_string(),
                     question: "Second?".to_string(),
@@ -897,6 +1069,7 @@ mod state_tests {
             session_id: "s1".to_string(),
             request_id: id.to_string(),
             questions: vec![maple_agent::agent::AgentQuestion {
+                multi_select: false,
                 id: id.to_string(),
                 header: "Question".to_string(),
                 question: format!("Question {id}"),
@@ -962,6 +1135,7 @@ mod state_tests {
                     session_id: "s1".to_string(),
                     request_id: "free-form".to_string(),
                     questions: vec![maple_agent::agent::AgentQuestion {
+                        multi_select: false,
                         id: "answer".to_string(),
                         header: "Question".to_string(),
                         question: "What should Maple do?".to_string(),
@@ -1014,6 +1188,7 @@ mod state_tests {
                 session_id: "s1".to_string(),
                 request_id: "q9".to_string(),
                 questions: vec![maple_agent::agent::AgentQuestion {
+                    multi_select: false,
                     id: "paused".to_string(),
                     header: "Question".to_string(),
                     question: "Paused?".to_string(),
@@ -1291,6 +1466,7 @@ mod state_tests {
             session_id: "s2".to_string(),
             request_id: "req-other".to_string(),
             questions: vec![maple_agent::agent::AgentQuestion {
+                multi_select: false,
                 id: "other".to_string(),
                 header: "Question".to_string(),
                 question: "From another task".to_string(),
@@ -1316,10 +1492,19 @@ mod state_tests {
             assert_eq!(this.pending_questions.len(), 1);
             // A second question for the shown session keeps the pick made
             // on the first card.
-            this.handle_service_event(one_question("a", "First?"), cx);
+            let mut event = one_question("a", "First?");
+            if let AgentServiceEvent::Question { questions, .. } = &mut event {
+                questions[0]
+                    .options
+                    .push(maple_agent::agent::AgentQuestionOption {
+                        label: "A".into(),
+                        description: String::new(),
+                    });
+            }
+            this.handle_service_event(event, cx);
             this.select_question_option(0, 0, cx);
             this.handle_service_event(one_question("b", "Second?"), cx);
-            assert_eq!(this.question_selected.get(&0), Some(&0));
+            assert_eq!(this.question_selected[&0].picked, BTreeSet::from([0]));
             // Switching to the other task shows its card.
             this.set_active_session(summary("s2", "B"), Vec::new(), HashMap::new(), cx);
             assert_eq!(

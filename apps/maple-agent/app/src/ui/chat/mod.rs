@@ -3,7 +3,7 @@
 //! facade + event stream.
 
 use crate::settings::PermissionMode;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
 
 use gpui::{
@@ -166,6 +166,12 @@ pub(crate) struct SpeechState {
     pub item_id: String,
     /// False while the first chunk is still being synthesized.
     pub playing: bool,
+}
+
+#[derive(Default)]
+pub(super) struct QuestionSelection {
+    cursor: Option<usize>,
+    picked: BTreeSet<usize>,
 }
 
 pub struct ChatScreen {
@@ -388,7 +394,7 @@ pub struct ChatScreen {
     /// inverts the `tool_details` default for that item.
     toggled_tools: HashSet<String>,
     /// Ticked options of a multi-select question.
-    question_selected: HashMap<usize, usize>,
+    question_selected: HashMap<usize, QuestionSelection>,
     /// Index of the question being shown within the current card; a batch
     /// iterates one question at a time instead of listing them all.
     question_step: usize,
@@ -2762,8 +2768,7 @@ impl ChatScreen {
         self.sidebar.read(cx).step_target(delta)
     }
 
-    /// Ctrl-1 to Ctrl-9: answer the question card with the numbered
-    /// option, the same as picking it and pressing Answer.
+    /// Ctrl-1 to Ctrl-9 submits a single choice or toggles a multi-select option.
     fn pick_and_submit_question_option(&mut self, index: usize, cx: &mut Context<Self>) {
         let Some(question) = self.current_question() else {
             return;
@@ -2779,8 +2784,12 @@ impl ChatScreen {
         if index >= options {
             return;
         }
-        self.select_question_option(step, index, cx);
-        self.submit_question(cx);
+        if question.questions[step].multi_select {
+            self.toggle_question_option(step, index, cx);
+        } else {
+            self.select_question_option(step, index, cx);
+            self.submit_question(cx);
+        }
     }
 
     fn escape(&mut self, cx: &mut Context<Self>) {
@@ -3569,10 +3578,15 @@ impl ChatScreen {
             .map(|input| input.read(cx).text())
             .unwrap_or_default();
         let typed = typed.trim();
-        if let Some(option_index) = self.question_selected.get(&step)
-            && let Some(option) = entry.options.get(*option_index)
-        {
-            let mut answer = vec![option.label.clone()];
+        let mut answer: Vec<_> = self
+            .question_selected
+            .get(&step)
+            .into_iter()
+            .flat_map(|selection| &selection.picked)
+            .filter_map(|index| entry.options.get(*index))
+            .map(|option| option.label.clone())
+            .collect();
+        if !answer.is_empty() {
             if !typed.is_empty() {
                 // The prefix keeps the note from reading as a second
                 // picked option in the echoed answers array.
@@ -3669,28 +3683,62 @@ impl ChatScreen {
         }
     }
 
-    /// Pick one option of one question (single-select, codex shape).
+    /// Pick an option, replacing earlier choices only for single-select questions.
     fn select_question_option(
         &mut self,
         question_index: usize,
         option_index: usize,
         cx: &mut Context<Self>,
     ) {
-        self.question_selected.insert(question_index, option_index);
+        let Some(question) = self
+            .current_question()
+            .and_then(|q| q.questions.get(question_index))
+        else {
+            return;
+        };
+        if option_index >= question.options.len() {
+            return;
+        }
+        let multi_select = question.multi_select;
+        let selection = self.question_selected.entry(question_index).or_default();
+        selection.cursor = Some(option_index);
+        if !multi_select {
+            selection.picked.clear();
+        }
+        selection.picked.insert(option_index);
         cx.notify();
     }
 
+    /// Vim navigation moves the cursor without checking multi-select options.
+    fn focus_question_option(&mut self, step: usize, index: usize, cx: &mut Context<Self>) {
+        if self
+            .current_question()
+            .and_then(|q| q.questions.get(step))
+            .is_some_and(|q| q.multi_select)
+        {
+            self.question_selected.entry(step).or_default().cursor = Some(index);
+            cx.notify();
+        } else {
+            self.select_question_option(step, index, cx);
+        }
+    }
+
     /// Click handler for an option row: clicking the picked option again
-    /// clears it so a typed answer can stand alone. Ctrl-N keeps plain
-    /// select semantics because it submits immediately.
+    /// clears it so a typed answer can stand alone.
     fn toggle_question_option(
         &mut self,
         question_index: usize,
         option_index: usize,
         cx: &mut Context<Self>,
     ) {
-        if self.question_selected.get(&question_index) == Some(&option_index) {
-            self.question_selected.remove(&question_index);
+        if let Some(selection) = self.question_selected.get_mut(&question_index)
+            && selection.picked.remove(&option_index)
+        {
+            if selection.picked.is_empty() {
+                self.question_selected.remove(&question_index);
+            } else {
+                selection.cursor = Some(option_index);
+            }
             cx.notify();
         } else {
             self.select_question_option(question_index, option_index, cx);

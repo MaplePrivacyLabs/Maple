@@ -18576,6 +18576,7 @@ mod tests {
         ));
         let broker = state.question_broker();
         let one_question = |id: &str, text: &str| AgentQuestion {
+            multi_select: false,
             id: id.to_string(),
             header: "Question".to_string(),
             question: text.to_string(),
