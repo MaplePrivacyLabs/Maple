@@ -5,6 +5,7 @@
 //! Maple-hosted implementation. A task freezes that backend choice when it is
 //! created; account defaults never rewrite existing tasks.
 
+use super::external_agents::claude::{self, ClaudeDetection};
 use super::external_agents::codex::{self, CodexDetection};
 use super::*;
 use std::collections::HashSet;
@@ -44,13 +45,27 @@ pub(super) struct ExternalAgentIntegration {
     project: fn(&IntegrationDetections, Option<&StoredIntegration>) -> AgentIntegration,
 }
 
-pub(super) const EXTERNAL_AGENT_INTEGRATIONS: &[ExternalAgentIntegration] =
-    &[ExternalAgentIntegration {
+pub(super) const EXTERNAL_AGENT_INTEGRATIONS: &[ExternalAgentIntegration] = &[
+    ExternalAgentIntegration {
         id: CODEX_INTEGRATION_ID,
         name: CODEX_CARD_NAME,
         description: CODEX_CARD_DESCRIPTION,
         project: |detections, stored| codex_public(&detections.codex, stored),
-    }];
+    },
+    ExternalAgentIntegration {
+        id: claude::PROVIDER_ID,
+        name: claude::PROVIDER_NAME,
+        description: "Hand work to the Claude Code CLI installed on this computer, with your own account.",
+        project: |detections, stored| claude_public(&detections.claude, stored),
+    },
+];
+
+impl AgentIntegration {
+    /// Whether this card is an external coding agent in the runtime catalog.
+    pub fn is_external_agent(&self) -> bool {
+        external_agent_selection(&self.id).is_some()
+    }
+}
 
 pub(super) fn external_agent_selection(id: &str) -> Option<&'static ExternalAgentIntegration> {
     EXTERNAL_AGENT_INTEGRATIONS
@@ -194,6 +209,7 @@ impl StoredIntegrationRegistry {
 pub(super) struct IntegrationDetections {
     pub(super) cua: CuaDetection,
     pub(super) codex: CodexDetection,
+    pub(super) claude: ClaudeDetection,
 }
 
 /// The Integrations card for Codex. Availability comes from the
@@ -234,6 +250,36 @@ fn codex_public(
         setup_available: false,
         enabled_for_new_tasks: stored.is_some_and(|entry| entry.enabled),
         detail,
+    }
+}
+
+fn claude_public(
+    detection: &ClaudeDetection,
+    stored: Option<&StoredIntegration>,
+) -> AgentIntegration {
+    let descriptor = external_agent_selection(claude::PROVIDER_ID).expect("Claude catalog entry");
+    AgentIntegration {
+        id: descriptor.id.into(),
+        name: descriptor.name.into(),
+        description: descriptor.description.into(),
+        availability: match (&detection.executable, &detection.problem) {
+            (None, _) => AgentIntegrationAvailability::NotDetected,
+            (_, Some(_)) => AgentIntegrationAvailability::SetupRequired,
+            _ => AgentIntegrationAvailability::Available,
+        },
+        backend: stored.map(|entry| entry.backend),
+        version: detection.version.clone(),
+        standalone_version: None,
+        permissions: None,
+        setup_available: false,
+        enabled_for_new_tasks: stored.is_some_and(|entry| entry.enabled),
+        detail: Some(if detection.executable.is_none() {
+            "Install Claude Code and make sure `claude` is on PATH, then reopen this page.".into()
+        } else if let Some(problem) = &detection.problem {
+            problem.clone()
+        } else {
+            "Uses your Claude Code sign-in. Run `claude auth login` in a terminal if needed.".into()
+        }),
     }
 }
 
@@ -438,13 +484,14 @@ fn embedded_cua_version() -> Option<String> {
     None
 }
 
-/// Discover every curated integration. `codex_search_path` is the PATH
-/// to look on for the Codex CLI, when the host knows a fuller one than
+/// Discover every curated integration. `search_path` is the PATH
+/// to look on for external agents, when the host knows a fuller one than
 /// the process environment (a macOS GUI launch).
-pub(super) async fn detect_integrations(codex_search_path: Option<&str>) -> IntegrationDetections {
+pub(super) async fn detect_integrations(search_path: Option<&str>) -> IntegrationDetections {
     IntegrationDetections {
         cua: detect_cua_driver().await,
-        codex: codex::detect(codex_search_path).await,
+        codex: codex::detect(search_path).await,
+        claude: claude::detect(search_path).await,
     }
 }
 
@@ -982,20 +1029,18 @@ fn validate_stored_registry(
     }
     let mut ids = HashSet::new();
     for entry in &registry.integrations {
-        if !matches!(
-            entry.id.as_str(),
-            CUA_DRIVER_INTEGRATION_ID | CODEX_INTEGRATION_ID
-        ) || !ids.insert(entry.id.as_str())
+        if (entry.id != CUA_DRIVER_INTEGRATION_ID && external_agent_selection(&entry.id).is_none())
+            || !ids.insert(entry.id.as_str())
         {
             return Err(
                 "Device-local integration settings contain an unknown or duplicate integration"
                     .to_string(),
             );
         }
-        if entry.id == CODEX_INTEGRATION_ID {
+        if external_agent_selection(&entry.id).is_some() {
             if entry.backend != AgentIntegrationBackend::Embedded || entry.external_server.is_some()
             {
-                return Err("Device-local Codex settings are invalid".to_string());
+                return Err("Device-local external agent settings are invalid".to_string());
             }
             continue;
         }
@@ -1272,6 +1317,7 @@ mod tests {
 
     fn cua_only(cua: CuaDetection) -> IntegrationDetections {
         IntegrationDetections {
+            claude: ClaudeDetection::default(),
             cua,
             codex: CodexDetection::default(),
         }
@@ -1307,10 +1353,14 @@ mod tests {
     }
 
     fn codex_registry(enabled: bool) -> StoredIntegrationRegistry {
+        provider_registry("codex", enabled)
+    }
+
+    fn provider_registry(provider: &str, enabled: bool) -> StoredIntegrationRegistry {
         StoredIntegrationRegistry {
             version: INTEGRATIONS_FILE_VERSION,
             integrations: vec![StoredIntegration {
-                id: CODEX_INTEGRATION_ID.to_string(),
+                id: provider.to_string(),
                 enabled,
                 backend: AgentIntegrationBackend::Embedded,
                 external_server: None,
@@ -2005,6 +2055,7 @@ mod tests {
         );
         let user = "codex-user";
         let detections = IntegrationDetections {
+            claude: ClaudeDetection::default(),
             cua: CuaDetection::not_detected(),
             codex: CodexDetection {
                 executable: Some(temporary.path().join("codex")),
@@ -2080,6 +2131,7 @@ mod tests {
                 enabled: false,
             },
             &IntegrationDetections {
+                claude: ClaudeDetection::default(),
                 cua: CuaDetection::not_detected(),
                 codex: CodexDetection::default(),
             },
@@ -2114,6 +2166,7 @@ mod tests {
             enabled: true,
         };
         let missing = IntegrationDetections {
+            claude: ClaudeDetection::default(),
             cua: CuaDetection::not_detected(),
             codex: CodexDetection::default(),
         };
@@ -2126,6 +2179,7 @@ mod tests {
         );
 
         let old = IntegrationDetections {
+            claude: ClaudeDetection::default(),
             cua: CuaDetection::not_detected(),
             codex: CodexDetection {
                 executable: Some(temporary.path().join("codex")),
@@ -2144,5 +2198,59 @@ mod tests {
             AgentIntegrationAvailability::SetupRequired
         );
         assert!(!external_agents_enabled(&paths, user));
+    }
+    #[test]
+    fn claude_setup_and_defaults_keep_shared_skills_until_both_are_off() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths =
+            AgentPathLayout::from_app_roots(temp.path().join("config"), temp.path().join("data"));
+        let mut detections = cua_only(CuaDetection::not_detected());
+        let request = AgentSetIntegrationEnabledRequest {
+            id: "claude".into(),
+            enabled: true,
+        };
+        assert!(
+            set_integration_default(&paths, "user", &request, &detections)
+                .unwrap_err()
+                .contains("Install Claude Code")
+        );
+        detections.claude = ClaudeDetection {
+            executable: Some(temp.path().join("claude")),
+            version: Some("2.1.270".into()),
+            problem: Some("Claude Code could not be started".into()),
+        };
+        assert!(
+            set_integration_default(&paths, "user", &request, &detections)
+                .unwrap_err()
+                .contains("could not be started")
+        );
+        detections.claude.problem = None;
+        save_stored_integrations(&paths, "user", &codex_registry(true)).unwrap();
+        set_integration_default(&paths, "user", &request, &detections).unwrap();
+        set_integration_default(
+            &paths,
+            "user",
+            &AgentSetIntegrationEnabledRequest {
+                id: "codex".into(),
+                enabled: false,
+            },
+            &detections,
+        )
+        .unwrap();
+        assert!(external_agents_enabled(&paths, "user"));
+        let skills = external_agent_skills_dir(&paths, "user").unwrap();
+        assert!(skills.join("handoff/SKILL.md").is_file());
+        set_integration_default(
+            &paths,
+            "user",
+            &AgentSetIntegrationEnabledRequest {
+                id: "claude".into(),
+                enabled: false,
+            },
+            &detections,
+        )
+        .unwrap();
+        assert!(!external_agents_enabled(&paths, "user"));
+        assert!(!skills.join("handoff/SKILL.md").exists());
     }
 }

@@ -1,4 +1,4 @@
-//! JSON-RPC 2.0 over newline-delimited stdio, as `codex app-server` speaks it.
+//! Codex app-server transport and the shared external-agent client interface.
 //!
 //! One reader task owns the child's stdout. It resolves responses to the
 //! requests this client sent, and hands notifications and server-initiated
@@ -21,6 +21,30 @@ const MAX_LINE_BYTES: usize = 4 * 1024 * 1024;
 /// message for long: approvals run on their own tasks.
 const SERVER_MESSAGE_CAPACITY: usize = 256;
 
+/// Operations supported by Maple's external-agent host.
+#[derive(Clone, Copy, Debug)]
+pub(super) enum RequestMethod {
+    Initialize,
+    ThreadStart,
+    ThreadResume,
+    TurnStart,
+    TurnSteer,
+    TurnInterrupt,
+}
+
+impl RequestMethod {
+    fn codex_method(self) -> &'static str {
+        match self {
+            Self::Initialize => "initialize",
+            Self::ThreadStart => "thread/start",
+            Self::ThreadResume => "thread/resume",
+            Self::TurnStart => "turn/start",
+            Self::TurnSteer => "turn/steer",
+            Self::TurnInterrupt => "turn/interrupt",
+        }
+    }
+}
+
 /// A message the server initiated.
 #[derive(Debug)]
 pub(super) enum ServerMessage {
@@ -34,6 +58,56 @@ pub(super) enum ServerMessage {
         method: String,
         params: Value,
     },
+}
+
+/// Both transports expose Maple's existing activity and permission messages.
+/// Claude translates these in Rust; its child speaks Claude's native protocol.
+pub(super) enum AgentClient {
+    Codex(Arc<AppServerClient>),
+    Claude(Arc<super::claude::Client>),
+}
+
+impl AgentClient {
+    pub(super) fn closed(&self) -> &CancellationToken {
+        match self {
+            Self::Codex(client) => client.closed(),
+            Self::Claude(client) => client.closed(),
+        }
+    }
+
+    pub(super) async fn request(
+        &self,
+        method: RequestMethod,
+        params: Value,
+    ) -> Result<Value, String> {
+        match self {
+            Self::Codex(client) => client.request(method.codex_method(), params).await,
+            Self::Claude(client) => client.request(method, params).await,
+        }
+    }
+
+    pub(super) async fn initialized(&self) -> Result<(), String> {
+        match self {
+            Self::Codex(client) => client.notify("initialized", json!({})).await,
+            Self::Claude(_) => Ok(()),
+        }
+    }
+
+    pub(super) async fn respond(&self, id: Value, result: Value) -> Result<(), String> {
+        match self {
+            Self::Codex(client) => client.respond(id, result).await,
+            Self::Claude(client) => client.respond(id, result).await,
+        }
+    }
+
+    pub(super) async fn respond_error(&self, id: Value, message: &str) {
+        match self {
+            Self::Codex(client) => client.respond_error(id, message).await,
+            Self::Claude(client) => {
+                let _ = client.respond(id, json!({"decision": "cancel"})).await;
+            }
+        }
+    }
 }
 
 type PendingResponses = Arc<StdMutex<HashMap<u64, oneshot::Sender<Result<Value, String>>>>>;

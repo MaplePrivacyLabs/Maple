@@ -8,10 +8,11 @@
 //! and its progress streams into the transcript row of the tool call that
 //! started the turn.
 //!
-//! Codex is the only provider today. The provider layer is separate so a
-//! second harness can slot in without changing the tool contract.
+//! Codex uses its app-server; Claude Code uses Goose’s native SDK protocol implementation.
+//! Both feed the same activity, permission, and lifecycle host.
 
 mod app_server;
+pub(crate) mod claude;
 pub(crate) mod codex;
 #[cfg(test)]
 mod tests;
@@ -22,7 +23,7 @@ use super::developer_tools::{
 use super::image_mediation::error_result;
 use super::tool_context::AgentToolContextSnapshot;
 use super::*;
-use app_server::{AppServerClient, ServerMessage};
+use app_server::{AgentClient, AppServerClient, RequestMethod, ServerMessage};
 use codex::{CodexEvent, CodexItem, CodexServerRequest};
 use goose::conversation::message::SystemNotificationContent;
 use std::fmt::Write as _;
@@ -396,7 +397,7 @@ impl ExternalAgentRegistry {
     }
 
     fn require_provider(provider: &str) -> Result<(), String> {
-        if provider.trim() == codex::PROVIDER_ID {
+        if matches!(provider.trim(), codex::PROVIDER_ID | claude::PROVIDER_ID) {
             Ok(())
         } else {
             Err(format!(
@@ -448,37 +449,55 @@ impl ExternalAgentRegistry {
         call: &ExternalAgentCall,
         providers: &[String],
     ) -> CallToolResult {
-        if !providers
+        if providers.is_empty() {
+            return text_result("No external agent providers are enabled for this task.");
+        }
+        let mut out = String::from("Agent providers available to this task:\n");
+        if providers
+            .iter()
+            .any(|provider| provider == claude::PROVIDER_ID)
+        {
+            let detection = claude::detect(call.login_path.as_deref()).await;
+            let detail = if detection.executable.is_none() {
+                "Install Claude Code and make sure `claude` is on PATH.".to_string()
+            } else if let Some(problem) = detection.problem {
+                problem
+            } else {
+                format!(
+                    "{}; uses your Claude Code account. If sign-in is needed, run `claude auth login`. Supports model and effort overrides.",
+                    detection.version.unwrap_or_default()
+                )
+            };
+            let _ = writeln!(out, "- claude: {detail}");
+        }
+        if providers
             .iter()
             .any(|provider| provider == codex::PROVIDER_ID)
         {
-            return text_result("No external agent providers are enabled for this task.");
-        }
-        let detection = codex::detect(call.login_path.as_deref()).await;
-        let mut out = String::new();
-        let _ = writeln!(out, "Agent providers available to this task:");
-        match (&detection.executable, &detection.problem) {
-            (None, _) => {
-                let _ = writeln!(
-                    out,
-                    "- codex: not installed. Ask the user to install the Codex CLI and make sure `codex` is on PATH."
-                );
-            }
-            (Some(_), Some(problem)) => {
-                let _ = writeln!(out, "- codex: unusable. {problem}");
-            }
-            (Some(_), None) => {
-                let version = detection.version.as_deref().unwrap_or("unknown version");
-                let sign_in = match detection.signed_in {
-                    Some(true) => "signed in".to_string(),
-                    Some(false) => codex::sign_in_hint().to_string(),
-                    None => "sign-in state unknown".to_string(),
-                };
-                let _ = writeln!(
-                    out,
-                    "- codex: {} {version}, {sign_in}. Runs `codex app-server` with the user's own Codex account and configuration; optional `model` and `effort` arguments override its defaults.",
-                    codex::PROVIDER_NAME
-                );
+            let detection = codex::detect(call.login_path.as_deref()).await;
+            match (&detection.executable, &detection.problem) {
+                (None, _) => {
+                    let _ = writeln!(
+                        out,
+                        "- codex: not installed. Ask the user to install the Codex CLI and make sure `codex` is on PATH."
+                    );
+                }
+                (Some(_), Some(problem)) => {
+                    let _ = writeln!(out, "- codex: unusable. {problem}");
+                }
+                (Some(_), None) => {
+                    let version = detection.version.as_deref().unwrap_or("unknown version");
+                    let sign_in = match detection.signed_in {
+                        Some(true) => "signed in".to_string(),
+                        Some(false) => codex::sign_in_hint().to_string(),
+                        None => "sign-in state unknown".to_string(),
+                    };
+                    let _ = writeln!(
+                        out,
+                        "- codex: {} {version}, {sign_in}. Runs `codex app-server` with the user's own Codex account and configuration; optional `model` and `effort` arguments override its defaults.",
+                        codex::PROVIDER_NAME
+                    );
+                }
             }
         }
         let _ = writeln!(
@@ -514,10 +533,11 @@ impl ExternalAgentRegistry {
             }
             let agent_id = format!(
                 "{}-{}",
-                codex::PROVIDER_ID,
+                params.provider.trim(),
                 self.next_agent.fetch_add(1, Ordering::Relaxed)
             );
             let agent = Arc::new(ExternalAgent::new(
+                params.provider.trim().to_string(),
                 agent_id.clone(),
                 call.session_id.clone(),
                 first_line_label(&prompt),
@@ -556,6 +576,9 @@ impl ExternalAgentRegistry {
         let Some(agent) = self.agent(&call.session_id, &params.agent_id).await else {
             return error_result(unknown_agent(&params.agent_id));
         };
+        if agent.provider != params.provider.trim() {
+            return error_result("This agent belongs to a different provider.");
+        }
         agent
             .run_turn(
                 &call,
@@ -580,6 +603,9 @@ impl ExternalAgentRegistry {
         let Some(agent) = self.agent(&call.session_id, &params.agent_id).await else {
             return error_result(unknown_agent(&params.agent_id));
         };
+        if agent.provider != params.provider.trim() {
+            return error_result("This agent belongs to a different provider.");
+        }
         let activity = agent.activity().await;
         let guidance = if activity.status == "running" {
             background_guidance()
@@ -598,6 +624,12 @@ impl ExternalAgentRegistry {
     ) -> CallToolResult {
         if let Err(error) = Self::require_provider(&params.provider) {
             return error_result(error);
+        }
+        let Some(agent) = self.agent(&call.session_id, &params.agent_id).await else {
+            return error_result(unknown_agent(&params.agent_id));
+        };
+        if agent.provider != params.provider.trim() {
+            return error_result("This agent belongs to a different provider.");
         }
         match self.cancel(&call.session_id, &params.agent_id).await {
             Ok(activity) => {
@@ -731,7 +763,7 @@ struct StoredCall {
 
 struct AgentProcess {
     child: ArmedShellChild,
-    client: Arc<AppServerClient>,
+    client: Arc<AgentClient>,
     reader: tokio::task::JoinHandle<()>,
     events: tokio::task::JoinHandle<()>,
 }
@@ -755,6 +787,8 @@ struct AgentState {
 }
 
 struct ExternalAgent {
+    provider: String,
+    launch: Mutex<()>,
     agent_id: String,
     session_id: String,
     task: String,
@@ -769,7 +803,15 @@ struct ExternalAgent {
 }
 
 impl ExternalAgent {
+    fn provider_name(&self) -> &str {
+        if self.provider == claude::PROVIDER_ID {
+            claude::PROVIDER_NAME
+        } else {
+            codex::PROVIDER_NAME
+        }
+    }
     fn new(
+        provider: String,
         agent_id: String,
         session_id: String,
         task: String,
@@ -784,7 +826,7 @@ impl ExternalAgent {
                 thread_id: None,
                 turn: None,
                 activity: ExternalAgentActivity {
-                    provider: codex::PROVIDER_ID.to_string(),
+                    provider: provider.clone(),
                     agent_id: agent_id.clone(),
                     status: "idle".to_string(),
                     ..Default::default()
@@ -795,6 +837,8 @@ impl ExternalAgent {
                 last_row_emit: None,
                 last_row_id: None,
             }),
+            provider,
+            launch: Mutex::new(()),
             agent_id,
             session_id,
             task,
@@ -826,7 +870,7 @@ impl ExternalAgent {
             elapsed_ms: self.started.elapsed().as_millis().min(u64::MAX as u128) as u64,
             activity: latest_activity_label(&state.activity),
             external: Some(ExternalAgentRef {
-                provider: codex::PROVIDER_ID.to_string(),
+                provider: self.provider.clone(),
                 agent_id: self.agent_id.clone(),
             }),
         })
@@ -839,10 +883,25 @@ impl ExternalAgent {
         call: &ExternalAgentCall,
         input: TurnInput,
     ) -> CallToolResult {
+        let launch = self.launch.lock().await;
         if self.cancel.is_cancelled() {
             return error_result("This external agent has been shut down.");
         }
-        if let Err(error) = self.ensure_process(call, input.model.as_deref()).await {
+        if self.state.lock().await.turn.is_some() {
+            return error_result(format!(
+                "Agent {} is still working on its previous turn. Wait for Maple's notice, or check with {AGENT_STATUS_TOOL}.",
+                self.agent_id
+            ));
+        }
+        let ready = tokio::select! {
+            biased;
+            _ = self.cancel.cancelled() => Err("This external agent has been shut down.".to_string()),
+            _ = call.cancel_token.cancelled() => Err("The external agent launch was cancelled.".to_string()),
+            _ = call.tool_context.revoked.cancelled() => Err("The external agent context was revoked.".to_string()),
+            result = tokio::time::timeout(Duration::from_secs(30), self.ensure_process(call, input.model.as_deref(), input.effort.as_deref())) =>
+                result.unwrap_or_else(|_| Err("The external agent did not initialize in time.".to_string())),
+        };
+        if let Err(error) = ready {
             return error_result(error);
         }
         let (client, thread_id, done_rx) = {
@@ -900,12 +959,13 @@ impl ExternalAgent {
             model: input.model.as_deref(),
             effort: input.effort.as_deref(),
         });
-        if let Err(error) = client.request("turn/start", params).await {
+        if let Err(error) = client.request(RequestMethod::TurnStart, params).await {
             self.finish_turn(TurnOutcome::Failed, Some(error.clone()))
                 .await;
             return error_result(error);
         }
 
+        drop(launch);
         if input.background {
             let agent = Arc::clone(self);
             tokio::spawn(async move {
@@ -961,6 +1021,7 @@ impl ExternalAgent {
         self: &Arc<Self>,
         call: &ExternalAgentCall,
         model: Option<&str>,
+        effort: Option<&str>,
     ) -> Result<(), String> {
         {
             let state = self.state.lock().await;
@@ -970,17 +1031,40 @@ impl ExternalAgent {
                 return Ok(());
             }
         }
-        let executable = codex::find_executable(call.login_path.as_deref()).ok_or_else(|| {
-            "Codex is not installed, or `codex` is not on PATH. Ask the user to install the Codex CLI.".to_string()
-        })?;
+        let existing_thread = self.state.lock().await.thread_id.clone();
+        let claude_thread = existing_thread
+            .clone()
+            .unwrap_or_else(claude::new_session_id);
+        let (executable, args) = if self.provider == claude::PROVIDER_ID {
+            let executable = claude::find_executable(call.login_path.as_deref())
+                .ok_or("Install Claude Code and make sure `claude` is on PATH.")?;
+            (
+                executable,
+                claude::command_args(&claude_thread, existing_thread.is_some(), model, effort),
+            )
+        } else {
+            let executable = codex::find_executable(call.login_path.as_deref()).ok_or_else(|| {
+                "Codex is not installed, or `codex` is not on PATH. Ask the user to install the Codex CLI.".to_string()
+            })?;
+            (
+                executable,
+                codex::app_server_args()
+                    .iter()
+                    .map(|arg| arg.to_string())
+                    .collect(),
+            )
+        };
         let mut command = build_external_agent_command(
             &executable,
-            &codex::app_server_args(),
-            &self.host.project_root,
+            &args.iter().map(String::as_str).collect::<Vec<_>>(),
+            &self.cwd,
             call.login_path.as_deref(),
             Some(&self.session_id),
             &call.tool_context,
         )?;
+        if self.provider == claude::PROVIDER_ID {
+            command.env_remove("CLAUDECODE");
+        }
         command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -988,41 +1072,54 @@ impl ExternalAgent {
             .kill_on_drop(true);
         let mut child = {
             let _launch = call.tool_context.begin_process_launch(&call.cancel_token)?;
-            spawn_contained(command).map_err(|error| format!("Failed to start Codex: {error}"))?
+            spawn_contained(command)
+                .map_err(|error| format!("Failed to start {}: {error}", self.provider_name()))?
         };
         let stdin = child
             .as_mut()
             .stdin()
             .take()
-            .ok_or_else(|| "Failed to open Codex's stdin".to_string())?;
+            .ok_or_else(|| "Failed to open the agent stdin".to_string())?;
         let stdout = child
             .as_mut()
             .stdout()
             .take()
-            .ok_or_else(|| "Failed to open Codex's stdout".to_string())?;
-        let (client, receiver, reader) = AppServerClient::new(stdin, stdout);
+            .ok_or_else(|| "Failed to open the agent stdout".to_string())?;
+        let (client, receiver, reader) = if self.provider == claude::PROVIDER_ID {
+            let (client, receiver, reader) = claude::Client::new(stdin, stdout, claude_thread);
+            (Arc::new(AgentClient::Claude(client)), receiver, reader)
+        } else {
+            let (client, receiver, reader) = AppServerClient::new(stdin, stdout);
+            (Arc::new(AgentClient::Codex(client)), receiver, reader)
+        };
         client
-            .request("initialize", codex::initialize_params())
+            .request(RequestMethod::Initialize, codex::initialize_params())
             .await?;
-        client.notify("initialized", json!({})).await?;
+        client.initialized().await?;
         let thread_id = {
             let existing = self.state.lock().await.thread_id.clone();
             let response = match &existing {
                 Some(thread_id) => {
                     client
-                        .request("thread/resume", codex::thread_resume_params(thread_id))
+                        .request(
+                            RequestMethod::ThreadResume,
+                            codex::thread_resume_params(thread_id),
+                        )
                         .await?
                 }
                 None => {
                     client
-                        .request("thread/start", codex::thread_start_params(&self.cwd, model))
+                        .request(
+                            RequestMethod::ThreadStart,
+                            codex::thread_start_params(&self.cwd, model),
+                        )
                         .await?
                 }
             };
             match existing {
                 Some(thread_id) => thread_id,
                 None => codex::thread_id_from_response(&response)
-                    .ok_or_else(|| "Codex did not report a thread ID".to_string())?,
+                    .ok_or_else(|| "The agent did not report a thread ID".to_string())?,
             }
         };
         let events = tokio::spawn(Arc::clone(self).consume_server_messages(receiver));
@@ -1046,8 +1143,34 @@ impl ExternalAgent {
         while let Some(message) = receiver.recv().await {
             match message {
                 ServerMessage::Notification { method, params } => {
-                    self.handle_event(codex::parse_notification(&method, &params))
-                        .await;
+                    let event = codex::parse_notification(&method, &params);
+                    if self.provider == claude::PROVIDER_ID
+                        && let CodexEvent::TurnCompleted { ref status, .. } = event
+                    {
+                        // A Claude process serves one turn. Reclaim it before
+                        // reporting completion, including on protocol failure.
+                        // On success stdin is closed: give session writes time
+                        // to flush, then clean up any remaining descendants.
+                        // Hold the lifecycle lock through cleanup so shutdown
+                        // cannot return while this task still owns a child.
+                        let mut state = self.state.lock().await;
+                        if let Some(mut process) = state.process.take() {
+                            if status == "completed" {
+                                let _ = tokio::time::timeout(
+                                    Duration::from_secs(2),
+                                    process.child.as_mut().wait(),
+                                )
+                                .await;
+                            }
+                            process.child.kill_and_wait().await;
+                            process.reader.abort();
+                            // Do not abort process.events: it is this task.
+                        }
+                        drop(state);
+                        self.handle_event(event).await;
+                        return;
+                    }
+                    self.handle_event(event).await;
                 }
                 ServerMessage::Request { id, method, params } => {
                     // An approval waits on the user. It must not stall the
@@ -1225,6 +1348,21 @@ impl ExternalAgent {
                 None => return,
             }
         };
+        if self.provider == claude::PROVIDER_ID && method == "claude/tool/requestApproval" {
+            let tool = params["tool"].as_str().unwrap_or("tool");
+            let arguments = params["input"].as_object().cloned().unwrap_or_default();
+            let request = AgentPermissionRequest {
+                request_id: format!("{}-{}", self.agent_id, id.as_str().unwrap_or("request")),
+                tool_name: "claude_tool".into(),
+                arguments,
+                prompt: Some(format!("Claude Code wants to use {tool}")),
+            };
+            let decision = self
+                .request_permission(request, format!("use {tool}"))
+                .await;
+            let _ = client.respond(id, codex::approval_response(decision)).await;
+            return;
+        }
         let response = match codex::parse_server_request(method, &params) {
             CodexServerRequest::CommandApproval {
                 item_id,
@@ -1366,7 +1504,7 @@ impl ExternalAgent {
             if let Some((client, thread_id, turn_id)) = steer {
                 match client
                     .request(
-                        "turn/steer",
+                        RequestMethod::TurnSteer,
                         codex::turn_steer_params(&thread_id, &turn_id, &prompt),
                     )
                     .await
@@ -1435,6 +1573,9 @@ impl ExternalAgent {
         request: AgentPermissionRequest,
         summary: String,
     ) -> AgentPermissionDecision {
+        if self.cancel.is_cancelled() || self.turn_ended().await.is_cancelled() {
+            return AgentPermissionDecision::Cancel;
+        }
         {
             let modes = self.host.permission_modes.lock().await;
             if modes
@@ -1531,7 +1672,7 @@ impl ExternalAgent {
             return;
         };
         let request = client.request(
-            "turn/interrupt",
+            RequestMethod::TurnInterrupt,
             codex::turn_interrupt_params(&thread_id, &turn_id),
         );
         if let Ok(Err(error)) = tokio::time::timeout(INTERRUPT_REQUEST_TIMEOUT, request).await {
@@ -1649,13 +1790,12 @@ impl ExternalAgent {
         let result_text = render_activity(&activity, &completion_guidance(&activity));
         let row_id = self.last_row_id().await;
         let for_model = background_result_message(
-            &format!("external agent {} ({})", self.agent_id, codex::PROVIDER_ID),
+            &format!("external agent {} ({})", self.agent_id, self.provider),
             outcome.status(),
             &result_text,
             &format!(
                 "Use {AGENT_STATUS_TOOL}(provider: \"{}\", agent_id: \"{}\") only if you need to inspect its current state again.",
-                codex::PROVIDER_ID,
-                self.agent_id
+                self.provider, self.agent_id
             ),
         );
         let delivered = self
@@ -1713,7 +1853,7 @@ impl ExternalAgent {
                 format!(
                     "External agent {} ({}) {}. {}",
                     self.agent_id,
-                    codex::PROVIDER_NAME,
+                    self.provider_name(),
                     match outcome {
                         TurnOutcome::Completed => "finished",
                         TurnOutcome::Failed => "failed",
@@ -1779,7 +1919,7 @@ impl ExternalAgent {
                     task: self.task.clone(),
                     background,
                     external: Some(ExternalAgentRef {
-                        provider: codex::PROVIDER_ID.to_string(),
+                        provider: self.provider.clone(),
                         agent_id: self.agent_id.clone(),
                     }),
                 },

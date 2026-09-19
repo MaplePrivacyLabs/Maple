@@ -2559,7 +2559,7 @@ impl SettingsScreen {
                             .size(px(28.))
                             .text_color(gpui::rgb(theme::text_primary()))
                             .into_any_element()
-                    } else if is_codex(&integration.id) {
+                    } else if integration.id == "codex" {
                         gpui::svg()
                             .path("icons/openai-mark.svg")
                             .size(px(26.))
@@ -2787,9 +2787,9 @@ fn plan_card(plan: &crate::billing::PlanUsage) -> Div {
 }
 
 fn integration_is_visible(integration: &AgentIntegration) -> bool {
-    // Codex is worth a row even before it is installed: the card says how
+    // External agents get a row even before installation: the card says how
     // to get it, where a hidden row would leave the feature undiscoverable.
-    if is_codex(&integration.id) {
+    if integration.is_external_agent() {
         return true;
     }
     if is_cua_driver(&integration.id)
@@ -2942,10 +2942,6 @@ fn cua_permission_badge(label: &'static str, granted: bool) -> Div {
 
 fn is_cua_driver(id: &str) -> bool {
     id == "cua-driver"
-}
-
-fn is_codex(id: &str) -> bool {
-    id == "codex"
 }
 
 /// Small on/off pill used in list rows.
@@ -3430,6 +3426,15 @@ mod tests {
         codex_ready.id = "codex".to_string();
         assert!(integration_can_enable(&codex_ready));
         assert!(!integration_can_setup(&codex_ready));
+        let mut claude_missing = integration(AgentIntegrationAvailability::NotDetected, false);
+        claude_missing.id = "claude".to_string();
+        assert!(integration_is_visible(&claude_missing));
+        assert!(!integration_can_enable(&claude_missing));
+        let mut claude_needs_setup =
+            integration(AgentIntegrationAvailability::SetupRequired, false);
+        claude_needs_setup.id = "claude".to_string();
+        assert!(integration_is_visible(&claude_needs_setup));
+        assert!(!integration_can_enable(&claude_needs_setup));
 
         let mut external = integration(AgentIntegrationAvailability::Available, true);
         external.backend = Some(AgentIntegrationBackend::External);

@@ -1,7 +1,7 @@
-//! Driver tests against a fake `codex app-server`.
+//! Driver tests against fake Codex and Claude Code CLIs.
 //!
-//! The fixture is this test binary re-executed as an ignored test. A shell
-//! shim named `codex` on a private PATH forwards to it, so the driver
+//! Each fixture is this test binary re-executed as an ignored test. Shell
+//! shims on a private PATH forward to them, so the driver
 //! resolves and spawns it exactly as it would the real CLI. Unix only until
 //! a `.cmd` shim exists for Windows.
 
@@ -13,12 +13,13 @@ use crate::agent::{AgentEventSink, AgentPathLayout, MapleAgentHostResources};
 use std::io::{BufRead, Write};
 use std::os::unix::fs::PermissionsExt;
 
-const FIXTURE_TEST: &str = "agent::external_agents::tests::fake_codex_app_server";
-const FIXTURE_MARKER: &str = "MAPLE_FAKE_CODEX";
-const FIXTURE_ARGS: &str = "MAPLE_FAKE_CODEX_ARGS";
-const FIXTURE_MODE: &str = "MAPLE_FAKE_CODEX_MODE";
-const FIXTURE_PID_FILE: &str = "MAPLE_FAKE_CODEX_PID_FILE";
-const FIXTURE_LOG: &str = "MAPLE_FAKE_CODEX_LOG";
+mod claude_fixture;
+
+const FIXTURE_MARKER: &str = "MAPLE_FAKE_AGENT";
+const FIXTURE_ARGS: &str = "MAPLE_FAKE_AGENT_ARGS";
+const FIXTURE_MODE: &str = "MAPLE_FAKE_AGENT_MODE";
+const FIXTURE_PID_FILE: &str = "MAPLE_FAKE_AGENT_PID_FILE";
+const FIXTURE_LOG: &str = "MAPLE_FAKE_AGENT_LOG";
 const WAIT: Duration = Duration::from_secs(20);
 
 #[derive(Default)]
@@ -66,17 +67,8 @@ impl Harness {
         fs::create_dir_all(&history).unwrap();
         let shim_dir = root.join("bin");
         fs::create_dir_all(&shim_dir).unwrap();
-        let pid_file = root.join("codex.pid");
-        let log_file = root.join("codex.log");
-        let shim = format!(
-            "#!/bin/sh\nexport {FIXTURE_MARKER}=1\nexport {FIXTURE_MODE}='{mode}'\nexport {FIXTURE_PID_FILE}='{}'\nexport {FIXTURE_LOG}='{}'\nexport {FIXTURE_ARGS}=\"$*\"\nexec '{}' '{FIXTURE_TEST}' --exact --ignored --nocapture --test-threads=1\n",
-            pid_file.display(),
-            log_file.display(),
-            std::env::current_exe().unwrap().display(),
-        );
-        let shim_path = shim_dir.join("codex");
-        fs::write(&shim_path, shim).unwrap();
-        fs::set_permissions(&shim_path, fs::Permissions::from_mode(0o700)).unwrap();
+        let pid_file = root.join("agent.pid");
+        let log_file = root.join("agent.log");
 
         let paths = AgentPathLayout::from_app_roots(root.join("config"), root.join("data"));
         let sink = Arc::new(RecordingSink::default());
@@ -100,7 +92,7 @@ impl Harness {
             lifetime: CancellationToken::new(),
         };
         let registry = Arc::new(ExternalAgentRegistry::new(host.clone()));
-        Self {
+        let harness = Self {
             _temp: temp,
             project,
             shim_dir,
@@ -110,7 +102,29 @@ impl Harness {
             registry,
             pid_file,
             log_file,
-        }
+        };
+        harness.install_fixture("codex", mode);
+        harness.install_fixture("claude", mode);
+        harness
+    }
+
+    fn install_fixture(&self, provider: &str, mode: &str) {
+        let (test, redirect) = match provider {
+            "codex" => ("fake_codex_app_server", ""),
+            // Keep libtest's status lines off the Claude protocol pipe.
+            // The fixture writes to fd 3, which is the original stdout.
+            "claude" => ("claude_fixture::run", " 3>&1 1>/dev/null"),
+            _ => panic!("unknown fixture provider"),
+        };
+        let shim = format!(
+            "#!/bin/sh\nexport {FIXTURE_MARKER}=1\nexport {FIXTURE_MODE}='{mode}'\nexport {FIXTURE_PID_FILE}='{}'\nexport {FIXTURE_LOG}='{}'\nexport {FIXTURE_ARGS}=\"$*\"\nexec '{}' 'agent::external_agents::tests::{test}' --exact --ignored --nocapture --test-threads=1{redirect}\n",
+            self.pid_file.display(),
+            self.log_file.display(),
+            std::env::current_exe().unwrap().display(),
+        );
+        let path = self.shim_dir.join(provider);
+        fs::write(&path, shim).unwrap();
+        fs::set_permissions(path, fs::Permissions::from_mode(0o700)).unwrap();
     }
 
     fn call(&self, session_id: &str, row_id: &str) -> ExternalAgentCall {
@@ -734,7 +748,7 @@ async fn registry_rejects_unknown_providers_bad_cwd_and_too_many_agents() {
     };
     let unknown = harness
         .registry
-        .start(harness.call("session-5", "r"), start("claude", None))
+        .start(harness.call("session-5", "r"), start("unknown", None))
         .await;
     assert_eq!(unknown.is_error, Some(true));
     assert!(result_text(&unknown).contains("Unknown agent provider"));
@@ -769,6 +783,7 @@ async fn registry_rejects_unknown_providers_bad_cwd_and_too_many_agents() {
             session.agents.insert(
                 agent_id.clone(),
                 Arc::new(ExternalAgent::new(
+                    "codex".into(),
                     agent_id,
                     "session-5".into(),
                     "idle".into(),
@@ -950,5 +965,301 @@ async fn an_async_question_is_answered_in_a_turn_of_maples_own() {
         !status_text.contains("Waiting for the user"),
         "{status_text}"
     );
+    harness.registry.shutdown_all(Duration::from_secs(5)).await;
+}
+
+fn claude_start(background: bool) -> AgentStartParams {
+    AgentStartParams {
+        provider: "claude".into(),
+        prompt: "Fix the fixture".into(),
+        background,
+        model: Some("sonnet".into()),
+        effort: Some("high".into()),
+        cwd: Some("sub".into()),
+    }
+}
+
+/// Exercises the native Rust transport against a deterministic CLI, with no inference.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn claude_native_streams_resumes_and_binds_the_provider() {
+    let harness = Harness::new("approve");
+    fs::create_dir(harness.project.join("sub")).unwrap();
+    harness.set_mode("claude-task", GooseMode::Auto).await;
+    let result = harness
+        .registry
+        .start(harness.call("claude-task", "r1"), claude_start(false))
+        .await;
+    let activity = result
+        .structured_content
+        .as_ref()
+        .unwrap_or_else(|| panic!("{}", result_text(&result)))[ACTIVITY_KEY]
+        .clone();
+    assert_eq!(activity["status"], "completed", "{activity}");
+    assert_eq!(activity["provider"], "claude");
+    assert_eq!(activity["text"], "Allowed");
+    assert_eq!(activity["commands"][0]["status"], "completed");
+    assert_eq!(activity["fileChanges"][0]["path"], "src/lib.rs");
+    assert_eq!(activity["todos"][0]["completed"], true);
+    let agent_id = activity["agentId"].as_str().unwrap().to_string();
+    let thread_id = activity["threadId"].as_str().unwrap().to_string();
+    let result = harness
+        .registry
+        .send(
+            harness.call("claude-task", "r2"),
+            AgentSendParams {
+                provider: "claude".into(),
+                agent_id: agent_id.clone(),
+                prompt: "Continue".into(),
+                background: false,
+                model: None,
+                effort: None,
+            },
+        )
+        .await;
+    assert!(
+        result_text(&result).contains("Status: completed"),
+        "{}",
+        result_text(&result)
+    );
+    let log = harness.log();
+    assert!(log.contains("--resume"));
+    assert!(
+        log.contains("stdin_closed"),
+        "completed CLI should exit before resumption"
+    );
+    assert!(log.contains(&thread_id));
+    assert!(log.contains("--effort"));
+    assert!(log.contains(&harness.project.join("sub").to_string_lossy().into_owned()));
+    assert!(!log.contains("dangerously-skip-permissions"));
+    for provider in ["codex", "unknown"] {
+        let result = harness
+            .registry
+            .cancel_tool(
+                &harness.call("claude-task", "r3"),
+                AgentRefParams {
+                    provider: provider.into(),
+                    agent_id: agent_id.clone(),
+                },
+            )
+            .await;
+        assert_eq!(result.is_error, Some(true));
+    }
+    let result = harness
+        .registry
+        .status(
+            &harness.call("another-task", "r4"),
+            AgentRefParams {
+                provider: "claude".into(),
+                agent_id,
+            },
+        )
+        .await;
+    assert_eq!(result.is_error, Some(true));
+    let providers = harness
+        .registry
+        .list_providers(&harness.call("claude-task", "list"), &["claude".into()])
+        .await;
+    assert!(result_text(&providers).contains("- claude:"));
+    assert!(!result_text(&providers).contains("- codex:"));
+    harness.registry.shutdown_all(Duration::from_secs(5)).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn claude_native_cancellation_kills_cli_and_descendants() {
+    let harness = Harness::new("slow");
+    fs::create_dir(harness.project.join("sub")).unwrap();
+    let result = harness
+        .registry
+        .start(harness.call("claude-stop", "r1"), claude_start(true))
+        .await;
+    assert!(
+        result_text(&result).contains("claude-1"),
+        "{}",
+        result_text(&result)
+    );
+    let pid = harness.fixture_pid().await;
+    let child_pid = wait_for(|| {
+        fs::read_to_string(harness.pid_file.with_extension("pid.child"))
+            .ok()
+            .and_then(|pid| pid.parse::<i32>().ok())
+    })
+    .await;
+    let activity = harness
+        .registry
+        .cancel("claude-stop", "claude-1")
+        .await
+        .unwrap();
+    assert_eq!(activity.status, "cancelled");
+    wait_for(|| (!process_alive(pid)).then_some(())).await;
+    // A killed orphan can briefly remain a zombie before PID 1 reaps it.
+    wait_for(|| {
+        (!process_alive(child_pid)
+            || fs::read_to_string(format!("/proc/{child_pid}/stat"))
+                .is_ok_and(|stat| stat.contains(") Z ")))
+        .then_some(())
+    })
+    .await;
+    // Reconnect through a new CLI process and resume the session saved before Stop.
+    harness.install_fixture("claude", "approve");
+    harness.set_mode("claude-stop", GooseMode::Auto).await;
+    let result = harness
+        .registry
+        .send(
+            harness.call("claude-stop", "r2"),
+            AgentSendParams {
+                provider: "claude".into(),
+                agent_id: "claude-1".into(),
+                prompt: "Resume".into(),
+                background: false,
+                model: None,
+                effort: None,
+            },
+        )
+        .await;
+    assert!(
+        result_text(&result).contains("Status: completed"),
+        "{}",
+        result_text(&result)
+    );
+    assert_eq!(
+        result.structured_content.unwrap()[ACTIVITY_KEY]["threadId"].as_str(),
+        activity.thread_id.as_deref()
+    );
+    harness.registry.shutdown_all(Duration::from_secs(5)).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn claude_native_permission_denial_and_questions_use_maple_brokers() {
+    for mode in ["approve", "question"] {
+        let harness = Harness::new(mode);
+        fs::create_dir(harness.project.join("sub")).unwrap();
+        let registry = harness.registry.clone();
+        let call = harness.call("claude-input", "r1");
+        let turn = tokio::spawn(async move { registry.start(call, claude_start(false)).await });
+        if mode == "approve" {
+            let pending = wait_for(|| {
+                harness
+                    .service
+                    .pending_permissions
+                    .try_lock()
+                    .ok()
+                    .and_then(|entries| {
+                        entries
+                            .iter()
+                            .next()
+                            .map(|(id, entry)| (id.clone(), entry.clone()))
+                    })
+            })
+            .await;
+            let (key, entry) = pending;
+            assert_eq!(entry.request.tool_name, "claude_tool");
+            assert_eq!(entry.request.arguments["command"], "cargo test");
+            harness
+                .service
+                .pending_permissions
+                .lock()
+                .await
+                .remove(&key);
+            let PendingPermissionOrigin::ExternalAgent(responder) = entry.origin else {
+                panic!("external responder expected")
+            };
+            assert!(responder.resolve(AgentPermissionDecision::DenyOnce));
+            assert!(!responder.resolve(AgentPermissionDecision::AllowOnce));
+        } else {
+            let (request_id, questions) = wait_for(|| {
+                harness.sink.events().iter().find_map(|event| match event {
+                    AgentServiceEvent::Question {
+                        session_id,
+                        request_id,
+                        questions,
+                    } if session_id == "claude-input" => {
+                        Some((request_id.clone(), questions.clone()))
+                    }
+                    _ => None,
+                })
+            })
+            .await;
+            assert_eq!(questions[0].question, "Tabs or spaces?");
+            assert!(
+                harness
+                    .service
+                    .answer_question(
+                        &request_id,
+                        r#"{"answers":{"q0":{"answers":["Spaces"]}}}"#.into()
+                    )
+                    .await
+            );
+        }
+        let result = tokio::time::timeout(WAIT, turn).await.unwrap().unwrap();
+        let text = result_text(&result);
+        assert!(
+            text.contains(if mode == "approve" {
+                "Denied"
+            } else {
+                "Spaces"
+            }),
+            "{text}"
+        );
+        harness.registry.shutdown_all(Duration::from_secs(5)).await;
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn claude_native_failures_are_not_success_or_unsanitized_output() {
+    for mode in ["eof", "error", "init-error", "malformed", "oversized"] {
+        let harness = Harness::new(mode);
+        fs::create_dir(harness.project.join("sub")).unwrap();
+        let result = harness
+            .registry
+            .start(harness.call("claude-fail", "r1"), claude_start(false))
+            .await;
+        let text = result_text(&result);
+        assert!(
+            text.contains("Status: failed") || result.is_error == Some(true),
+            "{mode}: {text}"
+        );
+        assert!(!text.contains("secret-canary"));
+        let pid = harness.fixture_pid().await;
+        wait_for(|| (!process_alive(pid)).then_some(())).await;
+        harness.registry.shutdown_all(Duration::from_secs(5)).await;
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn claude_native_stop_withdraws_pending_permission() {
+    let harness = Harness::new("approve");
+    fs::create_dir(harness.project.join("sub")).unwrap();
+    let result = harness
+        .registry
+        .start(harness.call("claude-pending", "r1"), claude_start(true))
+        .await;
+    assert!(result_text(&result).contains("claude-1"));
+    let key = wait_for(|| {
+        harness
+            .service
+            .pending_permissions
+            .try_lock()
+            .ok()
+            .and_then(|pending| pending.keys().next().cloned())
+    })
+    .await;
+    let pid = harness.fixture_pid().await;
+    let activity = harness
+        .registry
+        .cancel("claude-pending", "claude-1")
+        .await
+        .unwrap();
+    assert_eq!(activity.status, "cancelled");
+    wait_for(|| (!process_alive(pid)).then_some(())).await;
+    wait_for(|| {
+        harness
+            .service
+            .pending_permissions
+            .try_lock()
+            .ok()
+            .and_then(|pending| (!pending.contains_key(&key)).then_some(()))
+    })
+    .await;
+    assert!(!harness.log().contains("\"behavior\":\"allow\""));
     harness.registry.shutdown_all(Duration::from_secs(5)).await;
 }

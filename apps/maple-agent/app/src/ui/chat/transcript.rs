@@ -1501,6 +1501,7 @@ pub(super) fn render_waiting_indicator() -> gpui::Stateful<Div> {
 /// external agent whose request Maple relays.
 pub(super) fn permission_card_heading(tool_name: &str) -> &'static str {
     match tool_name {
+        "claude_tool" => "Claude Code wants to use a tool",
         "codex_command" => "Codex wants to run a command",
         "codex_file_change" => "Codex wants to change files",
         _ => "Permission required",
