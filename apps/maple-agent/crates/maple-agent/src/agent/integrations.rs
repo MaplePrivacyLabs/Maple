@@ -83,21 +83,24 @@ impl ExtensionState for TaskIntegrationOverrides {
     const VERSION: &'static str = "1";
 }
 
+pub(super) fn external_agent_enabled(stored: &StoredIntegrationRegistry, id: &str) -> bool {
+    stored
+        .integrations
+        .iter()
+        .any(|entry| entry.id == id && entry.enabled)
+}
+
 fn session_external_agent_enabled(
     stored: &StoredIntegrationRegistry,
     session: &Session,
     id: &str,
 ) -> bool {
-    // Missing metadata is inheritance, including tasks created before this
-    // integration existed. Never snapshot an inherited false into old tasks.
-    TaskIntegrationOverrides::from_extension_data(&session.extension_data)
-        .and_then(|state| state.enabled.get(id).copied())
-        .unwrap_or_else(|| {
-            stored
-                .integrations
-                .iter()
-                .any(|entry| entry.id == id && entry.enabled)
-        })
+    // Settings admits the provider; each task must also explicitly select it.
+    // A saved selection cannot bypass a disabled account/device integration.
+    external_agent_enabled(stored, id)
+        && TaskIntegrationOverrides::from_extension_data(&session.extension_data)
+            .and_then(|state| state.enabled.get(id).copied())
+            .unwrap_or(false)
 }
 
 pub(super) fn session_external_agent_providers(
@@ -856,6 +859,7 @@ pub(super) fn project_session_mcp_servers(
         servers.extend(
             EXTERNAL_AGENT_INTEGRATIONS
                 .iter()
+                .filter(|entry| external_agent_enabled(stored, entry.id))
                 .map(|entry| AgentSessionMcpServer {
                     name: entry.id.to_string(),
                     kind: AgentSessionIntegrationKind::ExternalAgent,
@@ -1373,7 +1377,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn old_task_inherits_providers_until_explicitly_overridden() {
+    async fn tasks_require_both_settings_and_persisted_provider_selection() {
         let temp = tempfile::tempdir().unwrap();
         let manager = SessionManager::new(temp.path().join("sessions"));
         let session = manager
@@ -1388,10 +1392,7 @@ mod tests {
         assert!(
             session_external_agent_providers(&codex_registry(false), &session, true).is_empty()
         );
-        assert_eq!(
-            session_external_agent_providers(&codex_registry(true), &session, true),
-            ["codex"]
-        );
+        assert!(session_external_agent_providers(&codex_registry(true), &session, true).is_empty());
         assert!(
             session_external_agent_providers(&codex_registry(true), &session, false).is_empty()
         );
@@ -1409,21 +1410,37 @@ mod tests {
         let enabled = persist_task_integration_override(&manager, &session.id, "codex", true)
             .await
             .unwrap();
+        assert!(
+            session_external_agent_providers(&codex_registry(false), &enabled, true).is_empty()
+        );
         assert_eq!(
-            session_external_agent_providers(&codex_registry(false), &enabled, true),
+            session_external_agent_providers(&codex_registry(true), &enabled, true),
             ["codex"]
+        );
+        let other_session = manager
+            .create_session(
+                temp.path().to_path_buf(),
+                "Other task".into(),
+                SessionType::User,
+                GooseMode::SmartApprove,
+            )
+            .await
+            .unwrap();
+        assert!(
+            session_external_agent_providers(&codex_registry(true), &other_session, true)
+                .is_empty()
         );
         drop(manager);
         let manager = SessionManager::new(temp.path().join("sessions"));
         let restored = manager.get_session(&session.id, false).await.unwrap();
         assert_eq!(
-            session_external_agent_providers(&codex_registry(false), &restored, true),
+            session_external_agent_providers(&codex_registry(true), &restored, true),
             ["codex"]
         );
     }
 
     #[test]
-    fn composer_lists_native_integrations_without_prior_setup() {
+    fn composer_lists_only_settings_enabled_providers_without_selecting_them() {
         let session = Session {
             session_type: SessionType::User,
             ..Session::default()
@@ -1431,10 +1448,23 @@ mod tests {
         let rows =
             project_session_mcp_servers(&StoredIntegrationRegistry::default(), &[], &session)
                 .unwrap();
-        assert!(rows.iter().any(|row| row.name == "codex"
-            && row.kind == AgentSessionIntegrationKind::ExternalAgent
-            && row.display_name == "Codex"
-            && !row.enabled));
+        assert!(
+            !rows
+                .iter()
+                .any(|row| row.kind == AgentSessionIntegrationKind::ExternalAgent)
+        );
+        for provider in ["codex", "claude"] {
+            let rows =
+                project_session_mcp_servers(&provider_registry(provider, true), &[], &session)
+                    .unwrap();
+            let native: Vec<_> = rows
+                .iter()
+                .filter(|row| row.kind == AgentSessionIntegrationKind::ExternalAgent)
+                .collect();
+            assert_eq!(native.len(), 1);
+            assert_eq!(native[0].name, provider);
+            assert!(!native[0].enabled);
+        }
         assert!(
             rows.iter()
                 .any(|row| row.name == CUA_DRIVER_MCP_NAME && !row.enabled && !row.available)
@@ -1456,7 +1486,7 @@ mod tests {
         assert!(
             codex_rows
                 .iter()
-                .any(|row| row.kind == AgentSessionIntegrationKind::ExternalAgent && row.enabled)
+                .any(|row| row.kind == AgentSessionIntegrationKind::ExternalAgent && !row.enabled)
         );
         let legacy_request: AgentSetSessionMcpServerRequest = serde_json::from_value(json!({
             "sessionId": "s1", "name": "codex", "enabled": true,
@@ -1472,6 +1502,11 @@ mod tests {
     /// external process is needed to inspect the model-facing tool catalog.
     #[tokio::test]
     async fn resumed_task_refreshes_external_tools_on_every_run() {
+        assert_resumed_task_refreshes_provider("codex").await;
+        assert_resumed_task_refreshes_provider("claude").await;
+    }
+
+    async fn assert_resumed_task_refreshes_provider(provider: &str) {
         let fixture =
             super::super::test_support::started_agent_runtime("integration-refresh").await;
         let service = &fixture.handle.service;
@@ -1513,20 +1548,24 @@ mod tests {
         );
         let mut agent = Arc::new(Agent::with_config(config.clone()));
         let context = SharedAgentToolContext::new(AgentToolContextSpec::default());
-        // Old task before enable, cached task after enable, cold restore after
-        // enable, explicit off, explicit on despite default off, and ACP lease.
+        // Settings alone never selects a provider. Revocation removes tools
+        // from warm and cold agents despite a saved selection; re-enabling
+        // Settings preserves the task's choice. ACP never receives the tools.
         for (default, override_value, cold, desktop, expected) in [
             (false, None, false, true, false),
-            (true, None, true, true, true),
+            (true, None, true, true, false),
             (false, None, false, true, false),
-            (true, None, false, true, true),
+            (true, None, false, true, false),
+            (true, Some(true), false, true, true),
+            (false, Some(true), false, true, false),
+            (true, Some(true), true, true, true),
+            (false, Some(true), true, true, false),
             (true, Some(false), true, true, false),
-            (false, Some(true), true, true, true),
-            (true, None, false, false, false),
+            (true, Some(true), false, false, false),
         ] {
-            save_stored_integrations(paths, user, &codex_registry(default)).unwrap();
+            save_stored_integrations(paths, user, &provider_registry(provider, default)).unwrap();
             if let Some(enabled) = override_value {
-                persist_task_integration_override(&manager, &session.id, "codex", enabled)
+                persist_task_integration_override(&manager, &session.id, provider, enabled)
                     .await
                     .unwrap();
             }
@@ -1582,23 +1621,54 @@ mod tests {
                 );
             }
         }
+        save_stored_integrations(paths, user, &provider_registry(provider, false)).unwrap();
+        let error = fixture
+            .handle
+            .set_session_mcp_server_enabled(AgentSetSessionMcpServerRequest {
+                session_id: session.id.clone(),
+                name: provider.to_string(),
+                kind: AgentSessionIntegrationKind::ExternalAgent,
+                enabled: true,
+            })
+            .await
+            .unwrap_err();
+        assert!(
+            error.contains("Enable this integration in Settings"),
+            "{error}"
+        );
+        let hidden = fixture
+            .handle
+            .list_session_mcp_servers(session.id.clone())
+            .await
+            .unwrap();
+        assert!(
+            !hidden
+                .iter()
+                .any(|row| row.kind == AgentSessionIntegrationKind::ExternalAgent)
+        );
         let rows = fixture
             .handle
             .set_session_mcp_server_enabled(AgentSetSessionMcpServerRequest {
                 session_id: session.id.clone(),
-                name: "codex".to_string(),
+                name: provider.to_string(),
                 kind: AgentSessionIntegrationKind::ExternalAgent,
                 enabled: false,
             })
             .await
             .unwrap();
         assert!(
-            rows.iter()
-                .any(|row| row.kind == AgentSessionIntegrationKind::ExternalAgent && !row.enabled)
+            !rows
+                .iter()
+                .any(|row| row.kind == AgentSessionIntegrationKind::ExternalAgent)
         );
         let stored_task = manager.get_session(&session.id, false).await.unwrap();
         assert!(
-            session_external_agent_providers(&codex_registry(true), &stored_task, true).is_empty()
+            session_external_agent_providers(
+                &provider_registry(provider, true),
+                &stored_task,
+                true
+            )
+            .is_empty()
         );
         // A future provider selected alongside an installed but unselected
         // Codex must not grant Codex access through forged tool arguments.
@@ -1622,7 +1692,7 @@ mod tests {
                 .call_tool(
                     &goose::agents::ToolCallContext::new(session.id.clone(), None, None),
                     name,
-                    Some(rmcp::object!({"provider": "codex"})),
+                    Some(rmcp::object!({"provider": provider})),
                     CancellationToken::new(),
                 )
                 .await
