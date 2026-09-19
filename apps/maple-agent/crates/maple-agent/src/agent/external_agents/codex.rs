@@ -78,7 +78,7 @@ pub(crate) fn find_executable(search_path: Option<&str>) -> Option<PathBuf> {
     }
 }
 
-async fn probe_version(executable: &Path) -> Result<String, String> {
+pub(super) async fn probe_version(executable: &Path) -> Result<String, String> {
     let mut command = tokio::process::Command::new(executable);
     command
         .arg("--version")

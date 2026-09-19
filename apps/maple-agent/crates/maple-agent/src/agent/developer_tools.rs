@@ -250,7 +250,7 @@ impl MapleDeveloperClient {
             Tool::new(
                 AGENT_START_TOOL.to_string(),
                 format!(
-                    "Hand a self-contained piece of work to an external coding agent (an installed harness such as Codex) that runs in the project with its own context and its own account. \
+                    "Hand a self-contained piece of work to an external coding agent (an installed harness such as Codex or Claude Code) that runs in the project with its own context and its own account. \
 The new agent knows nothing about this conversation: write a complete briefing with the task, relevant files, current state, what was tried, decisions made, acceptance criteria, and constraints. \
 It runs under its own sandbox and approval settings; whatever it asks approval for comes to the user through Maple, and in Allow all Maple grants it. \
 Blocking by default: the call returns the agent's result. With background=true the call returns at once and Maple tells you when the agent finishes; do not poll. \
@@ -261,7 +261,7 @@ Call {LIST_AGENT_PROVIDERS_TOOL} first when unsure what is installed."
                     "properties": {
                         "provider": {
                             "type": "string",
-                            "description": "Which external agent to use, from list_agent_providers (for example \"codex\")"
+                            "description": "Which external agent to use, from list_agent_providers (for example \"codex\" or \"claude\")"
                         },
                         "prompt": {
                             "type": "string",
