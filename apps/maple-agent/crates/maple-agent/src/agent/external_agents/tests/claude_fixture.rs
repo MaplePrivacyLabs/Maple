@@ -1,10 +1,11 @@
 //! Native CLI fixture for the Claude transport. Reuses the driver test binary.
 
-use super::{FIXTURE_ARGS, FIXTURE_LOG, FIXTURE_MARKER, FIXTURE_MODE, FIXTURE_PID_FILE};
+use super::{
+    FIXTURE_ARGS, FIXTURE_LOG, FIXTURE_MARKER, FIXTURE_MODE, FIXTURE_PID_FILE, fixture_output,
+};
 use serde_json::{Value, json};
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, Write};
-use std::os::fd::FromRawFd;
 use std::process::Command;
 
 fn send(out: &mut File, message: Value) {
@@ -34,10 +35,7 @@ fn run() {
     if std::env::var_os(FIXTURE_MARKER).is_none() {
         return;
     }
-    // SAFETY: install_fixture's shell shim duplicates the protocol pipe to
-    // fd 3 before redirecting libtest stdout to /dev/null. This File is the
-    // sole owner of that descriptor in the re-executed fixture process.
-    let mut out = unsafe { File::from_raw_fd(3) };
+    let mut out = fixture_output();
     let args = std::env::var(FIXTURE_ARGS).unwrap();
     let args: Vec<_> = args.split_whitespace().collect();
     if args.contains(&"--version") {

@@ -11,6 +11,7 @@ use super::*;
 use crate::agent::tool_context::default_tool_context_spec;
 use crate::agent::{AgentEventSink, AgentPathLayout, MapleAgentHostResources};
 use std::io::{BufRead, Write};
+use std::os::fd::FromRawFd;
 use std::os::unix::fs::PermissionsExt;
 
 mod claude_fixture;
@@ -109,15 +110,15 @@ impl Harness {
     }
 
     fn install_fixture(&self, provider: &str, mode: &str) {
-        let (test, redirect) = match provider {
-            "codex" => ("fake_codex_app_server", ""),
-            // Keep libtest's status lines off the Claude protocol pipe.
-            // The fixture writes to fd 3, which is the original stdout.
-            "claude" => ("claude_fixture::run", " 3>&1 1>/dev/null"),
+        let test = match provider {
+            "codex" => "fake_codex_app_server",
+            "claude" => "claude_fixture::run",
             _ => panic!("unknown fixture provider"),
         };
+        // Keep libtest's status output off both protocol pipes. Its output
+        // can race the fixture, so inserting a newline is not sufficient.
         let shim = format!(
-            "#!/bin/sh\nexport {FIXTURE_MARKER}=1\nexport {FIXTURE_MODE}='{mode}'\nexport {FIXTURE_PID_FILE}='{}'\nexport {FIXTURE_LOG}='{}'\nexport {FIXTURE_ARGS}=\"$*\"\nexec '{}' 'agent::external_agents::tests::{test}' --exact --ignored --nocapture --test-threads=1{redirect}\n",
+            "#!/bin/sh\nexport {FIXTURE_MARKER}=1\nexport {FIXTURE_MODE}='{mode}'\nexport {FIXTURE_PID_FILE}='{}'\nexport {FIXTURE_LOG}='{}'\nexport {FIXTURE_ARGS}=\"$*\"\nexec '{}' 'agent::external_agents::tests::{test}' --exact --ignored --nocapture --test-threads=1 3>&1 1>/dev/null\n",
             self.pid_file.display(),
             self.log_file.display(),
             std::env::current_exe().unwrap().display(),
@@ -161,14 +162,18 @@ impl Harness {
     }
 }
 
-async fn wait_for<T>(mut probe: impl FnMut() -> Option<T>) -> T {
-    let deadline = Instant::now() + WAIT;
-    loop {
-        if let Some(value) = probe() {
-            return value;
+#[track_caller]
+fn wait_for<T>(mut probe: impl FnMut() -> Option<T>) -> impl Future<Output = T> {
+    let caller = std::panic::Location::caller();
+    async move {
+        let deadline = Instant::now() + WAIT;
+        loop {
+            if let Some(value) = probe() {
+                return value;
+            }
+            assert!(Instant::now() < deadline, "timed out waiting at {caller}");
+            tokio::time::sleep(Duration::from_millis(25)).await;
         }
-        assert!(Instant::now() < deadline, "timed out waiting");
-        tokio::time::sleep(Duration::from_millis(25)).await;
     }
 }
 
@@ -185,6 +190,13 @@ fn process_alive(pid: i32) -> bool {
     unsafe { libc::kill(pid, 0) == 0 }
 }
 
+fn fixture_output() -> fs::File {
+    // SAFETY: install_fixture's shim duplicates the protocol pipe to fd 3
+    // before redirecting libtest stdout. Each fixture calls this once and
+    // this File is the sole owner of that descriptor in the child process.
+    unsafe { fs::File::from_raw_fd(3) }
+}
+
 /// The fake app-server. It answers the handshake, starts a thread, and
 /// on `turn/start` plays a short turn that asks for one command approval
 /// and reports what decision it got in its final message. In `slow` mode
@@ -195,11 +207,7 @@ fn fake_codex_app_server() {
     if std::env::var_os(FIXTURE_MARKER).is_none() {
         return;
     }
-    let stdout = std::io::stdout();
-    let mut out = stdout.lock();
-    // libtest prints "test <name> ... " with no newline before the test
-    // runs; end that line so the first protocol line stands alone.
-    writeln!(out).unwrap();
+    let mut out = fixture_output();
     let args = std::env::var(FIXTURE_ARGS).unwrap_or_default();
     if args.contains("--version") {
         writeln!(out, "codex-cli 0.150.0").unwrap();
@@ -214,6 +222,10 @@ fn fake_codex_app_server() {
     let stdin = std::io::stdin();
     let mut lines = stdin.lock().lines();
     let mut send = |value: Value| {
+        // Reproduce libtest status text arriving after fixture startup,
+        // without a newline. It must not corrupt a protocol response.
+        print!("fixture status");
+        std::io::stdout().flush().unwrap();
         writeln!(out, "{value}").unwrap();
         out.flush().unwrap();
     };
@@ -541,7 +553,7 @@ async fn cancelling_the_run_interrupts_the_turn_and_shutdown_kills_the_process()
     let registry = Arc::clone(&harness.registry);
     let call = harness.call("session-3", "row-3");
     let cancel = call.cancel_token.clone();
-    let turn = tokio::spawn(async move {
+    let mut turn = tokio::spawn(async move {
         registry
             .start(
                 call,
@@ -556,19 +568,25 @@ async fn cancelling_the_run_interrupts_the_turn_and_shutdown_kills_the_process()
             )
             .await
     });
-    let pid = harness.fixture_pid().await;
-    // Wait until the turn is identified, so the interrupt can name it.
-    {
-        let sink = Arc::clone(&harness.sink);
-        wait_for(|| {
-            sink.events()
-                .iter()
-                .any(|event| matches!(event, AgentServiceEvent::TimelineItem { item, .. } if item.id == "row-3"))
-                .then_some(())
-        })
-        .await;
-    }
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    let pid = tokio::select! {
+        pid = harness.fixture_pid() => pid,
+        result = &mut turn => panic!("Codex fixture stopped before startup: {}", result_text(&result.unwrap())),
+    };
+    // The initial timeline row precedes turn/start. Wait for the actual
+    // turn ID instead of guessing when the notification has been consumed.
+    let agent = harness
+        .registry
+        .agent("session-3", "codex-1")
+        .await
+        .unwrap();
+    wait_for(|| {
+        agent
+            .state
+            .try_lock()
+            .ok()
+            .and_then(|state| state.turn.as_ref()?.turn_id.as_ref().map(|_| ()))
+    })
+    .await;
     cancel.cancel();
     let result = turn.await.unwrap();
     let text = result_text(&result);
