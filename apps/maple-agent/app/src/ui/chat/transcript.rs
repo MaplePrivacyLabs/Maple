@@ -412,8 +412,8 @@ fn render_message(item: &AgentTimelineItem, revision: u64, transcript: &Transcri
                     .flex()
                     .items_center()
                     .gap_2()
-                    .child(timestamp_label(item, &group))
-                    .children(copy),
+                    .children(copy)
+                    .child(timestamp_label(item, &group)),
             )
     } else {
         typography::chat_reading(div())
@@ -436,7 +436,6 @@ fn render_message(item: &AgentTimelineItem, revision: u64, transcript: &Transcri
                     .items_center()
                     .gap_1()
                     .child(button)
-                    .child(timestamp_label(item, &group))
                     .when(transcript.speech_available, |row| {
                         let speech = transcript.speech.filter(|speech| speech.item_id == item.id);
                         row.child(speak_message_button(
@@ -447,6 +446,7 @@ fn render_message(item: &AgentTimelineItem, revision: u64, transcript: &Transcri
                             chat.clone(),
                         ))
                     })
+                    .child(timestamp_label(item, &group))
             }))
     }
 }
