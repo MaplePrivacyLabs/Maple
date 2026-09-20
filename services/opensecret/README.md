@@ -55,6 +55,9 @@ OpenAI-compatible wire endpoint. Use an OpenSecret SDK or Maple for
 protected-route integration tests; plain `curl` is suitable only for public
 health probes.
 
+For per-project callback allowlists, optional callback selection, and
+old-client compatibility, see [OAuth callback selection](docs/oauth-callbacks.md).
+
 `GET /health-check` returns HTTP 200 with `{"status":"pass","version":"v1"}`
 when the server can respond. It does not contact Tinfoil, other providers, or
 PostgreSQL; provider outages must not remove responsive enclaves from
@@ -83,7 +86,9 @@ OPENSECRET_DEV_POSTGRES=0 OPENSECRET_DEV_ENV=0 OPENSECRET_DEV_CONTAINERS=0 \
   cargo test --locked --all-features
 ```
 
-Default CI does not run ignored database or live-provider tests. Use the
+The Rust unit-test job does not run ignored tests. The SDK integration job
+also runs the disposable-database helper, including OAuth settings and
+encrypted V1/V2 callback-selection checks. Live-provider tests remain separate. Use the
 [`validate-opensecret`](../../.agents/skills/validate-opensecret/SKILL.md) workflow
 for disposable PostgreSQL tests, authorized provider checks, encrypted-client
 smoke tests, Nix checks, and release-only EIF/PCR evidence. Report those layers

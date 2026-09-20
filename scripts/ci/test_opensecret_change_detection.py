@@ -81,6 +81,13 @@ class OpenSecretChangeDetectionTests(unittest.TestCase):
             with self.subTest(path=path):
                 self.assert_routes([path])
 
+    def test_disposable_database_harness_selects_integration_without_app_packaging(self):
+        path = ".agents/skills/validate-opensecret/scripts/disposable_db_tests.sh"
+        self.assert_routes([path], "integration")
+        self.assertEqual(research_routes(path), frozenset())
+        self.assertFalse(affects_agent(path))
+        self.assert_routes([".agents/skills/validate-opensecret/SKILL.md"])
+
     def test_submodules_and_selector_changes_select_all_backend_checks(self):
         for path in (".gitmodules", ".github/workflows/opensecret-change-detection.yml",
                      "scripts/ci/opensecret_change_detection.py"):

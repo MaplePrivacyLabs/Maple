@@ -189,6 +189,40 @@ pub fn validate_email_provider(provider: &str) -> Result<(), validator::Validati
     Ok(())
 }
 
+const MAX_ADDITIONAL_REDIRECT_URLS: usize = 16;
+
+fn validate_oauth_redirect_url(redirect_url: &str) -> Result<(), validator::ValidationError> {
+    if redirect_url.is_empty() || redirect_url.len() > 255 {
+        let mut error = validator::ValidationError::new("oauth_redirect_url");
+        error.message = Some(format!("Redirect URL must not be empty and must not exceed 255 characters (current length: {})", redirect_url.len()).into());
+        return Err(error);
+    }
+    // Preserve the existing generic URL contract, including loopback development.
+    if let Err(parse_err) = url::Url::parse(redirect_url) {
+        let mut error = validator::ValidationError::new("oauth_redirect_url_invalid");
+        error.message = Some(format!("Invalid redirect URL: {}", parse_err).into());
+        return Err(error);
+    }
+    Ok(())
+}
+
+fn validate_additional_redirect_urls(
+    redirect_urls: Option<&[String]>,
+) -> Result<(), validator::ValidationError> {
+    let Some(redirect_urls) = redirect_urls else {
+        return Ok(());
+    };
+    if redirect_urls.len() > MAX_ADDITIONAL_REDIRECT_URLS {
+        let mut error = validator::ValidationError::new("oauth_additional_redirect_urls");
+        error.message = Some("At most 16 additional redirect URLs are allowed".into());
+        return Err(error);
+    }
+    for redirect_url in redirect_urls {
+        validate_oauth_redirect_url(redirect_url)?;
+    }
+    Ok(())
+}
+
 pub fn validate_oauth_provider_settings(
     settings: &OAuthProviderSettings,
 ) -> Result<(), validator::ValidationError> {
@@ -198,18 +232,8 @@ pub fn validate_oauth_provider_settings(
         error.message = Some(format!("Client ID must not be empty and must not exceed 255 characters (current length: {})", settings.client_id.len()).into());
         return Err(error);
     }
-    // Validate redirect_url
-    if settings.redirect_url.is_empty() || settings.redirect_url.len() > 255 {
-        let mut error = validator::ValidationError::new("oauth_redirect_url");
-        error.message = Some(format!("Redirect URL must not be empty and must not exceed 255 characters (current length: {})", settings.redirect_url.len()).into());
-        return Err(error);
-    }
-    // Basic URL validation
-    if let Err(parse_err) = url::Url::parse(&settings.redirect_url) {
-        let mut error = validator::ValidationError::new("oauth_redirect_url_invalid");
-        error.message = Some(format!("Invalid redirect URL: {}", parse_err).into());
-        return Err(error);
-    }
+    validate_oauth_redirect_url(&settings.redirect_url)?;
+    validate_additional_redirect_urls(settings.additional_redirect_urls.as_deref())?;
 
     Ok(())
 }
@@ -223,18 +247,8 @@ pub fn validate_apple_oauth_settings(
         error.message = Some(format!("Client ID must not be empty and must not exceed 255 characters (current length: {})", settings.client_id.len()).into());
         return Err(error);
     }
-    // Validate redirect_url
-    if settings.redirect_url.is_empty() || settings.redirect_url.len() > 255 {
-        let mut error = validator::ValidationError::new("oauth_redirect_url");
-        error.message = Some(format!("Redirect URL must not be empty and must not exceed 255 characters (current length: {})", settings.redirect_url.len()).into());
-        return Err(error);
-    }
-    // Basic URL validation
-    if let Err(parse_err) = url::Url::parse(&settings.redirect_url) {
-        let mut error = validator::ValidationError::new("oauth_redirect_url_invalid");
-        error.message = Some(format!("Invalid redirect URL: {}", parse_err).into());
-        return Err(error);
-    }
+    validate_oauth_redirect_url(&settings.redirect_url)?;
+    validate_additional_redirect_urls(settings.additional_redirect_urls.as_deref())?;
 
     // Validate team_id if provided
     if let Some(ref team_id) = settings.team_id {
@@ -267,4 +281,88 @@ pub fn validate_apple_oauth_settings(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::{json, Value};
+
+    fn oauth_request(provider: &str, additions: Option<Value>) -> Value {
+        let mut settings = json!({
+            "client_id": "customer-client",
+            "redirect_url": "https://customer.example/callback"
+        });
+        if let Some(additions) = additions {
+            settings["additional_redirect_urls"] = additions;
+        }
+        let mut request = json!({
+            "google_oauth_enabled": false,
+            "github_oauth_enabled": false,
+            "apple_oauth_enabled": false
+        });
+        request[format!("{provider}_oauth_enabled")] = json!(true);
+        request[format!("{provider}_oauth_settings")] = settings;
+        request
+    }
+
+    #[test]
+    fn oauth_redirect_lists_accept_legacy_null_empty_and_generic_urls() {
+        for provider in ["google", "github", "apple"] {
+            for additions in [
+                None,
+                Some(Value::Null),
+                Some(json!([])),
+                Some(json!([
+                    "http://127.0.0.1:5173/callback",
+                    "https://dev.secretgpt.ai/callback",
+                    "https://preview.opensecret.cloud/callback",
+                    "https://customer.example/callback"
+                ])),
+            ] {
+                let request: UpdateOAuthSettingsRequest =
+                    serde_json::from_value(oauth_request(provider, additions)).unwrap();
+                assert!(request.validate().is_ok(), "provider: {provider}");
+            }
+        }
+    }
+
+    #[test]
+    fn oauth_redirect_lists_enforce_count_and_per_url_bounds() {
+        for provider in ["google", "github", "apple"] {
+            let at_limit = vec!["https://customer.example/callback"; MAX_ADDITIONAL_REDIRECT_URLS];
+            let request: UpdateOAuthSettingsRequest =
+                serde_json::from_value(oauth_request(provider, Some(json!(at_limit)))).unwrap();
+            assert!(request.validate().is_ok());
+
+            for additions in [
+                json!(vec![
+                    "https://customer.example/callback";
+                    MAX_ADDITIONAL_REDIRECT_URLS + 1
+                ]),
+                json!([""]),
+                json!(["/relative/callback"]),
+                json!([format!("https://customer.example/{}", "x".repeat(256))]),
+            ] {
+                let request: UpdateOAuthSettingsRequest =
+                    serde_json::from_value(oauth_request(provider, Some(additions))).unwrap();
+                assert!(request.validate().is_err(), "provider: {provider}");
+            }
+        }
+    }
+
+    #[test]
+    fn oauth_redirect_lists_reject_wrong_json_types() {
+        for provider in ["google", "github", "apple"] {
+            for additions in [json!("https://customer.example/callback"), json!([42])] {
+                assert!(
+                    serde_json::from_value::<UpdateOAuthSettingsRequest>(oauth_request(
+                        provider,
+                        Some(additions)
+                    ))
+                    .is_err()
+                );
+            }
+        }
+    }
 }

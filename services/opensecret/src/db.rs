@@ -1872,22 +1872,38 @@ impl DBConnection for PostgresConnection {
     fn update_project_oauth_settings(
         &self,
         project_id: i32,
-        settings: OAuthSettings,
+        mut settings: OAuthSettings,
     ) -> Result<ProjectSetting, DBError> {
-        let new_settings = NewProjectSetting::new_oauth_settings(project_id, settings)?;
         let conn = &mut self.db.get().map_err(|_| DBError::ConnectionError)?;
 
-        // Check if settings exist
-        if let Some(mut existing) =
-            ProjectSetting::get_by_project_and_category(conn, project_id, SettingCategory::OAuth)?
-        {
-            existing.settings = new_settings.settings;
-            existing.update(conn)?;
-            Ok(existing)
-        } else {
-            // Create new settings
-            new_settings.insert(conn).map_err(DBError::from)
-        }
+        conn.transaction::<_, DBError, _>(|conn| {
+            use crate::models::schema::org_projects;
+
+            // Lock the owning project even before its first settings row exists.
+            // An older client omitting the additive lists must merge against the
+            // latest committed settings, not overwrite a concurrent update.
+            org_projects::table
+                .filter(org_projects::id.eq(project_id))
+                .select(org_projects::id)
+                .for_update()
+                .first::<i32>(conn)?;
+
+            if let Some(mut existing) = ProjectSetting::get_by_project_and_category(
+                conn,
+                project_id,
+                SettingCategory::OAuth,
+            )? {
+                settings.preserve_omitted_redirect_urls(&existing.get_oauth_settings()?);
+                existing.settings =
+                    NewProjectSetting::new_oauth_settings(project_id, settings)?.settings;
+                existing.update(conn)?;
+                Ok(existing)
+            } else {
+                NewProjectSetting::new_oauth_settings(project_id, settings)?
+                    .insert(conn)
+                    .map_err(DBError::from)
+            }
+        })
     }
 
     // Platform email verification implementations
@@ -3002,4 +3018,257 @@ pub(crate) fn setup_db(url: String) -> Arc<dyn DBConnection + Send + Sync> {
 
     info!("Connected to database with pool size: 20, min idle: 5");
     Arc::new(PostgresConnection { db: pool })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::project_settings::{AppleOAuthSettings, OAuthProviderSettings};
+    use std::{
+        thread,
+        time::{Duration, Instant},
+    };
+
+    struct OAuthSettingsFixture {
+        database_url: String,
+        database: Arc<PostgresConnection>,
+        project_id: i32,
+        org: Org,
+    }
+
+    impl OAuthSettingsFixture {
+        fn new() -> Self {
+            let database_url = std::env::var("AEAD_TAMPER_TEST_DATABASE_URL")
+                .expect("requires an explicitly selected disposable migrated local database");
+            let parsed = url::Url::parse(&database_url).expect("database URL must parse");
+            assert!(matches!(
+                parsed.host_str(),
+                Some("127.0.0.1" | "localhost" | "[::1]")
+            ));
+            let pool = Pool::builder()
+                .max_size(1)
+                .min_idle(Some(0))
+                .connection_timeout(Duration::from_secs(10))
+                .build(ConnectionManager::<PgConnection>::new(database_url.clone()))
+                .expect("disposable database must be available");
+            let database = Arc::new(PostgresConnection { db: pool });
+            let (org, project_id) = {
+                let conn = &mut database.db.get().unwrap();
+                let org = NewOrg::new(format!("oauth-settings-test-{}", Uuid::new_v4()))
+                    .insert(conn)
+                    .unwrap();
+                let project = NewOrgProject::new(org.id, "OAuth settings test".to_string())
+                    .insert(conn)
+                    .unwrap();
+                (org, project.id)
+            };
+            Self {
+                database_url,
+                database,
+                project_id,
+                org,
+            }
+        }
+
+        fn stored(&self) -> OAuthSettings {
+            self.database
+                .get_project_oauth_settings(self.project_id)
+                .unwrap()
+                .unwrap()
+        }
+    }
+
+    impl Drop for OAuthSettingsFixture {
+        fn drop(&mut self) {
+            if let Ok(mut conn) = self.database.db.get() {
+                let _ = self.org.delete(&mut conn);
+            }
+        }
+    }
+
+    fn oauth_settings(additions: Option<Vec<String>>) -> OAuthSettings {
+        let provider = OAuthProviderSettings {
+            client_id: "test-client".to_string(),
+            redirect_url: "https://customer.example/callback".to_string(),
+            additional_redirect_urls: additions.clone(),
+        };
+        OAuthSettings {
+            google_oauth_enabled: true,
+            github_oauth_enabled: true,
+            apple_oauth_enabled: true,
+            google_oauth_settings: Some(provider.clone()),
+            github_oauth_settings: Some(provider),
+            apple_oauth_settings: Some(AppleOAuthSettings {
+                client_id: "test-apple-client".to_string(),
+                redirect_url: "https://customer.example/apple/callback".to_string(),
+                additional_redirect_urls: additions,
+                team_id: Some("ABCDEFGHIJ".to_string()),
+                key_id: Some("1234567890".to_string()),
+            }),
+        }
+    }
+
+    fn assert_additions(settings: &OAuthSettings, expected: &[&str]) {
+        let expected: Vec<String> = expected.iter().map(|value| (*value).to_string()).collect();
+        for actual in [
+            &settings
+                .google_oauth_settings
+                .as_ref()
+                .unwrap()
+                .additional_redirect_urls,
+            &settings
+                .github_oauth_settings
+                .as_ref()
+                .unwrap()
+                .additional_redirect_urls,
+            &settings
+                .apple_oauth_settings
+                .as_ref()
+                .unwrap()
+                .additional_redirect_urls,
+        ] {
+            assert_eq!(actual.as_ref(), Some(&expected));
+        }
+    }
+
+    #[test]
+    #[ignore = "requires AEAD_TAMPER_TEST_DATABASE_URL pointing at disposable migrated local Postgres"]
+    fn db_oauth_settings_insert_preserve_replace_and_clear() {
+        let fixture = OAuthSettingsFixture::new();
+        assert!(fixture
+            .database
+            .get_project_oauth_settings(fixture.project_id)
+            .unwrap()
+            .is_none());
+        let legacy = oauth_settings(None);
+        fixture
+            .database
+            .update_project_oauth_settings(fixture.project_id, legacy.clone())
+            .unwrap();
+        assert_eq!(
+            serde_json::to_value(fixture.stored()).unwrap(),
+            serde_json::to_value(legacy).unwrap()
+        );
+
+        fixture
+            .database
+            .update_project_oauth_settings(
+                fixture.project_id,
+                oauth_settings(Some(vec!["https://first.example/callback".to_string()])),
+            )
+            .unwrap();
+        for null in [false, true] {
+            let mut update = serde_json::to_value(oauth_settings(None)).unwrap();
+            if null {
+                for provider in ["google", "github", "apple"] {
+                    update[format!("{provider}_oauth_settings")]["additional_redirect_urls"] =
+                        serde_json::Value::Null;
+                }
+            }
+            update["google_oauth_settings"]["redirect_url"] =
+                serde_json::json!("https://new-default.example/callback");
+            let response = fixture
+                .database
+                .update_project_oauth_settings(
+                    fixture.project_id,
+                    serde_json::from_value(update).unwrap(),
+                )
+                .unwrap();
+            let stored = fixture.stored();
+            assert_additions(&stored, &["https://first.example/callback"]);
+            assert_eq!(
+                stored.google_oauth_settings.as_ref().unwrap().redirect_url,
+                "https://new-default.example/callback"
+            );
+            assert_eq!(response.settings, serde_json::to_value(stored).unwrap());
+        }
+        for replacement in [vec!["https://replacement.example/callback"], vec![]] {
+            fixture
+                .database
+                .update_project_oauth_settings(
+                    fixture.project_id,
+                    oauth_settings(Some(
+                        replacement
+                            .iter()
+                            .map(|value| (*value).to_string())
+                            .collect(),
+                    )),
+                )
+                .unwrap();
+            assert_additions(&fixture.stored(), &replacement);
+            fixture
+                .database
+                .update_project_oauth_settings(fixture.project_id, oauth_settings(None))
+                .unwrap();
+            assert_additions(&fixture.stored(), &replacement);
+        }
+    }
+
+    #[derive(diesel::QueryableByName)]
+    struct BackendPid {
+        #[diesel(sql_type = diesel::sql_types::Integer)]
+        pid: i32,
+    }
+
+    #[derive(diesel::QueryableByName)]
+    struct WaitingForLock {
+        #[diesel(sql_type = diesel::sql_types::Bool)]
+        waiting: bool,
+    }
+
+    #[test]
+    #[ignore = "requires AEAD_TAMPER_TEST_DATABASE_URL pointing at disposable migrated local Postgres"]
+    fn db_oauth_settings_omission_waits_for_latest_committed_additions() {
+        for initially_present in [false, true] {
+            let fixture = OAuthSettingsFixture::new();
+            if initially_present {
+                fixture
+                    .database
+                    .update_project_oauth_settings(
+                        fixture.project_id,
+                        oauth_settings(Some(vec!["https://old.example/callback".to_string()])),
+                    )
+                    .unwrap();
+            }
+            let worker_pid = diesel::sql_query("SELECT pg_backend_pid() AS pid")
+                .get_result::<BackendPid>(&mut fixture.database.db.get().unwrap())
+                .unwrap()
+                .pid;
+            let mut writer = PgConnection::establish(&fixture.database_url).unwrap();
+            let mut observer = PgConnection::establish(&fixture.database_url).unwrap();
+            let worker = writer.transaction::<_, diesel::result::Error, _>(|conn| {
+                use crate::models::schema::org_projects;
+                org_projects::table.filter(org_projects::id.eq(fixture.project_id))
+                    .select(org_projects::id).for_update().first::<i32>(conn)?;
+                let updated = NewProjectSetting::new_oauth_settings(
+                    fixture.project_id,
+                    oauth_settings(Some(vec!["https://latest.example/callback".to_string()])),
+                ).unwrap();
+                if let Some(mut existing) = ProjectSetting::get_by_project_and_category(
+                    conn, fixture.project_id, SettingCategory::OAuth,
+                ).unwrap() {
+                    existing.settings = updated.settings;
+                    existing.update(conn).unwrap();
+                } else {
+                    updated.insert(conn).unwrap();
+                }
+
+                let database = fixture.database.clone();
+                let project_id = fixture.project_id;
+                let worker = thread::spawn(move || database.update_project_oauth_settings(project_id, oauth_settings(None)));
+                let deadline = Instant::now() + Duration::from_secs(5);
+                loop {
+                    let waiting = diesel::sql_query("SELECT COALESCE((SELECT wait_event_type = 'Lock' FROM pg_stat_activity WHERE pid = $1), false) AS waiting")
+                        .bind::<diesel::sql_types::Integer, _>(worker_pid)
+                        .get_result::<WaitingForLock>(&mut observer).unwrap().waiting;
+                    if waiting { break; }
+                    assert!(Instant::now() < deadline, "older settings writer must wait for the uncommitted update");
+                    thread::sleep(Duration::from_millis(10));
+                }
+                Ok(worker)
+            }).unwrap();
+            worker.join().unwrap().unwrap();
+            assert_additions(&fixture.stored(), &["https://latest.example/callback"]);
+        }
+    }
 }

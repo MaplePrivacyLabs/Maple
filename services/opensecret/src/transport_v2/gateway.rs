@@ -623,6 +623,8 @@ mod tests {
         envelope::{Credential, CredentialKind},
     };
 
+    include!("oauth_callback_tests.rs");
+
     struct TestSession {
         client: SessionSecrets,
         server: Arc<Session>,

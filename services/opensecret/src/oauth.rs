@@ -33,6 +33,9 @@ pub type BasicClient =
 pub struct OAuthState {
     pub csrf_token: String,
     pub client_id: Uuid,
+    // Snapshot the selected callback, including when initiation used the default.
+    // Complete-state equality protects this value before callback code uses it.
+    pub redirect_url: String,
 }
 
 #[derive(Debug, Clone)]
@@ -836,6 +839,7 @@ mod tests {
         OAuthState {
             csrf_token: csrf_token.to_string(),
             client_id: Uuid::from_u128(client_id),
+            redirect_url: "https://app.example/auth/callback".to_string(),
         }
     }
 
@@ -967,6 +971,60 @@ mod tests {
         assert!(store.consume_at(&valid, now).await);
     }
 
+    #[test]
+    fn oauth_state_round_trip_requires_the_selected_redirect() {
+        let original = state("state-round-trip", 1);
+        let encoded = serde_json::to_value(&original).unwrap();
+        assert_eq!(
+            serde_json::from_value::<OAuthState>(encoded.clone()).unwrap(),
+            original
+        );
+        let mut missing_redirect = encoded;
+        missing_redirect
+            .as_object_mut()
+            .unwrap()
+            .remove("redirect_url");
+        assert!(serde_json::from_value::<OAuthState>(missing_redirect).is_err());
+    }
+
+    #[tokio::test]
+    async fn changed_redirect_is_rejected_without_consuming_v1_or_v2_state() {
+        for session_id in [None, Some(SessionId::from_bytes([42; 16]))] {
+            let store = OAuthStateStore::with_limits(Duration::from_secs(60), 2);
+            let now = Instant::now();
+            let valid = state("redirect-bound-state", 1);
+            let binding = match session_id {
+                Some(session_id) => OAuthStateBinding::TransportV2 {
+                    session_id,
+                    code_binding: new_pkce_binding().1,
+                },
+                None => OAuthStateBinding::LegacyV1,
+            };
+            store
+                .store_with_binding(&valid.csrf_token, valid.clone(), binding, now)
+                .await
+                .unwrap();
+
+            for changed_redirect in ["https://auth.example/auth/callback", ""] {
+                let mut changed = valid.clone();
+                changed.redirect_url = changed_redirect.to_string();
+                assert!(store
+                    .take_with_binding(&changed, session_id, now)
+                    .await
+                    .is_none());
+            }
+            let consumed = store
+                .take_with_binding(&valid, session_id, now)
+                .await
+                .unwrap();
+            assert_eq!(consumed.state.redirect_url, valid.redirect_url);
+            assert!(store
+                .take_with_binding(&valid, session_id, now)
+                .await
+                .is_none());
+        }
+    }
+
     #[tokio::test]
     async fn oauth_state_protocol_and_v2_session_binding_are_non_consuming_on_mismatch() {
         let store = OAuthStateStore::with_limits(Duration::from_secs(60), 2);
@@ -1045,9 +1103,20 @@ mod tests {
             .collect();
         assert!(!legacy_parameters.contains_key("code_challenge"));
         assert!(!legacy_parameters.contains_key("code_challenge_method"));
+        assert_eq!(
+            legacy_parameters.get("redirect_uri").map(String::as_str),
+            Some("https://maple.example/callback")
+        );
 
         let bound = github.generate_bound_authorize_url(&github_client).await;
         assert_pkce_authorization(&bound);
+        assert!(
+            url::Url::parse(&bound.auth_url)
+                .unwrap()
+                .query_pairs()
+                .any(|(key, value)| key == "redirect_uri"
+                    && value == "https://maple.example/callback")
+        );
 
         let google = GoogleProvider {
             auth_url: "https://google.example/authorize".to_string(),
@@ -1065,6 +1134,16 @@ mod tests {
             .unwrap();
         let bound = google.generate_bound_authorize_url(&google_client).await;
         assert_pkce_authorization(&bound);
+        for auth_url in [
+            google.generate_authorize_url(&google_client).await.0,
+            bound.auth_url,
+        ] {
+            assert!(url::Url::parse(&auth_url)
+                .unwrap()
+                .query_pairs()
+                .any(|(key, value)| key == "redirect_uri"
+                    && value == "https://maple.example/callback"));
+        }
 
         let apple = AppleProvider {
             auth_url: "https://apple.example/authorize".to_string(),
@@ -1087,6 +1166,10 @@ mod tests {
             .into_owned()
             .collect();
         assert!(!legacy_parameters.contains_key("nonce"));
+        assert_eq!(
+            legacy_parameters.get("redirect_uri").map(String::as_str),
+            Some("https://maple.example/callback")
+        );
 
         let bound = apple.generate_bound_authorize_url(&apple_client).await;
         let parameters: HashMap<_, _> = url::Url::parse(&bound.auth_url)
@@ -1101,6 +1184,44 @@ mod tests {
         assert_eq!(
             parameters.get("nonce").map(String::as_str),
             Some(expected_nonce.as_str())
+        );
+        assert_eq!(
+            parameters.get("redirect_uri").map(String::as_str),
+            Some("https://maple.example/callback")
+        );
+    }
+
+    #[tokio::test]
+    async fn oauth_token_exchange_sends_the_recorded_redirect_uri() {
+        let recorded_redirect = "https://auth.example/auth/google/callback";
+        let client = OAuthBasicClient::new(ClientId::new("test-client".to_string()))
+            .set_client_secret(ClientSecret::new("test-secret".to_string()))
+            .set_auth_uri(AuthUrl::new("https://provider.example/authorize".to_string()).unwrap())
+            .set_token_uri(TokenUrl::new("https://provider.example/token".to_string()).unwrap())
+            .set_redirect_uri(RedirectUrl::new(recorded_redirect.to_string()).unwrap());
+        let token = client
+            .exchange_code(oauth2::AuthorizationCode::new("test-code".to_string()))
+            .request_async(&|request: oauth2::HttpRequest| async move {
+                let parameters: HashMap<_, _> = url::form_urlencoded::parse(request.body())
+                    .into_owned()
+                    .collect();
+                assert_eq!(
+                    parameters.get("redirect_uri").map(String::as_str),
+                    Some(recorded_redirect)
+                );
+                Ok::<_, std::convert::Infallible>(
+                    oauth2::http::Response::builder()
+                        .status(200)
+                        .header("Content-Type", "application/json")
+                        .body(br#"{"access_token":"test-token","token_type":"bearer"}"#.to_vec())
+                        .unwrap(),
+                )
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            oauth2::TokenResponse::access_token(&token).secret(),
+            "test-token"
         );
     }
 
