@@ -115,6 +115,8 @@ pub struct OAuthOAuthCallbackResponse {
 #[derive(Deserialize, Clone)]
 pub struct OAuthAuthRequest {
     pub client_id: Uuid,
+    #[serde(default)]
+    pub redirect_url: Option<String>,
 }
 
 #[derive(Deserialize, Clone)]
@@ -211,10 +213,60 @@ impl AppleTokenResponse {
     }
 }
 
+enum OAuthRedirectSelection<'a> {
+    Requested(Option<&'a str>),
+    // Only construct after the callback state matches and consumes server-stored state.
+    ValidatedState(&'a str),
+}
+
+fn select_oauth_redirect_url<'a>(
+    settings: &'a OAuthProviderSettings,
+    selection: OAuthRedirectSelection<'a>,
+) -> Result<&'a str, ApiError> {
+    match selection {
+        OAuthRedirectSelection::Requested(None) => Ok(&settings.redirect_url),
+        OAuthRedirectSelection::Requested(Some(requested)) => {
+            if requested == settings.redirect_url
+                || settings
+                    .additional_redirect_urls
+                    .as_ref()
+                    .is_some_and(|urls| urls.iter().any(|url| url == requested))
+            {
+                Ok(requested)
+            } else {
+                Err(ApiError::BadRequest)
+            }
+        }
+        // Configuration may change while the user authenticates. A validated
+        // callback must exchange its code with the same URL used at initiation.
+        OAuthRedirectSelection::ValidatedState(redirect_url) => Ok(redirect_url),
+    }
+}
+
+fn apple_token_exchange_params<'a>(
+    oauth_client: &'a BasicClient,
+    client_id: &'a str,
+    client_secret: &'a str,
+    code: &'a str,
+) -> Result<[(&'static str, &'a str); 5], ApiError> {
+    let redirect_uri = oauth_client
+        .redirect_uri()
+        .ok_or(ApiError::InternalServerError)?
+        .as_str();
+    Ok([
+        ("client_id", client_id),
+        ("client_secret", client_secret),
+        ("code", code),
+        ("grant_type", "authorization_code"),
+        ("redirect_uri", redirect_uri),
+    ])
+}
+
 async fn get_project_oauth_client(
     app_state: &AppState,
     project_id: i32,
     provider_name: &str,
+    redirect_selection: OAuthRedirectSelection<'_>,
 ) -> Result<BasicClient, ApiError> {
     // Get project OAuth settings
     let oauth_settings = app_state
@@ -276,6 +328,7 @@ async fn get_project_oauth_client(
             let standard_settings = apple_settings.as_ref().map(|apple| OAuthProviderSettings {
                 client_id: apple.client_id.clone(),
                 redirect_url: apple.redirect_url.clone(),
+                additional_redirect_urls: apple.additional_redirect_urls.clone(),
             });
 
             (enabled, standard_settings, secret)
@@ -297,6 +350,10 @@ async fn get_project_oauth_client(
         error!("{} OAuth settings not configured", provider_name);
         ApiError::BadRequest
     })?;
+
+    // Reject unlisted requested URLs before decrypting credentials, generating
+    // provider authorization parameters, or allocating one-time state.
+    let redirect_url = select_oauth_redirect_url(&provider_settings, redirect_selection)?;
 
     // Get and decrypt client secret
     let secret = secret_key.ok_or_else(|| {
@@ -386,11 +443,7 @@ async fn get_project_oauth_client(
             ApiError::InternalServerError
         })?;
 
-        // Log the OAuth URL and redirect URL being used
-        debug!(
-            "Building Apple OAuth client with Client ID: {}, Redirect URL: {}",
-            client_id_with_services, apple_settings.redirect_url
-        );
+        debug!("Building Apple OAuth client");
 
         // Use the same client ID for the OAuth client as in the JWT's sub claim
         let client_id_for_client = client_id_with_services.clone();
@@ -401,11 +454,11 @@ async fn get_project_oauth_client(
             .build_client(
                 client_id_for_client, // Use the same client ID as in the JWT
                 client_secret_jwt,
-                apple_settings.redirect_url.clone(),
+                redirect_url.to_string(),
             )
             .await
-            .map_err(|e| {
-                error!("Failed to build Apple OAuth client: {:?}", e);
+            .map_err(|_| {
+                error!("Failed to build Apple OAuth client");
                 ApiError::InternalServerError
             })
     } else {
@@ -414,7 +467,7 @@ async fn get_project_oauth_client(
             .build_client(
                 provider_settings.client_id.clone(),
                 client_secret,
-                provider_settings.redirect_url.clone(),
+                redirect_url.to_string(),
             )
             .await
             .map_err(|_| ApiError::InternalServerError)
@@ -434,7 +487,13 @@ pub async fn initiate_oauth(
         .map_err(|_| ApiError::BadRequest)?;
 
     // Get OAuth client for this project
-    let oauth_client = get_project_oauth_client(&app_state, project.id, provider_name).await?;
+    let oauth_client = get_project_oauth_client(
+        &app_state,
+        project.id,
+        provider_name,
+        OAuthRedirectSelection::Requested(auth_request.redirect_url.as_deref()),
+    )
+    .await?;
 
     // Get the OAuth provider
     let oauth_provider = app_state
@@ -483,10 +542,16 @@ pub async fn initiate_oauth(
         (auth_url, csrf_token, None)
     };
 
-    // Create our state that includes both CSRF token and client_id
+    // Snapshot the actual callback even when the caller omitted redirect_url.
+    // Callbacks must not pick up a subsequently changed project default.
     let state = OAuthState {
         csrf_token: csrf_token.secret().clone(),
         client_id: project.client_id,
+        redirect_url: oauth_client
+            .redirect_uri()
+            .ok_or(ApiError::InternalServerError)?
+            .as_str()
+            .to_string(),
     };
 
     // Store the complete state in the provider
@@ -541,13 +606,13 @@ pub async fn oauth_callback(
     // Decode and parse the state
     let state_json = base64::engine::general_purpose::URL_SAFE_NO_PAD
         .decode(&callback_request.state)
-        .map_err(|e| {
-            error!("Could not parse state: {:?}", e);
+        .map_err(|_| {
+            error!("Could not decode OAuth state");
             ApiError::BadRequest
         })?;
     debug!("Parsed state from request");
-    let state: OAuthState = serde_json::from_slice(&state_json).map_err(|e| {
-        error!("Could not parse OAuthState: {:?}", e);
+    let state: OAuthState = serde_json::from_slice(&state_json).map_err(|_| {
+        error!("Could not parse OAuth state");
         ApiError::BadRequest
     })?;
     debug!("Converted state to OAuthState");
@@ -600,7 +665,13 @@ pub async fn oauth_callback(
         })?;
 
     // Get OAuth client for this project
-    let oauth_client = get_project_oauth_client(&app_state, project.id, provider_name).await?;
+    let oauth_client = get_project_oauth_client(
+        &app_state,
+        project.id,
+        provider_name,
+        OAuthRedirectSelection::ValidatedState(&state.redirect_url),
+    )
+    .await?;
 
     // Exchange the code for an access token
     debug!(
@@ -713,14 +784,6 @@ pub async fn oauth_callback(
             ApiError::InternalServerError
         })?;
 
-        let redirect_uri = oauth_client
-            .redirect_uri()
-            .ok_or_else(|| {
-                error!("OAuth redirect URL not configured");
-                ApiError::InternalServerError
-            })?
-            .as_str();
-
         // Make sure the client_id parameter matches what's in the JWT's sub claim
         // Apple requires these to be exactly the same
         // - client_id parameter must match JWT's sub claim exactly
@@ -733,13 +796,12 @@ pub async fn oauth_callback(
         };
 
         // Build the form data for the token request
-        let params = [
-            ("client_id", client_id_param),
-            ("client_secret", &client_secret),
-            ("code", &callback_request.code),
-            ("grant_type", "authorization_code"),
-            ("redirect_uri", redirect_uri),
-        ];
+        let params = apple_token_exchange_params(
+            &oauth_client,
+            client_id_param,
+            &client_secret,
+            &callback_request.code,
+        )?;
 
         // Create the request
         let request = client
@@ -1593,6 +1655,147 @@ mod tests {
     };
     use diesel::{ExpressionMethods, QueryDsl, RunQueryDsl};
     use tokio::sync::RwLock;
+
+    fn redirect_settings() -> OAuthProviderSettings {
+        OAuthProviderSettings {
+            client_id: "provider-client".to_string(),
+            redirect_url: "https://app.example/auth/callback".to_string(),
+            additional_redirect_urls: Some(vec![
+                "https://auth.example/auth/callback".to_string(),
+                "http://127.0.0.1:3000/auth/callback".to_string(),
+            ]),
+        }
+    }
+
+    #[test]
+    fn oauth_initiate_request_keeps_old_payloads_compatible() {
+        let client_id = Uuid::from_u128(1);
+        for payload in [
+            serde_json::json!({ "client_id": client_id }),
+            serde_json::json!({ "client_id": client_id, "redirect_url": null }),
+        ] {
+            let request: OAuthAuthRequest = serde_json::from_value(payload).unwrap();
+            assert_eq!(request.client_id, client_id);
+            assert!(request.redirect_url.is_none());
+        }
+
+        let request: OAuthAuthRequest = serde_json::from_value(serde_json::json!({
+            "client_id": client_id,
+            "redirect_url": "https://auth.example/auth/callback",
+        }))
+        .unwrap();
+        assert_eq!(
+            request.redirect_url.as_deref(),
+            Some("https://auth.example/auth/callback")
+        );
+        assert!(
+            serde_json::from_value::<OAuthAuthRequest>(serde_json::json!({
+                "client_id": client_id,
+                "redirect_url": ["https://auth.example/auth/callback"],
+            }))
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn oauth_redirect_selection_uses_default_or_an_exact_allowlist_match() {
+        let settings = redirect_settings();
+        assert_eq!(
+            select_oauth_redirect_url(&settings, OAuthRedirectSelection::Requested(None)).unwrap(),
+            settings.redirect_url
+        );
+        for requested in [
+            settings.redirect_url.as_str(),
+            "https://auth.example/auth/callback",
+            "http://127.0.0.1:3000/auth/callback",
+        ] {
+            assert_eq!(
+                select_oauth_redirect_url(
+                    &settings,
+                    OAuthRedirectSelection::Requested(Some(requested)),
+                )
+                .unwrap(),
+                requested
+            );
+        }
+        for unlisted in [
+            "https://other.example/auth/callback",
+            "https://auth.example/auth/other",
+            "https://auth.example/auth/callback/",
+            "https://auth.example/auth/callback?extra=1",
+            "https://auth.example/auth/callback#fragment",
+            "https://auth.example:443/auth/callback",
+            "https://AUTH.example/auth/callback",
+            "https://auth.example/auth/%63allback",
+            "https://auth.example.evil.example/auth/callback",
+            "",
+        ] {
+            assert!(matches!(
+                select_oauth_redirect_url(
+                    &settings,
+                    OAuthRedirectSelection::Requested(Some(unlisted)),
+                ),
+                Err(ApiError::BadRequest)
+            ));
+        }
+    }
+
+    #[test]
+    fn validated_callback_keeps_selected_url_after_configuration_changes() {
+        let mut settings = redirect_settings();
+        for request in [None, Some("https://auth.example/auth/callback")] {
+            let selected =
+                select_oauth_redirect_url(&settings, OAuthRedirectSelection::Requested(request))
+                    .unwrap()
+                    .to_string();
+            settings.redirect_url = "https://new-app.example/auth/callback".to_string();
+            settings.additional_redirect_urls = None;
+            assert_eq!(
+                select_oauth_redirect_url(
+                    &settings,
+                    OAuthRedirectSelection::ValidatedState(&selected),
+                )
+                .unwrap(),
+                selected
+            );
+            assert!(matches!(
+                select_oauth_redirect_url(
+                    &settings,
+                    OAuthRedirectSelection::Requested(Some(&selected)),
+                ),
+                Err(ApiError::BadRequest)
+            ));
+            settings = redirect_settings();
+        }
+    }
+
+    #[test]
+    fn apple_token_exchange_uses_the_callback_clients_recorded_redirect() {
+        let selected = "https://auth.example/auth/apple/callback";
+        let client = oauth2::basic::BasicClient::new(oauth2::ClientId::new(
+            "apple-client.services".to_string(),
+        ))
+        .set_auth_uri(oauth2::AuthUrl::new("https://apple.example/authorize".to_string()).unwrap())
+        .set_token_uri(oauth2::TokenUrl::new("https://apple.example/token".to_string()).unwrap())
+        .set_redirect_uri(oauth2::RedirectUrl::new(selected.to_string()).unwrap());
+        let params = apple_token_exchange_params(
+            &client,
+            "apple-client.services",
+            "test-secret",
+            "test-code",
+        )
+        .unwrap();
+        assert_eq!(
+            params,
+            [
+                ("client_id", "apple-client.services"),
+                ("client_secret", "test-secret"),
+                ("code", "test-code"),
+                ("grant_type", "authorization_code"),
+                ("redirect_uri", selected),
+            ]
+        );
+    }
 
     #[tokio::test]
     #[ignore = "requires AEAD_TAMPER_TEST_DATABASE_URL pointing at disposable migrated local Postgres"]

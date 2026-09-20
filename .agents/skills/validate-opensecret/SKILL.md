@@ -62,8 +62,8 @@ OPENSECRET_DEV_POSTGRES=0 OPENSECRET_DEV_ENV=0 OPENSECRET_DEV_CONTAINERS=0 \
   cargo test --locked --all-features
 ```
 
-Report passed, failed, and ignored counts. Default CI has no PostgreSQL service
-and does not execute ignored tests. Do not substitute an aggregate recipe
+Report passed, failed, and ignored counts. The Rust unit-test CI job has no
+PostgreSQL service and does not execute ignored tests. Do not substitute an aggregate recipe
 unless its checked-in definition preserves the same targets, features,
 lockfile, and warning policy.
 
@@ -93,8 +93,12 @@ OPENSECRET_DEV_POSTGRES=0 OPENSECRET_DEV_ENV=0 OPENSECRET_DEV_CONTAINERS=0 \
 ```
 
 The helper proves an empty-database migration and the selected local synthetic
-database suites. It does not prove an OAuth provider flow, encrypted client
-transport, or a data conversion from representative old rows.
+database suites, including OAuth settings preservation and callback selection
+through the real V1 encryption middleware and V2 gateway. The SDK integration
+workflow runs this helper too. The callback fixtures use synthetic local
+credentials and perform no provider exchanges; they do not prove a live OAuth
+provider flow, a released SDK or application, or a data conversion from
+representative old rows.
 
 For a data migration, separately build an upgrade-shaped disposable database
 with representative pre-change rows and verify restart, rollback, and retry

@@ -38,6 +38,7 @@ SDK_INTEGRATION_FILES = frozenset({
     "sdk/.npmrc", "sdk/bun.lock", "sdk/bunfig.toml", "sdk/package.json",
     "sdk/rust-toolchain.toml", "sdk/flake.nix", "sdk/flake.lock",
     ".github/workflows/sdk-integration.yml",
+    ".agents/skills/validate-opensecret/scripts/disposable_db_tests.sh",
 })
 KNOWN_INDEPENDENT_PREFIXES = (
     "apps/", "proxy/", "services/updates/", ".agents/", ".github/",

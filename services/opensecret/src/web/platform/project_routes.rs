@@ -803,7 +803,8 @@ async fn update_oauth_settings(
         apple_oauth_settings: update_request.apple_oauth_settings,
     };
 
-    // Update settings
+    // The database preserves omitted additional callback lists atomically;
+    // every other setting retains whole-object replacement semantics.
     let settings = data
         .db
         .update_project_oauth_settings(project.id, oauth_settings)?;

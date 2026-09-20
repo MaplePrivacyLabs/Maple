@@ -87,7 +87,6 @@ use tokio::task::{self};
 use tower_http::cors::{Any, CorsLayer};
 use tracing::{debug, error, info, trace, warn};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
-use url::Url;
 use uuid::Uuid;
 use vsock::{VsockAddr, VsockStream};
 use web::attestation_routes;
@@ -737,18 +736,6 @@ pub enum AppMode {
     Preview,
     Prod,
     Custom(String),
-}
-
-impl AppMode {
-    fn frontend_url(&self) -> &str {
-        match self {
-            AppMode::Local => "http://127.0.0.1:5173",
-            AppMode::Dev => "https://dev.secretgpt.ai",
-            AppMode::Preview => "https://preview.opensecret.cloud",
-            AppMode::Prod => "https://trymaple.ai",
-            AppMode::Custom(_) => "https://preview.opensecret.cloud",
-        }
-    }
 }
 
 impl fmt::Display for AppMode {
@@ -2779,17 +2766,6 @@ impl AppState {
         self.db
             .update_platform_user_password(user, encrypted_password)
             .map_err(Error::from)
-    }
-
-    pub fn frontend_url(&self) -> String {
-        self.app_mode.frontend_url().to_string()
-    }
-
-    pub fn oauth_callback_url(&self, provider: &str) -> Result<String, url::ParseError> {
-        let base_url = Url::parse(self.frontend_url().as_str())?;
-        Ok(base_url
-            .join(&format!("/auth/{}/callback", provider))?
-            .to_string())
     }
 
     pub async fn create_account_deletion_request(

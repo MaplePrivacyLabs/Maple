@@ -52,12 +52,18 @@ impl Default for EmailSettings {
 pub struct OAuthProviderSettings {
     pub client_id: String,
     pub redirect_url: String,
+    /// Missing or null on an update preserves the stored list; an empty list clears it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub additional_redirect_urls: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct AppleOAuthSettings {
     pub client_id: String,
     pub redirect_url: String,
+    /// Missing or null on an update preserves the stored list; an empty list clears it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub additional_redirect_urls: Option<Vec<String>>,
     pub team_id: Option<String>, // Apple Developer Team ID (10 chars)
     pub key_id: Option<String>,  // Apple Private Key ID (10 chars)
 }
@@ -72,6 +78,41 @@ pub struct OAuthSettings {
     pub github_oauth_settings: Option<OAuthProviderSettings>,
     #[serde(default)]
     pub apple_oauth_settings: Option<AppleOAuthSettings>,
+}
+
+impl OAuthSettings {
+    /// Preserve only the additive fields older settings clients cannot send.
+    /// Other fields retain the existing whole-object replacement semantics.
+    pub(crate) fn preserve_omitted_redirect_urls(&mut self, existing: &Self) {
+        for (incoming, stored) in [
+            (
+                &mut self.google_oauth_settings,
+                &existing.google_oauth_settings,
+            ),
+            (
+                &mut self.github_oauth_settings,
+                &existing.github_oauth_settings,
+            ),
+        ] {
+            if let (Some(incoming), Some(stored)) = (incoming, stored) {
+                if incoming.additional_redirect_urls.is_none() {
+                    incoming
+                        .additional_redirect_urls
+                        .clone_from(&stored.additional_redirect_urls);
+                }
+            }
+        }
+        if let (Some(incoming), Some(stored)) = (
+            &mut self.apple_oauth_settings,
+            &existing.apple_oauth_settings,
+        ) {
+            if incoming.additional_redirect_urls.is_none() {
+                incoming
+                    .additional_redirect_urls
+                    .clone_from(&stored.additional_redirect_urls);
+            }
+        }
+    }
 }
 
 #[derive(Queryable, Identifiable)]
@@ -164,5 +205,109 @@ impl NewProjectSetting {
             .values(self)
             .get_result(conn)
             .map_err(ProjectSettingError::DatabaseError)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn legacy_settings() -> Value {
+        json!({
+            "google_oauth_enabled": true,
+            "github_oauth_enabled": true,
+            "apple_oauth_enabled": true,
+            "google_oauth_settings": {
+                "client_id": "google-client",
+                "redirect_url": "https://customer.example/google"
+            },
+            "github_oauth_settings": {
+                "client_id": "github-client",
+                "redirect_url": "http://127.0.0.1:5173/github"
+            },
+            "apple_oauth_settings": {
+                "client_id": "apple-client",
+                "redirect_url": "https://customer.example/apple",
+                "team_id": "ABCDEFGHIJ",
+                "key_id": "1234567890"
+            }
+        })
+    }
+
+    #[test]
+    fn legacy_oauth_settings_round_trip_without_additional_fields() {
+        let legacy = legacy_settings();
+        let settings: OAuthSettings = serde_json::from_value(legacy.clone()).unwrap();
+        assert_eq!(serde_json::to_value(settings).unwrap(), legacy);
+    }
+
+    #[test]
+    fn omitted_and_null_lists_preserve_only_existing_provider_additions() {
+        let mut current_json = legacy_settings();
+        for provider in ["google", "github", "apple"] {
+            current_json[format!("{provider}_oauth_settings")]["additional_redirect_urls"] =
+                json!([format!("https://auth.customer.example/{provider}")]);
+        }
+        let current: OAuthSettings = serde_json::from_value(current_json).unwrap();
+        for null in [false, true] {
+            let mut update_json = legacy_settings();
+            if null {
+                for provider in ["google", "github", "apple"] {
+                    update_json[format!("{provider}_oauth_settings")]["additional_redirect_urls"] =
+                        Value::Null;
+                }
+            }
+            update_json["google_oauth_settings"]["redirect_url"] =
+                json!("https://new.customer.example/google");
+            update_json["github_oauth_enabled"] = json!(false);
+            update_json["github_oauth_settings"] = Value::Null;
+            let mut update: OAuthSettings = serde_json::from_value(update_json).unwrap();
+            update.preserve_omitted_redirect_urls(&current);
+
+            let google = update.google_oauth_settings.unwrap();
+            assert_eq!(google.redirect_url, "https://new.customer.example/google");
+            assert_eq!(
+                google.additional_redirect_urls,
+                current
+                    .google_oauth_settings
+                    .as_ref()
+                    .unwrap()
+                    .additional_redirect_urls
+            );
+            assert_eq!(
+                update
+                    .apple_oauth_settings
+                    .unwrap()
+                    .additional_redirect_urls,
+                current
+                    .apple_oauth_settings
+                    .as_ref()
+                    .unwrap()
+                    .additional_redirect_urls
+            );
+            assert!(!update.github_oauth_enabled);
+            assert!(update.github_oauth_settings.is_none());
+        }
+    }
+
+    #[test]
+    fn explicit_lists_replace_and_empty_lists_clear() {
+        let mut current_json = legacy_settings();
+        for provider in ["google", "github", "apple"] {
+            current_json[format!("{provider}_oauth_settings")]["additional_redirect_urls"] =
+                json!(["https://old.customer.example/callback"]);
+        }
+        let current: OAuthSettings = serde_json::from_value(current_json).unwrap();
+        for replacement in [json!([]), json!(["https://new.customer.example/callback"])] {
+            let mut update_json = legacy_settings();
+            for provider in ["google", "github", "apple"] {
+                update_json[format!("{provider}_oauth_settings")]["additional_redirect_urls"] =
+                    replacement.clone();
+            }
+            let mut update: OAuthSettings = serde_json::from_value(update_json.clone()).unwrap();
+            update.preserve_omitted_redirect_urls(&current);
+            assert_eq!(serde_json::to_value(update).unwrap(), update_json);
+        }
     }
 }

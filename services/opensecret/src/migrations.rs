@@ -130,10 +130,12 @@ async fn perform_maple_settings_migration(
             google_oauth_settings: google_client_id.map(|client_id| OAuthProviderSettings {
                 client_id,
                 redirect_url: format!("{}/auth/google/callback", oauth_base_url),
+                additional_redirect_urls: None,
             }),
             github_oauth_settings: github_client_id.map(|client_id| OAuthProviderSettings {
                 client_id,
                 redirect_url: format!("{}/auth/github/callback", oauth_base_url),
+                additional_redirect_urls: None,
             }),
             apple_oauth_settings: None,
         };

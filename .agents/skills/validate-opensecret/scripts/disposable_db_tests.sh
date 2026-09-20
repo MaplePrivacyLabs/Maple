@@ -95,8 +95,8 @@ cleanup() {
   rm -rf -- "$workdir"
 
   if [ "$status" -eq 0 ] && [ "$tests_passed" -eq 1 ]; then
-    printf 'Disposable-DB evidence: %s AEAD/database tests and %s OAuth database tests passed; no tests skipped; temporary cluster removed.\n' \
-      "$aead_count" "$oauth_count"
+    printf 'Disposable-DB evidence: %s AEAD/database tests, %s OAuth database tests, and %s callback settings/transport tests passed; no tests skipped; temporary cluster removed.\n' \
+      "$aead_count" "$oauth_count" "$callback_count"
   fi
   exit "$status"
 }
@@ -199,6 +199,28 @@ if grep -qi 'skipping:' "$workdir/oauth-tests.log"; then
 fi
 grep -Eq "test result: ok\\. ${oauth_count} passed; 0 failed; 0 ignored;" \
   "$workdir/oauth-tests.log"
+
+callback_count=0
+for callback_filter in \
+  db::tests::db_oauth_settings_ \
+  transport_v2::gateway::tests::db_oauth_callback_selection_v1_v2; do
+  cargo test --locked --all-features "$callback_filter" \
+    -- --ignored --list >"$workdir/callback-tests.list"
+  selected_count="$(awk -v prefix="$callback_filter" \
+    'index($0, prefix) == 1 && /: test$/ { count++ }
+     END { print count + 0 }' "$workdir/callback-tests.list")"
+  test "$selected_count" -gt 0
+
+  cargo test --locked --all-features "$callback_filter" \
+    -- --ignored --test-threads=1 --nocapture 2>&1 | tee "$workdir/callback-tests.log"
+  if grep -qi 'skipping:' "$workdir/callback-tests.log"; then
+    printf 'OAuth callback test output contained a skip marker\n' >&2
+    exit 1
+  fi
+  grep -Eq "test result: ok\\. ${selected_count} passed; 0 failed; 0 ignored;" \
+    "$workdir/callback-tests.log"
+  callback_count=$((callback_count + selected_count))
+done
 
 assert_database_identity
 assert_migration_count
