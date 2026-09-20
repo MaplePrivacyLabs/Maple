@@ -90,6 +90,7 @@ objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std"
 objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSString"] }
 
 [target.'cfg(target_os = "ios")'.dependencies]
+tauri-plugin-iap = { path = "plugins/tauri-plugin-iap" }
 # We build ONNX Runtime 1.23.2 from source for iOS (see scripts/build-ios-onnxruntime.sh)
 # We disable download-binaries and copy-dylibs since we link our own xcframework
 # PDF OCR needs "std" for Error trait impl and file operations, and "ndarray"

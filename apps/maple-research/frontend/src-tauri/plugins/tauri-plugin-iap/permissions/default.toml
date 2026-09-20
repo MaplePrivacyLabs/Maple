@@ -1,0 +1,7 @@
+[default]
+description = "iOS StoreKit products, explicit purchasing, recovery and management"
+permissions = [
+  "allow-register-listener", "allow-remove-listener", "allow-get-products",
+  "allow-purchase", "allow-get-signed-transactions", "allow-finish-transaction",
+  "allow-sync", "allow-get-storefront", "allow-manage-subscriptions"
+]
