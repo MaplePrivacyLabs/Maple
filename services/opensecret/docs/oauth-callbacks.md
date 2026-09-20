@@ -37,8 +37,11 @@ enabled flags and other provider settings retain their existing semantics.
 - This preservation applies when the provider settings object is supplied.
   Omitting or clearing the entire provider object retains the existing
   whole-object PUT behavior; it is not a patch API for other fields.
-- GET and the PUT response include a stored list. Existing rows without the
-  field remain readable; no SQL schema migration is required.
+- GET and the PUT response include `additional_redirect_urls` when a list is
+  stored, including `[]`. An unset or null stored value omits the field from
+  the response; both omission and `[]` mean no additional callbacks on read.
+  Existing rows without the field remain readable; no SQL schema migration
+  is required.
 - URL-list preservation and the settings write are serialized per project,
   so an older writer that omits the field cannot overwrite a concurrently
   committed list with an earlier snapshot.
