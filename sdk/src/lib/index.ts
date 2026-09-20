@@ -79,6 +79,12 @@ export { createApiKey, listApiKeys, deleteApiKey } from "./api";
 export { mintNativeHandoffGrant } from "./api";
 
 export {
+  captureUserCredentialSnapshot,
+  clearUserCredentialsIfCurrent,
+  type UserCredentialSnapshot
+} from "./transportV2/auth";
+
+export {
   prepareNativeOAuthHandoff,
   readNativeUserAuth,
   installNativeOAuthHandoffCredentials,

@@ -234,11 +234,11 @@ export type OpenSecretContextType = {
    * 4. After successful deletion, the client should clear all local storage and tokens
    */
   confirmAccountDeletion: (confirmationCode: string, plaintextSecret: string) => Promise<void>;
-  initiateGitHubAuth: (inviteCode: string) => Promise<api.GithubAuthResponse>;
+  initiateGitHubAuth: (inviteCode: string, redirectUrl?: string) => Promise<api.GithubAuthResponse>;
   handleGitHubCallback: (code: string, state: string, inviteCode: string) => Promise<void>;
-  initiateGoogleAuth: (inviteCode: string) => Promise<api.GoogleAuthResponse>;
+  initiateGoogleAuth: (inviteCode: string, redirectUrl?: string) => Promise<api.GoogleAuthResponse>;
   handleGoogleCallback: (code: string, state: string, inviteCode: string) => Promise<void>;
-  initiateAppleAuth: (inviteCode: string) => Promise<api.AppleAuthResponse>;
+  initiateAppleAuth: (inviteCode: string, redirectUrl?: string) => Promise<api.AppleAuthResponse>;
   handleAppleCallback: (code: string, state: string, inviteCode: string) => Promise<void>;
   handleAppleNativeSignIn: (appleUser: api.AppleUser, inviteCode?: string) => Promise<void>;
   mintNativeHandoffGrant: typeof api.mintNativeHandoffGrant;
@@ -1254,9 +1254,9 @@ export function OpenSecretProvider({
     }
   }
 
-  const initiateGitHubAuth = async (inviteCode: string) => {
+  const initiateGitHubAuth = async (inviteCode: string, redirectUrl?: string) => {
     try {
-      return await api.initiateGitHubAuth(clientId, inviteCode);
+      return await api.initiateGitHubAuth(clientId, inviteCode, redirectUrl);
     } catch (error) {
       console.error("Failed to initiate GitHub auth:", error);
       throw error;
@@ -1275,9 +1275,9 @@ export function OpenSecretProvider({
     }
   };
 
-  const initiateGoogleAuth = async (inviteCode: string) => {
+  const initiateGoogleAuth = async (inviteCode: string, redirectUrl?: string) => {
     try {
-      return await api.initiateGoogleAuth(clientId, inviteCode);
+      return await api.initiateGoogleAuth(clientId, inviteCode, redirectUrl);
     } catch (error) {
       console.error("Failed to initiate Google auth:", error);
       throw error;
@@ -1296,9 +1296,9 @@ export function OpenSecretProvider({
     }
   };
 
-  const initiateAppleAuth = async (inviteCode: string) => {
+  const initiateAppleAuth = async (inviteCode: string, redirectUrl?: string) => {
     try {
-      return await api.initiateAppleAuth(clientId, inviteCode);
+      return await api.initiateAppleAuth(clientId, inviteCode, redirectUrl);
     } catch (error) {
       console.error("Failed to initiate Apple auth:", error);
       throw error;

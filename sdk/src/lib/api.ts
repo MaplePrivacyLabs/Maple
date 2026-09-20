@@ -391,13 +391,19 @@ export async function changePassword(currentPassword: string, newPassword: strin
 
 export async function initiateGitHubAuth(
   client_id: string,
-  inviteCode?: string
+  inviteCode?: string,
+  redirectUrl?: string
 ): Promise<GithubAuthResponse> {
+  const request = {
+    client_id,
+    ...(inviteCode ? { invite_code: inviteCode } : {}),
+    ...(redirectUrl !== undefined ? { redirect_url: redirectUrl } : {})
+  };
   try {
-    return await encryptedApiCall<{ invite_code?: string; client_id: string }, GithubAuthResponse>(
+    return await encryptedApiCall<typeof request, GithubAuthResponse>(
       `${apiUrl}/auth/github`,
       "POST",
-      inviteCode ? { invite_code: inviteCode, client_id } : { client_id },
+      request,
       undefined,
       "Failed to initiate GitHub auth"
     );
@@ -570,13 +576,19 @@ export type AppleAuthResponse = {
 
 export async function initiateGoogleAuth(
   client_id: string,
-  inviteCode?: string
+  inviteCode?: string,
+  redirectUrl?: string
 ): Promise<GoogleAuthResponse> {
+  const request = {
+    client_id,
+    ...(inviteCode ? { invite_code: inviteCode } : {}),
+    ...(redirectUrl !== undefined ? { redirect_url: redirectUrl } : {})
+  };
   try {
-    return await encryptedApiCall<{ invite_code?: string; client_id: string }, GoogleAuthResponse>(
+    return await encryptedApiCall<typeof request, GoogleAuthResponse>(
       `${apiUrl}/auth/google`,
       "POST",
-      inviteCode ? { invite_code: inviteCode, client_id } : { client_id },
+      request,
       undefined,
       "Failed to initiate Google auth"
     );
@@ -637,6 +649,7 @@ export async function handleGoogleCallback(
  * Initiates Apple OAuth authentication flow
  * @param client_id - The client ID for your OpenSecret project
  * @param inviteCode - Optional invite code for new user registration
+ * @param redirectUrl - Optional exact backend-registered callback URL; omitted uses the project default
  * @returns A promise resolving to the Apple auth response containing auth URL and state
  * @description
  * This function starts the Apple OAuth authentication process by:
@@ -649,13 +662,19 @@ export async function handleGoogleCallback(
  */
 export async function initiateAppleAuth(
   client_id: string,
-  inviteCode?: string
+  inviteCode?: string,
+  redirectUrl?: string
 ): Promise<AppleAuthResponse> {
+  const request = {
+    client_id,
+    ...(inviteCode ? { invite_code: inviteCode } : {}),
+    ...(redirectUrl !== undefined ? { redirect_url: redirectUrl } : {})
+  };
   try {
-    return await encryptedApiCall<{ invite_code?: string; client_id: string }, AppleAuthResponse>(
+    return await encryptedApiCall<typeof request, AppleAuthResponse>(
       `${apiUrl}/auth/apple`,
       "POST",
-      inviteCode ? { invite_code: inviteCode, client_id } : { client_id },
+      request,
       undefined,
       "Failed to initiate Apple auth"
     );

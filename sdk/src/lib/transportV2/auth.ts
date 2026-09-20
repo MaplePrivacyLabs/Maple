@@ -32,6 +32,27 @@ export interface TransportV2AuthSnapshot {
   revision: number;
 }
 
+const userCredentialSnapshotBrand = Symbol("UserCredentialSnapshot");
+
+/**
+ * An opaque, process-local handle for conditional user-credential cleanup.
+ * Keep the original object in memory; copying or serializing it is unsupported.
+ * The handle exposes no tokens, account identity, or storage keys.
+ */
+export interface UserCredentialSnapshot {
+  readonly [userCredentialSnapshotBrand]: true;
+}
+
+interface CapturedUserCredentials {
+  apiOrigin: string;
+  revision: number;
+  accessToken: string;
+  refreshToken: string;
+}
+
+const issuedUserCredentialSnapshots = new WeakSet<UserCredentialSnapshot>();
+const capturedUserCredentials = new WeakMap<UserCredentialSnapshot, CapturedUserCredentials>();
+
 export type TransportV2ProfilePublicationDecision = "publish" | "reload" | "discard";
 
 export class TransportV2AuthorityChangedError extends Error {
@@ -648,6 +669,98 @@ export function clearTransportV2CredentialsIfCurrent(expected: TransportV2AuthSn
   commitState(state, "cleanup");
   clearLegacyCredentials();
   if (hadCredentials) notifyInvalidated(apiOrigin, expected.kind);
+  return true;
+}
+
+function readPersistedStateForUserCleanup(apiOrigin: string): {
+  state: PersistedState;
+  key: string;
+  storage: Storage;
+} {
+  const persistent = persistentStorageResult();
+  if (persistent.kind !== "available") {
+    throw new Error("User credential cleanup requires accessible persistent storage.");
+  }
+  const key = storageKey(apiOrigin);
+  // Reading via readBlob could substitute or republish a stale memory copy.
+  // A caller must resolve an unpersisted write before capturing or clearing.
+  if (fallbackOnlyKeys.has(key) || pendingRemovalKeys.has(key)) {
+    throw new Error("User credential cleanup requires synchronized persistent storage.");
+  }
+  let raw: string | null;
+  try {
+    raw = persistent.storage.getItem(key);
+  } catch {
+    throw new Error("User credential cleanup could not read persistent storage.");
+  }
+  return {
+    state: raw === null ? emptyState(apiOrigin) : parseState(raw, apiOrigin),
+    key,
+    storage: persistent.storage
+  };
+}
+
+/**
+ * Capture the currently persisted V2 user credentials for this API origin.
+ * Returns null when there are none; throws on unavailable, unsynchronized, or
+ * malformed storage. Capture before the asynchronous work that needs cleanup.
+ * This does not copy credentials into the returned handle or perform network I/O.
+ */
+export function captureUserCredentialSnapshot(apiUrl: string): UserCredentialSnapshot | null {
+  const apiOrigin = canonicalizeTransportV2ApiOrigin(apiUrl);
+  const { state } = readPersistedStateForUserCleanup(apiOrigin);
+  const credentials = credentialsFromSlot(apiOrigin, "user", state.user);
+  if (!credentials) return null;
+  const snapshot: UserCredentialSnapshot = Object.freeze({
+    [userCredentialSnapshotBrand]: true as const
+  });
+  issuedUserCredentialSnapshots.add(snapshot);
+  capturedUserCredentials.set(snapshot, {
+    apiOrigin,
+    revision: credentials.revision,
+    accessToken: credentials.accessToken,
+    refreshToken: credentials.refreshToken
+  });
+  return snapshot;
+}
+
+/**
+ * Clear the captured V2 user credentials only if the persisted pair and revision
+ * still match. Returns false for an observed replacement or a consumed handle.
+ * Storage errors throw and leave the handle retryable; invalid handles throw.
+ * Success invalidates the local provider's user state, but does not revoke a
+ * server session or clear API keys, platform credentials, or the cache root.
+ *
+ * localStorage has no atomic compare-and-swap across browser contexts. This
+ * fences changes observed before the write, not a simultaneous write by another
+ * tab. Callers requiring that stronger guarantee must coordinate all writers.
+ * Never recapture on a stale result merely to force cleanup of newer credentials.
+ */
+export function clearUserCredentialsIfCurrent(snapshot: UserCredentialSnapshot): boolean {
+  if (!issuedUserCredentialSnapshots.has(snapshot)) {
+    throw new TypeError("Expected an original user credential snapshot from this SDK instance.");
+  }
+  const expected = capturedUserCredentials.get(snapshot);
+  if (!expected) return false;
+  const { state, key, storage } = readPersistedStateForUserCleanup(expected.apiOrigin);
+  if (
+    state.user.revision !== expected.revision ||
+    state.user.credentials?.access_token !== expected.accessToken ||
+    state.user.credentials?.refresh_token !== expected.refreshToken
+  ) {
+    capturedUserCredentials.delete(snapshot);
+    return false;
+  }
+  state.user = { revision: nextRevision(state.user.revision), credentials: null };
+  const encoded = JSON.stringify(state);
+  try {
+    storage.setItem(key, encoded);
+  } catch {
+    throw new Error("User credential cleanup could not be persisted.");
+  }
+  memoryBlobs.set(key, encoded);
+  capturedUserCredentials.delete(snapshot);
+  notifyInvalidated(expected.apiOrigin, "user");
   return true;
 }
 

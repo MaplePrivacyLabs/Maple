@@ -107,6 +107,8 @@ export type EmailSettings = {
 export type OAuthProviderSettings = {
   client_id: string;
   redirect_url: string;
+  /** Omitted or null preserves the registered list on update; [] clears it. */
+  additional_redirect_urls?: string[] | null;
   team_id?: string; // Apple-specific: The Apple Developer Team ID
   key_id?: string; // Apple-specific: The Apple Developer Key ID for Sign in with Apple
 };
