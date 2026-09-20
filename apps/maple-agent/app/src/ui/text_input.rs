@@ -2012,10 +2012,13 @@ impl Element for TextElement {
         let mask = input.mask;
         let style = window.text_style();
 
+        // Typed text takes the theme's primary color, not whatever the
+        // surrounding element happens to set: an input inside a caption
+        // row or an unstyled container still reads in both themes.
         let (display_text, text_color) = if content.is_empty() {
             (input.placeholder.clone(), theme::placeholder())
         } else {
-            (input.display_text(), style.color)
+            (input.display_text(), rgb(theme::text_primary()).into())
         };
 
         let run = TextRun {

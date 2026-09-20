@@ -279,6 +279,10 @@ impl Render for MapleApp {
             .flex()
             .flex_col()
             .font_family(crate::assets::FONT_BODY)
+            // The default for any text that sets no color of its own.
+            // GPUI's own default is black, which vanishes on the dark
+            // surfaces, so every omission used to be a dark-mode bug.
+            .text_color(gpui::rgb(ui::theme::text_primary()))
             // Chrome default 14 px (`text_sm`). Chat reading size is set
             // on transcript/composer via `typography::chat_reading`.
             .text_sm()

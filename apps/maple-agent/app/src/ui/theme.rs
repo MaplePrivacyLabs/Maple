@@ -149,7 +149,9 @@ tokens! {
     text_primary: 0xd1d2dc, 0x171717;
     text_heading: 0xe8e8ed, 0x171717;
     text_secondary: 0xbabccb, 0x525252;
-    text_muted: 0x9c9dab, 0xa3a3a3;
+    /// Captions. Light sits between neutral-500 and 600: neutral-400 was
+    /// 2.5:1 on white, under the 4.5:1 the contrast test holds text to.
+    text_muted: 0x9c9dab, 0x6b6b6b;
     text_faint: 0x5e5f6e, 0xd4d4d4;
 
     /// Maple coral (maple-500): send button, focus, caret, permission prompts.
@@ -166,7 +168,8 @@ tokens! {
     status_error: 0xe07052, 0xd05e41;
     /// Wavy underline under a misspelled word in the composer.
     spell_error: 0xe07052, 0xd05e41;
-    status_warning: 0xd4a35a, 0xd4a35a;
+    /// Amber-700 on light: the dark amber was 2.3:1 on white.
+    status_warning: 0xd4a35a, 0xb45309;
 
     code_text: 0xe8e8ed, 0x171717;
     /// Links take the tertiary Bark scale (bark-300 / bark-500).
@@ -285,3 +288,74 @@ pub const RADIUS_XL: Pixels = px(24.);
 /// The brand kit's medium spacing step (`--space-md`): horizontal padding
 /// of every pill button.
 pub const SPACE_MD: Pixels = px(20.);
+
+#[cfg(test)]
+mod contrast_tests {
+    use super::*;
+
+    /// WCAG relative luminance of a 24-bit color.
+    fn luminance(color: u32) -> f64 {
+        let channel = |shift: u32| {
+            let value = f64::from((color >> shift) & 0xff) / 255.;
+            if value <= 0.03928 {
+                value / 12.92
+            } else {
+                ((value + 0.055) / 1.055).powf(2.4)
+            }
+        };
+        0.2126 * channel(16) + 0.7152 * channel(8) + 0.0722 * channel(0)
+    }
+
+    fn contrast(a: u32, b: u32) -> f64 {
+        let (a, b) = (luminance(a), luminance(b));
+        (a.max(b) + 0.05) / (a.min(b) + 0.05)
+    }
+
+    /// Every text role must read on every resting surface in both
+    /// palettes: 4.5:1 for body roles (WCAG AA), 3:1 for status and link
+    /// colors, which the brand kit fixes and which carry short labels.
+    /// `text_faint` is decorative and not held to a ratio. Hover and
+    /// selection fills are transient and not checked.
+    #[test]
+    fn text_roles_read_on_every_surface() {
+        let mut failures = Vec::new();
+        for (name, palette) in [("dark", &DARK), ("light", &LIGHT)] {
+            let surfaces = [
+                ("bg_app", palette.bg_app),
+                ("bg_sidebar", palette.bg_sidebar),
+                ("bg_elevated", palette.bg_elevated),
+                ("bg_input", palette.bg_input),
+                ("bg_sidebar_card", palette.bg_sidebar_card),
+                ("bg_tool_card", palette.bg_tool_card),
+            ];
+            let body = [
+                ("text_primary", palette.text_primary),
+                ("text_heading", palette.text_heading),
+                ("text_secondary", palette.text_secondary),
+                ("text_muted", palette.text_muted),
+                ("code_text", palette.code_text),
+            ];
+            let labels = [
+                ("status_success", palette.status_success),
+                ("status_error", palette.status_error),
+                ("status_warning", palette.status_warning),
+                ("link", palette.link),
+            ];
+            for (surface, fill) in surfaces {
+                for (role, color) in body {
+                    let ratio = contrast(color, fill);
+                    if ratio < 4.5 {
+                        failures.push(format!("{name}: {role} on {surface} is {ratio:.2}:1"));
+                    }
+                }
+                for (role, color) in labels {
+                    let ratio = contrast(color, fill);
+                    if ratio < 3. {
+                        failures.push(format!("{name}: {role} on {surface} is {ratio:.2}:1"));
+                    }
+                }
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+}
