@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import {
   cancelChatResponseForHistoryDeletion,
   quiesceChatRuntimeRunsForHistoryDeletion,
@@ -97,6 +97,31 @@ describe("chat history deletion quiescence", () => {
         }
       })
     ).rejects.toThrow("Timed out waiting for active chat requests to stop");
+  });
+
+  test("consumes cancellation rejection when its invocation exhausts the deadline", async () => {
+    const store = fakeStore();
+    store.setSnapshot({ runToken: 1, currentResponseId: "response-stuck" });
+    const now = spyOn(Date, "now").mockReturnValue(0);
+    let cancellationInvoked = false;
+
+    try {
+      await expect(
+        quiesceChatRuntimeRunsForHistoryDeletion({
+          store,
+          timeoutMs: 1,
+          cancelResponse: async () => {
+            cancellationInvoked = true;
+            now.mockReturnValue(2);
+            throw new Error("cancel failed after deadline");
+          }
+        })
+      ).rejects.toThrow("Timed out waiting for active chat requests to stop");
+      expect(cancellationInvoked).toBe(true);
+      expect(store.getActiveRunKeys()).toEqual([store.key]);
+    } finally {
+      now.mockRestore();
+    }
   });
 
   test("retries a rejected cancellation while response ownership remains", async () => {
