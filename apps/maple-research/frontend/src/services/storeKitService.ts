@@ -73,51 +73,68 @@ export const storeKit: StoreKitBridge = {
 export interface StoreKitAcknowledgement {
   acknowledged_transaction_id: string;
   // The selected entitlement can still be Stripe, a team, or another provider.
-  payment_provider?: string;
+  payment_provider?: string | null;
 }
 
-export class StoreKitRecoveryError extends Error {
-  readonly acknowledgements: readonly StoreKitAcknowledgement[];
+export interface StoreKitRecoveryFailure {
+  transactionId: string;
+  error: unknown;
+}
 
-  constructor(acknowledgements: readonly StoreKitAcknowledgement[]) {
+export class StoreKitRecoveryError<
+  Acknowledgement extends StoreKitAcknowledgement = StoreKitAcknowledgement
+> extends Error {
+  readonly acknowledgements: readonly Acknowledgement[];
+  readonly failures: readonly StoreKitRecoveryFailure[];
+
+  constructor(
+    acknowledgements: readonly Acknowledgement[],
+    failures: readonly StoreKitRecoveryFailure[] = []
+  ) {
     super("storekit_recovery_incomplete");
     this.name = "StoreKitRecoveryError";
     this.acknowledgements = [...acknowledgements];
+    this.failures = [...failures];
   }
 }
 
-interface RevisionRequest {
-  promise: Promise<StoreKitAcknowledgement>;
-  resolve: (acknowledgement: StoreKitAcknowledgement) => void;
+interface RevisionRequest<Acknowledgement> {
+  promise: Promise<Acknowledgement>;
+  resolve: (acknowledgement: Acknowledgement) => void;
   reject: (error: unknown) => void;
 }
 
-interface ObservedRevision {
+interface ObservedRevision<Acknowledgement> {
   jws: string;
-  acknowledgement?: StoreKitAcknowledgement;
-  request?: RevisionRequest;
+  acknowledgement?: Acknowledgement;
+  request?: RevisionRequest<Acknowledgement>;
 }
 
-interface TransactionRecovery {
-  revisions: Map<string, ObservedRevision>;
+interface TransactionRecovery<Acknowledgement> {
+  revisions: Map<string, ObservedRevision<Acknowledgement>>;
   running: boolean;
 }
 
 /**
  * One instance belongs to one immutable authenticated account/session. Dispose
  * it on logout or account change; never replace its submit callback in place.
- * StoreKit retains unfinished transactions, so no JWS goes into web storage.
+ * Recovery consults StoreKit and retains in-session failures; no JWS goes into web storage.
  */
-export class StoreKitRecovery {
+export class StoreKitRecovery<
+  Acknowledgement extends StoreKitAcknowledgement = StoreKitAcknowledgement
+> {
   private active = true;
-  private readonly transactions = new Map<string, TransactionRecovery>();
+  private readonly transactions = new Map<string, TransactionRecovery<Acknowledgement>>();
 
   constructor(
     private readonly bridge: Pick<
       StoreKitBridge,
       "finishTransaction" | "getSignedTransactions" | "sync"
     >,
-    private readonly submit: (signedTransaction: string) => Promise<StoreKitAcknowledgement>
+    private readonly submit: (
+      signedTransaction: string,
+      transactionId: string
+    ) => Promise<Acknowledgement>
   ) {}
 
   dispose(): void {
@@ -129,14 +146,11 @@ export class StoreKitRecovery {
     if (!this.active) throw new Error("storekit_session_changed");
   }
 
-  acknowledge(transaction: SignedStoreKitTransaction): Promise<StoreKitAcknowledgement> {
+  acknowledge(transaction: SignedStoreKitTransaction): Promise<Acknowledgement> {
     return this.acknowledgeRevision(transaction.transactionId, transaction.jws);
   }
 
-  private acknowledgeRevision(
-    transactionId: string,
-    jws: string
-  ): Promise<StoreKitAcknowledgement> {
+  private acknowledgeRevision(transactionId: string, jws: string): Promise<Acknowledgement> {
     this.assertActive();
     let recovery = this.transactions.get(transactionId);
     if (!recovery) {
@@ -149,9 +163,9 @@ export class StoreKitRecovery {
       recovery.revisions.set(jws, revision);
     }
     if (revision.request) return revision.request.promise;
-    let resolve!: RevisionRequest["resolve"];
-    let reject!: RevisionRequest["reject"];
-    const promise = new Promise<StoreKitAcknowledgement>((accept, fail) => {
+    let resolve!: RevisionRequest<Acknowledgement>["resolve"];
+    let reject!: RevisionRequest<Acknowledgement>["reject"];
+    const promise = new Promise<Acknowledgement>((accept, fail) => {
       resolve = accept;
       reject = fail;
     });
@@ -165,7 +179,7 @@ export class StoreKitRecovery {
 
   private async submitAndFinish(
     transactionId: string,
-    recovery: TransactionRecovery
+    recovery: TransactionRecovery<Acknowledgement>
   ): Promise<void> {
     try {
       while (recovery.revisions.size > 0) {
@@ -175,7 +189,7 @@ export class StoreKitRecovery {
         for (const revision of recovery.revisions.values()) {
           this.assertActive();
           if (revision.acknowledgement) continue;
-          const acknowledgement = await this.submit(revision.jws);
+          const acknowledgement = await this.submit(revision.jws, transactionId);
           this.assertActive();
           if (acknowledgement.acknowledged_transaction_id !== transactionId) {
             throw new Error("storekit_acknowledgement_mismatch");
@@ -205,7 +219,7 @@ export class StoreKitRecovery {
     }
   }
 
-  async recover(): Promise<StoreKitAcknowledgement[]> {
+  async recover(): Promise<Acknowledgement[]> {
     this.assertActive();
     const { transactions } = await this.bridge.getSignedTransactions();
     this.assertActive();
@@ -228,14 +242,19 @@ export class StoreKitRecovery {
     const acknowledgements = results.flatMap((result) =>
       result.status === "fulfilled" ? [result.value] : []
     );
-    if (results.some((result) => result.status === "rejected")) {
-      throw new StoreKitRecoveryError(acknowledgements);
+    const failures = results.flatMap((result, index) =>
+      result.status === "rejected"
+        ? [{ transactionId: candidates[index].transactionId, error: result.reason as unknown }]
+        : []
+    );
+    if (failures.length > 0) {
+      throw new StoreKitRecoveryError(acknowledgements, failures);
     }
     return acknowledgements;
   }
 
   /** Only call from an explicit Restore action: sync may prompt for Apple login. */
-  async restore(): Promise<StoreKitAcknowledgement[]> {
+  async restore(): Promise<Acknowledgement[]> {
     this.assertActive();
     await this.bridge.sync();
     this.assertActive();
