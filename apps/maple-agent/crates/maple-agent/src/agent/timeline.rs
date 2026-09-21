@@ -969,9 +969,39 @@ pub(super) fn session_summary(session: &Session) -> AgentSessionSummary {
             .map(|model| model.model_name.clone()),
         mode: session.goose_mode.to_string(),
         web_enabled: session_web_enabled(session),
-        archived: session.archived_at.is_some(),
+        state: stored_task_state(session),
         acp: session.session_type == SessionType::Acp,
     }
+}
+
+/// Read the task's ladder state from the session. Goose's own archive
+/// timestamp wins, so a session archived from outside Maple's state
+/// record (an ACP client) still reads as archived; otherwise Maple's
+/// record decides, and absent means active.
+pub(super) fn stored_task_state(session: &Session) -> AgentTaskState {
+    if session.archived_at.is_some() {
+        return AgentTaskState::Archived;
+    }
+    session
+        .extension_data
+        .get_extension_state(MAPLE_TASK_STATE_KEY, MAPLE_TASK_STATE_VERSION)
+        .and_then(|value| value.get("state"))
+        .and_then(|value| serde_json::from_value::<AgentTaskState>(value.clone()).ok())
+        .unwrap_or_default()
+}
+
+/// The session's extension data with Maple's state record set to `state`.
+pub(super) fn extension_data_with_task_state(
+    session: &Session,
+    state: AgentTaskState,
+) -> goose::session::ExtensionData {
+    let mut extension_data = session.extension_data.clone();
+    extension_data.set_extension_state(
+        MAPLE_TASK_STATE_KEY,
+        MAPLE_TASK_STATE_VERSION,
+        json!({ "state": state }),
+    );
+    extension_data
 }
 
 /// Read Maple's web flag from the session; absent means enabled.

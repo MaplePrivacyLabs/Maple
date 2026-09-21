@@ -38,12 +38,6 @@ pub struct AppSettings {
     /// Sidebar task ids the user pinned, in pin order.
     #[serde(default)]
     pub pinned_tasks: Vec<String>,
-    /// Sidebar task ids the user settled away from the active section.
-    #[serde(default)]
-    pub settled_tasks: Vec<String>,
-    /// Sidebar task ids the user moved back into the active section.
-    #[serde(default)]
-    pub unsettled_tasks: Vec<String>,
     /// Display names for project roots, keyed by absolute path.
     #[serde(default)]
     pub project_names: std::collections::HashMap<String, String>,
@@ -289,8 +283,6 @@ impl Default for AppSettings {
             shortcut_overrides: std::collections::BTreeMap::new(),
             pinned_roots: Vec::new(),
             pinned_tasks: Vec::new(),
-            settled_tasks: Vec::new(),
-            unsettled_tasks: Vec::new(),
             project_names: std::collections::HashMap::new(),
             desktop_notifications: default_desktop_notifications(),
             reduce_motion: false,

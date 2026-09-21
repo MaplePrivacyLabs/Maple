@@ -1,16 +1,16 @@
 //! Tests for the chat screen.
 
 mod state_tests {
-    use std::collections::HashSet;
     use std::sync::Arc;
 
     use crate::ui::chat::cache::{INLINE_PARSE_LIMIT, MAX_DIFF_LINES, ORDINAL_SPACING};
     use crate::ui::chat::composer::SideThreadTurn;
     use crate::ui::chat::images::{MAX_DRAFT_IMAGES, encode_data_url};
-    use crate::ui::chat::sidebar::RenameTarget;
+    use crate::ui::chat::sidebar::{RenameTarget, SidebarEvent, TaskMove};
     use crate::ui::chat::transcript::{diff_lines_for, maple_display_text, tool_label_title};
     use crate::ui::chat::*;
     use gpui::TestAppContext;
+    use maple_agent::agent::AgentTaskState;
 
     fn summary(id: &str, title: &str) -> AgentSessionSummary {
         summary_at(id, title, "/tmp/proj")
@@ -19,7 +19,7 @@ mod state_tests {
     fn summary_at(id: &str, title: &str, project_root: &str) -> AgentSessionSummary {
         AgentSessionSummary {
             web_enabled: true,
-            archived: false,
+            state: AgentTaskState::Active,
             acp: false,
             id: id.to_string(),
             title: title.to_string(),
@@ -399,12 +399,12 @@ mod state_tests {
         let screen = screen(cx);
         screen.update(cx, |this, cx| {
             this.sessions = vec![summary("s1", "Live"), summary("s2", "Old")];
-            this.sessions[1].archived = true;
+            this.sessions[1].state = AgentTaskState::Archived;
             this.sync_sidebar(cx);
             assert_eq!(this.sidebar_active(cx), vec![0]);
             assert_eq!(this.archived_indices(cx), vec![1]);
 
-            this.sessions[0].archived = true;
+            this.sessions[0].state = AgentTaskState::Archived;
             this.sync_sidebar(cx);
             assert!(this.sidebar_active(cx).is_empty());
             assert_eq!(this.archived_indices(cx), vec![0, 1]);
@@ -725,7 +725,7 @@ mod state_tests {
             b.project_root = "/work/beta".to_string();
             let mut c = summary("s3", "Old login task");
             c.project_root = "/work/beta".to_string();
-            c.archived = true;
+            c.state = AgentTaskState::Archived;
             this.sessions = vec![a, b, c];
             this.sync_sidebar(cx);
             assert_eq!(this.sidebar_active(cx).len(), 2);
@@ -1820,9 +1820,8 @@ mod state_tests {
             this.active_runs.clear();
             this.sidebar.update(cx, |sidebar, _| {
                 sidebar.set_pinned_tasks_for_test(Vec::new());
-                sidebar.set_settled_for_test(HashSet::from(["s1".to_string()]));
             });
-            this.sync_sidebar(cx);
+            this.settle_task("s1", cx);
             assert_eq!(this.sidebar_active(cx), vec![1]);
             assert_eq!(this.sidebar_settled(cx), vec![0]);
 
@@ -1867,10 +1866,7 @@ mod state_tests {
         let screen = screen(cx);
         screen.update(cx, |this, cx| {
             this.sessions = vec![summary_at("s1", "One", "/a"), summary_at("s2", "Two", "/b")];
-            this.sidebar.update(cx, |sidebar, _| {
-                sidebar.set_settled_for_test(HashSet::from(["s1".to_string()]));
-            });
-            this.sync_sidebar(cx);
+            this.settle_task("s1", cx);
             assert_eq!(this.sidebar_settled(cx), vec![0]);
             assert_eq!(this.sidebar_active(cx), vec![1]);
             assert_eq!(this.switcher_root_paths(cx), ["/a", "/b"]);
@@ -1885,8 +1881,8 @@ mod state_tests {
         });
     }
 
-    /// A manual settle parks a task outside the active inbox until new
-    /// activity wakes it; a manual un-settle moves it back.
+    /// A settled task sits outside the active inbox until the runtime
+    /// makes it active again, by a run or by hand.
     #[gpui::test]
     fn test_settling_a_task_moves_it_out_of_the_inbox(cx: &mut TestAppContext) {
         cx.executor().allow_parking();
@@ -1894,44 +1890,35 @@ mod state_tests {
         screen.update(cx, |this, cx| {
             this.sessions = vec![summary_at("s1", "One", "/a")];
             this.completed_unread_sessions.insert("s1".to_string());
-            this.sidebar.update(cx, |sidebar, _| {
-                sidebar.set_settled_for_test(HashSet::from(["s1".to_string()]));
-            });
-            this.sync_sidebar(cx);
+            this.settle_task("s1", cx);
             // The manual settle outranks the unseen completion...
             assert_eq!(this.sidebar_settled(cx), vec![0]);
             assert!(this.sidebar_active(cx).is_empty());
-            // ...but a live run is activity: it wakes the task again.
+            // ...but a live run is activity: the runtime makes the task
+            // active, and the running set covers the frame before its
+            // updated record lands.
             this.active_runs
                 .insert("s1".to_string(), "run-1".to_string());
             this.sync_sidebar(cx);
             assert_eq!(this.sidebar_active(cx), vec![0]);
 
             this.active_runs.clear();
-            this.sidebar.update(cx, |sidebar, _| {
-                sidebar.set_settled_for_test(HashSet::new());
-                sidebar.set_unsettled_for_test(HashSet::from(["s1".to_string()]));
-            });
-            this.sync_sidebar(cx);
+            this.unsettle_task("s1", cx);
             assert_eq!(this.sidebar_active(cx), vec![0]);
             assert!(this.sidebar_settled(cx).is_empty());
             // Reading the task (no live run, no unseen completion) leaves it
             // in the active inbox; only an explicit settle moves it out.
             this.completed_unread_sessions.clear();
-            this.sidebar.update(cx, |sidebar, _| {
-                sidebar.set_unsettled_for_test(HashSet::new());
-            });
             this.sync_sidebar(cx);
             assert_eq!(this.sidebar_active(cx), vec![0]);
             assert!(this.sidebar_settled(cx).is_empty());
         });
     }
 
-    /// The row buttons drive `settle_task` and `unsettle_task` back to
-    /// back; a settle followed by an un-settle must return the task to
-    /// the top of the active inbox.
+    /// The runtime's updated records move a row between Active and
+    /// Settled and back, any number of times.
     #[gpui::test]
-    fn test_settle_buttons_toggle_a_task_back_and_forth(cx: &mut TestAppContext) {
+    fn test_state_records_move_a_task_back_and_forth(cx: &mut TestAppContext) {
         cx.executor().allow_parking();
         let screen = screen(cx);
         screen.update(cx, |this, cx| {
@@ -1947,7 +1934,6 @@ mod state_tests {
             this.unsettle_task("s1", cx);
             assert_eq!(this.sidebar_active(cx), vec![0]);
             assert!(this.sidebar_settled(cx).is_empty());
-            // An already-woken task can still be un-settled again.
             this.settle_task("s1", cx);
             this.unsettle_task("s1", cx);
             assert_eq!(this.sidebar_active(cx), vec![0]);
@@ -1955,20 +1941,315 @@ mod state_tests {
         });
     }
 
-    /// A finished run wakes a settled task and the sections follow
-    /// without any manual rebuild: the run events own the sidebar
-    /// entries.
+    /// The hover button steps a task one rung forward along active,
+    /// settled, archived, deleted. The overflow menu reaches every later
+    /// rung and comes back only to active: no settle or unsettle on an
+    /// archived task, no pin on a settled one.
     #[gpui::test]
-    fn test_a_finished_run_wakes_a_settled_task(cx: &mut TestAppContext) {
+    fn test_task_ladder_actions_follow_the_rung(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        let screen = screen(cx);
+        screen.update(cx, |this, cx| {
+            this.sessions = vec![
+                summary("s1", "Active"),
+                summary("s2", "Settled"),
+                summary("s3", "Archived"),
+            ];
+            this.sessions[2].state = AgentTaskState::Archived;
+            this.sync_sidebar(cx);
+            this.settle_task("s2", cx);
+            this.sidebar
+                .update(cx, |sidebar, cx| sidebar.set_archived_expanded(true, cx));
+            let sidebar = this.sidebar.read(cx);
+
+            assert_eq!(sidebar.row_step_label_for_test("s1"), Some("Settle"));
+            assert_eq!(
+                sidebar.task_menu_labels_for_test("s1"),
+                vec![
+                    "Rename task",
+                    "Pin task",
+                    "Settle task",
+                    "Archive task",
+                    "Delete task"
+                ]
+            );
+
+            assert_eq!(sidebar.row_step_label_for_test("s2"), Some("Archive"));
+            assert_eq!(
+                sidebar.task_menu_labels_for_test("s2"),
+                vec!["Rename task", "Reopen task", "Archive task", "Delete task"]
+            );
+
+            assert_eq!(sidebar.row_step_label_for_test("s3"), Some("Delete"));
+            assert_eq!(
+                sidebar.task_menu_labels_for_test("s3"),
+                vec!["Rename task", "Reopen task", "Delete task"]
+            );
+        });
+    }
+
+    /// The moves themselves: every move to another rung asks the runtime
+    /// for that state, a move to the rung the task is on asks nothing,
+    /// leaving active drops the pin at once, and delete asks the screen,
+    /// which asks the user.
+    #[gpui::test]
+    fn test_ladder_moves_emit_the_right_events(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        let screen = screen(cx);
+        let events = std::rc::Rc::new(std::cell::RefCell::new(Vec::<SidebarEvent>::new()));
+        screen.update(cx, |this, cx| {
+            let sink = events.clone();
+            cx.subscribe(&this.sidebar, move |_, _, event: &SidebarEvent, _| {
+                sink.borrow_mut().push(event.clone());
+            })
+            .detach();
+            this.sessions = vec![
+                summary("s1", "Active"),
+                summary("s2", "Settled"),
+                summary("s3", "Archived"),
+            ];
+            this.sessions[1].state = AgentTaskState::Settled;
+            this.sessions[2].state = AgentTaskState::Archived;
+            this.sync_sidebar(cx);
+            this.sidebar
+                .update(cx, |sidebar, cx| sidebar.toggle_task_pin("s1", cx));
+            assert_eq!(this.sidebar_pinned(cx), vec![0]);
+        });
+        let take = |cx: &mut TestAppContext| -> Vec<SidebarEvent> {
+            cx.run_until_parked();
+            std::mem::take(&mut *events.borrow_mut())
+        };
+        let move_task = |this: &mut ChatScreen, cx: &mut Context<ChatScreen>, id: &str, to| {
+            this.sidebar.update(cx, |s, cx| s.move_task(id, to, cx));
+        };
+        let state_of = |emitted: &[SidebarEvent], id: &str, expected: AgentTaskState| {
+            matches!(
+                emitted,
+                [SidebarEvent::SetState { session_id, state }] if session_id == id && *state == expected
+            )
+        };
+
+        // Active -> settled asks for Settled and drops the pin now.
+        screen.update(cx, |this, cx| {
+            move_task(this, cx, "s1", TaskMove::Settled);
+            assert!(this.sidebar_pinned(cx).is_empty());
+        });
+        let emitted = take(cx);
+        assert!(
+            state_of(&emitted, "s1", AgentTaskState::Settled),
+            "{emitted:?}"
+        );
+
+        // Settled -> active asks for Active.
+        screen.update(cx, |this, cx| move_task(this, cx, "s2", TaskMove::Active));
+        let emitted = take(cx);
+        assert!(
+            state_of(&emitted, "s2", AgentTaskState::Active),
+            "{emitted:?}"
+        );
+
+        // Any rung -> archived asks for Archived.
+        for id in ["s1", "s2"] {
+            screen.update(cx, |this, cx| move_task(this, cx, id, TaskMove::Archived));
+            let emitted = take(cx);
+            assert!(
+                state_of(&emitted, id, AgentTaskState::Archived),
+                "{emitted:?}"
+            );
+        }
+
+        // Archived -> active asks for Active.
+        screen.update(cx, |this, cx| move_task(this, cx, "s3", TaskMove::Active));
+        let emitted = take(cx);
+        assert!(
+            state_of(&emitted, "s3", AgentTaskState::Active),
+            "{emitted:?}"
+        );
+
+        // The rung a task is on already asks nothing.
+        screen.update(cx, |this, cx| {
+            move_task(this, cx, "s1", TaskMove::Active);
+            move_task(this, cx, "s2", TaskMove::Settled);
+            move_task(this, cx, "s3", TaskMove::Archived);
+        });
+        assert!(take(cx).is_empty());
+
+        // Any rung -> deleted asks the screen, which asks the user.
+        for id in ["s1", "s2", "s3"] {
+            screen.update(cx, |this, cx| move_task(this, cx, id, TaskMove::Deleted));
+            let emitted = take(cx);
+            assert!(
+                matches!(emitted.as_slice(), [SidebarEvent::DeleteTask(got)] if got == id),
+                "{emitted:?}"
+            );
+            screen.update(cx, |this, _cx| {
+                assert_eq!(
+                    this.confirm,
+                    Some(dialogs::ConfirmDialog::DeleteTask(id.to_string()))
+                );
+                this.confirm = None;
+            });
+        }
+    }
+
+    /// The runtime bumps a session's update time when its state changes,
+    /// so once its record lands a reopened task sits at the top of
+    /// Active, above other recent activity.
+    #[gpui::test]
+    fn test_reopened_task_lands_on_top_of_active(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        let screen = screen(cx);
+        screen.update(cx, |this, cx| {
+            this.sessions = vec![summary("s1", "Newer"), summary("s2", "Old")];
+            this.sessions[0].updated_ms = 10;
+            this.sessions[1].state = AgentTaskState::Archived;
+            this.sync_sidebar(cx);
+            assert_eq!(this.archived_indices(cx), vec![1]);
+
+            this.sidebar
+                .update(cx, |s, cx| s.move_task("s2", TaskMove::Active, cx));
+            let mut session = summary("s2", "Old");
+            session.updated_ms = 20;
+            assert!(this.apply_service_event(
+                AgentServiceEvent::SessionUpdated {
+                    session_id: "s2".to_string(),
+                    run_id: None,
+                    session,
+                },
+                cx
+            ));
+            assert!(this.archived_indices(cx).is_empty());
+            assert!(this.sidebar_settled(cx).is_empty());
+            assert_eq!(this.sidebar_active(cx), vec![1, 0]);
+        });
+    }
+
+    /// Escape closes the confirmation without acting; accepting runs the
+    /// step the dialog stands for.
+    #[gpui::test]
+    fn test_confirm_dialog_cancels_and_accepts(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        let screen = screen(cx);
+        screen.update(cx, |this, cx| {
+            this.sessions = vec![summary("s1", "One")];
+            this.sync_sidebar(cx);
+            this.request_delete_task("s1", cx);
+            assert!(this.confirm.is_some());
+            this.escape(cx);
+            assert!(this.confirm.is_none());
+            assert_eq!(this.sessions.len(), 1);
+
+            // Accepting dispatches on the dialog kind: a root removal
+            // reaches archive_root, which refuses mid-selection.
+            this.root_selecting = true;
+            this.request_remove_root("/tmp/proj", cx);
+            this.accept_confirm(cx);
+            assert!(this.confirm.is_none());
+            assert!(this.notice.is_some());
+        });
+    }
+
+    /// Pinned is a view of active work: settling a pinned task drops
+    /// the pin so the task really moves to Settled, and it does not come
+    /// back pinned when it is reopened.
+    #[gpui::test]
+    fn test_settling_a_pinned_task_unpins_it(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        let screen = screen(cx);
+        screen.update(cx, |this, cx| {
+            this.sessions = vec![summary("s1", "One"), summary("s2", "Two")];
+            this.sync_sidebar(cx);
+            this.sidebar
+                .update(cx, |sidebar, cx| sidebar.toggle_task_pin("s1", cx));
+            assert_eq!(this.sidebar_pinned(cx), vec![0]);
+            assert_eq!(
+                this.sidebar.read(cx).row_step_label_for_test("s1"),
+                Some("Settle")
+            );
+
+            // The pin drops at once; the row moves when the runtime's
+            // record lands.
+            this.sidebar.update(cx, |sidebar, cx| {
+                sidebar.move_task("s1", TaskMove::Settled, cx)
+            });
+            assert!(this.sidebar_pinned(cx).is_empty());
+            assert_eq!(this.sidebar_active(cx), vec![0, 1]);
+            this.settle_task("s1", cx);
+            assert_eq!(this.sidebar_settled(cx), vec![0]);
+            assert_eq!(this.sidebar_active(cx), vec![1]);
+            assert_eq!(
+                this.sidebar.read(cx).row_step_label_for_test("s1"),
+                Some("Archive")
+            );
+
+            this.unsettle_task("s1", cx);
+            assert!(this.sidebar_pinned(cx).is_empty());
+            assert_eq!(this.sidebar_active(cx), vec![0, 1]);
+        });
+    }
+
+    /// Deleting asks first; the confirmation names the task.
+    #[gpui::test]
+    fn test_delete_task_asks_before_it_runs(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        let screen = screen(cx);
+        screen.update(cx, |this, cx| {
+            this.sessions = vec![summary("s1", "One")];
+            this.sync_sidebar(cx);
+            this.request_delete_task("s1", cx);
+            assert_eq!(
+                this.confirm,
+                Some(dialogs::ConfirmDialog::DeleteTask("s1".to_string()))
+            );
+            assert_eq!(this.sessions.len(), 1);
+        });
+    }
+
+    /// Once the backend has deleted a task, the row leaves every section
+    /// and a deleted selection moves to the newest live task in its root.
+    #[gpui::test]
+    fn test_remove_session_drops_the_row_and_moves_the_selection(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        let screen = screen(cx);
+        screen.update(cx, |this, cx| {
+            this.sessions = vec![summary("s1", "One"), summary("s2", "Two")];
+            this.completed_unread_sessions.insert("s1".to_string());
+            this.sync_sidebar(cx);
+            this.settle_task("s1", cx);
+            assert_eq!(this.sidebar_settled(cx), vec![0]);
+
+            this.remove_session("s1", cx);
+            assert_eq!(
+                this.sessions
+                    .iter()
+                    .map(|s| s.id.as_str())
+                    .collect::<Vec<_>>(),
+                vec!["s2"]
+            );
+            // The next task loads asynchronously; the old selection is gone.
+            assert!(this.selected_session.is_none());
+            assert_eq!(this.loading_session.as_deref(), Some("s2"));
+            assert!(!this.completed_unread_sessions.contains("s1"));
+            assert!(this.sidebar_settled(cx).is_empty());
+            assert_eq!(this.sidebar_active(cx), vec![0]);
+
+            // Removing a task the list no longer has is a no-op.
+            this.remove_session("s1", cx);
+            assert_eq!(this.sessions.len(), 1);
+        });
+    }
+
+    /// A run on a settled task shows it active from the start: the
+    /// running set covers the first frame, the runtime's record keeps it
+    /// there, and finishing leaves it active with its unread marker.
+    #[gpui::test]
+    fn test_a_run_shows_a_settled_task_active(cx: &mut TestAppContext) {
         cx.executor().allow_parking();
         let screen = screen(cx);
         screen.update(cx, |this, cx| {
             this.selected_session = None;
             this.sessions = vec![summary("s1", "One")];
-            this.sidebar.update(cx, |sidebar, _| {
-                sidebar.set_settled_for_test(HashSet::from(["s1".to_string()]));
-            });
-            this.sync_sidebar(cx);
+            this.settle_task("s1", cx);
             assert_eq!(this.sidebar_settled(cx), vec![0]);
             assert!(this.sidebar_active(cx).is_empty());
 
@@ -1980,6 +2261,10 @@ mod state_tests {
             );
             assert_eq!(this.sidebar_active(cx), vec![0]);
 
+            // The runtime's record arrives while the run works.
+            this.unsettle_task("s1", cx);
+            assert_eq!(this.sidebar_active(cx), vec![0]);
+
             this.handle_run_event(
                 "s1",
                 "run-1",
@@ -1988,7 +2273,6 @@ mod state_tests {
                 ),
                 cx,
             );
-            assert!(this.sidebar.read(cx).settled_tasks().is_empty());
             assert_eq!(this.sidebar_active(cx), vec![0]);
             assert!(this.sidebar_settled(cx).is_empty());
             assert!(this.completed_unread_sessions.contains("s1"));
@@ -2019,6 +2303,42 @@ mod state_tests {
             this.sidebar
                 .update(cx, |sidebar, cx| sidebar.close_popups(cx));
             assert!(!this.step_sidebar_popup(1, 1, cx));
+        });
+    }
+
+    /// Choosing any task-menu item closes the menu: a ladder move and a
+    /// pin toggle alike.
+    #[gpui::test]
+    fn test_task_menu_closes_after_an_item_runs(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        let screen = screen(cx);
+        screen.update(cx, |this, cx| {
+            this.application_vim_enabled = true;
+            this.sessions = vec![summary("s1", "One")];
+            this.sync_sidebar(cx);
+
+            // Rows: Rename, Pin, Settle, Archive, Delete; three lands on Settle.
+            this.sidebar
+                .update(cx, |sidebar, cx| sidebar.open_task_menu_for_test("s1", cx));
+            assert!(this.step_sidebar_popup(1, 3, cx));
+            this.activate_sidebar_popup(cx);
+            assert!(this.sidebar.read(cx).task_menu().is_none());
+
+            // Rows: Rename, Reopen, Archive, Delete; the second reopens.
+            this.settle_task("s1", cx);
+            this.sidebar
+                .update(cx, |sidebar, cx| sidebar.open_task_menu_for_test("s1", cx));
+            assert!(this.step_sidebar_popup(1, 2, cx));
+            this.activate_sidebar_popup(cx);
+            assert!(this.sidebar.read(cx).task_menu().is_none());
+            this.unsettle_task("s1", cx);
+
+            this.sidebar
+                .update(cx, |sidebar, cx| sidebar.open_task_menu_for_test("s1", cx));
+            assert!(this.step_sidebar_popup(1, 2, cx));
+            this.activate_sidebar_popup(cx);
+            assert!(this.sidebar.read(cx).task_menu().is_none());
+            assert_eq!(this.sidebar_pinned(cx), vec![0]);
         });
     }
 

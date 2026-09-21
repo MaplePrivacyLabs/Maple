@@ -18,7 +18,7 @@ use gpui::{
     AnyElement, AppContext, Context, Div, Entity, EventEmitter, Focusable, SharedString, Task,
     WeakEntity, Window, div, prelude::*, px,
 };
-use maple_agent::agent::{AgentProjectTrustStatus, AgentSessionSummary};
+use maple_agent::agent::{AgentProjectTrustStatus, AgentSessionSummary, AgentTaskState};
 
 use super::commands::ChatCommand;
 use super::navigation::SidebarTarget;
@@ -39,8 +39,14 @@ pub(super) enum SidebarEvent {
     /// A session changed on the backend (a rename); the screen owns the
     /// canonical list and pushes it back.
     SessionChanged(AgentSessionSummary),
-    /// Archive or restore a task.
-    SetArchived { session_id: String, archived: bool },
+    /// Move a task between active, settled, and archived. The runtime
+    /// owns the state; its updated record moves the row.
+    SetState {
+        session_id: String,
+        state: AgentTaskState,
+    },
+    /// Delete a task for good; the screen confirms first.
+    DeleteTask(String),
     /// Remove a project; the screen confirms first.
     RemoveRoot(String),
     /// Trust or untrust a project.
@@ -73,7 +79,9 @@ pub(super) struct SidebarRow {
     /// Hover group that reveals the row's action buttons.
     pub(super) group: SharedString,
     pub(super) rename_id: SharedString,
-    pub(super) archive_id: SharedString,
+    /// The hover button that moves the task one rung along
+    /// active, settled, archived, deleted.
+    pub(super) step_id: SharedString,
     /// Animation id of the running indicator.
     pub(super) spinner_id: SharedString,
     pub(super) pin_id: SharedString,
@@ -84,6 +92,8 @@ pub(super) struct SidebarRow {
     pub(super) menu_pin_id: SharedString,
     pub(super) menu_settle_id: SharedString,
     pub(super) menu_archive_id: SharedString,
+    pub(super) menu_delete_id: SharedString,
+    pub(super) menu_reopen_id: SharedString,
     pub(super) title: SharedString,
     /// Display name of the task's project, shown on every row.
     pub(super) project_name: SharedString,
@@ -99,7 +109,7 @@ impl SidebarRow {
             element_id: SharedString::from(format!("session-{id}")),
             group: SharedString::from(format!("task-row-{id}")),
             rename_id: SharedString::from(format!("rename-session-{id}")),
-            archive_id: SharedString::from(format!("archive-session-{id}")),
+            step_id: SharedString::from(format!("step-session-{id}")),
             spinner_id: SharedString::from(format!("spinner-session-{id}")),
             pin_id: SharedString::from(format!("pin-session-{id}")),
             menu_id: SharedString::from(format!("menu-session-{id}")),
@@ -108,6 +118,8 @@ impl SidebarRow {
             menu_pin_id: SharedString::from(format!("pin-task-{id}")),
             menu_settle_id: SharedString::from(format!("settle-task-{id}")),
             menu_archive_id: SharedString::from(format!("archive-task-{id}")),
+            menu_delete_id: SharedString::from(format!("delete-task-{id}")),
+            menu_reopen_id: SharedString::from(format!("reopen-task-{id}")),
             title: SharedString::from(session.title.clone()),
             project_name: SharedString::from(project_name.to_string()),
             search: session.title.to_lowercase(),
@@ -148,6 +160,71 @@ pub(super) struct SidebarTaskEntry {
     pub(super) pinned: bool,
     pub(super) settled: bool,
     pub(super) archived: bool,
+}
+
+/// Where a task sits on the ladder active, settled, archived, deleted.
+/// The hover button steps one rung forward; the overflow menu reaches
+/// every later rung and comes back only to active. The pinned section
+/// is a view of active tasks, not a rung of its own.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum TaskRung {
+    Active,
+    Settled,
+    Archived,
+}
+
+/// Where a menu item or the hover button sends a task.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum TaskMove {
+    Active,
+    Settled,
+    Archived,
+    Deleted,
+}
+
+/// The one-rung-forward move of a task: the hover button's icon and
+/// short label.
+pub(super) struct TaskStep {
+    pub(super) icon: &'static str,
+    pub(super) row_label: &'static str,
+}
+
+impl TaskRung {
+    pub(super) fn of(task: SidebarTaskEntry) -> Self {
+        if task.archived {
+            Self::Archived
+        } else if task.settled {
+            Self::Settled
+        } else {
+            Self::Active
+        }
+    }
+
+    /// The rung after this one.
+    pub(super) fn next(self) -> TaskMove {
+        match self {
+            Self::Active => TaskMove::Settled,
+            Self::Settled => TaskMove::Archived,
+            Self::Archived => TaskMove::Deleted,
+        }
+    }
+
+    pub(super) fn step(self) -> TaskStep {
+        match self {
+            Self::Active => TaskStep {
+                icon: "check",
+                row_label: "Settle",
+            },
+            Self::Settled => TaskStep {
+                icon: "archive",
+                row_label: "Archive",
+            },
+            Self::Archived => TaskStep {
+                icon: "trash-2",
+                row_label: "Delete",
+            },
+        }
+    }
 }
 
 /// Why the task list has no rows to show.
@@ -254,8 +331,6 @@ pub(super) struct Sidebar {
     rename_focus_pending: bool,
     // Persisted in the app settings.
     pinned_tasks: Vec<String>,
-    settled_tasks: HashSet<String>,
-    unsettled_tasks: HashSet<String>,
     project_names: HashMap<String, String>,
     // Application Vim's view of the rows.
     vim_selected: Option<SidebarTarget>,
@@ -327,8 +402,6 @@ impl Sidebar {
             rename_input: None,
             rename_focus_pending: false,
             pinned_tasks: settings.pinned_tasks.clone(),
-            settled_tasks: settings.settled_tasks.iter().cloned().collect(),
-            unsettled_tasks: settings.unsettled_tasks.iter().cloned().collect(),
             project_names: settings.project_names.clone(),
             vim_selected: None,
             vim_by_row: Vec::new(),
@@ -435,23 +508,15 @@ impl Sidebar {
         }
     }
 
-    /// A fresh completion is new activity: it wakes a task the user
-    /// settled away earlier.
-    pub(super) fn wake_task(&mut self, session_id: &str, cx: &mut Context<Self>) {
-        if self.settled_tasks.remove(session_id) {
-            self.rebuild_sections();
-            cx.notify();
-        }
-    }
-
     /// Forget tasks that left the app (their project was removed).
     pub(super) fn forget_tasks(&mut self, ids: &[String], cx: &mut Context<Self>) {
+        let before = self.pinned_tasks.len();
         self.pinned_tasks
             .retain(|candidate| !ids.contains(candidate));
-        self.settled_tasks
-            .retain(|candidate| !ids.contains(candidate));
-        self.unsettled_tasks
-            .retain(|candidate| !ids.contains(candidate));
+        if self.pinned_tasks.len() != before {
+            let pinned = self.pinned_tasks.clone();
+            persist_settings(move |settings| settings.pinned_tasks = pinned);
+        }
         self.rebuild_sections();
         cx.notify();
     }
@@ -566,11 +631,6 @@ impl Sidebar {
     }
 
     #[cfg(test)]
-    pub(super) fn settled_tasks(&self) -> &HashSet<String> {
-        &self.settled_tasks
-    }
-
-    #[cfg(test)]
     pub(super) fn set_project_name_for_test(&mut self, root: &str, name: &str) {
         self.project_names
             .insert(root.to_string(), name.to_string());
@@ -589,19 +649,11 @@ impl Sidebar {
         self.rebuild_sections();
     }
 
-    #[cfg(test)]
-    pub(super) fn set_settled_for_test(&mut self, settled: HashSet<String>) {
-        self.settled_tasks = settled;
-        self.rebuild_sections();
-    }
-
     /// Other tests persist their fixture ids into the settings file this
     /// process reads; a fixture starts from nothing persisted.
     #[cfg(test)]
     pub(super) fn reset_persisted_for_test(&mut self) {
         self.pinned_tasks.clear();
-        self.settled_tasks.clear();
-        self.unsettled_tasks.clear();
         self.project_names.clear();
         self.rebuild_sections();
     }
@@ -620,12 +672,6 @@ impl Sidebar {
     pub(super) fn open_task_menu_for_test(&mut self, session_id: &str, cx: &mut Context<Self>) {
         self.task_menu = Some(session_id.to_string());
         cx.notify();
-    }
-
-    #[cfg(test)]
-    pub(super) fn set_unsettled_for_test(&mut self, unsettled: HashSet<String>) {
-        self.unsettled_tasks = unsettled;
-        self.rebuild_sections();
     }
 
     #[cfg(test)]
@@ -724,7 +770,7 @@ impl Sidebar {
             if !matches {
                 continue;
             }
-            if session.archived {
+            if session.state == AgentTaskState::Archived {
                 archived.push(index);
             } else if pinned_ids.contains(session.id.as_str()) {
                 pinned.push(index);
@@ -743,13 +789,7 @@ impl Sidebar {
             )
         };
         pinned.sort_by_cached_key(by_update);
-        active.sort_by_cached_key(|ix| {
-            let unsettled = self
-                .sessions
-                .get(*ix)
-                .is_some_and(|session| self.unsettled_tasks.contains(&session.id));
-            (std::cmp::Reverse(unsettled), by_update(ix))
-        });
+        active.sort_by_cached_key(by_update);
         settled.sort_by_cached_key(by_update);
         self.pinned_rows = pinned;
         self.active_rows = active;
@@ -785,11 +825,11 @@ impl Sidebar {
         self.rebuild_entries();
     }
 
-    /// Whether a task belongs to the active inbox. Every task stays
-    /// active until it is settled away by hand; a run in flight is
-    /// activity, so it wakes even a settled task.
+    /// Whether a task belongs to the active inbox. The runtime makes a
+    /// task active the moment a run starts on it; the running set covers
+    /// the frame before its updated record lands.
     fn session_is_active(&self, session: &AgentSessionSummary) -> bool {
-        self.running.contains(&session.id) || !self.settled_tasks.contains(&session.id)
+        self.running.contains(&session.id) || session.state != AgentTaskState::Settled
     }
 
     /// Flatten the sections into list rows. The list splices only the
@@ -987,26 +1027,24 @@ impl Sidebar {
     /// Pin or unpin a task. Pinned tasks stay at the top of the sidebar
     /// and persist in the app settings.
     pub(super) fn toggle_task_pin(&mut self, session_id: &str, cx: &mut Context<Self>) {
-        if self.pinned_tasks.iter().any(|pinned| pinned == session_id) {
-            self.pinned_tasks.retain(|pinned| pinned != session_id);
-        } else {
+        let pinned = self.pinned_tasks.iter().any(|pinned| pinned == session_id);
+        self.set_task_pinned(session_id, !pinned, cx);
+    }
+
+    fn set_task_pinned(&mut self, session_id: &str, pinned: bool, cx: &mut Context<Self>) {
+        let is_pinned = self.pinned_tasks.iter().any(|pinned| pinned == session_id);
+        if is_pinned == pinned {
+            return;
+        }
+        if pinned {
             self.pinned_tasks.push(session_id.to_string());
+        } else {
+            self.pinned_tasks.retain(|pinned| pinned != session_id);
         }
         self.rebuild_sections();
         cx.notify();
         let pinned = self.pinned_tasks.clone();
         persist_settings(move |settings| settings.pinned_tasks = pinned);
-    }
-
-    /// Move a task to the settled section: it leaves the active inbox
-    /// until new activity wakes it again.
-    pub(super) fn settle_task(&mut self, session_id: &str, cx: &mut Context<Self>) {
-        self.unsettled_tasks.remove(session_id);
-        if self.settled_tasks.insert(session_id.to_string()) {
-            self.rebuild_sections();
-            cx.notify();
-            persist_task_sets(self.settled_tasks.clone(), self.unsettled_tasks.clone());
-        }
     }
 
     /// Whether a collapsible section shows its rows.
@@ -1026,17 +1064,6 @@ impl Sidebar {
         }
         self.rebuild_entries();
         cx.notify();
-    }
-
-    /// Move a task back into the active inbox at the top. It stays
-    /// active until it is settled away by hand again.
-    pub(super) fn unsettle_task(&mut self, session_id: &str, cx: &mut Context<Self>) {
-        self.settled_tasks.remove(session_id);
-        if self.unsettled_tasks.insert(session_id.to_string()) {
-            self.rebuild_sections();
-            cx.notify();
-            persist_task_sets(self.settled_tasks.clone(), self.unsettled_tasks.clone());
-        }
     }
 
     /// Open or close the project switcher menu.
@@ -1241,71 +1268,161 @@ impl Sidebar {
         cx.notify();
     }
 
-    /// The overflow menu of a task row: rename, pin, settle, archive.
+    /// The overflow menu of a task row: rename, then where the task can
+    /// go. Active tasks pin, settle, archive, or delete; settled tasks
+    /// reopen, archive, or delete; archived tasks reopen or delete.
     fn task_menu_items(&self, task: SidebarTaskEntry) -> Vec<SidebarMenuItem> {
         let Some(row) = self.rows.get(task.session) else {
             return Vec::new();
         };
+        let rung = TaskRung::of(task);
         let rename_id = row.id.to_string();
-        let pinned_id = row.id.to_string();
-        let settle_id = row.id.to_string();
-        let archive_id = row.id.to_string();
-        let pinned = task.pinned;
-        let archived = task.archived;
-        let active = !archived && (self.running.contains(&*row.id) || !task.settled);
-        vec![
-            SidebarMenuItem {
-                id: row.menu_rename_id.clone(),
-                icon: "pencil",
-                label: "Rename task",
-                on_click: Box::new(move |this, cx| {
-                    this.begin_rename(RenameTarget::Task(rename_id.clone()), cx)
-                }),
-            },
-            SidebarMenuItem {
+        let mut items = vec![SidebarMenuItem {
+            id: row.menu_rename_id.clone(),
+            icon: "pencil",
+            label: "Rename task",
+            on_click: Box::new(move |this, cx| {
+                this.begin_rename(RenameTarget::Task(rename_id.clone()), cx)
+            }),
+        }];
+        if rung == TaskRung::Active {
+            let pinned_id = row.id.to_string();
+            let pinned = task.pinned;
+            items.push(SidebarMenuItem {
                 id: row.menu_pin_id.clone(),
                 icon: "pin",
                 label: if pinned { "Unpin task" } else { "Pin task" },
                 on_click: Box::new(move |this, cx| this.toggle_task_pin(&pinned_id, cx)),
-            },
-            SidebarMenuItem {
-                id: row.menu_settle_id.clone(),
-                icon: if active { "check" } else { "undo-2" },
-                label: if active {
-                    "Settle task"
-                } else {
-                    "Unsettle task"
-                },
-                on_click: Box::new(move |this, cx| {
-                    if active {
-                        this.settle_task(&settle_id, cx)
-                    } else {
-                        this.unsettle_task(&settle_id, cx)
-                    }
-                }),
-            },
-            SidebarMenuItem {
-                id: row.menu_archive_id.clone(),
-                icon: if archived {
-                    "archive-restore"
-                } else {
-                    "archive"
-                },
-                label: if archived {
-                    "Restore task"
-                } else {
-                    "Archive task"
-                },
-                on_click: Box::new(move |this, cx| {
-                    this.task_menu = None;
-                    cx.emit(SidebarEvent::SetArchived {
-                        session_id: archive_id.clone(),
-                        archived: !archived,
-                    });
-                    cx.notify();
-                }),
-            },
-        ]
+            });
+        }
+        let moves: &[(TaskMove, &SharedString, &'static str, &'static str)] = match rung {
+            TaskRung::Active => &[
+                (
+                    TaskMove::Settled,
+                    &row.menu_settle_id,
+                    "check",
+                    "Settle task",
+                ),
+                (
+                    TaskMove::Archived,
+                    &row.menu_archive_id,
+                    "archive",
+                    "Archive task",
+                ),
+                (
+                    TaskMove::Deleted,
+                    &row.menu_delete_id,
+                    "trash-2",
+                    "Delete task",
+                ),
+            ],
+            TaskRung::Settled => &[
+                (
+                    TaskMove::Active,
+                    &row.menu_reopen_id,
+                    "undo-2",
+                    "Reopen task",
+                ),
+                (
+                    TaskMove::Archived,
+                    &row.menu_archive_id,
+                    "archive",
+                    "Archive task",
+                ),
+                (
+                    TaskMove::Deleted,
+                    &row.menu_delete_id,
+                    "trash-2",
+                    "Delete task",
+                ),
+            ],
+            TaskRung::Archived => &[
+                (
+                    TaskMove::Active,
+                    &row.menu_reopen_id,
+                    "undo-2",
+                    "Reopen task",
+                ),
+                (
+                    TaskMove::Deleted,
+                    &row.menu_delete_id,
+                    "trash-2",
+                    "Delete task",
+                ),
+            ],
+        };
+        for &(to, id, icon, label) in moves {
+            let session_id = row.id.to_string();
+            items.push(SidebarMenuItem {
+                id: id.clone(),
+                icon,
+                label,
+                on_click: Box::new(move |this, cx| this.move_task(&session_id, to, cx)),
+            });
+        }
+        // Every item commits an action, so choosing one closes the menu.
+        for item in &mut items {
+            let action = std::mem::replace(&mut item.on_click, Box::new(|_, _| {}));
+            item.on_click = Box::new(move |this, cx| {
+                this.task_menu = None;
+                this.menu_selected = None;
+                cx.notify();
+                action(this, cx);
+            });
+        }
+        items
+    }
+
+    /// Send a task to a rung. The runtime owns the state, so every move
+    /// but delete asks it and the row follows its updated record. Pinned
+    /// is a view of active work: leaving active drops the pin at once.
+    pub(super) fn move_task(&mut self, session_id: &str, to: TaskMove, cx: &mut Context<Self>) {
+        let Some(current) = self
+            .sessions
+            .iter()
+            .find(|session| session.id == session_id)
+            .map(|session| session.state)
+        else {
+            return;
+        };
+        let target = match to {
+            TaskMove::Active => AgentTaskState::Active,
+            TaskMove::Settled => AgentTaskState::Settled,
+            TaskMove::Archived => AgentTaskState::Archived,
+            TaskMove::Deleted => {
+                cx.emit(SidebarEvent::DeleteTask(session_id.to_string()));
+                cx.notify();
+                return;
+            }
+        };
+        if target != AgentTaskState::Active {
+            self.set_task_pinned(session_id, false, cx);
+        }
+        if current != target {
+            cx.emit(SidebarEvent::SetState {
+                session_id: session_id.to_string(),
+                state: target,
+            });
+            cx.notify();
+        }
+    }
+
+    #[cfg(test)]
+    pub(super) fn task_menu_labels_for_test(&self, session_id: &str) -> Vec<&'static str> {
+        self.task_menu_entry(session_id)
+            .map(|task| {
+                self.task_menu_items(task)
+                    .into_iter()
+                    .map(|item| item.label)
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    #[cfg(test)]
+    pub(super) fn row_step_label_for_test(&self, session_id: &str) -> Option<&'static str> {
+        self.task_menu_entry(session_id)
+            .map(|task| TaskRung::of(task).step().row_label)
     }
 
     /// The overflow menu of one switcher project row.
@@ -2157,8 +2274,9 @@ impl Sidebar {
         )
     }
 
-    /// One task row: title, its project, and hover actions. Archived rows
-    /// show a restore button; live rows show an archive button on hover.
+    /// One task row: title, its project, and hover actions. The last
+    /// hover button moves the task one rung forward; the overflow menu
+    /// reaches every later rung and the way back to active.
     fn render_task_row(
         &self,
         task: SidebarTaskEntry,
@@ -2169,7 +2287,7 @@ impl Sidebar {
         let SidebarTaskEntry {
             session: index,
             pinned: is_pinned,
-            settled,
+            settled: _,
             archived,
         } = task;
         let row = &self.rows[index];
@@ -2178,8 +2296,10 @@ impl Sidebar {
             .then(|| self.session_activity(&row.id))
             .flatten();
         let session_id = Arc::clone(&row.id);
-        let action_id = Arc::clone(&row.id);
+        let step_id = Arc::clone(&row.id);
         let rename_id = Arc::clone(&row.id);
+        let rung = TaskRung::of(task);
+        let step = rung.step();
         let menu_id = Arc::clone(&row.id);
         let pin_id = row.pin_id.clone();
         let rename_field = self.task_rename_field(&row.id);
@@ -2304,17 +2424,13 @@ impl Sidebar {
                         }),
                     ))
                     .child(row_action(
-                        row.archive_id.clone(),
+                        row.step_id.clone(),
                         &row.group,
-                        if settled { "undo-2" } else { "check" },
-                        if settled { "Reopen" } else { "Settle" },
+                        step.icon,
+                        step.row_label,
                         cx.listener(move |this, _event, _window, cx| {
                             cx.stop_propagation();
-                            if settled {
-                                this.unsettle_task(&action_id, cx);
-                            } else {
-                                this.settle_task(&action_id, cx);
-                            }
+                            this.move_task(&step_id, rung.next(), cx);
                         }),
                     )),
             )
@@ -2497,14 +2613,6 @@ fn persist_settings(update: impl FnOnce(&mut crate::settings::AppSettings) + Sen
     crate::settings::update_settings_in_background(update);
 }
 
-/// Write the settle/unsettle sets in one background update.
-fn persist_task_sets(settled: HashSet<String>, unsettled: HashSet<String>) {
-    crate::settings::update_settings_in_background(move |settings| {
-        settings.settled_tasks = settled.into_iter().collect();
-        settings.unsettled_tasks = unsettled.into_iter().collect();
-    });
-}
-
 /// A spinner while the task runs, a dot once it completed unseen. The
 /// spinner keeps the sidebar repainting while any task runs; `spinner_id`
 /// is prebuilt so render allocates nothing.
@@ -2594,7 +2702,7 @@ pub(super) fn session_summary_eq(a: &AgentSessionSummary, b: &AgentSessionSummar
         && a.model == b.model
         && a.mode == b.mode
         && a.web_enabled == b.web_enabled
-        && a.archived == b.archived
+        && a.state == b.state
 }
 
 pub(super) fn root_display_name(root: &str) -> String {

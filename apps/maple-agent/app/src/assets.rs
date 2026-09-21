@@ -51,6 +51,7 @@ assets!(
     "icons/square-pen.svg",
     "icons/square.svg",
     "icons/trash-2.svg",
+    "icons/undo-2.svg",
     "icons/users.svg",
     "icons/volume-2.svg",
     "icons/x.svg",
