@@ -28,6 +28,7 @@ import zlib
 
 
 ARCHIVE_NAME = "maple-web-dist.tar.gz"
+AUTH_ARCHIVE_NAME = "maple-auth-dist.tar.gz"
 MANIFEST_NAME = "pages-artifact.json"
 MAX_MANIFEST_BYTES = 16 * 1024
 MAX_ARCHIVE_BYTES = 200 * 1024 * 1024
@@ -74,7 +75,7 @@ def validate_manifest(value: object) -> dict:
         raise ArtifactError("Invalid artifact manifest fields")
     if type(value["schema_version"]) is not int or value["schema_version"] != 1:
         raise ArtifactError("Unsupported artifact manifest version")
-    if value["profile"] not in ("pr", "release"):
+    if value["profile"] not in ("pr", "release", "auth-release"):
         raise ArtifactError("Invalid artifact build profile")
     if not _hex(value["source_sha"], 40) or not _hex(value["archive_sha256"], 64):
         raise ArtifactError("Invalid artifact digest or source identity")
@@ -150,8 +151,15 @@ def read_preview_zip(
     expected_run_id: int,
     expected_run_attempt: int,
     output_archive: Path,
+    *,
+    archive_name: str = ARCHIVE_NAME,
+    expected_profile: str = "pr",
 ) -> dict:
     """Unwrap precisely the two expected GitHub artifact files, without extraction."""
+    if (expected_profile, archive_name) not in {
+        ("pr", ARCHIVE_NAME), ("auth-release", AUTH_ARCHIVE_NAME),
+    }:
+        raise ArtifactError("Unsupported artifact archive/profile pair")
     if not _hex(expected_sha, 40) or not all(
         _positive_integer(value) for value in (expected_run_id, expected_run_attempt)
     ):
@@ -166,7 +174,7 @@ def read_preview_zip(
             with zipfile.ZipFile(source) as bundle:
                 entries = bundle.infolist()
                 if len(entries) != 2 or {entry.filename for entry in entries} != {
-                    ARCHIVE_NAME,
+                    archive_name,
                     MANIFEST_NAME,
                 }:
                     raise ArtifactError("Unexpected artifact ZIP entries")
@@ -186,7 +194,7 @@ def read_preview_zip(
                         raise ArtifactError("Artifact ZIP entry exceeds size limit")
                 manifest = _load_manifest(bundle.read(MANIFEST_NAME))
                 if (
-                    manifest["profile"] != "pr"
+                    manifest["profile"] != expected_profile
                     or manifest["source_sha"] != expected_sha
                     or manifest["run_id"] != expected_run_id
                     or manifest["run_attempt"] != expected_run_attempt
@@ -196,7 +204,7 @@ def read_preview_zip(
                     raise ArtifactError("Artifact output already exists")
                 descriptor, name = tempfile.mkstemp(prefix=".pages-archive-", dir=output_archive.parent)
                 staged = Path(name)
-                with os.fdopen(descriptor, "wb") as target, bundle.open(ARCHIVE_NAME) as archive:
+                with os.fdopen(descriptor, "wb") as target, bundle.open(archive_name) as archive:
                     actual_digest = _copy_bounded(archive, target, MAX_ARCHIVE_BYTES)
                 if actual_digest != manifest["archive_sha256"]:
                     raise ArtifactError("Artifact archive digest mismatch")
@@ -388,7 +396,7 @@ def main() -> int:
     commands = parser.add_subparsers(dest="command", required=True)
     manifest = commands.add_parser("manifest", help="Write metadata for a built web archive")
     manifest.add_argument("--archive", required=True, type=Path)
-    manifest.add_argument("--profile", required=True, choices=("pr", "release"))
+    manifest.add_argument("--profile", required=True, choices=("pr", "release", "auth-release"))
     manifest.add_argument("--sha", required=True)
     manifest.add_argument("--run-id", required=True, type=int)
     manifest.add_argument("--run-attempt", required=True, type=int)

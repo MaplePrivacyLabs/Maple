@@ -1,0 +1,56 @@
+@config "../../tailwind.auth.config.cjs";
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@font-face {
+  font-family: "Manrope";
+  src: url("/fonts/Manrope-VariableFont_wght.ttf") format("truetype");
+  font-weight: 200 800;
+  font-display: swap;
+}
+
+@layer base {
+  :root {
+    --app-font-family: "Manrope", sans-serif;
+    --background: 0 0% 98%;
+    --foreground: 0 0% 15%;
+    --primary: 0 0% 9%;
+    --primary-foreground: 0 0% 98%;
+    --muted-foreground: 0 0% 45%;
+    --ring: 17 100% 72%;
+    --maple-primary: 17 100% 72%;
+    --maple-primary-container: 17 100% 94%;
+    --maple-secondary: 237 8% 57%;
+  }
+
+  body {
+    margin: 0;
+    background: hsl(var(--background));
+    color: hsl(var(--foreground));
+    font-family: var(--app-font-family);
+    font-size: 14px;
+    line-height: 1.6;
+  }
+}
+
+@layer components {
+  .auth-shell {
+    display: grid;
+    min-height: 100dvh;
+    place-items: center;
+    padding: 24px;
+  }
+
+  .auth-card {
+    display: grid;
+    gap: 24px;
+    width: min(100%, 448px);
+    padding: 32px;
+    border: 1px solid #e5e5e5;
+    border-radius: 16px;
+    background: #fff;
+    box-shadow: 0 12px 40px rgb(0 0 0 / 4%);
+  }
+}

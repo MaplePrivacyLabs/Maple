@@ -150,6 +150,9 @@ use_pr_environment() {
   export VITE_OS_FLAGS_BASE_URL="https://flags-dev.opensecret.cloud"
   export VITE_MAPLE_BILLING_API_URL="https://billing-dev.opensecret.cloud"
   export VITE_CLIENT_ID="ba5a14b5-d915-47b1-b7b1-afda52bc5fc6"
+  export VITE_AUTH_ORIGIN="https://trymaple.ai"
+  export VITE_APP_ORIGIN="https://trymaple.ai"
+  export VITE_MARKETING_ORIGIN="https://www.trymaple.ai"
 }
 
 use_release_environment() {
@@ -167,6 +170,9 @@ use_release_environment() {
   export VITE_OS_FLAGS_BASE_URL="https://flags.opensecret.cloud"
   export VITE_MAPLE_BILLING_API_URL="https://billing.opensecret.cloud"
   export VITE_CLIENT_ID="ba5a14b5-d915-47b1-b7b1-afda52bc5fc6"
+  export VITE_AUTH_ORIGIN="https://trymaple.ai"
+  export VITE_APP_ORIGIN="https://trymaple.ai"
+  export VITE_MARKETING_ORIGIN="https://www.trymaple.ai"
 }
 
 configure_reproducible_build_metadata() {

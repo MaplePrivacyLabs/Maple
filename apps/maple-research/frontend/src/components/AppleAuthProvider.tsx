@@ -5,6 +5,13 @@ import { Apple } from "./icons/Apple";
 import { HostedNativeSignInConfirmation } from "./HostedNativeSignInConfirmation";
 import { getBillingService } from "@/billing/billingService";
 import {
+  getAppleAuthError,
+  getAppleAuthorizationNonce,
+  isAppleAuthCancellation,
+  type AppleAuthorization
+} from "@/services/appleOAuth";
+import { getBrowserOAuthCallbackUrl } from "@/services/oauthConfig";
+import {
   clearDesktopOAuthTransport,
   clearDesktopOAuthTarget,
   isCurrentDesktopOAuthTarget,
@@ -25,62 +32,7 @@ interface AppleAuthProviderProps {
   children?: React.ReactNode;
 }
 
-export interface AppleAuthorization {
-  code: string;
-  state: string;
-  id_token?: string;
-}
-
-declare global {
-  interface Window {
-    AppleID: {
-      auth: {
-        init: (config: {
-          clientId: string;
-          scope: string;
-          redirectURI: string;
-          state: string;
-          nonce: string;
-          usePopup: boolean;
-        }) => void;
-        signIn: () => Promise<{
-          authorization: AppleAuthorization;
-        }>;
-      };
-    };
-  }
-}
-
-function getAppleAuthError(value: unknown): Error {
-  if (value instanceof Error) return value;
-  if (value && typeof value === "object") {
-    const error = (value as Record<string, unknown>).error;
-    if (typeof error === "string" && error) return new Error(error);
-  }
-
-  return new Error("Apple authentication failed");
-}
-
-function isAppleAuthCancellation(error: Error): boolean {
-  return error.message === "user_cancelled_authorize" || error.message === "popup_closed_by_user";
-}
-
-function getAppleAuthorizationNonce(authUrl: string): string {
-  let url: URL;
-  try {
-    url = new URL(authUrl);
-  } catch {
-    throw new Error("Apple authorization response did not contain a valid nonce");
-  }
-
-  const nonces = url.searchParams.getAll("nonce");
-  const nonce = nonces[0];
-  if (nonces.length !== 1 || !nonce || !/^[0-9a-f]{64}$/u.test(nonce)) {
-    throw new Error("Apple authorization response did not contain a valid nonce");
-  }
-
-  return nonce;
-}
+export type { AppleAuthorization } from "@/services/appleOAuth";
 
 export function AppleAuthProvider({
   onSuccess,
@@ -132,14 +84,16 @@ export function AppleAuthProvider({
   }, []);
 
   const initializeAppleAuth = async (target: TransportV2DesktopOAuthState | null) => {
-    if (!window.AppleID) {
+    const appleId = window.AppleID;
+    if (!appleId) {
       throw new Error("Apple Sign In SDK not loaded");
     }
 
     if (!isNativeOAuthRedirect()) clearDesktopOAuthTransport();
 
     // A retry is a new authorization attempt, so it gets a fresh backend state and nonce.
-    const initiateResult = await os.initiateAppleAuth(inviteCode || "");
+    const redirectURI = getBrowserOAuthCallbackUrl("apple", window.location.origin);
+    const initiateResult = await os.initiateAppleAuth(inviteCode || "", redirectURI);
     if (!active.current || (target && !isCurrentDesktopOAuthTarget(target))) return;
     const nonce = getAppleAuthorizationNonce(initiateResult.auth_url);
 
@@ -150,10 +104,10 @@ export function AppleAuthProvider({
       sessionStorage.setItem("selected_plan", selectedPlan);
     }
 
-    window.AppleID.auth.init({
+    appleId.auth.init({
       clientId: "cloud.opensecret.maple.services",
       scope: "name email",
-      redirectURI: window.location.origin + "/auth/apple/callback",
+      redirectURI,
       state,
       nonce,
       usePopup: true
@@ -204,7 +158,9 @@ export function AppleAuthProvider({
 
       // Programmatic Apple sign-in returns one promise that resolves on success and rejects on
       // failure. It is the only completion channel; document events are intentionally unused.
-      const authResult = await window.AppleID.auth.signIn();
+      const appleId = window.AppleID;
+      if (!appleId) throw new Error("Apple Sign In SDK not loaded");
+      const authResult = await appleId.auth.signIn();
       if (!active.current || (target && !isCurrentDesktopOAuthTarget(target))) return;
       const authorization = authResult?.authorization;
       if (!authorization?.code || !authorization.state) {

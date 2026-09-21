@@ -7,10 +7,12 @@ on:
   pull_request:
     paths:
       - ".github/workflows/pages-*.yml"
+      - ".github/workflows/auth-pages-*.yml"
       - "scripts/ci/pages_*.py"
       - "scripts/ci/test_pages_*.py"
       - "scripts/ci/_common.sh"
       - "scripts/ci/web.sh"
+      - "scripts/ci/auth-web.sh"
       - "services/updates/package.json"
       - "services/updates/bun.lock"
       - "flake.nix"
@@ -19,10 +21,12 @@ on:
     branches: [master]
     paths:
       - ".github/workflows/pages-*.yml"
+      - ".github/workflows/auth-pages-*.yml"
       - "scripts/ci/pages_*.py"
       - "scripts/ci/test_pages_*.py"
       - "scripts/ci/_common.sh"
       - "scripts/ci/web.sh"
+      - "scripts/ci/auth-web.sh"
       - "services/updates/package.json"
       - "services/updates/bun.lock"
       - "flake.nix"

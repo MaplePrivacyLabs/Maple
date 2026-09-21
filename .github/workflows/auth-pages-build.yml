@@ -1,0 +1,54 @@
+name: Auth Pages build
+
+permissions:
+  contents: read
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest-8-cores
+    timeout-minutes: 30
+    steps:
+      - name: Checkout auth source
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
+        with:
+          github-token: ""
+
+      - name: Test Pages artifact and deployment boundaries
+        run: nix build --no-update-lock-file --no-link --print-build-logs .#checks.x86_64-linux.pages
+
+      - name: Build auth with production services
+        env:
+          MAPLE_AUTH_ENVIRONMENT: release
+        run: nix develop --no-update-lock-file .#ci -c bash scripts/ci/auth-web.sh
+
+      - name: Describe the auth artifact
+        run: |
+          set -euo pipefail
+          artifact_dir="apps/maple-research/frontend/src-tauri/target/reproducibility"
+          nix develop --no-update-lock-file .#pages -c python3 -I scripts/ci/pages_artifact.py manifest \
+            --archive "$artifact_dir/maple-auth-dist.tar.gz" \
+            --profile auth-release \
+            --sha "$GITHUB_SHA" \
+            --run-id "$GITHUB_RUN_ID" \
+            --run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --output "$artifact_dir/pages-artifact.json"
+
+      - name: Upload the auth artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: maple-auth-production-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            apps/maple-research/frontend/src-tauri/target/reproducibility/maple-auth-dist.tar.gz
+            apps/maple-research/frontend/src-tauri/target/reproducibility/pages-artifact.json
+          if-no-files-found: error
+          retention-days: 5

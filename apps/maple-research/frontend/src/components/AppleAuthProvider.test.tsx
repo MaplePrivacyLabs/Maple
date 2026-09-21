@@ -334,14 +334,17 @@ describe("AppleAuthProvider", () => {
     });
 
     expect(initiateAppleAuth).toHaveBeenCalledTimes(4);
-    expect(initiateAppleAuth).toHaveBeenNthCalledWith(1, "invite-one");
-    expect(initiateAppleAuth).toHaveBeenNthCalledWith(2, "invite-one");
-    expect(initiateAppleAuth).toHaveBeenNthCalledWith(3, "invite-one");
-    expect(initiateAppleAuth).toHaveBeenNthCalledWith(4, "invite-two");
+    const callbackUrl = "https://trymaple.ai/auth/apple/callback";
+    expect(initiateAppleAuth).toHaveBeenNthCalledWith(1, "invite-one", callbackUrl);
+    expect(initiateAppleAuth).toHaveBeenNthCalledWith(2, "invite-one", callbackUrl);
+    expect(initiateAppleAuth).toHaveBeenNthCalledWith(3, "invite-one", callbackUrl);
+    expect(initiateAppleAuth).toHaveBeenNthCalledWith(4, "invite-two", callbackUrl);
     expect(appleInit).toHaveBeenCalledTimes(4);
     expect(appleInit.mock.calls[0]?.[0]).toMatchObject({
       nonce: "11".repeat(32),
-      state: "state-one"
+      state: "state-one",
+      redirectURI: callbackUrl,
+      usePopup: true
     });
     expect(appleInit.mock.calls[1]?.[0]).toMatchObject({
       nonce: "22".repeat(32),
@@ -482,7 +485,7 @@ describe("AppleAuthProvider", () => {
     expect(JSON.stringify(renderer?.toJSON())).not.toContain("Open Maple");
   });
 
-  for (const provider of ["github", "google", "apple"] as const) {
+  for (const provider of ["github", "google"] as const) {
     test(`${provider} redirect callback waits for hosted account approval`, async () => {
       const { markTransportV2DesktopOAuth } = await import("@/services/desktopOAuthTransport");
       markTransportV2DesktopOAuth({
@@ -543,6 +546,31 @@ describe("AppleAuthProvider", () => {
       expect(window.location.href).toBe("cloud.opensecret.maple://auth?handoff_grant=aaa.bbb.ccc");
     });
   }
+
+  test("explains popup-only Apple sign-in without processing a redirect or stored form response", async () => {
+    sessionStorage.setItem("apple_form_data", JSON.stringify({ code: "unused", state: "unused" }));
+    Object.assign(window.location, {
+      search: "?code=unused-code&state=unused-state",
+      pathname: "/auth/apple/callback"
+    });
+    const rootRoute = createRootRoute();
+    const route = callbackRoute.update({
+      getParentRoute: () => rootRoute,
+      path: "/auth/$provider/callback"
+    } as never);
+    const router = createRouter({
+      routeTree: rootRoute.addChildren([route]),
+      history: createMemoryHistory({ initialEntries: ["/auth/apple/callback"] })
+    });
+    await router.load();
+    await act(async () => {
+      renderer = create(<RouterProvider router={router} />);
+    });
+    expect(handleAppleCallback).not.toHaveBeenCalled();
+    expect(mintNativeHandoffGrant).not.toHaveBeenCalled();
+    expect(JSON.stringify(renderer?.toJSON())).toContain("Apple sign-in uses a popup");
+    expect(JSON.stringify(renderer?.toJSON())).toContain("allow popups for this site");
+  });
 
   for (const decision of ["approve", "cancel"] as const) {
     test(`Apple desktop confirmation survives authentication through the root layout and can ${decision}`, async () => {
@@ -667,6 +695,10 @@ describe("AppleAuthProvider", () => {
         renderer = create(<RouterProvider router={router} />);
       });
       expect(initiateGoogleAuth).toHaveBeenCalledTimes(1);
+      expect(initiateGoogleAuth).toHaveBeenCalledWith(
+        "",
+        "https://trymaple.ai/auth/google/callback"
+      );
       await act(async () => {
         await router.navigate({
           to: "/desktop-auth",

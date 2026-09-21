@@ -112,3 +112,83 @@ nix build --no-update-lock-file --no-link --print-build-logs .#checks.x86_64-lin
 nix flake check --no-update-lock-file
 MAPLE_WEB_ENVIRONMENT=pr nix develop --no-update-lock-file .#ci -c ./scripts/ci/web.sh
 ```
+
+## Independent auth site
+
+The auth site has a separate entry point, artifact and publication path. It does
+not follow Maple desktop releases or change the existing app publisher. The
+source implementation is described in [Auth site](../apps/maple-research/docs/auth-site.md).
+
+| Lane | Source and configuration | Result |
+| --- | --- | --- |
+| `Auth Pages CI` | PRs targeting any base, including forks and stacked branches; relevant master pushes; `pr` profile | Offline checks, ordinary frontend checks and web build, separate auth build; no publication |
+| `Auth Pages build` | Manual dispatch on protected `master`; `release` profile | `maple-auth-production-RUN-ATTEMPT` artifact containing `maple-auth-dist.tar.gz` and `pages-artifact.json` |
+| `Publish Auth Pages` | Separate manual dispatch on protected `master`, selecting the exact successful build run and attempt | Fixed `maple-auth` Pages project, `maple-auth.pages.dev`, `auth-pages-production` Git ref and protected environment, reported URL `https://auth.trymaple.ai` |
+
+`MAPLE_AUTH_PAGES_PRODUCTION_ENABLED` must be the literal string `true` in both
+the workflow and publisher process. It is off when absent, empty or false.
+Merging these files starts neither production auth publication nor native-client
+entry changes. No auth preview is automatically hosted. The native auth-entry
+origin remains the existing apex until a separately authorized rollout changes it.
+
+`scripts/ci/auth-web.sh` runs the separate `build:auth` recipe. Its Vite entry
+is `auth.html`; the final static root is `dist-auth/index.html`. The build uses
+the existing fixed `pr` or `release` service profiles. Build/run commands use
+Bun's `--no-env-file`, and the auth Vite configuration disables dotenv loading.
+Dependency installation uses the frozen frontend lockfile with install lifecycle
+scripts disabled. The pinned Bun 1.3.5 installer can still read local dotenv files
+despite that flag, consistent with the [upstream installer issue](https://github.com/oven-sh/bun/issues/31450).
+Its child-process environment does not propagate back to the shell's fixed build
+profile. The build scripts never rename or move managed dotenv files; fresh
+production CI checkouts contain no managed workspace dotenv files. The pinned CI
+shell provides the Node, Bun and Python runtimes used by these scripts.
+
+The stacked development dependency may use `file:../../../sdk`. A production
+auth build rejects that link before installing dependencies: it requires an exact
+stable `@mapleai/sdk` version of at least `4.1.0`, rejects SDK source overrides,
+and checks the installed package name/version and that it resolves inside the
+frozen `node_modules` installation. The SDK must first be published and the
+frontend manifest and lockfile updated to that exact registry version. This
+offline gate does not itself publish the SDK or query the registry.
+
+The auth publisher uses trusted master tooling and the same static archive,
+download, Wrangler and credential boundaries described above. It accepts only
+the auth build workflow's successful manual master run, current run attempt and
+exact current master SHA in the expected repository. The archive name and
+`auth-release` manifest profile cannot substitute for an app artifact. It
+rechecks the selection before upload and after deployment. The auth production
+ref must already exist, and advances without force; a stale build or non-forward
+selection fails closed. Operators must create the project, ref, protected
+environment, scoped credentials, custom-domain configuration and activation
+variable separately. The project must have the fixed identity above and either
+no Git source (a Direct Upload project) or an explicit
+`source.config.production_deployments_enabled: false`. A present but malformed
+Git-source configuration is rejected. The existing app project retains its
+requirement for explicitly disabled native Git production builds.
+
+Only the final auth deploy step receives CF credentials. Its protected
+`auth-pages-production` environment uses `deployment: false`, with the same
+protection and explicit artifact-SHA status semantics as the app publisher.
+The auth path does not write `pages-production` or report the app's public URL.
+
+Auth response headers come from the trusted publisher's fixed `AUTH_HEADERS`
+constant, applied to `/*`: `Cache-Control: no-store, max-age=0`,
+`X-Robots-Tag: noindex, nofollow`, `Referrer-Policy: no-referrer`,
+`X-Frame-Options: DENY` and `Content-Security-Policy: frame-ancestors 'none'`.
+The publisher creates `_headers` only after re-extracting and checking all
+producer asset hashes. Producer `_headers`, redirects and worker configuration
+remain forbidden; the app publisher adds no headers. These source rules do not
+establish the live Cloudflare cache policy: auth cache bypass, actual response
+headers, custom domains, TLS/Access and browser/native handoff must be verified
+during the separate dark-publication rehearsal before redirect activation.
+
+For an unprivileged local auth build (no services or publication):
+
+```bash
+MAPLE_AUTH_ENVIRONMENT=pr nix develop --no-update-lock-file .#ci -c bash scripts/ci/auth-web.sh
+```
+
+The Pages offline test target also covers auth provenance, SDK pinning, static
+artifact rejection, fixed response headers and destination isolation. A passing
+build or publisher test is source evidence; retained-session login, callback
+allowlists and deployed handoff behavior require the later rehearsal.

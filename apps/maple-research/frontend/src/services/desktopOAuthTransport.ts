@@ -1,3 +1,5 @@
+import { getNativeOAuthEntryUrl } from "./oauthConfig";
+
 export type DesktopOAuthTransport = "v1" | "v2";
 export type DesktopOAuthProvider = "github" | "google" | "apple";
 
@@ -72,18 +74,18 @@ function removeTransportV2PendingState(): void {
   sessionStorage.removeItem(TRANSPORT_V2_MINT_CLAIM_KEY);
 }
 
-export function buildTransportV2DesktopAuthUrl({
-  provider,
-  nativeSessionId,
-  nativeRequestId
-}: TransportV2DesktopAuthUrlOptions): string {
+export function buildTransportV2DesktopAuthUrl(
+  { provider, nativeSessionId, nativeRequestId }: TransportV2DesktopAuthUrlOptions,
+  authOrigin = import.meta.env.VITE_AUTH_ORIGIN,
+  isDevelopment = import.meta.env.DEV === true
+): string {
   if (!isDesktopOAuthProvider(provider)) {
     throw new Error("Desktop authentication provider is missing or invalid");
   }
   assertTransportV2PublicId(nativeSessionId, "native session");
   assertTransportV2PublicId(nativeRequestId, "native request");
 
-  const url = new URL("https://trymaple.ai/desktop-auth");
+  const url = new URL(getNativeOAuthEntryUrl(authOrigin, isDevelopment));
   url.searchParams.set("provider", provider);
   url.searchParams.set("transport", "v2");
   url.searchParams.set(TRANSPORT_V2_NATIVE_SESSION_QUERY, nativeSessionId);

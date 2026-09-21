@@ -195,7 +195,7 @@
           actionlint
           rustToolchain
         ];
-        ciPackages = [ rustupShim ] ++ commonPackages;
+        ciPackages = [ rustupShim pkgs.nodejs ] ++ commonPackages;
 
         linuxTauriPackages =
           with pkgs;
@@ -689,9 +689,9 @@
             # actionlint 1.7.10 predates GitHub's supported concurrency.queue key.
             # Release-gate tests assert that the only intended value is queue: max.
             for workflow in ./*.yml; do
-              if [ "$workflow" = ./pages-publish.yml ]; then
+              if [ "$workflow" = ./pages-publish.yml ] || [ "$workflow" = ./auth-pages-publish.yml ]; then
                 # It also predates environment.deployment. Pages tests require
-                # false on both publisher jobs; keep this exception file-scoped.
+                # false on the publisher jobs; keep this exception file-scoped.
                 actionlint -config-file ${./.github/actionlint.yaml} -ignore 'unexpected key "deployment" for "environment" section' "$workflow"
               else
                 actionlint -config-file ${./.github/actionlint.yaml} -ignore 'unexpected key "queue" for "concurrency" section' "$workflow"

@@ -49,7 +49,7 @@ function OAuthCallback() {
   const redirectTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const navigate = useNavigate();
   const router = useRouter();
-  const { handleGitHubCallback, handleGoogleCallback, handleAppleCallback } = useOpenSecret();
+  const { handleGitHubCallback, handleGoogleCallback } = useOpenSecret();
   const processedRef = useRef(false);
 
   const { provider } = Route.useParams();
@@ -127,38 +127,29 @@ function OAuthCallback() {
       if (processedRef.current) return;
       processedRef.current = true;
 
-      // Get URL parameters for all OAuth providers
+      // Browser Apple completion belongs to the popup promise on its initiating page.
+      // This static route cannot receive Apple's form_post response.
+      if (provider === "apple") {
+        handleAuthError(
+          new Error(
+            "Apple sign-in uses a popup. Return to the sign-in page, allow popups for this site, and try again."
+          )
+        );
+        return;
+      }
+
+      // Get URL parameters for redirect-based OAuth providers.
       const urlParams = new URLSearchParams(window.location.search);
       const code = urlParams.get("code");
       const state = urlParams.get("state");
 
-      // For Apple, we might get form data instead of URL parameters
-      // Apple uses form_post with POST request in some scenarios
-      let appleData = null;
-      if (provider === "apple" && !code) {
-        // Check if we have Apple data in sessionStorage from form_post
-        const appleFormData = sessionStorage.getItem("apple_form_data");
-        if (appleFormData) {
-          try {
-            appleData = JSON.parse(appleFormData);
-            sessionStorage.removeItem("apple_form_data");
-          } catch (e) {
-            console.error("Failed to parse Apple form data:", e);
-          }
-        }
-      }
-
-      if ((code && state) || (provider === "apple" && appleData)) {
+      if (code && state) {
         try {
           // Handle the callback based on the provider
           if (provider === "github") {
             await handleGitHubCallback(code || "", state || "", "");
           } else if (provider === "google") {
             await handleGoogleCallback(code || "", state || "", "");
-          } else if (provider === "apple") {
-            // This handles the redirect flow (backup for non-popup scenarios)
-            // Most Apple auth will now be handled client-side in the AppleAuthProvider component
-            await handleAppleCallback(code || "", state || "", "");
           } else {
             throw new Error(`Unsupported provider: ${provider}`);
           }
@@ -190,7 +181,6 @@ function OAuthCallback() {
 
     processCallback();
   }, [
-    handleAppleCallback,
     handleAuthError,
     handleGitHubCallback,
     handleGoogleCallback,

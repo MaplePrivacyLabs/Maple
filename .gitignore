@@ -4,6 +4,7 @@ apps/maple-research/frontend/node_modules/
 
 # Build outputs
 /apps/maple-research/frontend/dist/
+/apps/maple-research/frontend/dist-auth/
 /apps/maple-research/frontend/build/
 
 # Environment variables

@@ -8,6 +8,7 @@ executable code on this runner. See docs/pages-deployments.md for the threat mod
 from __future__ import annotations
 
 import argparse
+from dataclasses import dataclass
 import hashlib
 import json
 import os
@@ -32,6 +33,23 @@ PRODUCTION_BRANCH = "pages-production"
 PREVIEW_WORKFLOW = "pages-preview-build.yml"
 RELEASE_WORKFLOW = "release.yml"
 MAX_DOWNLOAD = 200 * 1024 * 1024
+
+
+@dataclass(frozen=True)
+class Destination:
+    """Trusted source configuration, never read from a build artifact."""
+
+    project: str
+    subdomain: str
+    production_branch: str
+    environment: str
+    public_url: str
+    headers: str | None = None
+    allow_direct_upload: bool = False
+
+
+APP_DESTINATION = Destination(PROJECT, SUBDOMAIN, PRODUCTION_BRANCH,
+                              "pages-production", "https://trymaple.ai")
 
 
 class Rejected(ValueError):
@@ -241,11 +259,7 @@ def prepare(gh, event, target, state):
     plan = select_plan(gh, event, target)
     archive = state / "web.tar.gz"
     if target == "preview":
-        zipped = state / "artifact.zip"
-        gh.api.download(gh.root + f"/actions/artifacts/{plan['artifact_id']}/zip", zipped,
-                        expected_digest=plan["artifact_digest"], accept="application/vnd.github+json")
-        manifest = read_preview_zip(zipped, plan["sha"], plan["run_id"], plan["run_attempt"], archive)
-        archive_digest = manifest["archive_sha256"]
+        archive_digest = download_build_artifact(gh, plan, state)
     else:
         for key, path in (("archive", archive), ("checksum", state / "web.sha256")):
             asset = plan[key]
@@ -261,14 +275,27 @@ def prepare(gh, event, target, state):
     return plan
 
 
-def cloudflare_project(cf, account, target):
-    project = cf.json(f"/accounts/{account}/pages/projects/{PROJECT}")
+def download_build_artifact(gh, plan, state, **artifact_options):
+    zipped = state / "artifact.zip"
+    gh.api.download(gh.root + f"/actions/artifacts/{plan['artifact_id']}/zip", zipped,
+                    expected_digest=plan["artifact_digest"], accept="application/vnd.github+json")
+    manifest = read_preview_zip(zipped, plan["sha"], plan["run_id"], plan["run_attempt"],
+                                state / "web.tar.gz", **artifact_options)
+    return manifest["archive_sha256"]
+
+
+def cloudflare_project(cf, account, target, destination=APP_DESTINATION):
+    project = cf.json(f"/accounts/{account}/pages/projects/{destination.project}")
     require(project.get("success") is True, "Cloudflare project lookup failed")
     project = project["result"]
-    require(project["name"] == PROJECT and project["subdomain"] == SUBDOMAIN
-            and project["production_branch"] == PRODUCTION_BRANCH, "Cloudflare project identity mismatch")
+    require(project["name"] == destination.project and project["subdomain"] == destination.subdomain
+            and project["production_branch"] == destination.production_branch, "Cloudflare project identity mismatch")
     if target == "production":
-        require(project.get("source", {}).get("config", {}).get("production_deployments_enabled") is False,
+        source = project.get("source")
+        no_git_source = destination.allow_direct_upload and source is None
+        disabled_git_builds = (isinstance(source, dict) and isinstance(source.get("config"), dict)
+                               and source["config"].get("production_deployments_enabled") is False)
+        require(no_git_source or disabled_git_builds,
                 "Disable Cloudflare automatic production builds before enabling the publisher")
     return project
 
@@ -301,7 +328,7 @@ def require_clean_wrangler_ancestors(workdir):
                     "Unexpected deployment configuration above Wrangler working directory")
 
 
-def run_wrangler(plan, assets, account, token, workdir):
+def run_wrangler(plan, assets, account, token, workdir, destination=APP_DESTINATION):
     root = Path(__file__).resolve().parents[2]
     executable = root / "services/updates/node_modules/wrangler/bin/wrangler.js"
     require(executable.is_file(), "Pinned Wrangler is not installed")
@@ -309,7 +336,7 @@ def run_wrangler(plan, assets, account, token, workdir):
     require(node is not None, "Pinned Node runtime is not available")
     require_clean_wrangler_ancestors(workdir)
     environment = wrangler_environment(account, token, workdir)
-    command = [node, str(executable), "pages", "deploy", str(assets), "--project-name", PROJECT,
+    command = [node, str(executable), "pages", "deploy", str(assets), "--project-name", destination.project,
                "--branch", plan["branch"], "--commit-hash", plan["sha"], "--commit-dirty=false",
                "--commit-message", f"Maple {plan['profile']} {plan['sha']}", "--no-bundle"]
     # Never echo Wrangler output: remote errors and artifact names are untrusted.
@@ -321,20 +348,20 @@ def run_wrangler(plan, assets, account, token, workdir):
     results = [result for result in results if result.get("type") == "pages-deploy-detailed"]
     require(len(results) == 1, "Unexpected Wrangler result")
     result = results[0]
-    require(result["pages_project"] == PROJECT and result["environment"] == plan["target"]
+    require(result["pages_project"] == destination.project and result["environment"] == plan["target"]
             and result["deployment_trigger"]["metadata"]["commit_hash"] == plan["sha"], "Wrangler deployment mismatch")
     require(re.fullmatch(r"[0-9a-f-]{36}", result["deployment_id"]), "Invalid deployment ID")
-    require(re.fullmatch(r"https://[0-9a-f]{8}\." + re.escape(SUBDOMAIN), result["url"]), "Unexpected deployment URL")
+    require(re.fullmatch(r"https://[0-9a-f]{8}\." + re.escape(destination.subdomain), result["url"]), "Unexpected deployment URL")
     return result
 
 
-def verify_deployment(cf, account, plan, result):
-    path = f"/accounts/{account}/pages/projects/{PROJECT}"
+def verify_deployment(cf, account, plan, result, destination=APP_DESTINATION):
+    path = f"/accounts/{account}/pages/projects/{destination.project}"
     for _ in range(30):
         response = cf.json(path + f"/deployments/{result['deployment_id']}")
         require(response.get("success") is True, "Cloudflare deployment lookup failed")
         deployment = response["result"]
-        require(deployment["environment"] == plan["target"] and deployment["project_name"] == PROJECT
+        require(deployment["environment"] == plan["target"] and deployment["project_name"] == destination.project
                 and deployment["url"] == result["url"]
                 and deployment["deployment_trigger"]["metadata"]["commit_hash"] == plan["sha"]
                 and deployment["deployment_trigger"]["metadata"]["branch"] == plan["branch"], "Cloudflare deployment mismatch")
@@ -342,7 +369,7 @@ def verify_deployment(cf, account, plan, result):
                 and deployment["latest_stage"]["status"] == "success"):
             if plan["target"] == "preview":
                 return
-            project = cloudflare_project(cf, account, "production")
+            project = cloudflare_project(cf, account, "production", destination)
             if project["canonical_deployment"]["id"] == result["deployment_id"]:
                 return
         require(deployment["latest_stage"]["status"] not in {"failure", "canceled"}, "Cloudflare deployment failed")
@@ -350,13 +377,13 @@ def verify_deployment(cf, account, plan, result):
     raise Rejected("Cloudflare deployment did not become active")
 
 
-def report(gh, plan, result):
-    environment = "pages-production" if plan["target"] == "production" else f"pages-{plan['branch']}"
+def report(gh, plan, result, destination=APP_DESTINATION):
+    environment = destination.environment if plan["target"] == "production" else f"pages-{plan['branch']}"
     deployment = gh.write("/deployments", {"ref": plan["sha"], "environment": environment,
                           "auto_merge": False, "required_contexts": [], "transient_environment": plan["target"] == "preview",
                           "production_environment": plan["target"] == "production",
                           "description": "Verified static Pages artifact"})
-    public_url = "https://trymaple.ai" if plan["target"] == "production" else result["url"]
+    public_url = destination.public_url if plan["target"] == "production" else result["url"]
     gh.write(f"/deployments/{number(deployment['id'])}/statuses", {"state": "success", "environment_url": public_url,
              "description": "Cloudflare deployment verified; application smoke is separate", "auto_inactive": True})
     if plan.get("pr_number"):
@@ -371,35 +398,43 @@ def report(gh, plan, result):
             gh.write(f"/issues/{plan['pr_number']}/comments", {"body": body})
 
 
-def deploy(gh, event, state):
+def add_trusted_headers(assets, destination):
+    """Only trusted publisher source may supply Pages response-header rules."""
+    if destination.headers is not None:
+        with (assets / "_headers").open("x", encoding="utf-8", newline="\n") as output:
+            output.write(destination.headers)
+
+
+def deploy(gh, event, state, *, destination=APP_DESTINATION, selector=select_plan):
     saved = json.loads((state / "plan.json").read_text())
     plan = saved["selection"]
-    if select_plan(gh, event, plan["target"]) != plan:
+    if selector(gh, event, plan["target"]) != plan:
         raise Superseded("Deployment selection changed before upload")
     account, token = os.environ.get("CLOUDFLARE_ACCOUNT_ID", ""), os.environ.get("CLOUDFLARE_API_TOKEN", "")
     require(re.fullmatch(r"[0-9a-f]{32}", account), "Invalid Cloudflare account ID")
     cf = API("https://api.cloudflare.com/client/v4", token)
-    cloudflare_project(cf, account, plan["target"])
+    cloudflare_project(cf, account, plan["target"], destination)
     # Re-extract under a new directory; no cache or previously extracted files
     # can alter what the credential-bearing Wrangler process sees.
     with tempfile.TemporaryDirectory(prefix="maple-pages-upload-", dir=state.parent) as temp:
         workspace = Path(temp)
         files = extract_static(state / "web.tar.gz", workspace / "assets", saved["archive_digest"])
         require(files == saved["files"], "Prepared artifact changed")
+        add_trusted_headers(workspace / "assets", destination)
         workdir = workspace / "runner"
         workdir.mkdir()
-        result = run_wrangler(plan, workspace / "assets", account, token, workdir)
-        verify_deployment(cf, account, plan, result)
+        result = run_wrangler(plan, workspace / "assets", account, token, workdir, destination)
+        verify_deployment(cf, account, plan, result, destination)
     if plan["target"] == "production":
-        if select_plan(gh, event, "production") != plan:
+        if selector(gh, event, "production") != plan:
             raise Superseded("Release changed during deployment; inspect the deployed result")
         if plan["previous_sha"] != plan["sha"]:
-            updated = gh.write(f"/git/refs/heads/{PRODUCTION_BRANCH}", {"sha": plan["sha"], "force": False}, "PATCH")
+            updated = gh.write(f"/git/refs/heads/{destination.production_branch}", {"sha": plan["sha"], "force": False}, "PATCH")
             require(updated["object"]["sha"] == plan["sha"], "Production ref update failed")
     else:
-        if select_plan(gh, event, "preview") != plan:
+        if selector(gh, event, "preview") != plan:
             raise Superseded("Preview changed during deployment; a newer preview is required")
-    report(gh, plan, result)
+    report(gh, plan, result, destination)
     summary = (f"### Maple Pages {plan['target']}\n\n"
                f"- Source: `{plan['sha']}`; profile: `{plan['profile']}`.\n"
                f"- Deployment: {result['url']}\n"
