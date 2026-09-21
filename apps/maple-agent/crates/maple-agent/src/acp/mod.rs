@@ -1,7 +1,8 @@
 use crate::agent::{
     AGENT_TOOL_CONTEXT_INACTIVE_ERROR, AgentCreateSessionRequest, AgentHostEventPolicy,
     AgentPermissionDecision, AgentPermissionRequest, AgentRunEvent, AgentRunPermissionResponder,
-    AgentRunTerminal, AgentRuntimeHandle, AgentSendMessageRequest, AgentTimelineItem,
+    AgentRunTerminal, AgentRuntimeHandle, AgentSendMessageRequest, AgentTaskState,
+    AgentTimelineItem,
 };
 mod config;
 mod convert;
@@ -361,7 +362,7 @@ impl AcpConnectionContext {
             self.retire_session(&session_id).await;
         }
         self.agent
-            .set_session_archived(session_id.clone(), true)
+            .set_session_state(session_id.clone(), AgentTaskState::Archived)
             .await
             .map_err(|error| {
                 agent_client_protocol::Error::invalid_request()
@@ -2584,7 +2585,7 @@ mod tests {
             model: Some("model".to_string()),
             mode: mode.to_string(),
             web_enabled: false,
-            archived: false,
+            state: AgentTaskState::Active,
             acp: false,
         }
     }

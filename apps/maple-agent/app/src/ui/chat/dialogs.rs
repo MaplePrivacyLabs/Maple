@@ -1,14 +1,32 @@
-//! Project-level dialogs and operations the screen owns even though the
-//! sidebar asks for them: the trust prompt, the remove-project
-//! confirmation, archiving, and leaving a task. They touch the canonical
-//! session list and the project context, which live here.
+//! Dialogs and operations the screen owns even though the sidebar asks
+//! for them: the trust prompt, the remove-project and delete-task
+//! confirmations, archiving, deleting, and leaving a task. They touch
+//! the canonical session list and the project context, which live here.
 
 use gpui::{Context, Div, div, prelude::*, px};
-use maple_agent::agent::AgentProjectTrustStatus;
+use maple_agent::agent::{AgentProjectTrustStatus, AgentTaskState};
 
 use super::ChatScreen;
 use crate::ui::theme;
 use crate::ui::widgets;
+
+/// A destructive step that waits for the user's yes.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) enum ConfirmDialog {
+    /// Remove a project root from the sidebar; its tasks archive.
+    RemoveRoot(String),
+    /// Delete a task and its stored transcript for good.
+    DeleteTask(String),
+}
+
+/// The words a confirmation shows.
+struct ConfirmCopy {
+    title: String,
+    body: &'static str,
+    /// The path or title shown in monospace under the body.
+    detail: String,
+    confirm_label: &'static str,
+}
 
 impl ChatScreen {
     /// Ask for a trust decision when the current project provides skills
@@ -197,26 +215,68 @@ impl ChatScreen {
 
     /// Ask before a project leaves the sidebar.
     pub(super) fn request_remove_root(&mut self, root: &str, cx: &mut Context<Self>) {
-        self.confirm_remove_root = Some(root.to_string());
+        self.open_confirm(ConfirmDialog::RemoveRoot(root.to_string()), cx);
+    }
+
+    /// Ask before a task is deleted for good.
+    pub(super) fn request_delete_task(&mut self, session_id: &str, cx: &mut Context<Self>) {
+        self.open_confirm(ConfirmDialog::DeleteTask(session_id.to_string()), cx);
+    }
+
+    fn open_confirm(&mut self, dialog: ConfirmDialog, cx: &mut Context<Self>) {
+        self.confirm = Some(dialog);
         self.dialog_focus.get_or_insert_with(|| cx.focus_handle());
         self.dialog_focus_pending = true;
         cx.notify();
     }
 
-    fn confirm_remove_root(&mut self, cx: &mut Context<Self>) {
-        if let Some(root) = self.confirm_remove_root.take() {
-            self.archive_root(&root, cx);
+    /// The user said yes to the open confirmation.
+    pub(super) fn accept_confirm(&mut self, cx: &mut Context<Self>) {
+        match self.confirm.take() {
+            Some(ConfirmDialog::RemoveRoot(root)) => self.archive_root(&root, cx),
+            Some(ConfirmDialog::DeleteTask(session_id)) => self.delete_task(&session_id, cx),
+            None => {}
         }
         cx.notify();
     }
 
-    /// Modal that confirms a project removal.
-    pub(super) fn render_confirm_remove(
+    fn confirm_copy(&self, dialog: &ConfirmDialog, cx: &gpui::App) -> ConfirmCopy {
+        match dialog {
+            ConfirmDialog::RemoveRoot(root) => {
+                let name = self.sidebar.read(cx).root_name(root);
+                ConfirmCopy {
+                    title: format!("Remove {name}?"),
+                    body: "The project leaves the sidebar and its tasks move to \
+                           Archived, where you can restore them. No files are deleted.",
+                    detail: root.clone(),
+                    confirm_label: "Remove",
+                }
+            }
+            ConfirmDialog::DeleteTask(session_id) => {
+                let title = self
+                    .sessions
+                    .iter()
+                    .find(|session| &session.id == session_id)
+                    .map(|session| session.title.clone())
+                    .unwrap_or_else(|| session_id.clone());
+                ConfirmCopy {
+                    title: "Delete this task?".to_string(),
+                    body: "The task and its transcript are deleted for good. Files the \
+                           agent wrote in the project stay where they are.",
+                    detail: title,
+                    confirm_label: "Delete",
+                }
+            }
+        }
+    }
+
+    /// Modal that confirms a project removal or a task deletion.
+    pub(super) fn render_confirm(
         &self,
-        root: &str,
+        dialog: &ConfirmDialog,
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<Div> {
-        let name = self.sidebar.read(cx).root_name(root);
+        let copy = self.confirm_copy(dialog, cx);
         let button = |id: &'static str, label: &'static str, primary: bool| {
             if primary {
                 widgets::danger_button(id)
@@ -227,7 +287,7 @@ impl ChatScreen {
             .child(label)
         };
         div()
-            .id("confirm-remove-backdrop")
+            .id("confirm-backdrop")
             .absolute()
             .size_full()
             .top_0()
@@ -238,14 +298,14 @@ impl ChatScreen {
             .items_center()
             .justify_center()
             .on_click(cx.listener(|this, _event, _window, cx| {
-                this.confirm_remove_root = None;
+                this.confirm = None;
                 cx.notify();
             }))
             .child(
                 div()
-                    .id("confirm-remove-card")
+                    .id("confirm-card")
                     .role(gpui::Role::Dialog)
-                    .aria_label(format!("Remove {name}?"))
+                    .aria_label(copy.title.clone())
                     .when_some(self.dialog_focus.clone(), |card, focus| {
                         card.track_focus(&focus)
                     })
@@ -255,11 +315,11 @@ impl ChatScreen {
                             |this, event: &gpui::KeyDownEvent, _window, cx| match dialog_key(event)
                             {
                                 Some(DialogKey::Confirm) => {
-                                    this.confirm_remove_root(cx);
+                                    this.accept_confirm(cx);
                                     cx.stop_propagation();
                                 }
                                 Some(DialogKey::Cancel) => {
-                                    this.confirm_remove_root = None;
+                                    this.confirm = None;
                                     cx.notify();
                                     cx.stop_propagation();
                                 }
@@ -283,40 +343,39 @@ impl ChatScreen {
                             .text_lg()
                             .font_weight(gpui::FontWeight::SEMIBOLD)
                             .text_color(gpui::rgb(theme::text_primary()))
-                            .child(format!("Remove {name}?")),
+                            .child(copy.title),
                     )
                     .child(
                         div()
                             .text_sm()
                             .text_color(gpui::rgb(theme::text_secondary()))
-                            .child(
-                                "The project leaves the sidebar and its tasks move to \
-                                 Archived, where you can restore them. No files are deleted.",
-                            ),
+                            .child(copy.body),
                     )
                     .child(
                         div()
                             .text_xs()
                             .font_family(crate::assets::FONT_MONO)
                             .text_color(gpui::rgb(theme::text_muted()))
-                            .child(root.to_string()),
+                            .child(copy.detail),
                     )
                     .child(
                         div()
                             .flex()
                             .justify_end()
                             .gap_2()
-                            .child(button("confirm-remove-cancel", "Cancel", false).on_click(
+                            .child(
+                                button("confirm-cancel", "Cancel", false).on_click(cx.listener(
+                                    |this, _event, _window, cx| {
+                                        cx.stop_propagation();
+                                        this.confirm = None;
+                                        cx.notify();
+                                    },
+                                )),
+                            )
+                            .child(button("confirm-ok", copy.confirm_label, true).on_click(
                                 cx.listener(|this, _event, _window, cx| {
                                     cx.stop_propagation();
-                                    this.confirm_remove_root = None;
-                                    cx.notify();
-                                }),
-                            ))
-                            .child(button("confirm-remove-ok", "Remove", true).on_click(
-                                cx.listener(|this, _event, _window, cx| {
-                                    cx.stop_propagation();
-                                    this.confirm_remove_root(cx);
+                                    this.accept_confirm(cx);
                                 }),
                             )),
                     ),
@@ -341,12 +400,13 @@ impl ChatScreen {
         }
     }
 
-    /// Archive or restore one task. The service event updates the row;
-    /// an archived selection moves to the newest task in the same root.
-    pub(super) fn set_session_archived(
+    /// Move one task between active, settled, and archived. The service
+    /// event updates the row; an archived selection moves to the newest
+    /// live task in the same root.
+    pub(super) fn set_session_state(
         &mut self,
         session_id: &str,
-        archived: bool,
+        state: AgentTaskState,
         cx: &mut Context<Self>,
     ) {
         let backend = self.backend.clone();
@@ -356,7 +416,7 @@ impl ChatScreen {
         self.call(
             async move {
                 backend
-                    .set_session_archived(&user_id, &session_id, archived)
+                    .set_session_state(&user_id, &session_id, state)
                     .await
             },
             cx,
@@ -365,12 +425,16 @@ impl ChatScreen {
                     Ok(session) => {
                         let root = session.project_root.clone();
                         this.upsert_session(session, cx);
-                        if archived && this.selected_session.as_deref() == Some(&*changed_id) {
+                        if state == AgentTaskState::Archived
+                            && this.selected_session.as_deref() == Some(&*changed_id)
+                        {
                             this.leave_selected_session(cx);
                             let next = this
                                 .sessions
                                 .iter()
-                                .find(|s| !s.archived && s.project_root == root)
+                                .find(|s| {
+                                    s.state != AgentTaskState::Archived && s.project_root == root
+                                })
                                 .map(|s| s.id.clone());
                             if let Some(id) = next {
                                 this.select_session(&id, cx);
@@ -382,6 +446,60 @@ impl ChatScreen {
                 cx.notify();
             },
         );
+    }
+
+    /// Delete one task for good. The runtime refuses while it runs, so
+    /// the row leaves the list only after the backend says it is gone.
+    pub(super) fn delete_task(&mut self, session_id: &str, cx: &mut Context<Self>) {
+        let backend = self.backend.clone();
+        let user_id = self.user_id.clone();
+        let session_id = session_id.to_string();
+        let deleted_id = session_id.clone();
+        self.call(
+            async move { backend.delete_session(&user_id, &session_id).await },
+            cx,
+            move |this, result, cx| {
+                match result {
+                    Ok(()) => this.remove_session(&deleted_id, cx),
+                    Err(error) => this.notice = Some(error.into()),
+                }
+                cx.notify();
+            },
+        );
+    }
+
+    /// Forget a task the backend no longer has. A deleted selection
+    /// moves to the newest live task in the same root.
+    pub(super) fn remove_session(&mut self, session_id: &str, cx: &mut Context<Self>) {
+        let Some(index) = self
+            .sessions
+            .iter()
+            .position(|session| session.id == session_id)
+        else {
+            return;
+        };
+        let removed = self.sessions.remove(index);
+        self.completed_unread_sessions.remove(session_id);
+        self.timeline_revisions.remove(session_id);
+        self.pending_questions
+            .retain(|question| question.session_id != session_id);
+        self.sidebar.update(cx, |sidebar, cx| {
+            sidebar.forget_tasks(std::slice::from_ref(&removed.id), cx);
+        });
+        if self.selected_session.as_deref() == Some(session_id) {
+            self.leave_selected_session(cx);
+            let next = self
+                .sessions
+                .iter()
+                .find(|s| {
+                    s.state != AgentTaskState::Archived && s.project_root == removed.project_root
+                })
+                .map(|s| s.id.clone());
+            if let Some(id) = next {
+                self.select_session(&id, cx);
+            }
+        }
+        self.sync_sidebar(cx);
     }
 
     /// Archive every task in a project and drop the project from the
@@ -401,7 +519,7 @@ impl ChatScreen {
             .chain(
                 self.sessions
                     .iter()
-                    .filter(|s| !s.archived)
+                    .filter(|s| s.state != AgentTaskState::Archived)
                     .map(|s| &s.project_root),
             )
             .find(|candidate| candidate.as_str() != root)
@@ -409,7 +527,7 @@ impl ChatScreen {
         let task_ids: Vec<String> = self
             .sessions
             .iter()
-            .filter(|s| !s.archived && s.project_root == root)
+            .filter(|s| s.state != AgentTaskState::Archived && s.project_root == root)
             .map(|s| s.id.clone())
             .collect();
         let removed = path.clone();
@@ -418,7 +536,9 @@ impl ChatScreen {
         self.call(
             async move {
                 for id in task_ids {
-                    backend.set_session_archived(&user_id, &id, true).await?;
+                    backend
+                        .set_session_state(&user_id, &id, AgentTaskState::Archived)
+                        .await?;
                 }
                 backend.remove_project_root(&user_id, path, fallback).await
             },
@@ -429,7 +549,7 @@ impl ChatScreen {
                         this.recent_roots.retain(|candidate| candidate != &removed);
                         for session in &mut this.sessions {
                             if session.project_root == removed {
-                                session.archived = true;
+                                session.state = AgentTaskState::Archived;
                                 this.completed_unread_sessions.remove(&session.id);
                             }
                         }

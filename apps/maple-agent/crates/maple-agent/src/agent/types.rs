@@ -1150,6 +1150,32 @@ pub enum SideQuestionEvent {
     Error(String),
 }
 
+/// Where a task sits on the ladder active, settled, archived. The
+/// runtime owns this: it persists with the session, a run that starts on
+/// a settled task makes it active again, and archived tasks keep their
+/// history and stay listed so a UI can show them apart. Deleted is not
+/// a state; a deleted task is gone.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum AgentTaskState {
+    #[default]
+    Active,
+    Settled,
+    Archived,
+}
+
+impl AgentTaskState {
+    /// The verb for an error such as "Stop the running agent before
+    /// archiving this task".
+    pub(crate) fn gerund(self) -> &'static str {
+        match self {
+            Self::Active => "reopening",
+            Self::Settled => "settling",
+            Self::Archived => "archiving",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentSessionSummary {
@@ -1163,8 +1189,8 @@ pub struct AgentSessionSummary {
     pub mode: String,
     /// Whether the task can use `web_search` / `open_url`.
     pub web_enabled: bool,
-    /// Hidden from the main task list; can be restored.
-    pub archived: bool,
+    /// Where the task sits in the sidebar ladder.
+    pub state: AgentTaskState,
     /// Created by an ACP client (an editor or Buzz), not in the desktop app.
     pub acp: bool,
 }

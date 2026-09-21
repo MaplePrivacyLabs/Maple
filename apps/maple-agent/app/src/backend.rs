@@ -23,7 +23,7 @@ use maple_agent::agent::{
     AgentProjectTrustStatus, AgentQueueControlRequest, AgentRenameSessionRequest,
     AgentRuntimeStatus, AgentSendMessageRequest, AgentServiceEvent, AgentSessionDetail,
     AgentSessionSummary, AgentSetIntegrationEnabledRequest, AgentSetupIntegrationRequest,
-    AgentSlashCommand, AgentStartRequest, AgentSubagent, MapleAgentHostResources,
+    AgentSlashCommand, AgentStartRequest, AgentSubagent, AgentTaskState, MapleAgentHostResources,
     MapleAgentService, RecentProjectRoot,
 };
 use maple_agent::maple_api::{
@@ -1442,7 +1442,8 @@ impl AgentBackend {
         let latest_id = sessions
             .iter()
             .find(|session| {
-                !session.archived && Some(&session.project_root) == project_root.as_ref()
+                session.state != AgentTaskState::Archived
+                    && Some(&session.project_root) == project_root.as_ref()
             })
             .map(|session| session.id.clone());
         let latest = match latest_id {
@@ -1481,16 +1482,28 @@ impl AgentBackend {
             .await
     }
 
-    pub async fn set_session_archived(
+    /// Move a task between active, settled, and archived. The runtime
+    /// refuses to settle or archive a task while it runs.
+    pub async fn set_session_state(
         &self,
         user_id: &str,
         session_id: &str,
-        archived: bool,
+        state: AgentTaskState,
     ) -> Result<AgentSessionSummary, String> {
         self.service
             .handle_for_user(user_id)
             .await?
-            .set_session_archived(session_id.to_string(), archived)
+            .set_session_state(session_id.to_string(), state)
+            .await
+    }
+
+    /// Delete a task and everything stored for it. The runtime refuses
+    /// while the task runs or an external surface holds it.
+    pub async fn delete_session(&self, user_id: &str, session_id: &str) -> Result<(), String> {
+        self.service
+            .handle_for_user(user_id)
+            .await?
+            .delete_session(session_id.to_string())
             .await
     }
 

@@ -154,6 +154,11 @@ const SUBAGENT_LOAD_TOOL: &str = "load";
 /// than through Goose's per-session extension state.
 const MAPLE_WEB_STATE_KEY: &str = "maple_web";
 const MAPLE_WEB_STATE_VERSION: &str = "1";
+/// Maple-owned record in the session's extension data: the task's ladder
+/// state (`AgentTaskState`). Absent means active. Archived is mirrored
+/// into Goose's `archived_at` as well, which wins when they disagree.
+const MAPLE_TASK_STATE_KEY: &str = "maple_task_state";
+const MAPLE_TASK_STATE_VERSION: &str = "1";
 // Goose currently renders the runtime registration key as the model-facing
 // extension heading, so keep this concise and reserve it from user MCP names.
 const MAPLE_SKILLS_CLIENT_KEY: &str = "maple-skills-extension";
@@ -4019,57 +4024,76 @@ impl AgentRuntimeHandle {
         Ok(summary)
     }
 
-    /// Archive or restore a task. Archived tasks keep their history and
-    /// stay listed with `archived` set, so the UI can show them apart.
-    pub async fn set_session_archived(
+    /// Move a task between active, settled, and archived. Archived tasks
+    /// keep their history and stay listed with `state` set, so the UI can
+    /// show them apart. A running task can only be made active: a run is
+    /// activity, so settling or archiving one mid-run is refused.
+    pub async fn set_session_state(
         &self,
         session_id: String,
-        archived: bool,
+        state: AgentTaskState,
     ) -> Result<AgentSessionSummary, String> {
-        let state = &self.service;
+        let service = &self.service;
         let user_id = self.user_id.as_ref();
         let account_scope = self.account_scope.as_ref();
-        let _runtime_lifecycle_guard = state.runtime_lifecycle.lock().await;
+        let _runtime_lifecycle_guard = service.runtime_lifecycle.lock().await;
         self.verify_generation().await?;
         self.ensure_accepting_new_work()?;
         let session_id = session_id.trim().to_string();
         if session_id.is_empty() {
             return Err("Agent task ID cannot be empty".to_string());
         }
-        let _session_lifecycle_guard = state.session_lifecycle.lock().await;
+        let _session_lifecycle_guard = service.session_lifecycle.lock().await;
         let session_manager = {
-            let runtime = state.inner.lock().await;
+            let runtime = service.inner.lock().await;
             match runtime.as_ref() {
                 Some(current) => {
                     ensure_runtime_account(current, account_scope)?;
-                    if archived && has_active_session_run(&current.active_runs, &session_id) {
-                        return Err("Stop the running agent before archiving this task".to_string());
+                    if state != AgentTaskState::Active
+                        && has_active_session_run(&current.active_runs, &session_id)
+                    {
+                        return Err(format!(
+                            "Stop the running agent before {} this task",
+                            state.gerund()
+                        ));
                     }
                     Arc::clone(&current.session_manager)
                 }
-                None => account_session_manager(&state.host.paths, user_id)?,
+                None => account_session_manager(&service.host.paths, user_id)?,
             }
         };
         let current_session = session_manager
             .get_session(&session_id, false)
             .await
-            .map_err(|error| format!("Failed to load Agent task before archiving: {error}"))?;
-        if current_session.archived_at.is_some() == archived {
+            .map_err(|error| {
+                format!(
+                    "Failed to load Agent task before {}: {error}",
+                    state.gerund()
+                )
+            })?;
+        if stored_task_state(&current_session) == state {
             return Ok(session_summary(&current_session));
         }
+        let archived_at = (state == AgentTaskState::Archived).then(chrono::Utc::now);
         session_manager
             .update(&session_id)
-            .archived_at(archived.then(chrono::Utc::now))
+            .extension_data(extension_data_with_task_state(&current_session, state))
+            .archived_at(archived_at)
             .apply()
             .await
-            .map_err(|error| format!("Failed to archive Agent task: {error}"))?;
+            .map_err(|error| format!("Failed to persist Agent task state: {error}"))?;
         let session = session_manager
             .get_session(&session_id, false)
             .await
-            .map_err(|error| format!("Failed to load archived Agent task: {error}"))?;
+            .map_err(|error| {
+                format!(
+                    "Failed to load Agent task after {}: {error}",
+                    state.gerund()
+                )
+            })?;
         let summary = session_summary(&session);
         emit_agent_event(
-            &state.host.events,
+            &service.host.events,
             AgentServiceEvent::SessionUpdated {
                 session_id,
                 run_id: None,
@@ -5289,6 +5313,28 @@ impl AgentRuntimeHandle {
                 .get_session(&request.session_id, true)
                 .await
                 .map_err(|e| format!("Failed to load Agent task: {e}"))?;
+            // A run is new activity: it wakes a settled task the moment it
+            // starts, so the task is active for as long as it works and
+            // stays there afterwards until it is settled again by hand.
+            if stored_task_state(&session) == AgentTaskState::Settled {
+                let extension_data =
+                    extension_data_with_task_state(&session, AgentTaskState::Active);
+                session_manager
+                    .update(&session.id)
+                    .extension_data(extension_data.clone())
+                    .apply()
+                    .await
+                    .map_err(|e| format!("Failed to wake Agent task: {e}"))?;
+                session.extension_data = extension_data;
+                emit_agent_event(
+                    &state.host.events,
+                    AgentServiceEvent::SessionUpdated {
+                        session_id: session.id.clone(),
+                        run_id: None,
+                        session: session_summary(&session),
+                    },
+                );
+            }
             let usage_before = AgentRunUsage::from_accumulated_session(&session);
             validate_session_model_lock(
                 session.message_count,
@@ -11035,6 +11081,40 @@ mod tests {
         let _ = fs::remove_dir_all(fixture.root);
     }
 
+    /// A run is activity: starting one on a settled task makes it active
+    /// before any of the run's own events, so the sidebar never shows a
+    /// working task in Settled.
+    #[tokio::test]
+    async fn a_run_wakes_a_settled_task_when_it_starts() {
+        let (fixture, session, lifetime) = background_completion_fixture().await;
+        let settled = fixture
+            .handle
+            .set_session_state(session.id.clone(), AgentTaskState::Settled)
+            .await
+            .unwrap();
+        assert_eq!(settled.state, AgentTaskState::Settled);
+        let mut run = fixture
+            .handle
+            .send_background_completion(&session.id, background_completion_message(), lifetime)
+            .await
+            .unwrap();
+        assert!(matches!(
+            run.events.recv().await,
+            Some(AgentRunEvent::Started)
+        ));
+        let runtime = fixture.handle.service.inner.lock().await;
+        let current = runtime.as_ref().unwrap();
+        let persisted = current
+            .session_manager
+            .get_session(&session.id, false)
+            .await
+            .unwrap();
+        assert_eq!(stored_task_state(&persisted), AgentTaskState::Active);
+        drop(runtime);
+        fixture.handle.stop().await.unwrap();
+        let _ = fs::remove_dir_all(fixture.root);
+    }
+
     #[tokio::test]
     async fn background_completion_rejects_cancelled_and_stale_owners() {
         let (fixture, session, lifetime) = background_completion_fixture().await;
@@ -14589,7 +14669,7 @@ mod tests {
             message_count: 0,
             model: None,
             mode: DEFAULT_GOOSE_MODE.to_string(),
-            archived: false,
+            state: AgentTaskState::Active,
             acp: false,
         };
         let mut sessions = vec![
@@ -18290,6 +18370,89 @@ mod tests {
         drop(handle);
         drop(state);
         drop(manager);
+        let _ = fs::remove_dir_all(test_root);
+    }
+
+    /// The task state persists with the session, mirrors archived into
+    /// Goose's own timestamp (which wins when they disagree), announces
+    /// each change once, and stays quiet when nothing changes.
+    #[tokio::test]
+    async fn set_session_state_persists_mirrors_archive_and_notifies() {
+        let sink = Arc::new(RecordingAgentEventSink::default());
+        let (test_root, paths, state) = agent_service_test_context("task-state", sink.clone());
+        let user = "task-state-user";
+        let project_root = test_root.join("project");
+        fs::create_dir_all(&project_root).unwrap();
+        let manager = account_session_manager(&paths, user).unwrap();
+        let session = manager
+            .create_session(
+                project_root.clone(),
+                "Task".to_string(),
+                SessionType::User,
+                GooseMode::SmartApprove,
+            )
+            .await
+            .unwrap();
+        assert_eq!(session_summary(&session).state, AgentTaskState::Active);
+        let handle = state.handle_for_user(user).await.unwrap();
+        let updates = || {
+            sink.events
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .iter()
+                .filter(|event| matches!(event, AgentServiceEvent::SessionUpdated { .. }))
+                .count()
+        };
+
+        let summary = handle
+            .set_session_state(format!(" {} ", session.id), AgentTaskState::Settled)
+            .await
+            .unwrap();
+        assert_eq!(summary.state, AgentTaskState::Settled);
+        let persisted = manager.get_session(&session.id, false).await.unwrap();
+        assert_eq!(stored_task_state(&persisted), AgentTaskState::Settled);
+        assert!(persisted.archived_at.is_none());
+        assert_eq!(updates(), 1);
+
+        // The same state again changes nothing and announces nothing.
+        handle
+            .set_session_state(session.id.clone(), AgentTaskState::Settled)
+            .await
+            .unwrap();
+        assert_eq!(updates(), 1);
+
+        let summary = handle
+            .set_session_state(session.id.clone(), AgentTaskState::Archived)
+            .await
+            .unwrap();
+        assert_eq!(summary.state, AgentTaskState::Archived);
+        let persisted = manager.get_session(&session.id, false).await.unwrap();
+        assert!(persisted.archived_at.is_some());
+        assert_eq!(updates(), 2);
+
+        // Goose's timestamp outranks a stale Maple record, so a session
+        // archived from outside Maple still reads as archived.
+        manager
+            .update(&session.id)
+            .extension_data(extension_data_with_task_state(
+                &persisted,
+                AgentTaskState::Active,
+            ))
+            .apply()
+            .await
+            .unwrap();
+        let persisted = manager.get_session(&session.id, false).await.unwrap();
+        assert_eq!(stored_task_state(&persisted), AgentTaskState::Archived);
+
+        let summary = handle
+            .set_session_state(session.id.clone(), AgentTaskState::Active)
+            .await
+            .unwrap();
+        assert_eq!(summary.state, AgentTaskState::Active);
+        let persisted = manager.get_session(&session.id, false).await.unwrap();
+        assert!(persisted.archived_at.is_none());
+        assert_eq!(stored_task_state(&persisted), AgentTaskState::Active);
+        assert_eq!(updates(), 3);
         let _ = fs::remove_dir_all(test_root);
     }
 

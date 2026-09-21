@@ -13,7 +13,7 @@ use gpui::{
 use maple_agent::agent::{
     AgentCreateSessionRequest, AgentImageUpload, AgentProjectTrustStatus, AgentQueuedMessage,
     AgentSendMessageRequest, AgentServiceEvent, AgentSessionMcpServer, AgentSessionSummary,
-    AgentSlashCommand, AgentSubagent, AgentTimelineItem, SideQuestionEvent,
+    AgentSlashCommand, AgentSubagent, AgentTaskState, AgentTimelineItem, SideQuestionEvent,
 };
 
 use crate::backend::{AgentBackend, PendingPermission, PendingQuestion};
@@ -403,7 +403,8 @@ pub struct ChatScreen {
     /// The unsent draft saved when browsing started.
     history_draft: String,
     /// Root waiting for the user to confirm removal.
-    confirm_remove_root: Option<String>,
+    /// The modal asking before a project removal or a task deletion.
+    confirm: Option<dialogs::ConfirmDialog>,
     /// Project that has skills or guidance and no trust decision yet.
     trust_prompt: Option<AgentProjectTrustStatus>,
     trust_saving: bool,
@@ -518,10 +519,10 @@ impl ChatScreen {
                 self.upsert_session(session, cx);
                 cx.notify();
             }
-            SidebarEvent::SetArchived {
-                session_id,
-                archived,
-            } => self.set_session_archived(&session_id, archived, cx),
+            SidebarEvent::SetState { session_id, state } => {
+                self.set_session_state(&session_id, state, cx)
+            }
+            SidebarEvent::DeleteTask(id) => self.request_delete_task(&id, cx),
             SidebarEvent::RemoveRoot(root) => self.request_remove_root(&root, cx),
             SidebarEvent::SetTrust { path, trusted } => self.set_project_trust(path, trusted, cx),
             SidebarEvent::ChooseProject => self.choose_root_dialog(cx),
@@ -624,16 +625,28 @@ impl ChatScreen {
         });
     }
 
+    /// Stand in for the runtime confirming a state change: set the
+    /// session's state as its updated record would and push the list.
+    #[cfg(test)]
+    fn set_task_state(&mut self, session_id: &str, state: AgentTaskState, cx: &mut Context<Self>) {
+        if let Some(session) = self
+            .sessions
+            .iter_mut()
+            .find(|session| session.id == session_id)
+        {
+            session.state = state;
+        }
+        self.sync_sidebar(cx);
+    }
+
     #[cfg(test)]
     fn settle_task(&mut self, session_id: &str, cx: &mut Context<Self>) {
-        self.sidebar
-            .update(cx, |sidebar, cx| sidebar.settle_task(session_id, cx));
+        self.set_task_state(session_id, AgentTaskState::Settled, cx);
     }
 
     #[cfg(test)]
     fn unsettle_task(&mut self, session_id: &str, cx: &mut Context<Self>) {
-        self.sidebar
-            .update(cx, |sidebar, cx| sidebar.unsettle_task(session_id, cx));
+        self.set_task_state(session_id, AgentTaskState::Active, cx);
     }
 
     #[cfg(test)]
@@ -943,7 +956,7 @@ impl ChatScreen {
             prompt_history: Vec::new(),
             history_index: None,
             history_draft: String::new(),
-            confirm_remove_root: None,
+            confirm: None,
             trust_prompt: None,
             trust_saving: false,
             queue: Vec::new(),
@@ -1531,7 +1544,10 @@ impl ChatScreen {
         let latest = self
             .sessions
             .iter()
-            .find(|session| !session.archived && Some(&session.project_root) == root.as_ref())
+            .find(|session| {
+                session.state != AgentTaskState::Archived
+                    && Some(&session.project_root) == root.as_ref()
+            })
             .map(|session| session.id.clone());
         match latest {
             Some(id) => self.select_session(&id, cx),
@@ -2812,8 +2828,8 @@ impl ChatScreen {
         let popups = self
             .sidebar
             .update(cx, |sidebar, cx| sidebar.close_popups(cx));
-        if self.confirm_remove_root.is_some() || popups {
-            self.confirm_remove_root = None;
+        if self.confirm.is_some() || popups {
+            self.confirm = None;
             cx.notify();
             return;
         }
@@ -2907,7 +2923,7 @@ impl ChatScreen {
             return;
         }
         // A modal dialog owns the keyboard; nothing types past it.
-        if self.trust_prompt.is_some() || self.confirm_remove_root.is_some() {
+        if self.trust_prompt.is_some() || self.confirm.is_some() {
             return;
         }
         // A focused text input already receives typing.
@@ -3878,7 +3894,7 @@ impl ChatScreen {
     /// Insert or replace a session row; returns whether anything changed.
     fn upsert_session(&mut self, session: AgentSessionSummary, cx: &mut Context<Self>) -> bool {
         // An archived row shows no indicator; drop a marker it may carry.
-        if session.archived {
+        if session.state == AgentTaskState::Archived {
             self.completed_unread_sessions.remove(&session.id);
         }
         if let Some(existing) = self
@@ -4274,10 +4290,6 @@ impl ChatScreen {
                     {
                         self.completed_unread_sessions
                             .insert(session_id.to_string());
-                        // A fresh completion is new activity: it wakes a
-                        // task the user settled away earlier.
-                        self.sidebar
-                            .update(cx, |sidebar, cx| sidebar.wake_task(session_id, cx));
                     }
                     // Waking or retiring a run moves a task between
                     // sections; the entries must follow the same frame.
@@ -4433,10 +4445,10 @@ impl Render for ChatScreen {
                 window.focus(&handle, cx);
             }
         }
-        let confirm_remove = self
-            .confirm_remove_root
+        let confirm = self
+            .confirm
             .clone()
-            .map(|root| self.render_confirm_remove(&root, cx));
+            .map(|dialog| self.render_confirm(&dialog, cx));
         let trust_prompt = self
             .trust_prompt
             .clone()
@@ -4655,7 +4667,7 @@ impl Render for ChatScreen {
                     "lightbox-reveal",
                 ))
             })
-            .children(confirm_remove)
+            .children(confirm)
             .children(trust_prompt)
     }
 }
