@@ -25,7 +25,7 @@ V1/V2 scope and restart behavior.
 ## One-time setup
 
 ```sh
-git -C ../.. submodule update --init --recursive -- services/opensecret/nitro-toolkit services/opensecret/privatemode-public
+git -C ../.. submodule update --init --recursive -- services/opensecret/privatemode-public
 OPENSECRET_DEV_POSTGRES=0 OPENSECRET_DEV_ENV=0 OPENSECRET_DEV_CONTAINERS=0 \
   nix develop --no-write-lock-file '.?submodules=1' -c just build-local-proxies-macos
 ```

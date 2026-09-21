@@ -2,6 +2,11 @@
 
 A collection of host-side utilities for working with AWS Nitro Enclaves. These tools help manage credentials, logging, and networking for Nitro Enclaves.
 
+Maintained directly in Maple under `services/opensecret/nitro-toolkit/`.
+Changes belong in Maple pull requests alongside the OpenSecret backend.
+This directory is not a Git submodule. The existing [MIT license](LICENSE)
+and source history are retained; see the [import notes](../../../docs/nitro-toolkit-import.md).
+
 ## Components
 
 ### Credential Requester
@@ -17,7 +22,7 @@ A Python-based service that securely handles AWS credential management for Nitro
 
 #### Usage
 ```bash
-# Build the Docker image from the repository root
+# Build the Docker image from services/opensecret/nitro-toolkit
 docker build -t credential-requester credential_requester
 
 # Run the container
@@ -43,7 +48,7 @@ A CloudWatch logging solution specifically designed for Nitro Enclaves.
 
 #### Usage
 ```bash
-# Build the Docker image from the repository root
+# Build the Docker image from services/opensecret/nitro-toolkit
 docker build -t enclave-logging logging
 
 # Run the container
@@ -101,10 +106,10 @@ python vsock_helper.py 3 8003 '{"request_type":"credentials","key_name":null}'
 
 ## Installation
 
-1. Clone the repository:
+1. Clone Maple and enter this directory:
 ```bash
-git clone https://github.com/OpenSecretCloud/nitro-toolkit.git
-cd nitro-toolkit
+git clone https://github.com/MaplePrivacyLabs/Maple.git
+cd Maple/services/opensecret/nitro-toolkit
 ```
 
 2. Build the credential requester and logging containers from their component directories. The traffic forwarder and VSOCK helper are standalone Python utilities. See the individual component sections for specific instructions.

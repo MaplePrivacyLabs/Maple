@@ -48,7 +48,7 @@ from monorepo-root `.github/workflows/opensecret-ci.yml` through the pinned,
 side-effect-disabled component Nix environment:
 
 ```sh
-git -C ../.. submodule update --init --recursive -- services/opensecret/nitro-toolkit services/opensecret/privatemode-public
+git -C ../.. submodule update --init --recursive -- services/opensecret/privatemode-public
 
 OPENSECRET_DEV_POSTGRES=0 OPENSECRET_DEV_ENV=0 OPENSECRET_DEV_CONTAINERS=0 \
   nix develop --no-write-lock-file '.?submodules=1' -c cargo fmt --all -- --check

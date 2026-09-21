@@ -123,7 +123,7 @@ if hook_selected agent; then
     run_component maple-agent "$REPO_ROOT/apps/maple-agent" "." "$REPO_ROOT/apps/maple-agent/.githooks/pre-commit"
 fi
 if hook_selected opensecret; then
-    for submodule in nitro-toolkit privatemode-public; do
+    for submodule in privatemode-public; do
         if [ ! -e "$REPO_ROOT/services/opensecret/$submodule/.git" ]; then
             hook_fail "services/opensecret/$submodule is not checked out; CI would fail. Run: git submodule update --init --recursive"
         fi

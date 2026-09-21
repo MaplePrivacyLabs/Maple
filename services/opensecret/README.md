@@ -26,7 +26,7 @@ container setup changes user-level state unless disabled. See
 [`docs/dev-shell.md`](docs/dev-shell.md) for controls.
 
 ```sh
-git submodule update --init --recursive -- services/opensecret/nitro-toolkit services/opensecret/privatemode-public
+git submodule update --init --recursive -- services/opensecret/privatemode-public
 cd services/opensecret
 OPENSECRET_DEV_CONTAINERS=0 nix develop --no-update-lock-file '.?submodules=1'
 just diesel-migration-run-local

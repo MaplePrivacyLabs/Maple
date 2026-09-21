@@ -10,12 +10,16 @@ description: Set up and run the open-source OpenSecret Rust backend. Use when st
 Read the monorepo-root `AGENTS.md` and `services/opensecret/AGENTS.md`, inspect
 the worktree, and preserve unrelated changes. For new work, prefer current
 `origin/master` unless the task names another base. From the monorepo root,
-initialize public submodules and enter the backend component before building:
+initialize the remaining public submodule and enter the backend component before building:
 
 ```sh
-git submodule update --init --recursive -- services/opensecret/nitro-toolkit services/opensecret/privatemode-public
+git submodule update --init --recursive -- services/opensecret/privatemode-public
 cd services/opensecret
 ```
+
+`nitro-toolkit/` is ordinary tracked backend source. Edit it in this component;
+no separate checkout or submodule revision update is needed. See the
+[import notes](../../../docs/nitro-toolkit-import.md) when updating an older checkout.
 
 Subsequent paths and commands in this skill are relative to
 `services/opensecret/` unless labeled otherwise. Use its pinned Nix environment

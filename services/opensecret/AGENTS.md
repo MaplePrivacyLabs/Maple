@@ -12,8 +12,9 @@ component unless explicitly labeled as monorepo-root paths.
    editing. Preserve unrelated changes. For new work, prefer current
    `origin/master` unless the task names another base.
 2. Inspect submodule status during review. Initialize dependencies with
-   `git submodule update --init --recursive -- services/opensecret/nitro-toolkit services/opensecret/privatemode-public`
+   `git submodule update --init --recursive -- services/opensecret/privatemode-public`
    from the monorepo root when building, testing, or working in their contents.
+   `nitro-toolkit/` is maintained directly in this component, not as a submodule.
    Use the component's pinned Nix toolchain; do not install substitute
    system toolchains merely to bypass the repository environment.
 3. Remember that `nix develop` has stateful PostgreSQL, `.env`, and Linux
