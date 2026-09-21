@@ -84,6 +84,20 @@ python traffic_forwarder.py <local_ip> <local_port> <remote_cid> <remote_port>
 python traffic_forwarder.py 127.0.0.1 8080 3 5000
 ```
 
+#### Offline regression tests
+
+From `services/opensecret/`, run the forwarder suite with the backend's pinned Python:
+
+```sh
+OPENSECRET_DEV_POSTGRES=0 OPENSECRET_DEV_ENV=0 OPENSECRET_DEV_CONTAINERS=0 \
+  nix develop --no-update-lock-file '.?submodules=1' -c \
+  python3 -B -m unittest discover -s nitro-toolkit -p test_traffic_forwarder.py -v
+```
+
+The tests use synthetic data and local sockets; no AWS credentials or VSOCK device
+are required. The backend's `traffic-forwarder` Nix check runs the same suite in
+existing backend CI. These tests do not establish deployed enclave behavior.
+
 ### VSOCK Helper
 
 A utility for managing VSOCK communications with Nitro Enclaves.

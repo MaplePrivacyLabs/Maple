@@ -22,14 +22,23 @@ signal.signal(signal.SIGTERM, signal_handler)
 def forward(source, destination, connection_id, direction):
     """Forward data between sockets with proper cleanup"""
     try:
-        source.settimeout(1.0)  # 1 second timeout for checking shutdown
         while not shutdown_flag.is_set():
             try:
                 data = source.recv(1024)
                 if not data:
                     logging.info(f"Connection {connection_id}: End of data stream ({direction})")
                     break
-                destination.sendall(data)
+                # sendall() hides partial progress when it times out. Keep the
+                # unsent suffix until it is written before receiving more data.
+                pending = memoryview(data)
+                while pending and not shutdown_flag.is_set():
+                    try:
+                        sent = destination.send(pending)
+                    except socket.timeout:
+                        continue  # Check shutdown without discarding bytes.
+                    if sent == 0:
+                        raise ConnectionError("Socket closed during forwarding")
+                    pending = pending[sent:]
             except socket.timeout:
                 continue  # Check shutdown flag
             except OSError as e:
@@ -71,6 +80,11 @@ def handle_connection(client_socket, client_addr, remote_cid, remote_port, conne
         server_socket.settimeout(30)  # 30 second timeout for connection
         server_socket.connect((remote_cid, remote_port))
         logging.info(f"Connection {connection_id}: Connected to VSOCK {remote_cid}:{remote_port}")
+
+        # Each socket is read by one worker and written by the other. Set both
+        # polling timeouts before starting either worker so writes are bounded.
+        client_socket.settimeout(1.0)
+        server_socket.settimeout(1.0)
         
         # Create forwarding threads
         outgoing_thread = threading.Thread(

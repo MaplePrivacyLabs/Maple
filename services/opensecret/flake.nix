@@ -552,6 +552,15 @@
             touch "$out"
           '';
           kernel-source-pin = kernelSourcePin;
+          traffic-forwarder = pkgs.runCommand "opensecret-traffic-forwarder-tests" {
+            nativeBuildInputs = [ pkgs.python3 ];
+          } ''
+            mkdir nitro-toolkit
+            cp ${./nitro-toolkit/traffic_forwarder.py} nitro-toolkit/traffic_forwarder.py
+            cp ${./nitro-toolkit/test_traffic_forwarder.py} nitro-toolkit/test_traffic_forwarder.py
+            python3 -B -m unittest discover -s nitro-toolkit -p test_traffic_forwarder.py -v
+            touch "$out"
+          '';
           operator-boundaries = pkgs.runCommand "opensecret-operator-boundaries" {
             nativeBuildInputs = [
               pkgs.bash pkgs.coreutils pkgs.git pkgs.jq pkgs.just pkgs.nodejs
