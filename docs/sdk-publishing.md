@@ -114,8 +114,17 @@ next.
    `proxy` with `cargo update -p maple-sdk --precise X.Y.Z`. The host app and
    its embedded proxy must resolve the same SDK version. When the SDK adds a
    user-facing condition, surface it through each client's own safe message
-   (native clients keep SDK error details private) and update the frontend's
-   embedded PCR0 roots if the SDK's changed.
+   (native clients keep SDK error details private). For enclave trust changes,
+   review both apps' embedded PCR0 fallback lists against the approved
+   `services/opensecret/pcrDevHistory.json` and `pcrProdHistory.json`:
+   `apps/maple-research/frontend/src/config/openSecretClientConfig.ts` and
+   `apps/maple-auth/src/config/openSecretClientConfig.ts`. Review each app's
+   combined app-provided and pinned-SDK roots for its intended approved enclave
+   measurements when signed-history fetching is unavailable, keeping development
+   and production policies separate.
+   Refresh affected lists and validate the affected app; identical lists or SDK
+   pins are not required. Record Auth's independently authorized build/publication
+   when its fallback changes; a Research release does not publish Auth.
 4. **Isolated app version bump** with `just update-version X.Y.Z` on its own
    branch, following `.agents/skills/release-maple/`.
 5. **Release** through the release skill when the team decides to ship. If the

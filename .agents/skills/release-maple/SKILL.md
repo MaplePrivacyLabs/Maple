@@ -129,6 +129,19 @@ pinning those consumers first; an intentional local-source release can proceed
 with the exact monorepo commit recorded. Unrelated SDK source changes do not
 require a pinned client to upgrade, and this preference adds no release gate.
 
+When preparing an enclave trust or PCR rotation change, review both browser
+consumers' embedded fallbacks against the approved development and production
+histories: `apps/maple-research/frontend/src/config/openSecretClientConfig.ts`
+and `apps/maple-auth/src/config/openSecretClientConfig.ts`. Verify each affected
+app's combined app-provided and pinned-SDK roots support its intended approved
+enclave measurements when signed-history fetching is unavailable, preserving
+development/production separation. Record affected artifacts and any pending rollout
+in the handoff. Auth owns a separate SDK pin and publisher: refreshing Research
+does not update Auth, and an Auth publication remains a separately authorized
+operation under [the Pages guide](../../../docs/pages-deployments.md#independent-auth-site).
+This is a compatibility review of each consumer, not a requirement to keep their
+lists byte-identical or release them together.
+
 Record the proxy version and inspect its own runtime inputs since `previous_tag`:
 
 ```bash

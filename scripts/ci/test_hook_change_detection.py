@@ -27,6 +27,8 @@ class HookChangeDetectionTests(unittest.TestCase):
             "justfile",
             "apps/maple-research/AGENTS.md",
             "apps/maple-research/.githooks/pre-commit",
+            "apps/maple-auth/AGENTS.md",
+            "apps/maple-auth/.githooks/pre-commit",
             "apps/maple-agent/AGENTS.md",
             "apps/maple-agent/.githooks/pre-commit",
             "sdk/README.md",
@@ -52,6 +54,16 @@ class HookChangeDetectionTests(unittest.TestCase):
             ["apps/maple-research/frontend/src/App.tsx", "apps/maple-research/frontend/src-tauri/src/lib.rs"],
             "research_frontend",
             "research_rust",
+        )
+
+    def test_auth_component_does_not_select_research(self) -> None:
+        for path in ("apps/maple-auth/src/main.tsx", "apps/maple-auth/package.json",
+                     "apps/maple-auth/bun.lock", "apps/maple-auth/vite.config.ts"):
+            with self.subTest(path=path):
+                self.assert_selects([path], "auth")
+        self.assert_selects(
+            ["apps/maple-auth/src/main.tsx", "apps/maple-research/frontend/src/App.tsx"],
+            "auth", "research_frontend",
         )
 
     def test_agent_component(self) -> None:

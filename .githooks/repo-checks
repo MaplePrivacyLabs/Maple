@@ -11,7 +11,8 @@ workflows=$(hook_staged_matching '^\.github/workflows/.*\.ya?ml$')
 if [ -n "$workflows" ]; then
     hook_require actionlint
     for workflow in $workflows; do
-        if [ "$workflow" = ".github/workflows/pages-publish.yml" ]; then
+        if [ "$workflow" = ".github/workflows/pages-publish.yml" ] ||
+           [ "$workflow" = ".github/workflows/auth-pages-publish.yml" ]; then
             hook_run actionlint -config-file .github/actionlint.yaml \
                 -ignore 'unexpected key "deployment" for "environment" section' "$workflow"
         else

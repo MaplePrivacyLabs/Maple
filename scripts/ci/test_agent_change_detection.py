@@ -40,6 +40,10 @@ class AgentChangeDetectionTests(unittest.TestCase):
 
     def test_research_typescript_and_independent_services_skip_agent(self):
         for path in (
+            "apps/maple-auth/src/main.tsx",
+            "apps/maple-auth/package.json",
+            "apps/maple-auth/bun.lock",
+            "apps/maple-auth/vite.config.ts",
             "apps/maple-research/frontend/src/main.tsx",
             "apps/maple-research/frontend/src-tauri/src/lib.rs",
             "sdk/src/lib/index.ts", "sdk/package.json", "sdk/flake.nix",

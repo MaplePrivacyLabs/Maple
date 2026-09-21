@@ -1,0 +1,69 @@
+name: Publish Auth Pages
+
+permissions:
+  contents: read
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_run_id:
+        description: Successful Auth Pages build run ID
+        required: true
+        type: string
+      build_run_attempt:
+        description: Successful Auth Pages build run attempt
+        required: true
+        type: string
+
+jobs:
+  production:
+    name: Publish verified auth build
+    if: >-
+      vars.MAPLE_AUTH_PAGES_PRODUCTION_ENABLED == 'true' &&
+      github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    concurrency:
+      group: pages-auth-production
+      cancel-in-progress: false
+    environment:
+      name: auth-pages-production
+      # Explicit artifact-SHA deployment status owns the production URL.
+      deployment: false
+    permissions:
+      contents: write
+      actions: read
+      deployments: write
+    steps:
+      - name: Checkout trusted publisher
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
+        with:
+          github-token: ""
+
+      - name: Install trusted deployment dependencies
+        working-directory: services/updates
+        run: nix develop --no-update-lock-file ../..#pages -c bun install --frozen-lockfile --ignore-scripts
+
+      - name: Verify and prepare the auth artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MAPLE_AUTH_PAGES_PRODUCTION_ENABLED: ${{ vars.MAPLE_AUTH_PAGES_PRODUCTION_ENABLED }}
+        run: >-
+          nix develop --no-update-lock-file .#pages -c python3 -I scripts/ci/pages_auth_deploy.py
+          prepare --state "$RUNNER_TEMP/maple-auth-pages"
+
+      - name: Deploy the verified auth artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MAPLE_AUTH_PAGES_PRODUCTION_ENABLED: ${{ vars.MAPLE_AUTH_PAGES_PRODUCTION_ENABLED }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: >-
+          nix develop --no-update-lock-file .#pages -c python3 -I scripts/ci/pages_auth_deploy.py
+          deploy --state "$RUNNER_TEMP/maple-auth-pages"

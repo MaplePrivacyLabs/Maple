@@ -7,6 +7,11 @@ description: Develop and debug ordinary non-Agent-Mode Maple features and fixes 
 
 Work from the `MaplePrivacyLabs/Maple` repository root. Treat `justfile`, `apps/maple-research/frontend/package.json`, `flake.nix`, `scripts/ci/`, and `.github/workflows/` as the command sources of truth. Check them again when they disagree with prose documentation.
 
+The standalone hosted native sign-in application lives in `apps/maple-auth`.
+For that app, follow its own `AGENTS.md`, package scripts, and Auth CI scripts;
+do not place its code in Research or make Auth depend on Research source,
+configuration, or dependency installation. Research retains its built-in auth.
+
 ## Route Specialized Work
 
 - Use `$validate-maple` for full validation, packaged-app smoke tests, cross-platform builds, or release-artifact verification.

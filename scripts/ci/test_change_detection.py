@@ -47,6 +47,20 @@ class ChangeDetectionTests(unittest.TestCase):
             "macos", "linux", "windows",
         )
 
+    def test_auth_component_does_not_trigger_research_packaging(self) -> None:
+        for path in (
+            "apps/maple-auth/src/main.tsx", "apps/maple-auth/package.json",
+            "apps/maple-auth/bun.lock", "apps/maple-auth/vite.config.ts",
+            "apps/maple-auth/.githooks/pre-commit", ".github/workflows/auth-pages-ci.yml",
+            "scripts/ci/auth-common.sh", "scripts/ci/auth-ci.sh", "scripts/ci/auth-web.sh",
+        ):
+            with self.subTest(path=path):
+                self.assert_routes([path])
+        self.assert_routes(
+            ["apps/maple-auth/src/main.tsx", "apps/maple-research/frontend/src/app.tsx"],
+            "frontend",
+        )
+
     def test_in_tree_rust_runtime_inputs_mark_desktop_lanes(self) -> None:
         for path in (
             "proxy/Cargo.toml",
