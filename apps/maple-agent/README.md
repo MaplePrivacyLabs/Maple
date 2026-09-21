@@ -213,7 +213,7 @@ cross-screen behavior rather than an opt-in Vim side effect.
 ### Keyboard shortcuts preview
 
 Open **Keyboard Shortcuts** in Settings to search, record, disable, or reset
-the 159 bindings Maple ships in this preview. Recording accepts sequences of up to
+the bindings Maple ships in this preview. Recording accepts sequences of up to
 four strokes; Enter saves, Backspace removes the latest stroke, and Escape
 cancels. Exact and prefix collisions are shown before saving, with an explicit
 choice to replace the other bindings or keep compatible chords.

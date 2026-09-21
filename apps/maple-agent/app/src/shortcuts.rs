@@ -482,7 +482,7 @@ mod tests {
     #[test]
     fn shipped_catalog_prepares_without_customization_conflicts() {
         let prepared = prepare(&ShortcutOverrides::new()).unwrap();
-        assert_eq!(prepared.bindings.len(), 159);
+        assert_eq!(prepared.bindings.len(), crate::keymap::catalog().len());
         assert!(
             prepared.rows.iter().all(|row| row.conflicts.is_empty()),
             "intentional parent/child context shadowing is not a user conflict"
@@ -662,7 +662,7 @@ mod tests {
             let runtime = ShortcutRuntime::bootstrap(&overrides, app);
             let snapshot = runtime.snapshot();
             assert_eq!(snapshot.generation, 1);
-            assert_eq!(snapshot.rows.len(), 159);
+            assert_eq!(snapshot.rows.len(), crate::keymap::catalog().len());
             assert!(snapshot.last_error.is_none());
             assert!(
                 snapshot

@@ -3,6 +3,7 @@
 //! form submit and composer send, and an optional multi-line mode that wraps
 //! text and grows with its content (Shift+Enter inserts a newline).
 
+mod bounds;
 pub mod vim;
 pub(crate) mod vim_actions;
 
@@ -42,6 +43,16 @@ actions!(
         SelectAll,
         Home,
         End,
+        SelectLineStart,
+        SelectLineEnd,
+        DeleteToLineStart,
+        DeleteToLineEnd,
+        WordLeft,
+        WordRight,
+        SelectWordLeft,
+        SelectWordRight,
+        DeleteWordBackward,
+        DeleteWordForward,
         Up,
         Down,
         ShowCharacterPalette,
@@ -929,8 +940,7 @@ impl TextInput {
         if matches!(self.vim_mode(), Some(VimMode::Normal | VimMode::Visual)) {
             self.execute_vim_command(VimCommand::Motion(Motion::LineStart), cx);
         } else {
-            self.move_to(0, cx);
-            self.sync_insert_cursor(0, cx);
+            self.move_to_offset(bounds::line_start(&self.content, self.cursor_offset()), cx);
         }
     }
 
@@ -938,9 +948,183 @@ impl TextInput {
         if matches!(self.vim_mode(), Some(VimMode::Normal | VimMode::Visual)) {
             self.execute_vim_command(VimCommand::Motion(Motion::LineEnd), cx);
         } else {
-            let offset = self.content.len();
-            self.move_to(offset, cx);
-            self.sync_insert_cursor(offset, cx);
+            self.move_to_offset(bounds::line_end(&self.content, self.cursor_offset()), cx);
+        }
+    }
+
+    fn select_line_start(&mut self, _: &SelectLineStart, _: &mut Window, cx: &mut Context<Self>) {
+        self.select_line_edge(bounds::line_start, cx);
+    }
+
+    fn select_line_end(&mut self, _: &SelectLineEnd, _: &mut Window, cx: &mut Context<Self>) {
+        self.select_line_edge(bounds::line_end, cx);
+    }
+
+    fn delete_to_line_start(
+        &mut self,
+        _: &DeleteToLineStart,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.delete_to_line_edge(bounds::line_start, InsertEditKind::Backspace, window, cx);
+    }
+
+    fn delete_to_line_end(
+        &mut self,
+        _: &DeleteToLineEnd,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.delete_to_line_edge(bounds::line_end, InsertEditKind::Delete, window, cx);
+    }
+
+    fn word_left(&mut self, _: &WordLeft, _: &mut Window, cx: &mut Context<Self>) {
+        self.move_by_word(false, cx);
+    }
+
+    fn word_right(&mut self, _: &WordRight, _: &mut Window, cx: &mut Context<Self>) {
+        self.move_by_word(true, cx);
+    }
+
+    fn select_word_left(&mut self, _: &SelectWordLeft, _: &mut Window, cx: &mut Context<Self>) {
+        self.select_by_word(false, cx);
+    }
+
+    fn select_word_right(&mut self, _: &SelectWordRight, _: &mut Window, cx: &mut Context<Self>) {
+        self.select_by_word(true, cx);
+    }
+
+    fn delete_word_backward(
+        &mut self,
+        _: &DeleteWordBackward,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.delete_word(false, window, cx);
+    }
+
+    fn delete_word_forward(
+        &mut self,
+        _: &DeleteWordForward,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.delete_word(true, window, cx);
+    }
+
+    /// Normal and Visual keep Vim's own motions. These shortcuts are for
+    /// Vim off and Insert, which is where text is typed.
+    fn standard_editing(&self) -> bool {
+        !matches!(self.vim_mode(), Some(VimMode::Normal | VimMode::Visual))
+    }
+
+    fn move_to_offset(&mut self, offset: usize, cx: &mut Context<Self>) {
+        self.move_to(offset, cx);
+        self.sync_insert_cursor(offset, cx);
+    }
+
+    fn move_by_word(&mut self, forward: bool, cx: &mut Context<Self>) {
+        if !self.standard_editing() {
+            return;
+        }
+        let offset = self.word_target(forward);
+        self.move_to_offset(offset, cx);
+    }
+
+    fn select_by_word(&mut self, forward: bool, cx: &mut Context<Self>) {
+        if !self.standard_editing() {
+            return;
+        }
+        let offset = self.word_target(forward);
+        self.select_to(offset, cx);
+        self.sync_insert_cursor(self.cursor_offset(), cx);
+    }
+
+    fn select_line_edge(&mut self, edge: fn(&str, usize) -> usize, cx: &mut Context<Self>) {
+        if !self.standard_editing() {
+            return;
+        }
+        let offset = edge(&self.content, self.cursor_offset());
+        self.select_to(offset, cx);
+        self.sync_insert_cursor(self.cursor_offset(), cx);
+    }
+
+    fn delete_word(&mut self, forward: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.standard_editing() {
+            return;
+        }
+        if self.consume_marked_text(window, cx) {
+            return;
+        }
+        let range = if self.selected_range.is_empty() {
+            let cursor = self.cursor_offset();
+            let target = self.word_target(forward);
+            if forward {
+                cursor..target
+            } else {
+                target..cursor
+            }
+        } else {
+            self.selected_range.clone()
+        };
+        if range.is_empty() {
+            return;
+        }
+        let kind = if forward {
+            InsertEditKind::Delete
+        } else {
+            InsertEditKind::Backspace
+        };
+        self.replace_range_with_kind(range, "", kind, cx);
+    }
+
+    fn delete_to_line_edge(
+        &mut self,
+        edge: fn(&str, usize) -> usize,
+        kind: InsertEditKind,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.standard_editing() {
+            return;
+        }
+        if self.consume_marked_text(window, cx) {
+            return;
+        }
+        let range = if self.selected_range.is_empty() {
+            let cursor = self.cursor_offset();
+            let target = edge(&self.content, cursor);
+            if target < cursor {
+                target..cursor
+            } else {
+                cursor..target
+            }
+        } else {
+            self.selected_range.clone()
+        };
+        if range.is_empty() {
+            return;
+        }
+        self.replace_range_with_kind(range, "", kind, cx);
+    }
+
+    fn word_target(&self, forward: bool) -> usize {
+        let cursor = self.cursor_offset();
+        if forward {
+            bounds::word_right(&self.content, cursor, bounds::host_word_stop())
+        } else {
+            bounds::word_left(&self.content, cursor)
+        }
+    }
+
+    /// An in-progress IME composition owns the next delete. Returns true
+    /// when that composition was cleared.
+    fn consume_marked_text(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        if self.vim.is_none() && self.marked_range.is_some() {
+            self.replace_text_in_range(None, "", window, cx);
+            true
+        } else {
+            false
         }
     }
 
@@ -2418,6 +2602,16 @@ impl Render for TextInput {
             .on_action(cx.listener(Self::select_all))
             .on_action(cx.listener(Self::home))
             .on_action(cx.listener(Self::end))
+            .on_action(cx.listener(Self::select_line_start))
+            .on_action(cx.listener(Self::select_line_end))
+            .on_action(cx.listener(Self::delete_to_line_start))
+            .on_action(cx.listener(Self::delete_to_line_end))
+            .on_action(cx.listener(Self::word_left))
+            .on_action(cx.listener(Self::word_right))
+            .on_action(cx.listener(Self::select_word_left))
+            .on_action(cx.listener(Self::select_word_right))
+            .on_action(cx.listener(Self::delete_word_backward))
+            .on_action(cx.listener(Self::delete_word_forward))
             .on_action(cx.listener(Self::up))
             .on_action(cx.listener(Self::down))
             .on_action(cx.listener(Self::show_character_palette))
@@ -3088,6 +3282,118 @@ mod tests {
             assert!(vim.last_change().is_none());
             assert!(vim.unnamed_register().is_none());
             assert_eq!(input.text_ref(), "bcz");
+        });
+    }
+
+    fn word_left_key() -> &'static str {
+        if cfg!(target_os = "macos") {
+            "alt-left"
+        } else {
+            "ctrl-left"
+        }
+    }
+
+    fn delete_word_backward_key() -> &'static str {
+        if cfg!(target_os = "macos") {
+            "alt-backspace"
+        } else {
+            "ctrl-backspace"
+        }
+    }
+
+    #[gpui::test]
+    fn home_and_word_keys_edit_the_current_line(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        let input = cx.new(|cx| {
+            crate::desktop::register_key_bindings(cx);
+            let mut input = TextInput::new("", cx).multiline(4);
+            input.set_text("hello world\nsecond", cx);
+            input
+        });
+        let (_host, cx) = cx.add_window_view(|_window, _cx| InputHost {
+            input: input.clone(),
+        });
+        let focus = cx.update(|_window, app| input.read(app).focus_handle(app));
+        cx.update(|window, app| window.focus(&focus, app));
+
+        // Home is the current line, not the start of the whole field.
+        cx.simulate_keystrokes("home");
+        cx.update(|_window, app| {
+            assert_eq!(input.read(app).selected_range, 12..12);
+        });
+        cx.simulate_keystrokes("shift-end");
+        cx.update(|_window, app| {
+            assert_eq!(input.read(app).selected_range, 12..18);
+        });
+
+        // Step back onto the end of "hello world", then to the start of "world".
+        cx.simulate_keystrokes("left");
+        cx.simulate_keystrokes(word_left_key());
+        cx.update(|_window, app| {
+            assert_eq!(input.read(app).selected_range, 6..6);
+        });
+        cx.simulate_keystrokes(delete_word_backward_key());
+        cx.update(|_window, app| {
+            let input = input.read(app);
+            assert_eq!(input.text_ref(), "world\nsecond");
+            assert_eq!(input.selected_range, 0..0);
+        });
+    }
+
+    #[gpui::test]
+    fn word_keys_run_in_insert_and_stay_out_of_normal(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        let input = cx.new(|cx| {
+            crate::desktop::register_key_bindings(cx);
+            let mut input = TextInput::new("", cx).composer_vim(true);
+            input.set_text("hello world", cx);
+            input
+        });
+        let (_host, cx) = cx.add_window_view(|_window, _cx| InputHost {
+            input: input.clone(),
+        });
+        let focus = cx.update(|_window, app| input.read(app).focus_handle(app));
+        cx.update(|window, app| window.focus(&focus, app));
+
+        cx.simulate_keystrokes(word_left_key());
+        cx.update(|_window, app| {
+            let input = input.read(app);
+            assert_eq!(input.vim_mode(), Some(VimMode::Normal));
+            // Normal mode sits on the last character, and the word key does not move it.
+            assert_eq!(input.selected_range, 10..10);
+        });
+
+        cx.simulate_keystrokes("i");
+        cx.simulate_keystrokes(word_left_key());
+        cx.update(|_window, app| {
+            let input = input.read(app);
+            assert_eq!(input.vim_mode(), Some(VimMode::Insert));
+            assert_eq!(input.selected_range, 6..6);
+        });
+    }
+
+    #[gpui::test]
+    fn delete_to_line_start_removes_the_current_line_prefix(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        let input = cx.new(|cx| {
+            let mut input = TextInput::new("", cx).multiline(4);
+            input.set_text("keep\nremove me", cx);
+            // Caret at the start of "me".
+            input.selected_range = 12..12;
+            input
+        });
+        let (_host, cx) = cx.add_window_view(|_window, _cx| InputHost {
+            input: input.clone(),
+        });
+        cx.update(|window, app| {
+            input.update(app, |input, cx| {
+                input.delete_to_line_start(&DeleteToLineStart, window, cx);
+            });
+        });
+        cx.update(|_window, app| {
+            let input = input.read(app);
+            assert_eq!(input.text_ref(), "keep\nme");
+            assert_eq!(input.selected_range, 5..5);
         });
     }
 }
