@@ -111,7 +111,6 @@ def check(sdk: Path, tarball: Path, consumer: Path) -> None:
     symbols = [
         "OpenSecretProvider", "useOpenSecret", "createCustomFetch",
         "OpenSecretDeveloper", "useOpenSecretDeveloper", "OpenSecretInferenceCapacityError",
-        "captureUserCredentialSnapshot", "clearUserCredentialsIfCurrent",
     ]
     assertion = (
         f"for (const name of {json.dumps(symbols)}) assert.equal(typeof sdk[name], 'function', name);\n"
@@ -133,10 +132,8 @@ def check(sdk: Path, tarball: Path, consumer: Path) -> None:
         'assert.equal(context.OpenSecretReact, undefined);\nconst sdk = context.MapleSDK;\n' + assertion
     )
     types = (
-        'import { OpenSecretProvider, useOpenSecret, createCustomFetch, '
-        'captureUserCredentialSnapshot, clearUserCredentialsIfCurrent } from "@mapleai/sdk";\n'
-        'import type { Model, OpenSecretContextType, PcrEnvironment, UserCredentialSnapshot } '
-        'from "@mapleai/sdk";\n'
+        'import { OpenSecretProvider, useOpenSecret, createCustomFetch } from "@mapleai/sdk";\n'
+        'import type { Model, OpenSecretContextType, PcrEnvironment } from "@mapleai/sdk";\n'
         'const env: PcrEnvironment = "production";\n'
         'const model: Model = { id: "example", created: 0, object: "model", owned_by: "example" };\n'
         'type Context = OpenSecretContextType;\n'
@@ -146,10 +143,6 @@ def check(sdk: Path, tarball: Path, consumer: Path) -> None:
         '  void initiate("");\n'
         '  void initiate("invite", "https://auth.example.com/callback");\n'
         '}\n'
-        'const snapshot: UserCredentialSnapshot | null = '
-        'captureUserCredentialSnapshot("https://api.example.com");\n'
-        'if (snapshot) { const cleared: boolean = clearUserCredentialsIfCurrent(snapshot); '
-        'void cleared; }\n'
         'void [OpenSecretProvider, useOpenSecret, createCustomFetch, env, model];\n'
     )
     for name in ("consumer.ts", "consumer.mts"):
@@ -164,10 +157,6 @@ def check(sdk: Path, tarball: Path, consumer: Path) -> None:
         '  void initiate("");\n'
         '  void initiate("invite", "https://auth.example.com/callback");\n'
         '}\n'
-        'const snapshot: sdk.UserCredentialSnapshot | null = '
-        'sdk.captureUserCredentialSnapshot("https://api.example.com");\n'
-        'if (snapshot) { const cleared: boolean = sdk.clearUserCredentialsIfCurrent(snapshot); '
-        'void cleared; }\n'
         'void [sdk.OpenSecretProvider, sdk.useOpenSecret, env, model];\n'
     )
     runtime_exports = [json.loads(run(["node", name], consumer)) for name in (

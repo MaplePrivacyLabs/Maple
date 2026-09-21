@@ -164,33 +164,6 @@ provider before selecting a non-default callback. An older backend ignores
 the new field and uses its default; the SDK does not silently retry with a
 different callback. Native Apple sign-in and the Rust SDK are unchanged.
 
-### Conditional local user-credential cleanup (4.1.0)
-
-`captureUserCredentialSnapshot(apiUrl)` returns an opaque in-memory handle
-for the currently persisted V2 user credentials, or `null` when none exist.
-Capture it before awaiting the operation after which cleanup is needed.
-`clearUserCredentialsIfCurrent(snapshot)` returns `true` only after persisting
-the removal of that same credential pair and revision. It returns `false` for
-an observed replacement, refresh, logout, or an already consumed handle.
-Do not take a fresh snapshot merely to clear the replacement credentials.
-
-The handle exposes no tokens or account identity and cannot be copied,
-serialized, or carried across a page reload or separate SDK instance.
-Unavailable, unreadable, unsynchronized, malformed, or unwritable persistent
-storage raises an error; a storage error leaves the handle retryable. These
-operations never substitute or republish an in-memory fallback. A successful
-clear invalidates the current SDK instance's React user state. It does not
-call server logout, revoke tokens, or clear API keys, platform credentials,
-other API origins, legacy global token slots, or the cache namespace root.
-
-**Concurrency limit:** [Web Storage](https://html.spec.whatwg.org/multipage/webstorage.html#introduction)
-does not guarantee cross-tab locking. The API rejects changes observed before
-its write, including a different token pair with a reused revision, but another context can still write between
-the read and write. Applications requiring protection against simultaneous
-writers must coordinate every mutation of the shared credential storage before
-adopting this cleanup path. Locking only cleanup is insufficient. This API does
-not claim that stronger cross-tab guarantee.
-
 ### Development
 
 Use the pinned Nix shell and Bun version. `bun.lock` is the supported dependency
