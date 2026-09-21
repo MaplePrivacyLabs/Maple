@@ -143,12 +143,13 @@ profile. The build scripts never rename or move managed dotenv files; fresh
 production CI checkouts contain no managed workspace dotenv files. The pinned CI
 shell provides the Node, Bun and Python runtimes used by these scripts.
 
-The stacked development dependency may use `file:../../../sdk`. A production
-auth build rejects that link before installing dependencies: it requires an exact
+The frontend pins published `@mapleai/sdk` 4.1.1. Development may use
+`file:../../../sdk`; a production auth build rejects that link before installing
+dependencies. It requires an exact
 stable `@mapleai/sdk` version of at least `4.1.0`, rejects SDK source overrides,
 and checks the installed package name/version and that it resolves inside the
-frozen `node_modules` installation. The SDK must first be published and the
-frontend manifest and lockfile updated to that exact registry version. This
+frozen `node_modules` installation. Future upgrades must publish the SDK first,
+then update the frontend manifest and lockfile to that exact registry version. This
 offline gate does not itself publish the SDK or query the registry.
 
 The auth publisher uses trusted master tooling and the same static archive,

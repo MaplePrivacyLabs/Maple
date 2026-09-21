@@ -66,6 +66,6 @@ activation flag, environment, project, and production ref. An app release
 does not publish the auth site. Provider registration, backend callback
 allowlists, and traffic redirection are separate rollout steps.
 
-An unpublished local SDK link is supported during stacked development, but
-must be replaced with the reviewed published SDK version before merging this
-consumer change. The production auth build rejects a local SDK link.
+The frontend pins published `@mapleai/sdk` 4.1.1 with a frozen registry lockfile.
+Local SDK links remain supported during development; the production auth build
+requires an exact published version and rejects local links.
