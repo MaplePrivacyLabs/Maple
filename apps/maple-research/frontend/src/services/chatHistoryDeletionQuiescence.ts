@@ -135,13 +135,16 @@ async function settleCancellationRequestsBeforeDeadline(
   deadline: number
 ): Promise<PromiseSettledResult<unknown>[]> {
   if (requests.length === 0) return [];
+  // These requests already started. Consume their rejections even when the
+  // deadline expires before we can wait for them.
+  const settledRequests = Promise.allSettled(requests);
   const remainingMs = deadline - Date.now();
   if (remainingMs <= 0) throw deletionTimeoutError();
 
   let timeout: ReturnType<typeof setTimeout> | undefined;
   try {
     return await Promise.race([
-      Promise.allSettled(requests),
+      settledRequests,
       new Promise<never>((_, reject) => {
         timeout = setTimeout(() => reject(deletionTimeoutError()), remainingMs);
       })
