@@ -203,13 +203,18 @@ grep -Eq "test result: ok\\. ${oauth_count} passed; 0 failed; 0 ignored;" \
 callback_count=0
 for callback_filter in \
   db::tests::db_oauth_settings_ \
-  transport_v2::gateway::tests::db_oauth_callback_selection_v1_v2; do
+  transport_v2::gateway::tests::db_oauth_callback_selection_v1_v2 \
+  transport_v2::gateway::tests::db_oauth_callback_completion_; do
   cargo test --locked --all-features "$callback_filter" \
     -- --ignored --list >"$workdir/callback-tests.list"
   selected_count="$(awk -v prefix="$callback_filter" \
     'index($0, prefix) == 1 && /: test$/ { count++ }
      END { print count + 0 }' "$workdir/callback-tests.list")"
   test "$selected_count" -gt 0
+  if [ "$callback_filter" = "transport_v2::gateway::tests::db_oauth_callback_completion_" ]; then
+    # Both Google and GitHub must complete through both encrypted transports.
+    test "$selected_count" -eq 4
+  fi
 
   cargo test --locked --all-features "$callback_filter" \
     -- --ignored --test-threads=1 --nocapture 2>&1 | tee "$workdir/callback-tests.log"

@@ -93,11 +93,13 @@ OPENSECRET_DEV_POSTGRES=0 OPENSECRET_DEV_ENV=0 OPENSECRET_DEV_CONTAINERS=0 \
 ```
 
 The helper proves an empty-database migration and the selected local synthetic
-database suites, including OAuth settings preservation and callback selection
-through the real V1 encryption middleware and V2 gateway. The SDK integration
-workflow runs this helper too. The callback fixtures use synthetic local
-credentials and perform no provider exchanges; they do not prove a live OAuth
-provider flow, a released SDK or application, or a data conversion from
+database suites, including OAuth settings preservation, callback selection,
+and Google/GitHub callback completion through the real V1 encryption middleware
+and V2 gateway. Completion tests exchange synthetic credentials only with
+local mock token/user-info endpoints, verify the originally selected callback
+after settings change, and reject replay without another exchange. The SDK
+integration workflow runs this helper too. These fixtures do not prove a live
+OAuth provider flow, a released SDK or application, or a data conversion from
 representative old rows.
 
 For a data migration, separately build an upgrade-shaped disposable database
