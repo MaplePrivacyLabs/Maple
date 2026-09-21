@@ -131,6 +131,7 @@ jobs:
             bun test src/lib/test/integration/apiKeys.test.ts --timeout 30000
             bun test src/lib/test/integration/bip85.test.ts --timeout 30000
             bun test src/lib/test/integration/developer.test.ts --timeout 30000
+            bun test src/lib/test/integration/oauthRedirect.test.ts --timeout 30000
             bun test src/lib/test/integration/signing.test.ts --timeout 30000
           '
 

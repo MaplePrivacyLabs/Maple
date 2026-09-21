@@ -140,6 +140,30 @@ conversations, inference, and account operations. Internal developer tooling
 uses `OpenSecretDeveloper` and `useOpenSecretDeveloper`; preserve that surface
 when changing the public exports.
 
+### OAuth callback selection (4.1.0)
+
+The three browser initiation methods accept an optional final callback URL:
+
+```ts
+const os = useOpenSecret();
+await os.initiateGoogleAuth(inviteCode); // Existing provider default.
+await os.initiateGoogleAuth(inviteCode, `${window.location.origin}/auth/google/callback`);
+await os.initiateGitHubAuth(inviteCode, `${window.location.origin}/auth/github/callback`);
+await os.initiateAppleAuth(inviteCode, `${window.location.origin}/auth/apple/callback`);
+```
+
+The SDK forwards a supplied URL unchanged as `redirect_url`; an omitted
+argument keeps the existing request shape. The backend validates exact
+membership in that project's provider settings. Its platform settings types
+also expose `additional_redirect_urls?: string[] | null`: when the provider
+object is supplied, omission or `null` preserves the list and `[]` clears it.
+See the [backend contract](../services/opensecret/docs/oauth-callbacks.md).
+
+Deploy backend callback-selection support and register the URL with the
+provider before selecting a non-default callback. An older backend ignores
+the new field and uses its default; the SDK does not silently retry with a
+different callback. Native Apple sign-in and the Rust SDK are unchanged.
+
 ### Development
 
 Use the pinned Nix shell and Bun version. `bun.lock` is the supported dependency

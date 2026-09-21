@@ -137,6 +137,12 @@ def check(sdk: Path, tarball: Path, consumer: Path) -> None:
         'const env: PcrEnvironment = "production";\n'
         'const model: Model = { id: "example", created: 0, object: "model", owned_by: "example" };\n'
         'type Context = OpenSecretContextType;\n'
+        'declare const context: Context;\n'
+        'for (const initiate of [context.initiateGitHubAuth, context.initiateGoogleAuth, '
+        'context.initiateAppleAuth]) {\n'
+        '  void initiate("");\n'
+        '  void initiate("invite", "https://auth.example.com/callback");\n'
+        '}\n'
         'void [OpenSecretProvider, useOpenSecret, createCustomFetch, env, model];\n'
     )
     for name in ("consumer.ts", "consumer.mts"):
@@ -145,6 +151,12 @@ def check(sdk: Path, tarball: Path, consumer: Path) -> None:
         'import sdk = require("@mapleai/sdk");\n'
         'const env: sdk.PcrEnvironment = "production";\n'
         'const model: sdk.Model = { id: "example", created: 0, object: "model", owned_by: "example" };\n'
+        'declare const context: sdk.OpenSecretContextType;\n'
+        'for (const initiate of [context.initiateGitHubAuth, context.initiateGoogleAuth, '
+        'context.initiateAppleAuth]) {\n'
+        '  void initiate("");\n'
+        '  void initiate("invite", "https://auth.example.com/callback");\n'
+        '}\n'
         'void [sdk.OpenSecretProvider, sdk.useOpenSecret, env, model];\n'
     )
     runtime_exports = [json.loads(run(["node", name], consumer)) for name in (
