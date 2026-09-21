@@ -163,6 +163,15 @@ The offline gate neither publishes the SDK nor queries the registry.
 The bundle boundary rejects sibling application code, source SDK imports,
 and the legacy SDK.
 
+Before publishing an Auth change related to enclave trust or PCR rotation,
+review `apps/maple-auth/src/config/openSecretClientConfig.ts` against the
+approved development/production histories. Verify the combined app-provided and
+pinned-SDK roots support the intended approved enclave when signed-history fetching
+is unavailable, preserving environment separation. Include Research's
+separate fallback in the [SDK consumer rollout review](sdk-publishing.md#rolling-an-sdk-fix-out-to-clients).
+Record the Auth artifact/publication separately; a Research release does not
+refresh the hosted Auth copy, and the two lists need not be byte-identical.
+
 The auth publisher uses trusted master tooling and the same static archive,
 download, Wrangler and credential boundaries described above. It accepts only
 the auth build workflow's successful manual master run, current run attempt and
