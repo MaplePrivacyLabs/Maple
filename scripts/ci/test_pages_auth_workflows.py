@@ -14,7 +14,8 @@ CHECK_PAGES = (
     ".#checks.x86_64-linux.pages"
 )
 BUILD_AUTH = "nix develop --no-update-lock-file .#ci -c bash scripts/ci/auth-web.sh"
-ARTIFACT_DIRECTORY = "apps/maple-research/frontend/src-tauri/target/reproducibility"
+CHECK_AUTH = "nix develop --no-update-lock-file .#ci -c bash scripts/ci/auth-ci.sh"
+ARTIFACT_DIRECTORY = "apps/maple-auth/target/reproducibility"
 
 
 class AuthPagesWorkflowTests(unittest.TestCase):
@@ -37,7 +38,7 @@ class AuthPagesWorkflowTests(unittest.TestCase):
             "(github.event_name == 'push' && github.ref == 'refs/heads/master')",
         )
 
-    def test_ci_covers_auth_and_shared_runtime_inputs(self):
+    def test_ci_covers_only_auth_and_shared_build_tooling(self):
         events = workflow(CI)["on"]
         self.assertEqual(events["pull_request"]["paths"], events["push"]["paths"])
         paths = events["pull_request"]["paths"]
@@ -45,23 +46,15 @@ class AuthPagesWorkflowTests(unittest.TestCase):
             set(paths),
             {
                 ".github/workflows/auth-pages-*.yml", ".github/workflows/pages-tests.yml",
-                "apps/maple-research/frontend/**", "!apps/maple-research/frontend/src-tauri/**",
-                "sdk/src/**", "!sdk/src/lib/test/**", "sdk/bun.lock", "sdk/bunfig.toml",
-                "sdk/package.json", "sdk/tsconfig.build.json", "sdk/tsconfig.json",
-                "sdk/vite.config.ts", "scripts/prepare-frontend-deps.sh",
-                "scripts/prepare-typescript-sdk.sh", "scripts/ci/_common.sh",
-                "scripts/ci/frontend.sh", "scripts/ci/web.sh",
-                "scripts/ci/auth-web.sh", "scripts/ci/pages_*.py", "scripts/ci/test_pages_*.py",
+                "apps/maple-auth/**", "scripts/ci/auth-*.sh",
+                "scripts/ci/pages_*.py", "scripts/ci/test_pages_*.py",
                 "flake.nix", "flake.lock",
             },
         )
-        self.assertLess(paths.index("apps/maple-research/frontend/**"),
-                        paths.index("!apps/maple-research/frontend/src-tauri/**"))
-        self.assertLess(paths.index("sdk/src/**"), paths.index("!sdk/src/lib/test/**"))
         for event in ("pull_request", "push"):
             test_paths = workflow("pages-tests.yml")["on"][event]["paths"]
             self.assertIn(".github/workflows/auth-pages-*.yml", test_paths)
-            self.assertIn("scripts/ci/auth-web.sh", test_paths)
+            self.assertIn("scripts/ci/auth-*.sh", test_paths)
 
     def test_builds_are_unprivileged_and_have_distinct_profiles(self):
         for name, job_name, profile in ((CI, "auth", "pr"), (BUILD, "build", "release")):
@@ -88,18 +81,19 @@ class AuthPagesWorkflowTests(unittest.TestCase):
         ci_actions = [step.get("uses", "") for step in workflow(CI)["jobs"]["auth"]["steps"]]
         self.assertFalse(any(action.startswith("actions/upload-artifact@") for action in ci_actions))
 
-    def test_ci_runs_shared_frontend_and_app_web_gates_on_stacked_prs(self):
-        steps = workflow(CI)["jobs"]["auth"]["steps"]
-        frontend = [step for step in steps if step.get("run") ==
-                    "nix develop --no-update-lock-file .#ci -c bash scripts/ci/frontend.sh"]
-        web = [step for step in steps if step.get("run") ==
-               "nix develop --no-update-lock-file .#ci -c bash scripts/ci/web.sh"]
-        self.assertEqual(len(frontend), 1)
-        self.assertEqual(len(web), 1)
-        self.assertNotIn("if", frontend[0])
-        self.assertNotIn("if", web[0])
-        self.assertEqual(web[0]["env"], {"MAPLE_WEB_ENVIRONMENT": "pr"})
-        self.assertLess(steps.index(frontend[0]), steps.index(web[0]))
+    def test_builds_test_only_the_standalone_auth_application(self):
+        for name, job in ((CI, "auth"), (BUILD, "build")):
+            with self.subTest(workflow=name):
+                steps = workflow(name)["jobs"][job]["steps"]
+                checks = [step for step in steps if step.get("run") == CHECK_AUTH]
+                builds = [step for step in steps if step.get("run") == BUILD_AUTH]
+                self.assertEqual(len(checks), 1)
+                self.assertNotIn("if", checks[0])
+                self.assertLess(steps.index(checks[0]), steps.index(builds[0]))
+                commands = " ".join(step.get("run", "") for step in steps)
+                for research_input in ("maple-research", "scripts/ci/frontend.sh", "scripts/ci/web.sh",
+                                       "prepare-frontend-deps", "prepare-typescript-sdk"):
+                    self.assertNotIn(research_input, commands)
 
     def test_production_build_is_manual_and_master_only(self):
         build = workflow(BUILD)

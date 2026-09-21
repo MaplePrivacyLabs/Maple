@@ -11,8 +11,6 @@ export default defineConfig({
   envDir: ignoreEnvFiles ? path.resolve(__dirname, "src-tauri") : undefined,
   plugins: [TanStackRouterVite({ autoCodeSplitting: true }), react(), derPlugin()],
   resolve: {
-    // A locally linked SDK must use the application's React singleton.
-    dedupe: ["react", "react-dom"],
     alias: {
       "@": path.resolve(__dirname, "./src")
     }

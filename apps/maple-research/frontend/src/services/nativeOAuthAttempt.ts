@@ -197,12 +197,12 @@ export async function startNativeOAuth(
   invokeCommand: InvokeCommand = invoke
 ): Promise<void> {
   const prepared = await beginNativeOAuthAttempt(apiUrl, navigation, Date.now(), invokeCommand);
+  const url = buildTransportV2DesktopAuthUrl({
+    provider,
+    nativeSessionId: prepared.sessionId,
+    nativeRequestId: prepared.requestId
+  });
   try {
-    const url = buildTransportV2DesktopAuthUrl({
-      provider,
-      nativeSessionId: prepared.sessionId,
-      nativeRequestId: prepared.requestId
-    });
     await invokeCommand("plugin:opener|open_url", { url });
   } catch (error) {
     await cancelNativeOAuthAttempt(prepared.nativeOAuthAttempt, invokeCommand).catch(

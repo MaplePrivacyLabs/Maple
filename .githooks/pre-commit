@@ -110,6 +110,9 @@ fi
 if hook_selected research_frontend || hook_selected research_rust; then
     run_component maple-research "$REPO_ROOT" ".#ci" "$REPO_ROOT/apps/maple-research/.githooks/pre-commit"
 fi
+if hook_selected auth; then
+    run_component maple-auth "$REPO_ROOT" ".#ci" "$REPO_ROOT/apps/maple-auth/.githooks/pre-commit"
+fi
 if hook_selected updates; then
     run_component updates "$REPO_ROOT" ".#ci" "$REPO_ROOT/services/updates/.githooks/pre-commit"
 fi

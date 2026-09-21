@@ -1,7 +1,6 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useEffect, useRef } from "react";
 import { useOpenSecret } from "@mapleai/sdk";
-import { getBrowserOAuthCallbackUrl } from "@/services/oauthConfig";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Loader2 } from "lucide-react";
 import { AppleAuthProvider } from "@/components/AppleAuthProvider";
@@ -92,16 +91,10 @@ function DesktopAuth() {
         // Initiate appropriate OAuth flow for GitHub and Google
         let auth_url;
         if (provider === "github") {
-          const result = await currentOs.current.initiateGitHubAuth(
-            "",
-            getBrowserOAuthCallbackUrl("github", window.location.origin)
-          );
+          const result = await currentOs.current.initiateGitHubAuth("");
           auth_url = result.auth_url;
         } else if (provider === "google") {
-          const result = await currentOs.current.initiateGoogleAuth(
-            "",
-            getBrowserOAuthCallbackUrl("google", window.location.origin)
-          );
+          const result = await currentOs.current.initiateGoogleAuth("");
           auth_url = result.auth_url;
         } else {
           throw new Error("Unsupported provider");

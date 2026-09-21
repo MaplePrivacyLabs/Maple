@@ -98,29 +98,6 @@ describe("desktop OAuth transport selection", () => {
     expect(parsed.hash).toBe("");
   });
 
-  test("changes only the hosted origin when direct auth entry is configured", () => {
-    const configured = new URL(buildTransportV2DesktopAuthUrl(state, "https://auth.trymaple.ai"));
-    const existing = new URL(buildTransportV2DesktopAuthUrl(state, "https://trymaple.ai"));
-    expect(configured.origin).toBe("https://auth.trymaple.ai");
-    expect(configured.pathname).toBe("/desktop-auth");
-    expect(existing.origin).toBe("https://trymaple.ai");
-    expect(existing.pathname).toBe("/desktop-auth");
-    expect(configured.search).toBe(existing.search);
-    expect([...configured.searchParams.keys()]).toEqual([
-      "provider",
-      "transport",
-      "native_session_id",
-      "native_request_id"
-    ]);
-    expect(configured.hash).toBe("");
-  });
-
-  test("fails closed when the configured entry is a full URL instead of an origin", () => {
-    expect(() => buildTransportV2DesktopAuthUrl(state, "https://auth.trymaple.ai/start")).toThrow(
-      "without a path"
-    );
-  });
-
   test("rejects non-canonical target identifiers", () => {
     expect(() =>
       buildTransportV2DesktopAuthUrl({ ...state, nativeSessionId: nativeSessionId.toUpperCase() })

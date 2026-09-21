@@ -115,13 +115,18 @@ MAPLE_WEB_ENVIRONMENT=pr nix develop --no-update-lock-file .#ci -c ./scripts/ci/
 
 ## Independent auth site
 
-The auth site has a separate entry point, artifact and publication path. It does
-not follow Maple desktop releases or change the existing app publisher. The
-source implementation is described in [Auth site](../apps/maple-research/docs/auth-site.md).
+The standalone [Auth application](../apps/maple-auth/README.md) owns its
+package, registry SDK pin, lockfile, assets, tests, configuration, build, and
+publication path under `apps/maple-auth`. It imports no Research source or
+configuration and does not use Research's dependency installation. The shared
+protocol comes from the published SDK; the small hosted UI/helper copies are
+maintained and tested within Auth. Research retains its built-in web auth,
+existing SDK pin, and native entry URLs. Neither an Auth change nor an Auth
+publication requires a Research release.
 
 | Lane | Source and configuration | Result |
 | --- | --- | --- |
-| `Auth Pages CI` | PRs targeting any base, including forks and stacked branches; relevant master pushes; `pr` profile | Offline checks, ordinary frontend checks and web build, separate auth build; no publication |
+| `Auth Pages CI` | PRs targeting any base, including forks and stacked branches; relevant master pushes; `pr` profile | Offline publisher checks, standalone Auth checks and Auth build; no Research build or publication |
 | `Auth Pages build` | Manual dispatch on protected `master`; `release` profile | `maple-auth-production-RUN-ATTEMPT` artifact containing `maple-auth-dist.tar.gz` and `pages-artifact.json` |
 | `Publish Auth Pages` | Separate manual dispatch on protected `master`, selecting the exact successful build run and attempt | Fixed `maple-auth` Pages project, `maple-auth.pages.dev`, `auth-pages-production` Git ref and protected environment, reported URL `https://auth.trymaple.ai` |
 
@@ -131,26 +136,32 @@ Merging these files starts neither production auth publication nor native-client
 entry changes. No auth preview is automatically hosted. The native auth-entry
 origin remains the existing apex until a separately authorized rollout changes it.
 
-`scripts/ci/auth-web.sh` runs the separate `build:auth` recipe. Its Vite entry
-is `auth.html`; the final static root is `dist-auth/index.html`. The build uses
-the existing fixed `pr` or `release` service profiles. Build/run commands use
-Bun's `--no-env-file`, and the auth Vite configuration disables dotenv loading.
-Dependency installation uses the frozen frontend lockfile with install lifecycle
-scripts disabled. The pinned Bun 1.3.5 installer can still read local dotenv files
-despite that flag, consistent with the [upstream installer issue](https://github.com/oven-sh/bun/issues/31450).
-Its child-process environment does not propagate back to the shell's fixed build
-profile. The build scripts never rename or move managed dotenv files; fresh
-production CI checkouts contain no managed workspace dotenv files. The pinned CI
-shell provides the Node, Bun and Python runtimes used by these scripts.
+`scripts/ci/auth-ci.sh` installs and checks only Auth. `scripts/ci/auth-web.sh`
+builds its `index.html` entry to `apps/maple-auth/dist`, then archives it under
+`apps/maple-auth/target/reproducibility/maple-auth-dist.tar.gz`. Both scripts
+use Auth's own helper, not Research/Tauri build tooling. Auth-only source edits
+select the Auth lane without Research or Agent component checks/packaging.
+Shared CI or release infrastructure edits can still select other affected lanes.
 
-The frontend pins published `@mapleai/sdk` 4.1.1. Development may use
-`file:../../../sdk`; a production auth build rejects that link before installing
-dependencies. It requires an exact
-stable `@mapleai/sdk` version of at least `4.1.0`, rejects SDK source overrides,
-and checks the installed package name/version and that it resolves inside the
-frozen `node_modules` installation. Future upgrades must publish the SDK first,
-then update the frontend manifest and lockfile to that exact registry version. This
-offline gate does not itself publish the SDK or query the registry.
+The fixed `pr` profile uses `https://enclave.secretgpt.ai` and development PCRs;
+`release` uses `https://enclave.trymaple.ai` and production PCRs. Both use the
+existing public Maple client ID. Build/run commands use Bun's `--no-env-file`,
+and Auth's Vite configuration disables dotenv loading for these fixed builds.
+Dependency installation uses Auth's frozen lockfile with lifecycle scripts
+disabled. The pinned Bun 1.3.5 installer can still read local dotenv files
+despite that flag; its child cannot alter the shell's fixed build profile.
+Scripts never rename or move managed dotenv files. Fresh production checkouts
+contain no managed workspace dotenv files. The pinned CI shell provides Node
+(required by TypeScript/Vite CLI shebangs), Bun, and Python.
+
+Auth pins published `@mapleai/sdk` 4.1.1; Research retains its own 4.0.1 pin.
+Both fixed Auth profiles reject local SDK links and source overrides, require
+an exact stable SDK version of at least 4.1.0, and check the installed package
+name/version and resolution inside Auth's own `node_modules`. Future Auth
+upgrades publish the SDK first, then update only Auth's manifest and lockfile.
+The offline gate neither publishes the SDK nor queries the registry.
+The bundle boundary rejects sibling application code, source SDK imports,
+and the legacy SDK.
 
 The auth publisher uses trusted master tooling and the same static archive,
 download, Wrangler and credential boundaries described above. It accepts only
@@ -183,10 +194,11 @@ establish the live Cloudflare cache policy: auth cache bypass, actual response
 headers, custom domains, TLS/Access and browser/native handoff must be verified
 during the separate dark-publication rehearsal before redirect activation.
 
-For an unprivileged local auth build (no services or publication):
+For unprivileged local Auth checks and build (no services or publication):
 
 ```bash
-MAPLE_AUTH_ENVIRONMENT=pr nix develop --no-update-lock-file .#ci -c bash scripts/ci/auth-web.sh
+nix develop --no-update-lock-file .#ci -c ./scripts/ci/auth-ci.sh
+MAPLE_AUTH_ENVIRONMENT=pr nix develop --no-update-lock-file .#ci -c ./scripts/ci/auth-web.sh
 ```
 
 The Pages offline test target also covers auth provenance, SDK pinning, static

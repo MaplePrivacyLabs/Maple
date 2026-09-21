@@ -1,0 +1,12 @@
+[install]
+exact = true
+frozenLockfile = true
+ignoreScripts = true
+auto = "disable"
+minimumReleaseAge = 604800
+# Our reviewed, protected SDK publisher supports immediate consumer upgrades.
+minimumReleaseAgeExcludes = ["@mapleai/sdk"]
+
+[test]
+preload = ["src/lib/test/der-loader.ts"]
+root = "./src"

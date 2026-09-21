@@ -9,22 +9,8 @@ on:
     paths:
       - ".github/workflows/auth-pages-*.yml"
       - ".github/workflows/pages-tests.yml"
-      - "apps/maple-research/frontend/**"
-      - "!apps/maple-research/frontend/src-tauri/**"
-      - "sdk/src/**"
-      - "!sdk/src/lib/test/**"
-      - "sdk/bun.lock"
-      - "sdk/bunfig.toml"
-      - "sdk/package.json"
-      - "sdk/tsconfig.build.json"
-      - "sdk/tsconfig.json"
-      - "sdk/vite.config.ts"
-      - "scripts/prepare-frontend-deps.sh"
-      - "scripts/prepare-typescript-sdk.sh"
-      - "scripts/ci/_common.sh"
-      - "scripts/ci/frontend.sh"
-      - "scripts/ci/web.sh"
-      - "scripts/ci/auth-web.sh"
+      - "apps/maple-auth/**"
+      - "scripts/ci/auth-*.sh"
       - "scripts/ci/pages_*.py"
       - "scripts/ci/test_pages_*.py"
       - "flake.nix"
@@ -34,22 +20,8 @@ on:
     paths:
       - ".github/workflows/auth-pages-*.yml"
       - ".github/workflows/pages-tests.yml"
-      - "apps/maple-research/frontend/**"
-      - "!apps/maple-research/frontend/src-tauri/**"
-      - "sdk/src/**"
-      - "!sdk/src/lib/test/**"
-      - "sdk/bun.lock"
-      - "sdk/bunfig.toml"
-      - "sdk/package.json"
-      - "sdk/tsconfig.build.json"
-      - "sdk/tsconfig.json"
-      - "sdk/vite.config.ts"
-      - "scripts/prepare-frontend-deps.sh"
-      - "scripts/prepare-typescript-sdk.sh"
-      - "scripts/ci/_common.sh"
-      - "scripts/ci/frontend.sh"
-      - "scripts/ci/web.sh"
-      - "scripts/ci/auth-web.sh"
+      - "apps/maple-auth/**"
+      - "scripts/ci/auth-*.sh"
       - "scripts/ci/pages_*.py"
       - "scripts/ci/test_pages_*.py"
       - "flake.nix"
@@ -76,13 +48,8 @@ jobs:
       - name: Test Pages artifact and deployment boundaries
         run: nix build --no-update-lock-file --no-link --print-build-logs .#checks.x86_64-linux.pages
 
-      - name: Test shared frontend
-        run: nix develop --no-update-lock-file .#ci -c bash scripts/ci/frontend.sh
-
-      - name: Build app with development services
-        env:
-          MAPLE_WEB_ENVIRONMENT: pr
-        run: nix develop --no-update-lock-file .#ci -c bash scripts/ci/web.sh
+      - name: Test the standalone auth app
+        run: nix develop --no-update-lock-file .#ci -c bash scripts/ci/auth-ci.sh
 
       - name: Build auth with development services
         env:

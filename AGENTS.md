@@ -9,6 +9,10 @@ current source and tests take precedence over historical design documents.
 - `apps/maple-research/`: the existing React/Vite/Tauri Maple application,
   including desktop Agent Mode. Read its [guide](apps/maple-research/AGENTS.md)
   for runtime placement, native security, and exact-app validation.
+- `apps/maple-auth/`: standalone V2 hosted native sign-in, with its own
+  package, SDK pin, tests, build, and independent Pages publisher. Read its
+  [guide](apps/maple-auth/AGENTS.md). Research keeps its built-in auth; do not
+  introduce cross-app source imports or coupled release triggers.
 - `apps/maple-agent/`: GPUI desktop-v2 prototype, ACP and proxy CLI. Read its
   [guide](apps/maple-agent/AGENTS.md) and `$develop-maple-agent`. Its runtime and
   update discovery are separate from Research and its existing Agent Mode.
@@ -97,7 +101,7 @@ release-configuration changes, plus the affected component checks.
 `./setup-hooks.sh` installs `.githooks/pre-commit`. It classifies staged paths
 with `scripts/ci/hook_change_detection.py` and runs each affected component's
 own `.githooks/pre-commit` inside that component's Nix flake, so the tools match
-CI: the root `.#ci` shell for Research, `services/updates/`, and repository
+CI: the root `.#ci` shell for Research, Auth, `services/updates/`, and repository
 checks; the component flakes for `apps/maple-agent/`, `sdk/`, `proxy/`, and
 `services/opensecret?submodules=1`. Without Nix it runs the same commands from
 `PATH` and warns that results may differ. It runs formatters, Clippy/ESLint,

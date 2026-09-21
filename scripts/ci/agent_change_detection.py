@@ -33,6 +33,7 @@ SHARED_INPUTS = frozenset(
 )
 KNOWN_INDEPENDENT_PREFIXES = (
     "apps/maple-research/",
+    "apps/maple-auth/",
     ".agents/",
     ".github/",
     ".githooks/",

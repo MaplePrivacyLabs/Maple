@@ -22,7 +22,6 @@ import { useRouteMeta } from "@/utils/routeMeta";
 import { getSafeInternalRedirect, navigateToSafeInternalRedirect } from "@/utils/internalRedirect";
 import { startNativeOAuth } from "@/services/nativeOAuthAttempt";
 import { clearDesktopOAuthTransport } from "@/services/desktopOAuthTransport";
-import { getBrowserOAuthCallbackUrl } from "@/services/oauthConfig";
 
 type LoginSearchParams = {
   next?: string;
@@ -134,11 +133,9 @@ function LoginPage() {
           redemptionCode: code
         });
       } else {
+        // Web flow remains unchanged
         clearDesktopOAuthTransport();
-        const { auth_url } = await os.initiateGitHubAuth(
-          "",
-          getBrowserOAuthCallbackUrl("github", window.location.origin)
-        );
+        const { auth_url } = await os.initiateGitHubAuth("");
         sessionStorage.removeItem("selected_plan");
         if (selected_plan) {
           sessionStorage.setItem("selected_plan", selected_plan);
@@ -169,11 +166,9 @@ function LoginPage() {
           redemptionCode: code
         });
       } else {
+        // Web flow remains unchanged
         clearDesktopOAuthTransport();
-        const { auth_url } = await os.initiateGoogleAuth(
-          "",
-          getBrowserOAuthCallbackUrl("google", window.location.origin)
-        );
+        const { auth_url } = await os.initiateGoogleAuth("");
         sessionStorage.removeItem("selected_plan");
         if (selected_plan) {
           sessionStorage.setItem("selected_plan", selected_plan);

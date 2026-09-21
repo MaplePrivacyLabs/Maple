@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { fileURLToPath } from "node:url";
 
-const frontendDirectory = fileURLToPath(new URL("../..", import.meta.url));
+const appDirectory = fileURLToPath(new URL("../..", import.meta.url));
 
 describe("hosted auth with the real SDK provider", () => {
   for (const scenario of ["cold-start", "cold-callback", "retained-start", "retained-callback"]) {
@@ -13,14 +13,12 @@ describe("hosted auth with the real SDK provider", () => {
           process.execPath,
           "--no-env-file",
           "--preload",
-          "./src/lib/test/preload.ts",
-          "--preload",
           "./src/lib/test/der-loader.ts",
           "./src/auth-site/fixtures/bootstrap.tsx",
           scenario
         ],
         {
-          cwd: frontendDirectory,
+          cwd: appDirectory,
           env: { PATH: process.env.PATH, LANG: "C.UTF-8" },
           stdout: "pipe",
           stderr: "pipe",

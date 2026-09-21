@@ -284,29 +284,6 @@ describe("native OAuth Transport V2 handoff", () => {
     expect(openerArgs.url).not.toContain("refresh-token");
   });
 
-  test("cancels a prepared native attempt when hosted entry configuration is rejected", async () => {
-    const desktopTransport = await import("./desktopOAuthTransport");
-    const buildUrl = spyOn(desktopTransport, "buildTransportV2DesktopAuthUrl").mockImplementation(
-      () => {
-        throw new Error("Authentication origin is invalid");
-      }
-    );
-    const calls: InvokeCall[] = [];
-    try {
-      await expect(startNativeOAuth("github", API_URL, {}, nativeInvoke(calls))).rejects.toThrow(
-        "Authentication origin is invalid"
-      );
-      expect(calls.map(({ command }) => command)).toEqual([
-        "native_oauth_begin",
-        "native_oauth_cancel"
-      ]);
-      expect(calls[1]?.args).toEqual({ request: { nativeOAuthAttempt: ATTEMPT_ID } });
-      expect(readPendingNativeOAuthAttempt()).toBeNull();
-    } finally {
-      buildUrl.mockRestore();
-    }
-  });
-
   test("redeems with the signed grant only and installs through the captured CAS fence", async () => {
     const calls: InvokeCall[] = [];
     await beginNativeOAuthAttempt(

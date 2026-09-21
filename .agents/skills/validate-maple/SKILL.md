@@ -105,6 +105,23 @@ Use for iOS, Android, signing, updater metadata, installers, entitlements, or di
 
 Run commands from the repository root unless the command changes directory explicitly.
 
+### Standalone hosted Auth
+
+For changes confined to `apps/maple-auth`, use its own guide and checks:
+
+```bash
+nix develop --no-update-lock-file .#ci -c ./scripts/ci/auth-ci.sh
+MAPLE_AUTH_ENVIRONMENT=pr nix develop --no-update-lock-file .#ci -c ./scripts/ci/auth-web.sh
+```
+
+Auth owns its package, registry SDK pin, frozen lockfile, tests, assets, and
+`dist` build. Do not install Research dependencies or run its web/native
+packaging merely to validate Auth. Shared publisher/workflow changes still
+require the repository checks. Real provider callbacks, retained sessions,
+manual/native opening, and live edge behavior require separate rehearsal;
+a local artifact does not establish those results. Browser smoke must serve
+Auth's built `dist` with its own preview command and record its origin.
+
 ### Focused frontend test
 
 ```bash

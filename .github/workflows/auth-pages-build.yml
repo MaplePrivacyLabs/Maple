@@ -26,6 +26,9 @@ jobs:
       - name: Test Pages artifact and deployment boundaries
         run: nix build --no-update-lock-file --no-link --print-build-logs .#checks.x86_64-linux.pages
 
+      - name: Test the standalone auth app
+        run: nix develop --no-update-lock-file .#ci -c bash scripts/ci/auth-ci.sh
+
       - name: Build auth with production services
         env:
           MAPLE_AUTH_ENVIRONMENT: release
@@ -34,7 +37,7 @@ jobs:
       - name: Describe the auth artifact
         run: |
           set -euo pipefail
-          artifact_dir="apps/maple-research/frontend/src-tauri/target/reproducibility"
+          artifact_dir="apps/maple-auth/target/reproducibility"
           nix develop --no-update-lock-file .#pages -c python3 -I scripts/ci/pages_artifact.py manifest \
             --archive "$artifact_dir/maple-auth-dist.tar.gz" \
             --profile auth-release \
@@ -48,7 +51,7 @@ jobs:
         with:
           name: maple-auth-production-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
-            apps/maple-research/frontend/src-tauri/target/reproducibility/maple-auth-dist.tar.gz
-            apps/maple-research/frontend/src-tauri/target/reproducibility/pages-artifact.json
+            apps/maple-auth/target/reproducibility/maple-auth-dist.tar.gz
+            apps/maple-auth/target/reproducibility/pages-artifact.json
           if-no-files-found: error
           retention-days: 5

@@ -49,7 +49,7 @@ function OAuthCallback() {
   const redirectTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const navigate = useNavigate();
   const router = useRouter();
-  const { handleGitHubCallback, handleGoogleCallback } = useOpenSecret();
+  const { handleGitHubCallback, handleGoogleCallback, handleAppleCallback } = useOpenSecret();
   const processedRef = useRef(false);
 
   const { provider } = Route.useParams();
@@ -127,29 +127,38 @@ function OAuthCallback() {
       if (processedRef.current) return;
       processedRef.current = true;
 
-      // Browser Apple completion belongs to the popup promise on its initiating page.
-      // This static route cannot receive Apple's form_post response.
-      if (provider === "apple") {
-        handleAuthError(
-          new Error(
-            "Apple sign-in uses a popup. Return to the sign-in page, allow popups for this site, and try again."
-          )
-        );
-        return;
-      }
-
-      // Get URL parameters for redirect-based OAuth providers.
+      // Get URL parameters for all OAuth providers
       const urlParams = new URLSearchParams(window.location.search);
       const code = urlParams.get("code");
       const state = urlParams.get("state");
 
-      if (code && state) {
+      // For Apple, we might get form data instead of URL parameters
+      // Apple uses form_post with POST request in some scenarios
+      let appleData = null;
+      if (provider === "apple" && !code) {
+        // Check if we have Apple data in sessionStorage from form_post
+        const appleFormData = sessionStorage.getItem("apple_form_data");
+        if (appleFormData) {
+          try {
+            appleData = JSON.parse(appleFormData);
+            sessionStorage.removeItem("apple_form_data");
+          } catch (e) {
+            console.error("Failed to parse Apple form data:", e);
+          }
+        }
+      }
+
+      if ((code && state) || (provider === "apple" && appleData)) {
         try {
           // Handle the callback based on the provider
           if (provider === "github") {
             await handleGitHubCallback(code || "", state || "", "");
           } else if (provider === "google") {
             await handleGoogleCallback(code || "", state || "", "");
+          } else if (provider === "apple") {
+            // This handles the redirect flow (backup for non-popup scenarios)
+            // Most Apple auth will now be handled client-side in the AppleAuthProvider component
+            await handleAppleCallback(code || "", state || "", "");
           } else {
             throw new Error(`Unsupported provider: ${provider}`);
           }
@@ -181,6 +190,7 @@ function OAuthCallback() {
 
     processCallback();
   }, [
+    handleAppleCallback,
     handleAuthError,
     handleGitHubCallback,
     handleGoogleCallback,
@@ -203,17 +213,6 @@ function OAuthCallback() {
   }
 
   if (error) {
-    const callbackParams = new URLSearchParams(window.location.search);
-    const codes = callbackParams.getAll("code");
-    const states = callbackParams.getAll("state");
-    const showAgentPasteHint =
-      (provider === "github" || provider === "google") &&
-      !nativeFlow.requested &&
-      codes.length === 1 &&
-      codes[0].trim().length > 0 &&
-      states.length === 1 &&
-      states[0].trim().length > 0 &&
-      !["error", "error_description", "error_uri"].some((key) => callbackParams.has(key));
     return (
       <Card className="max-w-md mx-auto mt-20">
         <CardHeader>
@@ -221,16 +220,6 @@ function OAuthCallback() {
         </CardHeader>
         <CardContent>
           <AlertDestructive title="Error" description={error} />
-          {showAgentPasteHint && (
-            <details className="mt-4 text-sm text-muted-foreground">
-              <summary className="cursor-pointer">Using Maple Agent's paste field?</summary>
-              <p className="mt-2">
-                If Maple Agent explicitly asked you to paste a callback URL, copy the full address
-                from this browser's address bar and paste it only into the sign-in window you
-                started. Do not share this address. Otherwise, start a new sign-in.
-              </p>
-            </details>
-          )}
           <div className="mt-4 flex justify-center">
             <Button asChild>
               <Link to="/">Try Again</Link>

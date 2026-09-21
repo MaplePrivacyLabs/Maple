@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import shutil
 import sys
 import tempfile
 import unittest
@@ -13,32 +14,43 @@ from pages_auth_build import check_sdk_pin
 
 
 class AuthBuildProfileTests(unittest.TestCase):
-    def test_fixed_profiles_replace_inherited_vite_values_and_keep_apex_entry(self):
-        common = Path(__file__).resolve().parent / "_common.sh"
-        shared = {"VITE_CLIENT_ID": "ba5a14b5-d915-47b1-b7b1-afda52bc5fc6",
-                  "VITE_AUTH_ORIGIN": "https://trymaple.ai", "VITE_APP_ORIGIN": "https://trymaple.ai",
-                  "VITE_MARKETING_ORIGIN": "https://www.trymaple.ai"}
-        for profile, expected in (
-            ("pr", {"VITE_OPEN_SECRET_API_URL": "https://enclave.secretgpt.ai",
-                    "VITE_OPEN_SECRET_PCR_ENVIRONMENT": "development",
-                    "VITE_OS_FLAGS_BASE_URL": "https://flags-dev.opensecret.cloud",
-                    "VITE_MAPLE_BILLING_API_URL": "https://billing-dev.opensecret.cloud"}),
-            ("release", {"VITE_OPEN_SECRET_API_URL": "https://enclave.trymaple.ai",
-                         "VITE_OPEN_SECRET_PCR_ENVIRONMENT": "production",
-                         "VITE_OS_FLAGS_BASE_URL": "https://flags.opensecret.cloud",
-                         "VITE_MAPLE_BILLING_API_URL": "https://billing.opensecret.cloud"}),
-        ):
-            with self.subTest(profile=profile):
-                expected = {**shared, **expected}
-                environment = {"PATH": os.environ["PATH"], "VITE_UNEXPECTED": "synthetic",
-                               **{key: "https://inherited.invalid" for key in expected}}
-                result = subprocess.run(
-                    ["bash", "-c", 'source "$1"; "$2"; "$3" -I -c "$4"', "profile-test",
-                     str(common), f"use_{profile}_environment", sys.executable,
-                     'import json,os; print(json.dumps({k:v for k,v in os.environ.items() if k.startswith("VITE_")}))'],
-                    env=environment, text=True, capture_output=True, check=True,
-                )
-                self.assertEqual(json.loads(result.stdout), expected)
+    def test_fixed_profiles_need_no_research_tree_and_replace_inherited_vite_values(self):
+        with tempfile.TemporaryDirectory() as directory:
+            # Deliberately copy only the auth helper. Sourcing Research/Tauri or
+            # an SDK checkout would fail in this independent application fixture.
+            root = Path(directory)
+            scripts = root / "scripts/ci"
+            scripts.mkdir(parents=True)
+            common = scripts / "auth-common.sh"
+            shutil.copyfile(Path(__file__).resolve().parent / "auth-common.sh", common)
+            shared = {"VITE_CLIENT_ID": "ba5a14b5-d915-47b1-b7b1-afda52bc5fc6"}
+            for profile, expected in (
+                ("pr", {"VITE_OPEN_SECRET_API_URL": "https://enclave.secretgpt.ai",
+                        "VITE_OPEN_SECRET_PCR_ENVIRONMENT": "development"}),
+                ("release", {"VITE_OPEN_SECRET_API_URL": "https://enclave.trymaple.ai",
+                             "VITE_OPEN_SECRET_PCR_ENVIRONMENT": "production"}),
+            ):
+                with self.subTest(profile=profile):
+                    expected = {**shared, **expected}
+                    environment = {"PATH": os.environ["PATH"], "VITE_UNEXPECTED": "synthetic",
+                                   "VITE_AUTH_ORIGIN": "https://inherited.invalid",
+                                   **{key: "https://inherited.invalid" for key in expected}}
+                    result = subprocess.run(
+                        ["bash", "-c", 'source "$1"; use_auth_environment "$2"; "$3" -I -c "$4"',
+                         "profile-test", str(common), profile, sys.executable,
+                         'import json,os; print(json.dumps({k:v for k,v in os.environ.items() if k.startswith("VITE_")}))'],
+                        env=environment, text=True, capture_output=True, check=True,
+                    )
+                    self.assertEqual(json.loads(result.stdout), expected)
+
+    def test_unknown_profile_fails_before_any_install_or_build(self):
+        common = Path(__file__).resolve().parent / "auth-common.sh"
+        result = subprocess.run(
+            ["bash", "-c", 'source "$1"; use_auth_environment typo', "profile-test", str(common)],
+            text=True, capture_output=True,
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("expected pr or release", result.stderr)
 
 
 class AuthSDKPinTests(unittest.TestCase):

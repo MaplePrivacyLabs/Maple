@@ -16,6 +16,7 @@ from collections.abc import Iterable
 OUTPUTS = (
     "research_frontend",
     "research_rust",
+    "auth",
     "agent",
     "sdk_rust",
     "sdk_ts",
@@ -44,6 +45,8 @@ FRONTEND_PREFIX = "apps/maple-research/frontend/"
 TAURI_PREFIX = "apps/maple-research/frontend/src-tauri/"
 RESEARCH_INERT_PREFIXES = ("apps/maple-research/docs/", "apps/maple-research/.githooks/")
 RESEARCH_INERT_FILES = frozenset({"apps/maple-research/deny.toml", "apps/maple-research/zapstore.yaml"})
+
+AUTH_PREFIX = "apps/maple-auth/"
 
 AGENT_PREFIX = "apps/maple-agent/"
 AGENT_INERT_PREFIXES = ("docs/", ".githooks/")
@@ -121,6 +124,11 @@ def classify_path(path: str) -> frozenset[str]:
         return frozenset({"research_frontend"})
     if path.startswith("apps/maple-research/"):
         return frozenset({"research_frontend", "research_rust"})
+
+    if path.startswith(AUTH_PREFIX):
+        if path.removeprefix(AUTH_PREFIX).startswith(".githooks/"):
+            return frozenset()
+        return frozenset({"auth"})
 
     if path.startswith(AGENT_PREFIX):
         relative = path.removeprefix(AGENT_PREFIX)

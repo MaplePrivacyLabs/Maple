@@ -1,6 +1,5 @@
 type BrowserOAuthProvider = "github" | "google" | "apple";
 
-const DEFAULT_NATIVE_OAUTH_ENTRY = "https://trymaple.ai/desktop-auth";
 const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]"]);
 
 function parseOAuthOrigin(value: string, allowLoopbackHttp: boolean): URL {
@@ -40,11 +39,4 @@ export function getBrowserOAuthCallbackUrl(provider: BrowserOAuthProvider, origi
     throw new Error("Unsupported authentication provider");
   }
   return new URL(`/auth/${provider}/callback`, parseOAuthOrigin(origin, true)).toString();
-}
-
-/** Direct auth entry remains opt-in until the auth cutover has passed its rollout gate. */
-export function getNativeOAuthEntryUrl(configuredOrigin?: string, isDevelopment = false): string {
-  if (configuredOrigin === undefined || configuredOrigin === "") return DEFAULT_NATIVE_OAUTH_ENTRY;
-  // The permanent alias works on both the original apex page and the auth site.
-  return new URL("/desktop-auth", parseOAuthOrigin(configuredOrigin, isDevelopment)).toString();
 }

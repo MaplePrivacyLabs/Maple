@@ -1,0 +1,5 @@
+#!/usr/bin/env sh
+set -eu
+component_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+repo_root=${MAPLE_HOOK_REPO_ROOT:-$(CDPATH= cd -- "$component_dir/../.." && pwd)}
+exec bash "$repo_root/scripts/ci/auth-ci.sh"
