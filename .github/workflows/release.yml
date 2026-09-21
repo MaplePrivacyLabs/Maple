@@ -126,6 +126,7 @@ jobs:
             >> "${GITHUB_OUTPUT}"
 
   build-tauri:
+    environment: desktop-signing
     needs: classify-app-release
     permissions:
       contents: write
@@ -395,6 +396,7 @@ jobs:
           gh release upload "${RELEASE_TAG}" "${files[@]}" --clobber
 
   build-android:
+    environment: android-signing
     needs: classify-app-release
     runs-on: ubuntu-latest-8-cores
     permissions:
@@ -488,6 +490,7 @@ jobs:
           gh release upload "${RELEASE_TAG}" "${files[@]}" --clobber
 
   build-ios:
+    environment: apple-signing
     needs: classify-app-release
     runs-on: macos-26-xlarge
     permissions:

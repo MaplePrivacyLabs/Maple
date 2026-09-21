@@ -12,6 +12,7 @@ jobs:
     uses: ./.github/workflows/app-change-detection.yml
 
   build-ios:
+    environment: apple-signing
     needs: changes
     if: ${{ always() && !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.frontend != 'false' || needs.changes.outputs.ios != 'false') }}
     runs-on: macos-26-xlarge
@@ -138,6 +139,7 @@ jobs:
           MAPLE_ENFORCE_IOS_SIGNED_REPRODUCIBILITY: "1"
 
   submit-ios-testflight:
+    environment: apple-signing
     if: github.event_name == 'push' && github.ref == 'refs/heads/master'
     needs: verify-ios-artifacts
     runs-on: macos-26-xlarge
