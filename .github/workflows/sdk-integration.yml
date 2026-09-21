@@ -87,7 +87,7 @@ jobs:
             psql "${DATABASE_URL}" -X -v ON_ERROR_STOP=1 \
             -f sdk/test/integration/bootstrap.sql
 
-      - name: Verify OAuth persistence and encrypted callback selection
+      - name: Verify OAuth persistence and encrypted callback flows
         run: |
           nix develop --no-update-lock-file './services/opensecret?submodules=1' -c bash -lc '
             set -euo pipefail
