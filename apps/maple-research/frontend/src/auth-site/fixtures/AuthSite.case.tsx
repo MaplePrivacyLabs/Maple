@@ -254,43 +254,41 @@ describe("hosted authentication entry", () => {
     expectFailureWithoutNavigation(originalUrl);
   });
 
-  test("copies the full callback address only after the user requests it", async () => {
+  test("offers restart guidance without a copy action for callbacks without a hosted target", async () => {
     const writeText = mock(async () => {});
     setGlobal("navigator", { clipboard: { writeText } });
     const originalUrl = callbackUrl();
     await renderAt(originalUrl);
     expect(writeText).not.toHaveBeenCalled();
-    expect(renderer!.root.findAllByProps({ role: "status" })).toHaveLength(0);
-
-    await act(async () => renderer!.root.findByType("button").props.onClick());
-
-    expect(writeText).toHaveBeenCalledTimes(1);
-    expect(writeText).toHaveBeenCalledWith(originalUrl);
-    expect(renderer!.root.findByProps({ role: "status" }).children.join("")).toBe(
-      "Address copied. Paste it only into the Maple sign-in you started."
+    expect(renderer!.root.findAllByType("button")).toHaveLength(0);
+    expect(JSON.stringify(renderer!.toJSON())).toContain(
+      "Return to Maple and start a new sign-in."
     );
+    expect(JSON.stringify(renderer!.toJSON())).not.toContain("Maple Agent");
     expectNoSdkCalls();
     expect(window.location.href).toBe(originalUrl);
   });
 
-  test("preserves the callback address and offers manual copying when clipboard access fails", async () => {
+  test("offers restart guidance without clipboard access after a hosted callback fails", async () => {
     const writeText = mock(async () => {
       throw new Error("Fixture clipboard permission denial");
     });
     setGlobal("navigator", { clipboard: { writeText } });
+    markTransportV2DesktopOAuth({ provider: "google", nativeSessionId, nativeRequestId });
+    handleGoogleCallback.mockImplementation(async () => {
+      throw new Error("Fixture callback rejection");
+    });
     const originalUrl = callbackUrl("google");
     await renderAt(originalUrl);
     expect(writeText).not.toHaveBeenCalled();
 
-    await act(async () => renderer!.root.findByType("button").props.onClick());
-
-    expect(writeText).toHaveBeenCalledTimes(1);
-    expect(writeText).toHaveBeenCalledWith(originalUrl);
-    expect(renderer!.root.findByProps({ role: "status" }).children.join("")).toBe(
-      "Copy the full address from your browser's address bar instead."
+    expect(renderer!.root.findAllByType("button")).toHaveLength(0);
+    expect(JSON.stringify(renderer!.toJSON())).toContain(
+      "Return to Maple and start a new sign-in."
     );
-    expectNoSdkCalls();
-    expect(window.location.href).toBe(originalUrl);
+    expect(JSON.stringify(renderer!.toJSON())).not.toContain("Maple Agent");
+    expect(handleGoogleCallback).toHaveBeenCalledTimes(1);
+    expectFailureWithoutNavigation(originalUrl);
   });
 
   test("does not consume another provider's pending target", async () => {

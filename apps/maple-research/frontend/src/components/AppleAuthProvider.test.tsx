@@ -75,6 +75,10 @@ class FakeDocument extends EventTarget {
   createElement(): FakeScript {
     return { async: false, parentNode: null, src: "" };
   }
+
+  getElementById(): null {
+    return null;
+  }
 }
 
 interface SignInControl {
@@ -109,6 +113,7 @@ const { Route: desktopRoute } = await import("@/routes/desktop-auth");
 
 const originalGlobals = {
   document: Object.getOwnPropertyDescriptor(globalThis, "document"),
+  navigator: Object.getOwnPropertyDescriptor(globalThis, "navigator"),
   localStorage: Object.getOwnPropertyDescriptor(globalThis, "localStorage"),
   sessionStorage: Object.getOwnPropertyDescriptor(globalThis, "sessionStorage"),
   window: Object.getOwnPropertyDescriptor(globalThis, "window"),
@@ -216,6 +221,7 @@ describe("AppleAuthProvider", () => {
     }
     restoreGlobal("scrollTo", originalGlobals.scrollTo);
     restoreGlobal("document", originalGlobals.document);
+    restoreGlobal("navigator", originalGlobals.navigator);
     restoreGlobal("localStorage", originalGlobals.localStorage);
     restoreGlobal("sessionStorage", originalGlobals.sessionStorage);
     restoreGlobal("window", originalGlobals.window);
@@ -544,6 +550,122 @@ describe("AppleAuthProvider", () => {
       });
       expect(mintNativeHandoffGrant).toHaveBeenCalledTimes(1);
       expect(window.location.href).toBe("cloud.opensecret.maple://auth?handoff_grant=aaa.bbb.ccc");
+    });
+  }
+
+  async function renderRejectedRedirectCallback(provider: string, search: string) {
+    const callback = mock(async () => {
+      throw new Error("Fixture provider callback rejection");
+    });
+    currentOpenSecret.handleGitHubCallback = callback;
+    currentOpenSecret.handleGoogleCallback = callback;
+    const clipboardWrite = mock(async () => {});
+    setGlobal("navigator", { clipboard: { writeText: clipboardWrite } });
+    const pathname = `/auth/${provider}/callback`;
+    const relativeUrl = `${pathname}${search}#fixture-fragment`;
+    const href = `https://trymaple.ai${relativeUrl}`;
+    Object.assign(window.location, { pathname, search, href, hash: "#fixture-fragment" });
+    const rootRoute = createRootRoute();
+    const route = callbackRoute.update({
+      getParentRoute: () => rootRoute,
+      path: "/auth/$provider/callback"
+    } as never);
+    const router = createRouter({
+      routeTree: rootRoute.addChildren([route]),
+      history: createMemoryHistory({ initialEntries: [relativeUrl] })
+    });
+    await router.load();
+    await act(async () => {
+      renderer = create(<RouterProvider router={router} />);
+    });
+    expect(JSON.stringify(renderer?.toJSON())).toContain("Authentication Failed");
+    expect(window.location.href).toBe(href);
+    expect(window.location.search).toBe(search);
+    expect(router.history.location.href).toBe(relativeUrl);
+    expect(clipboardWrite).not.toHaveBeenCalled();
+    expect(mintNativeHandoffGrant).not.toHaveBeenCalled();
+    return callback;
+  }
+
+  for (const provider of ["github", "google"] as const) {
+    test(`${provider} callback error offers a collapsed Maple Agent paste hint without taking action`, async () => {
+      const callback = await renderRejectedRedirectCallback(
+        provider,
+        "?code=fixture-code&state=fixture-state"
+      );
+      expect(callback).toHaveBeenCalledWith("fixture-code", "fixture-state", "");
+      const details = renderer!.root.findByType("details");
+      expect(details.props.open).toBeUndefined();
+      expect(details.findByType("summary").children.join("")).toBe(
+        "Using Maple Agent's paste field?"
+      );
+      expect(details.findByType("p").children.join("")).toBe(
+        "If Maple Agent explicitly asked you to paste a callback URL, copy the full address from this browser's address bar and paste it only into the sign-in window you started. Do not share this address. Otherwise, start a new sign-in."
+      );
+    });
+  }
+
+  for (const scenario of [
+    {
+      name: "Apple callbacks",
+      provider: "apple",
+      search: "?code=fixture-code&state=fixture-state"
+    },
+    { name: "missing code", provider: "github", search: "?state=fixture-state" },
+    { name: "missing state", provider: "google", search: "?code=fixture-code" },
+    { name: "empty code", provider: "github", search: "?code=&state=fixture-state" },
+    { name: "empty state", provider: "google", search: "?code=fixture-code&state=" },
+    {
+      name: "duplicate code",
+      provider: "github",
+      search: "?code=fixture-code&code=fixture-code&state=fixture-state"
+    },
+    {
+      name: "duplicate state",
+      provider: "google",
+      search: "?code=fixture-code&state=fixture-state&state=fixture-state"
+    },
+    {
+      name: "an error parameter even when empty",
+      provider: "github",
+      search: "?code=fixture-code&state=fixture-state&error="
+    },
+    {
+      name: "an error_description parameter",
+      provider: "google",
+      search: "?code=fixture-code&state=fixture-state&error_description=fixture-error"
+    },
+    {
+      name: "an error_uri parameter",
+      provider: "github",
+      search: "?code=fixture-code&state=fixture-state&error_uri=https%3A%2F%2Fexample.com%2Ferror"
+    }
+  ]) {
+    test(`does not offer the Maple Agent paste hint for ${scenario.name}`, async () => {
+      await renderRejectedRedirectCallback(scenario.provider, scenario.search);
+      expect(renderer!.root.findAllByType("details")).toHaveLength(0);
+      expect(JSON.stringify(renderer?.toJSON())).not.toContain("Using Maple Agent's paste field?");
+    });
+  }
+
+  for (const provider of ["github", "google"] as const) {
+    test(`${provider} hosted native callback errors never offer the Maple Agent paste hint`, async () => {
+      const { markTransportV2DesktopOAuth, readTransportV2DesktopOAuth } =
+        await import("@/services/desktopOAuthTransport");
+      markTransportV2DesktopOAuth({
+        provider,
+        nativeSessionId: "01".repeat(16),
+        nativeRequestId: "ab".repeat(16)
+      });
+      const callback = await renderRejectedRedirectCallback(
+        provider,
+        "?code=fixture-code&state=fixture-state"
+      );
+      expect(callback).toHaveBeenCalledTimes(1);
+      // Error handling clears the pending target, but the request was still a native flow.
+      expect(readTransportV2DesktopOAuth(provider)).toBeNull();
+      expect(renderer!.root.findAllByType("details")).toHaveLength(0);
+      expect(JSON.stringify(renderer?.toJSON())).not.toContain("Using Maple Agent's paste field?");
     });
   }
 

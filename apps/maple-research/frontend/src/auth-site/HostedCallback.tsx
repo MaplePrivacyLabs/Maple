@@ -29,7 +29,7 @@ export function HostedCallback({ route }: { route: Extract<AuthSiteRoute, { kind
           setStatus("failed");
           return;
         }
-        // GPUI's paste flow does not own a browser continuation. Leave its URL untouched.
+        // A hosted callback must still own its native target. Leave its address untouched.
         if (!target || !isCurrentDesktopOAuthTarget(target)) {
           setStatus("failed");
           return;

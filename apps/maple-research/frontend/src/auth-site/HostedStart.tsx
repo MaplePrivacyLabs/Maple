@@ -24,12 +24,17 @@ export function HostedStart({ route }: { route: Extract<AuthSiteRoute, { kind: "
       started.current = true;
       void (async () => {
         try {
-          markTransportV2DesktopOAuth(route);
+          const handoffInput = {
+            provider: route.provider,
+            nativeSessionId: route.nativeSessionId,
+            nativeRequestId: route.nativeRequestId
+          };
+          markTransportV2DesktopOAuth(handoffInput);
           const pending = readTransportV2DesktopOAuth(route.provider);
           if (!pending) throw new Error("Native sign-in is unavailable");
           setTarget(pending);
           if (route.provider === "apple") return;
-          if (!claimTransportV2DesktopOAuthInitiation(route)) {
+          if (!claimTransportV2DesktopOAuthInitiation(handoffInput)) {
             setFailed(true);
             return;
           }

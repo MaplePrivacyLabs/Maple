@@ -13,8 +13,10 @@ the legacy V1 bridge.
   Maple. They do not accept an arbitrary return URL.
 - `/auth/github/callback` and `/auth/google/callback` complete the pending
   browser flow and show the existing account confirmation before minting the
-  native handoff grant. Callback errors keep the address intact for clients
-  that explicitly ask the user to paste it.
+  native handoff grant. Callback errors keep the address intact and ask the
+  user to restart sign-in in Maple. Maple Agent's paste flow uses the configured
+  default callback on the web app, whose error page provides conditional
+  paste guidance; it does not use the auth site.
 - Apple uses its popup API with the existing Services ID
   `cloud.opensecret.maple.services`. It requires the auth domain and callback
   to be registered with Apple before live use. A static site cannot process
@@ -28,8 +30,12 @@ existing behavior. Completing or cancelling this flow does not sign the user
 out of the web app or erase their browser credentials.
 
 Browser OAuth initiation explicitly selects a callback on the initiating
-origin. The backend must allow that exact URL. The legacy V1 bridge remains
-part of the web app and continues to use its default callback.
+origin. Before the callback-aware backend and this frontend are live together,
+verify that each exact current-origin callback equals its provider's default
+or an additional allowlist entry. Equivalent routes or trailing-slash redirects
+do not satisfy exact membership. Apply the check to development and preview
+origins used for rehearsal as well. The legacy V1 bridge remains part of the
+web app and continues to use its existing default callback.
 
 `VITE_AUTH_ORIGIN` selects the origin for native browser entry, using
 `/desktop-auth` on that origin. It accepts an HTTPS origin, or exact loopback
@@ -45,9 +51,12 @@ From the repository root, use the pinned toolchain:
 nix develop --no-update-lock-file .#ci -c bash scripts/ci/auth-web.sh
 ```
 
-The default `pr` profile uses development services and ignores local dotenv
-files. The script validates and archives the auth-only output. It does not
-publish it or change OAuth settings.
+The default `pr` profile uses development services. Build/run commands ignore
+local dotenv files; the pinned installer limitation is documented in
+[Pages deployments](../../../docs/pages-deployments.md#independent-auth-site).
+The script validates and archives the auth-only output. It does not publish
+it or change OAuth settings. The CI shell pins Node because the TypeScript
+and Vite command-line tools invoked by Bun use Node shebangs.
 
 For a configured local development session, the frontend also exposes
 `dev:auth` (loopback port 5174) and `preview:auth`. Preserve any externally

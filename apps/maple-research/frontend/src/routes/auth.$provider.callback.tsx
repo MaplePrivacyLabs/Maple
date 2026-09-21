@@ -203,6 +203,17 @@ function OAuthCallback() {
   }
 
   if (error) {
+    const callbackParams = new URLSearchParams(window.location.search);
+    const codes = callbackParams.getAll("code");
+    const states = callbackParams.getAll("state");
+    const showAgentPasteHint =
+      (provider === "github" || provider === "google") &&
+      !nativeFlow.requested &&
+      codes.length === 1 &&
+      codes[0].trim().length > 0 &&
+      states.length === 1 &&
+      states[0].trim().length > 0 &&
+      !["error", "error_description", "error_uri"].some((key) => callbackParams.has(key));
     return (
       <Card className="max-w-md mx-auto mt-20">
         <CardHeader>
@@ -210,6 +221,16 @@ function OAuthCallback() {
         </CardHeader>
         <CardContent>
           <AlertDestructive title="Error" description={error} />
+          {showAgentPasteHint && (
+            <details className="mt-4 text-sm text-muted-foreground">
+              <summary className="cursor-pointer">Using Maple Agent's paste field?</summary>
+              <p className="mt-2">
+                If Maple Agent explicitly asked you to paste a callback URL, copy the full address
+                from this browser's address bar and paste it only into the sign-in window you
+                started. Do not share this address. Otherwise, start a new sign-in.
+              </p>
+            </details>
+          )}
           <div className="mt-4 flex justify-center">
             <Button asChild>
               <Link to="/">Try Again</Link>
