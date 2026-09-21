@@ -26,14 +26,17 @@ Only source master is imported. Existing OpenSecret pull requests and branches
 remain in the old repository for separate review and replay under the new
 prefix; this import does not merge or close them.
 
-The root `.gitmodules` registers the unchanged backend gitlinks:
+At the initial backend import, the root `.gitmodules` registered these gitlinks:
 
 | Component path | Imported revision |
 | --- | --- |
 | `services/opensecret/nitro-toolkit` | `dcfea5f66c3f0aea232b649da2ce3661be54cc14` |
 | `services/opensecret/privatemode-public` | `4b72dcbbd58940835b5ba32502c1e247721b9584` |
 
-Initialize them with `git submodule update --init --recursive`. Backend Cargo,
+Nitro Toolkit has since been [imported as ordinary tracked source](nitro-toolkit-import.md)
+at that same revision and path. Only `privatemode-public` remains a submodule;
+initialize it with `git submodule update --init --recursive -- services/opensecret/privatemode-public`.
+Backend Cargo,
 Nix, and existing `just` recipes run from `services/opensecret/`. Its flake and
 lockfile stay separate from the client build environments. Root backend
 shortcuts are `just opensecret-check` and `just opensecret-pcr-check`.
