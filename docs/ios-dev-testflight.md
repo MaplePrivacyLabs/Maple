@@ -25,7 +25,10 @@ All `VITE_*` values are public configuration and must never contain secrets.
 
 Set the public repository variable `MAPLE_IOS_DEV_AUTH_ORIGIN` to the canonical
 HTTPS origin of the existing development website, with no path, query, fragment,
-or credentials. The native build requires it and has no fallback to the
+or credentials. The intended stable origin is `https://app-dev.trymaple.ai`,
+serving Research's master development build. Provision and verify that site
+before enabling this channel; naming it here does not establish a deployment.
+The native build requires the variable and has no fallback to the
 production website. The development Pages build receives the same value as
 `VITE_MAPLE_DEV_AUTH_ORIGIN`; production builds remove that development setting.
 An unset variable preserves ordinary web previews, but blocks a Maple Dev native
@@ -57,6 +60,13 @@ any shared default. Verify the same callback in the provider console, including
 the existing Apple web Services ID's `<origin>/auth/apple/callback`. Selecting a
 non-default callback would require a separate SDK and caller upgrade. See the
 [backend callback contract](../services/opensecret/docs/oauth-callbacks.md).
+
+Once these shared development defaults move, new OAuth attempts from arbitrary
+PR preview origins cannot retain their cross-origin continuation state. Use the
+stable development site for OAuth testing; previews can still serve other branch
+validation. Production callback settings remain separate. Publish the compatible
+hosted development flow before enabling native browser sign-in, and retain that
+web-before-native ordering for future handoff protocol changes.
 
 ## Build and upload workflow
 
