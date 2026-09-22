@@ -1090,16 +1090,30 @@ impl SettingsScreen {
             .gap_4()
             .child(setting_copy(title, description))
             .child(
-                widgets::secondary_button(gpui::SharedString::from(format!(
-                    "setting-value-{}",
-                    title.to_lowercase().replace(' ', "-")
-                )))
+                widgets::secondary_button({
+                    let id = format!("setting-value-{}", title.to_lowercase().replace(' ', "-"));
+                    gpui::SharedString::from(id)
+                })
                 .flex_none()
                 .py_1p5()
                 .gap_1()
-                .on_click(cx.listener(move |this, _event, _window, cx| {
-                    this.toggle_setting_menu(menu, cx);
-                }))
+                .debug_selector({
+                    let selector =
+                        format!("setting-value-{}", title.to_lowercase().replace(' ', "-"));
+                    move || selector
+                })
+                .capture_any_mouse_down(widgets::popup_press(cx.listener(
+                    move |this, _event, _window, cx| {
+                        this.toggle_setting_menu(menu, cx);
+                    },
+                )))
+                .on_click(
+                    cx.listener(move |this, event: &gpui::ClickEvent, _window, cx| {
+                        if event.is_keyboard() {
+                            this.toggle_setting_menu(menu, cx);
+                        }
+                    }),
+                )
                 .child(self.menu_value_label(menu))
                 .child(icon("chevron-down", px(12.), theme::text_muted())),
             );

@@ -1053,6 +1053,32 @@ mod tests {
             assert_eq!(this.open_menu, Some(SettingMenu::Appearance));
         });
     }
+
+    /// A second press on the value button dismisses the dropdown. The
+    /// outside-press handler would otherwise close it before the click
+    /// toggled it open again.
+    #[gpui::test]
+    fn second_press_on_a_setting_dropdown_dismisses_it(cx: &mut TestAppContext) {
+        let settings = dropdown_screen(cx, false);
+        let (_host, cx) = cx.add_window_view(|_window, _cx| DropdownHost {
+            settings: settings.clone(),
+        });
+        cx.simulate_resize(gpui::size(px(1200.), px(800.)));
+
+        let bounds = cx
+            .debug_bounds("setting-value-appearance")
+            .expect("the appearance value button renders");
+        let center = bounds.center();
+        cx.simulate_click(center, gpui::Modifiers::default());
+        settings.update(cx, |this, _| {
+            assert_eq!(this.open_menu, Some(SettingMenu::Appearance));
+        });
+        cx.simulate_click(center, gpui::Modifiers::default());
+        settings.update(cx, |this, _| {
+            assert_eq!(this.open_menu, None);
+        });
+    }
+
     #[gpui::test]
     fn vim_activation_opens_picks_and_escapes_the_dropdown(cx: &mut TestAppContext) {
         let settings = dropdown_screen(cx, true);

@@ -631,6 +631,11 @@ impl Sidebar {
     }
 
     #[cfg(test)]
+    pub(super) fn project_menu(&self) -> Option<&str> {
+        self.project_menu.as_deref()
+    }
+
+    #[cfg(test)]
     pub(super) fn set_project_name_for_test(&mut self, root: &str, name: &str) {
         self.project_names
             .insert(root.to_string(), name.to_string());
@@ -1972,45 +1977,66 @@ impl Sidebar {
             .w_full()
             .mb_3()
             .child(
+                // The folder-plus button is a sibling of the menu trigger.
+                // A capture press on the whole row would toggle the menu
+                // when the plus was the target.
                 div()
-                    .id("projects-header")
-                    .role(gpui::Role::Button)
-                    .aria_label("Projects")
-                    .aria_expanded(self.switcher_menu_open)
                     .flex()
                     .items_center()
                     .gap_1p5()
                     .w_full()
-                    .px_4()
-                    .py_1()
-                    .rounded(theme::RADIUS_SM)
-                    .text_sm()
-                    .font_weight(gpui::FontWeight::MEDIUM)
-                    .text_color(gpui::rgb(theme::text_primary()))
-                    .hover(|style| {
-                        style
-                            .bg(gpui::rgb(theme::bg_sidebar_row_hover()))
-                            .cursor_pointer()
-                    })
-                    .on_click(cx.listener(|this, _event, _window, cx| {
-                        cx.stop_propagation();
-                        this.toggle_switcher_menu(cx);
-                    }))
-                    .child(icon("folder", px(16.), theme::text_secondary()))
+                    .pr_4()
                     .child(
                         div()
+                            .id("projects-header")
+                            .role(gpui::Role::Button)
+                            .aria_label("Projects")
+                            .aria_expanded(self.switcher_menu_open)
+                            .debug_selector(|| "projects-header".to_string())
+                            .flex()
                             .flex_1()
                             .min_w_0()
-                            .line_clamp(1)
-                            .text_ellipsis()
-                            .child(self.scope_label.clone()),
+                            .items_center()
+                            .gap_1p5()
+                            .pl_4()
+                            .py_1()
+                            .rounded(theme::RADIUS_SM)
+                            .text_sm()
+                            .font_weight(gpui::FontWeight::MEDIUM)
+                            .text_color(gpui::rgb(theme::text_primary()))
+                            .hover(|style| {
+                                style
+                                    .bg(gpui::rgb(theme::bg_sidebar_row_hover()))
+                                    .cursor_pointer()
+                            })
+                            .capture_any_mouse_down(widgets::popup_press(cx.listener(
+                                |this, _event, _window, cx| {
+                                    this.toggle_switcher_menu(cx);
+                                },
+                            )))
+                            .on_click(cx.listener(|this, event: &gpui::ClickEvent, _window, cx| {
+                                if !event.is_keyboard() {
+                                    return;
+                                }
+                                cx.stop_propagation();
+                                this.toggle_switcher_menu(cx);
+                            }))
+                            .child(icon("folder", px(16.), theme::text_secondary()))
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .line_clamp(1)
+                                    .text_ellipsis()
+                                    .child(self.scope_label.clone()),
+                            )
+                            .when(self.switcher_menu_open, |row| {
+                                row.child(icon("chevron-down", px(14.), theme::text_secondary()))
+                            })
+                            .when(!self.switcher_menu_open, |row| {
+                                row.child(icon("chevron-right", px(14.), theme::text_secondary()))
+                            }),
                     )
-                    .when(self.switcher_menu_open, |row| {
-                        row.child(icon("chevron-down", px(14.), theme::text_secondary()))
-                    })
-                    .when(!self.switcher_menu_open, |row| {
-                        row.child(icon("chevron-right", px(14.), theme::text_secondary()))
-                    })
                     .child(
                         div()
                             .id("new-project")
@@ -2117,19 +2143,32 @@ impl Sidebar {
                     .when(is_current, |row| {
                         row.child(icon("check", px(14.), theme::accent()))
                     })
-                    .child(row_action(
-                        root.menu_id.clone(),
-                        &root.row_group,
-                        "ellipsis",
-                        "Project options",
-                        {
-                            let root = root.root.clone();
-                            cx.listener(move |this, _event, _window, cx| {
+                    .child({
+                        let press_root = root.root.clone();
+                        let click_root = root.root.clone();
+                        row_action(
+                            root.menu_id.clone(),
+                            &root.row_group,
+                            "ellipsis",
+                            "Project options",
+                            cx.listener(move |this, event: &gpui::ClickEvent, _window, cx| {
+                                if !event.is_keyboard() {
+                                    return;
+                                }
                                 cx.stop_propagation();
-                                this.toggle_project_menu(&root, cx);
-                            })
-                        },
-                    ))
+                                this.toggle_project_menu(&click_root, cx);
+                            }),
+                        )
+                        .debug_selector({
+                            let selector = root.menu_id.to_string();
+                            move || selector.clone()
+                        })
+                        .capture_any_mouse_down(widgets::popup_press(cx.listener(
+                            move |this, _event, _window, cx| {
+                                this.toggle_project_menu(&press_root, cx);
+                            },
+                        )))
+                    })
                     .children(has_menu.then(|| self.render_project_menu(&root.root.clone(), cx))),
             );
         }
@@ -2403,16 +2442,31 @@ impl Sidebar {
                     .group_hover(row.group.clone(), |style| {
                         style.bg(gpui::rgb(theme::bg_sidebar_row_hover()))
                     })
-                    .child(row_action(
-                        row.menu_id.clone(),
-                        &row.group,
-                        "ellipsis",
-                        "More",
-                        cx.listener(move |this, _event, _window, cx| {
-                            cx.stop_propagation();
-                            this.toggle_task_menu(menu_id.as_ref(), cx);
-                        }),
-                    ))
+                    .child({
+                        let press_menu = Arc::clone(&menu_id);
+                        row_action(
+                            row.menu_id.clone(),
+                            &row.group,
+                            "ellipsis",
+                            "More",
+                            cx.listener(move |this, event: &gpui::ClickEvent, _window, cx| {
+                                if !event.is_keyboard() {
+                                    return;
+                                }
+                                cx.stop_propagation();
+                                this.toggle_task_menu(menu_id.as_ref(), cx);
+                            }),
+                        )
+                        .debug_selector({
+                            let selector = row.menu_id.to_string();
+                            move || selector.clone()
+                        })
+                        .capture_any_mouse_down(widgets::popup_press(cx.listener(
+                            move |this, _event, _window, cx| {
+                                this.toggle_task_menu(press_menu.as_ref(), cx);
+                            },
+                        )))
+                    })
                     .child(row_action(
                         row.rename_id.clone(),
                         &row.group,

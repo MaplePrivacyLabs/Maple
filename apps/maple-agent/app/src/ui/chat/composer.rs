@@ -65,10 +65,21 @@ impl ChatScreen {
                 false,
             )
             .flex_none()
+            .debug_selector(|| "root-picker".to_string())
+            // Inside the drag region: a press here toggles the menu and
+            // must not start a window drag.
             .on_mouse_down(gpui::MouseButton::Left, |_event, _window, cx| {
                 cx.stop_propagation();
             })
-            .on_click(cx.listener(|this, _event, window, cx| {
+            .capture_any_mouse_down(widgets::popup_press(cx.listener(
+                |this, _event, window, cx| {
+                    this.execute_command(ChatCommand::ChooseProject, window, cx);
+                },
+            )))
+            .on_click(cx.listener(|this, event: &gpui::ClickEvent, window, cx| {
+                if !event.is_keyboard() {
+                    return;
+                }
                 this.execute_command(ChatCommand::ChooseProject, window, cx);
             })),
         )
@@ -1024,13 +1035,17 @@ impl ChatScreen {
                             self.models_menu_open,
                             false,
                         )
-                        .on_click(cx.listener(
+                        .debug_selector(|| "model-picker".to_string())
+                        .capture_any_mouse_down(widgets::popup_press(cx.listener(
                             |this, _event, _window, cx| {
-                                this.root_menu_open = false;
-                                this.mode_menu_open = false;
-                                this.mcp_menu_open = false;
-                                this.models_menu_open = !this.models_menu_open;
-                                cx.notify();
+                                this.toggle_models_menu(cx);
+                            },
+                        )))
+                        .on_click(cx.listener(
+                            |this, event: &gpui::ClickEvent, _window, cx| {
+                                if event.is_keyboard() {
+                                    this.toggle_models_menu(cx);
+                                }
                             },
                         )),
                     )
@@ -1043,13 +1058,17 @@ impl ChatScreen {
                             self.mode_menu_open,
                             false,
                         )
-                        .on_click(cx.listener(
+                        .debug_selector(|| "permission-mode-toggle".to_string())
+                        .capture_any_mouse_down(widgets::popup_press(cx.listener(
                             |this, _event, _window, cx| {
-                                this.root_menu_open = false;
-                                this.models_menu_open = false;
-                                this.mcp_menu_open = false;
-                                this.mode_menu_open = !this.mode_menu_open;
-                                cx.notify();
+                                this.toggle_mode_menu(cx);
+                            },
+                        )))
+                        .on_click(cx.listener(
+                            |this, event: &gpui::ClickEvent, _window, cx| {
+                                if event.is_keyboard() {
+                                    this.toggle_mode_menu(cx);
+                                }
                             },
                         )),
                     )
@@ -1066,16 +1085,17 @@ impl ChatScreen {
                             self.mcp_menu_open,
                             false,
                         )
-                        .on_click(cx.listener(
+                        .debug_selector(|| "mcp-menu".to_string())
+                        .capture_any_mouse_down(widgets::popup_press(cx.listener(
                             |this, _event, _window, cx| {
-                                this.root_menu_open = false;
-                                this.models_menu_open = false;
-                                this.mode_menu_open = false;
-                                this.mcp_menu_open = !this.mcp_menu_open;
-                                if this.mcp_menu_open {
-                                    this.refresh_session_mcp(cx);
+                                this.toggle_mcp_menu(cx);
+                            },
+                        )))
+                        .on_click(cx.listener(
+                            |this, event: &gpui::ClickEvent, _window, cx| {
+                                if event.is_keyboard() {
+                                    this.toggle_mcp_menu(cx);
                                 }
-                                cx.notify();
                             },
                         )),
                     )
@@ -1235,6 +1255,37 @@ impl ChatScreen {
                             }),
                     ),
             )
+    }
+
+    /// Open or close the model menu. The other composer menus close.
+    fn toggle_models_menu(&mut self, cx: &mut Context<Self>) {
+        self.root_menu_open = false;
+        self.mode_menu_open = false;
+        self.mcp_menu_open = false;
+        self.models_menu_open = !self.models_menu_open;
+        cx.notify();
+    }
+
+    /// Open or close the permission-mode menu. The other composer menus close.
+    fn toggle_mode_menu(&mut self, cx: &mut Context<Self>) {
+        self.root_menu_open = false;
+        self.models_menu_open = false;
+        self.mcp_menu_open = false;
+        self.mode_menu_open = !self.mode_menu_open;
+        cx.notify();
+    }
+
+    /// Open or close the integrations menu. Opening refreshes that session's
+    /// servers. The other composer menus close.
+    fn toggle_mcp_menu(&mut self, cx: &mut Context<Self>) {
+        self.root_menu_open = false;
+        self.models_menu_open = false;
+        self.mode_menu_open = false;
+        self.mcp_menu_open = !self.mcp_menu_open;
+        if self.mcp_menu_open {
+            self.refresh_session_mcp(cx);
+        }
+        cx.notify();
     }
 }
 

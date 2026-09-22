@@ -4124,6 +4124,115 @@ mod state_tests {
         );
     }
 
+    /// A second press on a popup's own button dismisses it. The menu's
+    /// outside-press handler runs on the way down and used to close the
+    /// menu before the button's click toggled it open again.
+    #[gpui::test]
+    fn test_second_press_on_a_popup_button_dismisses_it(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        struct ChatHost {
+            chat: Entity<ChatScreen>,
+        }
+        impl Render for ChatHost {
+            fn render(
+                &mut self,
+                _window: &mut Window,
+                _cx: &mut Context<Self>,
+            ) -> impl IntoElement {
+                div()
+                    .w(px(1200.))
+                    .h(px(800.))
+                    .flex()
+                    .flex_col()
+                    .child(self.chat.clone())
+            }
+        }
+
+        let chat = cx.new(|cx| {
+            let _guard = SETTINGS_LOCK.lock();
+            let backend = std::sync::Arc::new(
+                crate::backend::AgentBackend::new("http://127.0.0.1:9".to_string(), String::new())
+                    .expect("backend"),
+            );
+            crate::desktop::register_key_bindings(cx);
+            let mut chat = ChatScreen::new_without_start(backend, "user".to_string(), cx);
+            chat.selected_session = Some("s1".to_string());
+            chat.sessions = vec![summary("s1", "One")];
+            chat.booting = false;
+            chat.models = vec!["voxtral-small-24b".to_string()];
+            chat.sync_sidebar(cx);
+            chat
+        });
+
+        let (_host, cx) = cx.add_window_view(|_window, _cx| ChatHost { chat: chat.clone() });
+        cx.simulate_resize(gpui::size(px(1200.), px(800.)));
+
+        let press = |cx: &mut gpui::VisualTestContext, selector: &'static str| {
+            let bounds = cx
+                .debug_bounds(selector)
+                .unwrap_or_else(|| panic!("{selector} was not rendered"));
+            cx.simulate_click(bounds.center(), gpui::Modifiers::default());
+        };
+
+        press(cx, "projects-header");
+        chat.update(cx, |this, cx| {
+            assert!(this.sidebar.read(cx).switcher_menu_open());
+        });
+        press(cx, "projects-header");
+        chat.update(cx, |this, cx| {
+            assert!(!this.sidebar.read(cx).switcher_menu_open());
+        });
+
+        press(cx, "menu-session-s1");
+        chat.update(cx, |this, cx| {
+            assert_eq!(this.sidebar.read(cx).task_menu(), Some("s1"));
+        });
+        press(cx, "menu-session-s1");
+        chat.update(cx, |this, cx| {
+            assert!(this.sidebar.read(cx).task_menu().is_none());
+        });
+
+        press(cx, "projects-header");
+        press(cx, "menu-project-/tmp/proj");
+        chat.update(cx, |this, cx| {
+            assert_eq!(this.sidebar.read(cx).project_menu(), Some("/tmp/proj"));
+        });
+        press(cx, "menu-project-/tmp/proj");
+        chat.update(cx, |this, cx| {
+            assert!(this.sidebar.read(cx).project_menu().is_none());
+        });
+        press(cx, "projects-header");
+
+        press(cx, "model-picker");
+        chat.update(cx, |this, _| assert!(this.models_menu_open));
+        press(cx, "model-picker");
+        chat.update(cx, |this, _| assert!(!this.models_menu_open));
+
+        press(cx, "permission-mode-toggle");
+        chat.update(cx, |this, _| assert!(this.mode_menu_open));
+        press(cx, "permission-mode-toggle");
+        chat.update(cx, |this, _| assert!(!this.mode_menu_open));
+
+        press(cx, "mcp-menu");
+        chat.update(cx, |this, _| assert!(this.mcp_menu_open));
+        press(cx, "mcp-menu");
+        chat.update(cx, |this, _| assert!(!this.mcp_menu_open));
+
+        press(cx, "root-picker");
+        chat.update(cx, |this, _| assert!(this.root_menu_open));
+        press(cx, "root-picker");
+        chat.update(cx, |this, _| assert!(!this.root_menu_open));
+
+        press(cx, "model-picker");
+        cx.simulate_click(gpui::point(px(700.), px(200.)), gpui::Modifiers::default());
+        chat.update(cx, |this, _| {
+            assert!(
+                !this.models_menu_open,
+                "a press outside the menu still dismisses it"
+            );
+        });
+    }
+
     /// Tool-card and thinking-row summaries must claim their row's width
     /// before any ellipsis: the title grows to fill the row (`flex_1` +
     /// `min_w_0`) and truncates at its end, never collapsing to its

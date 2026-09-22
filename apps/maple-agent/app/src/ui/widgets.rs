@@ -54,6 +54,11 @@ fn press_depth(style: StyleRefinement) -> StyleRefinement {
 ///
 /// The caller adds the anchoring (`gpui::anchored` or `absolute`), the
 /// dismiss handler, and the rows.
+///
+/// A second press on the button that opened the panel must dismiss it.
+/// [`popup_press`] does that. The panel's outside-press handler runs in
+/// the capture phase and would close the menu before the button's click
+/// toggled it back open.
 pub fn popup_panel(id: impl Into<ElementId>, width: Pixels) -> Stateful<Div> {
     div()
         .id(id)
@@ -68,6 +73,25 @@ pub fn popup_panel(id: impl Into<ElementId>, width: Pixels) -> Stateful<Div> {
         .shadow_md()
         .flex()
         .flex_col()
+}
+
+/// Left press on the button that opens a popup, handled in the capture phase.
+///
+/// Bind this with `capture_any_mouse_down` on that button. It stops the
+/// press before the popup's `on_mouse_down_out` can close the menu, then
+/// toggles. Keep `on_click` for the keyboard and ignore mouse clicks
+/// there (`ClickEvent::is_keyboard`): a stopped press does not become a
+/// click, and a mouse click must not toggle a second time.
+pub fn popup_press(
+    toggle: impl Fn(&gpui::MouseDownEvent, &mut Window, &mut App) + 'static,
+) -> impl Fn(&gpui::MouseDownEvent, &mut Window, &mut App) + 'static {
+    move |event, window, cx| {
+        if event.button != gpui::MouseButton::Left {
+            return;
+        }
+        cx.stop_propagation();
+        toggle(event, window, cx);
+    }
 }
 
 /// One row inside a [`popup_panel`]. A disabled row is dimmed and takes
