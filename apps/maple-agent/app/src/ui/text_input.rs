@@ -3,6 +3,7 @@
 //! form submit and composer send, and an optional multi-line mode that wraps
 //! text and grows with its content (Shift+Enter inserts a newline).
 
+mod bounds;
 pub mod vim;
 pub(crate) mod vim_actions;
 
@@ -42,8 +43,28 @@ actions!(
         SelectAll,
         Home,
         End,
+        SelectLineStart,
+        SelectLineEnd,
+        DeleteToLineStart,
+        DeleteToLineEnd,
+        WordLeft,
+        WordRight,
+        SelectWordLeft,
+        SelectWordRight,
+        DeleteWordBackward,
+        DeleteWordForward,
+        ParagraphStart,
+        ParagraphEnd,
+        SelectParagraphStart,
+        SelectParagraphEnd,
+        DocumentStart,
+        DocumentEnd,
+        SelectDocumentStart,
+        SelectDocumentEnd,
         Up,
         Down,
+        SelectUp,
+        SelectDown,
         ShowCharacterPalette,
         Paste,
         Cut,
@@ -77,6 +98,12 @@ pub struct TextInput {
     placeholder: SharedString,
     selected_range: Range<usize>,
     selection_reversed: bool,
+    /// A soft wrap has two visual caret positions at the same byte offset.
+    /// Line-start commands keep the caret on the following display row.
+    cursor_affinity: CursorAffinity,
+    /// Desired horizontal position during a run of vertical arrow commands.
+    /// A short row must not pull later movements away from this column.
+    vertical_goal_x: Option<Pixels>,
     marked_range: Option<Range<usize>>,
     last_layout: Option<TextLayout>,
     last_bounds: Option<Bounds<Pixels>>,
@@ -165,12 +192,19 @@ pub struct TextInput {
 /// How many text states one input remembers for undo.
 const UNDO_DEPTH: usize = 128;
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CursorAffinity {
+    Upstream,
+    Downstream,
+}
+
 /// The content and selection before an edit.
 #[derive(Clone)]
 struct EditSnapshot {
     content: SharedString,
     selected_range: Range<usize>,
     selection_reversed: bool,
+    cursor_affinity: CursorAffinity,
 }
 
 /// The kinds of edit that fold into one undo step. Everything else
@@ -214,6 +248,8 @@ impl TextInput {
             placeholder: SharedString::from(placeholder.to_string()),
             selected_range: 0..0,
             selection_reversed: false,
+            cursor_affinity: CursorAffinity::Upstream,
+            vertical_goal_x: None,
             marked_range: None,
             last_layout: None,
             last_bounds: None,
@@ -515,6 +551,8 @@ impl TextInput {
     /// IME composition, a reversed selection, and the menus whose items
     /// point at a word.
     fn forget_text_positions(&mut self) {
+        self.vertical_goal_x = None;
+        self.cursor_affinity = CursorAffinity::Upstream;
         self.marked_range = None;
         self.vim_ime_baseline = None;
         self.selection_reversed = false;
@@ -530,6 +568,7 @@ impl TextInput {
             content: snapshot.text.into(),
             selected_range: snapshot.cursor..snapshot.cursor,
             selection_reversed: false,
+            cursor_affinity: CursorAffinity::Upstream,
         });
         self.redo_stack.clear();
         self.last_edit = None;
@@ -579,6 +618,8 @@ impl TextInput {
     }
 
     fn apply_vim_outcome(&mut self, outcome: VimOutcome, cx: &mut Context<Self>) {
+        self.vertical_goal_x = None;
+        self.cursor_affinity = CursorAffinity::Upstream;
         let text_changed = outcome.text_changed;
         if outcome.consumed {
             self.keep_cursor_visible = true;
@@ -729,6 +770,8 @@ impl TextInput {
             self.record_edit(continues);
         }
 
+        self.cursor_affinity = CursorAffinity::Upstream;
+        self.vertical_goal_x = None;
         self.content =
             (self.content[0..range.start].to_owned() + new_text + &self.content[range.end..])
                 .into();
@@ -751,6 +794,7 @@ impl TextInput {
             content: self.content.clone(),
             selected_range: self.selected_range.clone(),
             selection_reversed: self.selection_reversed,
+            cursor_affinity: self.cursor_affinity,
         }
     }
 
@@ -780,6 +824,7 @@ impl TextInput {
         self.forget_text_positions();
         self.selected_range = snapshot.selected_range;
         self.selection_reversed = snapshot.selection_reversed;
+        self.cursor_affinity = snapshot.cursor_affinity;
         self.last_edit = None;
         self.keep_cursor_visible = true;
         self.refresh_spelling();
@@ -884,6 +929,7 @@ impl TextInput {
             self.move_to(offset, cx);
             self.sync_insert_cursor(offset, cx);
         }
+        self.cursor_affinity = CursorAffinity::Downstream;
     }
 
     fn right(&mut self, _: &Right, _: &mut Window, cx: &mut Context<Self>) {
@@ -909,6 +955,7 @@ impl TextInput {
         }
         self.select_to(self.previous_boundary(self.cursor_offset()), cx);
         self.sync_insert_cursor(self.cursor_offset(), cx);
+        self.cursor_affinity = CursorAffinity::Downstream;
     }
 
     fn select_right(&mut self, _: &SelectRight, _: &mut Window, cx: &mut Context<Self>) {
@@ -925,34 +972,421 @@ impl TextInput {
         self.select_to(self.content.len(), cx)
     }
 
-    fn home(&mut self, _: &Home, _: &mut Window, cx: &mut Context<Self>) {
+    fn home(&mut self, _: &Home, window: &mut Window, cx: &mut Context<Self>) {
         if matches!(self.vim_mode(), Some(VimMode::Normal | VimMode::Visual)) {
             self.execute_vim_command(VimCommand::Motion(Motion::LineStart), cx);
         } else {
-            self.move_to(0, cx);
-            self.sync_insert_cursor(0, cx);
+            let offset = self.line_target(false, window);
+            self.move_to_offset(offset, cx);
+            self.cursor_affinity = CursorAffinity::Downstream;
         }
     }
 
-    fn end(&mut self, _: &End, _: &mut Window, cx: &mut Context<Self>) {
+    fn end(&mut self, _: &End, window: &mut Window, cx: &mut Context<Self>) {
         if matches!(self.vim_mode(), Some(VimMode::Normal | VimMode::Visual)) {
             self.execute_vim_command(VimCommand::Motion(Motion::LineEnd), cx);
         } else {
-            let offset = self.content.len();
-            self.move_to(offset, cx);
-            self.sync_insert_cursor(offset, cx);
+            let offset = self.line_target(true, window);
+            self.move_to_offset(offset, cx);
         }
     }
 
-    fn up(&mut self, _: &Up, _: &mut Window, cx: &mut Context<Self>) {
+    fn select_line_start(
+        &mut self,
+        _: &SelectLineStart,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.select_line_edge(false, window, cx);
+    }
+
+    fn select_line_end(&mut self, _: &SelectLineEnd, window: &mut Window, cx: &mut Context<Self>) {
+        self.select_line_edge(true, window, cx);
+    }
+
+    fn delete_to_line_start(
+        &mut self,
+        _: &DeleteToLineStart,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.delete_to_line_edge(false, InsertEditKind::Backspace, window, cx);
+    }
+
+    fn delete_to_line_end(
+        &mut self,
+        _: &DeleteToLineEnd,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.delete_to_line_edge(true, InsertEditKind::Delete, window, cx);
+    }
+
+    fn word_left(&mut self, _: &WordLeft, _: &mut Window, cx: &mut Context<Self>) {
+        self.move_by_word(false, cx);
+    }
+
+    fn word_right(&mut self, _: &WordRight, _: &mut Window, cx: &mut Context<Self>) {
+        self.move_by_word(true, cx);
+    }
+
+    fn select_word_left(&mut self, _: &SelectWordLeft, _: &mut Window, cx: &mut Context<Self>) {
+        self.select_by_word(false, cx);
+    }
+
+    fn select_word_right(&mut self, _: &SelectWordRight, _: &mut Window, cx: &mut Context<Self>) {
+        self.select_by_word(true, cx);
+    }
+
+    fn delete_word_backward(
+        &mut self,
+        _: &DeleteWordBackward,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.delete_word(false, window, cx);
+    }
+
+    fn delete_word_forward(
+        &mut self,
+        _: &DeleteWordForward,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.delete_word(true, window, cx);
+    }
+
+    /// Normal and Visual keep Vim's own motions. These shortcuts are for
+    /// Vim off and Insert, which is where text is typed.
+    fn standard_editing(&self) -> bool {
+        !matches!(self.vim_mode(), Some(VimMode::Normal | VimMode::Visual))
+    }
+
+    fn move_to_offset(&mut self, offset: usize, cx: &mut Context<Self>) {
+        self.move_to(offset, cx);
+        self.sync_insert_cursor(offset, cx);
+    }
+
+    fn move_by_word(&mut self, forward: bool, cx: &mut Context<Self>) {
+        if !self.standard_editing() {
+            return;
+        }
+        let offset = self.word_target(forward);
+        self.move_to_offset(offset, cx);
+        if !forward {
+            self.cursor_affinity = CursorAffinity::Downstream;
+        }
+    }
+
+    fn select_by_word(&mut self, forward: bool, cx: &mut Context<Self>) {
+        if !self.standard_editing() {
+            return;
+        }
+        let offset = self.word_target(forward);
+        self.select_to(offset, cx);
+        self.sync_insert_cursor(self.cursor_offset(), cx);
+        if !forward {
+            self.cursor_affinity = CursorAffinity::Downstream;
+        }
+    }
+
+    fn select_line_edge(&mut self, end: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.standard_editing() {
+            return;
+        }
+        let offset = self.line_target(end, window);
+        if cfg!(target_os = "macos") {
+            self.extend_to_edge(offset, end, cx);
+        } else {
+            self.select_to(offset, cx);
+            self.sync_insert_cursor(self.cursor_offset(), cx);
+        }
+        self.cursor_affinity = if end {
+            CursorAffinity::Upstream
+        } else {
+            CursorAffinity::Downstream
+        };
+    }
+
+    fn delete_word(&mut self, forward: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.standard_editing() {
+            return;
+        }
+        if self.consume_marked_text(window, cx) {
+            return;
+        }
+        let range = if self.selected_range.is_empty() {
+            let cursor = self.cursor_offset();
+            let target = self.word_target(forward);
+            if forward {
+                cursor..target
+            } else {
+                target..cursor
+            }
+        } else {
+            self.selected_range.clone()
+        };
+        if range.is_empty() {
+            return;
+        }
+        let kind = if forward {
+            InsertEditKind::Delete
+        } else {
+            InsertEditKind::Backspace
+        };
+        self.replace_range_with_kind(range, "", kind, cx);
+    }
+
+    fn delete_to_line_edge(
+        &mut self,
+        end: bool,
+        kind: InsertEditKind,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.standard_editing() {
+            return;
+        }
+        if self.consume_marked_text(window, cx) {
+            return;
+        }
+        let range = if self.selected_range.is_empty() {
+            let cursor = self.cursor_offset();
+            let mut target = self.line_target(end, window);
+            if cfg!(target_os = "macos")
+                && end
+                && target == cursor
+                && self.content[cursor..].starts_with('\n')
+            {
+                target += 1;
+            }
+            if target < cursor {
+                target..cursor
+            } else {
+                cursor..target
+            }
+        } else {
+            self.selected_range.clone()
+        };
+        if range.is_empty() {
+            return;
+        }
+        self.replace_range_with_kind(range, "", kind, cx);
+    }
+
+    /// macOS line commands follow the rows the user sees. Paragraph commands
+    /// and Vim motions continue to use explicit newline boundaries.
+    fn line_target(&mut self, end: bool, window: &mut Window) -> usize {
+        let (cursor, affinity) = if cfg!(target_os = "macos") && !self.selected_range.is_empty() {
+            if end {
+                (self.selected_range.end, CursorAffinity::Upstream)
+            } else {
+                (self.selected_range.start, CursorAffinity::Downstream)
+            }
+        } else {
+            (self.cursor_offset(), self.cursor_affinity)
+        };
+        if cfg!(target_os = "macos") && self.multiline {
+            self.ensure_navigation_layout(window);
+            if let Some(layout) = self
+                .last_layout
+                .as_ref()
+                .filter(|l| self.layout_is_current(l))
+                && let Some(range) =
+                    layout.visual_line_range(self.to_display_offset(cursor), affinity)
+            {
+                return self.content_offset_for_display(if end { range.end } else { range.start });
+            }
+        }
+        if end {
+            bounds::line_end(&self.content, cursor)
+        } else {
+            bounds::line_start(&self.content, cursor)
+        }
+    }
+
+    /// Multiple key events can arrive before prepaint. Re-shape only when an
+    /// edit made the last layout stale, using the field's actual font and width.
+    fn ensure_navigation_layout(&mut self, window: &mut Window) {
+        if self
+            .last_layout
+            .as_ref()
+            .is_some_and(|l| self.layout_is_current(l))
+        {
+            return;
+        }
+        let Some(cache) = &self.shape_cache else {
+            return;
+        };
+        let Some(base_run) = cache.runs.first() else {
+            return;
+        };
+        let text = self.display_text();
+        let run = TextRun {
+            len: text.len(),
+            ..base_run.clone()
+        };
+        if let Ok(lines) = window.text_system().shape_text(
+            text.clone(),
+            cache.font_size,
+            &[run],
+            cache.wrap_width,
+            None,
+        ) {
+            self.last_layout = Some(TextLayout {
+                lines: Arc::new(lines.into_vec()),
+                line_height: self
+                    .last_layout
+                    .as_ref()
+                    .map_or(window.line_height(), |l| l.line_height),
+                text,
+            });
+        }
+    }
+
+    fn paragraph_start(&mut self, _: &ParagraphStart, _: &mut Window, cx: &mut Context<Self>) {
+        self.move_paragraph(false, false, cx);
+    }
+
+    fn paragraph_end(&mut self, _: &ParagraphEnd, _: &mut Window, cx: &mut Context<Self>) {
+        self.move_paragraph(true, false, cx);
+    }
+
+    fn select_paragraph_start(
+        &mut self,
+        _: &SelectParagraphStart,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.move_paragraph(false, true, cx);
+    }
+
+    fn select_paragraph_end(
+        &mut self,
+        _: &SelectParagraphEnd,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.move_paragraph(true, true, cx);
+    }
+
+    fn move_paragraph(&mut self, forward: bool, select: bool, cx: &mut Context<Self>) {
+        if !self.standard_editing() {
+            return;
+        }
+        let cursor = self.cursor_offset();
+        let mut offset = if !select && !self.selected_range.is_empty() {
+            if forward {
+                bounds::line_end(&self.content, self.selected_range.end)
+            } else {
+                bounds::line_start(&self.content, self.selected_range.start)
+            }
+        } else if forward && select {
+            (bounds::line_end(&self.content, cursor) + 1).min(self.content.len())
+        } else if forward {
+            bounds::line_end(&self.content, self.next_boundary(cursor))
+        } else {
+            bounds::line_start(&self.content, self.previous_boundary(cursor))
+        };
+        if select && !self.selected_range.is_empty() {
+            // Native paragraph selection stops at its anchor when reversing.
+            if forward && self.selection_reversed {
+                offset = offset.min(self.selected_range.end);
+            } else if !forward && !self.selection_reversed {
+                offset = offset.max(self.selected_range.start);
+            }
+        }
+        self.move_standard(offset, select, cx);
+        if select || !forward {
+            self.cursor_affinity = CursorAffinity::Downstream;
+        }
+    }
+
+    fn document_start(&mut self, _: &DocumentStart, _: &mut Window, cx: &mut Context<Self>) {
+        self.move_standard(0, false, cx);
+    }
+
+    fn document_end(&mut self, _: &DocumentEnd, _: &mut Window, cx: &mut Context<Self>) {
+        self.move_standard(self.content.len(), false, cx);
+    }
+
+    fn select_document_start(
+        &mut self,
+        _: &SelectDocumentStart,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.extend_to_edge(0, false, cx);
+    }
+
+    fn select_document_end(
+        &mut self,
+        _: &SelectDocumentEnd,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.extend_to_edge(self.content.len(), true, cx);
+    }
+
+    /// Native line/document selection extends the corresponding end of the
+    /// entire selection, unlike paragraph selection's anchored active head.
+    fn extend_to_edge(&mut self, offset: usize, end: bool, cx: &mut Context<Self>) {
+        if !self.standard_editing() {
+            return;
+        }
+        self.selection_reversed = !end;
+        self.move_standard(offset, true, cx);
+    }
+
+    fn move_standard(&mut self, offset: usize, select: bool, cx: &mut Context<Self>) {
+        if !self.standard_editing() {
+            return;
+        }
+        if select {
+            self.select_to(offset, cx);
+            let selection = self.selected_range.clone();
+            let reversed = self.selection_reversed;
+            self.sync_insert_cursor(self.cursor_offset(), cx);
+            // These Shift commands retain a selection in Vim Insert mode.
+            self.selected_range = selection;
+            self.selection_reversed = reversed;
+        } else {
+            self.move_to_offset(offset, cx);
+        }
+        cx.stop_propagation();
+    }
+
+    fn word_target(&self, forward: bool) -> usize {
+        let cursor = self.cursor_offset();
+        if forward {
+            bounds::word_right(&self.content, cursor, bounds::host_word_stop())
+        } else {
+            bounds::word_left(&self.content, cursor)
+        }
+    }
+
+    /// An in-progress IME composition owns the next delete. Returns true
+    /// when that composition was cleared.
+    fn consume_marked_text(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        if self.vim.is_none() && self.marked_range.is_some() {
+            self.replace_text_in_range(None, "", window, cx);
+            true
+        } else {
+            false
+        }
+    }
+
+    fn up(&mut self, _: &Up, window: &mut Window, cx: &mut Context<Self>) {
         if matches!(self.vim_mode(), Some(VimMode::Normal | VimMode::Visual)) {
             self.execute_vim_command(VimCommand::Motion(Motion::Up), cx);
             return;
         }
-        match self.vertical_neighbor(-1) {
-            Some(offset) => {
+        self.ensure_navigation_layout(window);
+        match self.vertical_neighbor(-1, None) {
+            Some((offset, affinity)) => {
                 self.move_to(offset, cx);
                 self.sync_insert_cursor(offset, cx);
+                self.cursor_affinity = affinity;
             }
             None => {
                 self.move_to(0, cx);
@@ -961,15 +1395,17 @@ impl TextInput {
         }
     }
 
-    fn down(&mut self, _: &Down, _: &mut Window, cx: &mut Context<Self>) {
+    fn down(&mut self, _: &Down, window: &mut Window, cx: &mut Context<Self>) {
         if matches!(self.vim_mode(), Some(VimMode::Normal | VimMode::Visual)) {
             self.execute_vim_command(VimCommand::Motion(Motion::Down), cx);
             return;
         }
-        match self.vertical_neighbor(1) {
-            Some(offset) => {
+        self.ensure_navigation_layout(window);
+        match self.vertical_neighbor(1, None) {
+            Some((offset, affinity)) => {
                 self.move_to(offset, cx);
                 self.sync_insert_cursor(offset, cx);
+                self.cursor_affinity = affinity;
             }
             None => {
                 let offset = self.content.len();
@@ -977,6 +1413,43 @@ impl TextInput {
                 self.sync_insert_cursor(offset, cx);
             }
         }
+    }
+
+    fn select_up(&mut self, _: &SelectUp, window: &mut Window, cx: &mut Context<Self>) {
+        self.select_vertical(-1, window, cx);
+    }
+
+    fn select_down(&mut self, _: &SelectDown, window: &mut Window, cx: &mut Context<Self>) {
+        self.select_vertical(1, window, cx);
+    }
+
+    fn select_vertical(&mut self, direction: i32, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.standard_editing() {
+            return;
+        }
+        self.ensure_navigation_layout(window);
+        let goal_x = self.vertical_goal_x.or_else(|| {
+            self.last_layout
+                .as_ref()?
+                .position_for_index_with_affinity(
+                    self.to_display_offset(self.cursor_offset()),
+                    self.cursor_affinity,
+                )
+                .map(|position| position.x)
+        });
+        let neighbor = self.vertical_neighbor(direction, goal_x);
+        let (offset, affinity) = neighbor.unwrap_or_else(|| {
+            if direction < 0 {
+                (0, CursorAffinity::Downstream)
+            } else {
+                (self.content.len(), CursorAffinity::Upstream)
+            }
+        });
+        self.move_standard(offset, true, cx);
+        self.cursor_affinity = affinity;
+        // Reaching a document boundary starts a new horizontal goal, unlike
+        // temporarily clamping to the end of a shorter intervening row.
+        self.vertical_goal_x = neighbor.and(goal_x);
     }
 
     fn sync_insert_cursor(&mut self, offset: usize, cx: &mut Context<Self>) {
@@ -1108,17 +1581,26 @@ impl TextInput {
 
     /// Offset on the row above (-1) or below (+1) the cursor, keeping the
     /// horizontal position. None when there is no such row.
-    fn vertical_neighbor(&self, direction: i32) -> Option<usize> {
+    fn vertical_neighbor(
+        &self,
+        direction: i32,
+        goal_x: Option<Pixels>,
+    ) -> Option<(usize, CursorAffinity)> {
         let layout = self.last_layout.as_ref()?;
+        if !self.layout_is_current(layout) {
+            return None;
+        }
         let cursor = self.to_display_offset(self.cursor_offset());
-        let position = layout.position_for_index(cursor)?;
+        let position = layout.position_for_index_with_affinity(cursor, self.cursor_affinity)?;
         let target_y =
             position.y + layout.line_height * (direction as f32) + layout.line_height / 2.;
         if target_y < px(0.) || target_y > layout.height() {
             return None;
         }
-        let display = layout.closest_index_for_position(point(position.x, target_y));
-        Some(self.content_offset_for_display(display))
+        let target = point(goal_x.unwrap_or(position.x), target_y);
+        let display = layout.closest_index_for_position(target);
+        let affinity = layout.affinity_for_position(display, target);
+        Some((self.content_offset_for_display(display), affinity))
     }
 
     fn on_mouse_down(
@@ -1129,12 +1611,16 @@ impl TextInput {
     ) {
         self.context_menu = None;
         let index = self.index_for_mouse_position(event.position);
+        let affinity = self.affinity_for_mouse_position(index, event.position);
         if self
             .vim_mode()
             .is_some_and(|mode| mode != VimMode::Disabled)
         {
             self.is_selecting = false;
             self.finish_vim_lifecycle(LifecycleEvent::MouseCaretMove { offset: index }, cx);
+            if self.standard_editing() {
+                self.cursor_affinity = affinity;
+            }
             return;
         }
         match event.click_count {
@@ -1156,6 +1642,7 @@ impl TextInput {
                 } else {
                     self.move_to(index, cx)
                 }
+                self.cursor_affinity = affinity;
             }
         }
     }
@@ -1313,7 +1800,10 @@ impl TextInput {
 
     fn on_mouse_move(&mut self, event: &MouseMoveEvent, _: &mut Window, cx: &mut Context<Self>) {
         if self.is_selecting {
-            self.select_to(self.index_for_mouse_position(event.position), cx);
+            let index = self.index_for_mouse_position(event.position);
+            let affinity = self.affinity_for_mouse_position(index, event.position);
+            self.select_to(index, cx);
+            self.cursor_affinity = affinity;
         }
     }
 
@@ -1397,6 +1887,8 @@ impl TextInput {
     }
 
     fn move_to(&mut self, offset: usize, cx: &mut Context<Self>) {
+        self.vertical_goal_x = None;
+        self.cursor_affinity = CursorAffinity::Upstream;
         let offset = snap_to_char_boundary(&self.content, offset);
         self.selected_range = offset..offset;
         self.keep_cursor_visible = true;
@@ -1443,6 +1935,22 @@ impl TextInput {
         }
     }
 
+    fn affinity_for_mouse_position(
+        &self,
+        index: usize,
+        position: gpui::Point<Pixels>,
+    ) -> CursorAffinity {
+        if let (Some(layout), Some(bounds)) = (&self.last_layout, &self.last_bounds)
+            && self.layout_is_current(layout)
+        {
+            return layout.affinity_for_position(
+                self.to_display_offset(index),
+                point(position.x - bounds.left(), position.y - bounds.top()),
+            );
+        }
+        CursorAffinity::Upstream
+    }
+
     fn index_for_mouse_position(&self, position: gpui::Point<Pixels>) -> usize {
         if self.content.is_empty() {
             return 0;
@@ -1475,6 +1983,8 @@ impl TextInput {
     }
 
     fn select_to(&mut self, offset: usize, cx: &mut Context<Self>) {
+        self.vertical_goal_x = None;
+        self.cursor_affinity = CursorAffinity::Upstream;
         let offset = snap_to_char_boundary(&self.content, offset);
         if self.selection_reversed {
             self.selected_range.start = offset
@@ -1632,6 +2142,7 @@ impl EntityInputHandler for TextInput {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.vertical_goal_x = None;
         let range = range_utf16
             .as_ref()
             .map(|range_utf16| self.range_from_utf16(range_utf16))
@@ -1651,6 +2162,7 @@ impl EntityInputHandler for TextInput {
                     range: range.clone(),
                 });
             }
+            self.cursor_affinity = CursorAffinity::Upstream;
             self.content =
                 (self.content[0..range.start].to_owned() + new_text + &self.content[range.end..])
                     .into();
@@ -1676,6 +2188,7 @@ impl EntityInputHandler for TextInput {
         if self.marked_range.is_none() {
             self.record_edit(false);
         }
+        self.cursor_affinity = CursorAffinity::Upstream;
         self.last_edit = None;
 
         self.content =
@@ -1712,8 +2225,17 @@ impl EntityInputHandler for TextInput {
     ) -> Option<Bounds<Pixels>> {
         let layout = self.last_layout.as_ref()?;
         let range = self.range_from_utf16(&range_utf16);
-        let start = layout.position_for_index(self.to_display_offset(range.start))?;
-        let end = layout.position_for_index(self.to_display_offset(range.end))?;
+        let caret_affinity = if range.is_empty() && range.start == self.cursor_offset() {
+            self.cursor_affinity
+        } else {
+            CursorAffinity::Upstream
+        };
+        let start = layout.position_for_index_with_affinity(
+            self.to_display_offset(range.start),
+            caret_affinity,
+        )?;
+        let end = layout
+            .position_for_index_with_affinity(self.to_display_offset(range.end), caret_affinity)?;
         Some(Bounds::from_corners(
             point(bounds.left() + start.x, bounds.top() + start.y),
             point(
@@ -1811,6 +2333,57 @@ impl TextLayout {
             start = end + 1;
         }
         Some(point(px(0.), y))
+    }
+
+    fn position_for_index_with_affinity(
+        &self,
+        index: usize,
+        affinity: CursorAffinity,
+    ) -> Option<gpui::Point<Pixels>> {
+        let mut position = self.position_for_index(index)?;
+        if affinity == CursorAffinity::Downstream
+            && index > 0
+            && self.text.as_bytes().get(index - 1) != Some(&b'\n')
+            && self.visual_line_range(index, affinity)?.start == index
+        {
+            position = point(px(0.), position.y + self.line_height);
+        }
+        Some(position)
+    }
+
+    fn visual_line_range(&self, index: usize, affinity: CursorAffinity) -> Option<Range<usize>> {
+        let mut start = 0;
+        for line in self.lines.iter() {
+            let end = start + line.len();
+            if index <= end {
+                let mut row_start = start;
+                for row_end in line
+                    .wrap_boundaries()
+                    .iter()
+                    .map(|boundary| {
+                        start + line.runs()[boundary.run_ix].glyphs[boundary.glyph_ix].index
+                    })
+                    .chain([end])
+                {
+                    if index < row_end
+                        || (index == row_end
+                            && (row_end == end || affinity == CursorAffinity::Upstream))
+                    {
+                        return Some(row_start..row_end);
+                    }
+                    row_start = row_end;
+                }
+            }
+            start = end + 1;
+        }
+        None
+    }
+
+    fn affinity_for_position(&self, index: usize, position: gpui::Point<Pixels>) -> CursorAffinity {
+        match self.position_for_index_with_affinity(index, CursorAffinity::Downstream) {
+            Some(downstream) if position.y >= downstream.y => CursorAffinity::Downstream,
+            _ => CursorAffinity::Upstream,
+        }
     }
 
     fn closest_index_for_position(&self, position: gpui::Point<Pixels>) -> usize {
@@ -2007,6 +2580,7 @@ impl Element for TextElement {
         let content = input.content.clone();
         let selected_range = input.selected_range.clone();
         let cursor = input.cursor_offset();
+        let cursor_affinity = input.cursor_affinity;
         let vim_mode = input.vim_mode();
         let vim_head = input.vim.as_ref().map(VimState::cursor);
         let mask = input.mask;
@@ -2118,7 +2692,7 @@ impl Element for TextElement {
             px(0.)
         } else {
             let cursor_x = layout
-                .position_for_index(display_cursor)
+                .position_for_index_with_affinity(display_cursor, cursor_affinity)
                 .map(|p| p.x)
                 .unwrap_or_default();
             let text_width = layout
@@ -2146,7 +2720,7 @@ impl Element for TextElement {
             let mut sy = last_scroll_y.min(max_scroll).max(px(0.));
             if keep_cursor_visible {
                 let cursor_y = layout
-                    .position_for_index(display_cursor)
+                    .position_for_index_with_affinity(display_cursor, cursor_affinity)
                     .map(|p| p.y)
                     .unwrap_or_default();
                 if cursor_y + line_height - sy > viewport {
@@ -2167,7 +2741,7 @@ impl Element for TextElement {
         );
         let (selection, cursor) = if selected_range.is_empty() {
             let cursor_pos = layout
-                .position_for_index(display_cursor)
+                .position_for_index_with_affinity(display_cursor, cursor_affinity)
                 .unwrap_or_default();
             let modal_block = matches!(vim_mode, Some(VimMode::Normal | VimMode::Visual));
             let cursor_width = if modal_block {
@@ -2223,7 +2797,9 @@ impl Element for TextElement {
             } else {
                 selected_range.end
             };
-            let start_pos = layout.position_for_index(start).unwrap_or_default();
+            let start_pos = layout
+                .position_for_index_with_affinity(start, CursorAffinity::Downstream)
+                .unwrap_or_default();
             let end_pos = layout.position_for_index(end).unwrap_or_default();
             let color = theme::text_selection();
             let mut quads = Vec::new();
@@ -2418,8 +2994,28 @@ impl Render for TextInput {
             .on_action(cx.listener(Self::select_all))
             .on_action(cx.listener(Self::home))
             .on_action(cx.listener(Self::end))
+            .on_action(cx.listener(Self::select_line_start))
+            .on_action(cx.listener(Self::select_line_end))
+            .on_action(cx.listener(Self::delete_to_line_start))
+            .on_action(cx.listener(Self::delete_to_line_end))
+            .on_action(cx.listener(Self::word_left))
+            .on_action(cx.listener(Self::word_right))
+            .on_action(cx.listener(Self::select_word_left))
+            .on_action(cx.listener(Self::select_word_right))
+            .on_action(cx.listener(Self::delete_word_backward))
+            .on_action(cx.listener(Self::delete_word_forward))
+            .on_action(cx.listener(Self::paragraph_start))
+            .on_action(cx.listener(Self::paragraph_end))
+            .on_action(cx.listener(Self::select_paragraph_start))
+            .on_action(cx.listener(Self::select_paragraph_end))
+            .on_action(cx.listener(Self::document_start))
+            .on_action(cx.listener(Self::document_end))
+            .on_action(cx.listener(Self::select_document_start))
+            .on_action(cx.listener(Self::select_document_end))
             .on_action(cx.listener(Self::up))
             .on_action(cx.listener(Self::down))
+            .on_action(cx.listener(Self::select_up))
+            .on_action(cx.listener(Self::select_down))
             .on_action(cx.listener(Self::show_character_palette))
             .on_action(cx.listener(Self::paste))
             .on_action(cx.listener(Self::cut))
@@ -3089,5 +3685,228 @@ mod tests {
             assert!(vim.unnamed_register().is_none());
             assert_eq!(input.text_ref(), "bcz");
         });
+    }
+
+    fn word_left_key() -> &'static str {
+        if cfg!(target_os = "macos") {
+            "alt-left"
+        } else {
+            "ctrl-left"
+        }
+    }
+
+    fn select_word_left_key() -> &'static str {
+        if cfg!(target_os = "macos") {
+            "alt-shift-left"
+        } else {
+            "ctrl-shift-left"
+        }
+    }
+
+    fn delete_word_backward_key() -> &'static str {
+        if cfg!(target_os = "macos") {
+            "alt-backspace"
+        } else {
+            "ctrl-backspace"
+        }
+    }
+
+    #[gpui::test]
+    fn home_and_word_keys_edit_the_current_line(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        let input = cx.new(|cx| {
+            crate::desktop::register_key_bindings(cx);
+            let mut input = TextInput::new("", cx).multiline(4);
+            input.set_text("hello world\nsecond", cx);
+            input
+        });
+        let (_host, cx) = cx.add_window_view(|_window, _cx| InputHost {
+            input: input.clone(),
+        });
+        let focus = cx.update(|_window, app| input.read(app).focus_handle(app));
+        cx.update(|window, app| window.focus(&focus, app));
+
+        // Home is the current line, not the start of the whole field.
+        cx.simulate_keystrokes("home");
+        cx.update(|_window, app| {
+            assert_eq!(input.read(app).selected_range, 12..12);
+        });
+        cx.simulate_keystrokes("shift-end");
+        cx.update(|_window, app| {
+            assert_eq!(input.read(app).selected_range, 12..18);
+        });
+
+        // Step back onto the end of "hello world", then to the start of "world".
+        cx.simulate_keystrokes("left");
+        cx.simulate_keystrokes(word_left_key());
+        cx.update(|_window, app| {
+            assert_eq!(input.read(app).selected_range, 6..6);
+        });
+        cx.simulate_keystrokes(delete_word_backward_key());
+        cx.update(|_window, app| {
+            let input = input.read(app);
+            assert_eq!(input.text_ref(), "world\nsecond");
+            assert_eq!(input.selected_range, 0..0);
+        });
+    }
+
+    #[gpui::test]
+    fn select_word_extends_the_selection(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        let input = cx.new(|cx| {
+            crate::desktop::register_key_bindings(cx);
+            let mut input = TextInput::new("", cx);
+            input.set_text("hello world", cx);
+            input
+        });
+        let (_host, cx) = cx.add_window_view(|_window, _cx| InputHost {
+            input: input.clone(),
+        });
+        let focus = cx.update(|_window, app| input.read(app).focus_handle(app));
+        cx.update(|window, app| window.focus(&focus, app));
+
+        cx.simulate_keystrokes(select_word_left_key());
+        cx.update(|_window, app| {
+            assert_eq!(input.read(app).selected_range, 6..11);
+        });
+    }
+
+    #[gpui::test]
+    fn word_keys_run_in_insert_and_stay_out_of_normal(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        let input = cx.new(|cx| {
+            crate::desktop::register_key_bindings(cx);
+            let mut input = TextInput::new("", cx).composer_vim(true);
+            input.set_text("hello world", cx);
+            input
+        });
+        let (_host, cx) = cx.add_window_view(|_window, _cx| InputHost {
+            input: input.clone(),
+        });
+        let focus = cx.update(|_window, app| input.read(app).focus_handle(app));
+        cx.update(|window, app| window.focus(&focus, app));
+
+        cx.simulate_keystrokes(word_left_key());
+        cx.update(|_window, app| {
+            let input = input.read(app);
+            assert_eq!(input.vim_mode(), Some(VimMode::Normal));
+            // Normal mode sits on the last character, and the word key does not move it.
+            assert_eq!(input.selected_range, 10..10);
+        });
+
+        cx.simulate_keystrokes("i");
+        cx.simulate_keystrokes(word_left_key());
+        cx.update(|_window, app| {
+            let input = input.read(app);
+            assert_eq!(input.vim_mode(), Some(VimMode::Insert));
+            assert_eq!(input.selected_range, 6..6);
+        });
+    }
+
+    #[gpui::test]
+    fn delete_to_line_start_removes_the_current_line_prefix(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        let input = cx.new(|cx| {
+            let mut input = TextInput::new("", cx).multiline(4);
+            input.set_text("keep\nremove me", cx);
+            // Caret at the start of "me".
+            input.selected_range = 12..12;
+            input
+        });
+        let (_host, cx) = cx.add_window_view(|_window, _cx| InputHost {
+            input: input.clone(),
+        });
+        cx.update(|window, app| {
+            input.update(app, |input, cx| {
+                input.delete_to_line_start(&DeleteToLineStart, window, cx);
+            });
+        });
+        cx.update(|_window, app| {
+            let input = input.read(app);
+            assert_eq!(input.text_ref(), "keep\nme");
+            assert_eq!(input.selected_range, 5..5);
+        });
+    }
+
+    #[cfg(target_os = "macos")]
+    #[gpui::test]
+    fn command_line_shortcuts_use_visible_rows(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        let text = "alpha beta gamma delta ".repeat(12);
+        let input = cx.new(|cx| {
+            crate::desktop::register_key_bindings(cx);
+            let mut input = TextInput::new("", cx).multiline(8);
+            input.set_text(&text, cx);
+            input
+        });
+        let (_host, cx) = cx.add_window_view(|_, _| InputHost {
+            input: input.clone(),
+        });
+        let (start, end) = cx.update(|window, app| {
+            window.focus(&input.read(app).focus_handle(app), app);
+            let line = &input.read(app).last_layout.as_ref().unwrap().lines[0];
+            let wrap = |n: usize| {
+                let boundary = line.wrap_boundaries()[n];
+                line.runs()[boundary.run_ix].glyphs[boundary.glyph_ix].index
+            };
+            (wrap(0), wrap(1))
+        });
+        cx.update(|_, app| input.update(app, |input, cx| input.move_to(start + 2, cx)));
+        cx.simulate_keystrokes("cmd-left cmd-left cmd-backspace");
+        cx.update(|_, app| {
+            assert_eq!(input.read(app).selected_range, start..start);
+            assert_eq!(input.read(app).text_ref(), text);
+        });
+        cx.simulate_keystrokes("cmd-shift-right");
+        cx.update(|_, app| assert_eq!(input.read(app).selected_range, start..end));
+        cx.simulate_keystrokes("cmd-right cmd-backspace");
+        cx.update(|_, app| {
+            assert_eq!(
+                input.read(app).text_ref(),
+                format!("{}{}", &text[..start], &text[end..])
+            )
+        });
+    }
+
+    #[cfg(target_os = "macos")]
+    #[gpui::test]
+    fn vertical_shortcuts_select_rows_paragraphs_and_document(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        let input = cx.new(|cx| {
+            crate::desktop::register_key_bindings(cx);
+            let mut input = TextInput::new("", cx).multiline(8).composer_vim(true);
+            input.set_text("aaaaaaaaaa\na\naaaaaaaaaa\n\naaaaaaaaaa", cx);
+            input
+        });
+        let (_host, cx) = cx.add_window_view(|_, _| InputHost {
+            input: input.clone(),
+        });
+        cx.update(|window, app| window.focus(&input.read(app).focus_handle(app), app));
+        cx.simulate_keystrokes("i");
+        cx.update(|_, app| input.update(app, |input, cx| input.move_to_offset(8, cx)));
+        // Short and empty rows preserve the column; reversal preserves the anchor.
+        for (key, heads) in [
+            ("shift-down", [12, 21, 24, 33]),
+            ("shift-up", [24, 21, 12, 8]),
+        ] {
+            for head in heads {
+                cx.simulate_keystrokes(key);
+                cx.update(|_, app| assert_eq!(input.read(app).selected_range, 8..head));
+            }
+        }
+        for (key, range) in [
+            ("alt-shift-down", 8..11),
+            ("alt-shift-up", 8..8),
+            ("alt-down", 10..10),
+            ("alt-down", 12..12),
+            ("alt-up", 11..11),
+            ("cmd-shift-up", 0..11),
+            ("cmd-shift-down", 0..35),
+            ("cmd-up", 0..0),
+            ("cmd-down", 35..35),
+        ] {
+            cx.simulate_keystrokes(key);
+            cx.update(|_, app| assert_eq!(input.read(app).selected_range, range, "{key}"));
+        }
     }
 }

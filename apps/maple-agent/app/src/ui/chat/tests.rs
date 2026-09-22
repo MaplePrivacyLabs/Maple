@@ -2846,8 +2846,7 @@ mod state_tests {
         });
     }
 
-    /// Alt-Up and Alt-Down walk the task rows in the order the sidebar
-    /// shows them, across projects, and stop at both ends.
+    /// Task stepping walks the sidebar rows across projects and stops at both ends.
     #[gpui::test]
     fn test_task_stepping_walks_the_whole_list(cx: &mut TestAppContext) {
         cx.executor().allow_parking();

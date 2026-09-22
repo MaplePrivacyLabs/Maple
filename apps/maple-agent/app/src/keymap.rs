@@ -78,8 +78,28 @@ enum SlotAction {
     Cut,
     Home,
     End,
+    SelectLineStart,
+    SelectLineEnd,
+    DeleteToLineStart,
+    DeleteToLineEnd,
+    WordLeft,
+    WordRight,
+    SelectWordLeft,
+    SelectWordRight,
+    DeleteWordBackward,
+    DeleteWordForward,
     Up,
     Down,
+    SelectUp,
+    SelectDown,
+    ParagraphStart,
+    ParagraphEnd,
+    SelectParagraphStart,
+    SelectParagraphEnd,
+    DocumentStart,
+    DocumentEnd,
+    SelectDocumentStart,
+    SelectDocumentEnd,
     Undo,
     Redo,
     ShowCharacterPalette,
@@ -148,8 +168,28 @@ impl SlotAction {
             Self::Cut => Box::new(text_input::Cut),
             Self::Home => Box::new(text_input::Home),
             Self::End => Box::new(text_input::End),
+            Self::SelectLineStart => Box::new(text_input::SelectLineStart),
+            Self::SelectLineEnd => Box::new(text_input::SelectLineEnd),
+            Self::DeleteToLineStart => Box::new(text_input::DeleteToLineStart),
+            Self::DeleteToLineEnd => Box::new(text_input::DeleteToLineEnd),
+            Self::WordLeft => Box::new(text_input::WordLeft),
+            Self::WordRight => Box::new(text_input::WordRight),
+            Self::SelectWordLeft => Box::new(text_input::SelectWordLeft),
+            Self::SelectWordRight => Box::new(text_input::SelectWordRight),
+            Self::DeleteWordBackward => Box::new(text_input::DeleteWordBackward),
+            Self::DeleteWordForward => Box::new(text_input::DeleteWordForward),
             Self::Up => Box::new(text_input::Up),
             Self::Down => Box::new(text_input::Down),
+            Self::SelectUp => Box::new(text_input::SelectUp),
+            Self::SelectDown => Box::new(text_input::SelectDown),
+            Self::ParagraphStart => Box::new(text_input::ParagraphStart),
+            Self::ParagraphEnd => Box::new(text_input::ParagraphEnd),
+            Self::SelectParagraphStart => Box::new(text_input::SelectParagraphStart),
+            Self::SelectParagraphEnd => Box::new(text_input::SelectParagraphEnd),
+            Self::DocumentStart => Box::new(text_input::DocumentStart),
+            Self::DocumentEnd => Box::new(text_input::DocumentEnd),
+            Self::SelectDocumentStart => Box::new(text_input::SelectDocumentStart),
+            Self::SelectDocumentEnd => Box::new(text_input::SelectDocumentEnd),
             Self::Undo => Box::new(text_input::Undo),
             Self::Redo => Box::new(text_input::Redo),
             Self::ShowCharacterPalette => Box::new(text_input::ShowCharacterPalette),
@@ -221,7 +261,43 @@ fn slot(
     }
 }
 
+/// Word and line shortcuts while Vim is off or in Insert. Normal and
+/// Visual keep `b`/`w`/`e`/`$`. A plain `TextInput` predicate would still
+/// match those modes, and Vim does not bind Option or Command arrows, so
+/// the exclusion has to live in the predicate.
+pub(crate) const STANDARD_TEXT_CONTEXT: &str =
+    "TextInput && editor_vim_mode != normal && editor_vim_mode != visual";
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum HostOs {
+    Macos,
+    Linux,
+    Windows,
+}
+
+impl HostOs {
+    fn current() -> Self {
+        if cfg!(target_os = "macos") {
+            Self::Macos
+        } else if cfg!(target_os = "windows") {
+            Self::Windows
+        } else {
+            Self::Linux
+        }
+    }
+}
+
 pub(crate) fn catalog() -> Vec<ShortcutSlot> {
+    catalog_for(HostOs::current())
+}
+
+fn catalog_for(os: HostOs) -> Vec<ShortcutSlot> {
+    // macOS Option-Up/Down is paragraph motion, so task switching uses Command-Option.
+    let (previous_task, next_task) = if matches!(os, HostOs::Macos) {
+        ("cmd-alt-up", "cmd-alt-down")
+    } else {
+        ("alt-up", "alt-down")
+    };
     let mut slots = vec![
         slot(
             "app.quit",
@@ -292,7 +368,7 @@ pub(crate) fn catalog() -> Vec<ShortcutSlot> {
             "Previous task",
             ShortcutCategory::Chat,
             Some("Chat"),
-            "alt-up",
+            previous_task,
             SlotAction::PreviousTask,
         ),
         slot(
@@ -300,7 +376,7 @@ pub(crate) fn catalog() -> Vec<ShortcutSlot> {
             "Next task",
             ShortcutCategory::Chat,
             Some("Chat"),
-            "alt-down",
+            next_task,
             SlotAction::NextTask,
         ),
         slot(
@@ -536,6 +612,22 @@ pub(crate) fn catalog() -> Vec<ShortcutSlot> {
             SlotAction::Down,
         ),
         slot(
+            "text_input.select_up",
+            "Select up",
+            ShortcutCategory::TextEditing,
+            Some(STANDARD_TEXT_CONTEXT),
+            "shift-up",
+            SlotAction::SelectUp,
+        ),
+        slot(
+            "text_input.select_down",
+            "Select down",
+            ShortcutCategory::TextEditing,
+            Some(STANDARD_TEXT_CONTEXT),
+            "shift-down",
+            SlotAction::SelectDown,
+        ),
+        slot(
             "text_input.undo",
             "Undo",
             ShortcutCategory::TextEditing,
@@ -645,7 +737,217 @@ pub(crate) fn catalog() -> Vec<ShortcutSlot> {
             SlotAction::VimCancel,
         ),
     ]);
+    add_platform_text_slots(&mut slots, os);
     slots
+}
+
+/// Platform text motions. `secondary` is Command on macOS and Control
+/// elsewhere, so Command+Left and Control+Left cannot share one sequence.
+fn add_platform_text_slots(slots: &mut Vec<ShortcutSlot>, os: HostOs) {
+    let mac = matches!(os, HostOs::Macos);
+    let (
+        word_left,
+        word_right,
+        select_word_left,
+        select_word_right,
+        delete_word_back,
+        delete_word_forward,
+    ) = if mac {
+        (
+            "alt-left",
+            "alt-right",
+            "alt-shift-left",
+            "alt-shift-right",
+            "alt-backspace",
+            "alt-delete",
+        )
+    } else {
+        (
+            "ctrl-left",
+            "ctrl-right",
+            "ctrl-shift-left",
+            "ctrl-shift-right",
+            "ctrl-backspace",
+            "ctrl-delete",
+        )
+    };
+    slots.extend([
+        slot(
+            "text_input.word_left",
+            "Move word left",
+            ShortcutCategory::TextEditing,
+            Some(STANDARD_TEXT_CONTEXT),
+            word_left,
+            SlotAction::WordLeft,
+        ),
+        slot(
+            "text_input.word_right",
+            "Move word right",
+            ShortcutCategory::TextEditing,
+            Some(STANDARD_TEXT_CONTEXT),
+            word_right,
+            SlotAction::WordRight,
+        ),
+        slot(
+            "text_input.select_word_left",
+            "Select word left",
+            ShortcutCategory::TextEditing,
+            Some(STANDARD_TEXT_CONTEXT),
+            select_word_left,
+            SlotAction::SelectWordLeft,
+        ),
+        slot(
+            "text_input.select_word_right",
+            "Select word right",
+            ShortcutCategory::TextEditing,
+            Some(STANDARD_TEXT_CONTEXT),
+            select_word_right,
+            SlotAction::SelectWordRight,
+        ),
+        slot(
+            "text_input.delete_word_backward",
+            "Delete previous word",
+            ShortcutCategory::TextEditing,
+            Some(STANDARD_TEXT_CONTEXT),
+            delete_word_back,
+            SlotAction::DeleteWordBackward,
+        ),
+        slot(
+            "text_input.delete_word_forward",
+            "Delete next word",
+            ShortcutCategory::TextEditing,
+            Some(STANDARD_TEXT_CONTEXT),
+            delete_word_forward,
+            SlotAction::DeleteWordForward,
+        ),
+        slot(
+            "text_input.select_line_start",
+            "Select to line start",
+            ShortcutCategory::TextEditing,
+            Some(STANDARD_TEXT_CONTEXT),
+            "shift-home",
+            SlotAction::SelectLineStart,
+        ),
+        slot(
+            "text_input.select_line_end",
+            "Select to line end",
+            ShortcutCategory::TextEditing,
+            Some(STANDARD_TEXT_CONTEXT),
+            "shift-end",
+            SlotAction::SelectLineEnd,
+        ),
+    ]);
+    if mac {
+        slots.extend([
+            slot(
+                "text_input.command_line_start",
+                "Move to line start (Command)",
+                ShortcutCategory::TextEditing,
+                Some(STANDARD_TEXT_CONTEXT),
+                "cmd-left",
+                SlotAction::Home,
+            ),
+            slot(
+                "text_input.command_line_end",
+                "Move to line end (Command)",
+                ShortcutCategory::TextEditing,
+                Some(STANDARD_TEXT_CONTEXT),
+                "cmd-right",
+                SlotAction::End,
+            ),
+            slot(
+                "text_input.command_select_line_start",
+                "Select to line start (Command)",
+                ShortcutCategory::TextEditing,
+                Some(STANDARD_TEXT_CONTEXT),
+                "cmd-shift-left",
+                SlotAction::SelectLineStart,
+            ),
+            slot(
+                "text_input.command_select_line_end",
+                "Select to line end (Command)",
+                ShortcutCategory::TextEditing,
+                Some(STANDARD_TEXT_CONTEXT),
+                "cmd-shift-right",
+                SlotAction::SelectLineEnd,
+            ),
+            slot(
+                "text_input.delete_to_line_start",
+                "Delete to line start",
+                ShortcutCategory::TextEditing,
+                Some(STANDARD_TEXT_CONTEXT),
+                "cmd-backspace",
+                SlotAction::DeleteToLineStart,
+            ),
+            slot(
+                "text_input.delete_to_line_end",
+                "Delete to line end",
+                ShortcutCategory::TextEditing,
+                Some(STANDARD_TEXT_CONTEXT),
+                "cmd-delete",
+                SlotAction::DeleteToLineEnd,
+            ),
+        ]);
+        for (id, label, sequence, action) in [
+            (
+                "text_input.paragraph_start",
+                "Move to paragraph start",
+                "alt-up",
+                SlotAction::ParagraphStart,
+            ),
+            (
+                "text_input.paragraph_end",
+                "Move to paragraph end",
+                "alt-down",
+                SlotAction::ParagraphEnd,
+            ),
+            (
+                "text_input.select_paragraph_start",
+                "Select to paragraph start",
+                "alt-shift-up",
+                SlotAction::SelectParagraphStart,
+            ),
+            (
+                "text_input.select_paragraph_end",
+                "Select to paragraph end",
+                "alt-shift-down",
+                SlotAction::SelectParagraphEnd,
+            ),
+            (
+                "text_input.document_start",
+                "Move to document start",
+                "cmd-up",
+                SlotAction::DocumentStart,
+            ),
+            (
+                "text_input.document_end",
+                "Move to document end",
+                "cmd-down",
+                SlotAction::DocumentEnd,
+            ),
+            (
+                "text_input.select_document_start",
+                "Select to document start",
+                "cmd-shift-up",
+                SlotAction::SelectDocumentStart,
+            ),
+            (
+                "text_input.select_document_end",
+                "Select to document end",
+                "cmd-shift-down",
+                SlotAction::SelectDocumentEnd,
+            ),
+        ] {
+            slots.push(slot(
+                id,
+                label,
+                ShortcutCategory::TextEditing,
+                Some(STANDARD_TEXT_CONTEXT),
+                sequence,
+                action,
+            ));
+        }
+    }
 }
 
 fn add_application_vim_slots(slots: &mut Vec<ShortcutSlot>) {
@@ -1211,38 +1513,146 @@ mod tests {
 
     #[test]
     fn catalog_contains_existing_shortcuts_and_the_application_vim_layer() {
-        let catalog = catalog();
-        assert_eq!(catalog.len(), 159);
-        let ids = catalog.iter().map(|slot| slot.id).collect::<BTreeSet<_>>();
-        assert_eq!(ids.len(), catalog.len());
-        assert_eq!(
-            catalog
-                .iter()
-                .filter(|slot| slot.category == ShortcutCategory::ComposerVim)
-                .count(),
-            76
-        );
-        assert_eq!(
-            catalog
-                .iter()
-                .filter(|slot| slot.category == ShortcutCategory::ApplicationVim)
-                .count(),
-            41
-        );
-        for (id, sequence) in [
-            ("app.quit", "secondary-q"),
-            ("project_menu.confirm", "enter"),
-            ("text_input.character_palette", "ctrl-cmd-space"),
-            ("application_vim.previous_annotation", "[ d"),
-            ("application_vim.next_annotation", "] d"),
-        ] {
+        for os in [HostOs::Macos, HostOs::Linux, HostOs::Windows] {
+            let catalog = catalog_for(os);
+            let ids = catalog.iter().map(|slot| slot.id).collect::<BTreeSet<_>>();
+            assert_eq!(ids.len(), catalog.len());
             assert_eq!(
                 catalog
                     .iter()
-                    .find(|slot| slot.id == id)
-                    .map(|slot| slot.default_sequence),
-                Some(sequence)
+                    .filter(|slot| slot.category == ShortcutCategory::ComposerVim)
+                    .count(),
+                76
+            );
+            assert_eq!(
+                catalog
+                    .iter()
+                    .filter(|slot| slot.category == ShortcutCategory::ApplicationVim)
+                    .count(),
+                41
+            );
+            for (id, sequence) in [
+                ("app.quit", "secondary-q"),
+                ("project_menu.confirm", "enter"),
+                ("text_input.character_palette", "ctrl-cmd-space"),
+                ("application_vim.previous_annotation", "[ d"),
+                ("application_vim.next_annotation", "] d"),
+                ("text_input.select_line_start", "shift-home"),
+                ("text_input.select_line_end", "shift-end"),
+            ] {
+                assert_eq!(
+                    catalog
+                        .iter()
+                        .find(|slot| slot.id == id)
+                        .map(|slot| slot.default_sequence),
+                    Some(sequence),
+                    "{id} on {os:?}"
+                );
+            }
+        }
+
+        let mac = catalog_for(HostOs::Macos);
+        let linux = catalog_for(HostOs::Linux);
+        let windows = catalog_for(HostOs::Windows);
+        assert_eq!(mac.len(), linux.len() + 14);
+        assert_eq!(linux.len(), windows.len());
+        for (id, mac_sequence, other_sequence) in [
+            ("text_input.word_left", "alt-left", "ctrl-left"),
+            ("text_input.word_right", "alt-right", "ctrl-right"),
+            (
+                "text_input.select_word_left",
+                "alt-shift-left",
+                "ctrl-shift-left",
+            ),
+            (
+                "text_input.select_word_right",
+                "alt-shift-right",
+                "ctrl-shift-right",
+            ),
+            (
+                "text_input.delete_word_backward",
+                "alt-backspace",
+                "ctrl-backspace",
+            ),
+            (
+                "text_input.delete_word_forward",
+                "alt-delete",
+                "ctrl-delete",
+            ),
+        ] {
+            assert_eq!(sequence(&mac, id), mac_sequence);
+            assert_eq!(sequence(&linux, id), other_sequence);
+            assert_eq!(sequence(&windows, id), other_sequence);
+            assert_eq!(
+                context(&mac, id),
+                Some(STANDARD_TEXT_CONTEXT),
+                "{id} stays out of Vim Normal and Visual"
             );
         }
+        for id in [
+            "text_input.command_line_start",
+            "text_input.command_line_end",
+            "text_input.command_select_line_start",
+            "text_input.command_select_line_end",
+            "text_input.delete_to_line_start",
+            "text_input.delete_to_line_end",
+        ] {
+            assert!(mac.iter().any(|slot| slot.id == id), "{id} on macOS");
+            assert!(linux.iter().all(|slot| slot.id != id), "{id} off macOS");
+        }
+        assert_eq!(sequence(&mac, "text_input.command_line_start"), "cmd-left");
+        assert_eq!(
+            sequence(&mac, "text_input.delete_to_line_start"),
+            "cmd-backspace"
+        );
+        assert_eq!(
+            sequence(&mac, "text_input.delete_to_line_end"),
+            "cmd-delete"
+        );
+        assert_eq!(sequence(&mac, "chat.previous_task"), "cmd-alt-up");
+        assert_eq!(sequence(&mac, "chat.next_task"), "cmd-alt-down");
+        assert_eq!(sequence(&linux, "chat.previous_task"), "alt-up");
+        assert_eq!(sequence(&windows, "chat.previous_task"), "alt-up");
+        assert_eq!(sequence(&linux, "chat.next_task"), "alt-down");
+        assert_eq!(sequence(&windows, "chat.next_task"), "alt-down");
+        assert_eq!(sequence(&mac, "text_input.paragraph_start"), "alt-up");
+        assert_eq!(sequence(&mac, "text_input.paragraph_end"), "alt-down");
+        for (os, catalog) in [("macOS", &mac), ("Linux", &linux), ("Windows", &windows)] {
+            let chat = catalog
+                .iter()
+                .filter(|slot| slot.context == Some("Chat"))
+                .map(|slot| slot.default_sequence)
+                .collect::<BTreeSet<_>>();
+            let text = catalog
+                .iter()
+                .filter(|slot| {
+                    matches!(
+                        slot.context,
+                        Some("TextInput") | Some(STANDARD_TEXT_CONTEXT)
+                    )
+                })
+                .map(|slot| slot.default_sequence)
+                .collect::<BTreeSet<_>>();
+            let shared = chat.intersection(&text).copied().collect::<Vec<_>>();
+            assert!(
+                shared.is_empty(),
+                "{os} text fields share a default key with Chat: {shared:?}"
+            );
+        }
+    }
+
+    fn sequence<'a>(catalog: &'a [ShortcutSlot], id: &str) -> &'a str {
+        catalog
+            .iter()
+            .find(|slot| slot.id == id)
+            .map(|slot| slot.default_sequence)
+            .unwrap_or_else(|| panic!("missing slot {id}"))
+    }
+
+    fn context<'a>(catalog: &'a [ShortcutSlot], id: &str) -> Option<&'a str> {
+        catalog
+            .iter()
+            .find(|slot| slot.id == id)
+            .and_then(|slot| slot.context)
     }
 }

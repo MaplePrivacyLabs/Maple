@@ -342,6 +342,8 @@ enum KnownContext {
     Transcript,
     RootMenu,
     TextInput,
+    /// Text fields with Vim off or in Insert. Normal and Visual are excluded.
+    StandardText,
     ComposerNormal,
     ComposerVisual,
     ComposerInsert,
@@ -359,6 +361,7 @@ fn known_context(context: Option<&str>) -> KnownContext {
         Some("Transcript") => KnownContext::Transcript,
         Some("RootMenu") => KnownContext::RootMenu,
         Some("TextInput") => KnownContext::TextInput,
+        Some(crate::keymap::STANDARD_TEXT_CONTEXT) => KnownContext::StandardText,
         Some(vim_actions::NORMAL_CONTEXT) => KnownContext::ComposerNormal,
         Some(vim_actions::VISUAL_CONTEXT) => KnownContext::ComposerVisual,
         Some(vim_actions::INSERT_CONTEXT) => KnownContext::ComposerInsert,
@@ -416,6 +419,18 @@ fn context_overlap(left: Option<&str>, right: Option<&str>) -> Option<ShortcutCo
             | (
                 KnownContext::ApplicationVimComposerNormal,
                 KnownContext::ComposerNormal
+            )
+            | (KnownContext::StandardText, KnownContext::TextInput)
+            | (KnownContext::TextInput, KnownContext::StandardText)
+            | (KnownContext::StandardText, KnownContext::ComposerInsert)
+            | (KnownContext::ComposerInsert, KnownContext::StandardText)
+            | (
+                KnownContext::StandardText,
+                KnownContext::ApplicationVimOtherInput
+            )
+            | (
+                KnownContext::ApplicationVimOtherInput,
+                KnownContext::StandardText
             )
     ) {
         return Some(ShortcutContextOverlap::Scoped);
@@ -482,7 +497,7 @@ mod tests {
     #[test]
     fn shipped_catalog_prepares_without_customization_conflicts() {
         let prepared = prepare(&ShortcutOverrides::new()).unwrap();
-        assert_eq!(prepared.bindings.len(), 159);
+        assert_eq!(prepared.bindings.len(), crate::keymap::catalog().len());
         assert!(
             prepared.rows.iter().all(|row| row.conflicts.is_empty()),
             "intentional parent/child context shadowing is not a user conflict"
@@ -567,6 +582,27 @@ mod tests {
             .unwrap();
         assert_eq!(modified.conflicts.len(), 1);
         assert_eq!(modified.conflicts[0].other_slot_id, "app.quit");
+    }
+
+    #[test]
+    fn standard_text_overlaps_text_fields_and_insert_only() {
+        let standard = Some(crate::keymap::STANDARD_TEXT_CONTEXT);
+        assert_eq!(
+            context_overlap(standard, Some("TextInput")),
+            Some(ShortcutContextOverlap::Scoped)
+        );
+        assert_eq!(
+            context_overlap(standard, Some(vim_actions::INSERT_CONTEXT)),
+            Some(ShortcutContextOverlap::Scoped)
+        );
+        assert_eq!(
+            context_overlap(standard, Some(vim_actions::NORMAL_CONTEXT)),
+            None
+        );
+        assert_eq!(
+            context_overlap(standard, Some(vim_actions::VISUAL_CONTEXT)),
+            None
+        );
     }
 
     #[test]
@@ -662,7 +698,7 @@ mod tests {
             let runtime = ShortcutRuntime::bootstrap(&overrides, app);
             let snapshot = runtime.snapshot();
             assert_eq!(snapshot.generation, 1);
-            assert_eq!(snapshot.rows.len(), 159);
+            assert_eq!(snapshot.rows.len(), crate::keymap::catalog().len());
             assert!(snapshot.last_error.is_none());
             assert!(
                 snapshot
