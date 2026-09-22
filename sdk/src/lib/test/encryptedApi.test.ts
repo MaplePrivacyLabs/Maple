@@ -493,6 +493,174 @@ describe("simplified Transport V2 encrypted API seam", () => {
     });
   }
 
+  for (const errorCase of [
+    {
+      name: "nested failed response",
+      event: "response.failed",
+      value: {
+        type: "response.failed",
+        response: {
+          status: "failed",
+          error: {
+            code: "upstream_context_limit",
+            message: "The request exceeds the selected model's context or token limit.",
+            detail: "do-not-project"
+          },
+          output: [{ content: "do-not-project" }]
+        }
+      },
+      message: "The request exceeds the selected model's context or token limit.",
+      code: "upstream_context_limit"
+    },
+    {
+      name: "event-name-only failed response",
+      event: "response.failed",
+      value: {
+        response: { error: { code: "upstream_provider_error", message: "Provider failed." } }
+      },
+      message: "Provider failed.",
+      code: "upstream_provider_error"
+    },
+    {
+      name: "legacy top-level error",
+      event: "response.error",
+      value: { error: { code: "upstream_timeout", message: "Provider timed out." } },
+      message: "Provider timed out.",
+      code: "upstream_timeout"
+    },
+    {
+      name: "top-level message precedence",
+      event: "response.failed",
+      value: {
+        message: "Original direct message.",
+        error: { message: "other" },
+        response: { error: { code: "nested", message: "other" } }
+      },
+      message: "Original direct message.",
+      code: undefined
+    },
+    {
+      name: "malformed nested error",
+      event: "response.failed",
+      value: { response: { error: { message: { private: "do-not-project" }, code: {} } } },
+      message: "The response failed.",
+      code: undefined
+    },
+    {
+      name: "non-string nested code",
+      event: "response.failed",
+      value: { response: { error: { message: "Provider failed.", code: { private: "hidden" } } } },
+      message: "Provider failed.",
+      code: undefined
+    },
+    {
+      name: "unrelated nested response",
+      event: "response.cancelled",
+      value: { response: { error: { code: "unrelated", message: "do-not-project" } } },
+      message: "The response was cancelled.",
+      code: undefined
+    }
+  ]) {
+    test(`Responses collector preserves ${errorCase.name} without replay`, async () => {
+      const testHarness = harness(async () =>
+        exchange(
+          new Response(`event: ${errorCase.event}\ndata: ${JSON.stringify(errorCase.value)}\n\n`, {
+            headers: { "content-type": "text/event-stream" }
+          })
+        )
+      );
+      let failure: unknown;
+      try {
+        await openAiAuthenticatedApiCallWithDependencies<{ model: string }, unknown>(
+          `${appApiUrl}/v1/responses`,
+          "POST",
+          { model: "fixture-model" },
+          undefined,
+          "fixture-api-key",
+          testHarness.dependencies
+        );
+      } catch (error) {
+        failure = error;
+      }
+      expect(failure).toBeInstanceOf(Error);
+      expect(failure).toMatchObject({ message: errorCase.message });
+      expect((failure as { code?: string }).code).toBe(errorCase.code);
+      // Preserve the collector's existing error status, without pretending an
+      // already-started SSE response became a new provider HTTP rejection.
+      expect((failure as { status: number }).status).toBe(500);
+      expect(failure).not.toHaveProperty("response");
+      expect(failure).not.toHaveProperty("detail");
+      expect(testHarness.request).toHaveBeenCalledTimes(1);
+      expect(testHarness.authority).not.toHaveBeenCalled();
+    });
+  }
+
+  test("does not project unrelated transport error properties as provider codes", async () => {
+    const testHarness = harness(async () => {
+      throw Object.assign(new Error("Transport failed."), { code: "unrelated-code" });
+    });
+    let failure: unknown;
+    try {
+      await openAiAuthenticatedApiCallWithDependencies<{ model: string }, unknown>(
+        `${appApiUrl}/v1/responses`,
+        "POST",
+        { model: "fixture-model" },
+        undefined,
+        "fixture-api-key",
+        testHarness.dependencies
+      );
+    } catch (error) {
+      failure = error;
+    }
+    expect(failure).toMatchObject({ message: "Transport failed.", status: 500 });
+    expect(failure).not.toHaveProperty("code");
+    expect(testHarness.request).toHaveBeenCalledTimes(1);
+  });
+
+  test("OpenAI calls retain safe upstream messages, statuses, and codes", async () => {
+    for (const [status, code] of [
+      [400, "upstream_invalid_request"],
+      [400, "upstream_context_limit"],
+      [502, "upstream_provider_error"],
+      [504, "upstream_timeout"]
+    ] as const) {
+      for (const target of ["/v1/chat/completions", "/v1/responses"]) {
+        const testHarness = harness(async () =>
+          exchange(
+            jsonResponse(
+              { status, message: "Safe upstream error fixture" },
+              {
+                status,
+                headers: {
+                  "x-opensecret-error-contract": "1",
+                  "x-opensecret-error-code": code
+                }
+              }
+            )
+          )
+        );
+        let failure: unknown;
+        try {
+          await openAiAuthenticatedApiCallWithDependencies<{ model: string }, unknown>(
+            `${appApiUrl}${target}`,
+            "POST",
+            { model: "fixture-model" },
+            undefined,
+            "fixture-api-key",
+            testHarness.dependencies
+          );
+        } catch (error) {
+          failure = error;
+        }
+        expect(failure).toBeInstanceOf(Error);
+        expect(failure).toMatchObject({ status, message: "Safe upstream error fixture" });
+        expect((failure as { headers: Headers }).headers.get("x-opensecret-error-code")).toBe(code);
+        expect(testHarness.request).toHaveBeenCalledTimes(1);
+        expect(testHarness.authority).not.toHaveBeenCalled();
+      }
+    }
+  });
+
   test("surfaces authenticated logical errors and notifies user auth without retrying", async () => {
     const logicalError = jsonResponse(
       { message: "operation denied" },

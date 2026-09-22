@@ -699,6 +699,82 @@ async fn recovery_does_not_replay_authenticated_logical_errors() {
 }
 
 #[tokio::test]
+async fn safe_upstream_errors_preserve_the_inference_contract_without_recovery() {
+    for (status, code) in [
+        (400, "upstream_invalid_request"),
+        (400, "upstream_context_limit"),
+        (502, "upstream_provider_error"),
+        (504, "upstream_timeout"),
+    ] {
+        for stream in [false, true] {
+            let server = MockServer::start().await;
+            let state = TestV2ServerState::new();
+            let body = serde_json::json!({
+                "status": status,
+                "message": "Safe upstream error fixture"
+            });
+            state.queue_json_response_with_headers(
+                status,
+                body.clone(),
+                &[
+                    ("x-opensecret-error-contract", "1"),
+                    ("x-opensecret-error-code", code),
+                ],
+            );
+            mount_sessions(&server, &state, 1, false).await;
+            Mock::given(method("POST"))
+                .and(path("/v2/request"))
+                .respond_with(state.request_responder())
+                .expect(1)
+                .mount(&server)
+                .await;
+            let client =
+                OpenSecretClient::new_with_api_key(server.uri(), "fixture-key".to_string())
+                    .unwrap();
+            client
+                .set_tokens(
+                    "fixture-access".to_string(),
+                    Some("fixture-refresh".to_string()),
+                )
+                .unwrap();
+            let response = client
+                .send_inference_request(
+                    HttpRequest::post("/v1/chat/completions")
+                        .header(header::CONTENT_TYPE, "application/json")
+                        .body(Bytes::from(
+                            serde_json::to_vec(&serde_json::json!({
+                                "model": "fixture-model", "stream": stream
+                            }))
+                            .unwrap(),
+                        ))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status().as_u16(), status);
+            assert_eq!(response.headers()["x-opensecret-error-contract"], "1");
+            assert_eq!(response.headers()["x-opensecret-error-code"], code);
+            assert!(!response
+                .headers()
+                .contains_key("x-opensecret-client-replay"));
+            assert_eq!(
+                collect_response_body(response.into_body()).await.unwrap(),
+                Bytes::from(serde_json::to_vec(&body).unwrap())
+            );
+            assert_eq!(state.captured_requests().len(), 1);
+            assert!(client.get_session_id().unwrap().is_some());
+            let tokens = client.get_tokens().unwrap().unwrap();
+            assert_eq!(tokens.access_token, "fixture-access");
+            assert_eq!(tokens.refresh_token.as_deref(), Some("fixture-refresh"));
+            assert!(!state
+                .captured_requests()
+                .iter()
+                .any(|request| request["target"] == "/refresh"));
+        }
+    }
+}
+
+#[tokio::test]
 async fn recovery_does_not_follow_request_redirects() {
     let server = MockServer::start().await;
     mount_sessions(&server, &TestV2ServerState::new(), 1, false).await;

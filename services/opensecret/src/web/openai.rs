@@ -1015,7 +1015,9 @@ fn public_completion_error(error: &ProviderRequestError, failure: &AttemptFailur
         };
     }
 
-    ApiError::from(error.clone())
+    super::provider_error::PublicProviderError::from_failure(failure)
+        .map(ApiError::InferenceProvider)
+        .unwrap_or_else(|| ApiError::from(error.clone()))
 }
 
 fn terminalize_recovered_provider_failures(
@@ -2116,7 +2118,7 @@ async fn proxy_openai(
                                 "Completion attempt failed: kind={:?}, stage={:?}",
                                 failure.kind, failure.stage
                             );
-                            let error_payload = completion_error_payload(failure.client_message());
+                            let error_payload = completion_failure_payload(&failure);
                             match encrypt_sse_event(&state, &session_id, &error_payload).await {
                                 Ok(event) => yield Ok(event),
                                 Err(error) => {
@@ -3045,6 +3047,10 @@ pub(crate) async fn finish_started_completion(
         {
             Ok(response_json) => response_json,
             Err(failure) => {
+                let public_error =
+                    super::provider_error::PublicProviderError::from_failure(&failure)
+                        .map(ApiError::InferenceProvider)
+                        .unwrap_or(ApiError::InternalServerError);
                 let terminal = AttemptTerminal::Failed {
                     attempt: attempt.clone(),
                     failure,
@@ -3052,7 +3058,7 @@ pub(crate) async fn finish_started_completion(
                 terminal_guard.record_terminal(&terminal);
                 return Err(CompletionExecutionError::Attempt {
                     terminal,
-                    public_error: ApiError::InternalServerError,
+                    public_error,
                 });
             }
         };
@@ -3508,6 +3514,20 @@ fn completion_error_payload(message: &str) -> Value {
             "code": null,
         }
     })
+}
+
+fn completion_failure_payload(failure: &AttemptFailure) -> Value {
+    match super::provider_error::PublicProviderError::from_failure(failure) {
+        Some(error) => json!({
+            "error": {
+                "message": error.message(),
+                "type": if error.status().is_client_error() { "invalid_request_error" } else { "server_error" },
+                "param": null,
+                "code": error.code(),
+            }
+        }),
+        None => completion_error_payload(failure.client_message()),
+    }
 }
 
 fn sse_event_from_encoded_data(event_data: &str) -> Event {
@@ -5692,7 +5712,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn upstream_diagnostic_reaches_correlated_terminal_but_not_public_error() {
+    async fn upstream_diagnostic_projects_static_public_detail_without_provider_text() {
         let app = Router::new().route("/v1/chat/completions", post(|| async {
             axum::http::Response::builder().status(400)
                 .body(axum::body::Body::from(r#"{"error":{"code":"unsupported_parameter","type":"invalid_request_error","message":"private-prompt-canary","param":"private-tool-canary"}}"#))
@@ -5710,7 +5730,9 @@ mod tests {
             Some("unsupported_parameter")
         );
         let public = public_completion_error(&error, &failure);
-        assert!(matches!(public, ApiError::InternalServerError));
+        assert!(matches!(public, ApiError::InferenceProvider(error)
+            if error.status() == StatusCode::BAD_REQUEST
+                && error.code() == "upstream_unsupported_parameter"));
         let router = ProviderRouter::default();
         let pinned = pinned_test_completion();
         let attempt = pinned
@@ -5782,6 +5804,140 @@ mod tests {
                     .deployment_capacity,
                 crate::inference::health::ShadowDisposition::WouldOpen { .. }
             ));
+        }
+    }
+
+    #[tokio::test]
+    async fn mock_provider_errors_preserve_safe_status_detail_and_never_allow_replay() {
+        for (upstream_status, label, public_status, code) in [
+            (400, "BadRequestError", 400, "upstream_invalid_request"),
+            (400, "private-label-canary", 400, "upstream_invalid_request"),
+            (
+                400,
+                "message-structure-fixture",
+                400,
+                "upstream_invalid_messages",
+            ),
+            (
+                400,
+                "context_length_exceeded",
+                400,
+                "upstream_context_limit",
+            ),
+            (400, "invalid_parameter", 400, "upstream_invalid_parameter"),
+            (
+                422,
+                "unsupported_parameter",
+                422,
+                "upstream_unsupported_parameter",
+            ),
+            (
+                413,
+                "private-label-canary",
+                413,
+                "upstream_payload_too_large",
+            ),
+            (401, "invalid_api_key", 502, "upstream_provider_error"),
+            (403, "permission_denied", 502, "upstream_provider_error"),
+            (404, "model_not_found", 502, "upstream_provider_error"),
+            (500, "invalid_request_error", 502, "upstream_provider_error"),
+            (502, "private-label-canary", 502, "upstream_provider_error"),
+            (408, "private-label-canary", 504, "upstream_timeout"),
+            (504, "private-label-canary", 504, "upstream_timeout"),
+        ] {
+            let calls = Arc::new(AtomicUsize::new(0));
+            let mock_calls = calls.clone();
+            let app =
+                Router::new().route(
+                    "/v1/chat/completions",
+                    post(move || {
+                        mock_calls.fetch_add(1, Ordering::SeqCst);
+                        async move {
+                            axum::http::Response::builder().status(upstream_status)
+                        .header(header::RETRY_AFTER, "7")
+                        .header("x-request-id", "private-request-canary")
+                        .header("x-opensecret-client-replay", "safe")
+                        .body(axum::body::Body::from(json!({"error": {
+                            "code": label, "type": "private-type-canary",
+                            "message": if label == "message-structure-fixture" {
+                                "conversation roles must alternate: private-prompt-canary"
+                            } else { "private-prompt-canary" },
+                            "param": "private-tool-canary"
+                        }}).to_string())).unwrap()
+                        }
+                    }),
+                );
+            let (trace, server) = call_mock_provider(app).await;
+            server.abort();
+            assert_eq!(calls.load(Ordering::SeqCst), 1);
+            assert!(trace.prior_failures.is_empty());
+            let error = trace.result.err().expect("provider rejects the request");
+            let failure = attempt_failure_from_provider_error(&error);
+            assert_eq!(failure.replay_safety, ReplaySafety::NotProvenPreAcceptance);
+            let pinned = pinned_test_completion();
+            let execution_error = CompletionExecutionError::Attempt {
+                terminal: AttemptTerminal::Failed {
+                    attempt: pinned
+                        .begin_execution()
+                        .begin_attempt(pinned.route.identity()),
+                    failure: failure.clone(),
+                },
+                public_error: public_completion_error(&error, &failure),
+            };
+            let response = execution_error
+                .into_pre_persistence_api_error()
+                .into_response();
+            assert_eq!(response.status().as_u16(), public_status);
+            assert_eq!(response.headers()[crate::ERROR_CONTRACT_HEADER], "1");
+            assert_eq!(response.headers()[crate::ERROR_CODE_HEADER], code);
+            for name in [crate::CLIENT_REPLAY_HEADER, "retry-after", "x-request-id"] {
+                assert!(!response.headers().contains_key(name));
+            }
+            let bytes = axum::body::to_bytes(response.into_body(), 1024)
+                .await
+                .unwrap();
+            let body: Value = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(body["status"], public_status);
+            assert!(body["message"]
+                .as_str()
+                .unwrap()
+                .starts_with("Upstream provider"));
+            assert_eq!(body.as_object().unwrap().len(), 2); // Legacy ErrorResponse shape.
+            assert!(!String::from_utf8(bytes.to_vec())
+                .unwrap()
+                .contains("private-"));
+        }
+    }
+
+    #[test]
+    fn completion_transport_errors_and_stream_payloads_use_safe_provider_projection() {
+        for (error, status, code) in [
+            (
+                ProviderRequestError::Timeout(Duration::from_secs(1)),
+                504,
+                "upstream_timeout",
+            ),
+            (
+                ProviderRequestError::Connect("private-address-canary".into()),
+                502,
+                "upstream_provider_error",
+            ),
+            (
+                ProviderRequestError::Send("private-body-canary".into()),
+                502,
+                "upstream_provider_error",
+            ),
+        ] {
+            let failure = attempt_failure_from_provider_error(&error);
+            let response = public_completion_error(&error, &failure).into_response();
+            assert_eq!(response.status().as_u16(), status);
+            assert_eq!(response.headers()[crate::ERROR_CODE_HEADER], code);
+            assert!(!response.headers().contains_key(crate::CLIENT_REPLAY_HEADER));
+            let payload = completion_failure_payload(&failure);
+            assert_eq!(payload["error"]["code"], code);
+            assert_eq!(payload["error"]["type"], "server_error");
+            assert!(payload["error"]["param"].is_null());
+            assert!(!payload.to_string().contains("private-"));
         }
     }
 
@@ -6713,7 +6869,7 @@ mod tests {
         assert_eq!(failure.replay_safety, ReplaySafety::NotProvenPreAcceptance);
         assert!(matches!(
             public_completion_error(&generic, &failure),
-            ApiError::InternalServerError
+            ApiError::InferenceProvider(error) if error.status() == StatusCode::BAD_GATEWAY
         ));
     }
 

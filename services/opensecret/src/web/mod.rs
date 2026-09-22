@@ -9,6 +9,7 @@ mod openai;
 pub mod openai_auth;
 pub mod platform;
 pub mod protected_routes;
+pub mod provider_error;
 pub mod responses;
 pub mod web_routes;
 pub(crate) mod web_safety;

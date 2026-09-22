@@ -597,6 +597,24 @@ mod tests {
                 });
         }
 
+        pub(crate) fn queue_json_response_with_headers(
+            &self,
+            status: u16,
+            body: serde_json::Value,
+            headers: &[(&str, &str)],
+        ) {
+            self.queue_json_response(status, body);
+            self.responses
+                .lock()
+                .unwrap()
+                .back_mut()
+                .unwrap()
+                .headers
+                .extend(headers.iter().map(|(name, value)| {
+                    LogicalHeader::new((*name).to_string(), (*value).to_string()).unwrap()
+                }));
+        }
+
         pub(crate) fn queue_delayed_json_response(
             &self,
             status: u16,

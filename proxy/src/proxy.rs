@@ -665,6 +665,62 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn safe_upstream_errors_reach_local_chat_callers_without_retrying() {
+        for (status, code) in [
+            (StatusCode::BAD_REQUEST, "upstream_invalid_request"),
+            (StatusCode::BAD_REQUEST, "upstream_context_limit"),
+            (StatusCode::BAD_GATEWAY, "upstream_provider_error"),
+            (StatusCode::GATEWAY_TIMEOUT, "upstream_timeout"),
+        ] {
+            for stream in [false, true] {
+                let error_body = Bytes::from(
+                    serde_json::to_vec(&serde_json::json!({
+                        "status": status.as_u16(),
+                        "message": "Safe upstream error fixture"
+                    }))
+                    .unwrap(),
+                );
+                let transport = Arc::new(MockTransport::new(vec![Ok(raw_response(
+                    status,
+                    &[
+                        ("content-type", "application/json"),
+                        ("x-opensecret-error-contract", "1"),
+                        ("x-opensecret-error-code", code),
+                    ],
+                    vec![error_body.clone()],
+                ))]));
+                let request_body = serde_json::to_vec(&serde_json::json!({
+                    "model": "fixture-model", "stream": stream
+                }))
+                .unwrap();
+                let response = mock_app(transport.clone())
+                    .oneshot(
+                        AxumRequest::builder()
+                            .method(Method::POST)
+                            .uri("/v1/chat/completions")
+                            .header(header::CONTENT_TYPE, "application/json")
+                            .body(Body::from(request_body))
+                            .unwrap(),
+                    )
+                    .await
+                    .unwrap();
+
+                assert_eq!(response.status(), status);
+                assert_eq!(response.headers()["x-opensecret-error-contract"], "1");
+                assert_eq!(response.headers()["x-opensecret-error-code"], code);
+                assert!(!response
+                    .headers()
+                    .contains_key("x-opensecret-client-replay"));
+                assert_eq!(
+                    to_bytes(response.into_body(), 1024).await.unwrap(),
+                    error_body
+                );
+                assert_eq!(transport.take_requests().len(), 1);
+            }
+        }
+    }
+
     #[tokio::test(start_paused = true)]
     async fn response_start_timeout_is_gateway_timeout() {
         let mut config = test_config();

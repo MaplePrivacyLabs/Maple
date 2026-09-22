@@ -389,6 +389,9 @@ pub enum ApiError {
         client_replay_safe: bool,
     },
 
+    #[error("{0}")]
+    InferenceProvider(web::provider_error::PublicProviderError),
+
     #[error("Bad Request")]
     BadRequest,
 
@@ -473,6 +476,7 @@ impl IntoResponse for ApiError {
             ApiError::ServiceUnavailable => StatusCode::SERVICE_UNAVAILABLE,
             ApiError::ImageDescriptionUnavailable => StatusCode::SERVICE_UNAVAILABLE,
             ApiError::InferenceCapacity { status, .. } => *status,
+            ApiError::InferenceProvider(error) => error.status(),
             ApiError::BadRequest => StatusCode::BAD_REQUEST,
             ApiError::SessionNotFound => StatusCode::BAD_REQUEST,
             ApiError::Conflict => StatusCode::CONFLICT,
@@ -498,6 +502,7 @@ impl IntoResponse for ApiError {
             ApiError::AccessTokenExpired => Some(ACCESS_TOKEN_EXPIRED_ERROR_CODE),
             ApiError::ImageDescriptionUnavailable => Some(IMAGE_DESCRIPTION_UNAVAILABLE_ERROR_CODE),
             ApiError::InferenceCapacity { .. } => Some(INFERENCE_CAPACITY_ERROR_CODE),
+            ApiError::InferenceProvider(error) => Some(error.code()),
             _ => None,
         };
         let mut response = (
