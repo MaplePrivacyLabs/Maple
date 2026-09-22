@@ -2299,6 +2299,15 @@ async fn start_runtime_for_user(
     // Goose resolves the global AGENTS.md relative to this path root, not the
     // real home. Link the user's ~/.agents/AGENTS.md in so it is honored.
     link_global_agents_md(&goose_path_root);
+    // Desktop, `acp` sessions, and ACP catalog probes are separate processes
+    // that all rewrite the same shared Goose config at startup. Goose's writer
+    // goes through a fixed-name temp file that concurrent processes race on,
+    // and the loser fails to start its runtime. Serialize the whole bootstrap
+    // mutation section on a Maple-owned lock file.
+    let goose_runtime_root = agent_root_dir(&state.host.paths)
+        .map_err(|e| e.to_string())?
+        .join("goose-runtime");
+    let goose_bootstrap_lock = lock_goose_bootstrap(&goose_runtime_root)?;
     // This account-scoped PermissionManager is the one AgentManager actually
     // inspects. Force every Maple-routed tool through ActionRequired before it
     // is constructed so stale Goose AlwaysAllow entries cannot bypass Maple.
@@ -2331,13 +2340,12 @@ async fn start_runtime_for_user(
     let login_shell_search_paths: Option<&[String]> = None;
 
     configure_embedded_goose(
-        &agent_root_dir(&state.host.paths)
-            .map_err(|e| e.to_string())?
-            .join("goose-runtime"),
+        &goose_runtime_root,
         &model,
         DEFAULT_GOOSE_MODE,
         login_shell_search_paths,
     )?;
+    drop(goose_bootstrap_lock);
     let session_manager = Arc::new(SessionManager::new(history_dir));
     // A crash can strand a zero-message ACP probe before its connection-owned
     // rollback runs. Such rows have never admitted user work; sweep them before
@@ -9100,6 +9108,42 @@ fn remove_maple_owned_goose_file(path: &Path, description: &str) -> Result<(), S
     }
 }
 
+/// Serialize Maple's Goose bootstrap mutations across `maple-gpui` processes.
+///
+/// Every runtime start rewrites the same shared Goose config files, and
+/// Goose's writer goes through a fixed-name temp file that is not safe
+/// against concurrent processes: the loser of the race fails to start its
+/// runtime. Hold an exclusive lock on a Maple-owned file next to the shared
+/// config for the whole bootstrap section. Released when the returned file is
+/// dropped.
+///
+/// Delete this once Goose's config writer is safe against concurrent
+/// processes: https://github.com/aaif-goose/goose/issues/12422
+fn lock_goose_bootstrap(goose_runtime_root: &Path) -> Result<fs::File, String> {
+    let config_dir = goose_runtime_root.join("config");
+    fs::create_dir_all(&config_dir)
+        .map_err(|error| format!("Failed to create Goose config dir: {error}"))?;
+    let lock_path = config_dir.join("maple-bootstrap.lock");
+    let file = fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(false)
+        .open(&lock_path)
+        .map_err(|error| {
+            format!(
+                "Failed to open Goose bootstrap lock {}: {error}",
+                lock_path.display()
+            )
+        })?;
+    file.lock().map_err(|error| {
+        format!(
+            "Failed to acquire Goose bootstrap lock {}: {error}",
+            lock_path.display()
+        )
+    })?;
+    Ok(file)
+}
+
 fn reset_maple_owned_permission_file(path: &Path) -> Result<(), String> {
     // Atomic temp-and-rename with owner-only mode: a crash mid-write must
     // not leave a truncated permission file that Goose would read as empty
@@ -13257,6 +13301,25 @@ mod tests {
         assert!(persisted.contains("GOOSE_SEARCH_PATHS: []"));
         assert!(!persisted.contains("/login/first"));
         assert!(!persisted.contains("/login/second"));
+        let _ = fs::remove_dir_all(test_root);
+    }
+
+    #[test]
+    fn goose_bootstrap_lock_excludes_a_second_holder() {
+        let test_root = recent_roots_test_dir("goose-bootstrap-lock");
+        let first = lock_goose_bootstrap(&test_root).unwrap();
+        let second = fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(false)
+            .open(test_root.join("config").join("maple-bootstrap.lock"))
+            .unwrap();
+        assert!(
+            second.try_lock().is_err(),
+            "a second handle must not acquire the held bootstrap lock"
+        );
+        drop(first);
+        assert!(second.try_lock().is_ok());
         let _ = fs::remove_dir_all(test_root);
     }
 
