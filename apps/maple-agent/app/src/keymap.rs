@@ -90,6 +90,16 @@ enum SlotAction {
     DeleteWordForward,
     Up,
     Down,
+    SelectUp,
+    SelectDown,
+    ParagraphStart,
+    ParagraphEnd,
+    SelectParagraphStart,
+    SelectParagraphEnd,
+    DocumentStart,
+    DocumentEnd,
+    SelectDocumentStart,
+    SelectDocumentEnd,
     Undo,
     Redo,
     ShowCharacterPalette,
@@ -170,6 +180,16 @@ impl SlotAction {
             Self::DeleteWordForward => Box::new(text_input::DeleteWordForward),
             Self::Up => Box::new(text_input::Up),
             Self::Down => Box::new(text_input::Down),
+            Self::SelectUp => Box::new(text_input::SelectUp),
+            Self::SelectDown => Box::new(text_input::SelectDown),
+            Self::ParagraphStart => Box::new(text_input::ParagraphStart),
+            Self::ParagraphEnd => Box::new(text_input::ParagraphEnd),
+            Self::SelectParagraphStart => Box::new(text_input::SelectParagraphStart),
+            Self::SelectParagraphEnd => Box::new(text_input::SelectParagraphEnd),
+            Self::DocumentStart => Box::new(text_input::DocumentStart),
+            Self::DocumentEnd => Box::new(text_input::DocumentEnd),
+            Self::SelectDocumentStart => Box::new(text_input::SelectDocumentStart),
+            Self::SelectDocumentEnd => Box::new(text_input::SelectDocumentEnd),
             Self::Undo => Box::new(text_input::Undo),
             Self::Redo => Box::new(text_input::Redo),
             Self::ShowCharacterPalette => Box::new(text_input::ShowCharacterPalette),
@@ -586,6 +606,22 @@ fn catalog_for(os: HostOs) -> Vec<ShortcutSlot> {
             SlotAction::Down,
         ),
         slot(
+            "text_input.select_up",
+            "Select up",
+            ShortcutCategory::TextEditing,
+            Some(STANDARD_TEXT_CONTEXT),
+            "shift-up",
+            SlotAction::SelectUp,
+        ),
+        slot(
+            "text_input.select_down",
+            "Select down",
+            ShortcutCategory::TextEditing,
+            Some(STANDARD_TEXT_CONTEXT),
+            "shift-down",
+            SlotAction::SelectDown,
+        ),
+        slot(
             "text_input.undo",
             "Undo",
             ShortcutCategory::TextEditing,
@@ -846,6 +882,65 @@ fn add_platform_text_slots(slots: &mut Vec<ShortcutSlot>, os: HostOs) {
                 SlotAction::DeleteToLineEnd,
             ),
         ]);
+        for (id, label, sequence, action) in [
+            (
+                "text_input.paragraph_start",
+                "Move to paragraph start",
+                "alt-up",
+                SlotAction::ParagraphStart,
+            ),
+            (
+                "text_input.paragraph_end",
+                "Move to paragraph end",
+                "alt-down",
+                SlotAction::ParagraphEnd,
+            ),
+            (
+                "text_input.select_paragraph_start",
+                "Select to paragraph start",
+                "alt-shift-up",
+                SlotAction::SelectParagraphStart,
+            ),
+            (
+                "text_input.select_paragraph_end",
+                "Select to paragraph end",
+                "alt-shift-down",
+                SlotAction::SelectParagraphEnd,
+            ),
+            (
+                "text_input.document_start",
+                "Move to document start",
+                "cmd-up",
+                SlotAction::DocumentStart,
+            ),
+            (
+                "text_input.document_end",
+                "Move to document end",
+                "cmd-down",
+                SlotAction::DocumentEnd,
+            ),
+            (
+                "text_input.select_document_start",
+                "Select to document start",
+                "cmd-shift-up",
+                SlotAction::SelectDocumentStart,
+            ),
+            (
+                "text_input.select_document_end",
+                "Select to document end",
+                "cmd-shift-down",
+                SlotAction::SelectDocumentEnd,
+            ),
+        ] {
+            slots.push(slot(
+                id,
+                label,
+                ShortcutCategory::TextEditing,
+                Some(STANDARD_TEXT_CONTEXT),
+                sequence,
+                action,
+            ));
+        }
     }
 }
 
@@ -1453,7 +1548,7 @@ mod tests {
         let mac = catalog_for(HostOs::Macos);
         let linux = catalog_for(HostOs::Linux);
         let windows = catalog_for(HostOs::Windows);
-        assert_eq!(mac.len(), linux.len() + 6);
+        assert_eq!(mac.len(), linux.len() + 14);
         assert_eq!(linux.len(), windows.len());
         for (id, mac_sequence, other_sequence) in [
             ("text_input.word_left", "alt-left", "ctrl-left"),

@@ -212,6 +212,14 @@ cross-screen behavior rather than an opt-in Vim side effect.
 
 ### Keyboard shortcuts preview
 
+On macOS, Command-Left/Right moves to the start/end of the visible wrapped
+line, and Command-Backspace/Delete deletes to that edge. Option-Up/Down moves
+between paragraph boundaries (explicit newlines); Command-Up/Down moves to
+the beginning/end of the text field. Add Shift to these arrow shortcuts to
+select text. Shift-Up/Down selects by visible row, retaining the horizontal
+cursor position across shorter rows. These shortcuts work in ordinary fields
+and composer Vim Insert mode; Vim Normal and Visual keep their own motions.
+
 Open **Keyboard Shortcuts** in Settings to search, record, disable, or reset
 the bindings Maple ships in this preview. Recording accepts sequences of up to
 four strokes; Enter saves, Backspace removes the latest stroke, and Escape
