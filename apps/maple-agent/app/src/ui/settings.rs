@@ -3053,7 +3053,7 @@ fn shortcut_context_label(context: Option<&str>) -> &str {
         Some("Chat") => "Chat",
         Some("Transcript") => "Transcript",
         Some("RootMenu") => "Project menu",
-        Some("TextInput") => "Text fields",
+        Some("TextInput") | Some(crate::keymap::STANDARD_TEXT_CONTEXT) => "Text fields",
         Some(crate::ui::text_input::vim_actions::NORMAL_CONTEXT) => "Composer — Normal",
         Some(crate::ui::text_input::vim_actions::VISUAL_CONTEXT) => "Composer — Visual",
         Some(crate::ui::text_input::vim_actions::INSERT_CONTEXT) => "Composer — Insert",
@@ -3531,6 +3531,14 @@ mod tests {
             "secondary-r"
         };
         assert_eq!(portable_keystroke_token(&keystroke), expected);
+    }
+
+    #[test]
+    fn standard_text_shortcuts_are_labeled_as_text_fields() {
+        assert_eq!(
+            shortcut_context_label(Some(crate::keymap::STANDARD_TEXT_CONTEXT)),
+            "Text fields"
+        );
     }
 
     #[test]

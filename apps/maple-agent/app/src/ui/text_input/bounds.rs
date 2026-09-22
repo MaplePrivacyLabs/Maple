@@ -2,11 +2,12 @@
 //!
 //! Word breaks follow Unicode word boundaries, the same segmentation
 //! double-click uses. Apostrophes and connector underscores stay inside a
-//! word (`don't`, `foo_bar`). Hyphens, commas, periods, and parentheses
-//! are boundaries. macOS Option+Right and GTK Ctrl+Right stop at the end
-//! of a word. Windows Ctrl+Right stops at the start of the next word.
-//! Leftward motion stops at the start of a word on every platform.
-//! A line is the text between newlines, matching composer Vim.
+//! word (`don't`, `foo_bar`). Punctuation, including non-ASCII marks such
+//! as em dashes, is skipped. Emoji still counts as a word. macOS
+//! Option+Right and GTK Ctrl+Right stop at the end of a word. Windows
+//! Ctrl+Right stops at the start of the next word. Leftward motion stops
+//! at the start of a word on every platform. A line is the text between
+//! newlines, matching composer Vim.
 
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -87,46 +88,33 @@ fn word_ranges(text: &str) -> impl Iterator<Item = WordRange> + '_ {
 }
 
 fn is_word(segment: &str) -> bool {
-    !segment.is_empty()
-        && !segment.chars().all(char::is_whitespace)
-        && !segment.chars().all(is_boundary_mark)
+    segment
+        .chars()
+        .any(|character| !character.is_whitespace() && !is_punctuation(character))
 }
 
-fn is_boundary_mark(character: char) -> bool {
-    matches!(
-        character,
-        ',' | '.'
-            | ';'
-            | ':'
-            | '!'
-            | '?'
-            | '('
-            | ')'
-            | '['
-            | ']'
-            | '{'
-            | '}'
-            | '\''
-            | '"'
-            | '-'
-            | '_'
-            | '/'
-            | '\\'
-            | '@'
-            | '#'
-            | '$'
-            | '%'
-            | '^'
-            | '&'
-            | '*'
-            | '+'
-            | '='
-            | '<'
-            | '>'
-            | '|'
-            | '~'
-            | '`'
-    )
+/// Punctuation is not a word stop. Emoji and other symbols are, because a
+/// chat composer treats them as their own words.
+fn is_punctuation(character: char) -> bool {
+    character.is_ascii_punctuation()
+        || matches!(
+            character,
+            '\u{00A1}'
+                | '\u{00A7}'
+                | '\u{00AB}'
+                | '\u{00B6}'
+                | '\u{00B7}'
+                | '\u{00BB}'
+                | '\u{00BF}'
+        )
+        || ('\u{2010}'..='\u{2027}').contains(&character)
+        || ('\u{2030}'..='\u{205E}').contains(&character)
+        || ('\u{2E00}'..='\u{2E7F}').contains(&character)
+        || ('\u{3001}'..='\u{303F}').contains(&character)
+        || ('\u{FF01}'..='\u{FF0F}').contains(&character)
+        || ('\u{FF1A}'..='\u{FF20}').contains(&character)
+        || ('\u{FF3B}'..='\u{FF40}').contains(&character)
+        || ('\u{FF5B}'..='\u{FF65}').contains(&character)
 }
 
 #[cfg(test)]
@@ -149,6 +137,15 @@ mod tests {
         assert_eq!(word_right(hyphenated, 0, WordStop::BoundaryEnd), 3);
         assert_eq!(word_right(hyphenated, 3, WordStop::BoundaryEnd), 7);
         assert_eq!(word_left(hyphenated, 7), 4);
+        // Em dash is punctuation, so it is not its own stop. Emoji is.
+        let dashed = "hello—world";
+        assert_eq!(word_right(dashed, 0, WordStop::BoundaryEnd), 5);
+        assert_eq!(word_right(dashed, 5, WordStop::BoundaryEnd), 13);
+        assert_eq!(word_left(dashed, 13), 8);
+        let emoji = "hi 👋";
+        assert_eq!(word_right(emoji, 0, WordStop::BoundaryEnd), 2);
+        assert_eq!(word_right(emoji, 2, WordStop::BoundaryEnd), 7);
+        assert_eq!(word_left(emoji, 7), 3);
         assert_eq!(word_left(text, 7), 0);
         assert_eq!(word_left(text, 5), 0);
         assert_eq!(word_left(text, 0), 0);

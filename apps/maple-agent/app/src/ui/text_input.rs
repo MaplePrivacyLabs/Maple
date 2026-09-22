@@ -3293,6 +3293,14 @@ mod tests {
         }
     }
 
+    fn select_word_left_key() -> &'static str {
+        if cfg!(target_os = "macos") {
+            "alt-shift-left"
+        } else {
+            "ctrl-shift-left"
+        }
+    }
+
     fn delete_word_backward_key() -> &'static str {
         if cfg!(target_os = "macos") {
             "alt-backspace"
@@ -3337,6 +3345,27 @@ mod tests {
             let input = input.read(app);
             assert_eq!(input.text_ref(), "world\nsecond");
             assert_eq!(input.selected_range, 0..0);
+        });
+    }
+
+    #[gpui::test]
+    fn select_word_extends_the_selection(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        let input = cx.new(|cx| {
+            crate::desktop::register_key_bindings(cx);
+            let mut input = TextInput::new("", cx);
+            input.set_text("hello world", cx);
+            input
+        });
+        let (_host, cx) = cx.add_window_view(|_window, _cx| InputHost {
+            input: input.clone(),
+        });
+        let focus = cx.update(|_window, app| input.read(app).focus_handle(app));
+        cx.update(|window, app| window.focus(&focus, app));
+
+        cx.simulate_keystrokes(select_word_left_key());
+        cx.update(|_window, app| {
+            assert_eq!(input.read(app).selected_range, 6..11);
         });
     }
 

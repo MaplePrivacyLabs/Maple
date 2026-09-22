@@ -245,7 +245,7 @@ fn slot(
 /// Visual keep `b`/`w`/`e`/`$`. A plain `TextInput` predicate would still
 /// match those modes, and Vim does not bind Option or Command arrows, so
 /// the exclusion has to live in the predicate.
-const STANDARD_TEXT_CONTEXT: &str =
+pub(crate) const STANDARD_TEXT_CONTEXT: &str =
     "TextInput && editor_vim_mode != normal && editor_vim_mode != visual";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -799,7 +799,7 @@ fn add_platform_text_slots(slots: &mut Vec<ShortcutSlot>, os: HostOs) {
         slots.extend([
             slot(
                 "text_input.command_line_start",
-                "Move to line start",
+                "Move to line start (Command)",
                 ShortcutCategory::TextEditing,
                 Some(STANDARD_TEXT_CONTEXT),
                 "cmd-left",
@@ -807,7 +807,7 @@ fn add_platform_text_slots(slots: &mut Vec<ShortcutSlot>, os: HostOs) {
             ),
             slot(
                 "text_input.command_line_end",
-                "Move to line end",
+                "Move to line end (Command)",
                 ShortcutCategory::TextEditing,
                 Some(STANDARD_TEXT_CONTEXT),
                 "cmd-right",
@@ -815,7 +815,7 @@ fn add_platform_text_slots(slots: &mut Vec<ShortcutSlot>, os: HostOs) {
             ),
             slot(
                 "text_input.command_select_line_start",
-                "Select to line start",
+                "Select to line start (Command)",
                 ShortcutCategory::TextEditing,
                 Some(STANDARD_TEXT_CONTEXT),
                 "cmd-shift-left",
@@ -823,7 +823,7 @@ fn add_platform_text_slots(slots: &mut Vec<ShortcutSlot>, os: HostOs) {
             ),
             slot(
                 "text_input.command_select_line_end",
-                "Select to line end",
+                "Select to line end (Command)",
                 ShortcutCategory::TextEditing,
                 Some(STANDARD_TEXT_CONTEXT),
                 "cmd-shift-right",
