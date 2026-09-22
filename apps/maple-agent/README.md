@@ -219,6 +219,8 @@ the beginning/end of the text field. Add Shift to these arrow shortcuts to
 select text. Shift-Up/Down selects by visible row, retaining the horizontal
 cursor position across shorter rows. These shortcuts work in ordinary fields
 and composer Vim Insert mode; Vim Normal and Visual keep their own motions.
+Previous and next task are Command-Option-Up/Down on macOS, and Alt-Up/Down
+on Linux and Windows.
 
 Open **Keyboard Shortcuts** in Settings to search, record, disable, or reset
 the bindings Maple ships in this preview. Recording accepts sequences of up to

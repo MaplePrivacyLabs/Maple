@@ -2746,8 +2746,8 @@ impl ChatScreen {
         }
     }
 
-    /// Alt-Up / Alt-Down: open the task before or after the selected one
-    /// in the order the sidebar shows them.
+    /// Open the task before or after the selected one, in sidebar order.
+    /// Defaults are Command-Option-Up/Down on macOS and Alt-Up/Down elsewhere.
     fn step_task(&mut self, delta: isize, cx: &mut Context<Self>) {
         let Some((row, id)) = self.task_step_target(delta, cx) else {
             return;

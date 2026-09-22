@@ -292,6 +292,12 @@ pub(crate) fn catalog() -> Vec<ShortcutSlot> {
 }
 
 fn catalog_for(os: HostOs) -> Vec<ShortcutSlot> {
+    // macOS Option-Up/Down is paragraph motion, so task switching uses Command-Option.
+    let (previous_task, next_task) = if matches!(os, HostOs::Macos) {
+        ("cmd-alt-up", "cmd-alt-down")
+    } else {
+        ("alt-up", "alt-down")
+    };
     let mut slots = vec![
         slot(
             "app.quit",
@@ -362,7 +368,7 @@ fn catalog_for(os: HostOs) -> Vec<ShortcutSlot> {
             "Previous task",
             ShortcutCategory::Chat,
             Some("Chat"),
-            "alt-up",
+            previous_task,
             SlotAction::PreviousTask,
         ),
         slot(
@@ -370,7 +376,7 @@ fn catalog_for(os: HostOs) -> Vec<ShortcutSlot> {
             "Next task",
             ShortcutCategory::Chat,
             Some("Chat"),
-            "alt-down",
+            next_task,
             SlotAction::NextTask,
         ),
         slot(
@@ -1603,6 +1609,36 @@ mod tests {
             sequence(&mac, "text_input.delete_to_line_end"),
             "cmd-delete"
         );
+        assert_eq!(sequence(&mac, "chat.previous_task"), "cmd-alt-up");
+        assert_eq!(sequence(&mac, "chat.next_task"), "cmd-alt-down");
+        assert_eq!(sequence(&linux, "chat.previous_task"), "alt-up");
+        assert_eq!(sequence(&windows, "chat.previous_task"), "alt-up");
+        assert_eq!(sequence(&linux, "chat.next_task"), "alt-down");
+        assert_eq!(sequence(&windows, "chat.next_task"), "alt-down");
+        assert_eq!(sequence(&mac, "text_input.paragraph_start"), "alt-up");
+        assert_eq!(sequence(&mac, "text_input.paragraph_end"), "alt-down");
+        for (os, catalog) in [("macOS", &mac), ("Linux", &linux), ("Windows", &windows)] {
+            let chat = catalog
+                .iter()
+                .filter(|slot| slot.context == Some("Chat"))
+                .map(|slot| slot.default_sequence)
+                .collect::<BTreeSet<_>>();
+            let text = catalog
+                .iter()
+                .filter(|slot| {
+                    matches!(
+                        slot.context,
+                        Some("TextInput") | Some(STANDARD_TEXT_CONTEXT)
+                    )
+                })
+                .map(|slot| slot.default_sequence)
+                .collect::<BTreeSet<_>>();
+            let shared = chat.intersection(&text).copied().collect::<Vec<_>>();
+            assert!(
+                shared.is_empty(),
+                "{os} text fields share a default key with Chat: {shared:?}"
+            );
+        }
     }
 
     fn sequence<'a>(catalog: &'a [ShortcutSlot], id: &str) -> &'a str {
