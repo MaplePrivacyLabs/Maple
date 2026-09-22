@@ -18,6 +18,9 @@ crates/maple-agent/   Maple's transport-neutral agent runtime, extracted from
                       the Maple provider over the Maple Rust SDK, developer
                       tools, permission policy, account-scoped session
                       storage, and the ACP server.
+crates/maple-remote/  The wire between a client and a host: framing,
+                      JSON-RPC on the control channel, binary streams,
+                      the host server, and the remote HostBackend.
 crates/maple-billing/ HTTP client for the Maple billing API.
 docs/                 Theme spec measured from the Tauri app.
 scripts/              One maintainer helper: screenshot.py takes a desktop
@@ -27,13 +30,21 @@ scripts/              One maintainer helper: screenshot.py takes a desktop
 
 ### Backend / frontend boundary
 
-`app/src/backend.rs` owns the runtime: it is the only file that drives
-`maple_agent`'s services, holding a private Tokio runtime and exposing an
-async facade (`AgentBackend`) plus one event stream. UI modules import data
-types from `maple_agent` (timeline items, session summaries) but talk to the
-running agent through that facade only. This mirrors Maple's own edge-adapter
-pattern, so a future process split replaces the facade without touching UI
-code.
+The UI talks to two facades and never to the runtime directly.
+
+`app/src/backend.rs` (`AgentBackend`) holds the account: the private Tokio
+runtime, sign-in and OAuth, billing, audio, and the in-process agent
+service. Everything a client drives on a host (tasks, projects, runs,
+permissions, integrations, session defaults) goes through the
+`maple_agent::host::HostBackend` trait. `AgentBackend::local_host` hands out
+the in-process implementation, `LocalHostBackend`, which wraps
+`AgentRuntimeHandle` and owns the host-side pieces the UI must not reach
+around it for: the git branch watch, directory suggestions, and the SQLite
+readers for context usage, tool summaries, and the usage page. Hosts push
+`HostEvent`s (runtime events plus branch reports) through one fan-out hub.
+A remote host implements the same trait over the wire, so the UI never
+branches on where a host runs. See
+[`docs/remote-development.md`](docs/remote-development.md) for the plan.
 
 The runtime was originally copied from Research’s Tauri source (now
 `apps/maple-research/frontend/src-tauri/src`) (`agent.rs`,
@@ -120,6 +131,28 @@ Cargo manifests and lockfile; Research has an independent dependency graph.
 - Release check on launch: a banner links to a newer GitHub release.
   Nothing is downloaded or installed by the app.
 - Window size and maximized state persist between launches.
+
+### Hosts
+
+Tasks can run on another machine. Settings > Hosts pairs this device with a
+host running `maple-agent serve` (address plus the one-time code the host
+printed) and lists the paired hosts with their connection state. Each row
+also shows the version and build the host announced ("last seen" while it
+is offline) and says when the host is behind this app, a different build
+of the same version, newer than this app, or older than a release the
+update check found. Saved hosts connect at launch and reconnect with
+backoff. Their tasks join the
+sidebar, badged with the host name once more than one host is known, and
+the project switcher filters by host. With a task open the header names
+the host it runs on; on the new-task screen a chip there names the host
+new tasks run on and switches it. Both appear once more than one host is
+known. The task itself is created there when its first message is sent.
+The host the last new task ran on is the target again at the next launch
+once it connects. Choosing a project opens one picker for every
+host: a search box over the host's recent projects and folders and a row
+that opens a typed path. Host-scoped settings (defaults, system prompt,
+integrations, usage) get a host selector when more than one host is
+connected. Offline hosts stay listed without their tasks until they return.
 
 ### Integrations preview
 
@@ -366,6 +399,7 @@ maple-agent                 Open the desktop app.
 maple-agent acp             Serve the Agent Client Protocol on stdio.
 maple-agent proxy [FLAGS]   Serve an OpenAI-compatible HTTP endpoint.
 maple-agent login           Sign in with email and password from a terminal.
+maple-agent serve [FLAGS]   Publish this machine's runtime to paired clients.
 maple-agent --version       Print the version.
 ```
 
@@ -400,6 +434,68 @@ Without `--cors`, the proxy rejects requests that carry browser-only headers
 (`Origin`, `Sec-Fetch-Site`) so a web page cannot spend a saved key through
 loopback. With `--cors`, a default key is refused for the same reason.
 
+### `maple-agent serve`
+
+```
+maple-agent serve                     Listen for paired clients.
+maple-agent serve pair                Publish a one-time pairing code.
+maple-agent serve devices list        Paired devices.
+maple-agent serve devices revoke DEV  Forget a device by key or name.
+
+--listen ADDR:PORT   bind address (default 0.0.0.0:7130, env MAPLE_SERVE_LISTEN)
+--name NAME          host name clients show (default: hostname, env MAPLE_SERVE_NAME)
+```
+
+Runs this machine as a host for the desktop app on another machine, over
+a LAN or a Tailscale network. It reuses the sign-in saved by `login` or
+the desktop app and hosts its own runtime. Without a saved sign-in it
+exits with a message; when the Maple server cannot be reached at start
+(a unit that comes up before the network) it serves anyway, requests fail
+until the sign-in goes through, and the sign-in is retried in the
+background with growing pauses. The desktop app can serve the
+same way: Settings > Hosts > "Allow remote connections" (off by default)
+listens on the same port, publishes pairing codes, and lists paired
+devices; the command and the window share the host key, the device list,
+and the lock, so only one of them serves at a time. A device is admitted by a
+one-time code: run `serve pair` on the host, enter the code in the app
+within five minutes, and both sides pin each other's key; later connections
+need no code. Devices and codes belong to the account that is hosting:
+`serve pair` and `serve devices` act on the saved sign-in and refuse to run
+without one, and a device paired while one account was signed in is not
+admitted after another account signs in. Traffic is Noise-encrypted inside a plain WebSocket, so
+pairing is the only gate and the listener binds every interface by default.
+Repeated wrong codes lock the source address out. Revoking a device ends
+its live connections within seconds. One `serve` per data root; a lock
+file refuses a second. Each connect is logged with the client's name,
+key, version, and build. See [`docs/remote-development.md`](docs/remote-development.md).
+
+`serve` is written to run under systemd: it stops cleanly on SIGTERM as
+well as Ctrl-C, reports `READY=1` once the port is bound and `STOPPING=1`
+on the way out when `NOTIFY_SOCKET` is set, and logs to stderr for the
+journal. A user unit:
+
+```ini
+[Unit]
+Description=Maple host
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=notify
+NotifyAccess=main
+ExecStart=%h/.local/bin/maple-agent serve --listen 100.64.0.7:7130
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=15
+
+[Install]
+WantedBy=default.target
+```
+
+Run `maple-agent login` once as that user first, then
+`systemctl --user enable --now maple-serve`; `loginctl enable-linger` keeps
+it up after logout.
+
 ## Build features
 
 The default build has every mode. Cargo features turn modes off, so a
@@ -411,6 +507,7 @@ window and its display libraries:
 | `desktop` | The gpui window. Without it the binary is headless. |
 | `acp` | `maple-agent acp` and `maple_agent::acp`. |
 | `proxy` | `maple-agent proxy`. |
+| `serve` | `maple-agent serve` and the `maple-remote` host side. |
 
 ```sh
 cargo build --release -p maple-agent-app --no-default-features --features acp
@@ -450,8 +547,8 @@ The roots follow the platform, the same way the Tauri app's
 
 | Path | Content |
 | --- | --- |
-| `<config>/settings.json` | App settings. |
-| `<config>/agent/accounts/<scope>/config.json` | Per-account agent configuration (default root, model, custom MCP servers, project trust). May roam between machines. |
+| `<config>/settings.json` | Client-side app settings, plus per-host task and project state under `hosts`. |
+| `<config>/agent/accounts/<scope>/config.json` | Per-account agent configuration (default root, model, custom MCP servers, project trust, session defaults: permission mode, web access, harness instructions). May roam between machines. |
 | `<config>/agent/accounts/<scope>/goose/config/` | Goose permission file for the account. |
 | `<config>/agent/accounts/<scope>/goose/config/skills/` | Skills the account's tasks can load, including the delegation skills Maple installs while any external agent is enabled. |
 | `<config>/agent/goose-runtime/` | Goose process configuration. |
@@ -461,6 +558,12 @@ The roots follow the platform, the same way the Tauri app's
 | `<local data>/agent/accounts/<scope>/tool_summaries.db` | Model-written one-line summaries of tool calls (SQLite, WAL). |
 | `<local data>/agent/accounts/<scope>/attachments/` | Image attachments. |
 | `<local data>/agent/acp/accounts/<scope>/config.json` | ACP configuration. |
+| `<local data>/remote/host_key.json` | This machine's static Noise key as a host (mode 0600). |
+| `<local data>/remote/device_key.json` | This machine's static Noise key as a client device (mode 0600). |
+| `<local data>/agent/accounts/<scope>/hosts.json` | Hosts this account paired with: key, name, addresses, last seen version and build. |
+| `<local data>/remote/accounts/<scope>/devices.json` | Devices paired into this account on this host. Another account's host never admits them. |
+| `<local data>/remote/accounts/<scope>/pending_pairing.json` | The pairing code `serve pair` published for this account, until used or expired (mode 0600). |
+| `<local data>/remote/serve.lock`, `serve.json` | The running host's lock and its listen address. |
 | `<local data>/logs/maple-agent.log` | Log file. Panics are logged here too. |
 
 Releases before the package rename used `maple-gpui` for both roots. On its

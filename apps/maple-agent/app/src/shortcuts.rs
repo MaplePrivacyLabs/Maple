@@ -481,7 +481,7 @@ fn context_overlap(left: Option<&str>, right: Option<&str>) -> Option<ShortcutCo
             | KnownContext::ApplicationVimOtherInput
             | KnownContext::ApplicationVimComposerNormal
     ) {
-        // The four application predicates explicitly exclude one another.
+        // The three application predicates explicitly exclude one another.
         // Their only overlapping legacy parents are handled above.
         return None;
     }
@@ -893,7 +893,7 @@ mod tests {
         for context in [
             Some("TextInput"),
             Some(vim_actions::NORMAL_CONTEXT),
-            Some("ApplicationVim && !TextInput && !Menu"),
+            Some(application_vim::ROOT_CONTEXT),
         ] {
             validate_sequence_for_context(
                 "focus-owned.test",

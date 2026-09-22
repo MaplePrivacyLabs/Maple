@@ -17,6 +17,8 @@ mod keymap;
 mod notify;
 #[cfg(feature = "desktop")]
 mod platform;
+mod remote;
+mod serve;
 mod settings;
 #[cfg(feature = "desktop")]
 mod shortcuts;
@@ -37,13 +39,11 @@ fn disabled_mode(mode: &str, feature: &str) -> ! {
 
 /// Command line for the binary. With no subcommand it opens the desktop
 /// window; `acp` and `proxy` run headless services.
-/// The `--version` string: package version plus the git revision baked in
-/// by `build.rs`, so a running binary can be matched back to a checkout.
-/// Clap wants a `&'static str` and both inputs are compile-time constants,
-/// but `format!` is still runtime, hence the leak of one small string.
+/// The `--version` string from [`env::version_string`]. Clap wants a
+/// `&'static str` and both inputs are compile-time constants, but
+/// `format!` is still runtime, hence the leak of one small string.
 fn version_string() -> &'static str {
-    let hash = option_env!("MAPLE_GIT_HASH").unwrap_or("unknown");
-    Box::leak(format!("{} ({})", env!("CARGO_PKG_VERSION"), hash).into_boxed_str())
+    Box::leak(env::version_string().into_boxed_str())
 }
 
 #[derive(Debug, Parser)]
@@ -71,6 +71,8 @@ enum Mode {
     Proxy(ProxyArgs),
     /// Sign in with email and password and save the session for `acp`.
     Login(LoginArgs),
+    /// Publish this machine's agent runtime to paired Maple clients.
+    Serve(serve::ServeArgs),
 }
 
 /// Settings for `maple-agent login`. The password is always prompted for
@@ -195,6 +197,22 @@ fn main() {
                 std::process::exit(1);
             }
         }
+        Some(Mode::Serve(args)) => {
+            #[cfg(not(feature = "serve"))]
+            {
+                let _ = args;
+                disabled_mode("serve", "serve");
+            }
+            #[cfg(feature = "serve")]
+            {
+                init_logging(LogOutput::FileAndStderr);
+                if let Err(error) = serve::run(args) {
+                    log::error!("{error}");
+                    eprintln!("{error}");
+                    std::process::exit(1);
+                }
+            }
+        }
         None => {
             #[cfg(feature = "desktop")]
             desktop::run();
@@ -286,19 +304,54 @@ fn configured_api_url() -> String {
 /// the desktop app does not need to run.
 #[cfg(feature = "acp")]
 fn run_acp() -> Result<(), String> {
-    let harness_instructions = settings::load_settings().effective_harness_instructions();
-    let backend = AgentBackend::new(configured_api_url(), harness_instructions)?;
+    let backend = std::sync::Arc::new(AgentBackend::new(configured_api_url())?);
     let user_id = backend.restore_now().ok_or_else(|| {
         "No saved Maple sign-in. Open the desktop app and sign in first.".to_string()
     })?;
+    adopt_legacy_session_defaults(&backend, &user_id);
     backend.run_acp_stdio(&user_id)
+}
+
+/// Session defaults an older version kept in settings.json move into the
+/// account config the first time an account is bound. The window and the
+/// `acp` and `serve` commands bind an account, so all of them run this
+/// before the runtime reads its config; the host ignores values the config
+/// already holds, and the next settings save drops the old keys.
+#[cfg(any(feature = "desktop", feature = "acp", feature = "serve"))]
+pub(crate) fn adopt_legacy_session_defaults(backend: &std::sync::Arc<AgentBackend>, user_id: &str) {
+    let legacy = settings::load_settings().legacy_session_defaults();
+    if legacy.is_empty() {
+        return;
+    }
+    let host = backend.local_host(user_id);
+    backend
+        .runtime_handle()
+        .block_on(adopt_legacy_session_defaults_into(&host, legacy));
+}
+
+/// The migration itself, for a caller already on the backend runtime: the
+/// window runs it again after a sign-in, since a user who was signed out
+/// at the upgrade has no saved account for the launch-time pass to bind.
+/// Idempotent: `migrate_session_defaults` keeps what the config holds.
+#[cfg(any(feature = "desktop", feature = "acp", feature = "serve"))]
+pub(crate) async fn adopt_legacy_session_defaults_into(
+    host: &maple_agent::host::LocalHostBackend,
+    legacy: maple_agent::host::LegacySessionDefaults,
+) {
+    if legacy.is_empty() {
+        return;
+    }
+    match host.migrate_session_defaults(legacy).await {
+        Ok(()) => settings::update_settings_in_background(|_| {}),
+        Err(error) => log::warn!("session defaults were not migrated: {error}"),
+    }
 }
 
 /// `maple-agent login`: sign in from a terminal. The saved session is the
 /// same one the desktop app writes, so `maple-agent acp` can run on a
 /// machine that never opened the window.
 fn run_login(args: LoginArgs) -> Result<(), String> {
-    let backend = AgentBackend::new(configured_api_url(), String::new())?;
+    let backend = AgentBackend::new(configured_api_url())?;
     if let Some(user_id) = backend.saved_user_id() {
         eprintln!("A Maple sign-in is already saved; signing in again replaces it.");
         log::info!("login replaces the saved session for account {user_id}");
@@ -389,7 +442,7 @@ fn init_logging(output: LogOutput) {
     }));
     log::info!(
         "maple-agent {} starting; log file: {}",
-        env!("CARGO_PKG_VERSION"),
+        env::version_string(),
         log_dir.join("maple-agent.log").display()
     );
     for note in ADOPTED_APP_DIRS.get().into_iter().flatten() {

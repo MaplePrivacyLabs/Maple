@@ -9,10 +9,11 @@ use maple_agent::agent::{AgentSlashCommand, SideQuestionTurn};
 
 use super::cache::MarkdownKind;
 use super::commands::ChatCommand;
+use super::hosts::status_dot;
 use super::transcript::{render_plan_row, render_subagent_row};
 use super::{
     COMPOSER_PLACEHOLDER, ChatPopup, ChatScreen, DraftImage, OpenSettingsSection,
-    ROOT_MENU_RECENTS, SIDE_THREAD_PLACEHOLDER, SIDEBAR_COLLAPSED_INSET, Section,
+    SIDE_THREAD_PLACEHOLDER, SIDEBAR_COLLAPSED_INSET, Section,
 };
 use crate::ui::icons::{icon, spinner};
 use crate::ui::markdown;
@@ -60,27 +61,84 @@ impl ChatScreen {
                 .text_color(gpui::rgb(theme::text_primary()))
                 .child(title),
         )
+        .when(self.hosts.len() > 1, |row| {
+            // One host needs no chip. With a task open the header names
+            // the host that task runs on, as a badge: the task cannot
+            // move, so there is nothing to switch. On the new-task screen
+            // the chip picks the host the task will be created on.
+            match self.selected_host.as_ref() {
+                Some((owner, name)) => {
+                    let online = self.hosts.get(owner).is_some_and(|entry| entry.online);
+                    row.child(
+                        div()
+                            .id("task-host")
+                            .h_8()
+                            .flex()
+                            .flex_none()
+                            .items_center()
+                            .gap_1()
+                            .px_2()
+                            .text_xs()
+                            .font_weight(gpui::FontWeight::MEDIUM)
+                            .text_color(gpui::rgb(theme::text_secondary()))
+                            .tooltip(widgets::tooltip("This task runs here", None))
+                            .child(status_dot(online))
+                            .child(div().whitespace_nowrap().child(name.clone())),
+                    )
+                }
+                None => {
+                    let online = self.target_host_online();
+                    let (frame, color) = chip_frame(
+                        "host-picker",
+                        self.target_host_label.clone(),
+                        self.popup.is_open(&ChatPopup::Host),
+                        false,
+                    );
+                    let chip = frame
+                        .tooltip(widgets::tooltip("New tasks run here", None))
+                        .child(status_dot(online))
+                        .child(
+                            div()
+                                .whitespace_nowrap()
+                                .child(self.target_host_label.clone()),
+                        )
+                        .child(icon("chevron-down", px(14.), color))
+                        // The header is a window drag region; a press here
+                        // is the chip's.
+                        .on_mouse_down(gpui::MouseButton::Left, |_event, _window, cx| {
+                            cx.stop_propagation();
+                        });
+                    row.child(
+                        self.with_menu(
+                            ChatPopup::Host,
+                            chip,
+                            Placement::BelowStart,
+                            window,
+                            cx,
+                            |this, _| this.host_menu(),
+                        )
+                        .flex_none(),
+                    )
+                }
+            }
+        })
         .child(
-            self.with_menu(
-                ChatPopup::Project,
-                chip(
-                    "root-picker",
-                    Some("folder-open"),
-                    self.project_label.clone(),
-                    true,
-                    self.popup.is_open(&ChatPopup::Project),
-                    false,
-                )
-                // The header is a window drag region; a press here is the
-                // chip's.
-                .on_mouse_down(gpui::MouseButton::Left, |_event, _window, cx| {
-                    cx.stop_propagation();
-                }),
-                Placement::BelowStart,
-                window,
-                cx,
-                Self::project_menu,
+            chip(
+                "root-picker",
+                Some("folder-open"),
+                self.project_label.clone(),
+                true,
+                self.project_picker.is_some(),
+                false,
             )
+            // The header is a window drag region; a press here is the
+            // chip's.
+            .on_mouse_down(gpui::MouseButton::Left, |_event, _window, cx| {
+                cx.stop_propagation();
+            })
+            .on_click(cx.listener(|this, _event, window, cx| {
+                this.execute_command(ChatCommand::ChooseProject, window, cx);
+            }))
             .flex_none(),
         )
         .when_some(self.branch_label.clone(), |row, branch| {
@@ -116,99 +174,11 @@ impl ChatScreen {
             .relative()
             .child(
                 self.popup
-                    .trigger(popup, button, cx, move |this, window, cx| {
-                        this.press_chip(popup, window, cx)
+                    .trigger(popup, button, cx, move |this, _window, cx| {
+                        this.toggle_popup(popup, cx)
                     }),
             )
             .children(menu)
-    }
-
-    /// A press on a chip: the header's project chip runs the command it
-    /// shares with its shortcut; a composer chip opens or closes its menu.
-    fn press_chip(&mut self, popup: ChatPopup, window: &mut Window, cx: &mut Context<Self>) {
-        match popup {
-            ChatPopup::Project => self.execute_command(ChatCommand::ChooseProject, window, cx),
-            popup => self.toggle_popup(popup, cx),
-        }
-    }
-
-    /// The header chip's menu: recent projects, then "New project…", then
-    /// manual entry when the native folder picker is unavailable.
-    fn project_menu(&self, cx: &mut Context<Self>) -> Menu<Self> {
-        let mut menu = Menu::new("project-menu", px(480.))
-            .label("Projects")
-            .application_vim(self.application_vim_enabled);
-        for path in self.recent_roots.iter().take(ROOT_MENU_RECENTS) {
-            let pick = path.clone();
-            menu = menu.item(
-                MenuItem::new(
-                    SharedString::from(format!("root-{path}")),
-                    path.clone(),
-                    move |this: &mut Self, _: &mut Window, cx: &mut Context<Self>| {
-                        this.select_project_root(pick.clone(), cx);
-                    },
-                )
-                .truncate_start()
-                .current(self.project_root.as_deref() == Some(path.as_str())),
-            );
-        }
-        menu = menu.item(
-            MenuItem::new(
-                "root-choose",
-                "New project…",
-                |this: &mut Self, _: &mut Window, cx: &mut Context<Self>| {
-                    this.choose_root_dialog(cx);
-                },
-            )
-            .icon("folder-plus"),
-        );
-        let Some(input) = self.root_input.clone() else {
-            return menu;
-        };
-        menu.child(
-            div()
-                .px_3()
-                .pt_1()
-                .pb_1()
-                .text_xs()
-                .text_color(gpui::rgb(theme::text_muted()))
-                .child("Or type an absolute path:"),
-        )
-        .child(
-            div()
-                .flex()
-                .items_center()
-                .gap_2()
-                .px_3()
-                .pb_2()
-                .child(
-                    div()
-                        .flex_1()
-                        .debug_selector(|| "root-path-field".to_string())
-                        .child(input),
-                )
-                .child(
-                    div()
-                        .id("root-apply")
-                        .px_3()
-                        .py_1()
-                        .rounded(theme::RADIUS_SM)
-                        .bg(gpui::rgb(theme::accent()))
-                        .text_sm()
-                        .font_weight(gpui::FontWeight::MEDIUM)
-                        .text_color(gpui::rgb(theme::on_accent()))
-                        .hover(|style| style.bg(gpui::rgb(theme::accent_hover())).cursor_pointer())
-                        .active(|style| style.bg(gpui::rgb(theme::send_bottom())))
-                        .on_click(cx.listener(|this, _event, _window, cx| {
-                            if let Some(path) =
-                                this.root_input.as_ref().map(|input| input.read(cx).text())
-                            {
-                                this.select_project_root(path, cx);
-                            }
-                        }))
-                        .child("Go"),
-                ),
-        )
     }
 
     fn model_menu(&self) -> Menu<Self> {
@@ -461,15 +431,13 @@ impl ChatScreen {
                 input.set_placeholder(SIDE_THREAD_PLACEHOLDER, cx)
             });
         }
-        let backend = self.backend.clone();
-        let user_id = self.user_id.clone();
+        let host = self.backend_for(session_id);
         let session_id = session_id.to_string();
         let question = question.to_string();
         let callback_id = request_id.clone();
         self.call(
             async move {
-                backend
-                    .ask_side_question(&user_id, &session_id, request_id, prior, question)
+                host.ask_side_question(session_id.clone(), request_id, prior, question)
                     .await
             },
             cx,
@@ -1192,6 +1160,8 @@ pub(super) fn slash_entries_for(token: &str, skills: &[AgentSlashCommand]) -> Ve
     .collect()
 }
 
+impl ChatScreen {}
+
 /// One control in the composer chip row. `active` means its menu is
 /// open; `highlight` means the feature it toggles is on, shown in the
 /// accent so the two states never look alike.
@@ -1203,6 +1173,22 @@ fn chip(
     active: bool,
     highlight: bool,
 ) -> gpui::Stateful<Div> {
+    let label = label.into();
+    let (frame, color) = chip_frame(id, label.clone(), active, highlight);
+    frame
+        .children(leading.map(|name| icon(name, px(16.), color)))
+        .child(div().whitespace_nowrap().child(label))
+        .when(chevron, |el| el.child(icon("chevron-down", px(14.), color)))
+}
+
+/// A header chip with no content yet, and the color its content takes.
+/// `label` names the chip for assistive technology.
+fn chip_frame(
+    id: &'static str,
+    label: SharedString,
+    active: bool,
+    highlight: bool,
+) -> (gpui::Stateful<Div>, u32) {
     let color = if highlight {
         theme::accent()
     } else if active {
@@ -1210,12 +1196,11 @@ fn chip(
     } else {
         theme::text_secondary()
     };
-    let label = label.into();
-    div()
+    let frame = div()
         .id(id)
         .debug_selector(|| id.to_string())
         .role(gpui::Role::Button)
-        .aria_label(label.clone())
+        .aria_label(label)
         .h_8()
         .flex()
         .items_center()
@@ -1231,8 +1216,6 @@ fn chip(
                 .bg(gpui::rgb(theme::bg_sidebar_pill()))
                 .cursor_pointer()
         })
-        .active(|style| style.bg(gpui::rgb(theme::bg_sidebar_row_selected())))
-        .children(leading.map(|name| icon(name, px(16.), color)))
-        .child(div().whitespace_nowrap().child(label))
-        .when(chevron, |el| el.child(icon("chevron-down", px(14.), color)))
+        .active(|style| style.bg(gpui::rgb(theme::bg_sidebar_row_selected())));
+    (frame, color)
 }
