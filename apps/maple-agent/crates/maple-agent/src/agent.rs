@@ -10836,9 +10836,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn transient_mcp_url_accepts_ipv6_loopback() {
+    fn transient_mcp_url_allows_remote_hosts_and_rejects_other_schemes() {
         assert!(validate_transient_mcp_url("http://[::1]:9000/mcp", "s").is_ok());
-        assert!(validate_transient_mcp_url("http://[2606:4700::1111]:9000/mcp", "s").is_err());
+        assert!(validate_transient_mcp_url("http://[2606:4700::1111]:9000/mcp", "s").is_ok());
+        assert!(validate_transient_mcp_url("https://mcp.example.com/sse", "s").is_ok());
+        assert!(validate_transient_mcp_url("ftp://127.0.0.1:9000/mcp", "s").is_err());
+        assert!(validate_transient_mcp_url("http://user:pw@127.0.0.1:9000/mcp", "s").is_err());
     }
 
     #[test]
