@@ -883,8 +883,6 @@ pub(crate) struct MenuItem<V: 'static> {
     /// Replaces the label and note; the label still names the row for
     /// assistive technology and type-ahead.
     content: Option<AnyElement>,
-    /// Elide a long label at its start, keeping the end (a path's folder).
-    truncate_start: bool,
     /// `Some` for a row that shows a state: a check for the current choice
     /// (a radio item) or a switch (a checkbox item).
     state: Option<ItemState>,
@@ -913,7 +911,6 @@ impl<V: 'static> MenuItem<V> {
             icon: None,
             note: None,
             content: None,
-            truncate_start: false,
             state: None,
             enabled: true,
             keep_open: false,
@@ -937,12 +934,6 @@ impl<V: 'static> MenuItem<V> {
     /// Show `content` in place of the label and note.
     pub(crate) fn content(mut self, content: impl IntoElement) -> Self {
         self.content = Some(content.into_any_element());
-        self
-    }
-
-    /// Elide a long label at its start, so a path keeps its last folder.
-    pub(crate) fn truncate_start(mut self) -> Self {
-        self.truncate_start = true;
         self
     }
 
@@ -1008,7 +999,6 @@ fn item_row<V: 'static, K: Clone + PartialEq + 'static>(
         icon: icon_name,
         note,
         content,
-        truncate_start,
         state,
         enabled,
         keep_open,
@@ -1081,19 +1071,7 @@ fn item_row<V: 'static, K: Clone + PartialEq + 'static>(
                     .min_w_0()
                     .flex()
                     .flex_col()
-                    .child(
-                        div()
-                            .min_w_0()
-                            .line_clamp(1)
-                            .map(|label| {
-                                if truncate_start {
-                                    label.text_ellipsis_start()
-                                } else {
-                                    label.text_ellipsis()
-                                }
-                            })
-                            .child(label),
-                    )
+                    .child(div().min_w_0().line_clamp(1).text_ellipsis().child(label))
                     .children(note.map(|note| {
                         div()
                             .text_xs()
