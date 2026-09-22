@@ -33,8 +33,16 @@
 pub mod carrier;
 pub mod client;
 pub mod devices;
+pub mod dial;
 pub mod frame;
+pub mod hosts;
+pub mod keys;
+pub mod listen;
+pub mod manager;
+pub mod net;
+pub mod noise;
 pub mod outbound;
+pub mod pairing;
 pub mod rpc;
 pub mod server;
 pub mod streams;
