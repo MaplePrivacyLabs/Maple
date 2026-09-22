@@ -40,6 +40,12 @@ development callback site to deploy support for the separate app callback
 scheme. Those backend and callback deployments are separate rollout gates;
 building this app does not apply them automatically.
 
+The current Dev entry targets Research's built-in `/desktop-auth` flow. The
+standalone `apps/maple-auth` application currently accepts only the original
+native target and returns the production callback scheme; it needs explicit Dev
+target support before its origin can be selected here. Publishing that separate
+auth site alone does not complete Maple Dev's sign-in integration.
+
 Research currently pins `@mapleai/sdk` 4.0.1. Its provider initiation does not
 select a `redirect_url`, so each enabled provider's existing development-project
 default callback must return to this exact origin. Adding an
