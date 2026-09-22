@@ -10,7 +10,9 @@ mod state_tests {
     use crate::ui::chat::transcript::{diff_lines_for, maple_display_text, tool_label_title};
     use crate::ui::chat::*;
     use gpui::TestAppContext;
-    use maple_agent::agent::AgentTaskState;
+    use maple_agent::agent::{
+        AgentMcpServer, AgentMcpTransport, AgentSessionIntegrationKind, AgentTaskState,
+    };
 
     fn summary(id: &str, title: &str) -> AgentSessionSummary {
         summary_at(id, title, "/tmp/proj")
@@ -1324,7 +1326,7 @@ mod state_tests {
             let btw = this.btw.as_ref().expect("thread continues");
             assert_eq!(btw.turns.len(), 3);
             assert_eq!(btw.turns[2].question, "plain follow-up");
-            assert!(this.try_command("s1", "/web", cx));
+            assert!(this.try_command(Some("s1"), "/web", cx));
             assert_eq!(this.btw.as_ref().unwrap().turns.len(), 3);
             this.close_side_thread(cx);
             assert!(this.btw.is_none());
@@ -1348,14 +1350,14 @@ mod state_tests {
         screen.update(cx, |this, cx| {
             this.booting = false;
             this.web_enabled = true;
-            assert!(this.try_command("s1", "/web", cx));
+            assert!(this.try_command(Some("s1"), "/web", cx));
             assert!(!this.web_enabled);
-            assert!(this.try_command("s1", "/model", cx));
+            assert!(this.try_command(Some("s1"), "/model", cx));
             assert!(this.popup.is_open(&ChatPopup::Model));
             // Unknown commands fall through to a normal send.
-            assert!(!this.try_command("s1", "/definitely-not-a-command", cx));
+            assert!(!this.try_command(Some("s1"), "/definitely-not-a-command", cx));
             // Paths that merely start with a slash are not commands.
-            assert!(!this.try_command("s1", "/etc/hosts is a path", cx));
+            assert!(!this.try_command(Some("s1"), "/etc/hosts is a path", cx));
         });
     }
 
@@ -1369,7 +1371,7 @@ mod state_tests {
                 description: "Deploy the app".to_string(),
                 input_hint: None,
             }];
-            assert!(this.try_command("s1", "/deploy staging", cx));
+            assert!(this.try_command(Some("s1"), "/deploy staging", cx));
             assert_eq!(
                 this.notice.as_ref().map(SharedString::as_ref),
                 Some("Loading skill…")
@@ -1625,6 +1627,8 @@ mod state_tests {
         });
     }
 
+    /// While a project selection is landing, neither "New Task" nor a
+    /// first send may run ahead of it.
     #[gpui::test]
     fn test_new_task_waits_for_a_project_selection(cx: &mut TestAppContext) {
         cx.executor().allow_parking();
@@ -1632,9 +1636,287 @@ mod state_tests {
         screen.update(cx, |this, cx| {
             this.project_root = Some("/work/alpha".to_string());
             this.root_selecting = true;
+            let generation = this.selection_generation;
             this.new_session(cx);
             assert!(!this.session_setup_pending);
+            assert_eq!(this.selection_generation, generation);
+            assert_eq!(this.selected_session.as_deref(), Some("s1"));
             assert!(this.notice.is_some());
+
+            this.booting = false;
+            this.selected_session = None;
+            this.send_text("hello".to_string(), cx);
+            assert!(!this.session_setup_pending);
+            assert!(this.pending_first_send.is_none());
+        });
+    }
+
+    /// "New Task" clears the selection and shows the empty screen for the
+    /// visible project; no task is created until something is sent.
+    #[gpui::test]
+    fn test_new_task_clears_the_selection_and_creates_nothing(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        let screen = screen(cx);
+        screen.update(cx, |this, cx| {
+            this.project_root = Some("/work/alpha".to_string());
+            this.sessions = vec![summary_at("s1", "Hello", "/work/alpha")];
+            this.selected_session = Some("s1".to_string());
+            this.replace_timeline(vec![user_item("u1", "hi")]);
+            this.loading_session = Some("s1".to_string());
+            this.default_web_enabled = false;
+            this.web_enabled = true;
+            let generation = this.selection_generation;
+
+            this.new_session(cx);
+
+            assert_eq!(this.selected_session, None);
+            assert!(!this.session_setup_pending);
+            assert!(this.pending_first_send.is_none());
+            assert!(this.timeline.is_empty());
+            assert_eq!(this.loading_session, None);
+            assert_eq!(this.selected_title.as_ref(), "New Task");
+            assert_eq!(this.project_root.as_deref(), Some("/work/alpha"));
+            assert!(
+                this.selection_generation > generation,
+                "a draft is navigation"
+            );
+            assert!(!this.web_enabled, "the draft takes the web default");
+            assert_eq!(this.sessions.len(), 1, "no row was added");
+        });
+    }
+
+    /// The first send on the empty screen creates the task, carrying the
+    /// draft's mode and model, and sends once the task lands.
+    #[gpui::test]
+    fn test_first_send_creates_the_task_then_sends(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        let screen = screen(cx);
+        screen.update(cx, |this, cx| {
+            this.booting = false;
+            this.selected_session = None;
+            this.project_root = Some("/work/alpha".to_string());
+            this.selected_model = Some("model-x".to_string());
+            let request = this.new_session_request().expect("draft request");
+            assert_eq!(request.model.as_deref(), Some("model-x"));
+            assert_eq!(request.mcp_server_names, None);
+            let generation = this.selection_generation;
+
+            this.send_text("hello".to_string(), cx);
+
+            assert!(this.session_setup_pending);
+            assert_eq!(
+                this.pending_first_send,
+                Some(FirstSend::Message {
+                    text: "hello".to_string(),
+                    steer: false,
+                })
+            );
+            assert_eq!(
+                this.selected_session, None,
+                "nothing is selected until the task lands"
+            );
+
+            // The create lands: the task is selected and the message goes
+            // out to it.
+            this.finish_new_session(
+                summary_at("created", "New Task", "/work/alpha"),
+                generation,
+                cx,
+            );
+            assert!(!this.session_setup_pending);
+            assert!(this.pending_first_send.is_none());
+            assert_eq!(this.selected_session.as_deref(), Some("created"));
+            assert!(this.awaiting_first_token, "the send was dispatched");
+        });
+    }
+
+    /// Enter while the first send is still creating its task does not
+    /// start a second create; the new text waits in the composer.
+    #[gpui::test]
+    fn test_send_during_a_pending_create_does_not_start_another(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        let screen = screen(cx);
+        screen.update(cx, |this, cx| {
+            this.booting = false;
+            this.selected_session = None;
+            this.project_root = Some("/work/alpha".to_string());
+            this.send_text("first".to_string(), cx);
+            assert!(this.session_setup_pending);
+
+            this.send_text("second".to_string(), cx);
+
+            assert_eq!(
+                this.pending_first_send,
+                Some(FirstSend::Message {
+                    text: "first".to_string(),
+                    steer: false,
+                })
+            );
+            assert!(this.notice.is_some());
+            // "New Task" cannot supersede the create either.
+            let generation = this.selection_generation;
+            this.new_session(cx);
+            assert_eq!(this.selection_generation, generation);
+        });
+    }
+
+    /// A failed create leaves nothing behind and gives the message back.
+    #[gpui::test]
+    fn test_failed_create_keeps_the_draft(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        let screen = screen(cx);
+        screen.update(cx, |this, cx| {
+            this.booting = false;
+            this.selected_session = None;
+            this.project_root = Some("/work/alpha".to_string());
+            this.send_text("hello".to_string(), cx);
+            assert!(this.session_setup_pending);
+
+            this.fail_new_session("no runtime".to_string(), cx);
+
+            assert!(!this.session_setup_pending);
+            assert!(this.pending_first_send.is_none());
+            assert_eq!(this.selected_session, None);
+            assert_eq!(
+                this.notice.as_ref().map(SharedString::as_ref),
+                Some("no runtime")
+            );
+        });
+    }
+
+    /// Commands that act on a task, and `/btw`, create the task first on
+    /// the empty screen; commands that do not need one run at once.
+    #[gpui::test]
+    fn test_commands_on_the_empty_screen_create_the_task_first(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        let screen = screen(cx);
+        screen.update(cx, |this, cx| {
+            this.booting = false;
+            this.selected_session = None;
+            this.project_root = Some("/work/alpha".to_string());
+            this.web_enabled = true;
+
+            // No task needed: the draft's web chip flips on screen only.
+            assert!(this.try_command(None, "/web", cx));
+            assert!(!this.web_enabled);
+            assert!(!this.session_setup_pending);
+
+            this.send_text("/btw what is this".to_string(), cx);
+            assert!(this.session_setup_pending);
+            assert_eq!(
+                this.pending_first_send,
+                Some(FirstSend::SideQuestion("what is this".to_string()))
+            );
+            this.fail_new_session("no runtime".to_string(), cx);
+
+            this.slash_commands = vec![AgentSlashCommand {
+                name: "deploy".to_string(),
+                description: "Deploy the app".to_string(),
+                input_hint: None,
+            }];
+            assert!(this.try_command(None, "/deploy staging", cx));
+            assert_eq!(
+                this.pending_first_send,
+                Some(FirstSend::Command("/deploy staging".to_string()))
+            );
+            // Unknown commands still fall through to a normal send.
+            this.fail_new_session("no runtime".to_string(), cx);
+            assert!(!this.try_command(None, "/definitely-not-a-command", cx));
+        });
+    }
+
+    /// Chip changes on the empty screen are draft state: nothing is
+    /// persisted, and the create applies them once the task exists.
+    #[gpui::test]
+    fn test_draft_chips_change_only_the_screen(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        let screen = screen(cx);
+        screen.update(cx, |this, cx| {
+            this.selected_session = None;
+            this.web_enabled = true;
+            this.set_web_enabled(false, cx);
+            assert!(!this.web_enabled);
+
+            this.set_session_mcp(vec![draft_mcp_row(AgentMcpServer {
+                name: "docs".to_string(),
+                description: String::new(),
+                enabled: true,
+                timeout_seconds: 30,
+                transport: AgentMcpTransport::Stdio {
+                    command: "docs-mcp".to_string(),
+                    environment: Vec::new(),
+                },
+            })]);
+            assert_eq!(this.mcp_enabled_count, 1);
+            this.toggle_session_mcp(
+                "docs".to_string(),
+                AgentSessionIntegrationKind::Mcp,
+                false,
+                cx,
+            );
+            assert_eq!(this.mcp_enabled_count, 0);
+            assert!(!this.session_mcp[0].enabled);
+            assert_eq!(
+                this.draft_mcp_changes,
+                vec![DraftMcpChange {
+                    name: "docs".to_string(),
+                    kind: AgentSessionIntegrationKind::Mcp,
+                    enabled: false,
+                }]
+            );
+            // Toggling back replaces the entry instead of stacking.
+            this.toggle_session_mcp(
+                "docs".to_string(),
+                AgentSessionIntegrationKind::Mcp,
+                true,
+                cx,
+            );
+            assert_eq!(this.draft_mcp_changes.len(), 1);
+            assert!(this.draft_mcp_changes[0].enabled);
+            // A task selection ends the draft.
+            this.clear_selected_session_presentation(cx);
+            assert!(this.draft_mcp_changes.is_empty());
+        });
+    }
+
+    /// An empty task persisted by an older build is not opened by the
+    /// boot auto-select: the new-task screen stands in for it.
+    #[gpui::test]
+    fn test_auto_select_skips_an_empty_task(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        let screen = screen(cx);
+        screen.update(cx, |this, cx| {
+            this.project_root = Some("/work/alpha".to_string());
+            this.selected_session = None;
+            let mut empty = summary_at("blank", "New Task", "/work/alpha");
+            empty.message_count = 0;
+            let requested = this.selection_generation;
+
+            this.apply_session_list(vec![empty], requested, cx);
+
+            assert_eq!(this.selected_session, None);
+            assert!(!this.session_setup_pending);
+            assert_eq!(this.selected_title.as_ref(), "New Task");
+
+            // A task with a message under the same root still opens.
+            this.selection_generation = requested;
+            this.apply_session_list(
+                vec![
+                    summary_at("blank", "New Task", "/work/alpha"),
+                    summary_at("real", "Real", "/work/alpha"),
+                ]
+                .into_iter()
+                .map(|mut summary| {
+                    if summary.id == "blank" {
+                        summary.message_count = 0;
+                    }
+                    summary
+                })
+                .collect(),
+                requested,
+                cx,
+            );
+            assert_eq!(this.loading_session.as_deref(), Some("real"));
         });
     }
 
@@ -3351,6 +3633,10 @@ mod state_tests {
             this.selected_session = Some("newer".to_string());
             this.selection_generation = 2;
             this.session_setup_pending = true;
+            this.pending_first_send = Some(FirstSend::Message {
+                text: "hello".to_string(),
+                steer: false,
+            });
 
             this.finish_new_session(summary_at("created", "Created", "/work/alpha"), 1, cx);
 
@@ -3358,6 +3644,11 @@ mod state_tests {
             assert_eq!(this.selected_session.as_deref(), Some("newer"));
             assert_eq!(this.project_root.as_deref(), Some("/work/beta"));
             assert!(this.sessions.iter().any(|session| session.id == "created"));
+            // The message it was created for is not sent into a task the
+            // user left; it is reported instead.
+            assert!(this.pending_first_send.is_none());
+            assert!(!this.awaiting_first_token);
+            assert!(this.notice.is_some());
         });
     }
 

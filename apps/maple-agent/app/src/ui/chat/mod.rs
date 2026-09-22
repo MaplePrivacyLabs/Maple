@@ -11,9 +11,10 @@ use gpui::{
     Window, div, prelude::*, px,
 };
 use maple_agent::agent::{
-    AgentCreateSessionRequest, AgentImageUpload, AgentProjectTrustStatus, AgentQueuedMessage,
-    AgentSendMessageRequest, AgentServiceEvent, AgentSessionMcpServer, AgentSessionSummary,
-    AgentSlashCommand, AgentSubagent, AgentTaskState, AgentTimelineItem, SideQuestionEvent,
+    AgentCreateSessionRequest, AgentImageUpload, AgentMcpServer, AgentMcpTransport,
+    AgentProjectTrustStatus, AgentQueuedMessage, AgentSendMessageRequest, AgentServiceEvent,
+    AgentSessionIntegrationKind, AgentSessionMcpServer, AgentSessionSummary, AgentSlashCommand,
+    AgentSubagent, AgentTaskState, AgentTimelineItem, SideQuestionEvent,
 };
 
 use crate::backend::{AgentBackend, PendingPermission, PendingQuestion};
@@ -184,6 +185,44 @@ pub(super) enum ChatPopup {
     Transcript(gpui::Point<gpui::Pixels>),
 }
 
+/// What the composer asked for while no task existed. The first send
+/// creates the task and then runs this against it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum FirstSend {
+    /// Plain text (with the staged images) for the new task.
+    Message { text: String, steer: bool },
+    /// A `/command` that needs a task, as typed.
+    Command(String),
+    /// A `/btw` question for the new task.
+    SideQuestion(String),
+}
+
+/// An integration toggled on the draft, applied once the task exists.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DraftMcpChange {
+    name: String,
+    kind: AgentSessionIntegrationKind,
+    enabled: bool,
+}
+
+/// The row the draft's integrations chip shows for a configured MCP
+/// server: what a new task would start with.
+fn draft_mcp_row(server: AgentMcpServer) -> AgentSessionMcpServer {
+    AgentSessionMcpServer {
+        display_name: server.name.clone(),
+        name: server.name,
+        kind: AgentSessionIntegrationKind::Mcp,
+        description: server.description,
+        transport: match server.transport {
+            AgentMcpTransport::Stdio { .. } => "stdio",
+            AgentMcpTransport::StreamableHttp { .. } => "streamable_http",
+        }
+        .to_string(),
+        enabled: server.enabled,
+        available: true,
+    }
+}
+
 pub struct ChatScreen {
     backend: Arc<AgentBackend>,
     user_id: String,
@@ -209,6 +248,14 @@ pub struct ChatScreen {
     permission_responding: bool,
     /// Suppresses duplicate session creation while one is in flight.
     session_setup_pending: bool,
+    /// The send that is creating the task, run once the task lands. A
+    /// selection change meanwhile drops it.
+    pending_first_send: Option<FirstSend>,
+    /// Integration toggles made on the draft. The create request's name
+    /// list would replace the integration defaults wholesale, so each
+    /// toggle is applied to the new task the way the chip applies it to
+    /// a live one.
+    draft_mcp_changes: Vec<DraftMcpChange>,
     /// An ask_user question waiting for the user's text answer.
     /// Questions waiting for the user, oldest first. The model can issue
     /// several ask_user calls in one turn; every card must be answerable.
@@ -863,6 +910,8 @@ impl ChatScreen {
             pending_permissions: Vec::new(),
             permission_responding: false,
             session_setup_pending: false,
+            pending_first_send: None,
+            draft_mcp_changes: Vec::new(),
             pending_questions: Vec::new(),
             pending_question_input: None,
             context_fraction: None,
@@ -1523,10 +1572,10 @@ impl ChatScreen {
     }
 
     /// Take a fresh session list. With nothing on screen, open the latest
-    /// task of the visible project or create one, but only when no task or
-    /// project was selected since the list was requested: a click whose
-    /// load is still in flight leaves the selection empty too, and the
-    /// auto-select would supersede it.
+    /// task of the visible project or show the new-task screen, but only
+    /// when no task or project was selected since the list was requested:
+    /// a click whose load is still in flight leaves the selection empty
+    /// too, and the auto-select would supersede it.
     fn apply_session_list(
         &mut self,
         sessions: Vec<AgentSessionSummary>,
@@ -1543,7 +1592,10 @@ impl ChatScreen {
             .sessions
             .iter()
             .find(|session| {
+                // An empty task (a draft an older build persisted) is not
+                // worth opening; the new-task screen is the same thing.
                 session.state != AgentTaskState::Archived
+                    && session.message_count > 0
                     && Some(&session.project_root) == root.as_ref()
             })
             .map(|session| session.id.clone());
@@ -1553,23 +1605,90 @@ impl ChatScreen {
         }
     }
 
-    fn new_session(&mut self, cx: &mut Context<Self>) {
-        // A boot-time auto-create and a user click can race; one only.
+    /// "New Task": show the empty screen for the visible project and
+    /// create nothing. The task is created the moment the first message
+    /// is sent, so a project switched before then moves it, and a click
+    /// that sends nothing leaves no empty row behind.
+    pub(super) fn new_session(&mut self, cx: &mut Context<Self>) {
+        // The first send is creating its task; a click now would
+        // supersede it and lose the message.
         if self.session_setup_pending {
             return;
         }
         if self.root_selecting {
-            // The visible project is about to change; a task created now
-            // would land under the old one.
+            // The visible project is about to change; a draft started now
+            // would supersede the selection landing.
             self.notice = Some("Wait for the project selection to finish, then try again".into());
+            cx.notify();
+            return;
+        }
+        // Starting a draft is navigation: a task load in flight must not
+        // land on top of the empty screen.
+        self.begin_navigation();
+        self.loading_session = None;
+        self.clear_selected_session_presentation(cx);
+        // The draft starts from the settings defaults; the chips edit it
+        // on screen only, until the task exists.
+        self.web_enabled = self.default_web_enabled;
+        self.refresh_draft_mcp(cx);
+        self.refresh_selected_title();
+        cx.notify();
+    }
+
+    /// Create the task the draft describes, then run `action` against it.
+    /// The composer clears now, as for a send; every failure gives the
+    /// text back.
+    fn create_for_first_send(&mut self, action: FirstSend, cx: &mut Context<Self>) {
+        self.slash_selected = None;
+        if let Some(composer) = self.composer.clone() {
+            composer.update(cx, |input, cx| input.clear(cx));
+        }
+        if self.root_selecting {
+            self.notice = Some("Wait for the project selection to finish, then try again".into());
+            self.restore_first_send(action, cx);
             cx.notify();
             return;
         }
         let Some(request) = self.new_session_request() else {
             self.notice = Some("Choose a project before creating a task".into());
+            self.restore_first_send(action, cx);
             cx.notify();
             return;
         };
+        self.pending_first_send = Some(action);
+        self.notice = Some("Creating the task…".into());
+        cx.notify();
+        self.create_session(request, cx);
+    }
+
+    /// Put a first send that did not happen back into the composer.
+    fn restore_first_send(&mut self, action: FirstSend, cx: &mut Context<Self>) {
+        let text = match action {
+            FirstSend::Message { text, .. } | FirstSend::Command(text) => text,
+            FirstSend::SideQuestion(question) => format!("/btw {question}"),
+        };
+        if let Some(composer) = self.composer.clone() {
+            composer.update(cx, |input, cx| input.set_text(&text, cx));
+        }
+    }
+
+    /// Run the send the task was created for.
+    fn run_first_send(&mut self, session_id: &str, action: FirstSend, cx: &mut Context<Self>) {
+        self.notice = None;
+        match action {
+            FirstSend::Message { text, steer } => {
+                self.send_to_session(session_id, text, steer, None, cx)
+            }
+            FirstSend::Command(text) => {
+                self.try_command(Some(session_id), &text, cx);
+            }
+            FirstSend::SideQuestion(question) => self.ask_side_question(session_id, &question, cx),
+        }
+    }
+
+    /// Create a task from `request`, then apply the draft's web access and
+    /// integration toggles, which the request cannot carry.
+    fn create_session(&mut self, request: AgentCreateSessionRequest, cx: &mut Context<Self>) {
         // Creating a task is a navigation intent, but the generation moves
         // only when the task lands: a failed create leaves loads in flight
         // alive, and a task or project selected meanwhile supersedes the
@@ -1578,22 +1697,71 @@ impl ChatScreen {
         self.session_setup_pending = true;
         let backend = self.backend.clone();
         let user_id = self.user_id.clone();
+        let web_enabled = self.web_enabled;
+        let mcp_changes = self.draft_mcp_changes.clone();
         self.call(
             async move {
-                backend
+                let mut session = backend
                     .create_session(&user_id, Some(request))
-                    .await
-                    .map(|detail| detail.session)
+                    .await?
+                    .session;
+                // The task exists from here on: a draft setting that does
+                // not apply is reported, not a reason to lose the task.
+                let mut warning = None;
+                if session.web_enabled != web_enabled {
+                    match backend
+                        .set_session_web_enabled(&user_id, &session.id, web_enabled)
+                        .await
+                    {
+                        Ok(updated) => session = updated,
+                        Err(message) => {
+                            warning = Some(format!("Could not change web access: {message}"))
+                        }
+                    }
+                }
+                for change in mcp_changes {
+                    if let Err(message) = backend
+                        .set_session_mcp_server_enabled(
+                            &user_id,
+                            &session.id,
+                            &change.name,
+                            change.kind,
+                            change.enabled,
+                        )
+                        .await
+                    {
+                        warning = Some(format!("Could not change {}: {message}", change.name));
+                    }
+                }
+                Ok((session, warning))
             },
             cx,
             move |this, result, cx| match result {
-                Ok(session) => this.finish_new_session(session, selection_generation, cx),
-                Err(message) => {
-                    this.session_setup_pending = false;
-                    this.notice = Some(message.into());
+                Ok((session, warning)) => {
+                    this.finish_new_session(session, selection_generation, cx);
+                    if let Some(warning) = warning {
+                        this.notice = Some(warning.into());
+                        cx.notify();
+                    }
                 }
+                Err(message) => this.fail_new_session(message, cx),
             },
         );
+    }
+
+    /// The create failed: nothing exists, so the draft stays as it was,
+    /// with the message back in the composer.
+    fn fail_new_session(&mut self, message: String, cx: &mut Context<Self>) {
+        self.session_setup_pending = false;
+        self.notice = Some(message.into());
+        if let Some(action) = self.pending_first_send.take()
+            && self.selected_session.is_none()
+        {
+            // The composer belongs to the task on screen; a draft left for
+            // another task does not land in it.
+            self.restore_first_send(action, cx);
+        }
+        cx.notify();
     }
 
     fn finish_new_session(
@@ -1609,17 +1777,23 @@ impl ChatScreen {
         self.upsert_session(session.clone(), cx);
         if self.selection_generation == selection_generation {
             self.begin_navigation();
+            let session_id = session.id.clone();
             self.set_active_session(session, Vec::new(), HashMap::new(), cx);
-            if !self.default_web_enabled {
-                self.set_web_enabled(false, cx);
+            if let Some(action) = self.pending_first_send.take() {
+                self.run_first_send(&session_id, action, cx);
             }
             return;
         }
 
         // Creation still succeeded, but an older callback must never override
-        // a newer task or project choice. If the project choice left the view
-        // empty while the one-create-at-a-time fence was held, let it settle
-        // now that another task may be created.
+        // a newer task or project choice. The message it was created for has
+        // no screen to go back to; say so rather than send it into a task
+        // the user left.
+        if self.pending_first_send.take().is_some() {
+            self.notice = Some("Message not sent: another task was opened first".into());
+        }
+        // If the project choice left the view empty while the
+        // one-create-at-a-time fence was held, let it settle now.
         self.sync_sidebar(cx);
         if self.selected_session.is_none() {
             self.refresh_sessions(cx);
@@ -1633,7 +1807,7 @@ impl ChatScreen {
         Some(AgentCreateSessionRequest {
             project_root: Some(self.project_root.clone()?),
             title: None,
-            model: None,
+            model: self.selected_model.clone(),
             context_limit: None,
             // Persist the composer's mode — the saved default until the
             // user picks one for this task — so the created row, its
@@ -1641,6 +1815,8 @@ impl ChatScreen {
             // runtime's SmartApprove startup default, and adopting that
             // summary would reset the chip to Ask First.
             mode: Some(self.permission_mode.as_str().to_string()),
+            // Integration toggles are applied after creation: a name list
+            // here would also decide the curated integrations.
             mcp_server_names: None,
             system_prompt: None,
         })
@@ -1848,6 +2024,11 @@ impl ChatScreen {
     ) {
         self.tool_details = settings.tool_details;
         self.default_web_enabled = settings.default_web_enabled;
+        if self.selected_session.is_none() {
+            // The draft has no record of its own; the chip shows the
+            // default the task will be created with.
+            self.web_enabled = settings.default_web_enabled;
+        }
         self.notify_enabled = settings.desktop_notifications;
         self.summaries_enabled = settings.tool_summaries;
         self.composer_vim_enabled = settings.composer_vim_enabled;
@@ -1876,7 +2057,11 @@ impl ChatScreen {
             self.apply_permission_mode(cx);
         }
         // Servers may have been added or removed in settings.
-        self.refresh_session_mcp(cx);
+        if self.selected_session.is_some() {
+            self.refresh_session_mcp(cx);
+        } else {
+            self.refresh_draft_mcp(cx);
+        }
         cx.notify();
     }
 
@@ -2121,6 +2306,7 @@ impl ChatScreen {
         // Release the hold while the previous session id is still selected.
         self.abandon_queue_edit(cx);
         self.selected_session = None;
+        self.draft_mcp_changes.clear();
         self.sync_sidebar_selection(cx);
         self.set_queue(Vec::new());
         self.replace_timeline(Vec::new());
@@ -2315,14 +2501,63 @@ impl ChatScreen {
         );
     }
 
+    /// Load the integrations a new task would start with, for the draft's
+    /// chip: the configured MCP servers with their defaults. Curated
+    /// integrations join once the task exists.
+    fn refresh_draft_mcp(&mut self, cx: &mut Context<Self>) {
+        self.draft_mcp_changes.clear();
+        self.set_session_mcp(Vec::new());
+        let backend = self.backend.clone();
+        let user_id = self.user_id.clone();
+        self.call(
+            async move { backend.list_mcp_servers(&user_id).await },
+            cx,
+            move |this, result, cx| {
+                if this.selected_session.is_some() {
+                    return;
+                }
+                match result {
+                    Ok(servers) => {
+                        this.draft_mcp_changes.clear();
+                        this.set_session_mcp(servers.into_iter().map(draft_mcp_row).collect());
+                    }
+                    Err(message) => log::debug!("mcp list failed: {message}"),
+                }
+                cx.notify();
+            },
+        );
+    }
+
     fn toggle_session_mcp(
         &mut self,
         name: String,
-        kind: maple_agent::agent::AgentSessionIntegrationKind,
+        kind: AgentSessionIntegrationKind,
         enabled: bool,
         cx: &mut Context<Self>,
     ) {
         let Some(session_id) = self.selected_session.clone() else {
+            // The draft: flip the row on screen; the task applies it when
+            // it is created.
+            if let Some(server) = self
+                .session_mcp
+                .iter_mut()
+                .find(|server| server.name == name && server.kind == kind)
+            {
+                server.enabled = enabled;
+            }
+            self.mcp_enabled_count = self
+                .session_mcp
+                .iter()
+                .filter(|server| server.enabled)
+                .count();
+            self.draft_mcp_changes
+                .retain(|change| !(change.name == name && change.kind == kind));
+            self.draft_mcp_changes.push(DraftMcpChange {
+                name,
+                kind,
+                enabled,
+            });
+            cx.notify();
             return;
         };
         let backend = self.backend.clone();
@@ -2349,9 +2584,12 @@ impl ChatScreen {
     }
 
     /// Persist the web flag for the selected task; the runtime applies it
-    /// on the next turn.
+    /// on the next turn. On the draft it is only screen state, applied
+    /// when the task is created.
     fn set_web_enabled(&mut self, enabled: bool, cx: &mut Context<Self>) {
         let Some(session_id) = self.selected_session.clone() else {
+            self.web_enabled = enabled;
+            cx.notify();
             return;
         };
         let previous = self.web_enabled;
@@ -3012,13 +3250,17 @@ impl ChatScreen {
     }
 
     fn send_text_with(&mut self, text: String, steer: bool, cx: &mut Context<Self>) {
-        let Some(session_id) = self.selected_session.clone() else {
-            self.notice = Some("Create a task first".into());
-            cx.notify();
-            return;
-        };
         if self.booting {
             self.notice = Some("Agent runtime is still starting".into());
+            cx.notify();
+            return;
+        }
+        // With no task the first send creates one and runs there. One
+        // create at a time: while it is in flight the text stays in the
+        // composer.
+        let session_id = self.selected_session.clone();
+        if session_id.is_none() && self.session_setup_pending {
+            self.notice = Some("Creating the task…".into());
             cx.notify();
             return;
         }
@@ -3037,7 +3279,16 @@ impl ChatScreen {
             if let Some(composer) = self.composer.clone() {
                 composer.update(cx, |input, cx| input.clear(cx));
             }
-            self.ask_side_question(&session_id, question, cx);
+            match session_id {
+                Some(session_id) => self.ask_side_question(&session_id, question, cx),
+                None if question.is_empty() => {
+                    self.notice = Some("Type /btw followed by a question".into());
+                    cx.notify();
+                }
+                None => {
+                    self.create_for_first_send(FirstSend::SideQuestion(question.to_string()), cx)
+                }
+            }
             return;
         }
         if self.current_question().is_some() {
@@ -3067,10 +3318,10 @@ impl ChatScreen {
             if let Some(composer) = self.composer.clone() {
                 composer.update(cx, |input, cx| input.clear(cx));
             }
-            self.try_command(&session_id, &format!("/{command}"), cx);
+            self.try_command(session_id.as_deref(), &format!("/{command}"), cx);
             return;
         }
-        if self.try_command(&session_id, text.trim(), cx) {
+        if self.try_command(session_id.as_deref(), text.trim(), cx) {
             // Commands never echo into the transcript; drop the typed text
             // so the palette cannot survive the execution.
             self.slash_selected = None;
@@ -3079,8 +3330,13 @@ impl ChatScreen {
             }
             return;
         }
-        let queue_id = self.queue_edit.as_ref().map(|edit| edit.queue_id.clone());
-        self.send_to_session(&session_id, text, steer, queue_id, cx);
+        match session_id {
+            Some(session_id) => {
+                let queue_id = self.queue_edit.as_ref().map(|edit| edit.queue_id.clone());
+                self.send_to_session(&session_id, text, steer, queue_id, cx);
+            }
+            None => self.create_for_first_send(FirstSend::Message { text, steer }, cx),
+        }
     }
 
     /// The command Enter should run when the slash palette is open: the
@@ -3151,8 +3407,15 @@ impl ChatScreen {
     }
 
     /// Execute a `/command` when it matches a built-in or a skill. Unknown
-    /// commands fall through and are sent to the model as plain text.
-    fn try_command(&mut self, session_id: &str, text: &str, cx: &mut Context<Self>) -> bool {
+    /// commands fall through and are sent to the model as plain text. With
+    /// no task (`session_id` is `None`) a command that acts on one creates
+    /// the task first and runs once it exists.
+    fn try_command(
+        &mut self,
+        session_id: Option<&str>,
+        text: &str,
+        cx: &mut Context<Self>,
+    ) -> bool {
         let Some(body) = text.strip_prefix('/') else {
             return false;
         };
@@ -3163,7 +3426,19 @@ impl ChatScreen {
         if name.is_empty() || name.contains('/') {
             return false;
         }
-        let session_id = session_id.to_string();
+        let is_skill = self
+            .slash_commands
+            .iter()
+            .any(|command| command.name.eq_ignore_ascii_case(name));
+        let needs_task = matches!(name, "compact" | "btw") || is_skill;
+        let session_id = match session_id {
+            Some(session_id) => Some(session_id.to_string()),
+            None if needs_task => {
+                self.create_for_first_send(FirstSend::Command(text.to_string()), cx);
+                return true;
+            }
+            None => None,
+        };
         match name {
             "compact" => {
                 self.compact_now(cx);
@@ -3210,7 +3485,9 @@ impl ChatScreen {
                 true
             }
             "btw" => {
-                self.ask_side_question(&session_id, args, cx);
+                if let Some(session_id) = session_id {
+                    self.ask_side_question(&session_id, args, cx);
+                }
                 true
             }
             "help" => {
@@ -3221,13 +3498,12 @@ impl ChatScreen {
             }
             _ => {
                 // Skill commands resolve into the prompt that loads them.
-                if !self
-                    .slash_commands
-                    .iter()
-                    .any(|command| command.name.eq_ignore_ascii_case(name))
-                {
+                if !is_skill {
                     return false;
                 }
+                let Some(session_id) = session_id else {
+                    return true;
+                };
                 let backend = self.backend.clone();
                 let working_dir = self.project_root.clone();
                 let command = name.to_string();
