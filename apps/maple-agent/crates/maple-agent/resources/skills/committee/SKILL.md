@@ -1,6 +1,6 @@
 ---
 name: committee
-description: Get several independent opinions on a question or design by asking external agents (Codex) and comparing them with your own analysis. Use when the user wants a second opinion, a review from another model, or a comparison of approaches.
+description: Get several independent opinions on a question or design by asking external agents (Codex or Claude Code) and comparing them with your own analysis. Use when the user wants a second opinion, a review from another model, or a comparison of approaches.
 metadata:
   maple: external-agents
   argument-hint: "<question or design to review>"

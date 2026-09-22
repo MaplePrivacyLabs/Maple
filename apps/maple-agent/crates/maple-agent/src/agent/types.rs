@@ -144,6 +144,8 @@ pub struct AgentIntegration {
     /// the desktop session, so the interface does not offer a button that
     /// repeats work the user already did.
     pub setup_available: bool,
+    /// Settings switch: external agents require this gate plus a per-task
+    /// selection. For CUA this remains the default for newly created tasks.
     pub enabled_for_new_tasks: bool,
     pub detail: Option<String>,
 }
@@ -316,6 +318,7 @@ pub struct AgentQuestionOption {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentQuestion {
+    pub multi_select: bool,
     pub id: String,
     pub header: String,
     pub question: String,

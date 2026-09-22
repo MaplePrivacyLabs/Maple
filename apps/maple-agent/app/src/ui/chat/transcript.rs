@@ -14,7 +14,7 @@ use maple_agent::agent::{
 use super::cache::{MAX_DIFF_LINES, MarkdownKind};
 use super::commands::ChatCommand;
 use super::speech::speak_message_button;
-use super::{CONTENT_WIDTH, ChatScreen, TranscriptCtx};
+use super::{CONTENT_WIDTH, ChatScreen, QuestionSelection, TranscriptCtx};
 use crate::backend::PendingPermission;
 
 use crate::ui::icons::{icon, spinner, spinner_with_id};
@@ -1294,7 +1294,7 @@ pub(super) fn render_question_card(
     question: &crate::backend::PendingQuestion,
     step: usize,
     input: Option<Entity<TextInput>>,
-    selected: &HashMap<usize, usize>,
+    selected: &HashMap<usize, QuestionSelection>,
     cx: &mut Context<ChatScreen>,
 ) -> Div {
     let mut card = div()
@@ -1351,11 +1351,25 @@ pub(super) fn render_question_card(
                 .text_color(gpui::rgb(theme::text_secondary()))
                 .child(entry.question.clone()),
         );
+        if entry.multi_select {
+            block = block.child(
+                div()
+                    .text_xs()
+                    .text_color(gpui::rgb(theme::text_muted()))
+                    .child(if has_more {
+                        "Select all that apply, then choose Next."
+                    } else {
+                        "Select all that apply, then choose Answer."
+                    }),
+            );
+        }
         for (option_index, option) in entry.options.iter().enumerate() {
-            let is_picked = selected.get(&question_index) == Some(&option_index);
+            let selection = selected.get(&question_index);
+            let is_picked = selection.is_some_and(|s| s.picked.contains(&option_index));
             let marker = div()
                 .size_3()
-                .rounded_full()
+                .when(entry.multi_select, |marker| marker.rounded_sm())
+                .when(!entry.multi_select, |marker| marker.rounded_full())
                 .border_1()
                 .border_color(gpui::rgb(if is_picked {
                     theme::accent()
@@ -1402,6 +1416,11 @@ pub(super) fn render_question_card(
                     .px_2()
                     .py_1p5()
                     .rounded(theme::RADIUS_SM)
+                    .when(
+                        entry.multi_select
+                            && selection.is_some_and(|s| s.cursor == Some(option_index)),
+                        |row| row.bg(gpui::rgb(theme::bg_sidebar_row_hover())),
+                    )
                     .hover(|style| {
                         style
                             .bg(gpui::rgb(theme::bg_sidebar_row_hover()))
@@ -1501,6 +1520,7 @@ pub(super) fn render_waiting_indicator() -> gpui::Stateful<Div> {
 /// external agent whose request Maple relays.
 pub(super) fn permission_card_heading(tool_name: &str) -> &'static str {
     match tool_name {
+        "claude_tool" => "Claude Code wants to use a tool",
         "codex_command" => "Codex wants to run a command",
         "codex_file_change" => "Codex wants to change files",
         _ => "Permission required",

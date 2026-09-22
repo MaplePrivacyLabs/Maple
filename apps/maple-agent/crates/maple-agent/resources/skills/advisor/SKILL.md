@@ -1,6 +1,6 @@
 ---
 name: advisor
-description: Ask an external agent (Codex) for read-only analysis or review of code, a plan, or a problem, without letting it change anything. Use when the user wants a review, an audit, or advice from another model.
+description: Ask an external agent (Codex or Claude Code) for read-only analysis or review of code, a plan, or a problem, without letting it change anything. Use when the user wants a review, an audit, or advice from another model.
 metadata:
   maple: external-agents
   argument-hint: "<what to review or ask about>"

@@ -74,10 +74,10 @@ Cargo manifests and lockfile; Research has an independent dependency graph.
   keeps its row after the turn ends, and Maple tells the task when it
   finishes, with a bounded result in the running turn or a new turn Maple
   starts automatically. The task can use `load` to retrieve any truncated output.
-- External agents: a task can hand work to the Codex CLI installed on
+- External agents: a task can hand work to Codex or Claude Code installed on
   this computer with the `agent_start`, `agent_send`, `agent_status`,
-  `agent_cancel`, and `list_agent_providers` tools, once Codex is enabled
-  under Settings > Integrations. Codex runs in the project with its own
+  `agent_cancel`, and `list_agent_providers` tools, once the provider is enabled
+  under Settings > Integrations. Each agent runs in the project with its own
   account, context, and sandbox settings; whatever it asks approval for
   comes to you through Maple's permission card, and Allow all grants it. Its progress streams
   into the tool call's row and its row above the composer has a Stop
@@ -158,16 +158,27 @@ account configuration that may roam between devices.
 The embedded design, migration rules, privacy boundary, and preview limits are
 documented in [`docs/embedded-cua.md`](docs/embedded-cua.md).
 
+#### Claude Code
+
+Settings > Integrations lists Claude Code (`claude`) alongside Codex, with the
+same per-task selection, streamed activity, permission cards, and Stop control.
+Install the Claude Code CLI on the app's PATH and sign in using
+`claude auth login`. Maple uses a Rust transport adapted from Goose's Claude
+Code provider. The CLI is the only external runtime dependency. The integration
+is off by default. Enable it in Settings to show it in the composer, then
+select it for the tasks that should use it. See
+[external agents](docs/external-agents.md#how-claude-code-is-driven).
+
 #### Codex
 
 Settings > Integrations also lists the Codex CLI when `codex` is on the PATH
 (the login shell's PATH on macOS). The card shows the installed version and
 whether Codex is signed in; Maple never runs Codex's sign-in itself. The
-toggle is off by default. The composer lists Codex alongside CUA and custom
-MCP servers, with an independent choice for each task. Tasks without an
-explicit Codex choice inherit the Settings default on every run, including
-older tasks; composer overrides survive relaunches. Enabling it gives runs
-the external-agent tools and installs the `handoff`, `committee`, and `advisor` skills into the
+toggle is off by default. Enabling it makes Codex available in the composer
+alongside CUA and custom MCP servers. Each task must select Codex explicitly;
+that choice survives relaunches but only applies while Settings enables Codex.
+Selecting it gives that task the external-agent tools. Enabling it in Settings
+installs the `handoff`, `committee`, and `advisor` skills into the
 account's Goose skills directory; disabling removes only the files Maple
 wrote. Codex needs version 0.143 or newer. See
 [`docs/external-agents.md`](docs/external-agents.md).
@@ -433,7 +444,7 @@ The roots follow the platform, the same way the Tauri app's
 | `<config>/settings.json` | App settings. |
 | `<config>/agent/accounts/<scope>/config.json` | Per-account agent configuration (default root, model, custom MCP servers, project trust). May roam between machines. |
 | `<config>/agent/accounts/<scope>/goose/config/` | Goose permission file for the account. |
-| `<config>/agent/accounts/<scope>/goose/config/skills/` | Skills the account's tasks can load, including the delegation skills Maple installs while Codex is enabled. |
+| `<config>/agent/accounts/<scope>/goose/config/skills/` | Skills the account's tasks can load, including the delegation skills Maple installs while any external agent is enabled. |
 | `<config>/agent/goose-runtime/` | Goose process configuration. |
 | `<local data>/auth.json` | Sign-in credentials (mode 0600). Device-local; never in a roaming profile. |
 | `<local data>/agent/accounts/<scope>/integrations.json` | Per-account defaults and validated launch details for integrations detected on this device. |

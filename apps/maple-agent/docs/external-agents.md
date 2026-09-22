@@ -1,36 +1,39 @@
 # External agents
 
 A Maple task can hand work to an external coding agent that is installed on
-the same computer. Codex is the first provider. The tool contract is generic
-so another harness can be added without changing what the task sees.
+the same computer. Supported providers are Codex (`codex`) and Claude Code
+(`claude`). Both use the same delegation tools and task controls.
 
 ## What the task sees
 
 Five tools appear when at least one external agent is selected in the
-composer's Integrations menu. Settings > Integrations supplies the device
-and account default. Tasks without an explicit choice inherit that default
-on every run, including tasks created before the integration existed.
-Choosing on or off in the composer persists an override for that task.
+composer's Integrations menu. Settings > Integrations controls which providers
+are available to select for this account on this device. Disabled providers
+are hidden from the composer. Enabling a provider in Settings does not select
+it for any task: each task starts with external agents off.
+Choosing on or off in the composer persists that choice for that task.
+Disabling a provider in Settings blocks saved task selections on the next run;
+re-enabling it restores their availability without erasing those choices.
 Changes take effect on its next run; stop an active run before changing
 its selection. CUA and custom MCP servers have independent switches.
 
-An unavailable integration remains visible and links to Settings for setup.
+An integration enabled in Settings but unavailable on the device remains
+visible in the composer and links to Settings for setup.
 The runtime checks installation before enabling a provider and again when
 launching it. External agents are desktop capabilities: an ACP caller cannot
 acquire them by resuming a desktop task.
 
 The tools are:
 
-
 | Tool | Purpose |
 | --- | --- |
-| `list_agent_providers` | Which providers are installed, their version, and whether they are signed in. |
+| `list_agent_providers` | Selected providers, their installation status and version, and setup or sign-in guidance. |
 | `agent_start` | Start an agent on a self-contained briefing. Blocking by default; `background: true` returns at once. |
 | `agent_send` | Give a started agent more instructions in the same thread. |
 | `agent_status` | Read an agent's status, last message, changed files, and commands. |
 | `agent_cancel` | Stop an agent's current turn and its process. The thread stays on disk; the next `agent_send` resumes it in a fresh process. |
 
-All tools except `list_agent_providers` take `provider` (`"codex"`). `agent_start` also takes optional
+All tools except `list_agent_providers` take `provider` (`"codex"` or `"claude"`). `agent_start` also takes optional
 `model`, `effort`, and `cwd`. `cwd` must be inside the project root.
 
 A result has Paseo's shape: a status line, the agent ID and thread ID, the
@@ -78,7 +81,7 @@ default mode, opens Maple's question card and the answer goes back in
 Codex's own shape; an asynchronous answer that arrives after the turn
 ended starts a follow-up turn on the same thread.
 
-The child runs in the project root, on the user's login PATH, with the same
+The child runs in the requested project directory, on the user's login PATH, with the same
 environment scrubbing as the shell tool, in its own process group or job
 so teardown reaches every descendant. It is killed when the runtime stops,
 on logout, and when its task is deleted. Threads are not ephemeral, so
@@ -92,6 +95,67 @@ PATH or the user's shell configuration.
 
 The handshake reports the reserved client name `codex_app_server_daemon`,
 the same non-originating name Paseo uses.
+
+## How Claude Code is driven
+
+Maple's native Rust transport is adapted from
+[Goose's `ClaudeCodeProvider`](https://github.com/AnthonyRonning/goose/blob/785d655d110746147117d23690e09cc7023aa9dc/crates/goose/src/providers/claude_code.rs).
+The control protocol types and permission exchange come from that implementation
+of Claude's SDK protocol. The adapted source lives in `external_agents/claude.rs`
+with its provenance.
+
+Goose keeps its transport private inside its provider. Maple adapts that code
+so its existing host retains control of process launch, the working directory,
+scoped environment, cancellation, and descendant cleanup. It also bounds
+protocol lines, sanitizes errors, projects activity, and supplies question
+answers through `updatedInput`.
+
+Install the Claude Code CLI and sign in with `claude auth login`. Detection
+runs `claude --version` and `claude auth status --json`. The card shows the
+CLI's sign-in status or login instructions; an unavailable, malformed, or
+timed-out status check is reported as unknown. Maple reads only the sign-in
+boolean, without retaining account details or reading credential files.
+As with Codex, sign-in status does not gate enabling the integration.
+The CLI is the only additional runtime dependency.
+
+Claude keeps its normal system prompt and configuration. Maple passes
+`--permission-mode default` and `--permission-prompt-tool stdio`, never a
+bypass-permissions flag. Claude's rules decide which actions need approval;
+`can_use_tool` requests go to Maple's current permission mode. Allow all answers
+those requests automatically, and Read only shows a one-shot permission card.
+`AskUserQuestion` uses Maple's question card, including multiple choices when
+Claude sets `multiSelect`. Click options or use numbered shortcuts to toggle
+them, then choose Answer (or Next in a batch). Vim navigation moves the cursor;
+Enter toggles the current choice. Answers change only that call's input; Maple
+never persists an allow rule in Claude's settings.
+
+Each turn starts a contained Claude CLI process using `--session-id` initially
+and `--resume` after the CLI confirms the session with `system/init` or a
+successful result. A failure before confirmation leaves the agent retryable
+with a fresh session. This allows optional `model` and `effort` launch
+arguments to change on each turn. The process runs in the requested project
+directory with the shell tool's scoped environment and process containment.
+Stop, task deletion, logout, and runtime shutdown reclaim Claude and its
+descendants. A subsequent `agent_send` resumes the saved session. You can also
+use `claude --resume` from a terminal.
+
+Claude's text, Bash calls, successful Edit/Write/NotebookEdit calls, and
+TodoWrite items feed the existing activity row. Other tools continue to run
+under Claude's policy but do not yet have specialized activity summaries.
+Command completion shows success or failure; tool-result messages do not
+guarantee numeric exit codes. Protocol failures produce a generic error without
+forwarding potentially sensitive exception text or CLI stderr.
+
+The `claude_native_*` runtime tests use a Rust CLI fixture, including a Rust
+sleeping child for descendant cleanup; they need no installed `sleep` program
+or Claude account. On Linux, the ignored `native_question_card_fixture` app
+test mounts the real chat screen with multi-select and single-select questions
+for interactive checks on a private desktop. Build it with `cargo test -p
+maple-gpui native_question_card_fixture --no-run` through the component build
+environment, then launch the reported test binary on the private display with
+`native_question_card_fixture --ignored --nocapture --test-threads=1` and
+isolated XDG directories. It supplies fixture questions without authenticating
+or starting inference; runtime broker tests cover delivery of the answer.
 
 ## Transcript
 
@@ -123,7 +187,8 @@ approval therefore still needs `load` before it can finish; completion delivery
 alone cannot unblock it.
 
 Stopping an agent, from its row or with `agent_cancel`, sends
-`turn/interrupt`, waits briefly for Codex to confirm, then kills the
+`turn/interrupt` (translated to Claude’s native `interrupt` control request), waits
+briefly for confirmation, then kills the
 process group. Codex does not always end a sandboxed command on interrupt,
 so the kill is what guarantees nothing keeps running.
 
@@ -144,17 +209,18 @@ so the kill is what guarantees nothing keeps running.
 Register its stable ID, label, description, and Settings projection in
 `EXTERNAL_AGENT_INTEGRATIONS` in `agent/integrations.rs`, then add discovery
 to `IntegrationDetections` and a transport adapter under `agent/external_agents/`.
-Settings defaults, composer rows, and task overrides use this catalog.
+Settings gates, composer rows, and task choices use this catalog.
 No provider-specific composer branch or database migration is needed.
 
 Task overrides live in the versioned `maple_integrations` extension data,
-keyed by provider ID. Missing entries mean inheritance, not disabled. CUA
+keyed by provider ID. Missing entries mean disabled. A true entry grants access
+only while Settings also enables that provider. CUA
 keeps its existing `maple_cua` backend metadata so an old external driver
 task cannot silently switch to the embedded backend.
 
 The selector carries a typed `kind` alongside `name` and `displayName`.
 MCP names and external provider IDs are separate domains; a custom MCP
-server named `codex` cannot toggle the Codex provider. Older MCP requests
+server named `codex` or `claude` cannot toggle either provider. Older MCP requests
 without `kind` continue to mean MCP.
 
 Provider transport adapters still own their protocol, discovery, progress,
@@ -167,3 +233,10 @@ Keep listing filtered by that same selection when more adapters are added.
 run configuration and Goose tool cache with old persisted extension state,
 warm reuse, cold restore, explicit overrides, and a desktop task leased to
 ACP. Extend that regression with each adapter's admission behavior.
+
+The `claude_native_*` tests exercise the Rust transport against a deterministic
+fake CLI, without network requests. Both providers' fixtures re-execute the
+Rust test binary through CLI shims on a private search PATH. They cover
+streamed activity, permissions, questions, resumption,
+provider/session isolation, errors, and process-group cancellation. Live
+inference and platform packaging remain separate checks.

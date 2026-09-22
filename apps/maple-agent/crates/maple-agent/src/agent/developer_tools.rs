@@ -250,7 +250,7 @@ impl MapleDeveloperClient {
             Tool::new(
                 AGENT_START_TOOL.to_string(),
                 format!(
-                    "Hand a self-contained piece of work to an external coding agent (an installed harness such as Codex) that runs in the project with its own context and its own account. \
+                    "Hand a self-contained piece of work to an external coding agent (an installed harness such as Codex or Claude Code) that runs in the project with its own context and its own account. \
 The new agent knows nothing about this conversation: write a complete briefing with the task, relevant files, current state, what was tried, decisions made, acceptance criteria, and constraints. \
 It runs under its own sandbox and approval settings; whatever it asks approval for comes to the user through Maple, and in Allow all Maple grants it. \
 Blocking by default: the call returns the agent's result. With background=true the call returns at once and Maple tells you when the agent finishes; do not poll. \
@@ -261,7 +261,7 @@ Call {LIST_AGENT_PROVIDERS_TOOL} first when unsure what is installed."
                     "properties": {
                         "provider": {
                             "type": "string",
-                            "description": "Which external agent to use, from list_agent_providers (for example \"codex\")"
+                            "description": "Which external agent to use, from list_agent_providers (for example \"codex\" or \"claude\")"
                         },
                         "prompt": {
                             "type": "string",
@@ -2824,6 +2824,10 @@ pub(super) fn parse_user_questions(
             .take(5)
             .collect();
         questions.push(crate::agent::AgentQuestion {
+            multi_select: entry
+                .get("multiSelect")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false),
             id,
             header,
             question,
@@ -3108,6 +3112,22 @@ mod tests {
         assert_eq!(ids, ["question_1", "question_1_2", "question_1_3"]);
         assert_eq!(questions.len(), MAX_USER_QUESTIONS);
         assert_eq!(questions[1].question, "Second?");
+    }
+
+    #[test]
+    fn parse_user_questions_preserves_multi_select_without_changing_the_default() {
+        let questions = parse_user_questions(&[
+            serde_json::json!({"question": "Pick several", "multiSelect": true}),
+            serde_json::json!({"question": "Pick one"}),
+            serde_json::json!({"question": "Invalid flag", "multiSelect": "true"}),
+        ]);
+        assert!(questions[0].multi_select);
+        assert!(!questions[1].multi_select);
+        assert!(!questions[2].multi_select);
+        assert_eq!(
+            serde_json::to_value(&questions[0]).unwrap()["multiSelect"],
+            true
+        );
     }
 
     #[test]

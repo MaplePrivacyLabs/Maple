@@ -75,10 +75,17 @@ cleanup. Do not run raw `cargo clean` against the shared cache.
 For composer integrations and external providers, read
 `apps/maple-agent/docs/external-agents.md`. Keep provider metadata in the
 runtime catalog and pass typed selection kinds through the UI bridge so
-user-controlled MCP names cannot shadow provider IDs. Preserve inherited
-defaults for tasks without overrides and CUA's existing backend metadata.
+user-controlled MCP names cannot shadow provider IDs. External providers must
+be enabled in Settings before appearing in the composer, and each task must
+explicitly select them. A saved task choice cannot bypass Settings. Preserve
+CUA's existing backend metadata.
 Exercise warm and cold session tool catalogs and ACP exclusion when changing
-run-boundary admission.
+run-boundary admission. Claude Code uses a native Rust transport adapted from
+the pinned Goose provider in `external_agents/claude.rs`. Preserve the source
+attribution when changing that adapted code. Keep process ownership in Maple's
+contained host. The `claude_native_*` tests re-execute the
+Rust test binary as a CLI fixture and need no Claude account or inference
+request. Keep fixture launch and environment setup shared with the Codex tests.
 
 ## Security and publication
 

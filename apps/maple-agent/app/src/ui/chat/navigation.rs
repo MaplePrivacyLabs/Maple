@@ -336,10 +336,9 @@ impl ChatScreen {
                 .map(|question| question.options.len())
                 .unwrap_or(0);
             if len > 0 {
-                let current = self.question_selected.get(&step).copied();
+                let current = self.question_selected.get(&step).and_then(|s| s.cursor);
                 let next = stepped_index(current, len, direction, count);
-                self.question_selected.insert(step, next);
-                cx.notify();
+                self.focus_question_option(step, next, cx);
             }
             return;
         }
@@ -383,9 +382,7 @@ impl ChatScreen {
                 .map(|question| question.options.len())
                 .unwrap_or(0);
             if len > 0 {
-                self.question_selected
-                    .insert(step, if first { 0 } else { len - 1 });
-                cx.notify();
+                self.focus_question_option(step, if first { 0 } else { len - 1 }, cx);
             }
             return;
         }
@@ -558,13 +555,24 @@ impl ChatScreen {
                         .min(question.questions.len().saturating_sub(1))
                 })
                 .unwrap_or_default();
-            if self.question_selected.contains_key(&step) {
+            if self
+                .current_question()
+                .and_then(|q| q.questions.get(step))
+                .is_some_and(|q| q.multi_select)
+                && let Some(index) = self.question_selected.get(&step).and_then(|s| s.cursor)
+            {
+                self.toggle_question_option(step, index, cx);
+            } else if self
+                .question_selected
+                .get(&step)
+                .is_some_and(|s| !s.picked.is_empty())
+            {
                 self.submit_question(cx);
             } else if let Some(input) = self.pending_question_input.clone() {
                 // Enter before an option is picked is the semantic route into
                 // the card's free-form answer. Enter inside the input still
                 // submits through TextInput's existing callback; j/k followed
-                // by Enter retains the direct option-submit path.
+                // by Enter retains the direct submit path for single choices.
                 let handle = input.read(cx).focus_handle(cx);
                 window.focus(&handle, cx);
                 cx.notify();
