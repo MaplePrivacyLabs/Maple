@@ -16,6 +16,7 @@ export function HostedNativeSignInConfirmation({
 }: {
   target: TransportV2DesktopOAuthState;
 }) {
+  const appName = target.nativeAppVariant === "dev" ? "Maple Dev" : "Maple";
   const os = useOpenSecret();
   const currentOs = useRef(os);
   currentOs.current = os;
@@ -119,12 +120,12 @@ export function HostedNativeSignInConfirmation({
   return (
     <div className="space-y-4">
       <div>
-        <p>Sign in to the Maple app as</p>
+        <p>Sign in to the {appName} app as</p>
         <p className="font-medium break-all">{account.email || `Account ${account.id}`}</p>
       </div>
       <p className="text-sm text-muted-foreground">
-        Continue only if you started this login in Maple. Check that Maple shows the same account
-        before signing in there.
+        Continue only if you started this login in {appName}. Check that {appName} shows the same
+        account before signing in there.
       </p>
       <div className="flex flex-wrap justify-end gap-2">
         <Button type="button" variant="outline" onClick={cancel}>
@@ -132,7 +133,7 @@ export function HostedNativeSignInConfirmation({
         </Button>
         {status === "complete" ? (
           <Button type="button" onClick={openMaple}>
-            Open Maple
+            {`Open ${appName}`}
           </Button>
         ) : (
           <Button
@@ -140,7 +141,7 @@ export function HostedNativeSignInConfirmation({
             onClick={approve}
             disabled={status === "minting" || !isCurrentDesktopOAuthTarget(target)}
           >
-            {status === "minting" ? "Continuing…" : "Continue to Maple"}
+            {status === "minting" ? "Continuing…" : `Continue to ${appName}`}
           </Button>
         )}
       </div>

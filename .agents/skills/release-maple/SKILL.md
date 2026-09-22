@@ -14,6 +14,12 @@ commit, external effect, and authority provided by the user.
 - A push to `master` starts production-shaped desktop, Android, iOS, web,
   frontend, and Rust workflows. The iOS master workflow uploads its verified
   IPA to TestFlight automatically.
+- The independent `Maple Dev TestFlight` workflow also builds every master
+  push and uploads the distinct `cloud.opensecret.maple.dev` application for
+  internal testing against the existing development services. Manual dispatch
+  accepts master only. Its app identity, credentials, artifact verification,
+  internal group setup, and retry contract are documented in
+  [Maple Dev on TestFlight](../../../docs/ios-dev-testflight.md).
 - Creating a GitHub Release starts the cross-platform release workflow. A
   successful release workflow starts separate updater-metadata, Pages, and
   best-effort Zapstore workflows. These siblings never gate or change the core

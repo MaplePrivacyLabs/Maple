@@ -107,6 +107,36 @@ describe("desktop OAuth transport selection", () => {
     ).toThrow("native request");
   });
 
+  test("dev launch selects the dev site and keeps the callback marker allowlisted", () => {
+    const url = new URL(
+      buildTransportV2DesktopAuthUrl(state, "dev", "https://dev-auth.example.test")
+    );
+    expect(url.origin).toBe("https://dev-auth.example.test");
+    expect(url.pathname).toBe("/desktop-auth");
+    expect(url.searchParams.get("native_app_variant")).toBe("dev");
+    expect(url.searchParams.get("native_session_id")).toBe(nativeSessionId);
+    expect(url.searchParams.get("native_request_id")).toBe(nativeRequestId);
+  });
+
+  test("dev handoff returns only the dev scheme and cannot claim a production target", async () => {
+    const devState = { ...state, nativeAppVariant: "dev" as const };
+    markTransportV2DesktopOAuth(devState, 1_000);
+    expect(() => claimTransportV2DesktopOAuthInitiation(state, 1_001)).toThrow();
+    expect(claimTransportV2DesktopOAuthInitiation(devState, 1_001)).toBe(true);
+    expect(readTransportV2DesktopOAuth("github", 1_001)).toEqual({
+      ...devState,
+      startedAt: 1_000
+    });
+    const deepLink = await mintTransportV2NativeAuthDeepLink(
+      { ...devState, startedAt: 1_000 },
+      async () => ({ grant: "head.payload.c2ln" }),
+      () => true,
+      () => 1_001
+    );
+    expect(deepLink).toBe("cloud.opensecret.maple.dev://auth?handoff_grant=head.payload.c2ln");
+    expect(readTransportV2DesktopOAuth(undefined, 1_001)).toBeNull();
+  });
+
   test("stores the exact provider and target pair in same-tab state", () => {
     markTransportV2DesktopOAuth(state, 1_000);
 

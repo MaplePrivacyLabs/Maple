@@ -134,6 +134,17 @@ class ChangeDetectionTests(unittest.TestCase):
             "ios_onnx",
         )
 
+    def test_ios_variants_only_select_ios_and_dev_workflow_keeps_its_own_trigger(self) -> None:
+        for path in (
+            "scripts/ci/ios-build-profile.py", "scripts/ci/ios-variant.sh",
+            "apps/maple-research/frontend/src-tauri/tauri.ios-dev.conf.json",
+        ):
+            with self.subTest(path=path):
+                self.assert_routes([path], "ios")
+        # The new workflow always builds master; editing it alone does not
+        # select an unrelated production app package or ONNX cache warmer.
+        self.assert_routes([".github/workflows/ios-dev-testflight.yml"])
+
     def test_mixed_changes_union_their_routes(self) -> None:
         self.assert_routes(
             ["sdk/src/lib/index.ts", "apps/maple-research/frontend/src/routes/index.tsx", "apps/maple-research/frontend/src-tauri/gen/android/build.gradle.kts"],

@@ -140,6 +140,21 @@ impl AppleJwtVerifier {
         audience: &str,
         expected_nonce: Option<&str>,
     ) -> Result<AppleIdTokenClaims, ApiError> {
+        self.verify_token_for_audiences(token, &[audience], expected_nonce)
+            .await
+    }
+
+    pub(crate) async fn verify_token_for_audiences(
+        &self,
+        token: &str,
+        audiences: &[&str],
+        expected_nonce: Option<&str>,
+    ) -> Result<AppleIdTokenClaims, ApiError> {
+        // The caller supplies only the project's configured native audiences.
+        // Never select an audience from the unverified token or request.
+        if audiences.is_empty() {
+            return Err(ApiError::InvalidJwt);
+        }
         // Get the kid from the token header
         let header = decode_header(token).map_err(|e| {
             error!("Failed to decode JWT header: {:?}", e);
@@ -158,7 +173,7 @@ impl AppleJwtVerifier {
 
         // Configure validation with more comprehensive checks
         let mut validation = Validation::new(Algorithm::RS256);
-        validation.set_audience(&[audience.to_string()]);
+        validation.set_audience(audiences);
         validation.set_issuer(&[APPLE_ISSUER.to_string()]);
         validation.validate_exp = true;
         validation.validate_nbf = true; // Validate "not before" if present
@@ -524,5 +539,117 @@ mod tests {
 
         assert_eq!(decoded.claims.sub, "apple-user-id");
         assert_eq!(decoded.claims.aud, "com.opensecret.test");
+    }
+
+    #[tokio::test]
+    async fn configured_native_audiences_accept_only_exact_signed_matches() {
+        let (private_key_pem, modulus, exponent) = generate_test_rsa_key_material();
+        let verifier = AppleJwtVerifier::new();
+        {
+            let mut cache = verifier.jwks_cache.write().await;
+            cache.last_updated = Utc::now();
+            cache.keys.insert(
+                "native-test".to_string(),
+                AppleKey {
+                    kty: "RSA".to_string(),
+                    kid: "native-test".to_string(),
+                    use_type: "sig".to_string(),
+                    alg: "RS256".to_string(),
+                    n: modulus,
+                    e: exponent,
+                },
+            );
+        }
+        let settings = crate::models::project_settings::AppleOAuthSettings {
+            client_id: "com.example.app".to_string(),
+            additional_native_client_ids: Some(vec!["com.example.app.dev".to_string()]),
+            ..Default::default()
+        };
+        let encoding_key = EncodingKey::from_rsa_pem(private_key_pem.as_bytes()).unwrap();
+        let mut header = Header::new(Algorithm::RS256);
+        header.kid = Some("native-test".to_string());
+        let base_claims = serde_json::json!({
+            "iss": APPLE_ISSUER, "sub": "same-team-user",
+            "aud": "com.example.app", "iat": Utc::now().timestamp(),
+            "exp": Utc::now().timestamp() + 3600,
+            "nonce": hex::encode(sha2::Sha256::digest(b"raw-nonce")),
+        });
+        use sha2::Digest;
+        for (audience, accepted) in [
+            ("com.example.app", true),
+            ("com.example.app.dev", true),
+            ("com.example.app.services", false),
+            ("com.example.app.dev.evil", false),
+            ("com.example.App.dev", false),
+            ("com.other.app", false),
+        ] {
+            let mut claims = base_claims.clone();
+            claims["aud"] = serde_json::json!(audience);
+            let token = encode(&header, &claims, &encoding_key).unwrap();
+            assert_eq!(
+                verifier
+                    .verify_token_for_audiences(
+                        &token,
+                        &settings.native_client_ids(),
+                        Some("raw-nonce")
+                    )
+                    .await
+                    .is_ok(),
+                accepted
+            );
+            // Existing web verification still accepts only its selected Services ID.
+            assert_eq!(
+                verifier
+                    .verify_token(&token, "com.example.app.services", Some("raw-nonce"))
+                    .await
+                    .is_ok(),
+                audience == "com.example.app.services"
+            );
+        }
+        for (field, value) in [
+            ("iss", serde_json::json!("https://attacker.example")),
+            ("exp", serde_json::json!(Utc::now().timestamp() - 120)),
+            ("nonce", serde_json::json!("wrong-nonce")),
+            ("nonce", serde_json::Value::Null),
+        ] {
+            let mut claims = base_claims.clone();
+            claims[field] = value;
+            let token = encode(&header, &claims, &encoding_key).unwrap();
+            assert!(verifier
+                .verify_token_for_audiences(
+                    &token,
+                    &settings.native_client_ids(),
+                    Some("raw-nonce")
+                )
+                .await
+                .is_err());
+        }
+        let token = encode(&header, &base_claims, &encoding_key).unwrap();
+        assert!(verifier
+            .verify_token_for_audiences(&token, &[], None)
+            .await
+            .is_err());
+        let (other_private_key, _, _) = generate_test_rsa_key_material();
+        let forged = encode(
+            &header,
+            &base_claims,
+            &EncodingKey::from_rsa_pem(other_private_key.as_bytes()).unwrap(),
+        )
+        .unwrap();
+        assert!(verifier
+            .verify_token_for_audiences(&forged, &settings.native_client_ids(), Some("raw-nonce"))
+            .await
+            .is_err());
+        let legacy = crate::models::project_settings::AppleOAuthSettings {
+            client_id: "com.example.app".to_string(),
+            ..Default::default()
+        };
+        let mut dev_claims = base_claims;
+        dev_claims["aud"] = serde_json::json!("com.example.app.dev");
+        let dev_token = encode(&header, &dev_claims, &encoding_key).unwrap();
+        assert!(verifier
+            .verify_token_for_audiences(&dev_token, &legacy.native_client_ids(), Some("raw-nonce"))
+            .await
+            .is_err());
     }
 }

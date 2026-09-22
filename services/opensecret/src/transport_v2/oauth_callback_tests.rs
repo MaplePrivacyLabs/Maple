@@ -175,6 +175,7 @@ async fn db_oauth_callback_selection_v1_v2() {
                 github_oauth_settings: Some(provider_settings("github")),
                 google_oauth_settings: Some(provider_settings("google")),
                 apple_oauth_settings: Some(AppleOAuthSettings {
+                    additional_native_client_ids: Some(vec!["com.example.app.dev".to_string()]),
                     client_id: "oauth-selection.services".to_string(),
                     redirect_url: default_url("apple"),
                     additional_redirect_urls: Some(vec![allowed_url("apple")]),
@@ -278,6 +279,9 @@ async fn db_oauth_callback_selection_v1_v2() {
                 );
                 let auth_url = url::Url::parse(response["auth_url"].as_str().unwrap()).unwrap();
                 let query: std::collections::HashMap<_, _> = auth_url.query_pairs().collect();
+                if provider == "apple" {
+                    assert_eq!(query.get("client_id").map(|value| value.as_ref()), Some("oauth-selection.services"));
+                }
                 assert_eq!(
                     query.get("redirect_uri").map(|value| value.as_ref()),
                     Some(expected)

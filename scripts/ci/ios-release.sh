@@ -2,6 +2,10 @@
 set -euo pipefail
 
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_common.sh"
+source "${SCRIPT_DIR}/ios-variant.sh"
+
+# Fail on unknown variants before dependency installation or signing setup.
+configure_ios_variant
 
 print_source_provenance
 verify_rust_lockfile
@@ -21,7 +25,6 @@ use_xcode_toolchain
 # supplies the target-appropriate system libraries.
 unset LIBRARY_PATH
 install_frontend_deps
-use_release_environment
 configure_reproducible_build_metadata
 build_frontend_dist
 
@@ -39,22 +42,9 @@ if [ -z "${APPLE_API_ISSUER:-}" ] || [ -z "${APPLE_API_KEY:-}" ] || [ -z "${APPL
 fi
 
 ios_project_state_dir=""
-ios_info_plist_present=0
-ios_entitlements_present=0
 restore_ios_build_state() {
-  remove_generated_ios_cargo_config
-
   if [ -n "${ios_project_state_dir}" ] && [ -d "${ios_project_state_dir}" ]; then
-    if [ -f "${ios_project_state_dir}/Info.plist" ]; then
-      cp "${ios_project_state_dir}/Info.plist" "${TAURI_DIR}/gen/apple/maple_iOS/Info.plist"
-    elif [ "${ios_info_plist_present}" = "0" ]; then
-      rm -f "${TAURI_DIR}/gen/apple/maple_iOS/Info.plist"
-    fi
-    if [ -f "${ios_project_state_dir}/maple_iOS.entitlements" ]; then
-      cp "${ios_project_state_dir}/maple_iOS.entitlements" "${TAURI_DIR}/gen/apple/maple_iOS/maple_iOS.entitlements"
-    elif [ "${ios_entitlements_present}" = "0" ]; then
-      rm -f "${TAURI_DIR}/gen/apple/maple_iOS/maple_iOS.entitlements"
-    fi
+    python3 "${SCRIPT_DIR}/ios-build-profile.py" restore --state-dir "${ios_project_state_dir}"
     rm -rf "${ios_project_state_dir}"
   fi
 }
@@ -62,16 +52,24 @@ restore_ios_build_state() {
 cd "${TAURI_DIR}"
 ios_project_state_dir="$(mktemp -d)"
 trap restore_ios_build_state EXIT
-if [ -f "${TAURI_DIR}/gen/apple/maple_iOS/Info.plist" ]; then
-  ios_info_plist_present=1
-  cp "${TAURI_DIR}/gen/apple/maple_iOS/Info.plist" "${ios_project_state_dir}/Info.plist"
+trap 'exit 130' INT
+trap 'exit 143' TERM HUP
+ios_source_sha="$(git -C "${REPO_ROOT}" rev-parse HEAD)"
+if [ "${MAPLE_IOS_VARIANT}" = "dev" ] && [ -z "${MAPLE_IOS_BUILD_NUMBER:-}" ]; then
+  echo "MAPLE_IOS_BUILD_NUMBER is required for a Maple Dev TestFlight build." >&2
+  exit 1
 fi
-if [ -f "${TAURI_DIR}/gen/apple/maple_iOS/maple_iOS.entitlements" ]; then
-  ios_entitlements_present=1
-  cp "${TAURI_DIR}/gen/apple/maple_iOS/maple_iOS.entitlements" "${ios_project_state_dir}/maple_iOS.entitlements"
-fi
+ios_build_number="${MAPLE_IOS_BUILD_NUMBER:-$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["version"])' "${TAURI_DIR}/tauri.conf.json")}"
+python3 "${SCRIPT_DIR}/ios-build-profile.py" prepare \
+  --state-dir "${ios_project_state_dir}" --variant "${MAPLE_IOS_VARIANT}" \
+  --source-sha "${ios_source_sha}" --build-number "${ios_build_number}" \
+  --frontend-hash "${MAPLE_FRONTEND_DIST_TREE_SHA256}"
 
 repro_dir="${TAURI_DIR}/target/reproducibility"
+if [ "${MAPLE_IOS_VARIANT}" = "dev" ]; then
+  repro_dir="${repro_dir}/ios-dev"
+  remove_build_tree "${TAURI_DIR}/target/ios-dev"
+fi
 mkdir -p "${repro_dir}"
 
 verify_ios_onnxruntime_manifest
@@ -83,7 +81,13 @@ export ORT_LIB_LOCATION="${TAURI_DIR}/onnxruntime-ios/onnxruntime.xcframework/io
 export ORT_SKIP_DOWNLOAD="true"
 export IPHONEOS_DEPLOYMENT_TARGET="${IPHONEOS_DEPLOYMENT_TARGET:-16.0}"
 
-ios_build_config='{"build":{"beforeBuildCommand":null}}'
+ios_build_config="${ios_project_state_dir}/tauri-build-config.json"
+
+verify_ios_profile() {
+  python3 "${SCRIPT_DIR}/ios-build-profile.py" "$@" \
+    --variant "${MAPLE_IOS_VARIANT}" --source-sha "${ios_source_sha}" \
+    --build-number "${ios_build_number}"
+}
 
 remove_ios_release_outputs() {
   local artifact
@@ -180,6 +184,7 @@ if [ -z "${unsigned_app}" ]; then
   echo "Could not find unsigned iOS app build product under ${TAURI_DIR}/gen/apple/build." >&2
   exit 1
 fi
+verify_ios_profile verify-app "${unsigned_app}"
 unsigned_app_canonical_hash="$(print_canonical_ios_app_hash "${unsigned_app}" "$(repo_relative_path "${unsigned_app}")" | tee "${repro_dir}/ios-release-unsigned-app-canonical.sha256" | awk '{ print $2 }')"
 cat "${repro_dir}/ios-release-unsigned-app-canonical.sha256"
 write_ios_canonical_app_file_manifest "${unsigned_app}" "${repro_dir}/ios-release-unsigned-app-canonical-files.sha256"
@@ -192,6 +197,7 @@ if [ -z "${signed_app}" ]; then
   echo "Could not find signed iOS app build product under ${TAURI_DIR}/gen/apple/build." >&2
   exit 1
 fi
+verify_ios_profile verify-app "${signed_app}"
 signed_app_canonical_hash="$(print_canonical_ios_app_hash "${signed_app}" "$(repo_relative_path "${signed_app}")" | tee "${repro_dir}/ios-release-archive-app-canonical.sha256" | awk '{ print $2 }')"
 cat "${repro_dir}/ios-release-archive-app-canonical.sha256"
 write_ios_canonical_app_file_manifest "${signed_app}" "${repro_dir}/ios-release-archive-app-canonical-files.sha256"
@@ -219,13 +225,22 @@ while IFS= read -r -d '' file; do
   ios_artifacts+=("${file}")
 done < <(find "${TAURI_DIR}/gen/apple/build" -type f -name '*.ipa' -print0 | LC_ALL=C sort -z)
 
-write_sha256_manifest "${repro_dir}/ios-release-final.sha256" "${ios_artifacts[@]}"
-print_file_hashes "${ios_artifacts[@]}"
-
 if [ "${#ios_artifacts[@]}" -ne 1 ]; then
   echo "Expected exactly one iOS IPA artifact, found ${#ios_artifacts[@]}." >&2
   exit 1
 fi
+
+if [ "${MAPLE_IOS_VARIANT}" = "dev" ]; then
+  mkdir -p "${TAURI_DIR}/target/ios-dev"
+  mv "${ios_artifacts[0]}" "${TAURI_DIR}/target/ios-dev/Maple-Dev.ipa"
+  ios_artifacts=("${TAURI_DIR}/target/ios-dev/Maple-Dev.ipa")
+  ios_profile_report="${TAURI_DIR}/target/ios-dev/ios-build-profile.json"
+else
+  ios_profile_report="${repro_dir}/ios-release-build-profile.json"
+fi
+verify_ios_profile verify-ipa "${ios_artifacts[0]}" --report "${ios_profile_report}"
+write_sha256_manifest "${repro_dir}/ios-release-final.sha256" "${ios_artifacts[@]}"
+print_file_hashes "${ios_artifacts[@]}"
 
 : > "${repro_dir}/ios-release-canonical-payload.sha256"
 for artifact in "${ios_artifacts[@]}"; do

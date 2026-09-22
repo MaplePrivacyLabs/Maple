@@ -114,8 +114,10 @@ CI_SCRIPT_ROUTES = {
     "scripts/ci/install-windows-artifact-signing.ps1": frozenset({"windows"}),
     "scripts/ci/install-windows-minisign.ps1": frozenset({"windows"}),
     "scripts/ci/ios-onnxruntime.sh": frozenset({"ios", "ios_onnx"}),
+    "scripts/ci/ios-build-profile.py": frozenset({"ios"}),
     "scripts/ci/ios-pr.sh": frozenset({"ios"}),
     "scripts/ci/ios-release.sh": frozenset({"ios"}),
+    "scripts/ci/ios-variant.sh": frozenset({"ios"}),
     "scripts/ci/verify-release-artifacts.sh": NATIVE_PLATFORMS,
     "scripts/ci/web.sh": frozenset({"frontend"}),
     "scripts/ci/windows-artifact-sign.ps1": frozenset({"windows"}),
@@ -153,6 +155,8 @@ def _native_path_routes(path: str) -> frozenset[str]:
         return frozenset({"macos"})
     if path == "apps/maple-research/frontend/src-tauri/tauri.windows.conf.json":
         return frozenset({"windows"})
+    if path == "apps/maple-research/frontend/src-tauri/tauri.ios-dev.conf.json":
+        return frozenset({"ios"})
 
     if path.startswith("apps/maple-research/frontend/src-tauri/scripts/"):
         filename = path.rsplit("/", 1)[-1]

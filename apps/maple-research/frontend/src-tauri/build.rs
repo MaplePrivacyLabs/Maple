@@ -1,5 +1,10 @@
+#[path = "src/ios_app_variant.rs"]
+mod ios_app_variant;
+
 fn main() {
     println!("cargo:rerun-if-env-changed=VITE_OPEN_SECRET_PCR_ENVIRONMENT");
+    println!("cargo:rerun-if-env-changed=MAPLE_IOS_VARIANT");
+    println!("cargo:rerun-if-env-changed=VITE_MAPLE_APP_VARIANT");
 
     let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
     if target_os == "ios" {
@@ -35,7 +40,37 @@ fn ensure_ios_custom_url_scheme() {
         .as_dictionary_mut()
         .expect("Info.plist is not a dictionary");
 
-    let scheme = "cloud.opensecret.maple";
+    let ios_variant = std::env::var("MAPLE_IOS_VARIANT").ok();
+    let frontend_variant = std::env::var("VITE_MAPLE_APP_VARIANT").ok();
+    let scheme =
+        ios_app_variant::custom_url_scheme(ios_variant.as_deref(), frontend_variant.as_deref())
+            .expect("invalid Maple iOS app variant");
+
+    // Switching build variants must not keep the other app's callback registered.
+    let mut changed = false;
+    let other_scheme = if scheme == "cloud.opensecret.maple.dev" {
+        "cloud.opensecret.maple"
+    } else {
+        "cloud.opensecret.maple.dev"
+    };
+    {
+        if let Some(entries) = dict
+            .get_mut("CFBundleURLTypes")
+            .and_then(plist::Value::as_array_mut)
+        {
+            for entry in entries.iter_mut() {
+                if let Some(schemes) = entry
+                    .as_dictionary_mut()
+                    .and_then(|entry| entry.get_mut("CFBundleURLSchemes"))
+                    .and_then(plist::Value::as_array_mut)
+                {
+                    let old_len = schemes.len();
+                    schemes.retain(|value| value.as_string() != Some(other_scheme));
+                    changed |= old_len != schemes.len();
+                }
+            }
+        }
+    }
 
     let has_scheme = dict
         .get("CFBundleURLTypes")
@@ -74,6 +109,9 @@ fn ensure_ios_custom_url_scheme() {
             arr.push(plist::Value::Dictionary(url_type));
         }
 
+        changed = true;
+    }
+    if changed {
         plist::to_file_xml(plist_path, &plist).expect("failed to write Info.plist");
     }
 }

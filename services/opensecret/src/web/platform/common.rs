@@ -249,6 +249,20 @@ pub fn validate_apple_oauth_settings(
     }
     validate_oauth_redirect_url(&settings.redirect_url)?;
     validate_additional_redirect_urls(settings.additional_redirect_urls.as_deref())?;
+    if let Some(client_ids) = &settings.additional_native_client_ids {
+        if client_ids.len() > 16
+            || client_ids.iter().any(|client_id| {
+                client_id.is_empty()
+                    || client_id.len() > 255
+                    || client_id.split('.').any(str::is_empty)
+                    || !client_id
+                        .bytes()
+                        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-'))
+            })
+        {
+            return Err(validator::ValidationError::new("apple_native_client_ids"));
+        }
+    }
 
     // Validate team_id if provided
     if let Some(ref team_id) = settings.team_id {
@@ -363,6 +377,34 @@ mod tests {
                     .is_err()
                 );
             }
+        }
+    }
+
+    #[test]
+    fn apple_native_audience_settings_validate_exact_bounded_identifiers() {
+        for (value, valid) in [
+            (Value::Null, true),
+            (json!([]), true),
+            (json!(["com.example.dev", "com.example.App-Beta"]), true),
+            (json!(vec!["com.example.dev"; 16]), true),
+            (json!(vec!["com.example.dev"; 17]), false),
+            (json!([""]), false),
+            (json!(["com.example.*"]), false),
+            (json!(["com.example.dev "]), false),
+            (json!(["com..dev"]), false),
+            (json!(["https://com.example.dev"]), false),
+            (json!(["com.éxample.dev"]), false),
+            (json!(["x".repeat(256)]), false),
+        ] {
+            let mut request_json = oauth_request("apple", None);
+            request_json["apple_oauth_settings"]["additional_native_client_ids"] = value;
+            let request: UpdateOAuthSettingsRequest = serde_json::from_value(request_json).unwrap();
+            assert_eq!(request.validate().is_ok(), valid);
+        }
+        for value in [json!("com.example.dev"), json!([42])] {
+            let mut request_json = oauth_request("apple", None);
+            request_json["apple_oauth_settings"]["additional_native_client_ids"] = value;
+            assert!(serde_json::from_value::<UpdateOAuthSettingsRequest>(request_json).is_err());
         }
     }
 }

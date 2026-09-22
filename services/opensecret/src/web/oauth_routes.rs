@@ -1433,18 +1433,16 @@ pub async fn handle_apple_native_signin(
         ApiError::BadRequest
     })?;
 
-    // Use the client ID from OAuth settings
-    let client_id = apple_oauth_settings.client_id;
-
     // Verify the Apple JWT token using the shared verifier with nonce if provided
     debug!("Verifying Apple identity token");
-    let claims = validate_apple_native_token(
-        &app_state.apple_jwt_verifier,
-        &request.identity_token,
-        &client_id,
-        request.nonce.as_deref(),
-    )
-    .await?;
+    let claims = app_state
+        .apple_jwt_verifier
+        .verify_token_for_audiences(
+            &request.identity_token,
+            &apple_oauth_settings.native_client_ids(),
+            request.nonce.as_deref(),
+        )
+        .await?;
 
     // If user_identifier is provided, verify it matches the sub from the token
     if let Some(user_id) = &request.user_identifier {

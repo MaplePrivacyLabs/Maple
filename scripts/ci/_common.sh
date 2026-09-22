@@ -150,6 +150,11 @@ use_pr_environment() {
   export VITE_OS_FLAGS_BASE_URL="https://flags-dev.opensecret.cloud"
   export VITE_MAPLE_BILLING_API_URL="https://billing-dev.opensecret.cloud"
   export VITE_CLIENT_ID="ba5a14b5-d915-47b1-b7b1-afda52bc5fc6"
+  # The hosted development callback and Maple Dev must agree on this public
+  # origin. Leaving it unset preserves ordinary previews without native auth.
+  if [ -n "${MAPLE_IOS_DEV_AUTH_ORIGIN:-}" ]; then
+    export VITE_MAPLE_DEV_AUTH_ORIGIN="${MAPLE_IOS_DEV_AUTH_ORIGIN}"
+  fi
 }
 
 use_release_environment() {
