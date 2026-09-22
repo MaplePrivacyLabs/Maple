@@ -1130,7 +1130,7 @@ mod tests {
     fn picking_from_the_dropdown_persists_to_disk(cx: &mut TestAppContext) {
         let _guard = crate::settings::SETTINGS_IO_LOCK.lock();
         let dir = std::env::temp_dir().join(format!(
-            "maple-gpui-dropdown-persist-{}",
+            "maple-agent-dropdown-persist-{}",
             std::process::id()
         ));
         let _ = std::fs::remove_dir_all(&dir);

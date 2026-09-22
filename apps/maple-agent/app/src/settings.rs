@@ -1,4 +1,4 @@
-//! App settings persisted to ~/.config/maple-gpui/settings.json and local
+//! App settings persisted to ~/.config/maple-agent/settings.json and local
 //! usage aggregation read from the goose usage ledger.
 
 // This module is the desktop frontend's boundary. A headless build (no
@@ -316,7 +316,7 @@ fn settings_file() -> PathBuf {
 #[cfg(test)]
 fn test_settings_file() -> PathBuf {
     static SCRATCH: std::sync::LazyLock<PathBuf> = std::sync::LazyLock::new(|| {
-        std::env::temp_dir().join(format!("maple-gpui-test-config-{}", std::process::id()))
+        std::env::temp_dir().join(format!("maple-agent-test-config-{}", std::process::id()))
     });
     if let Some(base) = std::env::var_os("XDG_CONFIG_HOME") {
         // Resolve from the captured value, not a second read: another
@@ -651,7 +651,7 @@ mod tests {
     fn queued_updates_reach_disk_and_survive_a_reload() {
         let _guard = SETTINGS_IO_LOCK.lock();
         let dir = std::env::temp_dir().join(format!(
-            "maple-gpui-settings-roundtrip-{}",
+            "maple-agent-settings-roundtrip-{}",
             std::process::id()
         ));
         let _ = std::fs::remove_dir_all(&dir);

@@ -405,9 +405,9 @@ mod state_tests {
     fn test_constructor_reads_persisted_defaults(cx: &mut TestAppContext) {
         cx.executor().allow_parking();
         let _guard = SETTINGS_LOCK.lock();
-        let dir = std::env::temp_dir().join(format!("maple-gpui-test-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("maple-agent-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        let config = dir.join("maple-gpui");
+        let config = dir.join("maple-agent");
         std::fs::create_dir_all(&config).unwrap();
         std::fs::write(
             config.join("settings.json"),
@@ -3297,11 +3297,11 @@ mod state_tests {
     fn test_new_task_takes_the_saved_permission_default(cx: &mut TestAppContext) {
         let _guard = SETTINGS_LOCK.lock();
         let dir = std::env::temp_dir().join(format!(
-            "maple-gpui-test-permission-default-{}",
+            "maple-agent-test-permission-default-{}",
             std::process::id()
         ));
         let _ = std::fs::remove_dir_all(&dir);
-        let config = dir.join("maple-gpui");
+        let config = dir.join("maple-agent");
         std::fs::create_dir_all(&config).unwrap();
         std::fs::write(
             config.join("settings.json"),

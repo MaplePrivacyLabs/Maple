@@ -46,7 +46,7 @@ class DebugPlistTests(unittest.TestCase):
 
     def test_unmanaged_bundle_does_not_copy_shell_or_stale_environment(self):
         result = MODULE.configure({"LSEnvironment": {"OLD_KEY": "fixture"}}, {"XDG_CONFIG_HOME": "/tmp/config"})
-        self.assertEqual(result["CFBundleIdentifier"], "cloud.opensecret.maple.gpui.dev")
+        self.assertEqual(result["CFBundleIdentifier"], "cloud.opensecret.maple.agent.dev")
         self.assertNotIn("LSEnvironment", result)
 
 

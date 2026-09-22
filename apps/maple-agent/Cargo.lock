@@ -5828,17 +5828,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "maple-billing"
-version = "0.1.0"
-dependencies = [
- "reqwest 0.13.4",
- "serde",
- "serde_json",
- "tokio",
-]
-
-[[package]]
-name = "maple-gpui"
+name = "maple-agent-app"
 version = "0.1.0"
 dependencies = [
  "axum",
@@ -5874,6 +5864,16 @@ dependencies = [
  "uuid",
  "wayland-client",
  "webbrowser",
+]
+
+[[package]]
+name = "maple-billing"
+version = "0.1.0"
+dependencies = [
+ "reqwest 0.13.4",
+ "serde",
+ "serde_json",
+ "tokio",
 ]
 
 [[package]]

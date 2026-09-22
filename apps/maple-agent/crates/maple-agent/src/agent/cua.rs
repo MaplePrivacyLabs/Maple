@@ -438,7 +438,7 @@ fn embedded_cua_session_identity(
         public_session: format!(
             "maple-task-{}",
             digest(
-                b"maple-gpui:embedded-cua:public:v1",
+                b"maple-agent:embedded-cua:public:v2",
                 account_scope,
                 session_id
             )
@@ -446,7 +446,7 @@ fn embedded_cua_session_identity(
         transport_session: format!(
             "maple-transport-{}",
             digest(
-                b"maple-gpui:embedded-cua:transport:v1",
+                b"maple-agent:embedded-cua:transport:v2",
                 account_scope,
                 session_id
             )

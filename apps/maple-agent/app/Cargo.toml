@@ -1,5 +1,5 @@
 [package]
-name = "maple-gpui"
+name = "maple-agent-app"
 description = "Native Maple desktop app (gpui frontend over the maple-agent runtime)"
 edition.workspace = true
 version.workspace = true
@@ -7,7 +7,7 @@ license.workspace = true
 publish = false
 
 [[bin]]
-name = "maple-gpui"
+name = "maple-agent"
 path = "src/main.rs"
 
 [features]
@@ -26,9 +26,9 @@ desktop = [
     "dep:spellbook",
     "dep:wayland-client",
 ]
-# `maple-gpui acp`: the Agent Client Protocol server on stdio.
+# `maple-agent acp`: the Agent Client Protocol server on stdio.
 acp = ["maple-agent/acp"]
-# `maple-gpui proxy`: the OpenAI-compatible HTTP endpoint.
+# `maple-agent proxy`: the OpenAI-compatible HTTP endpoint.
 proxy = ["dep:maple-proxy", "dep:axum", "dep:tower-http"]
 
 [dependencies]
@@ -63,7 +63,7 @@ spellbook = { version = "0.4", optional = true }
 rusqlite = { version = "0.32", features = ["bundled"] }
 chrono = "0.4"
 clap = { version = "4", features = ["derive", "env"] }
-# Hidden password prompt for `maple-gpui login`.
+# Hidden password prompt for `maple-agent login`.
 rpassword = "7"
 maple-proxy = { workspace = true, optional = true }
 reqwest = { workspace = true, features = ["json"] }

@@ -31,7 +31,7 @@ use clap::{Args, Parser, Subcommand};
 /// Shown when a mode was compiled out with `--no-default-features`.
 #[cfg(not(all(feature = "desktop", feature = "acp", feature = "proxy")))]
 fn disabled_mode(mode: &str, feature: &str) -> ! {
-    eprintln!("maple-gpui {mode} is not available: this build lacks the `{feature}` feature.");
+    eprintln!("maple-agent {mode} is not available: this build lacks the `{feature}` feature.");
     std::process::exit(2);
 }
 
@@ -47,7 +47,7 @@ fn version_string() -> &'static str {
 }
 
 #[derive(Debug, Parser)]
-#[command(name = "maple-gpui", version = version_string(), about, disable_help_subcommand = true)]
+#[command(name = "maple-agent", version = version_string(), about, disable_help_subcommand = true)]
 struct Cli {
     #[command(subcommand)]
     mode: Option<Mode>,
@@ -73,7 +73,7 @@ enum Mode {
     Login(LoginArgs),
 }
 
-/// Settings for `maple-gpui login`. The password is always prompted for
+/// Settings for `maple-agent login`. The password is always prompted for
 /// so it never lands in shell history or a process listing.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Args)]
 struct LoginArgs {
@@ -82,7 +82,7 @@ struct LoginArgs {
     email: Option<String>,
 }
 
-/// Settings for `maple-gpui proxy`, from flags with environment fallbacks.
+/// Settings for `maple-agent proxy`, from flags with environment fallbacks.
 #[derive(Debug, Clone, PartialEq, Eq, Args)]
 struct ProxyArgs {
     /// Bind address.
@@ -128,6 +128,9 @@ impl ProxyArgs {
 #[cfg(feature = "desktop")]
 static PROCESS_START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
 
+/// Notes from adopting pre-rename state directories, logged once logging is up.
+static ADOPTED_APP_DIRS: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+
 /// Milliseconds since `main` began.
 #[cfg(feature = "desktop")]
 pub(crate) fn startup_elapsed() -> u128 {
@@ -141,6 +144,8 @@ fn main() {
     // SAFETY: this is the first statement of `main`. No other thread exists
     // yet, so mutating the process environment here cannot race a reader.
     unsafe { maple_agent::prepare_process_environment() };
+    // Before any mode opens settings, credentials, or the log file.
+    let _ = ADOPTED_APP_DIRS.set(backend::adopt_legacy_app_dirs());
     #[cfg(feature = "desktop")]
     let _ = PROCESS_START.set(std::time::Instant::now());
     let cli = Cli::parse();
@@ -199,7 +204,7 @@ fn main() {
     }
 }
 
-/// `maple-gpui proxy`: an OpenAI-compatible endpoint in front of Maple's
+/// `maple-agent proxy`: an OpenAI-compatible endpoint in front of Maple's
 /// enclave, for tools that speak the OpenAI API. Runs until killed.
 #[cfg(feature = "proxy")]
 fn run_proxy(args: ProxyArgs) -> Result<(), String> {
@@ -276,7 +281,7 @@ fn configured_api_url() -> String {
     env::env_string("MAPLE_API_URL").unwrap_or_else(|| "https://enclave.trymaple.ai".to_string())
 }
 
-/// `maple-gpui acp`: a standalone ACP agent over stdio. It reuses the
+/// `maple-agent acp`: a standalone ACP agent over stdio. It reuses the
 /// sign-in saved by the desktop app and hosts its own agent runtime, so
 /// the desktop app does not need to run.
 #[cfg(feature = "acp")]
@@ -289,8 +294,8 @@ fn run_acp() -> Result<(), String> {
     backend.run_acp_stdio(&user_id)
 }
 
-/// `maple-gpui login`: sign in from a terminal. The saved session is the
-/// same one the desktop app writes, so `maple-gpui acp` can run on a
+/// `maple-agent login`: sign in from a terminal. The saved session is the
+/// same one the desktop app writes, so `maple-agent acp` can run on a
 /// machine that never opened the window.
 fn run_login(args: LoginArgs) -> Result<(), String> {
     let backend = AgentBackend::new(configured_api_url(), String::new())?;
@@ -315,7 +320,7 @@ fn run_login(args: LoginArgs) -> Result<(), String> {
         Some(email) => eprintln!("Signed in as {email}."),
         None => eprintln!("Signed in."),
     }
-    eprintln!("`maple-gpui acp` and the desktop app will use this sign-in.");
+    eprintln!("`maple-agent acp` and the desktop app will use this sign-in.");
     Ok(())
 }
 
@@ -336,7 +341,7 @@ fn prompt_line(prompt: &str) -> Result<String, String> {
     Ok(line)
 }
 
-/// Log to stderr and to `<data dir>/logs/maple-gpui.log` so a freeze or
+/// Log to stderr and to `<data dir>/logs/maple-agent.log` so a freeze or
 /// crash leaves evidence on disk. `RUST_LOG` still controls the level;
 /// the default is `info`. Panics are logged as well.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -354,7 +359,7 @@ fn init_logging(output: LogOutput) {
         std::fs::OpenOptions::new()
             .create(true)
             .append(true)
-            .open(log_dir.join("maple-gpui.log"))
+            .open(log_dir.join("maple-agent.log"))
             .ok()
     });
     // goose is chatty at info during a run; its warnings still show.
@@ -383,10 +388,13 @@ fn init_logging(output: LogOutput) {
         default_hook(info);
     }));
     log::info!(
-        "maple-gpui {} starting; log file: {}",
+        "maple-agent {} starting; log file: {}",
         env!("CARGO_PKG_VERSION"),
-        log_dir.join("maple-gpui.log").display()
+        log_dir.join("maple-agent.log").display()
     );
+    for note in ADOPTED_APP_DIRS.get().into_iter().flatten() {
+        log::info!("state directory: {note}");
+    }
 }
 
 /// Buffered file sink plus stderr. Warnings and errors flush the file at
@@ -424,7 +432,7 @@ mod tests {
     use clap::Parser;
 
     fn parse(args: &[&str]) -> Result<Option<Mode>, clap::Error> {
-        Cli::try_parse_from(std::iter::once("maple-gpui").chain(args.iter().copied()))
+        Cli::try_parse_from(std::iter::once("maple-agent").chain(args.iter().copied()))
             .map(|cli| cli.mode)
     }
 
@@ -446,7 +454,7 @@ mod tests {
     #[test]
     fn version_flags_print_the_package_version() {
         let expected = format!(
-            "maple-gpui {} ({})",
+            "maple-agent {} ({})",
             env!("CARGO_PKG_VERSION"),
             option_env!("MAPLE_GIT_HASH").unwrap_or("unknown")
         );

@@ -265,7 +265,7 @@ impl SettingsScreen {
                 .text_color(gpui::rgb(theme::text_secondary()))
                 .child(format!(
                     "Keys work with any OpenAI-compatible client at {}/v1 and with \
-                     `maple-gpui proxy --api-key`. A key is shown once, when created.",
+                     `maple-agent proxy --api-key`. A key is shown once, when created.",
                     self.backend.api_url()
                 )),
         );

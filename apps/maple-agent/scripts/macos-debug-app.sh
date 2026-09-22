@@ -7,10 +7,10 @@ if [[ "$(uname -s)" != "Darwin" ]]; then
 fi
 
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
-requested_bundle_dir="${MAPLE_DEBUG_APP_PATH:-$repo_root/target/debug/Maple GPUI Dev.app}"
-binary_source="$repo_root/target/debug/maple-gpui"
+requested_bundle_dir="${MAPLE_DEBUG_APP_PATH:-$repo_root/target/debug/Maple Agent Dev.app}"
+binary_source="$repo_root/target/debug/maple-agent"
 codesign_identity="${MAPLE_DEBUG_CODESIGN_IDENTITY:--}"
-bundle_id="${MAPLE_DEBUG_BUNDLE_ID:-cloud.opensecret.maple.gpui.dev}"
+bundle_id="${MAPLE_DEBUG_BUNDLE_ID:-cloud.opensecret.maple.agent.dev}"
 
 if [[ ! "$bundle_id" =~ ^[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+$ ]]; then
     echo "MAPLE_DEBUG_BUNDLE_ID must be a dotted bundle identifier" >&2
@@ -50,7 +50,7 @@ trap 'rm -rf -- "$staging_root"' EXIT
 staged_bundle="$staging_root/$bundle_name"
 contents_dir="$staged_bundle/Contents"
 frameworks_dir="$contents_dir/Frameworks"
-binary_destination="$contents_dir/MacOS/maple-gpui"
+binary_destination="$contents_dir/MacOS/maple-agent"
 
 mkdir -p "$contents_dir/MacOS" "$frameworks_dir"
 cp "$repo_root/app/macos/Info.plist" "$contents_dir/Info.plist"

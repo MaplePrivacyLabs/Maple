@@ -4,7 +4,7 @@ GPUI desktop-v2 prototype for Maple, under `apps/maple-agent/`.
 Read the repository-root `AGENTS.md` and `$develop-maple-agent` as well.
 Commands below run from this component directory through its pinned Nix shell.
 
-GPUI desktop app for Maple. Workspace crates: `app` (binary `maple-gpui`),
+GPUI desktop app for Maple. Workspace crates: `app` (package `maple-agent-app`, binary `maple-agent`),
 `crates/maple-agent`, `crates/maple-billing`. See `README.md` for the
 layout, prerequisites, and command line modes.
 
@@ -17,15 +17,15 @@ format, one workspace clippy pass, and the workspace tests when Agent files
 are staged; `MAPLE_HOOK_FULL=1` runs the full `just ci`.
 
 Build and test through `just` or `nix develop` so this checkout shares
-Cargo intermediates with other maple-gpui worktrees
-(`CARGO_BUILD_BUILD_DIR` under `~/.cache/cargo-build/maple-gpui/`). Do
+Cargo intermediates with other Agent worktrees
+(`CARGO_BUILD_BUILD_DIR` under `~/.cache/cargo-build/maple-agent/`). Do
 not set a per-worktree `CARGO_TARGET_DIR` or
-`MAPLE_GPUI_DISABLE_SHARED_CARGO_BUILD_DIR` unless asked. Raw `cargo`
+`MAPLE_DISABLE_SHARED_CARGO_BUILD_DIR` unless asked. Raw `cargo`
 outside those environments rebuilds gpui into this checkout's `target/`.
 
 ```sh
 just build     # debug binary
-just run       # debug binary with RUST_LOG=warn,maple_gpui=debug
+just run       # debug binary with RUST_LOG=warn,maple_agent=debug
 just release   # release binary (fat LTO, one codegen unit)
 just headless  # acp and proxy modes only, no window
 just clean     # this checkout's target/ and dist/ only
@@ -36,15 +36,15 @@ Raw `cargo clean` would delete the shared cache; use `just clean` or
 
 Stop only the exact process launched for this checkout, through its originating
 terminal or recorded PID after verifying the full executable path. Multiple
-workspaces can run `maple-gpui`; a process name is not ownership. Managed
+workspaces can run `maple-agent`; a process name is not ownership. Managed
 workspaces provide `bin/maple-agent` with separate config/data roots and a
 shared proxy-port reservation. Never start two proxies on that reservation.
 
 ## Logs and freezes
 
-The app logs to stderr and to `~/.local/share/maple-gpui/logs/maple-gpui.log`
+The app logs to stderr and to `~/.local/share/maple-agent/logs/maple-agent.log`
 (level `info` by default; `RUST_LOG=debug` for more). Panics are logged
-there too. Tail it with `tail -f ~/.local/share/maple-gpui/logs/maple-gpui.log`.
+there too. Tail it with `tail -f ~/.local/share/maple-agent/logs/maple-agent.log`.
 
 If the app freezes, dump all thread backtraces while it is still hung:
 
