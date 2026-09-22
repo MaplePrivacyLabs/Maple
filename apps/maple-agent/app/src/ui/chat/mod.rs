@@ -1950,6 +1950,7 @@ impl ChatScreen {
     fn finish_loading(&mut self, session_id: &str) {
         if self.loading_session.as_deref() == Some(session_id) {
             self.loading_session = None;
+            self.refresh_selected_title();
         }
     }
 
@@ -2012,6 +2013,7 @@ impl ChatScreen {
             .find_map(plan_entries)
             .unwrap_or_default();
         self.set_plan(plan);
+        self.refresh_selected_title();
     }
 
     /// Apply settings-default changes when returning from the settings
@@ -4096,6 +4098,10 @@ impl ChatScreen {
                 self.timeline_index.insert(item.id.clone(), (index, 0));
                 self.timeline.push(item);
                 self.list_state.splice(index..index, 1);
+                if index == 0 {
+                    // The pane leaves the empty state; the header follows.
+                    self.refresh_selected_title();
+                }
                 index
             }
         };
@@ -4995,7 +5001,14 @@ impl ChatScreen {
     }
 
     /// Cache the header title for the selected task.
+    /// Cache the header title for the selected task. The header names what
+    /// the pane shows: with no transcript on screen it is a new task,
+    /// whatever the list has selected.
     fn refresh_selected_title(&mut self) {
+        if self.timeline.is_empty() && self.loading_session.is_none() {
+            self.selected_title = DEFAULT_TASK_TITLE.into();
+            return;
+        }
         self.selected_title = self
             .selected_session
             .as_deref()

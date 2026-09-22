@@ -1627,6 +1627,26 @@ mod state_tests {
         });
     }
 
+    /// The header names what the pane shows: an empty pane is a new task
+    /// even while the list still marks a row.
+    #[gpui::test]
+    fn test_header_says_new_task_while_the_pane_is_empty(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        let screen = screen(cx);
+        screen.update(cx, |this, _cx| {
+            this.sessions = vec![summary_at("s1", "Hello", "/work/alpha")];
+            this.selected_session = Some("s1".to_string());
+            this.replace_timeline(Vec::new());
+            assert_eq!(this.selected_title.as_ref(), "New Task");
+
+            this.replace_timeline(vec![user_item("u1", "hi")]);
+            assert_eq!(this.selected_title.as_ref(), "Hello");
+
+            this.replace_timeline(Vec::new());
+            assert_eq!(this.selected_title.as_ref(), "New Task");
+        });
+    }
+
     /// While a project selection is landing, neither "New Task" nor a
     /// first send may run ahead of it.
     #[gpui::test]
