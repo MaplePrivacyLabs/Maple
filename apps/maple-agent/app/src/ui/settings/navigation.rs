@@ -399,6 +399,12 @@ impl SettingsScreen {
     }
 
     fn application_escape(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // An open dropdown closes first. It normally has focus and closes
+        // on its own Escape binding; this covers one that has not taken
+        // focus yet.
+        if self.popup.close(cx) {
+            return;
+        }
         if self.application_text_input_focused(window, cx) {
             window.focus(&self.application_focus, cx);
             cx.notify();
@@ -407,12 +413,6 @@ impl SettingsScreen {
         if self.shortcut_recorder.is_some() {
             self.stop_shortcut_recording();
             cx.notify();
-            return;
-        }
-        // An open dropdown closes before Escape leaves Settings. It
-        // normally has focus and closes on its own Escape binding; this
-        // covers one that has not taken focus yet.
-        if self.popup.close(cx) {
             return;
         }
         self.close(cx);

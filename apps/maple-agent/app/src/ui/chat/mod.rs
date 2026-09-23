@@ -2753,7 +2753,11 @@ impl ChatScreen {
         // An open menu closes first. It normally has focus and closes on
         // its own Escape binding; this covers a menu that has not taken
         // focus yet.
-        if self.popup.close(cx) {
+        let chat_menu = self.popup.close(cx);
+        let sidebar_menu = self
+            .sidebar
+            .update(cx, |sidebar, cx| sidebar.close_popups(cx));
+        if chat_menu || sidebar_menu {
             return;
         }
         if self
@@ -2781,10 +2785,7 @@ impl ChatScreen {
             self.set_project_trust(path, false, cx);
             return;
         }
-        let popups = self
-            .sidebar
-            .update(cx, |sidebar, cx| sidebar.close_popups(cx));
-        if self.confirm.is_some() || popups {
+        if self.confirm.is_some() {
             self.confirm = None;
             cx.notify();
             return;

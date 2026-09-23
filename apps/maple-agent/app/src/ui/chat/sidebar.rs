@@ -130,7 +130,7 @@ impl SidebarRow {
 /// The sidebar's popup menus. One is open at a time; a project's own menu
 /// opens inside the switcher (see `Sidebar::project_popup`).
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) enum SidebarPopup {
+enum SidebarPopup {
     Switcher,
     /// A task row's overflow menu.
     Task(String),

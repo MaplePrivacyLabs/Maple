@@ -75,6 +75,7 @@ impl ChatScreen {
                 Placement::BelowStart,
                 cx,
                 |this, window, cx| this.execute_command(ChatCommand::ChooseProject, window, cx),
+                Self::project_menu,
             )
             .flex_none(),
         )
@@ -92,8 +93,8 @@ impl ChatScreen {
         .child(div().flex_1())
     }
 
-    /// `button` as the opener of `popup`, with that popup's menu attached
-    /// while it is open.
+    /// `button` as the opener of `popup`, with `menu` attached below or
+    /// above it while the popup is open.
     fn with_menu(
         &self,
         popup: ChatPopup,
@@ -101,15 +102,10 @@ impl ChatScreen {
         placement: Placement,
         cx: &mut Context<Self>,
         toggle: impl Fn(&mut Self, &mut Window, &mut Context<Self>) + 'static,
+        menu: impl FnOnce(&Self, &mut Context<Self>) -> Menu<Self>,
     ) -> Div {
         let menu = self.popup.is_open(&popup).then(|| {
-            let menu = match popup {
-                ChatPopup::Project => self.project_menu(cx),
-                ChatPopup::Model => self.model_menu(),
-                ChatPopup::Mode => self.mode_menu(),
-                ChatPopup::Integrations => self.integrations_menu(),
-                ChatPopup::Transcript(_) => Menu::new("transcript-menu", px(160.)),
-            };
+            let menu = menu(self, cx);
             self.popup.render(menu, placement, cx)
         });
         div()
@@ -916,6 +912,7 @@ impl ChatScreen {
                         Placement::AboveStart,
                         cx,
                         |this, _, cx| this.toggle_popup(ChatPopup::Model, cx),
+                        |this, _| this.model_menu(),
                     ))
                     .child(self.with_menu(
                         ChatPopup::Mode,
@@ -930,6 +927,7 @@ impl ChatScreen {
                         Placement::AboveStart,
                         cx,
                         |this, _, cx| this.toggle_popup(ChatPopup::Mode, cx),
+                        |this, _| this.mode_menu(),
                     ))
                     .child(self.with_menu(
                         ChatPopup::Integrations,
@@ -948,6 +946,7 @@ impl ChatScreen {
                         Placement::AboveStart,
                         cx,
                         |this, _, cx| this.toggle_popup(ChatPopup::Integrations, cx),
+                        |this, _| this.integrations_menu(),
                     ))
                     .child(
                         chip(

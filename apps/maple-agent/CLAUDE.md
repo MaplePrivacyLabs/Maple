@@ -55,6 +55,25 @@ gdb -p VERIFIED_PID -batch -ex "thread apply all bt" > /tmp/maple-hang.txt 2>&1
 The default release profile strips symbols. `just release-debug` builds a
 release binary that keeps line tables for usable backtraces.
 
+## Popups
+
+Every dropdown, overflow menu, and context menu goes through
+`ui/popup.rs`. Do not wire a floating panel by hand. A view keeps one
+`Popup` per nesting level and wires each opener with `Popup::trigger`.
+Commands and keys that open a menu call `Popup::open`. The view rebuilds
+the open `Menu` on every render and calls `Popup::sync_focus` first thing
+in its render. The popup handles the rest:
+
+- a second press on the trigger closes the menu
+- a press outside closes it
+- occlusion
+- one open menu per window
+- keyboard and Application Vim navigation
+- returning focus when the menu closes
+- accessibility
+
+Menu keys live in the keymap's `Menu` context.
+
 ## Performance
 
 This app must feel instant. Treat frame time and UI-thread stalls as bugs.
