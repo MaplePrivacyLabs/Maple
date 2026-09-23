@@ -44,6 +44,9 @@ CONSUMERS = {
     "mobile-build.yml": {
         "build-ios": "apple-signing", "submit-ios-testflight": "apple-signing",
     },
+    "ios-dev-testflight.yml": {
+        "build-ios-dev": "apple-signing", "submit-ios-dev-testflight": "apple-signing",
+    },
     "android-build.yml": {"build-android": "android-signing"},
     "release.yml": {
         "build-tauri": "desktop-signing", "build-windows": "windows-signing",
@@ -104,6 +107,88 @@ class SigningWorkflowTests(unittest.TestCase):
             job = workflows()[name]["jobs"]["build-windows"]
             self.assertEqual(job["environment"], "windows-signing")
             self.assertEqual(job.get("permissions", workflows()[name]["permissions"])["id-token"], "write")
+
+    def test_dev_testflight_runs_for_every_master_push_and_only_trusted_manual_runs(self):
+        config = workflows()["ios-dev-testflight.yml"]
+        self.assertEqual(config["on"], {"push": {"branches": ["master"]}, "workflow_dispatch": None})
+        self.assertEqual(config["permissions"], {"contents": "read"})
+        self.assertEqual(config["concurrency"], {
+            "group": "maple-ios-dev-testflight", "cancel-in-progress": False, "queue": "max",
+        })
+        expected_guard = (
+            "github.repository == 'MaplePrivacyLabs/Maple' && "
+            "github.ref == 'refs/heads/master' && "
+            "(github.event_name == 'push' || github.event_name == 'workflow_dispatch')"
+        )
+        for job in config["jobs"].values():
+            self.assertEqual(" ".join(job["if"].split()), expected_guard)
+            self.assertNotIn("strategy", job)
+            checkout = job["steps"][0]
+            self.assertTrue(checkout["uses"].startswith("actions/checkout@"))
+            self.assertEqual(checkout["with"], {
+                "ref": "${{ github.sha }}", "persist-credentials": False,
+            })
+
+    def test_dev_testflight_build_variant_and_artifacts_cannot_use_production_defaults(self):
+        job = workflows()["ios-dev-testflight.yml"]["jobs"]["build-ios-dev"]
+        build = next(step for step in job["steps"] if "ios-release.sh" in step.get("run", ""))
+        self.assertEqual(build["env"]["MAPLE_IOS_VARIANT"], "dev")
+        self.assertEqual(build["env"]["MAPLE_IOS_BUILD_NUMBER"], "${{ steps.identity.outputs.build_number }}")
+        self.assertEqual(build["env"]["MAPLE_IOS_DEV_AUTH_ORIGIN"], "${{ vars.MAPLE_IOS_DEV_AUTH_ORIGIN }}")
+        self.assertEqual(build["env"]["MAPLE_ENFORCE_IOS_SIGNED_REPRODUCIBILITY"], "1")
+        upload = next(step for step in job["steps"] if step.get("uses", "").startswith("actions/upload-artifact@"))
+        self.assertEqual(upload["with"]["name"], job["outputs"]["artifact_name"])
+        self.assertEqual(upload["with"]["if-no-files-found"], "error")
+        paths = upload["with"]["path"].splitlines()
+        self.assertIn("apps/maple-research/frontend/src-tauri/target/ios-dev/Maple-Dev.ipa", paths)
+        self.assertIn("apps/maple-research/frontend/src-tauri/target/ios-dev/ios-build-profile.json", paths)
+        self.assertTrue(all("/ios-dev/" in path for path in paths))
+        for step in job["steps"]:
+            if "key" in step.get("with", {}):
+                self.assertTrue(step["with"]["key"].startswith("maple-dev-"))
+                self.assertTrue(all(key.startswith("maple-dev-") for key in step["with"]["restore-keys"].splitlines()))
+
+    def test_dev_testflight_verifies_exact_download_before_exposing_upload_credentials(self):
+        job = workflows()["ios-dev-testflight.yml"]["jobs"]["submit-ios-dev-testflight"]
+        self.assertEqual(job["needs"], "build-ios-dev")
+        self.assertEqual(job["permissions"], {"contents": "read"})
+        self.assertEqual(job["env"]["MAPLE_IOS_BUILD_NUMBER"], "${{ needs.build-ios-dev.outputs.build_number }}")
+        self.assertEqual(job["env"]["MAPLE_IOS_DEV_AUTH_ORIGIN"], "${{ vars.MAPLE_IOS_DEV_AUTH_ORIGIN }}")
+        steps = job["steps"]
+        download = next(i for i, step in enumerate(steps) if step.get("uses", "").startswith("actions/download-artifact@"))
+        self.assertEqual(steps[download]["with"], {
+            "name": "${{ needs.build-ios-dev.outputs.artifact_name }}", "path": "artifacts",
+        })
+        proof = next(i for i, step in enumerate(steps) if "verify-release-artifacts.sh" in step.get("run", ""))
+        profile = next(i for i, step in enumerate(steps) if "ios-build-profile.py" in step.get("run", ""))
+        upload = next(i for i, step in enumerate(steps) if "altool --upload-app" in step.get("run", ""))
+        self.assertLess(download, proof)
+        self.assertLess(proof, profile)
+        self.assertLess(profile, upload)
+        self.assertEqual(steps[proof]["env"]["MAPLE_ENFORCE_IOS_SIGNED_REPRODUCIBILITY"], "1")
+        for index in (proof, profile, upload):
+            self.assertNotIn("continue-on-error", steps[index])
+            self.assertNotIn("if", steps[index])
+        for step in steps[:upload]:
+            self.assertFalse(signing_references(step))
+        verification = steps[profile]["run"]
+        for required in (
+            "verify-ipa artifacts/ios-dev/Maple-Dev.ipa --variant dev",
+            '--source-sha "${GITHUB_SHA}"', '--build-number "${MAPLE_IOS_BUILD_NUMBER}"',
+            '--report "${RUNNER_TEMP}/verified-ios-build-profile.json"',
+            'cmp artifacts/ios-dev/ios-build-profile.json "${RUNNER_TEMP}/verified-ios-build-profile.json"',
+        ):
+            self.assertIn(required, verification)
+        self.assertIn("--file artifacts/ios-dev/Maple-Dev.ipa", steps[upload]["run"])
+        self.assertIn("trap 'rm -f", steps[upload]["run"])
+
+    def test_dev_testflight_has_no_release_or_external_tester_distribution_action(self):
+        config = workflows()["ios-dev-testflight.yml"]
+        for job in config["jobs"].values():
+            for step in job["steps"]:
+                self.assertNotRegex(step.get("run", ""), r"gh release|betaGroups|betaTesters|appStoreVersions")
+                if "uses" in step:
+                    self.assertRegex(step["uses"], r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+@[0-9a-f]{40}$")
 
     def test_credential_check_is_manual_and_cannot_sign_or_publish(self):
         config = workflows()["signing-credentials-check.yml"]

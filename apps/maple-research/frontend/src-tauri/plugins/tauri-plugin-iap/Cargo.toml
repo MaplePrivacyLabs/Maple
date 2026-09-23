@@ -1,0 +1,19 @@
+[package]
+name = "tauri-plugin-iap"
+version = "0.10.0-rc.10"
+edition = "2024"
+rust-version = "1.93"
+links = "tauri-plugin-iap"
+license = "MIT"
+repository = "https://github.com/Choochmeque/tauri-plugin-iap"
+description = "Maple's iOS-only deferred-finish StoreKit fork"
+publish = false
+
+[dependencies]
+tauri = { version = "2", default-features = false }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+
+[build-dependencies]
+tauri-plugin = { version = "2", features = ["build"] }

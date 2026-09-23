@@ -10,6 +10,7 @@ import { LocalStateProvider } from "./state/LocalStateContext";
 import { ErrorFallback } from "./components/ErrorFallback";
 import { NotFoundFallback } from "./components/NotFoundFallback";
 import { BillingServiceProvider } from "./components/BillingServiceProvider";
+import { AppleBillingProvider } from "./billing/AppleBillingProvider";
 import { DeepLinkHandler } from "./components/DeepLinkHandler";
 import { NotificationProvider } from "./contexts/NotificationContext";
 import { ChatTypographyProvider } from "./contexts/ChatTypographyContext";
@@ -18,6 +19,7 @@ import { ProxyEventListener } from "./components/ProxyEventListener";
 import { UpdateEventListener } from "./components/UpdateEventListener";
 import { TTSProvider } from "./services/tts/TTSContext";
 import { openSecretClientConfig } from "./config/openSecretClientConfig";
+import { DevelopmentAppBadge } from "./components/DevelopmentAppBadge";
 
 // Create a new router instance
 const router = createRouter({
@@ -55,6 +57,7 @@ const queryClient = new QueryClient({
 export default function App() {
   return (
     <ThemeProvider>
+      <DevelopmentAppBadge />
       <NotificationProvider>
         <OpenSecretProvider {...openSecretClientConfig()}>
           <LocalStateProvider>
@@ -64,10 +67,12 @@ export default function App() {
                   <ChatTypographyProvider>
                     <TTSProvider>
                       <BillingServiceProvider>
-                        <ProxyEventListener />
-                        <UpdateEventListener />
-                        <DeepLinkHandler />
-                        <InnerApp />
+                        <AppleBillingProvider>
+                          <ProxyEventListener />
+                          <UpdateEventListener />
+                          <DeepLinkHandler />
+                          <InnerApp />
+                        </AppleBillingProvider>
                       </BillingServiceProvider>
                     </TTSProvider>
                   </ChatTypographyProvider>

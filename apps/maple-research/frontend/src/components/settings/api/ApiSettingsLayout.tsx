@@ -17,7 +17,6 @@ import { useBillingState } from "@/state/useLocalState";
 import { isIOS, isTauriDesktop } from "@/utils/platform";
 import { cn } from "@/utils/utils";
 import { SettingsPage, SettingsSection } from "../SettingsPage";
-import packageJson from "../../../../package.json";
 
 type ApiNavLinkProps = {
   to: "/settings/api" | "/settings/api/keys" | "/settings/api/proxy";
@@ -81,17 +80,6 @@ export function ApiSettingsLayout() {
     }
   });
 
-  const {
-    data: products,
-    isLoading: productsLoading,
-    isError: productsError,
-    refetch: refetchProducts
-  } = useQuery({
-    queryKey: ["products-version-check", isIOSPlatform],
-    queryFn: () => getBillingService().getProducts(`v${packageJson.version}`),
-    enabled: isIOSPlatform
-  });
-
   const resolvedBillingStatus = currentBillingStatus ?? billingStatus;
 
   if (billingStatusError && resolvedBillingStatus === null) {
@@ -119,54 +107,11 @@ export function ApiSettingsLayout() {
     );
   }
 
-  if (
-    (billingStatusLoading && resolvedBillingStatus === null) ||
-    (isIOSPlatform && productsLoading)
-  ) {
+  if (billingStatusLoading && resolvedBillingStatus === null) {
     return <ApiSettingsLoading />;
   }
 
-  if (isIOSPlatform && productsError) {
-    return (
-      <SettingsPage
-        title="API & credits"
-        description="Manage API access, extra credits, and local developer tools."
-      >
-        <Alert variant="destructive">
-          <AlertCircle className="h-4 w-4" />
-          <AlertDescription className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-            <span>Unable to confirm API availability for this app version.</span>
-            <Button type="button" variant="outline" size="sm" onClick={() => refetchProducts()}>
-              <RotateCw className="mr-2 h-3.5 w-3.5" />
-              Try again
-            </Button>
-          </AlertDescription>
-        </Alert>
-      </SettingsPage>
-    );
-  }
-
   const userHasApiAccess = hasApiAccess(resolvedBillingStatus);
-  const isApprovedIOSVersion =
-    !isIOSPlatform || !!products?.some((product) => product.is_available !== false);
-
-  if (!isApprovedIOSVersion) {
-    return (
-      <SettingsPage
-        title="API & credits"
-        description="Manage API access, extra credits, and local developer tools."
-      >
-        <SettingsSection
-          title="Not available in this app version"
-          description="API management is unavailable for this iOS version. You can continue using your current Maple plan normally."
-        >
-          <Button asChild variant="outline">
-            <Link to="/settings/billing">Back to billing</Link>
-          </Button>
-        </SettingsSection>
-      </SettingsPage>
-    );
-  }
 
   if (!userHasApiAccess) {
     return (
@@ -176,7 +121,11 @@ export function ApiSettingsLayout() {
       >
         <SettingsSection
           title="Unlock API access"
-          description="Upgrade to Pro, Max, or a Team plan to create API keys, purchase extra credits, and use Maple programmatically."
+          description={
+            isIOSPlatform
+              ? "Upgrade to Pro or Max to create API keys and use Maple programmatically."
+              : "Upgrade to Pro, Max, or a Team plan to create API keys, purchase extra credits, and use Maple programmatically."
+          }
         >
           <Button asChild variant="primary">
             <Link to="/pricing">

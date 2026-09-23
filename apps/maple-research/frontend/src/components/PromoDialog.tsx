@@ -11,6 +11,7 @@ import { Badge } from "@/components/ui/badge";
 import { Tag, Sparkles, Check, Cpu, Image, FileText, Mic, Globe, Zap } from "lucide-react";
 import { useNavigate } from "@tanstack/react-router";
 import type { DiscountResponse } from "@/billing/billingApi";
+import { isIOS } from "@/utils/platform";
 
 interface PromoDialogProps {
   open: boolean;
@@ -45,7 +46,13 @@ const PROMO_BENEFITS = [
   }
 ];
 
-export function PromoDialog({ open, onOpenChange, discount }: PromoDialogProps) {
+export function PromoDialog(props: PromoDialogProps) {
+  // Web percentage discounts do not apply to StoreKit prices.
+  if (isIOS()) return null;
+  return <WebPromoDialog {...props} />;
+}
+
+function WebPromoDialog({ open, onOpenChange, discount }: PromoDialogProps) {
   const navigate = useNavigate();
 
   const handleUpgrade = () => {

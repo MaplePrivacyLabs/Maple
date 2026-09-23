@@ -42,3 +42,21 @@ This boundary prevents a new, unreviewed branch workflow from reading signing
 credentials. It does not make code already admitted to a signing job harmless,
 prevent an authorized person from publishing a release, or replace the separate
 PCR-signing approval policy.
+
+The shared iOS release script removes App Store Connect signing inputs from
+child-process environments before dependency installation, the frontend build,
+and the unsigned archive. It decodes an encoded private key only immediately
+before the signed archive/export, into an owned temporary directory with mode
+700 and a key file with mode 600. Success, failure, and handled signals remove
+that directory; the key is already removed before artifact verification. A
+caller-supplied `APPLE_API_KEY_PATH` remains caller-owned and is never modified
+or deleted by the script.
+
+This limits accidental inheritance and key-file lifetime within the script. It
+does not isolate the signer from code running under the same runner account:
+the invoking Nix environment and signed Tauri/native build are still trusted,
+and an earlier child could remain running. A caller-supplied key already on disk
+also remains accessible to that account. Separate signing infrastructure would
+be required to establish that stronger boundary. Hermetic release-script tests
+exercise canary environments and cleanup; they do not prove real Apple signing
+or TestFlight upload.

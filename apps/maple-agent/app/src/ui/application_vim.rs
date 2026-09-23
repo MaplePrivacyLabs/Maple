@@ -8,10 +8,10 @@
 use gpui::Action;
 
 /// Root application-navigation bindings. The negative child contexts keep
-/// ordinary inputs and the project menu in charge while they own focus.
-pub(crate) const ROOT_CONTEXT: &str = "ApplicationVim && !TextInput && !RootMenu";
-/// Vim aliases while the existing project chooser owns focus.
-pub(crate) const ROOT_MENU_CONTEXT: &str = "ApplicationVim && RootMenu";
+/// ordinary inputs and an open popup menu in charge while they own focus.
+pub(crate) const ROOT_CONTEXT: &str = "ApplicationVim && !TextInput && !Menu";
+/// Vim aliases while an open popup menu owns focus.
+pub(crate) const MENU_CONTEXT: &str = "ApplicationVim && Menu";
 /// Escape from an ordinary field returns to its screen's application proxy.
 pub(crate) const OTHER_INPUT_CONTEXT: &str = "ApplicationVim && TextInput && input_role == other";
 /// Application chords intentionally reserved from composer Normal mode.

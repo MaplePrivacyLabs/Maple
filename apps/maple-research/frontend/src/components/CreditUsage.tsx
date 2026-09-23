@@ -96,7 +96,7 @@ export function CreditUsage() {
 
   const hasApiCredits = apiBalance !== undefined && apiBalance > 0;
 
-  const planLabel = toPlanNameLabel(productName);
+  const planLabel = toPlanNameLabel(productName ?? undefined);
   const resetFullLabel = shouldShowUsageMeter
     ? formatResetDate(billingStatus?.usage_reset_date)
     : undefined;

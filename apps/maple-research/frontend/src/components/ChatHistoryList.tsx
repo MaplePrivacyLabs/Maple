@@ -83,7 +83,7 @@ const SIDEBAR_ELLIPSIS_TRIGGER_ROW_BASE = `absolute inset-y-0 right-0 ${ROW_MENU
 /** Desktop: hide overflow menu until row hover, keyboard focus, or open menu (touch keeps it visible). */
 function sidebarEllipsisTriggerRowClass(isMobile: boolean): string {
   if (isMobile) return SIDEBAR_ELLIPSIS_TRIGGER_ROW_BASE;
-  return `${SIDEBAR_ELLIPSIS_TRIGGER_ROW_BASE} transition-opacity duration-150 opacity-0 pointer-events-none group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100 has-[[data-state=open]]:pointer-events-auto has-[[data-state=open]]:opacity-100`;
+  return `${SIDEBAR_ELLIPSIS_TRIGGER_ROW_BASE} transition-opacity duration-150 opacity-0 pointer-events-none group-hover:pointer-events-auto group-hover:opacity-100 group-has-[:focus-visible]:pointer-events-auto group-has-[:focus-visible]:opacity-100 has-[[data-state=open]]:pointer-events-auto has-[[data-state=open]]:opacity-100`;
 }
 const SIDEBAR_ELLIPSIS_BTN =
   "relative z-10 shrink-0 rounded-full border-0 bg-transparent p-1.5 text-foreground/40 transition-colors hover:text-foreground group-hover:text-foreground focus-visible:text-foreground focus-visible:outline-none";
@@ -1345,7 +1345,7 @@ export function ChatHistoryList({
             <div className={sidebarEllipsisTriggerRowClass(isMobile)}>
               <div className={SIDEBAR_ELLIPSIS_FADE} aria-hidden="true" />
               <div className="flex items-center bg-muted dark:bg-[hsl(var(--sidebar))]">
-                <DropdownMenu>
+                <DropdownMenu modal={false}>
                   <DropdownMenuTrigger asChild>
                     <button
                       type="button"
@@ -1534,7 +1534,7 @@ export function ChatHistoryList({
                   <div className={sidebarEllipsisTriggerRowClass(isMobile)}>
                     <div className={SIDEBAR_ELLIPSIS_FADE} aria-hidden="true" />
                     <div className="flex items-center bg-muted dark:bg-[hsl(var(--sidebar))]">
-                      <DropdownMenu>
+                      <DropdownMenu modal={false}>
                         <DropdownMenuTrigger asChild>
                           <button
                             type="button"

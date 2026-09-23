@@ -221,7 +221,7 @@ export const LocalStateProvider = ({
   const [selectedProjectId, setSelectedProjectIdState] = useState<string | null>(null);
   const currentModelRef = useRef(modelState.model);
 
-  const setBillingStatus = useCallback((status: BillingStatus) => {
+  const setBillingStatus = useCallback((status: BillingStatus | null) => {
     setBillingStatusState(status);
   }, []);
 

@@ -9,6 +9,8 @@ mod agent_acp;
 mod agent_host;
 #[cfg(desktop)]
 mod agent_tauri;
+#[cfg(test)]
+mod ios_app_variant;
 #[cfg(any(desktop, target_os = "ios"))]
 mod legacy_tts_cleanup;
 #[cfg(desktop)]
@@ -21,6 +23,8 @@ mod pdf_extractor;
 mod pdf_ocr;
 #[cfg(desktop)]
 mod proxy;
+#[cfg(target_os = "ios")]
+mod storekit_experiment;
 #[cfg(desktop)]
 mod updater_preferences;
 mod word_extractor;
@@ -235,6 +239,13 @@ fn handle_desktop_run_event(app_handle: &tauri::AppHandle, event: tauri::RunEven
 
 // This handles incoming deep links
 fn handle_deep_link_event(url: &str, app: &tauri::AppHandle) {
+    // Maple Dev must never process a return intended for the installed production app.
+    if app.config().identifier == "cloud.opensecret.maple.dev"
+        && !tauri::Url::parse(url).is_ok_and(|url| url.scheme() == "cloud.opensecret.maple.dev")
+    {
+        log::warn!("[Deep Link] Ignoring callback for another app");
+        return;
+    }
     // OAuth callbacks carry bearer tokens in the query string, so never log the raw URL.
     log::info!("[Deep Link] Received callback");
     #[cfg(desktop)]
@@ -551,7 +562,9 @@ pub fn run() {
     // Only add the Apple Sign In plugin on iOS
     #[cfg(all(not(desktop), target_os = "ios"))]
     {
-        builder = builder.plugin(tauri_plugin_sign_in_with_apple::init());
+        builder = builder
+            .plugin(tauri_plugin_sign_in_with_apple::init())
+            .plugin(tauri_plugin_iap::init());
     }
 
     // Android-specific configuration
@@ -584,6 +597,7 @@ pub fn run() {
     #[cfg(all(not(desktop), target_os = "ios"))]
     let app = builder
         .invoke_handler(tauri::generate_handler![
+            storekit_experiment::storekit_experiment_enabled,
             pdf_extractor::extract_document_content,
             native_oauth::native_oauth_begin,
             native_oauth::native_oauth_redeem,

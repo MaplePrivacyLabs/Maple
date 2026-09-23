@@ -371,7 +371,8 @@ describe("DeepLinkHandler native auth callbacks", () => {
       `cloud.opensecret.maple://other?handoff_grant=${VALID_GRANT}`,
       `https://auth/?handoff_grant=${VALID_GRANT}`,
       "cloud.opensecret.maple://auth?handoff_grant=not-a-valid-grant",
-      `cloud.opensecret.maple://auth?handoff_grant=${VALID_GRANT}#fragment`
+      `cloud.opensecret.maple://auth?handoff_grant=${VALID_GRANT}#fragment`,
+      `cloud.opensecret.maple.dev://auth?handoff_grant=${VALID_GRANT}`
     ];
 
     for (const payload of malformedCallbacks) await flushDeepLink(payload);
@@ -379,6 +380,25 @@ describe("DeepLinkHandler native auth callbacks", () => {
     expect(nativeCalls).toHaveLength(0);
     expect(readPendingNativeOAuthAttempt()).toEqual(pending);
     expect(location.href).toBe("tauri://localhost/");
+  });
+
+  test("Maple Dev ignores production auth and payment returns, then accepts its own confirmed grant", async () => {
+    await act(async () => {
+      renderer?.update(
+        <NotificationProvider>
+          <DeepLinkHandler tauri appVariant="dev" />
+        </NotificationProvider>
+      );
+    });
+    const pending = await prepareAttempt();
+    await flushDeepLink(`cloud.opensecret.maple://auth?handoff_grant=${VALID_GRANT}`);
+    await flushDeepLink("cloud.opensecret.maple://payment-success");
+    await flushDeepLink("https://trymaple.ai/payment-success");
+    expect(nativeCalls).toHaveLength(0);
+    expect(readPendingNativeOAuthAttempt()).toEqual(pending);
+    expect(location.href).toBe("tauri://localhost/");
+    await approveDeepLink(`cloud.opensecret.maple.dev://auth?handoff_grant=${VALID_GRANT}`);
+    expect(sharedState().installCalls).toHaveLength(1);
   });
 
   test("ignores callbacks without a pending attempt or while already authenticated", async () => {

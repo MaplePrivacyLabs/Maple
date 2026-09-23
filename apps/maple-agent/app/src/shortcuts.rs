@@ -9,7 +9,7 @@ use gpui::{App, KeyBinding, Keystroke};
 
 use crate::ui::{application_vim, text_input::vim_actions};
 
-use crate::keymap::{build_binding, catalog, install};
+use crate::keymap::{RENAMED_SLOT_IDS, build_binding, catalog, install};
 
 pub(crate) type ShortcutOverrides = BTreeMap<String, Option<String>>;
 
@@ -158,6 +158,17 @@ impl ShortcutRuntime {
     }
 }
 
+/// Move overrides saved under a renamed slot id to the slot's current id,
+/// unless the current id has its own. Run before editing overrides so a reset
+/// or change also retires the old key.
+pub(crate) fn migrate_renamed_slots(overrides: &mut ShortcutOverrides) {
+    for (old, new) in RENAMED_SLOT_IDS {
+        if let Some(saved) = overrides.remove(*old) {
+            overrides.entry((*new).to_owned()).or_insert(saved);
+        }
+    }
+}
+
 pub(super) struct PreparedShortcuts {
     pub(super) bindings: Vec<KeyBinding>,
     pub(super) rows: Vec<ShortcutRow>,
@@ -169,7 +180,9 @@ pub(super) fn prepare(overrides: &ShortcutOverrides) -> Result<PreparedShortcuts
     let known_ids = catalog.iter().map(|slot| slot.id).collect::<BTreeSet<_>>();
     let unknown = overrides
         .keys()
-        .filter(|id| !known_ids.contains(id.as_str()))
+        .filter(|id| {
+            !known_ids.contains(id.as_str()) && !RENAMED_SLOT_IDS.iter().any(|(old, _)| old == id)
+        })
         .cloned()
         .collect::<Vec<_>>();
     let compatibility_warning = (!unknown.is_empty()).then(|| {
@@ -185,8 +198,14 @@ pub(super) fn prepare(overrides: &ShortcutOverrides) -> Result<PreparedShortcuts
     let mut bindings = Vec::with_capacity(catalog.len());
     let mut rows = Vec::with_capacity(catalog.len());
     for slot in catalog {
-        let modified = overrides.contains_key(slot.id);
-        let current_sequence = match overrides.get(slot.id) {
+        let saved = overrides.get(slot.id).or_else(|| {
+            RENAMED_SLOT_IDS
+                .iter()
+                .find(|(_, new)| *new == slot.id)
+                .and_then(|(old, _)| overrides.get(*old))
+        });
+        let modified = saved.is_some();
+        let current_sequence = match saved {
             Some(None) => None,
             Some(Some(sequence)) => Some(display_sequence(sequence)?),
             None => Some(slot.default_sequence.to_owned()),
@@ -340,7 +359,8 @@ enum KnownContext {
     Global,
     Chat,
     Transcript,
-    RootMenu,
+    /// An open popup menu (see `ui::popup`).
+    Menu,
     TextInput,
     /// Text fields with Vim off or in Insert. Normal and Visual are excluded.
     StandardText,
@@ -348,7 +368,7 @@ enum KnownContext {
     ComposerVisual,
     ComposerInsert,
     ApplicationVimRoot,
-    ApplicationVimRootMenu,
+    ApplicationVimMenu,
     ApplicationVimOtherInput,
     ApplicationVimComposerNormal,
     Other,
@@ -359,14 +379,14 @@ fn known_context(context: Option<&str>) -> KnownContext {
         None => KnownContext::Global,
         Some("Chat") => KnownContext::Chat,
         Some("Transcript") => KnownContext::Transcript,
-        Some("RootMenu") => KnownContext::RootMenu,
+        Some(crate::ui::popup::MENU_CONTEXT) => KnownContext::Menu,
         Some("TextInput") => KnownContext::TextInput,
         Some(crate::keymap::STANDARD_TEXT_CONTEXT) => KnownContext::StandardText,
         Some(vim_actions::NORMAL_CONTEXT) => KnownContext::ComposerNormal,
         Some(vim_actions::VISUAL_CONTEXT) => KnownContext::ComposerVisual,
         Some(vim_actions::INSERT_CONTEXT) => KnownContext::ComposerInsert,
         Some(application_vim::ROOT_CONTEXT) => KnownContext::ApplicationVimRoot,
-        Some(application_vim::ROOT_MENU_CONTEXT) => KnownContext::ApplicationVimRootMenu,
+        Some(application_vim::MENU_CONTEXT) => KnownContext::ApplicationVimMenu,
         Some(application_vim::OTHER_INPUT_CONTEXT) => KnownContext::ApplicationVimOtherInput,
         Some(application_vim::COMPOSER_NORMAL_CONTEXT) => {
             KnownContext::ApplicationVimComposerNormal
@@ -392,8 +412,21 @@ fn context_overlap(left: Option<&str>, right: Option<&str>) -> Option<ShortcutCo
     }
     if matches!(
         (left, right),
-        (KnownContext::RootMenu, KnownContext::ApplicationVimRootMenu)
-            | (KnownContext::ApplicationVimRootMenu, KnownContext::RootMenu)
+        (KnownContext::Menu, KnownContext::ApplicationVimMenu)
+            | (KnownContext::ApplicationVimMenu, KnownContext::Menu)
+            // A text field inside a menu (the project menu's path field, a
+            // project's rename field in the switcher).
+            | (KnownContext::Menu, KnownContext::TextInput)
+            | (KnownContext::TextInput, KnownContext::Menu)
+            | (KnownContext::Menu, KnownContext::StandardText)
+            | (KnownContext::StandardText, KnownContext::Menu)
+            | (KnownContext::Menu, KnownContext::ApplicationVimOtherInput)
+            | (KnownContext::ApplicationVimOtherInput, KnownContext::Menu)
+            // The transcript's right-click menu opens inside the transcript.
+            | (KnownContext::Menu, KnownContext::Transcript)
+            | (KnownContext::Transcript, KnownContext::Menu)
+            | (KnownContext::ApplicationVimMenu, KnownContext::Transcript)
+            | (KnownContext::Transcript, KnownContext::ApplicationVimMenu)
             | (KnownContext::Transcript, KnownContext::ApplicationVimRoot)
             | (KnownContext::ApplicationVimRoot, KnownContext::Transcript)
             | (
@@ -438,13 +471,13 @@ fn context_overlap(left: Option<&str>, right: Option<&str>) -> Option<ShortcutCo
     if matches!(
         left,
         KnownContext::ApplicationVimRoot
-            | KnownContext::ApplicationVimRootMenu
+            | KnownContext::ApplicationVimMenu
             | KnownContext::ApplicationVimOtherInput
             | KnownContext::ApplicationVimComposerNormal
     ) || matches!(
         right,
         KnownContext::ApplicationVimRoot
-            | KnownContext::ApplicationVimRootMenu
+            | KnownContext::ApplicationVimMenu
             | KnownContext::ApplicationVimOtherInput
             | KnownContext::ApplicationVimComposerNormal
     ) {
@@ -469,8 +502,12 @@ fn context_overlap(left: Option<&str>, right: Option<&str>) -> Option<ShortcutCo
     {
         return Some(ShortcutContextOverlap::Scoped);
     }
-    // Transcript, RootMenu, ordinary TextInput, and the three mutually
-    // exclusive composer modes cannot be active focus contexts together.
+    // A menu, the transcript, ordinary TextInput, and the three mutually
+    // exclusive composer modes cannot otherwise be active focus contexts
+    // together. A menu is never inside a text field: a field's own
+    // right-click menu renders beside the field's key context. Application
+    // Vim marks a menu only while the menu itself has focus, never while a
+    // field inside it does.
     None
 }
 #[cfg(test)]
@@ -501,6 +538,28 @@ mod tests {
         assert!(
             prepared.rows.iter().all(|row| row.conflicts.is_empty()),
             "intentional parent/child context shadowing is not a user conflict"
+        );
+    }
+
+    #[test]
+    fn overrides_saved_under_a_renamed_slot_still_apply() {
+        let mut overrides = ShortcutOverrides::new();
+        overrides.insert("project_menu.next".into(), Some("ctrl-n".into()));
+        let prepared = prepare(&overrides).unwrap();
+        assert_eq!(prepared.compatibility_warning, None);
+        let row = prepared
+            .rows
+            .iter()
+            .find(|row| row.slot_id == "menu.next")
+            .expect("renamed slot");
+        assert_eq!(row.current_sequence.as_deref(), Some("ctrl-n"));
+        assert!(row.modified);
+
+        // Editing moves the override to the current id.
+        migrate_renamed_slots(&mut overrides);
+        assert_eq!(
+            overrides.into_iter().collect::<Vec<_>>(),
+            vec![("menu.next".to_string(), Some("ctrl-n".to_string()))]
         );
     }
 
@@ -603,6 +662,35 @@ mod tests {
             context_overlap(standard, Some(vim_actions::VISUAL_CONTEXT)),
             None
         );
+    }
+
+    #[test]
+    fn menus_overlap_the_fields_inside_them_and_the_transcript() {
+        let menu = Some(crate::ui::popup::MENU_CONTEXT);
+        let vim_menu = Some(application_vim::MENU_CONTEXT);
+        for (left, right) in [
+            (menu, Some("TextInput")),
+            (menu, Some(application_vim::OTHER_INPUT_CONTEXT)),
+            (menu, Some("Transcript")),
+            (vim_menu, Some("Transcript")),
+        ] {
+            assert_eq!(
+                context_overlap(left, right),
+                Some(ShortcutContextOverlap::Scoped),
+                "{left:?} and {right:?}"
+            );
+            assert_eq!(
+                context_overlap(right, left),
+                Some(ShortcutContextOverlap::Scoped),
+                "{right:?} and {left:?}"
+            );
+        }
+        // No menu opens inside the composer's text.
+        assert_eq!(
+            context_overlap(menu, Some(vim_actions::NORMAL_CONTEXT)),
+            None
+        );
+        assert_eq!(context_overlap(vim_menu, Some("TextInput")), None);
     }
 
     #[test]
@@ -805,7 +893,7 @@ mod tests {
         for context in [
             Some("TextInput"),
             Some(vim_actions::NORMAL_CONTEXT),
-            Some("ApplicationVim && !TextInput && !RootMenu"),
+            Some("ApplicationVim && !TextInput && !Menu"),
         ] {
             validate_sequence_for_context(
                 "focus-owned.test",

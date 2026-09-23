@@ -2,7 +2,8 @@
 //! shortcut does, so a menu entry, its keyboard hint, and the Settings
 //! shortcuts page cannot disagree. The Edit menu binds the platform's
 //! standard actions so text fields and the transcript get Cut, Copy,
-//! Paste, and Select All from the bar and from Services.
+//! Paste, and Select All from the bar and from Services. macOS also
+//! gets Hide Maple, Hide Others, and Show All.
 
 use gpui::{App, Menu, MenuItem, OsAction, SystemMenuType};
 
@@ -12,16 +13,14 @@ use super::text_input;
 /// Install the menu bar. gpui shows it on macOS; other platforms ignore
 /// it, so the call is unconditional.
 pub fn install(cx: &mut App) {
-    cx.set_menus(vec![
+    cx.set_menus(app_menus(cfg!(target_os = "macos")));
+}
+
+fn app_menus(macos: bool) -> Vec<Menu> {
+    vec![
         Menu {
             name: "Maple".into(),
-            items: vec![
-                MenuItem::action("Settings…", chat::OpenAppSettings),
-                MenuItem::separator(),
-                MenuItem::os_submenu("Services", SystemMenuType::Services),
-                MenuItem::separator(),
-                MenuItem::action("Quit Maple", crate::desktop::QuitApp),
-            ],
+            items: maple_menu_items(macos),
             disabled: false,
         },
         Menu {
@@ -58,5 +57,58 @@ pub fn install(cx: &mut App) {
             ],
             disabled: false,
         },
-    ]);
+    ]
+}
+
+fn maple_menu_items(macos: bool) -> Vec<MenuItem> {
+    let mut items = vec![
+        MenuItem::action("Settings…", chat::OpenAppSettings),
+        MenuItem::separator(),
+        MenuItem::os_submenu("Services", SystemMenuType::Services),
+        MenuItem::separator(),
+    ];
+    if macos {
+        items.extend([
+            MenuItem::action("Hide Maple", crate::desktop::Hide),
+            MenuItem::action("Hide Others", crate::desktop::HideOthers),
+            MenuItem::action("Show All", crate::desktop::ShowAll),
+            MenuItem::separator(),
+        ]);
+    }
+    items.push(MenuItem::action("Quit Maple", crate::desktop::QuitApp));
+    items
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn maple_action_names(macos: bool) -> Vec<String> {
+        maple_menu_items(macos)
+            .into_iter()
+            .filter_map(|item| match item {
+                MenuItem::Action { name, .. } => Some(name.to_string()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn macos_application_menu_has_standard_hide_commands() {
+        assert_eq!(
+            maple_action_names(true),
+            [
+                "Settings…",
+                "Hide Maple",
+                "Hide Others",
+                "Show All",
+                "Quit Maple",
+            ]
+        );
+    }
+
+    #[test]
+    fn other_platforms_omit_hide_commands() {
+        assert_eq!(maple_action_names(false), ["Settings…", "Quit Maple"]);
+    }
 }

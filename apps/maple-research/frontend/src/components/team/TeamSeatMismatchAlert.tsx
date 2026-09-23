@@ -5,6 +5,7 @@ import { AlertTriangle, Users } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { getBillingService } from "@/billing/billingService";
 import type { TeamStatus } from "@/types/team";
+import { isIOS } from "@/utils/platform";
 import { formatTeamSeatMismatchMessage, getTeamSeatMismatch } from "@/utils/teamSeats";
 
 export function TeamSeatMismatchAlert() {
@@ -45,7 +46,7 @@ export function TeamSeatMismatchAlert() {
               <h4 className="text-sm font-medium leading-tight">Team usage paused</h4>
               <p className="mt-1 text-xs font-medium text-destructive">{summary}</p>
               <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
-                {formatTeamSeatMismatchMessage(mismatch, isAdmin ? "admin" : "member")}
+                {formatTeamSeatMismatchMessage(mismatch, isAdmin ? "admin" : "member", !isIOS())}
               </p>
             </div>
             <div className="flex justify-end">

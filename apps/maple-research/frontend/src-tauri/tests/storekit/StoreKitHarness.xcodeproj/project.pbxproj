@@ -1,0 +1,39 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {};
+	objectVersion = 56;
+	objects = {
+		100000000000000000000001 = {isa = PBXBuildFile; fileRef = 200000000000000000000001; };
+		100000000000000000000002 = {isa = PBXBuildFile; fileRef = 200000000000000000000002; };
+		100000000000000000000003 = {isa = PBXBuildFile; fileRef = 200000000000000000000003; };
+		100000000000000000000004 = {isa = PBXBuildFile; fileRef = 200000000000000000000006; };
+		200000000000000000000001 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HarnessHost.swift; sourceTree = "<group>"; };
+		200000000000000000000002 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MapleStoreKitUITests.swift; sourceTree = "<group>"; };
+		200000000000000000000003 = {isa = PBXFileReference; lastKnownFileType = text; path = Maple.storekit; sourceTree = "<group>"; };
+		200000000000000000000004 = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = StoreKitHarnessHost.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		200000000000000000000005 = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = MapleStoreKitUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		200000000000000000000006 = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; path = Developer/Library/Frameworks/StoreKitTest.framework; sourceTree = SDKROOT; };
+		300000000000000000000001 = {isa = PBXGroup; children = (200000000000000000000001, 200000000000000000000002, 200000000000000000000003, 200000000000000000000006, 300000000000000000000002); sourceTree = "<group>"; };
+		300000000000000000000002 = {isa = PBXGroup; children = (200000000000000000000004, 200000000000000000000005); name = Products; sourceTree = "<group>"; };
+		400000000000000000000001 = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (100000000000000000000001); runOnlyForDeploymentPostprocessing = 0; };
+		400000000000000000000002 = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (100000000000000000000002); runOnlyForDeploymentPostprocessing = 0; };
+		400000000000000000000003 = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (100000000000000000000003); runOnlyForDeploymentPostprocessing = 0; };
+		400000000000000000000004 = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (100000000000000000000004); runOnlyForDeploymentPostprocessing = 0; };
+		500000000000000000000001 = {isa = PBXNativeTarget; buildConfigurationList = 700000000000000000000002; buildPhases = (400000000000000000000001); buildRules = (); dependencies = (); name = StoreKitHarnessHost; productName = StoreKitHarnessHost; productReference = 200000000000000000000004; productType = "com.apple.product-type.application"; };
+		500000000000000000000002 = {isa = PBXNativeTarget; buildConfigurationList = 700000000000000000000003; buildPhases = (400000000000000000000002, 400000000000000000000004, 400000000000000000000003); buildRules = (); dependencies = (800000000000000000000002); name = MapleStoreKitUITests; productName = MapleStoreKitUITests; productReference = 200000000000000000000005; productType = "com.apple.product-type.bundle.ui-testing"; };
+		600000000000000000000001 = {isa = PBXProject; attributes = {BuildIndependentTargetsInParallel = YES; LastSwiftUpdateCheck = 2600; LastUpgradeCheck = 2600; TargetAttributes = {500000000000000000000001 = {CreatedOnToolsVersion = 26.5; }; 500000000000000000000002 = {CreatedOnToolsVersion = 26.5; TestTargetID = 500000000000000000000001; }; }; }; buildConfigurationList = 700000000000000000000001; compatibilityVersion = "Xcode 14.0"; developmentRegion = en; hasScannedForEncodings = 0; knownRegions = (en, Base); mainGroup = 300000000000000000000001; productRefGroup = 300000000000000000000002; projectDirPath = ""; projectRoot = ""; targets = (500000000000000000000001, 500000000000000000000002); };
+		700000000000000000000001 = {isa = XCConfigurationList; buildConfigurations = (900000000000000000000001, 900000000000000000000002); defaultConfigurationIsVisible = 0; defaultConfigurationName = Debug; };
+		700000000000000000000002 = {isa = XCConfigurationList; buildConfigurations = (900000000000000000000003, 900000000000000000000004); defaultConfigurationIsVisible = 0; defaultConfigurationName = Debug; };
+		700000000000000000000003 = {isa = XCConfigurationList; buildConfigurations = (900000000000000000000005, 900000000000000000000006); defaultConfigurationIsVisible = 0; defaultConfigurationName = Debug; };
+		800000000000000000000001 = {isa = PBXContainerItemProxy; containerPortal = 600000000000000000000001; proxyType = 1; remoteGlobalIDString = 500000000000000000000001; remoteInfo = StoreKitHarnessHost; };
+		800000000000000000000002 = {isa = PBXTargetDependency; target = 500000000000000000000001; targetProxy = 800000000000000000000001; };
+		900000000000000000000001 = {isa = XCBuildConfiguration; buildSettings = {ALWAYS_SEARCH_USER_PATHS = NO; CLANG_ENABLE_MODULES = YES; IPHONEOS_DEPLOYMENT_TARGET = 17.0; SDKROOT = iphoneos; SWIFT_VERSION = 5.0; TARGETED_DEVICE_FAMILY = "1,2"; DEBUG_INFORMATION_FORMAT = dwarf; ENABLE_TESTABILITY = YES; SWIFT_OPTIMIZATION_LEVEL = "-Onone"; }; name = Debug; };
+		900000000000000000000002 = {isa = XCBuildConfiguration; buildSettings = {ALWAYS_SEARCH_USER_PATHS = NO; CLANG_ENABLE_MODULES = YES; IPHONEOS_DEPLOYMENT_TARGET = 17.0; SDKROOT = iphoneos; SWIFT_VERSION = 5.0; TARGETED_DEVICE_FAMILY = "1,2"; }; name = Release; };
+		900000000000000000000003 = {isa = XCBuildConfiguration; buildSettings = {CODE_SIGN_STYLE = Automatic; GENERATE_INFOPLIST_FILE = YES; INFOPLIST_KEY_UILaunchScreen_Generation = YES; PRODUCT_BUNDLE_IDENTIFIER = cloud.opensecret.maple.storekit.harnesshost; PRODUCT_NAME = "$(TARGET_NAME)"; SUPPORTED_PLATFORMS = iphonesimulator; }; name = Debug; };
+		900000000000000000000004 = {isa = XCBuildConfiguration; buildSettings = {CODE_SIGN_STYLE = Automatic; GENERATE_INFOPLIST_FILE = YES; INFOPLIST_KEY_UILaunchScreen_Generation = YES; PRODUCT_BUNDLE_IDENTIFIER = cloud.opensecret.maple.storekit.harnesshost; PRODUCT_NAME = "$(TARGET_NAME)"; SUPPORTED_PLATFORMS = iphonesimulator; }; name = Release; };
+		900000000000000000000005 = {isa = XCBuildConfiguration; buildSettings = {CODE_SIGN_STYLE = Automatic; ENABLE_TESTING_SEARCH_PATHS = YES; GENERATE_INFOPLIST_FILE = YES; LD_RUNPATH_SEARCH_PATHS = ("$(inherited)", "@executable_path/Frameworks", "@loader_path/Frameworks"); PRODUCT_BUNDLE_IDENTIFIER = cloud.opensecret.maple.storekit.uitests; PRODUCT_NAME = "$(TARGET_NAME)"; SUPPORTED_PLATFORMS = iphonesimulator; TEST_TARGET_NAME = StoreKitHarnessHost; }; name = Debug; };
+		900000000000000000000006 = {isa = XCBuildConfiguration; buildSettings = {CODE_SIGN_STYLE = Automatic; ENABLE_TESTING_SEARCH_PATHS = YES; GENERATE_INFOPLIST_FILE = YES; LD_RUNPATH_SEARCH_PATHS = ("$(inherited)", "@executable_path/Frameworks", "@loader_path/Frameworks"); PRODUCT_BUNDLE_IDENTIFIER = cloud.opensecret.maple.storekit.uitests; PRODUCT_NAME = "$(TARGET_NAME)"; SUPPORTED_PLATFORMS = iphonesimulator; TEST_TARGET_NAME = StoreKitHarnessHost; }; name = Release; };
+	};
+	rootObject = 600000000000000000000001;
+}

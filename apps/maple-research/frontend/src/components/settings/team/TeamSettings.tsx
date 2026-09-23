@@ -27,6 +27,7 @@ import { Label } from "@/components/ui/label";
 import { useSettingsNavigationLock } from "@/contexts/SettingsNavigationLockContext";
 import { useBillingState } from "@/state/useLocalState";
 import type { TeamStatus } from "@/types/team";
+import { isIOS } from "@/utils/platform";
 import {
   formatTeamSeatMismatchMessage,
   getTeamSeatCounts,
@@ -166,7 +167,9 @@ function TeamMemberDashboard({ teamStatus }: { teamStatus: TeamStatus }) {
           <AlertTriangle className="h-4 w-4" />
           <AlertDescription>
             <p className="font-medium">Team usage is paused</p>
-            <p className="mt-1 text-sm">{formatTeamSeatMismatchMessage(seatMismatch, "member")}</p>
+            <p className="mt-1 text-sm">
+              {formatTeamSeatMismatchMessage(seatMismatch, "member", !isIOS())}
+            </p>
           </AlertDescription>
         </Alert>
       )}
@@ -351,7 +354,9 @@ function TeamAdminDashboard({ teamStatus }: { teamStatus: TeamStatus }) {
           <AlertTriangle className="h-4 w-4" />
           <AlertDescription>
             <p className="font-medium">Team usage is paused</p>
-            <p className="mt-1 text-sm">{formatTeamSeatMismatchMessage(seatMismatch, "admin")}</p>
+            <p className="mt-1 text-sm">
+              {formatTeamSeatMismatchMessage(seatMismatch, "admin", !isIOS())}
+            </p>
             <div className="mt-4 flex flex-col gap-2 lg:flex-row">
               <Button
                 type="button"
@@ -363,7 +368,7 @@ function TeamAdminDashboard({ teamStatus }: { teamStatus: TeamStatus }) {
                 <Users className="mr-1.5 h-3.5 w-3.5" />
                 Manage members
               </Button>
-              {canOpenBillingPortal && (
+              {canOpenBillingPortal && !isIOS() && (
                 <Button
                   type="button"
                   variant="outline"

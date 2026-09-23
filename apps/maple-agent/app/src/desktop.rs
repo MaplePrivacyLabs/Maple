@@ -9,7 +9,7 @@ use gpui::{
     div, prelude::*, px, size,
 };
 
-actions!(maple_app, [QuitApp]);
+actions!(maple_app, [QuitApp, Hide, HideOthers, ShowAll]);
 
 use crate::backend::AgentBackend;
 use crate::ui;
@@ -231,6 +231,7 @@ impl MapleApp {
         cx: &mut Context<Self>,
     ) -> Result<(), String> {
         let mut overrides = self.settings.shortcut_overrides.clone();
+        crate::shortcuts::migrate_renamed_slots(&mut overrides);
         match change {
             ShortcutSettingsChange::Set {
                 slot_id,
@@ -401,6 +402,12 @@ pub fn run() {
             }
             ui::spell::preload();
             cx.on_action(|_: &QuitApp, cx| cx.quit());
+            #[cfg(target_os = "macos")]
+            {
+                cx.on_action(|_: &Hide, cx| cx.hide());
+                cx.on_action(|_: &HideOthers, cx| cx.hide_other_apps());
+                cx.on_action(|_: &ShowAll, cx| cx.unhide_other_apps());
+            }
             let shortcut_runtime = crate::shortcuts::ShortcutRuntime::bootstrap(
                 &startup_settings.shortcut_overrides,
                 cx,

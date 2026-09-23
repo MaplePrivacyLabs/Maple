@@ -4736,6 +4736,7 @@ dependencies = [
  "tauri-plugin-deep-link",
  "tauri-plugin-dialog",
  "tauri-plugin-fs",
+ "tauri-plugin-iap",
  "tauri-plugin-log",
  "tauri-plugin-opener",
  "tauri-plugin-os",
@@ -8579,6 +8580,17 @@ dependencies = [
  "thiserror 2.0.18",
  "toml 1.1.0+spec-1.1.0",
  "url",
+]
+
+[[package]]
+name = "tauri-plugin-iap"
+version = "0.10.0-rc.10"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tauri",
+ "tauri-plugin",
+ "thiserror 2.0.18",
 ]
 
 [[package]]

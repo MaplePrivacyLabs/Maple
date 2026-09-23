@@ -35,7 +35,7 @@ export function ConversationProjectPicker({
   const isProjectSelected = !!selectedProject;
 
   return (
-    <DropdownMenu>
+    <DropdownMenu modal={false}>
       <DropdownMenuTrigger asChild>
         <Button
           type="button"

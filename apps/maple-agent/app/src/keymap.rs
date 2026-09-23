@@ -8,10 +8,10 @@ use std::rc::Rc;
 use gpui::{Action, App, DummyKeyboardMapper, KeyBinding, KeyBindingContextPredicate};
 
 use crate::{
-    desktop::QuitApp,
+    desktop::{Hide, HideOthers, QuitApp},
     ui::{
         application_vim::{self, SpatialDirection},
-        chat,
+        chat, popup,
         text_input::{
             self,
             vim::{
@@ -27,7 +27,7 @@ pub(crate) enum ShortcutCategory {
     Application,
     Chat,
     Transcript,
-    ProjectMenu,
+    Menus,
     TextEditing,
     ComposerVim,
     ApplicationVim,
@@ -39,7 +39,7 @@ impl ShortcutCategory {
             Self::Application => "Application",
             Self::Chat => "Chat",
             Self::Transcript => "Transcript",
-            Self::ProjectMenu => "Project Menu",
+            Self::Menus => "Menus",
             Self::TextEditing => "Text Editing",
             Self::ComposerVim => "Composer Vim",
             Self::ApplicationVim => "Application Vim",
@@ -50,6 +50,8 @@ impl ShortcutCategory {
 #[derive(Clone, Copy)]
 enum SlotAction {
     QuitApp,
+    Hide,
+    HideOthers,
     ChatEscape,
     NewTask,
     FocusSearch,
@@ -63,9 +65,12 @@ enum SlotAction {
     PickQuestionOption(usize),
     CopySelection,
     SelectAllTranscript,
-    RootMenuPrevious,
-    RootMenuNext,
-    RootMenuConfirm,
+    MenuPrevious,
+    MenuNext,
+    MenuFirst,
+    MenuLast,
+    MenuConfirm,
+    MenuCancel,
     Backspace,
     Delete,
     Left,
@@ -140,6 +145,8 @@ impl SlotAction {
     fn build(self) -> Box<dyn Action> {
         match self {
             Self::QuitApp => Box::new(QuitApp),
+            Self::Hide => Box::new(Hide),
+            Self::HideOthers => Box::new(HideOthers),
             Self::ChatEscape => Box::new(chat::ChatEscape),
             Self::NewTask => Box::new(chat::NewTask),
             Self::FocusSearch => Box::new(chat::FocusSearch),
@@ -153,9 +160,12 @@ impl SlotAction {
             Self::PickQuestionOption(index) => Box::new(chat::PickQuestionOption { index }),
             Self::CopySelection => Box::new(chat::CopySelection),
             Self::SelectAllTranscript => Box::new(chat::SelectAllTranscript),
-            Self::RootMenuPrevious => Box::new(chat::RootMenuPrevious),
-            Self::RootMenuNext => Box::new(chat::RootMenuNext),
-            Self::RootMenuConfirm => Box::new(chat::RootMenuConfirm),
+            Self::MenuPrevious => Box::new(popup::SelectPrevious),
+            Self::MenuNext => Box::new(popup::SelectNext),
+            Self::MenuFirst => Box::new(popup::SelectFirst),
+            Self::MenuLast => Box::new(popup::SelectLast),
+            Self::MenuConfirm => Box::new(popup::Confirm),
+            Self::MenuCancel => Box::new(popup::Cancel),
             Self::Backspace => Box::new(text_input::Backspace),
             Self::Delete => Box::new(text_input::Delete),
             Self::Left => Box::new(text_input::Left),
@@ -260,6 +270,22 @@ fn slot(
         action,
     }
 }
+
+/// Slot ids renamed since they could be customized, and their current ids.
+/// A saved override under an old id still applies to the renamed slot.
+pub(crate) const RENAMED_SLOT_IDS: &[(&str, &str)] = &[
+    ("project_menu.previous", "menu.previous"),
+    ("project_menu.next", "menu.next"),
+    ("project_menu.confirm", "menu.confirm"),
+    (
+        "application_vim.project_menu.previous",
+        "application_vim.menu.previous",
+    ),
+    (
+        "application_vim.project_menu.next",
+        "application_vim.menu.next",
+    ),
+];
 
 /// Word and line shortcuts while Vim is off or in Insert. Normal and
 /// Visual keep `b`/`w`/`e`/`$`. A plain `TextInput` predicate would still
@@ -388,6 +414,29 @@ fn catalog_for(os: HostOs) -> Vec<ShortcutSlot> {
             SlotAction::AllowPermission,
         ),
     ];
+    if matches!(os, HostOs::Macos) {
+        slots.splice(
+            1..1,
+            [
+                slot(
+                    "app.hide",
+                    "Hide Maple",
+                    ShortcutCategory::Application,
+                    None,
+                    "cmd-h",
+                    SlotAction::Hide,
+                ),
+                slot(
+                    "app.hide_others",
+                    "Hide Others",
+                    ShortcutCategory::Application,
+                    None,
+                    "alt-cmd-h",
+                    SlotAction::HideOthers,
+                ),
+            ],
+        );
+    }
     for (id, label, sequence, index) in [
         (
             "chat.pick_question_option_1",
@@ -471,28 +520,60 @@ fn catalog_for(os: HostOs) -> Vec<ShortcutSlot> {
             SlotAction::SelectAllTranscript,
         ),
         slot(
-            "project_menu.previous",
-            "Previous project menu item",
-            ShortcutCategory::ProjectMenu,
-            Some("RootMenu"),
+            "menu.previous",
+            "Previous menu item",
+            ShortcutCategory::Menus,
+            Some(popup::MENU_CONTEXT),
             "up",
-            SlotAction::RootMenuPrevious,
+            SlotAction::MenuPrevious,
         ),
         slot(
-            "project_menu.next",
-            "Next project menu item",
-            ShortcutCategory::ProjectMenu,
-            Some("RootMenu"),
+            "menu.next",
+            "Next menu item",
+            ShortcutCategory::Menus,
+            Some(popup::MENU_CONTEXT),
             "down",
-            SlotAction::RootMenuNext,
+            SlotAction::MenuNext,
         ),
         slot(
-            "project_menu.confirm",
-            "Choose project menu item",
-            ShortcutCategory::ProjectMenu,
-            Some("RootMenu"),
+            "menu.first",
+            "First menu item",
+            ShortcutCategory::Menus,
+            Some(popup::MENU_CONTEXT),
+            "home",
+            SlotAction::MenuFirst,
+        ),
+        slot(
+            "menu.last",
+            "Last menu item",
+            ShortcutCategory::Menus,
+            Some(popup::MENU_CONTEXT),
+            "end",
+            SlotAction::MenuLast,
+        ),
+        slot(
+            "menu.confirm",
+            "Choose menu item",
+            ShortcutCategory::Menus,
+            Some(popup::MENU_CONTEXT),
             "enter",
-            SlotAction::RootMenuConfirm,
+            SlotAction::MenuConfirm,
+        ),
+        slot(
+            "menu.confirm.space",
+            "Choose menu item with Space",
+            ShortcutCategory::Menus,
+            Some(popup::MENU_CONTEXT),
+            "space",
+            SlotAction::MenuConfirm,
+        ),
+        slot(
+            "menu.cancel",
+            "Close menu",
+            ShortcutCategory::Menus,
+            Some(popup::MENU_CONTEXT),
+            "escape",
+            SlotAction::MenuCancel,
         ),
     ]);
 
@@ -1146,23 +1227,35 @@ fn add_application_vim_slots(slots: &mut Vec<ShortcutSlot>) {
 
     for (id, label, sequence, action) in [
         (
-            "application_vim.project_menu.previous",
-            "Application Vim previous project menu item",
+            "application_vim.menu.previous",
+            "Application Vim previous menu item",
             "k",
-            SlotAction::ApplicationVimPrevious,
+            SlotAction::MenuPrevious,
         ),
         (
-            "application_vim.project_menu.next",
-            "Application Vim next project menu item",
+            "application_vim.menu.next",
+            "Application Vim next menu item",
             "j",
-            SlotAction::ApplicationVimNext,
+            SlotAction::MenuNext,
+        ),
+        (
+            "application_vim.menu.first",
+            "Application Vim first menu item",
+            "g g",
+            SlotAction::MenuFirst,
+        ),
+        (
+            "application_vim.menu.last",
+            "Application Vim last menu item",
+            "G",
+            SlotAction::MenuLast,
         ),
     ] {
         slots.push(slot(
             id,
             label,
             ShortcutCategory::ApplicationVim,
-            Some(application_vim::ROOT_MENU_CONTEXT),
+            Some(application_vim::MENU_CONTEXT),
             sequence,
             action,
         ));
@@ -1529,11 +1622,13 @@ mod tests {
                     .iter()
                     .filter(|slot| slot.category == ShortcutCategory::ApplicationVim)
                     .count(),
-                41
+                43
             );
             for (id, sequence) in [
                 ("app.quit", "secondary-q"),
-                ("project_menu.confirm", "enter"),
+                ("menu.confirm", "enter"),
+                ("menu.cancel", "escape"),
+                ("application_vim.menu.first", "g g"),
                 ("text_input.character_palette", "ctrl-cmd-space"),
                 ("application_vim.previous_annotation", "[ d"),
                 ("application_vim.next_annotation", "] d"),
@@ -1554,8 +1649,18 @@ mod tests {
         let mac = catalog_for(HostOs::Macos);
         let linux = catalog_for(HostOs::Linux);
         let windows = catalog_for(HostOs::Windows);
-        assert_eq!(mac.len(), linux.len() + 14);
+        assert_eq!(mac.len(), linux.len() + 16);
         assert_eq!(linux.len(), windows.len());
+        assert_eq!(sequence(&mac, "app.hide"), "cmd-h");
+        assert_eq!(sequence(&mac, "app.hide_others"), "alt-cmd-h");
+        for id in ["app.hide", "app.hide_others"] {
+            assert!(linux.iter().all(|slot| slot.id != id), "{id} off Linux");
+            assert!(windows.iter().all(|slot| slot.id != id), "{id} off Windows");
+        }
+        for slot in &mac {
+            build_binding(slot, slot.default_sequence)
+                .unwrap_or_else(|error| panic!("macOS shortcut '{}' is invalid: {error}", slot.id));
+        }
         for (id, mac_sequence, other_sequence) in [
             ("text_input.word_left", "alt-left", "ctrl-left"),
             ("text_input.word_right", "alt-right", "ctrl-right"),

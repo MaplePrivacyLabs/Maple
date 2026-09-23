@@ -9,6 +9,7 @@ pub mod login;
 pub mod markdown;
 pub mod menus;
 pub mod motion;
+pub(crate) mod popup;
 pub mod rich_text;
 pub mod scrollbar;
 pub mod settings;
