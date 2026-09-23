@@ -26,7 +26,8 @@
 //! - The panel draws above everything and blocks the pointer from what
 //!   lies beneath it. It opens on its preferred side of the trigger, flips
 //!   to the other side when only that one has room, and stays inside the
-//!   window, so it never covers its own trigger while there is room.
+//!   window, so it never covers its own trigger while there is room. In a
+//!   window smaller than the menu, it narrows and scrolls.
 //! - Assistive technology sees a button that reports whether its popup is
 //!   expanded, a named menu of named items, and the highlighted item as the
 //!   focused one.
@@ -68,6 +69,12 @@ gpui::actions!(
 const GAP: Pixels = px(4.);
 /// Closest a menu comes to the window edge.
 const WINDOW_MARGIN: Pixels = px(8.);
+
+/// [`WINDOW_MARGIN`] past any inset the window draws around its content
+/// (client-side decorations).
+fn window_margin(window: &Window) -> Pixels {
+    WINDOW_MARGIN + window.client_inset().unwrap_or_default()
+}
 
 /// The popups that hold focus, or held it and have not handed it back yet,
 /// across the app. Each entry keeps what other popups need to know about
@@ -509,6 +516,13 @@ impl<V: 'static, K: Clone + PartialEq + 'static> Popup<V, K> {
         // has focus: `g g` must not hold back a "g" typed into a field
         // inside it.
         let vim = application_vim && self.focus.is_focused(window);
+        // The panel never outgrows the window: a narrower window narrows
+        // it, and a shorter one scrolls it.
+        let margin = window_margin(window);
+        let viewport = window.viewport_size();
+        let room_width = (viewport.width - margin * 2.).max(px(0.));
+        let room_height = (viewport.height - margin * 2.).max(px(0.));
+        let max_height = max_height.map_or(room_height, |height| height.min(room_height));
 
         let focus = self.focus.clone();
         let panel = widgets::popup_panel(id.clone(), width)
@@ -516,12 +530,10 @@ impl<V: 'static, K: Clone + PartialEq + 'static> Popup<V, K> {
             .key_context(if vim { MENU_VIM_CONTEXT } else { MENU_CONTEXT })
             .track_focus(&self.focus)
             .when_some(label, |panel, label| panel.aria_label(label))
-            .when_some(max_height, |panel, height| {
-                panel
-                    .max_h(height)
-                    .overflow_y_scroll()
-                    .track_scroll(&self.scroll)
-            })
+            .max_w(room_width)
+            .max_h(max_height)
+            .overflow_y_scroll()
+            .track_scroll(&self.scroll)
             .on_mouse_down_out(cx.listener(move |view, _: &MouseDownEvent, window, cx| {
                 if !over_inner_menu(&focus, window, cx) {
                     get(view).close(cx);
@@ -751,7 +763,7 @@ impl Element for Float {
             return;
         };
         let size = panel.layout_as_root(AvailableSpace::min_size(), window, cx);
-        let margin = WINDOW_MARGIN + window.client_inset().unwrap_or_default();
+        let margin = window_margin(window);
         let origin = self
             .placement
             .origin(bounds, size, window.viewport_size(), margin);
@@ -813,7 +825,8 @@ impl<V: 'static> Menu<V> {
         self
     }
 
-    /// Scroll past this height.
+    /// Scroll past this height. Every menu also scrolls when the window
+    /// is shorter than it.
     pub(crate) fn max_height(mut self, height: Pixels) -> Self {
         self.max_height = Some(height);
         self
@@ -1575,6 +1588,39 @@ mod tests {
         assert!(
             menu.top() <= row.top() && row.bottom() <= menu.bottom(),
             "the row {row:?} is scrolled into the menu {menu:?}"
+        );
+    }
+
+    /// A window smaller than a menu narrows the menu and scrolls it, so all
+    /// of it stays inside the window and every row can still be reached.
+    #[gpui::test]
+    fn a_menu_larger_than_the_window_fits_inside_it(cx: &mut TestAppContext) {
+        let (host, cx) = setup(cx);
+        // Narrower and shorter than menu A.
+        let window = size(px(140.), px(100.));
+        cx.simulate_resize(window);
+        cx.run_until_parked();
+        click(cx, "a-trigger");
+        assert_eq!(open(&host, cx), Some(Which::A));
+        let menu = cx.debug_bounds("menu-a").expect("menu");
+        let inside = Bounds::new(
+            point(WINDOW_MARGIN, WINDOW_MARGIN),
+            size(
+                window.width - WINDOW_MARGIN * 2.,
+                window.height - WINDOW_MARGIN * 2.,
+            ),
+        );
+        assert!(
+            inside.contains(&menu.origin)
+                && menu.right() <= inside.right()
+                && menu.bottom() <= inside.bottom(),
+            "the menu {menu:?} fits inside {inside:?}"
+        );
+        cx.simulate_keystrokes("end");
+        let row = cx.debug_bounds("a-sub").expect("row");
+        assert!(
+            menu.top() <= row.top() && row.bottom() <= menu.bottom(),
+            "the last row {row:?} scrolls into the menu {menu:?}"
         );
     }
 
