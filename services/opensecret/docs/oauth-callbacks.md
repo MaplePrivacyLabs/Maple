@@ -72,6 +72,44 @@ The callback request does not accept a separate redirect override. Changing
 the callback inside the returned state cannot change the server's stored
 selection.
 
+## Additional native Apple apps
+
+An Apple provider settings object also accepts `additional_native_client_ids`
+when several native apps use the same project:
+
+```json
+{
+  "client_id": "com.example.app",
+  "additional_native_client_ids": ["com.example.app.dev"],
+  "redirect_url": "https://app.example.com/auth/apple/callback"
+}
+```
+
+This is a nested settings example; preserve the other provider settings and
+enabled flags when making the whole-object PUT. Only the project's configured
+`client_id` and these explicit additions are accepted as audiences at
+`/auth/apple/native`. There is no wildcard, prefix, case-insensitive, or
+caller-selected audience matching. Signature, issuer, expiry, supplied nonce,
+and verified subject checks still apply. The list accepts at most 16 entries;
+each must be 1–255 ASCII letters, digits, periods or hyphens, with no empty
+period-separated segments.
+
+The existing `client_id` remains the default native audience and still selects
+the web flow's Services ID (`client_id` with `.services` appended if needed).
+Additional native IDs do not change any web audience, client secret, or OAuth
+callback. Leave the existing client ID unchanged when adding a development app.
+Absent or null on PUT preserves the stored native list under the same project
+lock as additional callbacks; an explicit list replaces it and `[]` clears it.
+Existing rows require no SQL migration, and projects without the field retain
+their original audience behavior.
+
+Deploy this backend support before an owner or administrator adds the new
+bundle ID through the encrypted platform settings API. Then verify read-back
+and native sign-in from the actual signed app. Apple Developer registration and
+Sign in with Apple capability configuration are separate prerequisites. An
+older backend rejects the added native audience and may discard its settings
+on PUT; stop dependent clients before downgrading.
+
 ## Compatibility and adoption
 
 Deploy backend support before a client selects a non-default callback.

@@ -14,6 +14,25 @@ CARGO_HOME_DIR="${CARGO_HOME:-${HOME:-}/.cargo}"
 RUSTUP_HOME_DIR="${RUSTUP_HOME:-${HOME:-}/.rustup}"
 PATH_PREFIX_MAP_FLAGS="-ffile-prefix-map=${REPO_ROOT}=/maple -fmacro-prefix-map=${REPO_ROOT}=/maple -fdebug-prefix-map=${REPO_ROOT}=/maple -ffile-prefix-map=${CARGO_HOME_DIR}=/cargo -fmacro-prefix-map=${CARGO_HOME_DIR}=/cargo -fdebug-prefix-map=${CARGO_HOME_DIR}=/cargo -ffile-prefix-map=${RUSTUP_HOME_DIR}=/rustup -fmacro-prefix-map=${RUSTUP_HOME_DIR}=/rustup -fdebug-prefix-map=${RUSTUP_HOME_DIR}=/rustup"
 
+# Tauri forwards only selected environment prefixes into Xcode's Rust build.
+# Carry these public compile-time values through Cargo's generated environment
+# so a Dev frontend cannot silently get production callback/PCR defaults.
+IOS_NATIVE_VARIANT="${MAPLE_IOS_VARIANT:-production}"
+IOS_FRONTEND_VARIANT="${VITE_MAPLE_APP_VARIANT:-production}"
+IOS_PCR_ENVIRONMENT="${VITE_OPEN_SECRET_PCR_ENVIRONMENT:-production}"
+case "${IOS_NATIVE_VARIANT}:${IOS_FRONTEND_VARIANT}" in
+    production:production|dev:dev) ;;
+    *) echo "iOS and frontend Maple app variants must agree." >&2; exit 1 ;;
+esac
+case "${IOS_PCR_ENVIRONMENT}" in
+    production|development) ;;
+    *) echo "Invalid iOS PCR environment." >&2; exit 1 ;;
+esac
+if [ "${IOS_NATIVE_VARIANT}" = dev ] && [ "${IOS_PCR_ENVIRONMENT}" != development ]; then
+    echo "Maple Dev requires the development PCR environment." >&2
+    exit 1
+fi
+
 # Check if xcframework exists
 if [ ! -d "$XCFRAMEWORK_DIR" ]; then
     echo "Error: ONNX Runtime xcframework not found at: $XCFRAMEWORK_DIR"
@@ -44,6 +63,9 @@ rustflags = [
 ]
 
 [env]
+MAPLE_IOS_VARIANT = { value = "${IOS_NATIVE_VARIANT}", force = true }
+VITE_MAPLE_APP_VARIANT = { value = "${IOS_FRONTEND_VARIANT}", force = true }
+VITE_OPEN_SECRET_PCR_ENVIRONMENT = { value = "${IOS_PCR_ENVIRONMENT}", force = true }
 CFLAGS = { value = "${PATH_PREFIX_MAP_FLAGS}", force = true }
 CXXFLAGS = { value = "${PATH_PREFIX_MAP_FLAGS}", force = true }
 OBJCFLAGS = { value = "${PATH_PREFIX_MAP_FLAGS}", force = true }

@@ -750,6 +750,16 @@
             touch "$out"
           '';
 
+          ios-build-profile = pkgs.runCommand "maple-ios-build-profile-check" {
+            nativeBuildInputs = with pkgs; [ bash python3 unzip ];
+            src = ./.;
+          } ''
+            cd "$src"
+            python3 scripts/ci/test_ios_build_profile.py
+            python3 scripts/ci/test_ios_release_signing.py
+            touch "$out"
+          '';
+
           pages = pkgs.runCommand "maple-pages-deployment-check" {
             nativeBuildInputs = with pkgs; [ bash python3 yq-go ];
             src = ./.;

@@ -1,0 +1,229 @@
+name: Maple Dev TestFlight
+
+permissions:
+  contents: read
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+# Preserve each master push instead of replacing the pending build. This queue
+# is separate from production Maple; GitHub supports up to 100 pending runs.
+concurrency:
+  group: maple-ios-dev-testflight
+  cancel-in-progress: false
+  queue: max
+
+jobs:
+  build-ios-dev:
+    if: >-
+      github.repository == 'MaplePrivacyLabs/Maple' &&
+      github.ref == 'refs/heads/master' &&
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    environment: apple-signing
+    runs-on: macos-26-xlarge
+    timeout-minutes: 240
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+    outputs:
+      build_number: ${{ steps.identity.outputs.build_number }}
+      artifact_name: maple-ios-dev-${{ github.run_id }}-${{ steps.identity.outputs.build_number }}
+    steps:
+      - name: Checkout exact master event commit
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Allocate Maple Dev build identity
+        id: identity
+        env:
+          RUN_NUMBER: ${{ github.run_number }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          printf 'build_number=%s.%s\n' "${RUN_NUMBER}" "${RUN_ATTEMPT}" >> "${GITHUB_OUTPUT}"
+
+      # Match the existing production lane without sharing app build caches.
+      - name: Select Xcode 26.5
+        id: select_xcode
+        run: |
+          set -euo pipefail
+          for xcode_app in \
+            /Applications/Xcode_26.5.0.app \
+            /Applications/Xcode_26.5_beta_2.app \
+            /Applications/Xcode_26.5_beta.app
+          do
+            if [ -x "${xcode_app}/Contents/Developer/usr/bin/xcodebuild" ]; then
+              sudo xcode-select -s "${xcode_app}/Contents/Developer"
+              xcode_info="$(xcodebuild -version)"
+              printf '%s\n' "${xcode_info}"
+              printf 'build=%s\n' "$(printf '%s\n' "${xcode_info}" | awk '/^Build version / { print $3; exit }')" >> "${GITHUB_OUTPUT}"
+              exit 0
+            fi
+          done
+          echo "Xcode 26.5 is not installed on this runner." >&2
+          exit 1
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
+        with:
+          github-token: ""
+
+      - name: Cache Maple Dev Xcode DerivedData and SourcePackages
+        uses: irgaly/xcode-cache@4141f139f00e335c6e1031fb93e667181f86146f # v1
+        with:
+          key: maple-dev-xcode26.5-${{ steps.select_xcode.outputs.build }}-${{ hashFiles('apps/maple-research/frontend/src-tauri/Cargo.lock') }}
+          restore-keys: |
+            maple-dev-xcode26.5-${{ steps.select_xcode.outputs.build }}-
+
+      - name: Cache Maple Dev ONNX Runtime iOS artifact
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: apps/maple-research/frontend/src-tauri/onnxruntime-ios
+          key: maple-dev-onnxruntime-ios-1.23.2-xcode26.5-${{ steps.select_xcode.outputs.build }}-${{ hashFiles('flake.lock', 'flake.nix', 'scripts/ci/_common.sh', 'scripts/ci/ios-onnxruntime.sh', 'apps/maple-research/frontend/src-tauri/scripts/build-ios-onnxruntime-all.sh', 'apps/maple-research/frontend/src-tauri/scripts/canonicalize-static-archive.py', 'apps/maple-research/frontend/src-tauri/scripts/onnxruntime-pins.sh') }}
+          restore-keys: |
+            maple-dev-onnxruntime-ios-1.23.2-xcode26.5-${{ steps.select_xcode.outputs.build }}-
+
+      - name: Prepare ONNX Runtime iOS artifact
+        run: nix develop --no-update-lock-file .#apple -c ./scripts/ci/ios-onnxruntime.sh
+        timeout-minutes: 90
+
+      - name: Build signed Maple Dev for internal TestFlight
+        run: nix develop --no-update-lock-file .#apple -c ./scripts/ci/ios-release.sh
+        env:
+          MAPLE_IOS_VARIANT: dev
+          MAPLE_IOS_BUILD_NUMBER: ${{ steps.identity.outputs.build_number }}
+          MAPLE_IOS_DEV_AUTH_ORIGIN: ${{ vars.MAPLE_IOS_DEV_AUTH_ORIGIN }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_PRIVATE_KEY: ${{ secrets.APPLE_API_PRIVATE_KEY }}
+          APPLE_DEVELOPMENT_TEAM: ${{ secrets.APPLE_TEAM_ID }}
+          MAPLE_ENFORCE_IOS_SIGNED_REPRODUCIBILITY: "1"
+        timeout-minutes: 90
+
+      - name: Collect Maple Dev artifact checksums
+        run: |
+          nix develop --no-update-lock-file .#apple -c ./scripts/ci/attestation-manifest.sh \
+            ios-dev-artifacts.sha256 \
+            apps/maple-research/frontend/src-tauri/target/reproducibility/ios-dev/ios-release-final.sha256 \
+            apps/maple-research/frontend/src-tauri/target/reproducibility/ios-dev/*.sha256 \
+            apps/maple-research/frontend/src-tauri/target/reproducibility/ios-dev/*.txt \
+            apps/maple-research/frontend/src-tauri/target/ios-dev/ios-build-profile.json
+
+      - name: Attest Maple Dev artifacts
+        # As in the production lane, token-policy failures do not bypass the
+        # independent artifact and profile verification before TestFlight upload.
+        continue-on-error: true
+        uses: actions/attest@281a49d4cbb0a72c9575a50d18f6deb515a11deb # v4
+        with:
+          subject-checksums: ios-dev-artifacts.sha256
+
+      - name: Upload Maple Dev artifact and proofs
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: maple-ios-dev-${{ github.run_id }}-${{ steps.identity.outputs.build_number }}
+          path: |
+            apps/maple-research/frontend/src-tauri/target/ios-dev/Maple-Dev.ipa
+            apps/maple-research/frontend/src-tauri/target/ios-dev/ios-build-profile.json
+            apps/maple-research/frontend/src-tauri/target/reproducibility/ios-dev/*.sha256
+            apps/maple-research/frontend/src-tauri/target/reproducibility/ios-dev/*.txt
+          if-no-files-found: error
+          retention-days: 14
+
+  submit-ios-dev-testflight:
+    if: >-
+      github.repository == 'MaplePrivacyLabs/Maple' &&
+      github.ref == 'refs/heads/master' &&
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    needs: build-ios-dev
+    environment: apple-signing
+    runs-on: macos-26-xlarge
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    env:
+      MAPLE_IOS_BUILD_NUMBER: ${{ needs.build-ios-dev.outputs.build_number }}
+      MAPLE_IOS_DEV_AUTH_ORIGIN: ${{ vars.MAPLE_IOS_DEV_AUTH_ORIGIN }}
+    steps:
+      - name: Checkout exact verifier commit
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Select Xcode 26.5
+        run: |
+          set -euo pipefail
+          for xcode_app in \
+            /Applications/Xcode_26.5.0.app \
+            /Applications/Xcode_26.5_beta_2.app \
+            /Applications/Xcode_26.5_beta.app
+          do
+            if [ -x "${xcode_app}/Contents/Developer/usr/bin/xcodebuild" ]; then
+              sudo xcode-select -s "${xcode_app}/Contents/Developer"
+              xcodebuild -version
+              exit 0
+            fi
+          done
+          echo "Xcode 26.5 is not installed on this runner." >&2
+          exit 1
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
+        with:
+          github-token: ""
+
+      - name: Download this build's Maple Dev artifact
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: ${{ needs.build-ios-dev.outputs.artifact_name }}
+          path: artifacts
+
+      - name: Verify Maple Dev artifact reproducibility proofs
+        run: nix develop --no-update-lock-file .#ci -c ./scripts/ci/verify-release-artifacts.sh artifacts ios
+        env:
+          MAPLE_ENFORCE_IOS_SIGNED_REPRODUCIBILITY: "1"
+
+      - name: Verify downloaded Maple Dev identity and development services
+        run: |
+          nix develop --no-update-lock-file .#ci -c python3 scripts/ci/ios-build-profile.py \
+            verify-ipa artifacts/ios-dev/Maple-Dev.ipa --variant dev \
+            --source-sha "${GITHUB_SHA}" --build-number "${MAPLE_IOS_BUILD_NUMBER}" \
+            --report "${RUNNER_TEMP}/verified-ios-build-profile.json"
+          cmp artifacts/ios-dev/ios-build-profile.json "${RUNNER_TEMP}/verified-ios-build-profile.json"
+
+      - name: Submit verified Maple Dev IPA to internal TestFlight
+        env:
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_PRIVATE_KEY: ${{ secrets.APPLE_API_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "${APPLE_API_ISSUER}" ] || [ -z "${APPLE_API_KEY}" ] || [ -z "${APPLE_API_PRIVATE_KEY}" ]; then
+            echo "App Store Connect credentials are required to upload Maple Dev." >&2
+            exit 1
+          fi
+          umask 077
+          mkdir -p "${HOME}/.private_keys"
+          key_path="${HOME}/.private_keys/AuthKey_${APPLE_API_KEY}.p8"
+          trap 'rm -f "${key_path}"' EXIT
+          if ! printf '%s' "${APPLE_API_PRIVATE_KEY}" | base64 --decode > "${key_path}" 2>/dev/null; then
+            printf '%s' "${APPLE_API_PRIVATE_KEY}" | base64 -D > "${key_path}"
+          fi
+          xcrun altool --upload-app --type ios \
+            --file artifacts/ios-dev/Maple-Dev.ipa \
+            --apiKey "${APPLE_API_KEY}" --apiIssuer "${APPLE_API_ISSUER}"
+          {
+            printf '### Maple Dev uploaded to Apple\n\n'
+            printf '* Bundle: cloud.opensecret.maple.dev\n'
+            printf '* Source: %s\n' "${GITHUB_SHA}"
+            printf '* Build: %s\n' "${MAPLE_IOS_BUILD_NUMBER}"
+            printf '* Services: existing development authentication, billing, and flags\n'
+            printf '* Distribution: internal TestFlight only\n\n'
+            printf 'Apple processing and internal group availability must be checked separately.\n'
+          } >> "${GITHUB_STEP_SUMMARY}"

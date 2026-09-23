@@ -9,6 +9,8 @@ mod agent_acp;
 mod agent_host;
 #[cfg(desktop)]
 mod agent_tauri;
+#[cfg(test)]
+mod ios_app_variant;
 #[cfg(any(desktop, target_os = "ios"))]
 mod legacy_tts_cleanup;
 #[cfg(desktop)]
@@ -235,6 +237,13 @@ fn handle_desktop_run_event(app_handle: &tauri::AppHandle, event: tauri::RunEven
 
 // This handles incoming deep links
 fn handle_deep_link_event(url: &str, app: &tauri::AppHandle) {
+    // Maple Dev must never process a return intended for the installed production app.
+    if app.config().identifier == "cloud.opensecret.maple.dev"
+        && !tauri::Url::parse(url).is_ok_and(|url| url.scheme() == "cloud.opensecret.maple.dev")
+    {
+        log::warn!("[Deep Link] Ignoring callback for another app");
+        return;
+    }
     // OAuth callbacks carry bearer tokens in the query string, so never log the raw URL.
     log::info!("[Deep Link] Received callback");
     #[cfg(desktop)]

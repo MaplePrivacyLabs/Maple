@@ -91,6 +91,7 @@ jobs:
         run: nix develop --no-update-lock-file .#ci -c ./scripts/ci/web.sh
         env:
           MAPLE_WEB_ENVIRONMENT: pr
+          MAPLE_IOS_DEV_AUTH_ORIGIN: ${{ vars.MAPLE_IOS_DEV_AUTH_ORIGIN }}
 
       - name: Describe the preview artifact
         id: artifact

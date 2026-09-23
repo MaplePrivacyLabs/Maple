@@ -4,6 +4,7 @@ import { useOpenSecret } from "@mapleai/sdk";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Loader2 } from "lucide-react";
 import { AppleAuthProvider } from "@/components/AppleAuthProvider";
+import { hostedNativeAppVariant } from "@/config/mapleAppVariant";
 import {
   claimTransportV2DesktopOAuthInitiation,
   isCurrentDesktopOAuthTarget,
@@ -20,6 +21,7 @@ interface DesktopAuthSearchParams {
   transport: "v2";
   native_session_id: string;
   native_request_id: string;
+  native_app_variant?: "dev";
 }
 
 // This route handles OAuth flow for both desktop and mobile Tauri apps
@@ -39,11 +41,17 @@ export const Route = createFileRoute("/desktop-auth")({
     if (!isTransportV2PublicId(search.native_request_id)) {
       throw new Error("Desktop authentication native request is missing or invalid");
     }
+    const variant = hostedNativeAppVariant(
+      search.native_app_variant,
+      window.location.origin,
+      import.meta.env.VITE_OPEN_SECRET_API_URL
+    );
     return {
       provider,
       transport: "v2",
       native_session_id: search.native_session_id,
-      native_request_id: search.native_request_id
+      native_request_id: search.native_request_id,
+      ...(variant === "dev" ? { native_app_variant: "dev" as const } : {})
     };
   }
 });
@@ -51,7 +59,7 @@ export const Route = createFileRoute("/desktop-auth")({
 function DesktopAuth() {
   // Use the typed search params
   const search = Route.useSearch();
-  const { provider, native_session_id, native_request_id } = search;
+  const { provider, native_session_id, native_request_id, native_app_variant } = search;
   const navigate = useNavigate();
   const os = useOpenSecret();
   const currentOs = useRef(os);
@@ -66,7 +74,8 @@ function DesktopAuth() {
         const handoffTarget = {
           provider,
           nativeSessionId: native_session_id,
-          nativeRequestId: native_request_id
+          nativeRequestId: native_request_id,
+          ...(native_app_variant ? { nativeAppVariant: native_app_variant } : {})
         };
         // These public identifiers address one request already prepared by the
         // native SDK. Keep the exact pair in this browser tab across the
@@ -116,7 +125,7 @@ function DesktopAuth() {
     return () => {
       active.current = false;
     };
-  }, [provider, native_session_id, native_request_id, navigate]);
+  }, [provider, native_session_id, native_request_id, native_app_variant, navigate]);
 
   // Special handling for Apple OAuth - use popup instead of redirect
   if (provider === "apple") {

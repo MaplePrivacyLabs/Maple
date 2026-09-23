@@ -18,6 +18,7 @@ import { ProxyEventListener } from "./components/ProxyEventListener";
 import { UpdateEventListener } from "./components/UpdateEventListener";
 import { TTSProvider } from "./services/tts/TTSContext";
 import { openSecretClientConfig } from "./config/openSecretClientConfig";
+import { DevelopmentAppBadge } from "./components/DevelopmentAppBadge";
 
 // Create a new router instance
 const router = createRouter({
@@ -55,6 +56,7 @@ const queryClient = new QueryClient({
 export default function App() {
   return (
     <ThemeProvider>
+      <DevelopmentAppBadge />
       <NotificationProvider>
         <OpenSecretProvider {...openSecretClientConfig()}>
           <LocalStateProvider>

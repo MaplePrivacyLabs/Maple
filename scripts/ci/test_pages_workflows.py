@@ -98,8 +98,25 @@ class PagesWorkflowTests(unittest.TestCase):
             if "./scripts/ci/web.sh" in step.get("run", "")
         ]
         self.assertEqual(len(build_steps), 1)
-        self.assertEqual(build_steps[0]["env"], {"MAPLE_WEB_ENVIRONMENT": "pr"})
+        self.assertEqual(build_steps[0]["env"], {
+            "MAPLE_WEB_ENVIRONMENT": "pr",
+            "MAPLE_IOS_DEV_AUTH_ORIGIN": "${{ vars.MAPLE_IOS_DEV_AUTH_ORIGIN }}",
+        })
         self.assertNotIn("if", build_steps[0])
+
+    def test_optional_native_auth_origin_is_only_exported_in_development(self):
+        origin = "https://dev-auth.example.test"
+        for profile in ("pr", "release"):
+            for configured in ("", origin):
+                with self.subTest(profile=profile, configured=configured):
+                    environment = dict(os.environ, MAPLE_IOS_DEV_AUTH_ORIGIN=configured,
+                                       VITE_MAPLE_DEV_AUTH_ORIGIN="https://stale.example.test")
+                    result = subprocess.run([
+                        "bash", "-c", 'source scripts/ci/_common.sh; '
+                        f'use_{profile}_environment; '
+                        'printf "%s" "${VITE_MAPLE_DEV_AUTH_ORIGIN:-}"',
+                    ], cwd=ROOT, env=environment, check=True, capture_output=True, text=True)
+                    self.assertEqual(result.stdout, configured if profile == "pr" else "")
 
     def test_preview_artifact_is_bound_to_one_run_and_attempt(self):
         steps = workflow("pages-preview-build.yml")["jobs"]["build-preview"]["steps"]

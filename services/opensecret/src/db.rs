@@ -1893,7 +1893,7 @@ impl DBConnection for PostgresConnection {
                 project_id,
                 SettingCategory::OAuth,
             )? {
-                settings.preserve_omitted_redirect_urls(&existing.get_oauth_settings()?);
+                settings.preserve_omitted_additions(&existing.get_oauth_settings()?);
                 existing.settings =
                     NewProjectSetting::new_oauth_settings(project_id, settings)?.settings;
                 existing.update(conn)?;
@@ -3100,6 +3100,7 @@ mod tests {
             github_oauth_settings: Some(provider),
             apple_oauth_settings: Some(AppleOAuthSettings {
                 client_id: "test-apple-client".to_string(),
+                additional_native_client_ids: None,
                 redirect_url: "https://customer.example/apple/callback".to_string(),
                 additional_redirect_urls: additions,
                 team_id: Some("ABCDEFGHIJ".to_string()),
@@ -3210,6 +3211,47 @@ mod tests {
         pid: i32,
     }
 
+    #[test]
+    #[ignore = "requires AEAD_TAMPER_TEST_DATABASE_URL pointing at disposable migrated local Postgres"]
+    fn db_oauth_settings_native_audiences_preserve_replace_and_clear() {
+        let fixture = OAuthSettingsFixture::new();
+        for replacement in [vec!["com.example.dev"], vec!["com.example.beta"], vec![]] {
+            let mut settings = oauth_settings(None);
+            settings
+                .apple_oauth_settings
+                .as_mut()
+                .unwrap()
+                .additional_native_client_ids = Some(
+                replacement
+                    .iter()
+                    .map(|value| (*value).to_string())
+                    .collect(),
+            );
+            fixture
+                .database
+                .update_project_oauth_settings(fixture.project_id, settings)
+                .unwrap();
+            for null in [false, true] {
+                let mut update = serde_json::to_value(oauth_settings(None)).unwrap();
+                if null {
+                    update["apple_oauth_settings"]["additional_native_client_ids"] =
+                        serde_json::Value::Null;
+                }
+                fixture
+                    .database
+                    .update_project_oauth_settings(
+                        fixture.project_id,
+                        serde_json::from_value(update).unwrap(),
+                    )
+                    .unwrap();
+                let stored = fixture.stored();
+                let apple = stored.apple_oauth_settings.unwrap();
+                assert_eq!(apple.additional_native_client_ids.unwrap(), replacement);
+                assert_eq!(apple.client_id, "test-apple-client");
+            }
+        }
+    }
+
     #[derive(diesel::QueryableByName)]
     struct WaitingForLock {
         #[diesel(sql_type = diesel::sql_types::Bool)]
@@ -3240,10 +3282,9 @@ mod tests {
                 use crate::models::schema::org_projects;
                 org_projects::table.filter(org_projects::id.eq(fixture.project_id))
                     .select(org_projects::id).for_update().first::<i32>(conn)?;
-                let updated = NewProjectSetting::new_oauth_settings(
-                    fixture.project_id,
-                    oauth_settings(Some(vec!["https://latest.example/callback".to_string()])),
-                ).unwrap();
+                let mut additions = oauth_settings(Some(vec!["https://latest.example/callback".to_string()]));
+                additions.apple_oauth_settings.as_mut().unwrap().additional_native_client_ids = Some(vec!["com.example.latest".to_string()]);
+                let updated = NewProjectSetting::new_oauth_settings(fixture.project_id, additions).unwrap();
                 if let Some(mut existing) = ProjectSetting::get_by_project_and_category(
                     conn, fixture.project_id, SettingCategory::OAuth,
                 ).unwrap() {
@@ -3269,6 +3310,14 @@ mod tests {
             }).unwrap();
             worker.join().unwrap().unwrap();
             assert_additions(&fixture.stored(), &["https://latest.example/callback"]);
+            assert_eq!(
+                fixture
+                    .stored()
+                    .apple_oauth_settings
+                    .unwrap()
+                    .additional_native_client_ids,
+                Some(vec!["com.example.latest".to_string()])
+            );
         }
     }
 }

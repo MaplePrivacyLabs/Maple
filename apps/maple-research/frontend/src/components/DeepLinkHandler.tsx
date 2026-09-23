@@ -11,12 +11,20 @@ import {
 } from "@/services/nativeOAuthAttempt";
 import { useNotification } from "@/contexts/NotificationContext";
 import { NativeOAuthAccountConfirmation } from "./NativeOAuthAccountConfirmation";
+import {
+  mapleAppVariant,
+  nativeCallbackScheme,
+  type MapleAppVariant
+} from "@/config/mapleAppVariant";
 
 // For direct deep link handling, we'll listen to our custom event
 // If we had the types installed, we would use:
 // import { onOpenUrl } from '@tauri-apps/plugin-deep-link';
 
-export function DeepLinkHandler({ tauri = isTauri() }: { tauri?: boolean } = {}) {
+export function DeepLinkHandler({
+  tauri = isTauri(),
+  appVariant = mapleAppVariant()
+}: { tauri?: boolean; appVariant?: MapleAppVariant } = {}) {
   const os = useOpenSecret();
   const { showNotification } = useNotification();
   const isAuthenticatedRef = useRef(false);
@@ -73,6 +81,9 @@ export function DeepLinkHandler({ tauri = isTauri() }: { tauri?: boolean } = {})
             try {
               // Parse the URL to extract parameters
               const urlObj = new URL(url);
+              const callbackScheme = `${nativeCallbackScheme(appVariant)}:`;
+              // The dev app owns only its dev scheme, including payment returns.
+              if (appVariant === "dev" && urlObj.protocol !== callbackScheme) return;
               // The URL path structure will be: cloud.opensecret.maple://path?params
               const pathParts = urlObj.pathname.split("/").filter(Boolean);
               const firstPathPart = pathParts[0] || urlObj.hostname;
@@ -83,7 +94,7 @@ export function DeepLinkHandler({ tauri = isTauri() }: { tauri?: boolean } = {})
                 const parameterNames = [...urlObj.searchParams.keys()];
                 const grantValues = urlObj.searchParams.getAll("handoff_grant");
                 const validEnvelope =
-                  urlObj.protocol === "cloud.opensecret.maple:" &&
+                  urlObj.protocol === callbackScheme &&
                   urlObj.hostname === "auth" &&
                   (urlObj.pathname === "" || urlObj.pathname === "/") &&
                   urlObj.username === "" &&
@@ -226,7 +237,7 @@ export function DeepLinkHandler({ tauri = isTauri() }: { tauri?: boolean } = {})
       resolveConfirmation(false);
       if (unlisten) unlisten();
     };
-  }, [confirmAccount, resolveConfirmation, showNotification, tauri]);
+  }, [appVariant, confirmAccount, resolveConfirmation, showNotification, tauri]);
 
   return confirmation ? (
     <NativeOAuthAccountConfirmation account={confirmation} onDecision={resolveConfirmation} />

@@ -1,0 +1,16 @@
+{
+  "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
+  "productName": "Maple Dev",
+  "identifier": "cloud.opensecret.maple.dev",
+  "bundle": {
+    "icon": ["icons/dev/icon.png"]
+  },
+  "plugins": {
+    "deep-link": {
+      "desktop": {
+        "schemes": ["cloud.opensecret.maple.dev"]
+      },
+      "mobile": []
+    }
+  }
+}

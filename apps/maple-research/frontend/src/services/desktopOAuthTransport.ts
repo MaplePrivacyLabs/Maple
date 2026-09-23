@@ -1,3 +1,11 @@
+import {
+  mapleAppVariant,
+  nativeAuthOrigin,
+  nativeCallbackScheme,
+  parseMapleAppVariant,
+  type MapleAppVariant
+} from "@/config/mapleAppVariant";
+
 export type DesktopOAuthTransport = "v1" | "v2";
 export type DesktopOAuthProvider = "github" | "google" | "apple";
 
@@ -20,6 +28,7 @@ export interface TransportV2DesktopOAuthState {
   nativeSessionId: string;
   nativeRequestId: string;
   startedAt: number;
+  nativeAppVariant?: "dev";
 }
 
 interface TransportV2DesktopAuthUrlOptions {
@@ -48,7 +57,7 @@ function assertTransportV2PublicId(value: unknown, label: string): asserts value
 }
 
 function pendingClaim(state: TransportV2DesktopOAuthState): string {
-  return `${state.provider}:${state.nativeSessionId}:${state.nativeRequestId}`;
+  return `${state.provider}:${state.nativeSessionId}:${state.nativeRequestId}${state.nativeAppVariant === "dev" ? ":dev" : ""}`;
 }
 
 function hasValidTimestamp(startedAt: unknown, now: number): startedAt is number {
@@ -72,18 +81,20 @@ function removeTransportV2PendingState(): void {
   sessionStorage.removeItem(TRANSPORT_V2_MINT_CLAIM_KEY);
 }
 
-export function buildTransportV2DesktopAuthUrl({
-  provider,
-  nativeSessionId,
-  nativeRequestId
-}: TransportV2DesktopAuthUrlOptions): string {
+export function buildTransportV2DesktopAuthUrl(
+  { provider, nativeSessionId, nativeRequestId }: TransportV2DesktopAuthUrlOptions,
+  variant: MapleAppVariant = mapleAppVariant(),
+  devAuthOrigin?: string
+): string {
+  parseMapleAppVariant(variant);
   if (!isDesktopOAuthProvider(provider)) {
     throw new Error("Desktop authentication provider is missing or invalid");
   }
   assertTransportV2PublicId(nativeSessionId, "native session");
   assertTransportV2PublicId(nativeRequestId, "native request");
 
-  const url = new URL("https://trymaple.ai/desktop-auth");
+  const url = new URL("/desktop-auth", nativeAuthOrigin(variant, devAuthOrigin));
+  if (variant === "dev") url.searchParams.set("native_app_variant", "dev");
   url.searchParams.set("provider", provider);
   url.searchParams.set("transport", "v2");
   url.searchParams.set(TRANSPORT_V2_NATIVE_SESSION_QUERY, nativeSessionId);
@@ -106,6 +117,7 @@ export function markTransportV2DesktopOAuth(
   }
   assertTransportV2PublicId(state.nativeSessionId, "native session");
   assertTransportV2PublicId(state.nativeRequestId, "native request");
+  parseMapleAppVariant(state.nativeAppVariant);
   if (!Number.isSafeInteger(now) || now < 0) {
     throw new Error("Desktop authentication timestamp is invalid");
   }
@@ -140,7 +152,8 @@ export function readTransportV2DesktopOAuth(
       !isDesktopOAuthProvider(parsed.provider) ||
       !isTransportV2PublicId(parsed.nativeSessionId) ||
       !isTransportV2PublicId(parsed.nativeRequestId) ||
-      !hasValidTimestamp(parsed.startedAt, now)
+      !hasValidTimestamp(parsed.startedAt, now) ||
+      (parsed.nativeAppVariant !== undefined && parsed.nativeAppVariant !== "dev")
     ) {
       throw new Error("Invalid pending desktop authentication state");
     }
@@ -161,7 +174,8 @@ export function claimTransportV2DesktopOAuthInitiation(
   if (
     !current ||
     current.nativeSessionId !== expected.nativeSessionId ||
-    current.nativeRequestId !== expected.nativeRequestId
+    current.nativeRequestId !== expected.nativeRequestId ||
+    current.nativeAppVariant !== expected.nativeAppVariant
   ) {
     throw new Error("Desktop authentication state changed before initiation");
   }
@@ -194,7 +208,11 @@ export function isNativeOAuthRedirect(): boolean {
   );
 }
 
-export function buildTransportV2NativeAuthDeepLink(handoffGrant: string): string {
+export function buildTransportV2NativeAuthDeepLink(
+  handoffGrant: string,
+  variant: MapleAppVariant = "production"
+): string {
+  parseMapleAppVariant(variant);
   const grantSegments = handoffGrant.split(".");
   if (
     handoffGrant.length === 0 ||
@@ -206,7 +224,7 @@ export function buildTransportV2NativeAuthDeepLink(handoffGrant: string): string
     throw new Error("The desktop authentication grant is missing or invalid");
   }
 
-  const deepLink = new URL("cloud.opensecret.maple://auth");
+  const deepLink = new URL(`${nativeCallbackScheme(variant)}://auth`);
   deepLink.searchParams.set("handoff_grant", handoffGrant);
   return deepLink.toString();
 }
@@ -260,7 +278,10 @@ export async function mintTransportV2NativeAuthDeepLink(
     if (!isCurrentDesktopOAuthTarget(handoffTarget, now()) || !ownsConfirmation()) {
       throw new Error("Native sign-in changed or expired; please restart login in Maple.");
     }
-    return buildTransportV2NativeAuthDeepLink(grant);
+    return buildTransportV2NativeAuthDeepLink(
+      grant,
+      handoffTarget.nativeAppVariant ?? "production"
+    );
   } finally {
     clearDesktopOAuthTarget(handoffTarget);
   }
