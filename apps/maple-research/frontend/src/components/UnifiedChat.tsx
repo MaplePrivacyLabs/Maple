@@ -5984,7 +5984,7 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
                             />
                           </Button>
 
-                          <DropdownMenu>
+                          <DropdownMenu modal={false}>
                             <DropdownMenuTrigger asChild>
                               <Button
                                 type="button"
@@ -6214,7 +6214,7 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
                           />
                         </Button>
 
-                        <DropdownMenu>
+                        <DropdownMenu modal={false}>
                           <DropdownMenuTrigger asChild>
                             <Button
                               type="button"
