@@ -57,7 +57,9 @@ function AccountPricing({ userId, isGuest }: { userId: string | null; isGuest: b
   });
 
   return (
-    <FullPageMain className="min-h-dvh bg-background px-4 py-10 text-foreground sm:px-6">
+    // Give the native paywall its own bounded scroll area. Its content and
+    // footer must retain their full height instead of shrinking into the viewport.
+    <FullPageMain className="h-dvh min-h-0 overflow-y-auto bg-background px-4 py-10 text-foreground sm:px-6 [&>div]:shrink-0">
       <ApplePricing
         userId={userId}
         isGuest={isGuest}
