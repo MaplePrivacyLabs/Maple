@@ -218,7 +218,7 @@ const WELCOME_EMAIL_HTML: &str = r#"
             <p>Your conversations sync securely across all your devices. Pick up right where you left off. iPhone, Android, Mac, Linux, and Web.</p>
         </div>
         <div class="download-buttons">
-            <a href="https://trymaple.ai/downloads" style="background-color: #111; color: #fff; padding: 12px 28px; border-radius: 6px; text-decoration: none; font-size: 15px; font-weight: 500;">Download Apps</a>
+            <a href="https://www.trymaple.ai/research#download" style="background-color: #111; color: #fff; padding: 12px 28px; border-radius: 6px; text-decoration: none; font-size: 15px; font-weight: 500;">Download Apps</a>
         </div>
 
         <hr class="divider">
@@ -262,7 +262,7 @@ const WELCOME_EMAIL_HTML: &str = r#"
             </table>
 
             <div style="text-align: center;">
-                <a href="https://trymaple.ai/pricing" class="cta-button">See Plans</a>
+                <a href="https://www.trymaple.ai/research#pricing" class="cta-button">See Plans</a>
             </div>
         </div>
 
