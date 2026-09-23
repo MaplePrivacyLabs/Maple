@@ -72,6 +72,7 @@ import {
   continueChatComposerList,
   continueChatComposerListBeforeInput
 } from "@/components/chatComposerListContinuation";
+import { ComposerHoverTooltip } from "@/components/chat/ComposerHoverTooltip";
 import { ModelSelector } from "@/components/ModelSelector";
 import { useBillingState, useModelState, useSelectedProjectState } from "@/state/useLocalState";
 import { isKnownFreePlan } from "@/billing/billingAccess";
@@ -5961,59 +5962,68 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
                             disabled={isGenerating}
                           />
 
-                          <Button
-                            type="button"
-                            variant="ghost"
-                            size="sm"
-                            className="h-8 w-8 p-0 text-[hsl(var(--maple-secondary-700))] hover:bg-[hsl(var(--maple-primary-container))] hover:text-[hsl(var(--maple-secondary-700))]"
-                            onClick={() => {
-                              const newValue = !isWebSearchEnabled;
-                              setIsWebSearchEnabled(newValue);
-                              localStorage.setItem("webSearchEnabled", newValue.toString());
-                            }}
-                            aria-label={
-                              isWebSearchEnabled ? "Disable web search" : "Enable web search"
-                            }
+                          <ComposerHoverTooltip
+                            label={`Web search ${isWebSearchEnabled ? "enabled" : "disabled"}`}
                           >
-                            <Globe
-                              className={`h-4 w-4 ${
-                                isWebSearchEnabled
-                                  ? "text-[hsl(var(--maple-primary))]"
-                                  : "text-[hsl(var(--maple-secondary-700))]"
-                              }`}
-                            />
-                          </Button>
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="sm"
+                              className="h-8 w-8 p-0 text-[hsl(var(--maple-secondary-700))] hover:bg-[hsl(var(--maple-primary-container))] hover:text-[hsl(var(--maple-secondary-700))]"
+                              onClick={() => {
+                                const newValue = !isWebSearchEnabled;
+                                setIsWebSearchEnabled(newValue);
+                                localStorage.setItem("webSearchEnabled", newValue.toString());
+                              }}
+                              aria-label={
+                                isWebSearchEnabled ? "Disable web search" : "Enable web search"
+                              }
+                            >
+                              <Globe
+                                className={`h-4 w-4 ${
+                                  isWebSearchEnabled
+                                    ? "text-[hsl(var(--maple-primary))]"
+                                    : "text-[hsl(var(--maple-secondary-700))]"
+                                }`}
+                              />
+                            </Button>
+                          </ComposerHoverTooltip>
 
                           <DropdownMenu modal={false}>
-                            <DropdownMenuTrigger asChild>
-                              <Button
-                                type="button"
-                                variant="ghost"
-                                size="sm"
-                                className="h-8 w-8 p-0 text-[hsl(var(--maple-secondary-700))] hover:bg-[hsl(var(--maple-primary-container))] hover:text-[hsl(var(--maple-secondary-700))]"
-                                disabled={Boolean(queueEdit) || isProcessingDocument}
-                                aria-busy={isProcessingDocument}
-                                aria-label={
-                                  isProcessingDocument
-                                    ? "Processing document"
-                                    : queueEdit
-                                      ? "Attachments unavailable while editing a queued message"
-                                      : "Add attachment"
-                                }
-                              >
-                                {isProcessingDocument ? (
-                                  <Loader2
-                                    className="h-4 w-4 animate-spin text-[hsl(var(--maple-secondary-700))]"
-                                    aria-hidden="true"
-                                  />
-                                ) : (
-                                  <Plus
-                                    className="h-4 w-4 text-[hsl(var(--maple-secondary-700))]"
-                                    aria-hidden="true"
-                                  />
-                                )}
-                              </Button>
-                            </DropdownMenuTrigger>
+                            <ComposerHoverTooltip
+                              label="Add files"
+                              enabled={!queueEdit && !isProcessingDocument}
+                            >
+                              <DropdownMenuTrigger asChild>
+                                <Button
+                                  type="button"
+                                  variant="ghost"
+                                  size="sm"
+                                  className="h-8 w-8 p-0 text-[hsl(var(--maple-secondary-700))] hover:bg-[hsl(var(--maple-primary-container))] hover:text-[hsl(var(--maple-secondary-700))]"
+                                  disabled={Boolean(queueEdit) || isProcessingDocument}
+                                  aria-busy={isProcessingDocument}
+                                  aria-label={
+                                    isProcessingDocument
+                                      ? "Processing document"
+                                      : queueEdit
+                                        ? "Attachments unavailable while editing a queued message"
+                                        : "Add attachment"
+                                  }
+                                >
+                                  {isProcessingDocument ? (
+                                    <Loader2
+                                      className="h-4 w-4 animate-spin text-[hsl(var(--maple-secondary-700))]"
+                                      aria-hidden="true"
+                                    />
+                                  ) : (
+                                    <Plus
+                                      className="h-4 w-4 text-[hsl(var(--maple-secondary-700))]"
+                                      aria-hidden="true"
+                                    />
+                                  )}
+                                </Button>
+                              </DropdownMenuTrigger>
+                            </ComposerHoverTooltip>
                             <DropdownMenuContent align="start">
                               <DropdownMenuItem
                                 disabled={Boolean(queueEdit)}
@@ -6052,16 +6062,22 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
                         </div>
 
                         <div className="flex shrink-0 items-center self-end gap-1.5 sm:gap-2">
-                          <Button
-                            type="button"
-                            onClick={startRecording}
-                            disabled={isStopping || isRecording || !canUseVoice}
-                            size="icon"
-                            variant="ghost"
-                            className="h-8 w-8 rounded-xl hover:bg-muted sm:h-9 sm:w-9"
+                          <ComposerHoverTooltip
+                            label="Dictate"
+                            enabled={!isStopping && !isRecording && Boolean(canUseVoice)}
                           >
-                            <Mic className="h-4 w-4" />
-                          </Button>
+                            <Button
+                              type="button"
+                              onClick={startRecording}
+                              aria-label="Dictate"
+                              disabled={isStopping || isRecording || !canUseVoice}
+                              size="icon"
+                              variant="ghost"
+                              className="h-8 w-8 rounded-xl hover:bg-muted sm:h-9 sm:w-9"
+                            >
+                              <Mic className="h-4 w-4" />
+                            </Button>
+                          </ComposerHoverTooltip>
                           {queueEdit ? (
                             <DiscardQueuedMessageEditButton onDiscard={discardQueueEdit} />
                           ) : null}
@@ -6078,14 +6094,19 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
                               <div className="h-3 w-3 rounded-md bg-current" />
                             </Button>
                           ) : null}
-                          <button
-                            type="submit"
-                            aria-label={queueEdit ? "Save queued message" : "Send message"}
-                            disabled={!canSubmitMessage}
-                            className="flex h-8 w-8 items-center justify-center rounded-full bg-gradient-to-b from-[hsl(var(--maple-primary))] to-[hsl(var(--maple-primary-strong))] text-[hsl(var(--maple-on-primary))]/90 transition-all duration-200 ease-out active:scale-[0.95] disabled:pointer-events-none disabled:opacity-40 sm:h-9 sm:w-9"
+                          <ComposerHoverTooltip
+                            label={queueEdit ? "Save queued message" : "Send prompt"}
+                            enabled={canSubmitMessage}
                           >
-                            <ArrowUp className="h-3.5 w-3.5 sm:h-4 sm:w-4" />
-                          </button>
+                            <button
+                              type="submit"
+                              aria-label={queueEdit ? "Save queued message" : "Send message"}
+                              disabled={!canSubmitMessage}
+                              className="flex h-8 w-8 items-center justify-center rounded-full bg-gradient-to-b from-[hsl(var(--maple-primary))] to-[hsl(var(--maple-primary-strong))] text-[hsl(var(--maple-on-primary))]/90 transition-all duration-200 ease-out active:scale-[0.95] disabled:pointer-events-none disabled:opacity-40 sm:h-9 sm:w-9"
+                            >
+                              <ArrowUp className="h-3.5 w-3.5 sm:h-4 sm:w-4" />
+                            </button>
+                          </ComposerHoverTooltip>
                         </div>
                       </div>
 
@@ -6191,59 +6212,68 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
                       <div className="flex min-w-0 flex-wrap items-center gap-1.5 sm:gap-2">
                         <ModelSelector />
 
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          size="sm"
-                          className="h-8 w-8 p-0 text-[hsl(var(--maple-secondary-700))] hover:bg-[hsl(var(--maple-primary-container))] hover:text-[hsl(var(--maple-secondary-700))]"
-                          onClick={() => {
-                            const newValue = !isWebSearchEnabled;
-                            setIsWebSearchEnabled(newValue);
-                            localStorage.setItem("webSearchEnabled", newValue.toString());
-                          }}
-                          aria-label={
-                            isWebSearchEnabled ? "Disable web search" : "Enable web search"
-                          }
+                        <ComposerHoverTooltip
+                          label={`Web search ${isWebSearchEnabled ? "enabled" : "disabled"}`}
                         >
-                          <Globe
-                            className={`h-4 w-4 ${
-                              isWebSearchEnabled
-                                ? "text-[hsl(var(--maple-primary))]"
-                                : "text-[hsl(var(--maple-secondary-700))]"
-                            }`}
-                          />
-                        </Button>
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="sm"
+                            className="h-8 w-8 p-0 text-[hsl(var(--maple-secondary-700))] hover:bg-[hsl(var(--maple-primary-container))] hover:text-[hsl(var(--maple-secondary-700))]"
+                            onClick={() => {
+                              const newValue = !isWebSearchEnabled;
+                              setIsWebSearchEnabled(newValue);
+                              localStorage.setItem("webSearchEnabled", newValue.toString());
+                            }}
+                            aria-label={
+                              isWebSearchEnabled ? "Disable web search" : "Enable web search"
+                            }
+                          >
+                            <Globe
+                              className={`h-4 w-4 ${
+                                isWebSearchEnabled
+                                  ? "text-[hsl(var(--maple-primary))]"
+                                  : "text-[hsl(var(--maple-secondary-700))]"
+                              }`}
+                            />
+                          </Button>
+                        </ComposerHoverTooltip>
 
                         <DropdownMenu modal={false}>
-                          <DropdownMenuTrigger asChild>
-                            <Button
-                              type="button"
-                              variant="ghost"
-                              size="sm"
-                              className="h-8 w-8 p-0 text-[hsl(var(--maple-secondary-700))] hover:bg-[hsl(var(--maple-primary-container))] hover:text-[hsl(var(--maple-secondary-700))]"
-                              disabled={Boolean(queueEdit) || isProcessingDocument}
-                              aria-busy={isProcessingDocument}
-                              aria-label={
-                                isProcessingDocument
-                                  ? "Processing document"
-                                  : queueEdit
-                                    ? "Attachments unavailable while editing a queued message"
-                                    : "Add attachment"
-                              }
-                            >
-                              {isProcessingDocument ? (
-                                <Loader2
-                                  className="h-4 w-4 animate-spin text-[hsl(var(--maple-secondary-700))]"
-                                  aria-hidden="true"
-                                />
-                              ) : (
-                                <Plus
-                                  className="h-4 w-4 text-[hsl(var(--maple-secondary-700))]"
-                                  aria-hidden="true"
-                                />
-                              )}
-                            </Button>
-                          </DropdownMenuTrigger>
+                          <ComposerHoverTooltip
+                            label="Add files"
+                            enabled={!queueEdit && !isProcessingDocument}
+                          >
+                            <DropdownMenuTrigger asChild>
+                              <Button
+                                type="button"
+                                variant="ghost"
+                                size="sm"
+                                className="h-8 w-8 p-0 text-[hsl(var(--maple-secondary-700))] hover:bg-[hsl(var(--maple-primary-container))] hover:text-[hsl(var(--maple-secondary-700))]"
+                                disabled={Boolean(queueEdit) || isProcessingDocument}
+                                aria-busy={isProcessingDocument}
+                                aria-label={
+                                  isProcessingDocument
+                                    ? "Processing document"
+                                    : queueEdit
+                                      ? "Attachments unavailable while editing a queued message"
+                                      : "Add attachment"
+                                }
+                              >
+                                {isProcessingDocument ? (
+                                  <Loader2
+                                    className="h-4 w-4 animate-spin text-[hsl(var(--maple-secondary-700))]"
+                                    aria-hidden="true"
+                                  />
+                                ) : (
+                                  <Plus
+                                    className="h-4 w-4 text-[hsl(var(--maple-secondary-700))]"
+                                    aria-hidden="true"
+                                  />
+                                )}
+                              </Button>
+                            </DropdownMenuTrigger>
+                          </ComposerHoverTooltip>
                           <DropdownMenuContent align="start">
                             <DropdownMenuItem
                               disabled={Boolean(queueEdit)}
@@ -6282,16 +6312,22 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
                       </div>
 
                       <div className="flex shrink-0 items-center self-end gap-1.5 sm:gap-2">
-                        <Button
-                          type="button"
-                          onClick={startRecording}
-                          disabled={isStopping || isRecording || !canUseVoice}
-                          size="icon"
-                          variant="ghost"
-                          className="h-8 w-8 rounded-xl text-[hsl(var(--maple-secondary-700))] hover:bg-[hsl(var(--maple-primary-container))] hover:text-[hsl(var(--maple-secondary-700))]"
+                        <ComposerHoverTooltip
+                          label="Dictate"
+                          enabled={!isStopping && !isRecording && Boolean(canUseVoice)}
                         >
-                          <Mic className="h-4 w-4 text-[hsl(var(--maple-secondary-700))]" />
-                        </Button>
+                          <Button
+                            type="button"
+                            onClick={startRecording}
+                            aria-label="Dictate"
+                            disabled={isStopping || isRecording || !canUseVoice}
+                            size="icon"
+                            variant="ghost"
+                            className="h-8 w-8 rounded-xl text-[hsl(var(--maple-secondary-700))] hover:bg-[hsl(var(--maple-primary-container))] hover:text-[hsl(var(--maple-secondary-700))]"
+                          >
+                            <Mic className="h-4 w-4 text-[hsl(var(--maple-secondary-700))]" />
+                          </Button>
+                        </ComposerHoverTooltip>
                         {queueEdit ? (
                           <DiscardQueuedMessageEditButton onDiscard={discardQueueEdit} />
                         ) : null}
@@ -6308,14 +6344,19 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
                             <div className="h-3 w-3 rounded-md bg-current" />
                           </Button>
                         ) : null}
-                        <button
-                          type="submit"
-                          aria-label={queueEdit ? "Save queued message" : "Send message"}
-                          disabled={!canSubmitMessage}
-                          className="flex h-8 w-8 items-center justify-center rounded-full bg-gradient-to-b from-[hsl(var(--maple-primary))] to-[hsl(var(--maple-primary-strong))] text-[hsl(var(--maple-on-primary))]/90 transition-all duration-200 ease-out active:scale-[0.95] disabled:pointer-events-none disabled:opacity-40"
+                        <ComposerHoverTooltip
+                          label={queueEdit ? "Save queued message" : "Send prompt"}
+                          enabled={canSubmitMessage}
                         >
-                          <ArrowUp className="h-4 w-4" />
-                        </button>
+                          <button
+                            type="submit"
+                            aria-label={queueEdit ? "Save queued message" : "Send message"}
+                            disabled={!canSubmitMessage}
+                            className="flex h-8 w-8 items-center justify-center rounded-full bg-gradient-to-b from-[hsl(var(--maple-primary))] to-[hsl(var(--maple-primary-strong))] text-[hsl(var(--maple-on-primary))]/90 transition-all duration-200 ease-out active:scale-[0.95] disabled:pointer-events-none disabled:opacity-40"
+                          >
+                            <ArrowUp className="h-4 w-4" />
+                          </button>
+                        </ComposerHoverTooltip>
                       </div>
                     </div>
 

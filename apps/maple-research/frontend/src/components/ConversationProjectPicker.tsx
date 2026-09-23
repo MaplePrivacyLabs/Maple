@@ -1,6 +1,7 @@
 import { Check, Folder, FolderOpen } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { useOpenSecret } from "@mapleai/sdk";
+import { ComposerHoverTooltip } from "@/components/chat/ComposerHoverTooltip";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/utils/utils";
 import { listAllConversationProjects } from "@/utils/paginatedLists";
@@ -36,25 +37,35 @@ export function ConversationProjectPicker({
 
   return (
     <DropdownMenu modal={false}>
-      <DropdownMenuTrigger asChild>
-        <Button
-          type="button"
-          variant="ghost"
-          size="sm"
-          className={cn(
-            "h-8 gap-2 px-2 text-muted-foreground",
-            isProjectSelected &&
-              "bg-[hsl(var(--maple-primary-container))] text-[hsl(var(--maple-primary))] hover:bg-[hsl(var(--maple-primary-container))] hover:text-[hsl(var(--maple-primary))]"
-          )}
-          disabled={disabled}
-          aria-label={selectedProject ? `Project: ${selectedProject.name}` : "No project selected"}
-        >
-          {isProjectSelected ? <FolderOpen className="h-4 w-4" /> : <Folder className="h-4 w-4" />}
-          {selectedProject ? (
-            <span className="hidden max-w-[120px] truncate md:inline">{selectedProject.name}</span>
-          ) : null}
-        </Button>
-      </DropdownMenuTrigger>
+      <ComposerHoverTooltip label="Choose project" enabled={!disabled}>
+        <DropdownMenuTrigger asChild>
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            className={cn(
+              "h-8 gap-2 px-2 text-muted-foreground",
+              isProjectSelected &&
+                "bg-[hsl(var(--maple-primary-container))] text-[hsl(var(--maple-primary))] hover:bg-[hsl(var(--maple-primary-container))] hover:text-[hsl(var(--maple-primary))]"
+            )}
+            disabled={disabled}
+            aria-label={
+              selectedProject ? `Project: ${selectedProject.name}` : "No project selected"
+            }
+          >
+            {isProjectSelected ? (
+              <FolderOpen className="h-4 w-4" />
+            ) : (
+              <Folder className="h-4 w-4" />
+            )}
+            {selectedProject ? (
+              <span className="hidden max-w-[120px] truncate md:inline">
+                {selectedProject.name}
+              </span>
+            ) : null}
+          </Button>
+        </DropdownMenuTrigger>
+      </ComposerHoverTooltip>
       <DropdownMenuContent align="start">
         <DropdownMenuItem onClick={() => onSelect(null)}>
           <Check className={`mr-2 h-4 w-4 ${selectedProjectId ? "invisible" : "visible"}`} />
