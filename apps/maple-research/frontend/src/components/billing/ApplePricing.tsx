@@ -1,14 +1,18 @@
 import { useEffect, useRef, useState } from "react";
 import { ArrowLeft, Check, Loader2 } from "lucide-react";
 import type { BillingStatus } from "@/billing/billingApi";
-import type { AppleBillingPurchaseResult } from "@/billing/appleBillingSession";
+import {
+  AppleBillingSessionChangedError,
+  type AppleBillingPurchaseResult
+} from "@/billing/appleBillingSession";
 import { AppleBillingApiError } from "@/billing/appleBillingApi";
+import { appleBillingErrorMessage } from "@/billing/appleBillingLifecycle";
 import {
   applePurchaseConflict,
   currentApplePlan,
   type ApplePlan
 } from "@/billing/applePricingPolicy";
-import type { StoreKitProduct } from "@/services/storeKitService";
+import { StoreKitRecoveryError, type StoreKitProduct } from "@/services/storeKitService";
 import { Button } from "@/components/ui/button";
 
 interface ApplePricingProps {
@@ -86,12 +90,14 @@ export function ApplePricing(props: ApplePricingProps) {
     } catch (failure) {
       if (isCurrent()) {
         setError(
-          failure instanceof AppleBillingApiError && failure.code === "conflict"
-            ? "This purchase belongs to another Maple account. Sign in to that account or contact support@trymaple.ai."
-            : action === "eula"
-              ? "The Apple license agreement could not be opened. Please try again."
-              : action === "manage"
-                ? "Apple subscription management could not be opened. You can also manage subscriptions in your device's Settings."
+          action === "eula"
+            ? "The Apple license agreement could not be opened. Please try again."
+            : action === "manage"
+              ? "Apple subscription management could not be opened. You can also manage subscriptions in your device's Settings."
+              : failure instanceof AppleBillingApiError ||
+                  failure instanceof StoreKitRecoveryError ||
+                  failure instanceof AppleBillingSessionChangedError
+                ? appleBillingErrorMessage(failure)
                 : action === "restore"
                   ? "Purchases could not be restored. Try Restore purchases again and complete Apple's sign-in prompt if asked."
                   : "Your purchase could not be confirmed. Do not purchase again; use Retry purchases when connected."
@@ -170,8 +176,7 @@ export function ApplePricing(props: ApplePricingProps) {
           role="alert"
           className="rounded-lg border border-destructive/40 p-4 text-sm"
         >
-          {error ??
-            "Some purchases still need confirmation. Retry purchases when connected; do not buy again."}
+          {error ?? props.recoveryError}
         </p>
       )}
       {message && (
@@ -241,9 +246,9 @@ export function ApplePricing(props: ApplePricingProps) {
                       if (isCurrent()) setPendingPlan(plan);
                       return "Your purchase is awaiting Apple's approval. Maple will update when it is approved; do not purchase again.";
                     }
-                    return result.acknowledgement.payment_provider === "apple"
-                      ? "Purchase confirmed. Your Maple plan has been updated."
-                      : "Purchase confirmed. Your current access comes from another plan. Review billing to manage your subscriptions.";
+                    return currentApplePlan(result.acknowledgement, plan)
+                      ? `Purchase confirmed. Maple ${plan} is your current plan.`
+                      : "Purchase confirmed. Review billing to see your current plan and manage your subscriptions.";
                   });
                 }}
               >

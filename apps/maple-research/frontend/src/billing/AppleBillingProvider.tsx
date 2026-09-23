@@ -31,7 +31,7 @@ function IOSAppleBillingProvider({ children }: { children: ReactNode }) {
           );
           return { apiOrigin, revision, principalId };
         },
-        createSession: (owner, onAcknowledged, onListenerError) =>
+        createSession: (owner, onAcknowledged, onListenerError, retryPolicy, onListenerRecovered) =>
           createAppleBillingSession({
             userId: owner,
             openSecretApiUrl: import.meta.env.VITE_OPEN_SECRET_API_URL,
@@ -39,6 +39,8 @@ function IOSAppleBillingProvider({ children }: { children: ReactNode }) {
             auth: osRef.current,
             onAcknowledged,
             onListenerError,
+            retryPolicy,
+            onListenerRecovered,
             allowInsecureLoopback: import.meta.env.DEV
           }),
         onAcknowledged: (status, owner) => {
@@ -67,7 +69,7 @@ function observeRecovery(lifecycle: AppleBillingLifecycle): () => void {
   const recover = () => {
     lifecycle.tick();
     if (document.visibilityState !== "hidden" && lifecycle.getSnapshot().ready) {
-      void lifecycle.retry().catch(() => {});
+      void lifecycle.recoverAutomatically().catch(() => {});
     }
   };
   window.addEventListener("online", recover);

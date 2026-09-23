@@ -191,6 +191,125 @@ describe("StoreKit acknowledgement ordering", () => {
     expect(f.finished).toEqual([transaction.transactionId]);
   });
 
+  test("submits newer revisions after an older failure but retains the failure as a finish barrier", async () => {
+    const f = fixture();
+    const older = controlledSubmission();
+    const newer = controlledSubmission();
+    const retry = controlledSubmission();
+    const revised = { ...transaction, jws: "newer.signed.snapshot" };
+    const latest = { ...transaction, jws: "latest.signed.snapshot" };
+    const other = {
+      ...transaction,
+      transactionId: "9007199254740995",
+      jws: "other.signed.snapshot"
+    };
+    const submitted: string[] = [];
+    let olderAttempts = 0;
+    const recovery = new StoreKitRecovery(f.bridge, (jws, transactionId) => {
+      submitted.push(jws);
+      if (jws === transaction.jws) return ++olderAttempts === 1 ? older.submit() : retry.submit();
+      if (jws === revised.jws) return newer.submit();
+      return Promise.resolve({ acknowledged_transaction_id: transactionId });
+    });
+    const first = recovery.acknowledge(transaction);
+    await older.started;
+    const second = recovery.acknowledge(revised);
+    // Attach handlers before rejecting the controlled request.
+    const settled = Promise.allSettled([first, second]);
+    older.reject(new Error("ownership conflict"));
+    await newer.started;
+    expect(submitted).toEqual([transaction.jws, revised.jws]);
+    expect(f.finished).toEqual([]);
+
+    // A revision observed after the first failure still reaches the server.
+    const third = recovery.acknowledge(latest);
+    const thirdSettled = Promise.allSettled([third]);
+    await recovery.acknowledge(other);
+    expect(f.finished).toEqual([other.transactionId]);
+    newer.resolve({ acknowledged_transaction_id: transaction.transactionId });
+    for (const result of [...(await settled), ...(await thirdSettled)]) {
+      expect(result.status).toBe("rejected");
+      if (result.status === "rejected") {
+        expect(result.reason.message).toBe("ownership conflict");
+      }
+    }
+    expect(submitted).toEqual([transaction.jws, revised.jws, other.jws, latest.jws]);
+    expect(f.finished).toEqual([other.transactionId]);
+
+    // A newer acknowledgement alone cannot finish the ID. Only the failed
+    // snapshot retries, and all acknowledged snapshots survive that retry.
+    const retried = recovery.acknowledge(latest);
+    await retry.started;
+    expect(f.finished).toEqual([other.transactionId]);
+    retry.resolve({ acknowledged_transaction_id: transaction.transactionId });
+    await retried;
+    expect(submitted).toEqual([
+      transaction.jws,
+      revised.jws,
+      other.jws,
+      latest.jws,
+      transaction.jws
+    ]);
+    expect(f.finished).toEqual([other.transactionId, transaction.transactionId]);
+  });
+
+  test("disposal preserves the submit error and prevents submission of queued revisions", async () => {
+    const f = fixture();
+    const older = controlledSubmission();
+    const submitted: string[] = [];
+    const recovery = new StoreKitRecovery(f.bridge, (jws) => {
+      submitted.push(jws);
+      return older.submit();
+    });
+    const first = recovery.acknowledge(transaction);
+    await older.started;
+    const second = recovery.acknowledge({ ...transaction, jws: "newer.signed.snapshot" });
+    const settled = Promise.allSettled([first, second]);
+    recovery.dispose();
+    const failure = new Error("adapter_session_changed");
+    older.reject(failure);
+    for (const result of await settled) {
+      expect(result.status).toBe("rejected");
+      if (result.status === "rejected") {
+        expect(result.reason).toBe(failure);
+      }
+    }
+    expect(submitted).toEqual([transaction.jws]);
+    expect(f.finished).toEqual([]);
+  });
+
+  test("reports every failed revision so a newer transient failure is not hidden by an older conflict", async () => {
+    const f = fixture();
+    const older = controlledSubmission();
+    const newer = controlledSubmission();
+    const conflict = new Error("ownership conflict");
+    const transient = new Error("billing unavailable");
+    const recovery = new StoreKitRecovery(f.bridge, (jws) =>
+      jws === transaction.jws ? older.submit() : newer.submit()
+    );
+    const first = recovery.acknowledge(transaction);
+    await older.started;
+    const second = recovery.acknowledge({ ...transaction, jws: "newer.signed.snapshot" });
+    const settled = Promise.allSettled([first, second]);
+    older.reject(conflict);
+    await newer.started;
+    newer.reject(transient);
+
+    for (const result of await settled) {
+      expect(result.status).toBe("rejected");
+      if (result.status === "rejected") {
+        expect(result.reason).toBeInstanceOf(StoreKitRecoveryError);
+        const error = result.reason as StoreKitRecoveryError;
+        expect(error.acknowledgements).toEqual([]);
+        expect(error.failures).toEqual([
+          { transactionId: transaction.transactionId, error: conflict },
+          { transactionId: transaction.transactionId, error: transient }
+        ]);
+      }
+    }
+    expect(f.finished).toEqual([]);
+  });
+
   for (const retryMode of ["acknowledge", "recover", "recover-empty"] as const) {
     test(`retains a failed newer revision and retries it through ${retryMode} before finishing`, async () => {
       const f = fixture();

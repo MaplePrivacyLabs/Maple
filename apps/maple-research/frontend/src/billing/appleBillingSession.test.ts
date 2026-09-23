@@ -8,6 +8,7 @@ import {
   type StoreKitPurchaseResult
 } from "@/services/storeKitService";
 import { AppleBillingApiError, type AppleTransactionResponse } from "./appleBillingApi";
+import { AppleBillingRetryPolicy } from "./appleBillingRetryPolicy";
 import {
   AppleBillingSession,
   AppleBillingSessionChangedError,
@@ -171,6 +172,155 @@ function fixture() {
 }
 
 describe("authenticated Apple billing session", () => {
+  test("listener completion is published only after every revision acknowledges and finish succeeds", async () => {
+    const f = fixture();
+    const completed = deferred<void>();
+    const finishing = deferred<void>();
+    const finishStarted = deferred<void>();
+    let recovered = false;
+    let rejected = true;
+    const session = f.session({
+      fetch: async () => (rejected ? json({}, 409) : json(response())),
+      bridge: {
+        ...f.bridge,
+        finishTransaction: async (id) => {
+          finishStarted.resolve();
+          await finishing.promise;
+          await f.bridge.finishTransaction(id);
+        }
+      },
+      onListenerRecovered: () => {
+        recovered = true;
+        completed.resolve();
+      }
+    });
+    await expect(session.start()).rejects.toBeInstanceOf(StoreKitRecoveryError);
+    expect(recovered).toBe(false);
+    rejected = false;
+    f.emit({ ...transaction, jws: "fresh-listener-state" });
+    await finishStarted.promise;
+    expect(recovered).toBe(false);
+    finishing.resolve();
+    await completed.promise;
+    expect(f.finished).toEqual([transaction.transactionId]);
+    session.dispose();
+  });
+
+  for (const status of [400, 409]) {
+    test(`${status} recovery waits for changed evidence or explicit restore across SDK refresh`, async () => {
+      const f = fixture();
+      const retryPolicy = new AppleBillingRetryPolicy();
+      const submissions: string[] = [];
+      let rejected = true;
+      const fetch: AppleBillingSessionOptions["fetch"] = async (_input, init) => {
+        const jws = JSON.parse(init!.body as string).signed_transaction as string;
+        submissions.push(jws);
+        return rejected ? json({}, status) : json(response());
+      };
+      const session = f.session({ retryPolicy, fetch });
+      await expect(session.start()).rejects.toBeInstanceOf(StoreKitRecoveryError);
+      await expect(session.start()).rejects.toBeInstanceOf(StoreKitRecoveryError);
+      f.emit();
+      await expect(session.recover()).rejects.toBeInstanceOf(StoreKitRecoveryError);
+      expect(submissions).toEqual([transaction.jws]);
+      expect(f.finished).toEqual([]);
+
+      session.dispose();
+      f.advance();
+      const refreshed = f.session({ retryPolicy, fetch });
+      await expect(refreshed.start()).rejects.toBeInstanceOf(StoreKitRecoveryError);
+      expect(submissions).toEqual([transaction.jws]);
+
+      f.list([{ ...transaction, jws: "new-signed-state" }]);
+      await expect(refreshed.recover()).rejects.toBeInstanceOf(StoreKitRecoveryError);
+      expect(submissions).toEqual([transaction.jws, transaction.jws, "new-signed-state"]);
+      // Repeated enumeration must not unlock an already-observed revision.
+      await expect(refreshed.recover()).rejects.toBeInstanceOf(StoreKitRecoveryError);
+      expect(submissions).toHaveLength(3);
+      rejected = false; // e.g. support resolves the ownership/configuration issue.
+      await expect(refreshed.restore()).resolves.toEqual([response()]);
+      expect(f.syncs).toBe(1);
+      expect(f.finished).toEqual([transaction.transactionId]);
+      expect(submissions).toHaveLength(5);
+      refreshed.dispose();
+    });
+  }
+
+  test("a conflicted transaction does not resubmit while an independent 503 recovers", async () => {
+    const f = fixture();
+    const other = { ...transaction, transactionId: "456", jws: "other-signed-state" };
+    f.list([transaction, other]);
+    const submitted: string[] = [];
+    let unavailable = true;
+    const session = f.session({
+      fetch: async (_input, init) => {
+        const jws = JSON.parse(init!.body as string).signed_transaction as string;
+        submitted.push(jws);
+        if (jws === transaction.jws) return json({}, 409);
+        return unavailable ? json({}, 503) : json(response(other.transactionId));
+      }
+    });
+    await expect(session.start()).rejects.toBeInstanceOf(StoreKitRecoveryError);
+    unavailable = false;
+    await expect(session.recover()).rejects.toBeInstanceOf(StoreKitRecoveryError);
+    expect(submitted).toEqual([transaction.jws, other.jws, other.jws]);
+    expect(f.finished).toEqual([other.transactionId]);
+    session.dispose();
+  });
+
+  test("new signed state retries retained conflicts without allowing an unacknowledged finish", async () => {
+    const f = fixture();
+    const submitted: string[] = [];
+    let oldStatus = 409;
+    const session = f.session({
+      fetch: async (_input, init) => {
+        const jws = JSON.parse(init!.body as string).signed_transaction as string;
+        submitted.push(jws);
+        return jws === transaction.jws && oldStatus !== 200
+          ? json({}, oldStatus)
+          : json(response());
+      }
+    });
+    await expect(session.start()).rejects.toBeInstanceOf(StoreKitRecoveryError);
+    f.list([{ ...transaction, jws: "updated-state" }]);
+    await expect(session.recover()).rejects.toBeInstanceOf(StoreKitRecoveryError);
+    expect(submitted).toEqual([transaction.jws, transaction.jws, "updated-state"]);
+    expect(f.finished).toEqual([]);
+    oldStatus = 200;
+    await session.restore();
+    expect(submitted).toEqual([transaction.jws, transaction.jws, "updated-state", transaction.jws]);
+    expect(f.finished).toEqual([transaction.transactionId]);
+    session.dispose();
+  });
+
+  test("429 remains retryable and a late old-owner conflict cannot poison the current policy", async () => {
+    const f = fixture();
+    const retryPolicy = new AppleBillingRetryPolicy();
+    let attempts = 0;
+    const stale = deferred<Response>();
+    const started = deferred<void>();
+    const session = f.session({
+      retryPolicy,
+      fetch: async () => {
+        if (++attempts === 1) return json({}, 429);
+        started.resolve();
+        return stale.promise;
+      }
+    });
+    await expect(session.start()).rejects.toBeInstanceOf(StoreKitRecoveryError);
+    const pending = session.recover().catch((error: unknown) => error);
+    await started.promise;
+    expect(attempts).toBe(2);
+    session.dispose();
+    f.advance();
+    stale.resolve(json({}, 409));
+    expect(await pending).toBeInstanceOf(Error);
+    const refreshed = f.session({ retryPolicy });
+    await refreshed.start();
+    expect(f.finished).toEqual([transaction.transactionId]);
+    refreshed.dispose();
+  });
+
   test("purchase passes the server account token and finishes after a provider-independent acknowledgement", async () => {
     const f = fixture();
     const session = f.session();

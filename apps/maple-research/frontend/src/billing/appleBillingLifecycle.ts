@@ -6,6 +6,7 @@ import {
 } from "./appleBillingSession";
 import { AppleBillingApiError, type AppleTransactionResponse } from "./appleBillingApi";
 import { StoreKitRecoveryError } from "@/services/storeKitService";
+import { AppleBillingRetryPolicy, shouldRetryAppleBilling } from "./appleBillingRetryPolicy";
 
 type Session = Pick<
   AppleBillingSession,
@@ -24,7 +25,9 @@ interface Options {
   createSession(
     userId: string,
     onAcknowledged: (response: AppleTransactionResponse) => void,
-    onListenerError: (error: unknown) => void
+    onListenerError: (error: unknown) => void,
+    retryPolicy: AppleBillingRetryPolicy,
+    onListenerRecovered: () => void
   ): Session;
   onAcknowledged(response: AppleTransactionResponse, userId: string): void;
   now?: () => number;
@@ -41,12 +44,18 @@ export function appleBillingErrorMessage(error: unknown): string {
     return "This Apple subscription belongs to another Maple account. Sign in to that account or contact support.";
   }
   if (error instanceof StoreKitRecoveryError && error.failures.length > 0) {
-    const conflict = error.failures.find(
-      ({ error: failure }) => failure instanceof AppleBillingApiError && failure.code === "conflict"
-    );
+    const conflict = error.failures.find(({ error: failure }) => hasOwnershipConflict(failure));
     if (conflict) return appleBillingErrorMessage(conflict.error);
   }
   return "We couldn't confirm your Apple purchases. Your purchases are saved by Apple; try again when you're connected.";
+}
+
+function hasOwnershipConflict(error: unknown): boolean {
+  return (
+    (error instanceof AppleBillingApiError && error.code === "conflict") ||
+    (error instanceof StoreKitRecoveryError &&
+      error.failures.some((failure) => hasOwnershipConflict(failure.error)))
+  );
 }
 
 /**
@@ -66,6 +75,8 @@ export class AppleBillingLifecycle {
   private failures = 0;
   private failureVersion = 0;
   private ownerSequence = 0;
+  private retryPolicy = new AppleBillingRetryPolicy();
+  private retryOwner: { userId: string; apiOrigin: string } | null = null;
   private readonly listeners = new Set<() => void>();
   private state: AppleBillingLifecycleState = {
     ownerKey: null,
@@ -104,6 +115,7 @@ export class AppleBillingLifecycle {
   setUser(userId: string | null): void {
     if (this.userId !== userId) {
       this.revoke();
+      this.resetRetryPolicy();
       this.userId = userId;
     }
     this.tick();
@@ -128,6 +140,12 @@ export class AppleBillingLifecycle {
   dispose(): void {
     this.stopped = true;
     this.revoke();
+    this.resetRetryPolicy();
+  }
+
+  private resetRetryPolicy(): void {
+    this.retryPolicy = new AppleBillingRetryPolicy();
+    this.retryOwner = null;
   }
 
   private revoke(): void {
@@ -159,6 +177,10 @@ export class AppleBillingLifecycle {
     ) {
       this.revoke();
       const owner = this.userId;
+      if (this.retryOwner?.userId !== owner || this.retryOwner.apiOrigin !== identity.apiOrigin) {
+        this.resetRetryPolicy();
+        this.retryOwner = { userId: owner, apiOrigin: identity.apiOrigin };
+      }
       try {
         const session = this.options.createSession(
           owner,
@@ -168,7 +190,9 @@ export class AppleBillingLifecycle {
           },
           (error) => {
             if (this.current(session)) this.failed(error);
-          }
+          },
+          this.retryPolicy,
+          () => this.listenerRecovered(session)
         );
         this.session = session;
         this.identity = identity;
@@ -184,6 +208,19 @@ export class AppleBillingLifecycle {
 
   private now(): number {
     return (this.options.now ?? Date.now)();
+  }
+
+  private listenerRecovered(session: Session): void {
+    // Do not clear another ID's failure just because this listener finished.
+    // Wait for any overlapping enumeration, then reconcile all pending IDs.
+    void Promise.resolve(this.recovering)
+      .catch(() => {})
+      .then(() => {
+        if (this.current(session) && this.state.recoveryError) {
+          return this.recoverAutomatically();
+        }
+      })
+      .catch(() => {});
   }
 
   private current(session: Session): boolean {
@@ -216,7 +253,9 @@ export class AppleBillingLifecycle {
 
   private failed(error: unknown): void {
     this.failureVersion++;
-    this.retryAt = this.now() + RETRY_DELAYS[Math.min(this.failures++, RETRY_DELAYS.length - 1)];
+    if (shouldRetryAppleBilling(error)) {
+      this.retryAt = this.now() + RETRY_DELAYS[Math.min(this.failures++, RETRY_DELAYS.length - 1)];
+    }
     this.publish({ recoveryError: appleBillingErrorMessage(error) });
   }
 
@@ -253,6 +292,7 @@ export class AppleBillingLifecycle {
     const session = this.session;
     if (!session || !this.current(session))
       return Promise.reject(new AppleBillingSessionChangedError());
+    this.retryAt = null;
     const request = this.run(session, () => session.start(), true);
     this.recovering = request;
     void request
@@ -265,6 +305,14 @@ export class AppleBillingLifecycle {
 
   retry = async (): Promise<void> => {
     this.requiredSession();
+    this.retryPolicy.retry();
+    await this.recover();
+  };
+
+  /** Foreground/network events enumerate new evidence without lifting 400/409 blocks. */
+  recoverAutomatically = async (): Promise<void> => {
+    this.requiredSession();
+    if (this.retryAt !== null && this.now() < this.retryAt) return;
     await this.recover();
   };
 

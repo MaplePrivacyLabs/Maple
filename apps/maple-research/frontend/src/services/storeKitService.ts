@@ -183,20 +183,32 @@ export class StoreKitRecovery<
   ): Promise<void> {
     try {
       while (recovery.revisions.size > 0) {
+        const failures: StoreKitRecoveryFailure[] = [];
         // Map iteration includes revisions added while a submission is pending.
         // Failed revisions remain in memory and must succeed on a later retry
         // before any acknowledged revision of this ID can cause a finish.
         for (const revision of recovery.revisions.values()) {
           this.assertActive();
           if (revision.acknowledgement) continue;
-          const acknowledgement = await this.submit(revision.jws, transactionId);
-          this.assertActive();
-          if (acknowledgement.acknowledged_transaction_id !== transactionId) {
-            throw new Error("storekit_acknowledgement_mismatch");
+          try {
+            const acknowledgement = await this.submit(revision.jws, transactionId);
+            this.assertActive();
+            if (acknowledgement.acknowledged_transaction_id !== transactionId) {
+              throw new Error("storekit_acknowledgement_mismatch");
+            }
+            revision.acknowledgement = acknowledgement;
+          } catch (error) {
+            // The submit adapter may report a typed account/session change.
+            // Stop immediately on disposal without replacing that error.
+            if (!this.active) throw error;
+            // Newer signed state can resolve a prior conflict. Submit every
+            // observed snapshot, but retain any failed snapshot as a barrier.
+            failures.push({ transactionId, error });
           }
-          revision.acknowledgement = acknowledgement;
         }
         this.assertActive();
+        if (failures.length === 1) throw failures[0].error;
+        if (failures.length > 1) throw new StoreKitRecoveryError([], failures);
         const ready = [...recovery.revisions.values()];
         // All revisions observed before this invocation are acknowledged. A
         // revision arriving during the native call cannot retract that call;

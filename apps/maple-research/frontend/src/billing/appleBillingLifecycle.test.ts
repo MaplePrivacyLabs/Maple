@@ -9,7 +9,9 @@ import {
   type AppleBillingIdentity,
   type AppleBillingPurchaseResult
 } from "./appleBillingSession";
-import type { AppleTransactionResponse } from "./appleBillingApi";
+import { AppleBillingApiError, type AppleTransactionResponse } from "./appleBillingApi";
+import { StoreKitRecoveryError } from "@/services/storeKitService";
+import type { AppleBillingRetryPolicy } from "./appleBillingRetryPolicy";
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -60,13 +62,15 @@ function fixture() {
     owner: string;
     ack: (status: AppleTransactionResponse) => void;
     fail: (error: unknown) => void;
+    retryPolicy: AppleBillingRetryPolicy;
+    recovered: () => void;
   }[] = [];
   const lifecycle = new AppleBillingLifecycle({
     readIdentity: () => identity,
     now: () => now,
-    createSession: (owner, ack, fail) => {
+    createSession: (owner, ack, fail, retryPolicy, recovered) => {
       const revision = identity.revision;
-      const session = { disposed: false, owner, ack, fail };
+      const session = { disposed: false, owner, ack, fail, retryPolicy, recovered };
       sessions.push(session);
       return {
         assertCurrent: () => {
@@ -119,6 +123,115 @@ function fixture() {
 }
 
 describe("Apple billing app lifecycle", () => {
+  test("listener completion reconciles all failures before clearing an old ownership message", async () => {
+    const f = fixture();
+    f.lifecycle.setUser("a");
+    const conflict = new AppleBillingApiError("conflict", 409);
+    f.starts[0].reject(conflict);
+    await flush();
+    f.sessions[0].ack(acknowledgement);
+    expect(f.lifecycle.getSnapshot().recoveryError).toContain("another Maple account");
+    f.sessions[0].recovered();
+    await flush();
+    expect(f.starts).toHaveLength(2);
+    f.starts[1].reject(conflict); // Another ID still has an ownership conflict.
+    await flush();
+    expect(f.lifecycle.getSnapshot().recoveryError).toContain("another Maple account");
+    f.sessions[0].recovered();
+    await flush();
+    f.starts[2].resolve([acknowledgement]);
+    await flush();
+    expect(f.lifecycle.getSnapshot().recoveryError).toBeNull();
+    f.lifecycle.dispose();
+  });
+
+  test("listener completion waits for overlapping recovery and cannot wake a revoked owner", async () => {
+    const f = fixture();
+    f.lifecycle.setUser("a");
+    f.sessions[0].recovered();
+    await flush();
+    expect(f.starts).toHaveLength(1);
+    f.starts[0].reject(new AppleBillingApiError("conflict", 409));
+    await flush();
+    expect(f.starts).toHaveLength(2);
+    f.sessions[0].recovered();
+    f.lifecycle.dispose();
+    f.starts[1].resolve([]);
+    await flush();
+    expect(f.starts).toHaveLength(2);
+  });
+
+  test("automatic recovery preserves terminal rejection across refresh; manual retry lifts it", async () => {
+    const f = fixture();
+    f.lifecycle.setUser("a");
+    const policy = f.sessions[0].retryPolicy;
+    const error = new AppleBillingApiError("conflict", 409);
+    policy.observe("123", "signed-state");
+    policy.failed("123", "signed-state", error);
+    f.starts[0].reject(new StoreKitRecoveryError([], [{ transactionId: "123", error }]));
+    await flush();
+    f.advance(300_000);
+    expect(f.starts).toHaveLength(1);
+    const wake = f.lifecycle.recoverAutomatically();
+    expect(() => policy.assertMaySubmit("123", "signed-state")).toThrow(error);
+    f.starts[1].reject(error);
+    await expect(wake).rejects.toBe(error);
+    f.identity("a", 2);
+    f.lifecycle.tick();
+    expect(f.sessions[1].retryPolicy).toBe(policy);
+    expect(() => policy.assertMaySubmit("123", "signed-state")).toThrow(error);
+    f.starts[2].reject(error);
+    await flush();
+    const manual = f.lifecycle.retry();
+    expect(() => policy.assertMaySubmit("123", "signed-state")).not.toThrow();
+    f.starts[3].resolve([acknowledgement]);
+    await manual;
+    expect(f.lifecycle.getSnapshot().recoveryError).toBeNull();
+    f.identity("b", 3);
+    f.lifecycle.setUser("b");
+    expect(f.sessions[2].retryPolicy).not.toBe(policy);
+    f.starts[4].resolve([]);
+    await flush();
+    f.lifecycle.dispose();
+  });
+
+  test("nested mixed failures retry with backoff that focus events cannot bypass", async () => {
+    const f = fixture();
+    f.lifecycle.setUser("a");
+    const conflict = new AppleBillingApiError("conflict", 409);
+    const transient = new AppleBillingApiError("unavailable", 429);
+    f.starts[0].reject(
+      new StoreKitRecoveryError(
+        [],
+        [
+          {
+            transactionId: "123",
+            error: new StoreKitRecoveryError(
+              [],
+              [
+                { transactionId: "123", error: conflict },
+                { transactionId: "123", error: transient }
+              ]
+            )
+          }
+        ]
+      )
+    );
+    await flush();
+    expect(f.lifecycle.getSnapshot().recoveryError).toContain("another Maple account");
+    await f.lifecycle.recoverAutomatically();
+    f.advance(14_999);
+    await f.lifecycle.recoverAutomatically();
+    expect(f.starts).toHaveLength(1);
+    f.advance(1);
+    expect(f.starts).toHaveLength(2);
+    f.starts[1].reject(conflict);
+    await flush();
+    f.advance(300_000);
+    expect(f.starts).toHaveLength(2);
+    f.lifecycle.dispose();
+  });
+
   test("does not create a session until both UI and SDK agree on the account", async () => {
     const f = fixture();
     f.lifecycle.setUser("b");

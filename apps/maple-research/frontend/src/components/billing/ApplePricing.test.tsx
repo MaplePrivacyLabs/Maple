@@ -4,6 +4,8 @@ import { act, create, type ReactTestInstance, type ReactTestRenderer } from "rea
 import { ApplePricing } from "./ApplePricing";
 import type { AppleBillingPurchaseResult } from "@/billing/appleBillingSession";
 import { AppleBillingApiError } from "@/billing/appleBillingApi";
+import { appleBillingErrorMessage } from "@/billing/appleBillingLifecycle";
+import { StoreKitRecoveryError } from "@/services/storeKitService";
 
 type Props = ComponentProps<typeof ApplePricing>;
 const proId = "cloud.opensecret.maple.dev.pro.monthly";
@@ -124,15 +126,66 @@ describe("Apple pricing interactions", () => {
     expect(text(renderer!.root)).toContain("No purchases were found");
     expect(scrollIntoView).toHaveBeenCalledTimes(2);
   });
-  test("background recovery notifications do not scroll the paywall", () => {
+  test("background recovery displays the sanitized ownership error without scrolling", () => {
     const input = props();
     const scrollIntoView = mock(() => {});
+    const recoveryError = appleBillingErrorMessage(new AppleBillingApiError("conflict", 409));
     mount(input, scrollIntoView);
-    act(() => renderer!.update(<ApplePricing {...input} recoveryError="recovery failed" />));
-    expect(text(renderer!.root)).toContain("Some purchases still need confirmation");
+    act(() => renderer!.update(<ApplePricing {...input} recoveryError={recoveryError} />));
+    expect(text(renderer!.root.findByProps({ role: "alert" }))).toBe(recoveryError);
+    expect(text(renderer!.root)).toContain("belongs to another Maple account");
+    expect(button("Subscribe to Pro").props.disabled).toBe(true);
     act(() => renderer!.update(<ApplePricing {...input} recoveryError={null} />));
     expect(scrollIntoView).not.toHaveBeenCalled();
   });
+  for (const label of ["Restore purchases", "Retry purchases"]) {
+    test(`${label} preserves a wrapped ownership conflict instead of suggesting Apple sign-in`, async () => {
+      const input = props();
+      const scrollIntoView = mock(() => {});
+      const failure = new StoreKitRecoveryError(
+        [],
+        [
+          { transactionId: "123", error: new AppleBillingApiError("conflict", 409) },
+          { transactionId: "456", error: new Error("private-native-error-canary") }
+        ]
+      );
+      const reject = async () => {
+        throw failure;
+      };
+      input.restore = reject;
+      input.retry = reject;
+      mount(input, scrollIntoView);
+      await click(label);
+      const alert = text(renderer!.root.findByProps({ role: "alert" }));
+      expect(alert).toBe(appleBillingErrorMessage(failure));
+      expect(alert).toContain("belongs to another Maple account");
+      expect(alert).not.toContain("sign-in prompt");
+      expect(alert).not.toContain("private-native-error-canary");
+      expect(alert).not.toContain("storekit_recovery_incomplete");
+      expect(input.refreshStatus).not.toHaveBeenCalled();
+      expect(scrollIntoView).toHaveBeenCalledTimes(1);
+    });
+  }
+  for (const [label, action, expected] of [
+    [
+      "Manage Apple subscriptions",
+      "manageApple",
+      "Apple subscription management could not be opened"
+    ],
+    ["Apple Standard EULA", "openEula", "The Apple license agreement could not be opened"]
+  ] as const) {
+    test(`${label} retains safe operation-specific failure advice`, async () => {
+      const input = props();
+      input[action] = async () => {
+        throw new Error("private-native-error-canary");
+      };
+      mount(input);
+      await click(label);
+      const alert = text(renderer!.root.findByProps({ role: "alert" }));
+      expect(alert).toContain(expected);
+      expect(alert).not.toContain("private-native-error-canary");
+    });
+  }
   test("missing flag and unknown or failed status cannot start a purchase", () => {
     for (const override of [
       { status: { ...props().status!, ios_iap_enabled: undefined } },
@@ -255,6 +308,39 @@ describe("Apple pricing interactions", () => {
     expect(text(renderer!.root)).toContain("belongs to another Maple account");
     expect(text(renderer!.root)).not.toContain("apple_billing_conflict");
   });
+  for (const selected of [
+    { payment_provider: "apple", product_name: "Pro", is_subscribed: true, current: true },
+    { payment_provider: "apple", product_name: "Max", is_subscribed: true, current: false },
+    { payment_provider: "stripe", product_name: "Pro", is_subscribed: true, current: false },
+    { payment_provider: "apple", product_name: "Pro", is_subscribed: false, current: false }
+  ] as const) {
+    test(`acknowledgement reports current access accurately for ${selected.payment_provider} ${selected.product_name} subscribed=${selected.is_subscribed}`, async () => {
+      const input = props();
+      input.purchase = mock(async () => ({
+        status: "success" as const,
+        acknowledgement: {
+          ...input.status!,
+          acknowledged_transaction_id: "123",
+          payment_provider: selected.payment_provider,
+          product_name: selected.product_name,
+          is_subscribed: selected.is_subscribed
+        }
+      }));
+      mount(input);
+      await click("Subscribe to Pro");
+      const feedback = text(renderer!.root.findByProps({ role: "status" }));
+      expect(feedback).toContain("Purchase confirmed.");
+      if (selected.current) {
+        expect(feedback).toContain("Maple Pro is your current plan.");
+        expect(feedback).not.toContain("Review billing");
+      } else {
+        expect(feedback).toContain("Review billing to see your current plan");
+        expect(feedback).not.toContain("Maple Pro is your current plan.");
+      }
+      expect(feedback).not.toContain("Your Maple plan has been updated");
+      expect(input.purchase).toHaveBeenCalledWith(proId);
+    });
+  }
   test("late completion from an old credential callback cannot overwrite current feedback", async () => {
     let finish!: (value: AppleBillingPurchaseResult) => void;
     const input = props();
