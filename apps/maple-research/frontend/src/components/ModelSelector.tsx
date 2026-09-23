@@ -347,7 +347,7 @@ export function ModelSelector({
 
   return (
     <>
-      <DropdownMenu>
+      <DropdownMenu modal={false}>
         <DropdownMenuTrigger asChild>
           <Button
             disabled={disabled}
