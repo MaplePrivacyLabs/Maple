@@ -23,12 +23,12 @@ once_cell = { workspace = true }
 http = { workspace = true }
 reqwest = { workspace = true }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
-goose = { git = "https://github.com/AnthonyRonning/goose.git", rev = "785d655d110746147117d23690e09cc7023aa9dc", package = "goose", default-features = false }
-goose-providers = { git = "https://github.com/AnthonyRonning/goose.git", rev = "785d655d110746147117d23690e09cc7023aa9dc", package = "goose-providers", default-features = false }
+goose = { git = "https://github.com/AnthonyRonning/goose.git", rev = "58b05d7ff794d31a1bb01f642ff485f2feea52cb", package = "goose", default-features = false }
+goose-providers = { git = "https://github.com/AnthonyRonning/goose.git", rev = "58b05d7ff794d31a1bb01f642ff485f2feea52cb", package = "goose-providers", default-features = false }
 maple-sdk = { workspace = true }
 maple-proxy = { workspace = true }
 rand = "0.8.6"
-rmcp = { version = "=3.1.2", default-features = false, features = ["client", "transport-streamable-http-client-reqwest"] }
+rmcp = { version = "=3.2.0", default-features = false, features = ["client", "transport-streamable-http-client-reqwest"] }
 httpdate = "1"
 process-wrap = { version = "=9.1.0", default-features = false, features = ["tokio1", "creation-flags", "job-object", "process-group"] }
 pulldown-cmark = { version = "0.13", default-features = false }

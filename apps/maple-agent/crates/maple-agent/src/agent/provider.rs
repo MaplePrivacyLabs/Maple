@@ -248,6 +248,7 @@ impl MapleProvider {
             true,
             OpenAiFormatOptions {
                 preserve_thinking_context: true,
+                supports_vision: model_config.supports_vision.unwrap_or_default(),
                 thinking_preservation_format: None,
             },
         )
@@ -1355,7 +1356,7 @@ mod tests {
                 .with_content(MessageContent::thinking("private chain", ""))
                 .with_text("Prior answer"),
         ];
-        let model_config =
+        let mut model_config =
             ModelConfig::new("test-model").with_merged_request_params(HashMap::from([
                 ("include_reasoning".to_string(), json!(false)),
                 (
@@ -1363,6 +1364,7 @@ mod tests {
                     json!({ "enable_thinking": false }),
                 ),
             ]));
+        model_config.supports_vision = Some(true);
 
         let stream = provider
             .stream(&model_config, "Maple system prompt", &messages, &[])
@@ -1455,9 +1457,8 @@ mod tests {
             )),
         );
 
-        // Positive control: Goose turns an MCP image result into a synthetic
-        // user image message. This is the exact path a text-only provider
-        // rejects if Maple's CUA adapter fails to mediate the screenshot.
+        // Positive control: a vision-capable model receives the raw MCP image.
+        // Maple's CUA adapter still mediates screenshots for text-only models.
         let raw_transport = Arc::new(FakeTransport::new(fragmented_success_response()));
         let raw_provider = MapleProvider::new(Arc::clone(&raw_transport));
         let raw_response = Message::user().with_tool_response(
@@ -1467,9 +1468,11 @@ mod tests {
                 rmcp::model::ContentBlock::image("cua-image-sentinel", "image/png"),
             ])),
         );
+        let mut vision_model = ModelConfig::new("vision-model");
+        vision_model.supports_vision = Some(true);
         let raw_stream = raw_provider
             .stream(
-                &ModelConfig::new("deepseek-v4-1-flash"),
+                &vision_model,
                 "system",
                 &[initial.clone(), tool_request.clone(), raw_response],
                 &[],

@@ -1968,6 +1968,7 @@ async fn cancel_pending_permissions_for_runs(
         if let Some(agent) = agents_by_run.get(&request.run_id) {
             agent
                 .handle_confirmation(
+                    &session_id,
                     request_id.clone(),
                     PermissionConfirmation {
                         principal_type: PrincipalType::Tool,
@@ -6519,8 +6520,13 @@ impl AgentRuntimeHandle {
             for (request_id, origin) in drained {
                 match origin {
                     PendingPermissionOrigin::Goose => {
-                        deliver_tool_permission(&agent, request_id.clone(), Permission::AllowOnce)
-                            .await;
+                        deliver_tool_permission(
+                            &agent,
+                            &session_id,
+                            request_id.clone(),
+                            Permission::AllowOnce,
+                        )
+                        .await;
                     }
                     PendingPermissionOrigin::ExternalAgent(responder) => {
                         responder.resolve(AgentPermissionDecision::AllowOnce);
@@ -6731,6 +6737,7 @@ impl AgentRuntimeHandle {
         }
         agent
             .handle_confirmation(
+                &session_id,
                 request_id.clone(),
                 PermissionConfirmation {
                     principal_type: PrincipalType::Tool,
@@ -6934,9 +6941,15 @@ fn select_session_permission_mode(
     }
 }
 
-async fn deliver_tool_permission(agent: &Agent, request_id: String, permission: Permission) {
+async fn deliver_tool_permission(
+    agent: &Agent,
+    session_id: &str,
+    request_id: String,
+    permission: Permission,
+) {
     agent
         .handle_confirmation(
+            session_id,
             request_id,
             PermissionConfirmation {
                 principal_type: PrincipalType::Tool,
@@ -6971,7 +6984,7 @@ async fn deliver_tool_permission_if_auto(
     } else {
         Permission::AllowOnce
     };
-    deliver_tool_permission(agent, request_id.to_string(), permission).await;
+    deliver_tool_permission(agent, session_id, request_id.to_string(), permission).await;
     drop(modes);
     true
 }
@@ -7006,7 +7019,7 @@ async fn claim_pending_permission_if_auto(
         } else {
             Permission::AllowOnce
         };
-        deliver_tool_permission(agent, request_id.to_string(), permission).await;
+        deliver_tool_permission(agent, session_id, request_id.to_string(), permission).await;
     }
     drop(modes);
     true
@@ -7069,7 +7082,7 @@ async fn automatically_handle_permissions(
                 log::info!("Auto-approved Agent Mode web search request {request_id}");
                 Permission::AllowOnce
             };
-            deliver_tool_permission(agent, request_id.clone(), permission).await;
+            deliver_tool_permission(agent, session_id, request_id.clone(), permission).await;
             handled.insert(request_id);
             continue;
         }
@@ -7111,7 +7124,7 @@ async fn automatically_handle_permissions(
                     WebPermissionOutcome::RequiresApproval => continue,
                 }
             };
-            deliver_tool_permission(agent, request_id.clone(), permission).await;
+            deliver_tool_permission(agent, session_id, request_id.clone(), permission).await;
             handled.insert(request_id);
             continue;
         }
@@ -7125,7 +7138,7 @@ async fn automatically_handle_permissions(
                 log::info!("Auto-approved local Agent Mode file read request {request_id}");
                 Permission::AllowOnce
             };
-            deliver_tool_permission(agent, request_id.clone(), permission).await;
+            deliver_tool_permission(agent, session_id, request_id.clone(), permission).await;
             handled.insert(request_id);
             continue;
         }
@@ -7174,7 +7187,7 @@ async fn automatically_handle_permissions(
             }
         };
 
-        deliver_tool_permission(agent, request_id.clone(), permission).await;
+        deliver_tool_permission(agent, session_id, request_id.clone(), permission).await;
         handled.insert(request_id);
     }
 
@@ -7860,8 +7873,15 @@ async fn run_agent_prompt(run: AgentPromptRun) -> Result<AgentPromptOutcome, Str
         max_turns: None,
         retry_config: None,
     };
+    // Maple's timeline and approval routing use the legacy reply stream.
+    // Evaluate state-machine event parity before enabling the new loop.
     let mut stream = agent
-        .reply(user_message, session_config, Some(cancel_token.clone()))
+        .reply(
+            user_message,
+            session_config,
+            false,
+            Some(cancel_token.clone()),
+        )
         .await
         .map_err(|e| format!("Goose reply failed: {e}"))?;
     let session_title_lifecycle_guard = session_title_lifecycle.lock().await;
@@ -7902,8 +7922,13 @@ async fn run_agent_prompt(run: AgentPromptRun) -> Result<AgentPromptOutcome, Str
                 let extracted_permissions = tool_permission_requests(&message);
                 if !extracted_permissions.conflicting_ids.is_empty() {
                     for request_id in &extracted_permissions.conflicting_ids {
-                        deliver_tool_permission(&agent, request_id.clone(), Permission::Cancel)
-                            .await;
+                        deliver_tool_permission(
+                            &agent,
+                            &session_id,
+                            request_id.clone(),
+                            Permission::Cancel,
+                        )
+                        .await;
                     }
                     prompt_error = Some(format!(
                         "Goose emitted an empty or conflicting permission request ID: {}",
@@ -7960,7 +7985,13 @@ async fn run_agent_prompt(run: AgentPromptRun) -> Result<AgentPromptOutcome, Str
                                 .lock()
                                 .await
                                 .insert(request_id.clone());
-                            deliver_tool_permission(&agent, request_id, Permission::Cancel).await;
+                            deliver_tool_permission(
+                                &agent,
+                                &session_id,
+                                request_id,
+                                Permission::Cancel,
+                            )
+                            .await;
                             item.status = Some("cancelled".to_string());
                             continue;
                         };
@@ -7981,8 +8012,13 @@ async fn run_agent_prompt(run: AgentPromptRun) -> Result<AgentPromptOutcome, Str
                                     .lock()
                                     .await
                                     .insert(request_id.clone());
-                                deliver_tool_permission(&agent, request_id, Permission::Cancel)
-                                    .await;
+                                deliver_tool_permission(
+                                    &agent,
+                                    &session_id,
+                                    request_id,
+                                    Permission::Cancel,
+                                )
+                                .await;
                                 item.status = Some("cancelled".to_string());
                             }
                             PendingPermissionRegistration::Existing => {
@@ -8361,15 +8397,10 @@ fn maple_skills_extension_config() -> ExtensionConfig {
 /// subagent it starts inherits this task's provider and its enabled MCP
 /// servers.
 ///
-/// KNOWN ISSUE: a subagent does not inherit the task's permission mode.
-/// Goose hard-codes `GooseMode::Auto` for every subagent (summon.rs:
-/// an approval mode would hang on the subagent's `confirmation_rx`,
-/// because subagent `ActionRequired` messages are not forwarded to the
-/// parent). So a subagent runs every tool without approval, even when
-/// the task is in Read only mode. Fixing this needs the aaif-goose fork
-/// to forward subagent approvals; until then `delegate` sits in
-/// `ask_before` in `MAPLE_GOOSE_PERMISSION_CONFIG`, so Read only mode
-/// prompts before each hand-off.
+/// The pinned Goose fork inherits the parent's permission mode and forwards
+/// subagent approvals to the parent session. `delegate` remains in
+/// `ask_before` in `MAPLE_GOOSE_PERMISSION_CONFIG`, so Read only mode also
+/// asks before each hand-off.
 fn maple_subagent_extension_config() -> ExtensionConfig {
     ExtensionConfig::Platform {
         name: SUMMON_EXTENSION_NAME.to_string(),
@@ -8486,7 +8517,6 @@ async fn attach_prepared_skills_client(agent: &Arc<Agent>, skills_client: TrustA
             maple_skills_extension_config(),
             Arc::new(skills_client),
             None,
-            None,
         )
         .await;
 }
@@ -8533,6 +8563,7 @@ async fn install_maple_provider<T>(
     session: &Session,
     model: &str,
     context_limit: Option<usize>,
+    supports_vision: bool,
 ) -> Result<(), String>
 where
     T: provider::MapleInferenceTransport + 'static,
@@ -8549,7 +8580,8 @@ where
             .and_then(|config| config.context_limit)
             .filter(|limit| *limit > 0)
     });
-    let model_config = maple_model_config(model, context_limit)?;
+    let mut model_config = maple_model_config(model, context_limit)?;
+    model_config.supports_vision = Some(supports_vision);
     install_maple_provider_config(agent, transport, &session.id, model_config).await
 }
 
@@ -8824,7 +8856,6 @@ async fn attach_embedded_cua_client(
             embedded_cua_extension_config(),
             client,
             None,
-            None,
         )
         .await;
     Ok(())
@@ -8883,7 +8914,15 @@ async fn finish_session_agent(
     }
     let skills_client =
         prepare_transient_skills_client(skills_scope.paths, skills_scope.user_id, &agent, session)?;
-    install_maple_provider(&agent, maple_api_session, session, model, context_limit).await?;
+    install_maple_provider(
+        &agent,
+        maple_api_session,
+        session,
+        model,
+        context_limit,
+        primary_model_supports_vision,
+    )
+    .await?;
     // All transient MCP operations are hidden behind Maple's one static
     // `external_mcp` tool, which is permanently ask-before in Maple's owned
     // permission file. Keeping Goose in SmartApprove preserves native behavior
@@ -8934,7 +8973,6 @@ async fn finish_session_agent(
             "developer".to_string(),
             developer,
             Arc::new(developer_client),
-            None,
             None,
         )
         .await;
@@ -13566,6 +13604,7 @@ mod tests {
             &glm_session,
             "glm-5-2",
             Some(384_000),
+            true,
         )
         .await
         .unwrap();
@@ -13586,6 +13625,7 @@ mod tests {
             &kimi_session,
             "auto:powerful",
             Some(256_000),
+            false,
         )
         .await
         .unwrap();
@@ -13613,6 +13653,20 @@ mod tests {
                 .map(|config| (config.model_name.as_str(), config.context_limit)),
             Some(("auto:powerful", Some(256_000)))
         );
+        assert_eq!(
+            persisted_glm
+                .model_config
+                .as_ref()
+                .and_then(|config| config.supports_vision),
+            Some(true)
+        );
+        assert_eq!(
+            persisted_kimi
+                .model_config
+                .as_ref()
+                .and_then(|config| config.supports_vision),
+            Some(false)
+        );
 
         let glm_agent = get_or_create_session_agent(
             &agent_manager,
@@ -13629,6 +13683,7 @@ mod tests {
             &persisted_glm,
             "glm-5-2",
             None,
+            true,
         )
         .await
         .unwrap();
@@ -13951,7 +14006,6 @@ mod tests {
                 "skills".to_string(),
                 mcp_config.clone(),
                 Arc::new(mcp_client),
-                None,
                 None,
             )
             .await;

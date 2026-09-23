@@ -3383,13 +3383,7 @@ mod tests {
             ],
         };
         manager
-            .add_client(
-                "developer".to_string(),
-                config,
-                Arc::new(client),
-                None,
-                None,
-            )
+            .add_client("developer".to_string(), config, Arc::new(client), None)
             .await;
 
         let tools = manager.get_prefixed_tools("session", None).await.unwrap();
