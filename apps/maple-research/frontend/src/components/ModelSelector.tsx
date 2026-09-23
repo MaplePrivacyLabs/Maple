@@ -349,19 +349,22 @@ export function ModelSelector({
   return (
     <>
       <DropdownMenu>
-        <DropdownMenuTrigger asChild>
-          <Button
-            disabled={disabled}
-            variant="ghost"
-            size="sm"
-            pressScale={false}
-            className="group h-8 px-2 text-[hsl(var(--maple-secondary-700))] hover:bg-[hsl(var(--maple-primary-container))] hover:text-[hsl(var(--maple-secondary-700))]"
-            data-testid="model-selector-button"
-            aria-label={`Current model: ${getDisplayNameText(model)}. Click to change model.`}
-          >
-            {modelDisplay}
-          </Button>
-        </DropdownMenuTrigger>
+        {/* Keep the press active when Chrome blurs the button as the menu opens. */}
+        <span className="group inline-flex has-[:disabled]:pointer-events-none">
+          <DropdownMenuTrigger asChild>
+            <Button
+              disabled={disabled}
+              variant="ghost"
+              size="sm"
+              pressScale={false}
+              className="group h-8 px-2 text-[hsl(var(--maple-secondary-700))] hover:bg-[hsl(var(--maple-primary-container))] hover:text-[hsl(var(--maple-secondary-700))]"
+              data-testid="model-selector-button"
+              aria-label={`Current model: ${getDisplayNameText(model)}. Click to change model.`}
+            >
+              {modelDisplay}
+            </Button>
+          </DropdownMenuTrigger>
+        </span>
         <DropdownMenuContent align="start" className="w-64 p-0">
           {!showAdvanced ? (
             <div className="p-1 flex flex-col">

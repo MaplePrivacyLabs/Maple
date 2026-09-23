@@ -5986,36 +5986,39 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
                           </Button>
 
                           <DropdownMenu>
-                            <DropdownMenuTrigger asChild>
-                              <Button
-                                type="button"
-                                variant="ghost"
-                                size="sm"
-                                pressScale={false}
-                                className="group h-8 w-8 p-0 text-[hsl(var(--maple-secondary-700))] hover:bg-[hsl(var(--maple-primary-container))] hover:text-[hsl(var(--maple-secondary-700))]"
-                                disabled={Boolean(queueEdit) || isProcessingDocument}
-                                aria-busy={isProcessingDocument}
-                                aria-label={
-                                  isProcessingDocument
-                                    ? "Processing document"
-                                    : queueEdit
-                                      ? "Attachments unavailable while editing a queued message"
-                                      : "Add attachment"
-                                }
-                              >
-                                {isProcessingDocument ? (
-                                  <Loader2
-                                    className="h-4 w-4 animate-spin text-[hsl(var(--maple-secondary-700))]"
-                                    aria-hidden="true"
-                                  />
-                                ) : (
-                                  <Plus
-                                    className="h-4 w-4 text-[hsl(var(--maple-secondary-700))] will-change-transform transition-transform duration-150 ease-out group-active:scale-90 motion-reduce:transition-none"
-                                    aria-hidden="true"
-                                  />
-                                )}
-                              </Button>
-                            </DropdownMenuTrigger>
+                            {/* Keep the press active when Chrome blurs the button as the menu opens. */}
+                            <span className="group inline-flex has-[:disabled]:pointer-events-none">
+                              <DropdownMenuTrigger asChild>
+                                <Button
+                                  type="button"
+                                  variant="ghost"
+                                  size="sm"
+                                  pressScale={false}
+                                  className="group h-8 w-8 p-0 text-[hsl(var(--maple-secondary-700))] hover:bg-[hsl(var(--maple-primary-container))] hover:text-[hsl(var(--maple-secondary-700))]"
+                                  disabled={Boolean(queueEdit) || isProcessingDocument}
+                                  aria-busy={isProcessingDocument}
+                                  aria-label={
+                                    isProcessingDocument
+                                      ? "Processing document"
+                                      : queueEdit
+                                        ? "Attachments unavailable while editing a queued message"
+                                        : "Add attachment"
+                                  }
+                                >
+                                  {isProcessingDocument ? (
+                                    <Loader2
+                                      className="h-4 w-4 animate-spin text-[hsl(var(--maple-secondary-700))]"
+                                      aria-hidden="true"
+                                    />
+                                  ) : (
+                                    <Plus
+                                      className="h-4 w-4 text-[hsl(var(--maple-secondary-700))] will-change-transform transition-transform duration-150 ease-out group-active:scale-90 motion-reduce:transition-none"
+                                      aria-hidden="true"
+                                    />
+                                  )}
+                                </Button>
+                              </DropdownMenuTrigger>
+                            </span>
                             <DropdownMenuContent align="start">
                               <DropdownMenuItem
                                 disabled={Boolean(queueEdit)}
@@ -6218,36 +6221,39 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
                         </Button>
 
                         <DropdownMenu>
-                          <DropdownMenuTrigger asChild>
-                            <Button
-                              type="button"
-                              variant="ghost"
-                              size="sm"
-                              pressScale={false}
-                              className="group h-8 w-8 p-0 text-[hsl(var(--maple-secondary-700))] hover:bg-[hsl(var(--maple-primary-container))] hover:text-[hsl(var(--maple-secondary-700))]"
-                              disabled={Boolean(queueEdit) || isProcessingDocument}
-                              aria-busy={isProcessingDocument}
-                              aria-label={
-                                isProcessingDocument
-                                  ? "Processing document"
-                                  : queueEdit
-                                    ? "Attachments unavailable while editing a queued message"
-                                    : "Add attachment"
-                              }
-                            >
-                              {isProcessingDocument ? (
-                                <Loader2
-                                  className="h-4 w-4 animate-spin text-[hsl(var(--maple-secondary-700))]"
-                                  aria-hidden="true"
-                                />
-                              ) : (
-                                <Plus
-                                  className="h-4 w-4 text-[hsl(var(--maple-secondary-700))] will-change-transform transition-transform duration-150 ease-out group-active:scale-90 motion-reduce:transition-none"
-                                  aria-hidden="true"
-                                />
-                              )}
-                            </Button>
-                          </DropdownMenuTrigger>
+                          {/* Keep the press active when Chrome blurs the button as the menu opens. */}
+                          <span className="group inline-flex has-[:disabled]:pointer-events-none">
+                            <DropdownMenuTrigger asChild>
+                              <Button
+                                type="button"
+                                variant="ghost"
+                                size="sm"
+                                pressScale={false}
+                                className="group h-8 w-8 p-0 text-[hsl(var(--maple-secondary-700))] hover:bg-[hsl(var(--maple-primary-container))] hover:text-[hsl(var(--maple-secondary-700))]"
+                                disabled={Boolean(queueEdit) || isProcessingDocument}
+                                aria-busy={isProcessingDocument}
+                                aria-label={
+                                  isProcessingDocument
+                                    ? "Processing document"
+                                    : queueEdit
+                                      ? "Attachments unavailable while editing a queued message"
+                                      : "Add attachment"
+                                }
+                              >
+                                {isProcessingDocument ? (
+                                  <Loader2
+                                    className="h-4 w-4 animate-spin text-[hsl(var(--maple-secondary-700))]"
+                                    aria-hidden="true"
+                                  />
+                                ) : (
+                                  <Plus
+                                    className="h-4 w-4 text-[hsl(var(--maple-secondary-700))] will-change-transform transition-transform duration-150 ease-out group-active:scale-90 motion-reduce:transition-none"
+                                    aria-hidden="true"
+                                  />
+                                )}
+                              </Button>
+                            </DropdownMenuTrigger>
+                          </span>
                           <DropdownMenuContent align="start">
                             <DropdownMenuItem
                               disabled={Boolean(queueEdit)}
