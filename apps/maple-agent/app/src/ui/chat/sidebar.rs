@@ -25,7 +25,7 @@ use super::navigation::SidebarTarget;
 use super::{ChatScreen, section_label};
 use crate::backend::AgentBackend;
 use crate::ui::icons::{icon, spinner_with_id, wordmark};
-use crate::ui::motion;
+use crate::ui::popup::{Menu, MenuItem, Placement, Popup};
 use crate::ui::text_input::TextInput;
 use crate::ui::theme;
 use crate::ui::titlebar;
@@ -127,12 +127,12 @@ impl SidebarRow {
     }
 }
 
-/// The popup menu the sidebar shows. The project menu opens inside the
-/// switcher menu, so its variant comes first in `popup`.
+/// The sidebar's popup menus. One is open at a time; a project's own menu
+/// opens inside the switcher (see `Sidebar::project_popup`).
 #[derive(Clone, Debug, PartialEq, Eq)]
-enum SidebarPopup {
+pub(super) enum SidebarPopup {
     Switcher,
-    Project(String),
+    /// A task row's overflow menu.
     Task(String),
 }
 
@@ -265,9 +265,8 @@ impl SidebarSection {
 
 type MenuAction = Box<dyn Fn(&mut Sidebar, &mut Context<Sidebar>)>;
 
-/// One selectable action of a sidebar popup menu. Building the list once
-/// keeps the render path and the Application-Vim Enter key on the same
-/// items.
+/// One action of a sidebar overflow menu, as the task and project menus
+/// list them.
 struct SidebarMenuItem {
     id: SharedString,
     icon: &'static str,
@@ -318,10 +317,10 @@ pub(super) struct Sidebar {
     scope_label: SharedString,
     project_filter: Option<String>,
     // Menus.
-    switcher_menu_open: bool,
-    menu_selected: Option<usize>,
-    task_menu: Option<String>,
-    project_menu: Option<String>,
+    popup: Popup<Sidebar, SidebarPopup>,
+    /// A project's overflow menu, open inside the switcher. Keyed by root.
+    project_popup: Popup<Sidebar, String>,
+    /// Trust status of the project whose menu is open, once it loads.
     menu_trust: Option<AgentProjectTrustStatus>,
     // Search and rename.
     filter: String,
@@ -391,10 +390,8 @@ impl Sidebar {
             switcher_roots: Vec::new(),
             scope_label: "All projects".into(),
             project_filter: None,
-            switcher_menu_open: false,
-            menu_selected: None,
-            task_menu: None,
-            project_menu: None,
+            popup: Popup::new(|this| &mut this.popup, cx),
+            project_popup: Popup::new(|this| &mut this.project_popup, cx),
             menu_trust: None,
             filter: String::new(),
             search_input,
@@ -620,14 +617,26 @@ impl Sidebar {
         self.project_filter.as_deref()
     }
 
-    #[cfg(test)]
     pub(super) fn switcher_menu_open(&self) -> bool {
-        self.switcher_menu_open
+        self.popup.is_open(&SidebarPopup::Switcher)
     }
 
     #[cfg(test)]
     pub(super) fn task_menu(&self) -> Option<&str> {
-        self.task_menu.as_deref()
+        match self.popup.open_key() {
+            Some(SidebarPopup::Task(session)) => Some(session),
+            _ => None,
+        }
+    }
+
+    #[cfg(test)]
+    pub(super) fn project_menu(&self) -> Option<&str> {
+        self.project_popup.open_key().map(String::as_str)
+    }
+
+    #[cfg(test)]
+    pub(super) fn popup_highlight(&self) -> Option<usize> {
+        self.popup.highlighted()
     }
 
     #[cfg(test)]
@@ -670,8 +679,8 @@ impl Sidebar {
 
     #[cfg(test)]
     pub(super) fn open_task_menu_for_test(&mut self, session_id: &str, cx: &mut Context<Self>) {
-        self.task_menu = Some(session_id.to_string());
-        cx.notify();
+        self.popup
+            .open(SidebarPopup::Task(session_id.to_string()), cx);
     }
 
     #[cfg(test)]
@@ -992,15 +1001,8 @@ impl Sidebar {
 
     /// Close whichever popup menu is open. Reports whether one was.
     pub(super) fn close_popups(&mut self, cx: &mut Context<Self>) -> bool {
-        if self.project_menu.is_none() && !self.switcher_menu_open && self.task_menu.is_none() {
-            return false;
-        }
-        self.project_menu = None;
-        self.switcher_menu_open = false;
-        self.task_menu = None;
-        self.menu_selected = None;
-        cx.notify();
-        true
+        let project = self.project_popup.close(cx);
+        self.popup.close(cx) || project
     }
 
     /// Run a backend future and hand its result back on this thread.
@@ -1066,31 +1068,40 @@ impl Sidebar {
         cx.notify();
     }
 
-    /// Open or close the project switcher menu.
+    /// Open or close the project switcher menu from its header.
     pub(super) fn toggle_switcher_menu(&mut self, cx: &mut Context<Self>) {
-        self.project_menu = None;
-        self.set_switcher_menu_open(!self.switcher_menu_open, cx);
+        self.project_popup.close(cx);
+        self.popup.toggle(SidebarPopup::Switcher, cx);
     }
 
-    /// Deterministically open or close the project switcher menu.
-    /// Application Vim uses this setter; pointer clicks toggle above.
+    /// Open or close the project switcher from the keyboard. Opening
+    /// highlights the current scope, like a native popup button.
     pub(super) fn set_switcher_menu_open(&mut self, open: bool, cx: &mut Context<Self>) {
-        self.menu_selected = None;
-        if self.switcher_menu_open == open {
+        if open == self.switcher_menu_open() {
             return;
         }
-        self.switcher_menu_open = open;
+        self.project_popup.close(cx);
         if open {
-            self.project_menu = None;
+            let current = self.project_filter.as_deref().and_then(|filter| {
+                self.switcher_roots
+                    .iter()
+                    .position(|root| root.root == filter)
+                    .map(|index| index + 1)
+            });
+            self.popup
+                .open_at_row(SidebarPopup::Switcher, Some(current.unwrap_or(0)), cx);
+        } else {
+            self.popup.close(cx);
         }
-        cx.notify();
     }
 
     /// Scope the sidebar to one project, or show every project again.
     pub(super) fn set_project_filter(&mut self, root: Option<String>, cx: &mut Context<Self>) {
-        self.menu_selected = None;
         self.project_filter = root.filter(|root| !root.is_empty());
-        self.switcher_menu_open = false;
+        self.project_popup.close(cx);
+        if self.switcher_menu_open() {
+            self.popup.close(cx);
+        }
         self.rebuild_sections();
         cx.notify();
     }
@@ -1147,7 +1158,7 @@ impl Sidebar {
                     });
                 })
         });
-        self.project_menu = None;
+        self.project_popup.close(cx);
         self.rename = Some(target);
         self.rename_input = Some(input);
         self.rename_focus_pending = true;
@@ -1213,9 +1224,7 @@ impl Sidebar {
 
     /// Show the project's folder in the file manager.
     fn open_folder(&mut self, root: &str, cx: &mut Context<Self>) {
-        self.project_menu = None;
         let path = root.to_string();
-        cx.notify();
         self.call(
             async move {
                 tokio::task::spawn_blocking(move || crate::platform::reveal_folder(&path))
@@ -1231,41 +1240,34 @@ impl Sidebar {
         );
     }
 
+    /// Open or close a project's overflow menu. Its trust row appears once
+    /// the project's trust status loads.
     fn toggle_project_menu(&mut self, root: &str, cx: &mut Context<Self>) {
-        self.task_menu = None;
-        self.menu_selected = None;
-        if self.project_menu.as_deref() == Some(root) {
-            self.project_menu = None;
-        } else {
-            self.project_menu = Some(root.to_string());
-            let backend = self.backend.clone();
-            let user_id = self.user_id.clone();
-            let path = root.to_string();
-            self.call(
-                async move { backend.project_trust(&user_id, path).await },
-                cx,
-                |this, result, cx| {
-                    if let Ok(status) = result
-                        && this.project_menu.as_deref() == Some(status.path.as_str())
-                    {
-                        this.menu_trust = Some(status);
-                        cx.notify();
-                    }
-                },
-            );
+        if !self.project_popup.toggle(root.to_string(), cx) {
+            return;
         }
-        cx.notify();
+        self.menu_trust = None;
+        let backend = self.backend.clone();
+        let user_id = self.user_id.clone();
+        let path = root.to_string();
+        self.call(
+            async move { backend.project_trust(&user_id, path).await },
+            cx,
+            |this, result, cx| {
+                if let Ok(status) = result
+                    && this.project_popup.is_open(&status.path)
+                {
+                    this.menu_trust = Some(status);
+                    cx.notify();
+                }
+            },
+        );
     }
 
     /// Open or close the overflow menu of one task row.
     fn toggle_task_menu(&mut self, session_id: &str, cx: &mut Context<Self>) {
-        self.menu_selected = None;
-        if self.task_menu.as_deref() == Some(session_id) {
-            self.task_menu = None;
-        } else {
-            self.task_menu = Some(session_id.to_string());
-        }
-        cx.notify();
+        self.popup
+            .toggle(SidebarPopup::Task(session_id.to_string()), cx);
     }
 
     /// The overflow menu of a task row: rename, then where the task can
@@ -1360,16 +1362,6 @@ impl Sidebar {
                 on_click: Box::new(move |this, cx| this.move_task(&session_id, to, cx)),
             });
         }
-        // Every item commits an action, so choosing one closes the menu.
-        for item in &mut items {
-            let action = std::mem::replace(&mut item.on_click, Box::new(|_, _| {}));
-            item.on_click = Box::new(move |this, cx| {
-                this.task_menu = None;
-                this.menu_selected = None;
-                cx.notify();
-                action(this, cx);
-            });
-        }
         items
     }
 
@@ -1461,13 +1453,11 @@ impl Sidebar {
                 } else {
                     "Trust project"
                 },
-                on_click: Box::new(move |this, cx| {
-                    this.project_menu = None;
+                on_click: Box::new(move |_, cx| {
                     cx.emit(SidebarEvent::SetTrust {
                         path: path.clone(),
                         trusted: !trusted,
                     });
-                    cx.notify();
                 }),
             });
         }
@@ -1475,32 +1465,15 @@ impl Sidebar {
             id: SharedString::from(format!("remove-project-{root}")),
             icon: "trash-2",
             label: "Remove project",
-            on_click: Box::new(move |this, cx| {
-                this.project_menu = None;
+            on_click: Box::new(move |_, cx| {
                 cx.emit(SidebarEvent::RemoveRoot(remove_root.clone()));
-                cx.notify();
             }),
         });
         items
     }
 
-    /// The popup menu the sidebar shows, if any. The project menu opens
-    /// inside the switcher, so it takes priority; the task menu and the
-    /// switcher never share the screen with each other.
-    fn popup(&self) -> Option<SidebarPopup> {
-        if let Some(root) = &self.project_menu {
-            return Some(SidebarPopup::Project(root.clone()));
-        }
-        if let Some(session) = &self.task_menu {
-            return Some(SidebarPopup::Task(session.clone()));
-        }
-        if self.switcher_menu_open {
-            return Some(SidebarPopup::Switcher);
-        }
-        None
-    }
-
     /// The task entry whose overflow menu is open.
+    #[cfg(test)]
     fn task_menu_entry(&self, session_id: &str) -> Option<SidebarTaskEntry> {
         self.entries.iter().find_map(|entry| match entry {
             SidebarEntry::Task(task) => self
@@ -1510,103 +1483,6 @@ impl Sidebar {
                 .map(|_| *task),
             _ => None,
         })
-    }
-
-    fn popup_rows(&self) -> Option<usize> {
-        match self.popup() {
-            Some(SidebarPopup::Switcher) => Some(self.switcher_roots.len() + 2),
-            Some(SidebarPopup::Project(root)) => Some(self.project_menu_items(&root).len()),
-            Some(SidebarPopup::Task(session)) => Some(
-                self.task_menu_entry(&session)
-                    .map(|task| self.task_menu_items(task).len())
-                    .unwrap_or(0),
-            ),
-            None => None,
-        }
-    }
-
-    /// The Application-Vim row highlight of whichever popup menu is open.
-    fn menu_selection(&self) -> Option<usize> {
-        (self.application_vim_enabled && self.popup().is_some())
-            .then_some(self.menu_selected)
-            .flatten()
-    }
-
-    /// Move the Application-Vim selection inside the open popup menu.
-    /// Reports whether one was open.
-    pub(super) fn step_popup(
-        &mut self,
-        delta: isize,
-        count: usize,
-        cx: &mut Context<Self>,
-    ) -> bool {
-        let Some(rows) = self.popup_rows().filter(|rows| *rows > 0) else {
-            return false;
-        };
-        for _ in 0..count {
-            let next = match self.menu_selected {
-                Some(current) => (current as isize + delta).rem_euclid(rows as isize),
-                None if delta < 0 => rows as isize - 1,
-                None => 0,
-            };
-            self.menu_selected = Some(next as usize);
-        }
-        cx.notify();
-        true
-    }
-
-    /// `gg` and `G` inside the open popup menu. Reports whether one was
-    /// open.
-    pub(super) fn popup_edge(&mut self, first: bool, cx: &mut Context<Self>) -> bool {
-        let Some(rows) = self.popup_rows().filter(|rows| *rows > 0) else {
-            return false;
-        };
-        self.menu_selected = Some(if first { 0 } else { rows - 1 });
-        cx.notify();
-        true
-    }
-
-    /// Enter inside the open popup menu: run the highlighted item's
-    /// action. Reports whether one was open.
-    pub(super) fn activate_popup(&mut self, cx: &mut Context<Self>) -> bool {
-        let Some(popup) = self.popup() else {
-            return false;
-        };
-        let Some(rows) = self.popup_rows().filter(|rows| *rows > 0) else {
-            return false;
-        };
-        let index = match self.menu_selected {
-            Some(index) => index.min(rows - 1),
-            None => return true,
-        };
-        match popup {
-            SidebarPopup::Switcher => {
-                if index == 0 {
-                    self.set_project_filter(None, cx);
-                } else if let Some(root) = self.switcher_roots.get(index - 1) {
-                    let root = root.root.clone();
-                    self.set_project_filter(Some(root), cx);
-                } else if index == self.switcher_roots.len() + 1 {
-                    self.set_switcher_menu_open(false, cx);
-                    cx.emit(SidebarEvent::ChooseProject);
-                }
-            }
-            SidebarPopup::Project(root) => {
-                if let Some(item) = self.project_menu_items(&root).into_iter().nth(index) {
-                    let SidebarMenuItem { on_click, .. } = item;
-                    on_click(self, cx);
-                }
-            }
-            SidebarPopup::Task(session) => {
-                if let Some(task) = self.task_menu_entry(&session)
-                    && let Some(item) = self.task_menu_items(task).into_iter().nth(index)
-                {
-                    let SidebarMenuItem { on_click, .. } = item;
-                    on_click(self, cx);
-                }
-            }
-        }
-        true
     }
 
     // ---- Application Vim ---------------------------------------------------
@@ -1964,72 +1840,91 @@ impl Sidebar {
     /// opens the menu that picks it. The overflow menu of one project
     /// hangs off its row inside the switcher.
     fn render_projects_header(&self, cx: &mut Context<Self>) -> AnyElement {
-        let menu = self
-            .switcher_menu_open
-            .then(|| self.render_switcher_menu(cx));
+        let open = self.switcher_menu_open();
+        let menu = open.then(|| {
+            self.popup
+                .render(self.switcher_menu(cx), Placement::BelowStart, cx)
+        });
+        let header = div()
+            .id("projects-header")
+            .role(gpui::Role::Button)
+            .aria_label("Projects")
+            .debug_selector(|| "projects-header".to_string())
+            .flex()
+            .items_center()
+            .gap_1p5()
+            .w_full()
+            .pl_4()
+            // Room for the new-project button, which sits over this end.
+            .pr(px(46.))
+            .py_1()
+            .rounded(theme::RADIUS_SM)
+            .text_sm()
+            .font_weight(gpui::FontWeight::MEDIUM)
+            .text_color(gpui::rgb(theme::text_primary()))
+            .hover(|style| {
+                style
+                    .bg(gpui::rgb(theme::bg_sidebar_row_hover()))
+                    .cursor_pointer()
+            })
+            .child(icon("folder", px(16.), theme::text_secondary()))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .line_clamp(1)
+                    .text_ellipsis()
+                    .child(self.scope_label.clone()),
+            )
+            .child(icon(
+                if open {
+                    "chevron-down"
+                } else {
+                    "chevron-right"
+                },
+                px(14.),
+                theme::text_secondary(),
+            ));
         div()
             .relative()
             .w_full()
             .mb_3()
             .child(
+                self.popup
+                    .trigger(SidebarPopup::Switcher, header, cx, |this, _, cx| {
+                        this.toggle_switcher_menu(cx)
+                    }),
+            )
+            .child(
+                // A sibling over the header's end, not a button inside a
+                // button. It blocks the pointer, so a press on it never
+                // reaches the header behind it.
                 div()
-                    .id("projects-header")
+                    .id("new-project")
                     .role(gpui::Role::Button)
-                    .aria_label("Projects")
-                    .aria_expanded(self.switcher_menu_open)
+                    .aria_label("New project")
+                    .occlude()
+                    .absolute()
+                    .right_4()
+                    .top_0()
+                    .bottom_0()
+                    .my_auto()
+                    .size_6()
                     .flex()
                     .items_center()
-                    .gap_1p5()
-                    .w_full()
-                    .px_4()
-                    .py_1()
+                    .justify_center()
                     .rounded(theme::RADIUS_SM)
-                    .text_sm()
-                    .font_weight(gpui::FontWeight::MEDIUM)
-                    .text_color(gpui::rgb(theme::text_primary()))
                     .hover(|style| {
                         style
                             .bg(gpui::rgb(theme::bg_sidebar_row_hover()))
                             .cursor_pointer()
                     })
-                    .on_click(cx.listener(|this, _event, _window, cx| {
+                    .tooltip(widgets::tooltip("New project", None))
+                    .on_click(cx.listener(|_this, _event, _window, cx| {
                         cx.stop_propagation();
-                        this.toggle_switcher_menu(cx);
+                        cx.emit(SidebarEvent::ChooseProject);
                     }))
-                    .child(icon("folder", px(16.), theme::text_secondary()))
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .line_clamp(1)
-                            .text_ellipsis()
-                            .child(self.scope_label.clone()),
-                    )
-                    .when(self.switcher_menu_open, |row| {
-                        row.child(icon("chevron-down", px(14.), theme::text_secondary()))
-                    })
-                    .when(!self.switcher_menu_open, |row| {
-                        row.child(icon("chevron-right", px(14.), theme::text_secondary()))
-                    })
-                    .child(
-                        div()
-                            .id("new-project")
-                            .size_6()
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .rounded(theme::RADIUS_SM)
-                            .hover(|style| {
-                                style
-                                    .bg(gpui::rgb(theme::bg_sidebar_row_hover()))
-                                    .cursor_pointer()
-                            })
-                            .on_click(cx.listener(|_this, _event, _window, cx| {
-                                cx.stop_propagation();
-                                cx.emit(SidebarEvent::ChooseProject);
-                            }))
-                            .child(icon("folder-plus", px(16.), theme::text_secondary())),
-                    ),
+                    .child(icon("folder-plus", px(16.), theme::text_secondary())),
             )
             .children(menu)
             .into_any_element()
@@ -2037,210 +1932,116 @@ impl Sidebar {
 
     /// The menu the project switcher opens: every project, each with an
     /// overflow menu of its own, plus a way back to all projects.
-    fn render_switcher_menu(&self, cx: &mut Context<Self>) -> gpui::Deferred {
-        let selected = self.menu_selection();
-        let mut items = vec![
-            div()
-                .id("switcher-all-projects")
-                .flex()
-                .items_center()
-                .gap_2()
-                .px_3()
-                .py_1p5()
-                .text_sm()
-                .text_color(gpui::rgb(theme::text_primary()))
-                .when(selected == Some(0), |row| {
-                    row.bg(gpui::rgb(theme::bg_input()))
-                })
-                .hover(|style| {
-                    style
-                        .bg(gpui::rgb(theme::bg_sidebar_row_hover()))
-                        .cursor_pointer()
-                })
-                .on_click(cx.listener(|this, _event, _window, cx| {
-                    this.set_project_filter(None, cx);
-                }))
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .line_clamp(1)
-                        .text_ellipsis()
-                        .child("All projects"),
+    fn switcher_menu(&self, cx: &mut Context<Self>) -> Menu<Self> {
+        let mut menu = Menu::new("switcher-menu", px(260.))
+            .label("Projects")
+            .max_height(px(360.))
+            .application_vim(self.application_vim_enabled)
+            .nested(&self.project_popup)
+            .item(
+                MenuItem::new(
+                    "switcher-all-projects",
+                    "All projects",
+                    |this: &mut Self, _: &mut Window, cx: &mut Context<Self>| {
+                        this.set_project_filter(None, cx);
+                    },
                 )
-                .when(self.project_filter.is_none(), |row| {
-                    row.child(icon("check", px(14.), theme::accent()))
-                }),
-        ];
-        for (index, root) in self.switcher_roots.iter().enumerate() {
-            let is_current = self.project_filter.as_deref() == Some(root.root.as_str());
-            let has_menu = self.project_menu.as_deref() == Some(root.root.as_str());
-            let rename_field = self.project_rename_field(&root.root);
-            let not_renaming = rename_field.is_none();
-            items.push(
-                div()
-                    .id(root.row_id.clone())
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .px_3()
-                    .py_1p5()
-                    .text_sm()
-                    .text_color(gpui::rgb(theme::text_primary()))
-                    .when(
-                        selected.is_some_and(|selected| selected == index + 1),
-                        |row| row.bg(gpui::rgb(theme::bg_input())),
-                    )
-                    .hover(|style| {
-                        style
-                            .bg(gpui::rgb(theme::bg_sidebar_row_hover()))
-                            .cursor_pointer()
-                    })
-                    .on_click({
-                        let root = root.root.clone();
-                        cx.listener(move |this, _event, _window, cx| {
-                            let root = root.clone();
-                            this.set_project_filter(Some(root), cx);
-                        })
-                    })
-                    .when_some(rename_field, |row, field| row.child(field))
-                    .when(not_renaming, |row| {
-                        row.child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .line_clamp(1)
-                                .text_ellipsis()
-                                .child(root.name.clone()),
-                        )
-                    })
-                    .when(is_current, |row| {
-                        row.child(icon("check", px(14.), theme::accent()))
-                    })
-                    .child(row_action(
-                        root.menu_id.clone(),
-                        &root.row_group,
-                        "ellipsis",
-                        "Project options",
-                        {
-                            let root = root.root.clone();
-                            cx.listener(move |this, _event, _window, cx| {
-                                cx.stop_propagation();
-                                this.toggle_project_menu(&root, cx);
-                            })
-                        },
-                    ))
-                    .children(has_menu.then(|| self.render_project_menu(&root.root.clone(), cx))),
+                .current(self.project_filter.is_none()),
             );
+        for root in &self.switcher_roots {
+            let pick = root.root.clone();
+            let group = root.row_group.clone();
+            let mut item = MenuItem::new(
+                root.row_id.clone(),
+                root.name.clone(),
+                move |this: &mut Self, _: &mut Window, cx: &mut Context<Self>| {
+                    this.set_project_filter(Some(pick.clone()), cx);
+                },
+            )
+            .current(self.project_filter.as_deref() == Some(root.root.as_str()))
+            // The row's overflow button shows while the row is hovered.
+            .style(move |row| row.group(group))
+            .trailing(self.project_menu_trigger(root, cx));
+            if let Some(field) = self.project_rename_field(&root.root) {
+                item = item.content(field);
+            }
+            menu = menu.item(item);
         }
-        let new_project_row = self.switcher_roots.len() + 1;
-        items.push(
-            div()
-                .id("switcher-new-project")
-                .flex()
-                .items_center()
-                .gap_2()
-                .px_3()
-                .py_1p5()
-                .text_sm()
-                .text_color(gpui::rgb(theme::text_secondary()))
-                .when(
-                    selected.is_some_and(|selected| selected == new_project_row),
-                    |row| row.bg(gpui::rgb(theme::bg_input())),
-                )
-                .hover(|style| {
-                    style
-                        .bg(gpui::rgb(theme::bg_sidebar_row_hover()))
-                        .cursor_pointer()
-                })
-                .on_click(cx.listener(|this, _event, _window, cx| {
-                    this.set_switcher_menu_open(false, cx);
+        menu.item(
+            MenuItem::new(
+                "switcher-new-project",
+                "New project…",
+                |_: &mut Self, _: &mut Window, cx: &mut Context<Self>| {
                     cx.emit(SidebarEvent::ChooseProject);
-                }))
-                .child(icon("folder-plus", px(14.), theme::text_secondary()))
-                .child("New project…"),
-        );
-        gpui::deferred(motion::fade_in(
-            div()
-                .id("switcher-menu")
-                .absolute()
-                .top(px(30.))
-                .left_0()
-                .min_w(px(220.))
-                .max_h(px(360.))
-                .overflow_y_scroll()
-                .p_1()
-                .rounded(theme::RADIUS_SM)
-                .bg(gpui::rgb(theme::bg_elevated()))
-                .border_1()
-                .border_color(gpui::rgb(theme::border()))
-                .shadow_md()
-                .flex()
-                .flex_col()
-                .on_mouse_down_out(cx.listener(|this, _event, _window, cx| {
-                    this.set_switcher_menu_open(false, cx);
-                }))
-                .children(items),
-            "switcher-menu-reveal",
-        ))
+                },
+            )
+            .icon("folder-plus"),
+        )
     }
 
-    /// Overflow menu for a task row: pin, settle, and archive, beside the
-    /// rename the pencil offers.
-    fn render_task_menu(&self, task: SidebarTaskEntry, cx: &mut Context<Self>) -> gpui::Deferred {
-        let Some(row) = self.rows.get(task.session) else {
-            return gpui::deferred(div());
-        };
-        let selected = self.menu_selection();
-        let mut menu = div()
-            .id(row.menu_panel_id.clone())
-            .absolute()
-            .top(px(30.))
-            .right_0()
-            .w(px(180.))
-            .py_1()
-            .rounded(theme::RADIUS_SM)
-            .bg(gpui::rgb(theme::bg_elevated()))
-            .border_1()
-            .border_color(gpui::rgb(theme::border()))
-            .shadow_md()
-            .flex()
-            .flex_col()
-            .on_mouse_down_out(cx.listener(|this, _event, _window, cx| {
-                this.task_menu = None;
-                cx.notify();
-            }));
-        for (index, item) in self.task_menu_items(task).into_iter().enumerate() {
-            menu = menu.child(popup_menu_row(item, selected == Some(index), cx));
-        }
-        gpui::deferred(motion::fade_in(menu, "sidebar-menu-reveal"))
+    /// A switcher row's overflow button, with the project's menu under it
+    /// while open.
+    fn project_menu_trigger(&self, root: &SwitcherRoot, cx: &mut Context<Self>) -> Div {
+        let open = self.project_popup.is_open(&root.root);
+        let menu = open.then(|| {
+            let menu = Menu::new(
+                SharedString::from(format!("project-menu-{}", root.root)),
+                px(180.),
+            )
+            .label("Project options")
+            .level(2)
+            .application_vim(self.application_vim_enabled)
+            .items(
+                self.project_menu_items(&root.root)
+                    .into_iter()
+                    .map(menu_item),
+            );
+            self.project_popup.render(menu, Placement::BelowEnd, cx)
+        });
+        let toggle = root.root.clone();
+        div()
+            .relative()
+            .child(self.project_popup.trigger(
+                root.root.clone(),
+                row_menu_button(
+                    root.menu_id.clone(),
+                    &root.row_group,
+                    "Project options",
+                    open,
+                ),
+                cx,
+                move |this, _, cx| this.toggle_project_menu(&toggle, cx),
+            ))
+            .children(menu)
     }
 
-    /// Overflow menu for a project row.
-    fn render_project_menu(&self, root: &str, cx: &mut Context<Self>) -> gpui::Deferred {
-        let selected = self.menu_selection();
-        let mut menu = div()
-            .id(SharedString::from(format!("project-menu-{root}")))
-            .absolute()
-            .top(px(30.))
-            .right_0()
-            .w(px(180.))
-            .py_1()
-            .rounded(theme::RADIUS_SM)
-            .bg(gpui::rgb(theme::bg_elevated()))
-            .border_1()
-            .border_color(gpui::rgb(theme::border()))
-            .shadow_md()
-            .flex()
-            .flex_col()
-            .on_mouse_down_out(cx.listener(|this, _event, _window, cx| {
-                this.project_menu = None;
-                cx.notify();
-            }));
-        for (index, item) in self.project_menu_items(root).into_iter().enumerate() {
-            menu = menu.child(popup_menu_row(item, selected == Some(index), cx));
-        }
-        gpui::deferred(motion::fade_in(menu, "sidebar-menu-reveal"))
+    /// A task row's overflow button, with the task's menu under it while
+    /// open: rename, then where the task can go.
+    fn task_menu_trigger(
+        &self,
+        row: &SidebarRow,
+        task: SidebarTaskEntry,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        let key = SidebarPopup::Task(row.id.to_string());
+        let open = self.popup.is_open(&key);
+        let menu = open.then(|| {
+            let menu = Menu::new(row.menu_panel_id.clone(), px(180.))
+                .label("Task options")
+                .application_vim(self.application_vim_enabled)
+                .items(self.task_menu_items(task).into_iter().map(menu_item));
+            self.popup.render(menu, Placement::BelowEnd, cx)
+        });
+        let session = row.id.to_string();
+        div()
+            .relative()
+            .child(self.popup.trigger(
+                key,
+                row_menu_button(row.menu_id.clone(), &row.group, "More", open),
+                cx,
+                move |this, _, cx| this.toggle_task_menu(&session, cx),
+            ))
+            .children(menu)
     }
 
     /// The rename field for the task being edited, if it is this one.
@@ -2300,11 +2101,9 @@ impl Sidebar {
         let rename_id = Arc::clone(&row.id);
         let rung = TaskRung::of(task);
         let step = rung.step();
-        let menu_id = Arc::clone(&row.id);
         let pin_id = row.pin_id.clone();
         let rename_field = self.task_rename_field(&row.id);
         let renaming = rename_field.is_some();
-        let task_menu_open = self.task_menu.as_deref() == Some(&*row.id);
         div()
             .relative()
             .w_full()
@@ -2403,16 +2202,7 @@ impl Sidebar {
                     .group_hover(row.group.clone(), |style| {
                         style.bg(gpui::rgb(theme::bg_sidebar_row_hover()))
                     })
-                    .child(row_action(
-                        row.menu_id.clone(),
-                        &row.group,
-                        "ellipsis",
-                        "More",
-                        cx.listener(move |this, _event, _window, cx| {
-                            cx.stop_propagation();
-                            this.toggle_task_menu(menu_id.as_ref(), cx);
-                        }),
-                    ))
+                    .child(self.task_menu_trigger(row, task, cx))
                     .child(row_action(
                         row.rename_id.clone(),
                         &row.group,
@@ -2434,7 +2224,6 @@ impl Sidebar {
                         }),
                     )),
             )
-            .children(task_menu_open.then(|| self.render_task_menu(task, cx)))
     }
 
     /// The collapse button in the top row.
@@ -2507,6 +2296,10 @@ impl Sidebar {
 
 impl Render for Sidebar {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // First, so the rename field's focus request below wins over a menu
+        // handing focus back.
+        self.popup.sync_focus(window, cx);
+        self.project_popup.sync_focus(window, cx);
         if self.rename_focus_pending {
             self.rename_focus_pending = false;
             if let Some(input) = self.rename_input.clone() {
@@ -2636,8 +2429,40 @@ pub(super) fn row_action(
     label: &'static str,
     on_click: impl Fn(&gpui::ClickEvent, &mut Window, &mut gpui::App) + 'static,
 ) -> gpui::Stateful<Div> {
+    row_button(id, group, icon_name, label)
+        .tooltip(widgets::tooltip(label, None))
+        .on_click(on_click)
+}
+
+/// A row's overflow button: [`row_action`]'s look, but it stays visible
+/// and pressed while its menu is open, and shows no tooltip over the menu.
+fn row_menu_button(
+    id: SharedString,
+    group: &SharedString,
+    label: &'static str,
+    open: bool,
+) -> gpui::Stateful<Div> {
+    row_button(id, group, "ellipsis", label)
+        .when(open, |button| {
+            button
+                .opacity(1.)
+                .bg(gpui::rgb(theme::bg_sidebar_row_selected()))
+        })
+        .when(!open, |button| {
+            button.tooltip(widgets::tooltip(label, None))
+        })
+}
+
+/// The small icon button a sidebar row shows while it is hovered.
+fn row_button(
+    id: SharedString,
+    group: &SharedString,
+    icon_name: &'static str,
+    label: &'static str,
+) -> gpui::Stateful<Div> {
     div()
-        .id(id)
+        .id(id.clone())
+        .debug_selector(|| id.to_string())
         .role(gpui::Role::Button)
         .aria_label(label)
         .flex_none()
@@ -2654,40 +2479,23 @@ pub(super) fn row_action(
                 .cursor_pointer()
         })
         .active(|style| style.bg(gpui::rgb(theme::border())))
-        .tooltip(widgets::tooltip(label, None))
-        .on_click(on_click)
         .child(icon(icon_name, px(14.), theme::text_secondary()))
 }
 
-/// One row of a sidebar popup menu: icon, label, and the hover and
-/// Application-Vim backgrounds.
-fn popup_menu_row(
-    item: SidebarMenuItem,
-    selected: bool,
-    cx: &mut Context<Sidebar>,
-) -> gpui::Stateful<Div> {
-    div()
-        .id(item.id)
-        .role(gpui::Role::MenuItem)
-        .flex()
-        .items_center()
-        .gap_2()
-        .px_3()
-        .py_1p5()
-        .text_sm()
-        .text_color(gpui::rgb(theme::text_primary()))
-        .when(selected, |row| row.bg(gpui::rgb(theme::bg_input())))
-        .hover(|style| {
-            style
-                .bg(gpui::rgb(theme::bg_sidebar_row_hover()))
-                .cursor_pointer()
-        })
-        .on_click(cx.listener(move |this, _event, _window, cx| {
-            cx.stop_propagation();
-            (item.on_click)(this, cx);
-        }))
-        .child(icon(item.icon, px(14.), theme::text_secondary()))
-        .child(item.label)
+/// A task or project menu action as a popup menu item.
+fn menu_item(item: SidebarMenuItem) -> MenuItem<Sidebar> {
+    let SidebarMenuItem {
+        id,
+        icon,
+        label,
+        on_click,
+    } = item;
+    MenuItem::new(
+        id,
+        label,
+        move |this: &mut Sidebar, _: &mut Window, cx: &mut Context<Sidebar>| on_click(this, cx),
+    )
+    .icon(icon)
 }
 
 /// Field-wise equality for session rows; the summary type has no

@@ -10,8 +10,8 @@ use gpui::{Context, Window};
 use super::navigation::ApplicationVimCommand;
 use super::{
     AllowPermission, ChatEscape, ChatScreen, ChooseProject, CopySelection, FocusSearch, NewTask,
-    NextTask, OpenAppSettings, OpenSettings, PickQuestionOption, PreviousTask, RootMenuConfirm,
-    RootMenuNext, RootMenuPrevious, SelectAllTranscript, ToggleArchived, ToggleSidebar,
+    NextTask, OpenAppSettings, OpenSettings, PickQuestionOption, PreviousTask, SelectAllTranscript,
+    ToggleArchived, ToggleSidebar,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -27,9 +27,6 @@ pub(super) enum ChatCommand {
     PickQuestionOption { index: usize },
     PreviousTask,
     RespondPermission { allow: bool },
-    RootMenuConfirm,
-    RootMenuNext,
-    RootMenuPrevious,
     SelectAllTranscript,
     ToggleArchived,
     ToggleSidebar,
@@ -70,9 +67,6 @@ impl ChatScreen {
             }
             ChatCommand::PreviousTask => self.step_task(-1, cx),
             ChatCommand::RespondPermission { allow } => self.respond_permission(allow, cx),
-            ChatCommand::RootMenuConfirm => self.confirm_root_menu(cx),
-            ChatCommand::RootMenuNext => self.step_root_menu(1, cx),
-            ChatCommand::RootMenuPrevious => self.step_root_menu(-1, cx),
             ChatCommand::SelectAllTranscript => self.select_all_text(cx),
             ChatCommand::ToggleArchived => self.toggle_archived_visibility(cx),
             ChatCommand::ToggleSidebar => self.toggle_sidebar_visibility(cx),
@@ -168,33 +162,6 @@ impl ChatScreen {
         cx: &mut Context<Self>,
     ) {
         self.execute_command(ChatCommand::PreviousTask, window, cx);
-    }
-
-    pub(super) fn root_menu_confirm(
-        &mut self,
-        _: &RootMenuConfirm,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.execute_command(ChatCommand::RootMenuConfirm, window, cx);
-    }
-
-    pub(super) fn root_menu_next(
-        &mut self,
-        _: &RootMenuNext,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.execute_command(ChatCommand::RootMenuNext, window, cx);
-    }
-
-    pub(super) fn root_menu_previous(
-        &mut self,
-        _: &RootMenuPrevious,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.execute_command(ChatCommand::RootMenuPrevious, window, cx);
     }
 
     pub(super) fn select_all_transcript(

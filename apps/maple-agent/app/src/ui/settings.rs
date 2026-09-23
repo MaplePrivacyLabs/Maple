@@ -3052,7 +3052,7 @@ fn shortcut_context_label(context: Option<&str>) -> &str {
         None => "Global",
         Some("Chat") => "Chat",
         Some("Transcript") => "Transcript",
-        Some("RootMenu") => "Project menu",
+        Some(crate::ui::popup::MENU_CONTEXT) => "Menus",
         Some("TextInput") | Some(crate::keymap::STANDARD_TEXT_CONTEXT) => "Text fields",
         Some(crate::ui::text_input::vim_actions::NORMAL_CONTEXT) => "Composer — Normal",
         Some(crate::ui::text_input::vim_actions::VISUAL_CONTEXT) => "Composer — Visual",
@@ -3553,23 +3553,22 @@ mod tests {
     #[test]
     fn shortcut_search_matches_each_displayed_field() {
         let row = shortcut_row(
-            "project.menu.open",
-            "Open Project Menu",
-            "Projects",
-            Some("RootMenu"),
-            "secondary-p",
-            Some("secondary-shift-p"),
+            "menu.next",
+            "Next menu item",
+            "Menus",
+            Some("Menu"),
+            "down",
+            Some("ctrl-n"),
             false,
         );
 
         for query in [
-            "open project",
-            "project.menu",
-            "projects",
-            "rootmenu",
-            "project menu",
-            "secondary-p",
-            "secondary-shift-p",
+            "next menu",
+            "menu.next",
+            "menus",
+            "menu item",
+            "down",
+            "ctrl-n",
         ] {
             assert!(shortcut_row_matches(&row, query), "query {query:?}");
         }

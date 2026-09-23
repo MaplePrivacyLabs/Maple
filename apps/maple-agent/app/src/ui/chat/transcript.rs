@@ -127,8 +127,8 @@ impl ChatScreen {
                     if let Some(focus) = &this.transcript_focus {
                         window.focus(focus, cx);
                     }
-                    this.transcript_menu = Some(event.position);
-                    cx.notify();
+                    this.popup
+                        .open(super::ChatPopup::Transcript(event.position), cx);
                 }),
             )
             .children(self.render_transcript_menu(cx))

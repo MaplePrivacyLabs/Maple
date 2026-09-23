@@ -314,18 +314,6 @@ impl ChatScreen {
         count: usize,
         cx: &mut Context<Self>,
     ) {
-        if self.root_menu_open {
-            for _ in 0..count {
-                self.step_root_menu(direction, cx);
-            }
-            return;
-        }
-        if self
-            .sidebar
-            .update(cx, |sidebar, cx| sidebar.step_popup(direction, count, cx))
-        {
-            return;
-        }
         if let Some(question) = self.current_question() {
             let step = self
                 .question_step
@@ -360,18 +348,6 @@ impl ChatScreen {
     }
 
     fn select_application_edge(&mut self, first: bool, cx: &mut Context<Self>) {
-        if self.root_menu_open {
-            let len = self.root_menu_rows();
-            self.root_menu_selected = (len > 0).then_some(if first { 0 } else { len - 1 });
-            cx.notify();
-            return;
-        }
-        if self
-            .sidebar
-            .update(cx, |sidebar, cx| sidebar.popup_edge(first, cx))
-        {
-            return;
-        }
         if let Some(question) = self.current_question() {
             let step = self
                 .question_step
@@ -537,16 +513,6 @@ impl ChatScreen {
     }
 
     fn activate_application_selection(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.root_menu_open {
-            self.confirm_root_menu(cx);
-            return;
-        }
-        if self
-            .sidebar
-            .update(cx, |sidebar, cx| sidebar.activate_popup(cx))
-        {
-            return;
-        }
         if self.current_question().is_some() {
             let step = self
                 .current_question()
@@ -586,9 +552,10 @@ impl ChatScreen {
         match self.application_vim.region {
             ChatRegion::Sidebar => match self.sidebar.read(cx).vim_selected().cloned() {
                 Some(SidebarTarget::NewTask) => self.new_session(cx),
-                Some(SidebarTarget::Projects) => self
-                    .sidebar
-                    .update(cx, |sidebar, cx| sidebar.toggle_switcher_menu(cx)),
+                Some(SidebarTarget::Projects) => self.sidebar.update(cx, |sidebar, cx| {
+                    let open = sidebar.switcher_menu_open();
+                    sidebar.set_switcher_menu_open(!open, cx);
+                }),
                 Some(SidebarTarget::Task(task_id)) => self.select_session(&task_id, cx),
                 Some(SidebarTarget::Archived) => self.toggle_archived_visibility(cx),
                 None => {}

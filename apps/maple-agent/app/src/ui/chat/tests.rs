@@ -95,6 +95,56 @@ mod state_tests {
         screen
     }
 
+    /// A chat screen in an active window, with the shipped key bindings.
+    /// `setup` runs on the screen before the first frame.
+    fn chat_window(
+        cx: &mut TestAppContext,
+        setup: impl FnOnce(&mut ChatScreen, &mut Context<ChatScreen>),
+    ) -> (Entity<ChatScreen>, &mut gpui::VisualTestContext) {
+        struct ChatHost {
+            chat: Entity<ChatScreen>,
+        }
+        impl Render for ChatHost {
+            fn render(
+                &mut self,
+                _window: &mut Window,
+                _cx: &mut Context<Self>,
+            ) -> impl IntoElement {
+                // A column, so the screen fills the window and the sidebar
+                // list has room for its rows.
+                div()
+                    .w(px(1200.))
+                    .h(px(800.))
+                    .flex()
+                    .flex_col()
+                    .child(self.chat.clone())
+            }
+        }
+        cx.executor().allow_parking();
+        let chat = cx.new(|cx| {
+            let _guard = SETTINGS_LOCK.lock();
+            let backend = std::sync::Arc::new(
+                crate::backend::AgentBackend::new("http://127.0.0.1:9".to_string(), String::new())
+                    .expect("backend"),
+            );
+            crate::desktop::register_key_bindings(cx);
+            let mut chat = ChatScreen::new_without_start(backend, "user".to_string(), cx);
+            chat.selected_session = Some("s1".to_string());
+            chat.booting = false;
+            chat.trust_prompts = false;
+            chat.sidebar
+                .update(cx, |sidebar, _| sidebar.reset_persisted_for_test());
+            setup(&mut chat, cx);
+            chat
+        });
+        let (_host, cx) = cx.add_window_view(|_window, _cx| ChatHost { chat: chat.clone() });
+        cx.simulate_resize(gpui::size(px(1200.), px(800.)));
+        // Focus events carry no path while the window is inactive.
+        cx.update(|window, _| window.activate_window());
+        cx.run_until_parked();
+        (chat, cx)
+    }
+
     fn todo_item(id: &str, todos: serde_json::Value) -> AgentTimelineItem {
         AgentTimelineItem {
             status: Some("completed".to_string()),
@@ -1002,15 +1052,9 @@ mod state_tests {
         screen.update(cx, |this, cx| {
             this.selected_session = Some("s1".to_string());
             this.booting = false;
-            this.models_menu_open = true;
-            this.mode_menu_open = true;
-            this.mcp_menu_open = true;
-            this.root_menu_open = true;
+            this.popup.open(ChatPopup::Model, cx);
             this.send_text("hello".to_string(), cx);
-            assert!(!this.models_menu_open);
-            assert!(!this.mode_menu_open);
-            assert!(!this.mcp_menu_open);
-            assert!(!this.root_menu_open);
+            assert_eq!(this.popup.open_key(), None);
         });
     }
 
@@ -1307,7 +1351,7 @@ mod state_tests {
             assert!(this.try_command("s1", "/web", cx));
             assert!(!this.web_enabled);
             assert!(this.try_command("s1", "/model", cx));
-            assert!(this.models_menu_open);
+            assert!(this.popup.is_open(&ChatPopup::Model));
             // Unknown commands fall through to a normal send.
             assert!(!this.try_command("s1", "/definitely-not-a-command", cx));
             // Paths that merely start with a slash are not commands.
@@ -1617,14 +1661,14 @@ mod state_tests {
         cx.executor().allow_parking();
         let screen = screen(cx);
         screen.update(cx, |this, cx| {
-            this.root_menu_open = true;
+            this.popup.open(ChatPopup::Project, cx);
             assert!(this.begin_root_picker(cx));
             assert!(this.root_picker_open);
-            assert!(!this.root_menu_open);
+            assert!(!this.popup.is_open(&ChatPopup::Project));
             // A second click while the picker is open must not start another.
-            this.root_menu_open = true;
+            this.popup.open(ChatPopup::Project, cx);
             assert!(!this.begin_root_picker(cx));
-            assert!(this.root_menu_open);
+            assert!(this.popup.is_open(&ChatPopup::Project));
         });
     }
 
@@ -1729,9 +1773,9 @@ mod state_tests {
         cx.executor().allow_parking();
         let screen = screen(cx);
         screen.update(cx, |this, cx| {
-            this.root_menu_open = true;
-            this.close_menus_on_escape(cx);
-            assert!(!this.root_menu_open);
+            this.popup.open(ChatPopup::Project, cx);
+            this.escape(cx);
+            assert_eq!(this.popup.open_key(), None);
         });
     }
 
@@ -2464,89 +2508,261 @@ mod state_tests {
         });
     }
 
-    /// Application Vim drives the task popup: stepping moves the
-    /// highlight and Enter runs the highlighted action.
+    /// The task menu takes the keyboard: arrows walk it and Enter runs
+    /// the highlighted action. Under Application Vim, j and k walk it too.
     #[gpui::test]
-    fn test_popup_vim_drives_the_task_menu(cx: &mut TestAppContext) {
-        cx.executor().allow_parking();
-        let screen = screen(cx);
-        screen.update(cx, |this, cx| {
-            this.application_vim_enabled = true;
+    fn test_keyboard_drives_the_task_menu(cx: &mut TestAppContext) {
+        let (chat, cx) = chat_window(cx, |this, cx| {
             this.sessions = vec![summary("s1", "One")];
             this.sync_sidebar(cx);
-            this.sidebar
-                .update(cx, |sidebar, cx| sidebar.open_task_menu_for_test("s1", cx));
-            // The first step highlights "Rename task"; Enter runs it.
-            assert!(this.step_sidebar_popup(1, 1, cx));
-            this.activate_sidebar_popup(cx);
-            assert!(matches!(
-                this.sidebar.read(cx).rename_target(),
-                Some(RenameTarget::Task(ref target)) if target == "s1"
-            ));
-            this.cancel_rename(cx);
-            // No popup open: stepping reports nothing to do.
-            this.sidebar
-                .update(cx, |sidebar, cx| sidebar.close_popups(cx));
-            assert!(!this.step_sidebar_popup(1, 1, cx));
         });
+        let sidebar = chat.update(cx, |this, _| this.sidebar.clone());
+        sidebar.update(cx, |sidebar, cx| sidebar.open_task_menu_for_test("s1", cx));
+        cx.run_until_parked();
+        // "Rename task" comes first.
+        cx.simulate_keystrokes("down enter");
+        assert!(matches!(
+            sidebar.update(cx, |sidebar, _| sidebar.rename_target()),
+            Some(RenameTarget::Task(ref target)) if target == "s1"
+        ));
+        assert!(sidebar.update(cx, |sidebar, _| sidebar.task_menu().is_none()));
+
+        chat.update(cx, |this, cx| {
+            this.cancel_rename(cx);
+            this.set_application_vim_enabled(true, cx);
+        });
+        sidebar.update(cx, |sidebar, cx| sidebar.open_task_menu_for_test("s1", cx));
+        cx.run_until_parked();
+        cx.simulate_keystrokes("j j");
+        assert_eq!(
+            sidebar.update(cx, |sidebar, _| sidebar.popup_highlight()),
+            Some(1)
+        );
+        cx.simulate_keystrokes("k");
+        assert_eq!(
+            sidebar.update(cx, |sidebar, _| sidebar.popup_highlight()),
+            Some(0)
+        );
     }
 
     /// Choosing any task-menu item closes the menu: a ladder move and a
     /// pin toggle alike.
     #[gpui::test]
     fn test_task_menu_closes_after_an_item_runs(cx: &mut TestAppContext) {
-        cx.executor().allow_parking();
-        let screen = screen(cx);
-        screen.update(cx, |this, cx| {
-            this.application_vim_enabled = true;
+        let (chat, cx) = chat_window(cx, |this, cx| {
             this.sessions = vec![summary("s1", "One")];
             this.sync_sidebar(cx);
-
-            // Rows: Rename, Pin, Settle, Archive, Delete; three lands on Settle.
-            this.sidebar
-                .update(cx, |sidebar, cx| sidebar.open_task_menu_for_test("s1", cx));
-            assert!(this.step_sidebar_popup(1, 3, cx));
-            this.activate_sidebar_popup(cx);
-            assert!(this.sidebar.read(cx).task_menu().is_none());
-
-            // Rows: Rename, Reopen, Archive, Delete; the second reopens.
-            this.settle_task("s1", cx);
-            this.sidebar
-                .update(cx, |sidebar, cx| sidebar.open_task_menu_for_test("s1", cx));
-            assert!(this.step_sidebar_popup(1, 2, cx));
-            this.activate_sidebar_popup(cx);
-            assert!(this.sidebar.read(cx).task_menu().is_none());
-            this.unsettle_task("s1", cx);
-
-            this.sidebar
-                .update(cx, |sidebar, cx| sidebar.open_task_menu_for_test("s1", cx));
-            assert!(this.step_sidebar_popup(1, 2, cx));
-            this.activate_sidebar_popup(cx);
-            assert!(this.sidebar.read(cx).task_menu().is_none());
-            assert_eq!(this.sidebar_pinned(cx), vec![0]);
         });
+        let sidebar = chat.update(cx, |this, _| this.sidebar.clone());
+        let pick = |cx: &mut gpui::VisualTestContext, keys: &str| {
+            sidebar.update(cx, |sidebar, cx| sidebar.open_task_menu_for_test("s1", cx));
+            cx.run_until_parked();
+            cx.simulate_keystrokes(keys);
+            assert!(sidebar.update(cx, |sidebar, _| sidebar.task_menu().is_none()));
+        };
+        // Rows: Rename, Pin, Settle, Archive, Delete.
+        pick(cx, "down down down enter");
+        // Rows: Rename, Reopen, Archive, Delete.
+        chat.update(cx, |this, cx| this.settle_task("s1", cx));
+        pick(cx, "down down enter");
+        chat.update(cx, |this, cx| this.unsettle_task("s1", cx));
+        pick(cx, "down down enter");
+        assert_eq!(chat.update(cx, |this, cx| this.sidebar_pinned(cx)), vec![0]);
     }
 
-    /// Application Vim drives the switcher popup: a count prefix reaches
-    /// a project row and Enter scopes the sidebar to it.
+    /// Opened from the keyboard, the switcher starts on the current scope;
+    /// Application Vim's j reaches a project and Enter scopes the sidebar
+    /// to it.
     #[gpui::test]
-    fn test_popup_vim_drives_the_switcher_menu(cx: &mut TestAppContext) {
-        cx.executor().allow_parking();
-        let screen = screen(cx);
-        screen.update(cx, |this, cx| {
-            this.application_vim_enabled = true;
+    fn test_application_vim_drives_the_switcher_menu(cx: &mut TestAppContext) {
+        let (chat, cx) = chat_window(cx, |this, cx| {
             this.sessions = vec![summary_at("s1", "One", "/a")];
             this.recent_roots = vec!["/b".to_string()];
             this.sync_sidebar(cx);
-            this.sidebar
-                .update(cx, |sidebar, cx| sidebar.set_switcher_menu_open(true, cx));
-            // Rows: "All projects", "/b", "/a", "New project…"; a count of
-            // two lands on "/b".
-            assert!(this.step_sidebar_popup(1, 2, cx));
-            this.activate_sidebar_popup(cx);
-            assert_eq!(this.sidebar.read(cx).project_filter(), Some("/b"));
-            assert!(!this.sidebar.read(cx).switcher_menu_open());
+            this.set_application_vim_enabled(true, cx);
         });
+        let sidebar = chat.update(cx, |this, _| this.sidebar.clone());
+        sidebar.update(cx, |sidebar, cx| sidebar.set_switcher_menu_open(true, cx));
+        cx.run_until_parked();
+        assert_eq!(
+            sidebar.update(cx, |sidebar, _| sidebar.popup_highlight()),
+            Some(0)
+        );
+        // Rows: "All projects", "/b", "/a", "New project…".
+        cx.simulate_keystrokes("j enter");
+        assert_eq!(
+            sidebar.update(cx, |sidebar, _| sidebar.project_filter().map(str::to_owned)),
+            Some("/b".to_string())
+        );
+        assert!(!sidebar.update(cx, |sidebar, _| sidebar.switcher_menu_open()));
+    }
+
+    /// What menu, if any, the chat and its sidebar show.
+    fn open_menu(chat: &Entity<ChatScreen>, cx: &mut gpui::VisualTestContext) -> String {
+        chat.update(cx, |this, cx| {
+            let sidebar = this.sidebar.read(cx);
+            let mut open = Vec::new();
+            if let Some(popup) = this.popup.open_key() {
+                open.push(format!("{popup:?}"));
+            }
+            if sidebar.switcher_menu_open() {
+                open.push("Switcher".to_string());
+            }
+            if let Some(task) = sidebar.task_menu() {
+                open.push(format!("Task({task})"));
+            }
+            if let Some(root) = sidebar.project_menu() {
+                open.push(format!("ProjectMenu({root})"));
+            }
+            open.join(" + ")
+        })
+    }
+
+    /// Press the middle of the element with `selector`. The sidebar is a
+    /// cached view, so refresh first: a reused view keeps its listeners but
+    /// not its debug bounds.
+    fn press(cx: &mut gpui::VisualTestContext, selector: &'static str) {
+        cx.update(|window, _| window.refresh());
+        cx.run_until_parked();
+        let bounds = cx
+            .debug_bounds(selector)
+            .unwrap_or_else(|| panic!("{selector} is not on screen"));
+        cx.simulate_click(bounds.center(), gpui::Modifiers::default());
+    }
+
+    /// Issue #997: a second press on the button that opened a menu closes
+    /// it. Before, the menu's outside-press handler closed it on the way
+    /// down and the button's click opened it again.
+    #[gpui::test]
+    fn test_a_second_press_on_each_trigger_closes_its_menu(cx: &mut TestAppContext) {
+        let (chat, cx) = chat_window(cx, |this, cx| {
+            this.sessions = vec![summary("s1", "One")];
+            this.models = vec!["voxtral-small-24b".to_string()];
+            this.sync_sidebar(cx);
+        });
+        for (trigger, menu) in [
+            ("projects-header", "Switcher"),
+            ("menu-session-s1", "Task(s1)"),
+            ("model-picker", "Model"),
+            ("permission-mode-toggle", "Mode"),
+            ("mcp-menu", "Integrations"),
+            ("root-picker", "Project"),
+        ] {
+            press(cx, trigger);
+            assert_eq!(open_menu(&chat, cx), menu, "{trigger} opens its menu");
+            press(cx, trigger);
+            assert_eq!(
+                open_menu(&chat, cx),
+                "",
+                "a second press on {trigger} closes it"
+            );
+        }
+
+        // The project menu opens from inside the switcher.
+        press(cx, "projects-header");
+        press(cx, "menu-project-/tmp/proj");
+        assert_eq!(open_menu(&chat, cx), "Switcher + ProjectMenu(/tmp/proj)");
+        press(cx, "menu-project-/tmp/proj");
+        assert_eq!(open_menu(&chat, cx), "Switcher");
+    }
+
+    /// One menu at a time: pressing another menu's button closes the open
+    /// menu, whichever view owns either of them.
+    #[gpui::test]
+    fn test_opening_a_menu_closes_the_open_one(cx: &mut TestAppContext) {
+        let (chat, cx) = chat_window(cx, |this, cx| {
+            this.sessions = vec![summary("s1", "One")];
+            this.models = vec!["voxtral-small-24b".to_string()];
+            this.sync_sidebar(cx);
+        });
+        for (first, then, open) in [
+            ("projects-header", "model-picker", "Model"),
+            ("menu-session-s1", "model-picker", "Model"),
+            ("model-picker", "menu-session-s1", "Task(s1)"),
+            ("model-picker", "projects-header", "Switcher"),
+            ("menu-session-s1", "projects-header", "Switcher"),
+            ("root-picker", "permission-mode-toggle", "Mode"),
+        ] {
+            press(cx, first);
+            press(cx, then);
+            assert_eq!(open_menu(&chat, cx), open, "{first} then {then}");
+            chat.update(cx, |this, cx| {
+                this.popup.close(cx);
+                this.sidebar
+                    .update(cx, |sidebar, cx| sidebar.close_popups(cx));
+            });
+        }
+
+        // A menu opened without the pointer closes the open one too: it
+        // takes the focus.
+        press(cx, "menu-session-s1");
+        cx.simulate_keystrokes("secondary-p");
+        assert_eq!(open_menu(&chat, cx), "Project");
+    }
+
+    /// A task menu reaches over the rows below it. A press on one of its
+    /// items lands on the item, not on the overflow button of the row
+    /// underneath.
+    #[gpui::test]
+    fn test_a_press_on_a_menu_item_reaches_the_item(cx: &mut TestAppContext) {
+        let (chat, cx) = chat_window(cx, |this, cx| {
+            this.sessions = vec![
+                summary("s1", "One"),
+                summary("s2", "Two"),
+                summary("s3", "Three"),
+            ];
+            this.sync_sidebar(cx);
+        });
+        press(cx, "menu-session-s1");
+        let menu = cx.debug_bounds("task-menu-s1").expect("the task menu");
+        let beneath = cx.debug_bounds("menu-session-s2").expect("s2's button");
+        assert!(
+            menu.contains(&beneath.center()),
+            "the fixture puts s2's button under s1's menu"
+        );
+        cx.simulate_click(beneath.center(), gpui::Modifiers::default());
+        assert_eq!(
+            open_menu(&chat, cx),
+            "",
+            "the press picked an item of s1's menu"
+        );
+    }
+
+    /// The header's project menu closes on a press outside it, like every
+    /// other menu. It used to stay open.
+    #[gpui::test]
+    fn test_the_project_menu_closes_on_an_outside_press(cx: &mut TestAppContext) {
+        let (chat, cx) = chat_window(cx, |this, cx| {
+            this.recent_roots = vec![absolute_fixture_root("one")];
+            this.sync_sidebar(cx);
+        });
+        press(cx, "root-picker");
+        assert_eq!(open_menu(&chat, cx), "Project");
+        cx.simulate_click(gpui::point(px(900.), px(500.)), gpui::Modifiers::default());
+        assert_eq!(open_menu(&chat, cx), "");
+    }
+
+    /// Typing into the project menu's path field stays in the field, and
+    /// Enter applies the path. Typing used to jump to the composer.
+    #[gpui::test]
+    fn test_the_project_path_field_keeps_its_typing(cx: &mut TestAppContext) {
+        let (chat, cx) = chat_window(cx, |_, _| {});
+        chat.update(cx, |this, cx| this.show_root_input(cx));
+        cx.run_until_parked();
+        let input = chat.update(cx, |this, _| this.root_input.clone().expect("path field"));
+        let handle = cx.update(|_, app| input.read(app).focus_handle(app));
+        cx.update(|window, app| window.focus(&handle, app));
+        cx.simulate_input("relative");
+        assert_eq!(input.update(cx, |input, _| input.text()), "relative");
+        let composer = chat.update(cx, |this, _| this.composer.clone().expect("composer"));
+        assert_eq!(composer.update(cx, |composer, _| composer.text()), "");
+        assert_eq!(open_menu(&chat, cx), "Project", "the menu stays open");
+        cx.simulate_keystrokes("enter");
+        assert_eq!(
+            chat.update(cx, |this, _| this.notice.clone()),
+            Some("Enter an absolute directory path".into()),
+            "Enter applies what was typed"
+        );
     }
 
     /// Escape closes whichever sidebar popup is open.
@@ -2557,10 +2773,11 @@ mod state_tests {
         screen.update(cx, |this, cx| {
             this.sidebar
                 .update(cx, |sidebar, cx| sidebar.set_switcher_menu_open(true, cx));
+            this.escape(cx);
+            assert!(!this.sidebar.read(cx).switcher_menu_open());
             this.sidebar
                 .update(cx, |sidebar, cx| sidebar.open_task_menu_for_test("s1", cx));
             this.escape(cx);
-            assert!(!this.sidebar.read(cx).switcher_menu_open());
             assert!(this.sidebar.read(cx).task_menu().is_none());
         });
     }
@@ -3755,9 +3972,12 @@ mod state_tests {
         // Once no focus transition consumes Escape, the same central route
         // still reaches Chat's legacy menu-close behavior.
         chat.update(cx, |this, cx| this.toggle_root_menu(cx));
-        assert!(cx.update(|_window, app| chat.read(app).root_menu_open));
+        assert!(cx.update(|_window, app| { chat.read(app).popup.is_open(&ChatPopup::Project) }));
         cx.simulate_keystrokes("escape");
-        assert!(!cx.update(|_window, app| chat.read(app).root_menu_open));
+        assert_eq!(
+            cx.update(|_window, app| chat.read(app).popup.open_key().copied()),
+            None
+        );
 
         // ga from composer Normal selects the newest assistant and returns
         // focus to the application proxy rather than leaving a stale chord
@@ -4005,7 +4225,7 @@ mod state_tests {
         cx.update(|window, app| window.focus(&composer_handle, app));
 
         cx.simulate_keystrokes("secondary-p");
-        assert!(cx.update(|_window, app| chat.read(app).root_menu_open));
+        assert!(cx.update(|_window, app| { chat.read(app).popup.is_open(&ChatPopup::Project) }));
         assert_ne!(
             cx.update(|window, app| window.focused(app)),
             Some(composer_handle.clone()),
@@ -4016,22 +4236,22 @@ mod state_tests {
         // wraps back to the first.
         cx.simulate_keystrokes("down");
         assert_eq!(
-            cx.update(|_window, app| chat.read(app).root_menu_selected),
+            cx.update(|_window, app| chat.read(app).popup.highlighted()),
             Some(0)
         );
         cx.simulate_keystrokes("down down");
         assert_eq!(
-            cx.update(|_window, app| chat.read(app).root_menu_selected),
+            cx.update(|_window, app| chat.read(app).popup.highlighted()),
             Some(2)
         );
         cx.simulate_keystrokes("down");
         assert_eq!(
-            cx.update(|_window, app| chat.read(app).root_menu_selected),
+            cx.update(|_window, app| chat.read(app).popup.highlighted()),
             Some(0)
         );
         cx.simulate_keystrokes("up");
         assert_eq!(
-            cx.update(|_window, app| chat.read(app).root_menu_selected),
+            cx.update(|_window, app| chat.read(app).popup.highlighted()),
             Some(2)
         );
 
@@ -4039,11 +4259,11 @@ mod state_tests {
         // the composer takes the typing back.
         cx.simulate_keystrokes("up up");
         assert_eq!(
-            cx.update(|_window, app| chat.read(app).root_menu_selected),
+            cx.update(|_window, app| chat.read(app).popup.highlighted()),
             Some(0)
         );
         cx.simulate_keystrokes("enter");
-        assert!(!cx.update(|_window, app| chat.read(app).root_menu_open));
+        assert!(!cx.update(|_window, app| { chat.read(app).popup.is_open(&ChatPopup::Project) }));
         assert_eq!(
             cx.update(|window, app| window.focused(app)),
             Some(composer_handle),
@@ -4054,15 +4274,15 @@ mod state_tests {
         // j/k aliases are live without disturbing the legacy arrow bindings.
         chat.update(cx, |this, cx| this.set_application_vim_enabled(true, cx));
         cx.simulate_keystrokes("secondary-p");
-        assert!(cx.update(|_window, app| chat.read(app).root_menu_open));
+        assert!(cx.update(|_window, app| { chat.read(app).popup.is_open(&ChatPopup::Project) }));
         cx.simulate_keystrokes("j j");
         assert_eq!(
-            cx.update(|_window, app| chat.read(app).root_menu_selected),
+            cx.update(|_window, app| chat.read(app).popup.highlighted()),
             Some(1)
         );
         cx.simulate_keystrokes("k");
         assert_eq!(
-            cx.update(|_window, app| chat.read(app).root_menu_selected),
+            cx.update(|_window, app| chat.read(app).popup.highlighted()),
             Some(0)
         );
     }
@@ -4100,7 +4320,7 @@ mod state_tests {
             chat.booting = false;
             chat.replace_timeline(vec![user_item("u1", "hello")]);
             chat.models = vec!["voxtral-small-24b".to_string()];
-            chat.models_menu_open = true;
+            chat.popup.open(ChatPopup::Model, cx);
             chat
         });
 
@@ -4108,8 +4328,8 @@ mod state_tests {
         cx.simulate_resize(gpui::size(px(1200.), px(800.)));
 
         let menu = cx
-            .debug_bounds("composer-menu")
-            .expect("the models menu renders while models_menu_open is set");
+            .debug_bounds("model-menu")
+            .expect("the models menu renders while it is open");
         let chips = cx
             .debug_bounds("composer-chips")
             .expect("the composer chip row renders");

@@ -4,19 +4,20 @@
 use crate::settings::PermissionMode;
 use std::sync::Arc;
 
-use gpui::{Context, Div, IntoElement, SharedString, div, prelude::*, px};
+use gpui::{Context, Div, IntoElement, SharedString, Window, div, prelude::*, px};
 use maple_agent::agent::{AgentSlashCommand, SideQuestionTurn};
 
 use super::cache::MarkdownKind;
 use super::commands::ChatCommand;
 use super::transcript::{render_plan_row, render_subagent_row};
 use super::{
-    COMPOSER_PLACEHOLDER, ChatScreen, DraftImage, OpenSettingsSection, ROOT_MENU_RECENTS,
-    SIDE_THREAD_PLACEHOLDER, SIDEBAR_COLLAPSED_INSET, Section,
+    COMPOSER_PLACEHOLDER, ChatPopup, ChatScreen, DraftImage, OpenSettingsSection,
+    ROOT_MENU_RECENTS, SIDE_THREAD_PLACEHOLDER, SIDEBAR_COLLAPSED_INSET, Section,
 };
 use crate::ui::icons::{icon, spinner};
 use crate::ui::markdown;
 use crate::ui::motion;
+use crate::ui::popup::{Menu, MenuItem, Placement};
 use crate::ui::text_input::vim::VimMode;
 use crate::ui::theme;
 use crate::ui::titlebar;
@@ -56,21 +57,26 @@ impl ChatScreen {
                 .child(title),
         )
         .child(
-            chip(
-                "root-picker",
-                Some("folder-open"),
-                self.project_label.clone(),
-                true,
-                self.root_menu_open,
-                false,
+            self.with_menu(
+                ChatPopup::Project,
+                chip(
+                    "root-picker",
+                    Some("folder-open"),
+                    self.project_label.clone(),
+                    true,
+                    self.popup.is_open(&ChatPopup::Project),
+                    false,
+                )
+                // The header is a window drag region; a press here is the
+                // chip's.
+                .on_mouse_down(gpui::MouseButton::Left, |_event, _window, cx| {
+                    cx.stop_propagation();
+                }),
+                Placement::BelowStart,
+                cx,
+                |this, window, cx| this.execute_command(ChatCommand::ChooseProject, window, cx),
             )
-            .flex_none()
-            .on_mouse_down(gpui::MouseButton::Left, |_event, _window, cx| {
-                cx.stop_propagation();
-            })
-            .on_click(cx.listener(|this, _event, window, cx| {
-                this.execute_command(ChatCommand::ChooseProject, window, cx);
-            })),
+            .flex_none(),
         )
         .when_some(self.branch_label.clone(), |row, branch| {
             row.child(
@@ -86,345 +92,227 @@ impl ChatScreen {
         .child(div().flex_1())
     }
 
-    /// Surface for the composer menus. A press outside closes every
-    /// composer menu, like the sidebar menus.
-    fn menu_panel(cx: &mut Context<Self>) -> gpui::Stateful<Div> {
+    /// `button` as the opener of `popup`, with that popup's menu attached
+    /// while it is open.
+    fn with_menu(
+        &self,
+        popup: ChatPopup,
+        button: gpui::Stateful<Div>,
+        placement: Placement,
+        cx: &mut Context<Self>,
+        toggle: impl Fn(&mut Self, &mut Window, &mut Context<Self>) + 'static,
+    ) -> Div {
+        let menu = self.popup.is_open(&popup).then(|| {
+            let menu = match popup {
+                ChatPopup::Project => self.project_menu(cx),
+                ChatPopup::Model => self.model_menu(),
+                ChatPopup::Mode => self.mode_menu(),
+                ChatPopup::Integrations => self.integrations_menu(),
+                ChatPopup::Transcript(_) => Menu::new("transcript-menu", px(160.)),
+            };
+            self.popup.render(menu, placement, cx)
+        });
         div()
-            .id("composer-menu-panel")
-            .occlude()
-            .flex()
-            .flex_col()
-            .mt_1()
-            .p_1()
-            .rounded(theme::RADIUS_MD)
-            .bg(gpui::rgb(theme::bg_elevated()))
-            .border_1()
-            .border_color(gpui::rgb(theme::border()))
-            .shadow_md()
-            .on_mouse_down_out(cx.listener(|this, _event, _window, cx| {
-                this.close_composer_menus(cx);
-            }))
+            .relative()
+            .child(self.popup.trigger(popup, button, cx, toggle))
+            .children(menu)
     }
 
-    /// Close every menu the chip row can open.
-    pub(super) fn close_composer_menus(&mut self, cx: &mut Context<Self>) {
-        if self.mode_menu_open || self.mcp_menu_open || self.models_menu_open {
-            self.mode_menu_open = false;
-            self.mcp_menu_open = false;
-            self.models_menu_open = false;
-            cx.notify();
+    /// The header chip's menu: recent projects, then "New project…", then
+    /// manual entry when the native folder picker is unavailable.
+    fn project_menu(&self, cx: &mut Context<Self>) -> Menu<Self> {
+        let mut menu = Menu::new("project-menu", px(480.))
+            .label("Projects")
+            .application_vim(self.application_vim_enabled);
+        for path in self.recent_roots.iter().take(ROOT_MENU_RECENTS) {
+            let pick = path.clone();
+            menu = menu.item(
+                MenuItem::new(
+                    SharedString::from(format!("root-{path}")),
+                    path.clone(),
+                    move |this: &mut Self, _: &mut Window, cx: &mut Context<Self>| {
+                        this.select_project_root(pick.clone(), cx);
+                    },
+                )
+                .truncate_start()
+                .current(self.project_root.as_deref() == Some(path.as_str())),
+            );
         }
-    }
-
-    /// Anchor point for the open composer menu: floating above the chip
-    /// row, bottom-anchored so the panel grows upward over the transcript
-    /// instead of pushing the layout around. The panel is rendered after
-    /// the composer (see the two `render_composer` call sites), so the
-    /// composer's border can never paint over it; the containing block is
-    /// the wrapper with `px_4` and `pb_4`, hence the +16 offsets that keep
-    /// the panel at the same spot it held as a composer child.
-    fn menu_overlay(menu: gpui::Stateful<Div>) -> Div {
-        div()
-            .absolute()
-            .bottom(px(64.))
-            .left(px(24.))
-            .w(px(480.))
-            .max_w_full()
-            .debug_selector(|| "composer-menu".to_string())
-            .child(motion::rise_in(menu, "composer-menu-reveal"))
-    }
-
-    /// The project menu, opened from the header chip. Rendered as an
-    /// overlay in the chat pane, right under the header.
-    pub(super) fn render_root_menu(&self, cx: &mut Context<Self>) -> Option<Div> {
-        if !self.root_menu_open {
-            return None;
-        }
-        let mut menu = Self::menu_panel(cx).w(px(480.)).max_w_full();
-        {
-            for (index, path) in self.recent_roots.iter().take(ROOT_MENU_RECENTS).enumerate() {
-                let is_current = self.project_root.as_deref() == Some(path.as_str());
-                menu = menu.child(
+        menu = menu.item(
+            MenuItem::new(
+                "root-choose",
+                "New project…",
+                |this: &mut Self, _: &mut Window, cx: &mut Context<Self>| {
+                    this.choose_root_dialog(cx);
+                },
+            )
+            .icon("folder-plus"),
+        );
+        let Some(input) = self.root_input.clone() else {
+            return menu;
+        };
+        menu.child(
+            div()
+                .px_3()
+                .pt_1()
+                .pb_1()
+                .text_xs()
+                .text_color(gpui::rgb(theme::text_muted()))
+                .child("Or type an absolute path:"),
+        )
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap_2()
+                .px_3()
+                .pb_2()
+                .child(div().flex_1().child(input))
+                .child(
                     div()
-                        .id(gpui::SharedString::from(format!("root-{}", path)))
+                        .id("root-apply")
                         .px_3()
                         .py_1()
+                        .rounded(theme::RADIUS_SM)
+                        .bg(gpui::rgb(theme::accent()))
                         .text_sm()
-                        .text_color(gpui::rgb(if is_current {
-                            theme::accent()
-                        } else {
-                            theme::text_primary()
+                        .font_weight(gpui::FontWeight::MEDIUM)
+                        .text_color(gpui::rgb(theme::on_accent()))
+                        .hover(|style| style.bg(gpui::rgb(theme::accent_hover())).cursor_pointer())
+                        .active(|style| style.bg(gpui::rgb(theme::send_bottom())))
+                        .on_click(cx.listener(|this, _event, _window, cx| {
+                            if let Some(path) =
+                                this.root_input.as_ref().map(|input| input.read(cx).text())
+                            {
+                                this.select_project_root(path, cx);
+                            }
                         }))
-                        // A path: keep the file name, drop the start.
-                        .line_clamp(1)
-                        .text_ellipsis_start()
-                        .when(self.root_menu_selected == Some(index), |row| {
-                            row.bg(gpui::rgb(theme::bg_input()))
-                        })
-                        .hover(|style| style.bg(gpui::rgb(theme::bg_input())).cursor_pointer())
-                        .on_click({
-                            let path = path.clone();
-                            cx.listener(move |this, _event, _window, cx| {
-                                this.select_project_root(path.clone(), cx);
-                            })
-                        })
-                        .child(path.clone()),
-                );
-            }
-            let choose_row = self.recent_roots.len().min(ROOT_MENU_RECENTS);
-            menu = menu.child(
-                div()
-                    .id("root-choose")
-                    .px_3()
-                    .py_1()
-                    .text_sm()
-                    .text_color(gpui::rgb(theme::text_secondary()))
-                    .when(self.root_menu_selected == Some(choose_row), |row| {
-                        row.bg(gpui::rgb(theme::bg_input()))
-                    })
-                    .hover(|style| style.bg(gpui::rgb(theme::bg_input())).cursor_pointer())
-                    .on_click(cx.listener(|this, _event, _window, cx| {
-                        this.choose_root_dialog(cx);
-                    }))
-                    .child("New project…"),
-            );
-            if let Some(input) = self.root_input.clone() {
-                menu = menu
-                    .child(
-                        div()
-                            .px_3()
-                            .pb_1()
-                            .text_xs()
-                            .text_color(gpui::rgb(theme::text_muted()))
-                            .child("Or type an absolute path:"),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap_2()
-                            .px_3()
-                            .pb_2()
-                            .child(div().flex_1().child(input))
-                            .child(
-                                div()
-                                    .id("root-apply")
-                                    .px_3()
-                                    .py_1()
-                                    .rounded(theme::RADIUS_SM)
-                                    .bg(gpui::rgb(theme::accent()))
-                                    .text_sm()
-                                    .font_weight(gpui::FontWeight::MEDIUM)
-                                    .text_color(gpui::rgb(theme::on_accent()))
-                                    .hover(|style| {
-                                        style.bg(gpui::rgb(theme::accent_hover())).cursor_pointer()
-                                    })
-                                    .active(|style| style.bg(gpui::rgb(theme::send_bottom())))
-                                    .on_click(cx.listener(|this, _event, _window, cx| {
-                                        if let Some(path) = this
-                                            .root_input
-                                            .as_ref()
-                                            .map(|input| input.read(cx).text())
-                                        {
-                                            this.select_project_root(path, cx);
-                                        }
-                                    }))
-                                    .child("Go"),
-                            ),
-                    );
-            }
-        }
-        Some(
-            div()
-                .absolute()
-                .top(px(40.))
-                .left_4()
-                .when(self.sidebar_collapsed, |menu| {
-                    menu.left(SIDEBAR_COLLAPSED_INSET)
-                })
-                .child(
-                    menu.key_context(if self.application_vim_enabled {
-                        "RootMenu ApplicationVim"
-                    } else {
-                        "RootMenu"
-                    })
-                    .when_some(self.root_menu_focus.clone(), |menu, focus| {
-                        menu.track_focus(&focus)
-                    }),
+                        .child("Go"),
                 ),
         )
     }
 
-    /// The open composer menu as an overlay. The panel floats above the
-    /// chip row, bottom-anchored so it grows upward over the transcript
-    /// instead of pushing the layout around.
-    pub(super) fn render_menu_panel(&self, cx: &mut Context<Self>) -> Option<Div> {
-        let mut menu = Self::menu_panel(cx);
-        if self.mode_menu_open {
-            for mode in [PermissionMode::Auto, PermissionMode::SmartApprove] {
-                let (label, note) = (mode.label(), mode.note());
-                let mode_icon = icon(mode.icon(), px(14.), theme::text_secondary());
-                let is_current = self.permission_mode == mode;
-                menu = menu.child(
-                    div()
-                        .id(gpui::SharedString::from(format!("mode-{}", mode.as_str())))
-                        .px_3()
-                        .py_1()
-                        .text_sm()
-                        .text_color(gpui::rgb(if is_current {
-                            theme::accent()
-                        } else {
-                            theme::text_primary()
-                        }))
-                        .hover(|style| style.bg(gpui::rgb(theme::bg_input())).cursor_pointer())
-                        .on_click(cx.listener(move |this, _event, _window, cx| {
+    fn model_menu(&self) -> Menu<Self> {
+        let selected = self.selected_model.as_deref();
+        Menu::new("model-menu", px(320.))
+            .label("Model")
+            .max_height(px(320.))
+            .application_vim(self.application_vim_enabled)
+            .items(self.models.iter().map(|model| {
+                let pick = model.clone();
+                MenuItem::new(
+                    SharedString::from(format!("model-{model}")),
+                    model.clone(),
+                    move |this: &mut Self, _: &mut Window, cx: &mut Context<Self>| {
+                        this.pick_model(pick.clone(), cx);
+                    },
+                )
+                .current(selected == Some(model.as_str()))
+            }))
+    }
+
+    fn mode_menu(&self) -> Menu<Self> {
+        Menu::new("mode-menu", px(320.))
+            .label("Approval mode")
+            .application_vim(self.application_vim_enabled)
+            .items(
+                [PermissionMode::Auto, PermissionMode::SmartApprove].map(|mode| {
+                    MenuItem::new(
+                        SharedString::from(format!("mode-{}", mode.as_str())),
+                        mode.label(),
+                        move |this: &mut Self, _: &mut Window, cx: &mut Context<Self>| {
                             this.permission_mode = mode;
                             this.uses_default_permission_mode = false;
-                            this.mode_menu_open = false;
                             this.apply_permission_mode(cx);
                             cx.notify();
-                        }))
-                        .child(
-                            div()
-                                .flex()
-                                .flex_col()
-                                .gap_0()
-                                .child(
-                                    div()
-                                        .flex()
-                                        .items_center()
-                                        .gap_1p5()
-                                        .child(mode_icon)
-                                        .child(label),
-                                )
-                                .child(
-                                    div()
-                                        .text_xs()
-                                        .text_color(gpui::rgb(theme::text_muted()))
-                                        .child(note),
-                                ),
-                        ),
-                );
-            }
-            return Some(Self::menu_overlay(menu));
-        }
-        if self.mcp_menu_open {
-            menu = menu.max_h(px(320.)).overflow_y_scroll();
+                        },
+                    )
+                    .icon(mode.icon())
+                    .note(mode.note())
+                    .current(self.permission_mode == mode)
+                }),
+            )
+    }
+
+    /// The task's integrations, each with a switch. A server that still
+    /// needs setup opens Settings instead.
+    fn integrations_menu(&self) -> Menu<Self> {
+        let mut menu = Menu::new("integrations-menu", px(360.))
+            .label("Integrations")
+            .max_height(px(320.))
+            .application_vim(self.application_vim_enabled)
+            .header("Integrations");
+        if self.session_mcp.is_empty() {
             menu = menu.child(
                 div()
                     .px_3()
-                    .pt_1()
-                    .pb_2()
-                    .text_xs()
-                    .font_weight(gpui::FontWeight::MEDIUM)
-                    .text_color(gpui::rgb(theme::text_secondary()))
-                    .child("Integrations"),
+                    .py_2()
+                    .text_sm()
+                    .text_color(gpui::rgb(theme::text_muted()))
+                    .child("No integrations available for this task."),
             );
-            if self.session_mcp.is_empty() {
-                menu = menu.child(
+        }
+        for server in &self.session_mcp {
+            let name = server.name.clone();
+            let kind = server.kind;
+            let enabled = server.enabled;
+            let available = server.available;
+            let usable = available || enabled;
+            let content = div()
+                .flex()
+                .flex_col()
+                .child(
                     div()
-                        .px_3()
-                        .py_2()
-                        .text_sm()
-                        .text_color(gpui::rgb(theme::text_muted()))
-                        .child("No integrations available for this task."),
-                );
-            }
-            for server in &self.session_mcp {
-                let name = server.name.clone();
-                let display_name = server.display_name.clone();
-                let enabled = server.enabled;
-                let kind = server.kind;
-                let available = server.available;
-                let row_id = gpui::SharedString::from(format!("mcp-{kind:?}-{name}"));
-                let switch_id = gpui::SharedString::from(format!("mcp-toggle-{kind:?}-{name}"));
-                menu = menu.child(
-                    widgets::menu_row(row_id, true)
-                        .flex()
-                        .items_center()
-                        .gap_3()
-                        .on_click(cx.listener(move |this, _event, _window, cx| {
-                            if available || enabled {
-                                this.toggle_session_mcp(name.clone(), kind, !enabled, cx);
-                            } else {
-                                this.mcp_menu_open = false;
-                                cx.emit(OpenSettingsSection(Section::Integrations));
-                            }
-                        }))
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .flex()
-                                .flex_col()
-                                .child(
-                                    div()
-                                        .text_sm()
-                                        .font_weight(gpui::FontWeight::MEDIUM)
-                                        .text_color(gpui::rgb(theme::text_primary()))
-                                        .line_clamp(1)
-                                        .text_ellipsis()
-                                        .child(display_name),
-                                )
-                                .when(!server.description.is_empty(), |col| {
-                                    col.child(
-                                        div()
-                                            .text_xs()
-                                            .text_color(gpui::rgb(theme::text_muted()))
-                                            .line_clamp(2)
-                                            .child(server.description.clone()),
-                                    )
-                                })
-                                .when(!available, |col| {
-                                    col.child(
-                                        div()
-                                            .text_xs()
-                                            .text_color(gpui::rgb(theme::status_warning()))
-                                            .child("Set up in Settings → Integrations"),
-                                    )
-                                }),
-                        )
-                        .child(widgets::switch(switch_id, enabled)),
-                );
-            }
-            menu = menu.child(
-                widgets::menu_row("mcp-manage", true)
-                    .mt_1()
-                    .border_t_1()
-                    .border_color(gpui::rgb(theme::border_subtle()))
-                    .text_color(gpui::rgb(theme::accent()))
-                    .on_click(cx.listener(|this, _event, _window, cx| {
-                        this.mcp_menu_open = false;
+                        .font_weight(gpui::FontWeight::MEDIUM)
+                        .line_clamp(1)
+                        .text_ellipsis()
+                        .child(server.display_name.clone()),
+                )
+                .when(!server.description.is_empty(), |column| {
+                    column.child(
+                        div()
+                            .text_xs()
+                            .text_color(gpui::rgb(theme::text_muted()))
+                            .line_clamp(2)
+                            .child(server.description.clone()),
+                    )
+                })
+                .when(!available, |column| {
+                    column.child(
+                        div()
+                            .text_xs()
+                            .text_color(gpui::rgb(theme::status_warning()))
+                            .child("Set up in Settings → Integrations"),
+                    )
+                });
+            let item = MenuItem::new(
+                SharedString::from(format!("mcp-{kind:?}-{name}")),
+                server.display_name.clone(),
+                move |this: &mut Self, _: &mut Window, cx: &mut Context<Self>| {
+                    if usable {
+                        this.toggle_session_mcp(name.clone(), kind, !enabled, cx);
+                    } else {
                         cx.emit(OpenSettingsSection(Section::Integrations));
-                    }))
-                    .child("Manage integrations…"),
-            );
-            return Some(Self::menu_overlay(menu));
+                    }
+                },
+            )
+            .content(content);
+            menu = menu.item(if usable {
+                item.switch(enabled)
+            } else {
+                item.trailing(widgets::switch_track(enabled))
+            });
         }
-        if self.models_menu_open {
-            let selected_model = self.selected_model.clone();
-            menu = menu.children(self.models.iter().map(|model| {
-                let current = selected_model.as_deref() == Some(model.as_str());
-                widgets::menu_row(gpui::SharedString::from(format!("model-{model}")), true)
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .py_1()
-                    .when(current, |row| row.font_weight(gpui::FontWeight::MEDIUM))
-                    .on_click({
-                        let model = model.clone();
-                        cx.listener(move |this, _event, _window, cx| {
-                            this.pick_model(model.clone(), cx);
-                        })
-                    })
-                    .child(div().flex_1().child(model.clone()))
-                    .when(current, |row| {
-                        row.child(icon("check", px(14.), theme::accent()))
-                    })
-            }));
-            return Some(Self::menu_overlay(menu));
-        }
-        None
+        menu.separator().item(
+            MenuItem::new(
+                "mcp-manage",
+                "Manage integrations…",
+                |_: &mut Self, _: &mut Window, cx: &mut Context<Self>| {
+                    cx.emit(OpenSettingsSection(Section::Integrations));
+                },
+            )
+            .style(|row| row.text_color(gpui::rgb(theme::accent()))),
+        )
     }
 
     /// Command palette shown while the composer text starts with "/".
@@ -1015,45 +903,36 @@ impl ChatScreen {
                     .pb_2()
                     .pt_1()
                     .debug_selector(|| "composer-chips".to_string())
-                    .child(
+                    .child(self.with_menu(
+                        ChatPopup::Model,
                         chip(
                             "model-picker",
                             None,
                             model_label,
                             true,
-                            self.models_menu_open,
+                            self.popup.is_open(&ChatPopup::Model),
                             false,
-                        )
-                        .on_click(cx.listener(
-                            |this, _event, _window, cx| {
-                                this.root_menu_open = false;
-                                this.mode_menu_open = false;
-                                this.mcp_menu_open = false;
-                                this.models_menu_open = !this.models_menu_open;
-                                cx.notify();
-                            },
-                        )),
-                    )
-                    .child(
+                        ),
+                        Placement::AboveStart,
+                        cx,
+                        |this, _, cx| this.toggle_popup(ChatPopup::Model, cx),
+                    ))
+                    .child(self.with_menu(
+                        ChatPopup::Mode,
                         chip(
                             "permission-mode-toggle",
                             Some(self.permission_mode.icon()),
                             self.permission_mode.label().to_string(),
                             true,
-                            self.mode_menu_open,
+                            self.popup.is_open(&ChatPopup::Mode),
                             false,
-                        )
-                        .on_click(cx.listener(
-                            |this, _event, _window, cx| {
-                                this.root_menu_open = false;
-                                this.models_menu_open = false;
-                                this.mcp_menu_open = false;
-                                this.mode_menu_open = !this.mode_menu_open;
-                                cx.notify();
-                            },
-                        )),
-                    )
-                    .child(
+                        ),
+                        Placement::AboveStart,
+                        cx,
+                        |this, _, cx| this.toggle_popup(ChatPopup::Mode, cx),
+                    ))
+                    .child(self.with_menu(
+                        ChatPopup::Integrations,
                         chip(
                             "mcp-menu",
                             Some("puzzle"),
@@ -1063,22 +942,13 @@ impl ChatScreen {
                                 count => format!("{count} integrations"),
                             },
                             false,
-                            self.mcp_menu_open,
+                            self.popup.is_open(&ChatPopup::Integrations),
                             false,
-                        )
-                        .on_click(cx.listener(
-                            |this, _event, _window, cx| {
-                                this.root_menu_open = false;
-                                this.models_menu_open = false;
-                                this.mode_menu_open = false;
-                                this.mcp_menu_open = !this.mcp_menu_open;
-                                if this.mcp_menu_open {
-                                    this.refresh_session_mcp(cx);
-                                }
-                                cx.notify();
-                            },
-                        )),
-                    )
+                        ),
+                        Placement::AboveStart,
+                        cx,
+                        |this, _, cx| this.toggle_popup(ChatPopup::Integrations, cx),
+                    ))
                     .child(
                         chip(
                             "web-toggle",
@@ -1308,8 +1178,12 @@ fn chip(
     } else {
         theme::text_secondary()
     };
+    let label = label.into();
     div()
         .id(id)
+        .debug_selector(|| id.to_string())
+        .role(gpui::Role::Button)
+        .aria_label(label.clone())
         .h_8()
         .flex()
         .items_center()
@@ -1327,6 +1201,6 @@ fn chip(
         })
         .active(|style| style.bg(gpui::rgb(theme::bg_sidebar_row_selected())))
         .children(leading.map(|name| icon(name, px(16.), color)))
-        .child(div().whitespace_nowrap().child(label.into()))
+        .child(div().whitespace_nowrap().child(label))
         .when(chevron, |el| el.child(icon("chevron-down", px(14.), color)))
 }

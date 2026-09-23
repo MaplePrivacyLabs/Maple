@@ -198,7 +198,7 @@ pub fn icon_button(
 /// The caller attaches `on_click`. The track is the brand accent when on
 /// and the hairline colour when off, so state reads without a label.
 pub fn switch(id: impl Into<ElementId>, on: bool) -> Stateful<Div> {
-    div()
+    switch_track(on)
         .id(id)
         .role(Role::Switch)
         .aria_toggled(if on {
@@ -206,6 +206,15 @@ pub fn switch(id: impl Into<ElementId>, on: bool) -> Stateful<Div> {
         } else {
             gpui::Toggled::False
         })
+        .focus_visible(focus_ring)
+        .hover(|style| style.cursor_pointer().opacity(0.9))
+        .active(|style| style.opacity(0.8))
+}
+
+/// The look of a [`switch`] without its role or input, for a row that is
+/// itself the control, such as a switch item in a popup menu.
+pub fn switch_track(on: bool) -> Div {
+    div()
         .flex_none()
         .w(px(34.))
         .h(px(20.))
@@ -219,9 +228,6 @@ pub fn switch(id: impl Into<ElementId>, on: bool) -> Stateful<Div> {
         .flex()
         .items_center()
         .when(on, |track| track.justify_end())
-        .focus_visible(focus_ring)
-        .hover(|style| style.cursor_pointer().opacity(0.9))
-        .active(|style| style.opacity(0.8))
         .child(
             div()
                 .size(px(14.))

@@ -231,6 +231,7 @@ impl MapleApp {
         cx: &mut Context<Self>,
     ) -> Result<(), String> {
         let mut overrides = self.settings.shortcut_overrides.clone();
+        crate::shortcuts::migrate_renamed_slots(&mut overrides);
         match change {
             ShortcutSettingsChange::Set {
                 slot_id,
