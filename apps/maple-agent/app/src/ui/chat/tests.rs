@@ -2620,12 +2620,16 @@ mod state_tests {
 
     /// Press the middle of the element with `selector`. The sidebar is a
     /// cached view, so refresh first: a reused view keeps its listeners but
-    /// not its debug bounds.
+    /// not its debug bounds. After a refresh the next paint has to put
+    /// those bounds back; one extra frame covers a park that finished
+    /// before that paint.
     fn press(cx: &mut gpui::VisualTestContext, selector: &'static str) {
-        cx.update(|window, _| window.refresh());
-        cx.run_until_parked();
-        let bounds = cx
-            .debug_bounds(selector)
+        let bounds = (0..2)
+            .find_map(|_| {
+                cx.update(|window, _| window.refresh());
+                cx.run_until_parked();
+                cx.debug_bounds(selector)
+            })
             .unwrap_or_else(|| panic!("{selector} is not on screen"));
         cx.simulate_click(bounds.center(), gpui::Modifiers::default());
     }
