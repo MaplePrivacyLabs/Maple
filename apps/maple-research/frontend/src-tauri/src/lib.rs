@@ -23,6 +23,8 @@ mod pdf_extractor;
 mod pdf_ocr;
 #[cfg(desktop)]
 mod proxy;
+#[cfg(target_os = "ios")]
+mod storekit_experiment;
 #[cfg(desktop)]
 mod updater_preferences;
 mod word_extractor;
@@ -560,7 +562,9 @@ pub fn run() {
     // Only add the Apple Sign In plugin on iOS
     #[cfg(all(not(desktop), target_os = "ios"))]
     {
-        builder = builder.plugin(tauri_plugin_sign_in_with_apple::init());
+        builder = builder
+            .plugin(tauri_plugin_sign_in_with_apple::init())
+            .plugin(tauri_plugin_iap::init());
     }
 
     // Android-specific configuration
@@ -593,6 +597,7 @@ pub fn run() {
     #[cfg(all(not(desktop), target_os = "ios"))]
     let app = builder
         .invoke_handler(tauri::generate_handler![
+            storekit_experiment::storekit_experiment_enabled,
             pdf_extractor::extract_document_content,
             native_oauth::native_oauth_begin,
             native_oauth::native_oauth_redeem,
