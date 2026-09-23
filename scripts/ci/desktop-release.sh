@@ -92,7 +92,11 @@ case "$(host_os)" in
     export RUSTFLAGS="${RUSTFLAGS:+${RUSTFLAGS} }-Clink-arg=-isysroot -Clink-arg=${SDKROOT}"
 
     unsigned_config='{"build":{"beforeBuildCommand":null},"bundle":{"createUpdaterArtifacts":false,"macOS":{"minimumSystemVersion":"13.4"}}}'
-    signed_config="$(jq -cn --arg updaterPubkey "$(tauri_updater_public_key_config_value)" '{
+    prepare_macos_password_provisioning_profile
+    signed_config="$(jq -cn \
+      --arg updaterPubkey "$(tauri_updater_public_key_config_value)" \
+      --arg entitlements "${MAPLE_MACOS_SIGNED_ENTITLEMENTS:-}" \
+      --arg profile "${MAPLE_MACOS_PROVISIONING_PROFILE:-}" '{
       build: {
         beforeBuildCommand: null
       },
@@ -103,9 +107,14 @@ case "$(host_os)" in
       },
       bundle: {
         createUpdaterArtifacts: true,
-        macOS: {
+        macOS: ({
           minimumSystemVersion: "13.4"
-        }
+        } + if $profile == "" then {} else {
+          entitlements: $entitlements,
+          files: {
+            "embedded.provisionprofile": $profile
+          }
+        } end)
       }
     }')"
 
@@ -117,18 +126,10 @@ case "$(host_os)" in
     remove_build_tree "${TAURI_DIR}/target/universal-apple-darwin/release/bundle/dmg"
     remove_build_tree "${TAURI_DIR}/target/universal-apple-darwin/release/bundle/macos"
 
-    prepare_macos_password_provisioning_profile
-    signed_path="${PATH}"
-    if [ -n "${MAPLE_MACOS_PROVISIONING_PROFILE:-}" ]; then
-      signed_path="${REPO_ROOT}/scripts/ci/macos-codesign-wrapper:${PATH}"
-    fi
-    PATH="${signed_path}" bun tauri build --target universal-apple-darwin --config "${signed_config}"
+    bun tauri build --target universal-apple-darwin --config "${signed_config}"
 
     signed_app="${TAURI_DIR}/target/universal-apple-darwin/release/bundle/macos/Maple.app"
-    if [ -n "${MAPLE_MACOS_PROVISIONING_PROFILE:-}" ] && [ ! -f "${signed_app}/Contents/embedded.provisionprofile" ]; then
-      echo "Signed Maple.app is missing Contents/embedded.provisionprofile." >&2
-      exit 1
-    fi
+    verify_macos_password_signing "${signed_app}"
     signed_canonical_hash="$(print_canonical_apple_bundle_hash "${signed_app}" "apps/maple-research/frontend/src-tauri/target/universal-apple-darwin/release/bundle/macos/Maple.app" | tee "${repro_dir}/desktop-release-macos-signed-canonical.sha256" | awk '{ print $2 }')"
     cat "${repro_dir}/desktop-release-macos-signed-canonical.sha256"
 

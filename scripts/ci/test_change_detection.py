@@ -116,8 +116,7 @@ class ChangeDetectionTests(unittest.TestCase):
             "android",
         )
 
-    def test_macos_password_profile_wrapper_marks_only_macos(self) -> None:
-        self.assert_routes(["scripts/ci/macos-codesign-wrapper/codesign"], "macos")
+    def test_canonical_apple_hash_marks_ios_and_macos(self) -> None:
         self.assert_routes(["scripts/ci/canonical-ios-app-hash.py"], "ios", "macos")
 
     def test_platform_owned_paths_only_mark_their_platform(self) -> None:

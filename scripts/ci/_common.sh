@@ -4156,41 +4156,92 @@ import_apple_developer_certificate() {
   echo "Imported Apple Developer ID certificate."
 }
 
+MAPLE_MACOS_TEAM_ID="X773Y823TN"
+MAPLE_MACOS_APP_ID="${MAPLE_MACOS_TEAM_ID}.cloud.opensecret.maple"
+MAPLE_MACOS_ASSOCIATED_DOMAIN="webcredentials:trymaple.ai"
+
 # The Developer ID profile must authorize this exact app to read the
 # trymaple.ai password. The check looks at the decoded plist text only.
 macos_profile_plist_allows_maple_passwords() {
   local plist="$1"
-  grep -F -q 'webcredentials:trymaple.ai' "${plist}" \
-    && grep -F -q 'X773Y823TN.cloud.opensecret.maple' "${plist}" \
+  grep -F -q "${MAPLE_MACOS_ASSOCIATED_DOMAIN}" "${plist}" \
+    && grep -F -q "${MAPLE_MACOS_APP_ID}" "${plist}" \
     && grep -F -q 'com.apple.developer.associated-domains' "${plist}"
 }
 
-# Decode APPLE_PROVISIONING_PROFILE and point codesign at the wrapper that
-# embeds it before the bundle is signed. No-op unless this build is signing.
+# Write the Developer ID entitlements: the checked-in base entitlements plus
+# the App ID claims macOS uses to match the embedded profile and the
+# restricted associated domain it authorizes. Only a build that embeds the
+# profile may claim these; any other signed build would be killed at launch.
+write_macos_signed_entitlements() {
+  local base="$1"
+  local out="$2"
+  "$(python3_runner)" - "${base}" "${out}" "${MAPLE_MACOS_TEAM_ID}" "${MAPLE_MACOS_APP_ID}" "${MAPLE_MACOS_ASSOCIATED_DOMAIN}" <<'PY'
+import plistlib
+import sys
+
+base, out, team_id, app_id, domain = sys.argv[1:]
+with open(base, "rb") as handle:
+    entitlements = plistlib.load(handle)
+entitlements["com.apple.application-identifier"] = app_id
+entitlements["com.apple.developer.team-identifier"] = team_id
+entitlements["com.apple.developer.associated-domains"] = [domain]
+with open(out, "wb") as handle:
+    plistlib.dump(entitlements, handle)
+PY
+}
+
+# Decode APPLE_PROVISIONING_PROFILE and write the matching entitlements for
+# the signed Tauri build. No-op unless this build is signing.
 prepare_macos_password_provisioning_profile() {
   if [ "$(host_os)" != "darwin" ] || [ -z "${APPLE_CERTIFICATE:-}" ]; then
     return 0
   fi
 
   if [ -z "${APPLE_PROVISIONING_PROFILE:-}" ]; then
-    echo "APPLE_PROVISIONING_PROFILE is required. Associated Domains is a restricted entitlement and the signed Mac app needs a Developer ID profile for webcredentials:trymaple.ai." >&2
+    echo "APPLE_PROVISIONING_PROFILE is required. Associated Domains is a restricted entitlement and the signed Mac app needs a Developer ID profile for ${MAPLE_MACOS_ASSOCIATED_DOMAIN}." >&2
     return 1
   fi
 
-  local decoded plist
-  decoded="$(mktemp)"
-  plist="$(mktemp)"
+  local work decoded plist entitlements
+  work="$(mktemp -d)"
+  decoded="${work}/maple.provisionprofile"
+  plist="${work}/profile.plist"
+  entitlements="${work}/Entitlements.developer-id.plist"
   decode_base64_string_to_file "${APPLE_PROVISIONING_PROFILE}" "${decoded}"
   if ! security cms -D -i "${decoded}" > "${plist}"; then
-    rm -f "${decoded}" "${plist}"
+    rm -rf "${work}"
     echo "APPLE_PROVISIONING_PROFILE is not a provisioning profile." >&2
     return 1
   fi
   if ! macos_profile_plist_allows_maple_passwords "${plist}"; then
-    rm -f "${decoded}" "${plist}"
-    echo "APPLE_PROVISIONING_PROFILE does not authorize webcredentials:trymaple.ai for X773Y823TN.cloud.opensecret.maple." >&2
+    rm -rf "${work}"
+    echo "APPLE_PROVISIONING_PROFILE does not authorize ${MAPLE_MACOS_ASSOCIATED_DOMAIN} for ${MAPLE_MACOS_APP_ID}." >&2
     return 1
   fi
   rm -f "${plist}"
+  write_macos_signed_entitlements "${TAURI_DIR}/Entitlements.plist" "${entitlements}"
   export MAPLE_MACOS_PROVISIONING_PROFILE="${decoded}"
+  export MAPLE_MACOS_SIGNED_ENTITLEMENTS="${entitlements}"
+}
+
+# Fail closed if the signed bundle lost the profile or the App ID claims.
+verify_macos_password_signing() {
+  local app="$1"
+  local claimed expected
+
+  if [ -z "${MAPLE_MACOS_PROVISIONING_PROFILE:-}" ]; then
+    return 0
+  fi
+  if ! cmp -s "${MAPLE_MACOS_PROVISIONING_PROFILE}" "${app}/Contents/embedded.provisionprofile"; then
+    echo "Signed Maple.app does not embed APPLE_PROVISIONING_PROFILE as Contents/embedded.provisionprofile." >&2
+    return 1
+  fi
+  claimed="$(codesign -d --entitlements - --xml "${app}" 2>/dev/null)"
+  for expected in "${MAPLE_MACOS_APP_ID}" "${MAPLE_MACOS_ASSOCIATED_DOMAIN}" "com.apple.developer.team-identifier"; do
+    if ! printf '%s' "${claimed}" | grep -F -q "${expected}"; then
+      echo "Signed Maple.app entitlements are missing ${expected}." >&2
+      return 1
+    fi
+  done
 }

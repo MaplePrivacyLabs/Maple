@@ -27,7 +27,7 @@ pub enum ApplePasswordDecision {
 pub fn classify_apple_authorization_code(code: i64) -> ApplePasswordDecision {
     match code {
         1001 => ApplePasswordDecision::Cancelled,
-        1003 | 1004 | 1005 => ApplePasswordDecision::Unavailable,
+        1003..=1005 => ApplePasswordDecision::Unavailable,
         other => ApplePasswordDecision::Failed { code: other },
     }
 }

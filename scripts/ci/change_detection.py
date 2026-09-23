@@ -105,7 +105,6 @@ CI_SCRIPT_ROUTES = {
     "scripts/ci/android-release.sh": frozenset({"android"}),
     "scripts/ci/attestation-manifest.sh": NATIVE_PLATFORMS,
     "scripts/ci/canonical-ios-app-hash.py": frozenset({"ios", "macos"}),
-    "scripts/ci/macos-codesign-wrapper/codesign": frozenset({"macos"}),
     "scripts/ci/canonical-windows-nsis-payload-hash.py": frozenset({"windows"}),
     "scripts/ci/desktop-pr.sh": DESKTOP_PLATFORMS,
     "scripts/ci/desktop-release.sh": DESKTOP_PLATFORMS,

@@ -1,8 +1,7 @@
-"""The Mac password profile is embedded only into the Maple app bundle."""
+"""The Mac password profile and its restricted entitlements go only into signed builds."""
 
-import os
 from pathlib import Path
-import stat
+import plistlib
 import subprocess
 import tempfile
 import unittest
@@ -10,21 +9,12 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
 COMMON = ROOT / "scripts/ci/_common.sh"
-WRAPPER = ROOT / "scripts/ci/macos-codesign-wrapper/codesign"
-CANARY = "CANARY-PROFILE-SECRET"
-
-
-def write_app(root: Path, bundle_id: str) -> Path:
-    app = root / f"{bundle_id}.app"
-    contents = app / "Contents"
-    contents.mkdir(parents=True)
-    (contents / "Info.plist").write_text(
-        '<?xml version="1.0" encoding="UTF-8"?>\n'
-        "<plist><dict><key>CFBundleIdentifier</key>"
-        f"<string>{bundle_id}</string></dict></plist>\n",
-        encoding="utf-8",
-    )
-    return app
+BASE_ENTITLEMENTS = ROOT / "apps/maple-research/frontend/src-tauri/Entitlements.plist"
+RESTRICTED = {
+    "com.apple.application-identifier",
+    "com.apple.developer.team-identifier",
+    "com.apple.developer.associated-domains",
+}
 
 
 class MacosProvisioningProfileTests(unittest.TestCase):
@@ -45,32 +35,27 @@ class MacosProvisioningProfileTests(unittest.TestCase):
             )
             subprocess.run(["bash", "-c", script], check=True)
 
-    def test_wrapper_embeds_the_profile_only_in_the_maple_bundle(self) -> None:
+    def test_base_entitlements_claim_no_restricted_entitlement(self) -> None:
+        # Builds signed without the profile (local, ad-hoc, CI without the
+        # secret) would be killed at launch if the base file claimed these.
+        base = plistlib.loads(BASE_ENTITLEMENTS.read_bytes())
+        self.assertFalse(RESTRICTED & base.keys())
+
+    def test_signed_entitlements_add_the_app_id_and_password_domain(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            maple = write_app(root, "cloud.opensecret.maple")
-            other = write_app(root, "cloud.opensecret.maple.agent")
-            profile = root / "profile.bin"
-            profile.write_text(CANARY, encoding="utf-8")
-            fake = root / "codesign"
-            fake.write_text("#!/bin/sh\nprintf '%s\\n' \"$@\"\n", encoding="utf-8")
-            fake.chmod(fake.stat().st_mode | stat.S_IEXEC)
-            env = os.environ.copy()
-            env["MAPLE_MACOS_PROVISIONING_PROFILE"] = str(profile)
-            env["MAPLE_REAL_CODESIGN"] = str(fake)
-            result = subprocess.run(
-                [str(WRAPPER), "--force", "--sign", "identity", str(maple), str(other)],
+            out = Path(tmp) / "signed.plist"
+            subprocess.run(
+                ["bash", "-c", f'source {COMMON}\nwrite_macos_signed_entitlements "$1" "$2"', "_",
+                 str(BASE_ENTITLEMENTS), str(out)],
                 check=True,
-                capture_output=True,
-                text=True,
-                env=env,
             )
-            embedded = (maple / "Contents/embedded.provisionprofile").read_text(encoding="utf-8")
-            self.assertEqual(embedded, CANARY)
-            self.assertFalse((other / "Contents/embedded.provisionprofile").exists())
-            self.assertNotIn(CANARY, result.stdout)
-            self.assertNotIn(CANARY, result.stderr)
-            self.assertIn(str(maple), result.stdout)
+            base = plistlib.loads(BASE_ENTITLEMENTS.read_bytes())
+            signed = plistlib.loads(out.read_bytes())
+            self.assertEqual({key: signed[key] for key in base}, base)
+            self.assertEqual(signed["com.apple.application-identifier"], "X773Y823TN.cloud.opensecret.maple")
+            self.assertEqual(signed["com.apple.developer.team-identifier"], "X773Y823TN")
+            self.assertEqual(signed["com.apple.developer.associated-domains"], ["webcredentials:trymaple.ai"])
+            self.assertEqual(set(signed) - set(base), RESTRICTED)
 
 
 if __name__ == "__main__":
