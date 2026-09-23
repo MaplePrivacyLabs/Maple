@@ -176,9 +176,9 @@ dependencies = [
 
 [[package]]
 name = "agent-client-protocol"
-version = "2.0.0"
+version = "2.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6d87bc7769eba641753ba5dc52f73ec3765d51022c6753bf040967125ddc86a8"
+checksum = "13f780597b2c88ab83d02509bcc3e86366751f86fa12114005e35c55ed691763"
 dependencies = [
  "agent-client-protocol-derive",
  "agent-client-protocol-schema",
@@ -200,9 +200,9 @@ dependencies = [
 
 [[package]]
 name = "agent-client-protocol-derive"
-version = "2.0.0"
+version = "2.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3abd4080f51e4f24f5042beb7fb7a66ede29a2dc1c2582c329532e1c27264ddc"
+checksum = "f4893bfb11e0e193aa5a64611a126ee87567acb1879556519c902722899229de"
 dependencies = [
  "quote",
  "syn 3.0.4",
@@ -210,9 +210,9 @@ dependencies = [
 
 [[package]]
 name = "agent-client-protocol-http"
-version = "2.0.0"
+version = "2.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4b4d8db045bc66b84526dfe4ef2ffb87d651b81c4ff945f91c63a2bc677a582c"
+checksum = "18e3d7117a48e9db3c4b5e29f7539bc14e390f1f782d10a99b1d9f5c3a8cc28f"
 dependencies = [
  "agent-client-protocol",
  "async-stream",
@@ -227,9 +227,9 @@ dependencies = [
 
 [[package]]
 name = "agent-client-protocol-schema"
-version = "1.5.0"
+version = "1.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d5c231915b4ab578c722eca2d1bd7df4d300bfd6cac3b8e9f0d1e3ddc95b187c"
+checksum = "1d595a79e1665d02c91c7dd1bedd118501e75cc0a3d5b1651b5150ec4c5c1e0d"
 dependencies = [
  "anyhow",
  "derive_more",
@@ -1895,8 +1895,8 @@ dependencies = [
  "compression-core",
  "flate2",
  "memchr",
- "zstd",
- "zstd-safe",
+ "zstd 0.13.3",
+ "zstd-safe 7.2.4",
 ]
 
 [[package]]
@@ -2484,7 +2484,7 @@ dependencies = [
  "sha2 0.10.9",
  "tiny-skia",
  "tracing",
- "zstd",
+ "zstd 0.13.3",
 ]
 
 [[package]]
@@ -3874,8 +3874,8 @@ dependencies = [
 
 [[package]]
 name = "goose"
-version = "1.51.0"
-source = "git+https://github.com/AnthonyRonning/goose.git?rev=38e965550cf8db3a101edddd0874ac9ed8dedfd8#38e965550cf8db3a101edddd0874ac9ed8dedfd8"
+version = "1.52.0"
+source = "git+https://github.com/AnthonyRonning/goose.git?rev=b26ae15dbbed79b22f9758abbcde19b34a8372a9#b26ae15dbbed79b22f9758abbcde19b34a8372a9"
 dependencies = [
  "agent-client-protocol",
  "agent-client-protocol-http",
@@ -3971,8 +3971,8 @@ dependencies = [
 
 [[package]]
 name = "goose-acp-macros"
-version = "1.51.0"
-source = "git+https://github.com/AnthonyRonning/goose.git?rev=38e965550cf8db3a101edddd0874ac9ed8dedfd8#38e965550cf8db3a101edddd0874ac9ed8dedfd8"
+version = "1.52.0"
+source = "git+https://github.com/AnthonyRonning/goose.git?rev=b26ae15dbbed79b22f9758abbcde19b34a8372a9#b26ae15dbbed79b22f9758abbcde19b34a8372a9"
 dependencies = [
  "quote",
  "syn 3.0.4",
@@ -3981,7 +3981,7 @@ dependencies = [
 [[package]]
 name = "goose-agent"
 version = "0.1.0-alpha.9"
-source = "git+https://github.com/AnthonyRonning/goose.git?rev=38e965550cf8db3a101edddd0874ac9ed8dedfd8#38e965550cf8db3a101edddd0874ac9ed8dedfd8"
+source = "git+https://github.com/AnthonyRonning/goose.git?rev=b26ae15dbbed79b22f9758abbcde19b34a8372a9#b26ae15dbbed79b22f9758abbcde19b34a8372a9"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3999,7 +3999,7 @@ dependencies = [
 [[package]]
 name = "goose-context-management"
 version = "0.1.0-alpha.9"
-source = "git+https://github.com/AnthonyRonning/goose.git?rev=38e965550cf8db3a101edddd0874ac9ed8dedfd8#38e965550cf8db3a101edddd0874ac9ed8dedfd8"
+source = "git+https://github.com/AnthonyRonning/goose.git?rev=b26ae15dbbed79b22f9758abbcde19b34a8372a9#b26ae15dbbed79b22f9758abbcde19b34a8372a9"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4015,7 +4015,7 @@ dependencies = [
 [[package]]
 name = "goose-download-manager"
 version = "0.1.0-alpha.9"
-source = "git+https://github.com/AnthonyRonning/goose.git?rev=38e965550cf8db3a101edddd0874ac9ed8dedfd8#38e965550cf8db3a101edddd0874ac9ed8dedfd8"
+source = "git+https://github.com/AnthonyRonning/goose.git?rev=b26ae15dbbed79b22f9758abbcde19b34a8372a9#b26ae15dbbed79b22f9758abbcde19b34a8372a9"
 dependencies = [
  "anyhow",
  "once_cell",
@@ -4028,7 +4028,7 @@ dependencies = [
 [[package]]
 name = "goose-provider-types"
 version = "0.1.0-alpha.9"
-source = "git+https://github.com/AnthonyRonning/goose.git?rev=38e965550cf8db3a101edddd0874ac9ed8dedfd8#38e965550cf8db3a101edddd0874ac9ed8dedfd8"
+source = "git+https://github.com/AnthonyRonning/goose.git?rev=b26ae15dbbed79b22f9758abbcde19b34a8372a9#b26ae15dbbed79b22f9758abbcde19b34a8372a9"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -4049,12 +4049,13 @@ dependencies = [
  "tracing",
  "unicode-normalization",
  "uuid",
+ "zstd 0.14.0",
 ]
 
 [[package]]
 name = "goose-providers"
 version = "0.1.0-alpha.9"
-source = "git+https://github.com/AnthonyRonning/goose.git?rev=38e965550cf8db3a101edddd0874ac9ed8dedfd8#38e965550cf8db3a101edddd0874ac9ed8dedfd8"
+source = "git+https://github.com/AnthonyRonning/goose.git?rev=b26ae15dbbed79b22f9758abbcde19b34a8372a9#b26ae15dbbed79b22f9758abbcde19b34a8372a9"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -4080,7 +4081,7 @@ dependencies = [
 [[package]]
 name = "goose-sdk-types"
 version = "0.1.0-alpha.9"
-source = "git+https://github.com/AnthonyRonning/goose.git?rev=38e965550cf8db3a101edddd0874ac9ed8dedfd8#38e965550cf8db3a101edddd0874ac9ed8dedfd8"
+source = "git+https://github.com/AnthonyRonning/goose.git?rev=b26ae15dbbed79b22f9758abbcde19b34a8372a9#b26ae15dbbed79b22f9758abbcde19b34a8372a9"
 dependencies = [
  "agent-client-protocol",
  "agent-client-protocol-schema",
@@ -13192,7 +13193,16 @@ version = "0.13.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e91ee311a569c327171651566e07972200e76fcfe2242a4fa446149a3881c08a"
 dependencies = [
- "zstd-safe",
+ "zstd-safe 7.2.4",
+]
+
+[[package]]
+name = "zstd"
+version = "0.14.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bf06bd8162af0734b344780deb55b42a2429ae430870d13fcc12f238e880fe6e"
+dependencies = [
+ "zstd-safe 8.0.0",
 ]
 
 [[package]]
@@ -13205,10 +13215,19 @@ dependencies = [
 ]
 
 [[package]]
-name = "zstd-sys"
-version = "2.0.16+zstd.1.5.7"
+name = "zstd-safe"
+version = "8.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "91e19ebc2adc8f83e43039e79776e3fda8ca919132d68a1fed6a5faca2683748"
+checksum = "ae42c0555055784c70058d19ba8e275528e8a99a706684868ace5da4e716a4ab"
+dependencies = [
+ "zstd-sys",
+]
+
+[[package]]
+name = "zstd-sys"
+version = "2.1.0+zstd.1.5.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0ef0a8027ec3ee71300ab3bcbcd0393f434aa72b91ca6d635a39941deae8eea0"
 dependencies = [
  "cc",
  "pkg-config",

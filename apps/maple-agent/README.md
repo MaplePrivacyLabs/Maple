@@ -45,7 +45,7 @@ remove Tauri:
   sink are injectable traits
 - public visibility opened on the service surface the app consumes
 
-Goose is pinned to a fork revision based on upstream v1.51.0 in this
+Goose is pinned to a fork revision based on upstream v1.52.0 in this
 component’s Cargo manifests and lockfile. The fork forwards subagent approvals
 to the parent and supports ephemeral native clients for embedded CUA. Research
 has an independent dependency graph.
