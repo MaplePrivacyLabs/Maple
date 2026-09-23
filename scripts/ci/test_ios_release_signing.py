@@ -21,6 +21,9 @@ import unittest
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
+# The flake runs this fixture alongside other checks on shared runners. Cold
+# interpreter starts can exceed 15 seconds without the release script hanging.
+FIXTURE_TIMEOUT = 60
 KEY_BYTES = b"fixture-private-key-canary\n"
 SIGNING_ENV = {
     "APPLE_API_ISSUER": "fixture-issuer-canary",
@@ -108,7 +111,7 @@ if env.get("FIXTURE_FAIL") == stage:
     sys.exit(37)
 if stage == "signed" and env.get("FIXTURE_WAIT"):
     (root / "signer-ready").touch()
-    time.sleep(30)
+    time.sleep(60)
 
 if stage in ("unsigned", "signed"):
     build = tauri / "gen/apple/build"
@@ -187,13 +190,17 @@ class SigningBoundaryTests(unittest.TestCase):
         # Copied Nix-store inputs retain read-only mode; replace only this
         # disposable fixture path instead of mutating the source or its mode.
         path.unlink(missing_ok=True)
-        path.write_text("#!/usr/bin/env bash\nset -euo pipefail\n" + textwrap.dedent(content))
+        # Linux Nix sandboxes intentionally lack /usr/bin/env. Use the Bash
+        # supplied by the test environment for directly executed fixture tools.
+        bash = shutil.which("bash")
+        self.assertIsNotNone(bash, "bash is required for the release-script fixture")
+        path.write_text(f"#!{bash}\nset -euo pipefail\n" + textwrap.dedent(content))
         path.chmod(0o755)
 
     def run_release(self, **changes):
         result = subprocess.run(["bash", str(self.scripts / "ios-release.sh")],
                                 env=dict(self.env, **changes), capture_output=True,
-                                text=True, timeout=15)
+                                text=True, timeout=FIXTURE_TIMEOUT)
         self.assertNotIn(SIGNING_ENV["APPLE_API_PRIVATE_KEY"], result.stdout + result.stderr)
         self.assertNotIn(KEY_BYTES.decode().strip(), result.stdout + result.stderr)
         return result
@@ -276,12 +283,12 @@ class SigningBoundaryTests(unittest.TestCase):
                                            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                            text=True, start_new_session=True)
                 try:
-                    deadline = time.monotonic() + 10
+                    deadline = time.monotonic() + 30
                     while not ready.exists() and process.poll() is None and time.monotonic() < deadline:
                         time.sleep(0.02)
                     self.assertTrue(ready.exists(), "fixture signer did not start")
                     os.killpg(process.pid, signum)
-                    stdout, stderr = process.communicate(timeout=10)
+                    stdout, stderr = process.communicate(timeout=30)
                     self.assertEqual(process.returncode, 128 + signum, stderr)
                     self.assertNotIn(KEY_BYTES.decode().strip(), stdout + stderr)
                     self.assert_cleanup()
@@ -319,7 +326,8 @@ with (Path(os.environ["FIXTURE_ROOT"]) / "rehearsal-events").open("a") as log:
         for target in ("ios", "all", "android"):
             with self.subTest(target=target):
                 result = subprocess.run(["bash", str(self.scripts / "signed-release-rehearsal.sh"), target],
-                                        env=environment, capture_output=True, text=True, timeout=10)
+                                        env=environment, capture_output=True, text=True,
+                                        timeout=FIXTURE_TIMEOUT)
                 self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual((self.root / "rehearsal-events").read_text().splitlines(),
                          ["ios-onnxruntime", "ios-release", "desktop-release",
