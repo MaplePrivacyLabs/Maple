@@ -97,7 +97,13 @@ the upload. Credentials are introduced only in the signing and final upload
 steps, within the existing protected `apple-signing` environment.
 
 The development export sets `testFlightInternalTestingOnly=true`, which prevents
-the IPA from being used for external TestFlight or App Store distribution. Apple
+the IPA from being used for external TestFlight or App Store distribution. IPA
+verification requires Xcode's exported `TFInternalTestingOnly` marker to be the
+boolean `true`; an absent, false, or malformed marker blocks upload. The
+reproducibility comparison normalizes only this exact marker on iPhoneOS, since
+Xcode adds it during export. Other metadata remains part of the comparison, and
+the final IPA checksum still covers the marker. Pre-export archives and simulator
+apps do not require the export marker. Apple
 processing and availability to the configured internal group are separate from
 a successful upload; the workflow does not submit for App Review or manage
 testers. See Apple's [internal tester documentation](https://developer.apple.com/help/app-store-connect/test-a-beta-version/add-internal-testers/).

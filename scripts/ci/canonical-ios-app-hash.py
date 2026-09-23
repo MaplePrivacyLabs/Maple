@@ -81,6 +81,12 @@ def canonical_info_plist(path):
     if "iPhoneOS" in value.get("CFBundleSupportedPlatforms", []):
         # App Store Connect export can rewrite this; the final IPA hash still covers it.
         value.pop("CFBundleVersion", None)
+        if (isinstance(value.get("CFBundleSupportedPlatforms"), list)
+                and value.get("TFInternalTestingOnly") is True):
+            # Xcode adds this exact boolean during internal-only TestFlight
+            # export. Dev IPA verification separately requires the restriction;
+            # malformed/false values and non-iOS metadata remain significant.
+            value.pop("TFInternalTestingOnly")
     url_types = value.get("CFBundleURLTypes")
     if isinstance(url_types, list):
         # Xcode export can add empty URL type entries, which do not register a scheme.
