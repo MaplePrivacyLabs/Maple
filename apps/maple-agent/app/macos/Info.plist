@@ -5,15 +5,15 @@
     <key>CFBundleDevelopmentRegion</key>
     <string>en</string>
     <key>CFBundleDisplayName</key>
-    <string>Maple GPUI Dev</string>
+    <string>Maple Agent Dev</string>
     <key>CFBundleExecutable</key>
-    <string>maple-gpui</string>
+    <string>maple-agent</string>
     <key>CFBundleIdentifier</key>
-    <string>cloud.opensecret.maple.gpui.dev</string>
+    <string>cloud.opensecret.maple.agent.dev</string>
     <key>CFBundleInfoDictionaryVersion</key>
     <string>6.0</string>
     <key>CFBundleName</key>
-    <string>Maple GPUI Dev</string>
+    <string>Maple Agent Dev</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>

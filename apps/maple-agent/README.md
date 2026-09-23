@@ -1,7 +1,7 @@
 # Maple Agent (GPUI prototype)
 
 Maple’s desktop-v2 prototype lives in `apps/maple-agent/` in this monorepo.
-Its internal Cargo package and executable remain named `maple-gpui`. It rebuilds Maple Agent Mode in
+Its Cargo package is `maple-agent-app` and its executable is `maple-agent`. It rebuilds Maple Agent Mode in
 [gpui](https://crates.io/crates/gpui) on top of the Maple agent runtime
 ported from the Tauri app.
 
@@ -11,7 +11,7 @@ OpenAI-compatible proxy. See "Command line" below.
 ## Layout
 
 ```
-app/                  The maple-gpui binary. Owns the window, login, chat,
+app/                  The maple-agent binary. Owns the window, login, chat,
                       settings, notifications, and the backend adapter.
 crates/maple-agent/   Maple's transport-neutral agent runtime, extracted from
                       the Tauri app with Tauri removed. Owns embedded Goose,
@@ -272,8 +272,7 @@ instead of launching the binary directly. It sources private
 billing configuration, and isolates config/data under
 `state/maple-agent/{config,data}`. The launcher clears inherited API keys and
 disables update discovery. Agent and the standalone proxy share one reserved
-proxy port: choose one process to own it. A registered legacy GPUI checkout
-keeps its own `bin/maple-gpui` launcher and separate state.
+proxy port: choose one process to own it.
 
 On macOS, use `just debug-app` when testing features that depend on privacy
 permissions. It stages the debug binary in a stable, development-only `.app`
@@ -323,24 +322,24 @@ Linux builds use Nix-provided ALSA, font, keyboard, Wayland and Vulkan libraries
 
 Local Nix shells and `just` recipes use Cargo's separate build directory
 (`CARGO_BUILD_BUILD_DIR` / `build.build-dir`) to share Rust intermediate
-artifacts across maple-gpui checkouts and git worktrees. Final artifacts
+artifacts across Agent checkouts and git worktrees. Final artifacts
 remain in the current checkout under `target/`, so `just run`,
 `just dist`, and debugger paths do not change.
 
 The default cache is separated by rustc host triple and compiler version:
 
 ```text
-$HOME/.cache/cargo-build/maple-gpui/<host-triple>/rust-<version>
+$HOME/.cache/cargo-build/maple-agent/<host-triple>/rust-<version>
 ```
 
 An existing `CARGO_BUILD_BUILD_DIR` takes precedence. To temporarily restore
 Cargo's traditional checkout-local layout, set
-`MAPLE_GPUI_DISABLE_SHARED_CARGO_BUILD_DIR=1`. CI does not enable the local
+`MAPLE_DISABLE_SHARED_CARGO_BUILD_DIR=1`. CI does not enable the local
 shared cache automatically.
 
 Raw `cargo clean` removes both the checkout's target directory and the
 configured shared build directory. To clean only the current checkout
-without invalidating other maple-gpui worktrees, run:
+without invalidating other Agent worktrees, run:
 
 ```bash
 just clean-local
@@ -363,22 +362,22 @@ just clean-local # this checkout's Cargo artifacts only (keeps the shared cache)
 ## Command line
 
 ```
-maple-gpui                 Open the desktop app.
-maple-gpui acp             Serve the Agent Client Protocol on stdio.
-maple-gpui proxy [FLAGS]   Serve an OpenAI-compatible HTTP endpoint.
-maple-gpui login           Sign in with email and password from a terminal.
-maple-gpui --version       Print the version.
+maple-agent                 Open the desktop app.
+maple-agent acp             Serve the Agent Client Protocol on stdio.
+maple-agent proxy [FLAGS]   Serve an OpenAI-compatible HTTP endpoint.
+maple-agent login           Sign in with email and password from a terminal.
+maple-agent --version       Print the version.
 ```
 
-### `maple-gpui login`
+### `maple-agent login`
 
 Prompts for the account email (or takes `--email`) and the password, signs
 in, and saves the session the same way the desktop app does. Use it on a
-machine that never opens the window so `maple-gpui acp` has a sign-in. The
+machine that never opens the window so `maple-agent acp` has a sign-in. The
 password is always prompted for; there is no flag for it. OAuth sign-in is
 desktop-only for now.
 
-### `maple-gpui acp`
+### `maple-agent acp`
 
 Runs a standalone ACP agent over stdio for editors and ACP clients. It
 reuses the sign-in saved by the desktop app and hosts its own runtime, so
@@ -386,7 +385,7 @@ the desktop app does not need to run. Logs go to the log file only; stdout
 is the ACP channel. If no sign-in is saved, it exits with a message that
 tells the user to sign in from the desktop app first.
 
-### `maple-gpui proxy`
+### `maple-agent proxy`
 
 ```
 --host HOST     bind address (default 127.0.0.1, env MAPLE_PROXY_HOST)
@@ -410,12 +409,12 @@ window and its display libraries:
 | Feature | What it adds |
 | --- | --- |
 | `desktop` | The gpui window. Without it the binary is headless. |
-| `acp` | `maple-gpui acp` and `maple_agent::acp`. |
-| `proxy` | `maple-gpui proxy`. |
+| `acp` | `maple-agent acp` and `maple_agent::acp`. |
+| `proxy` | `maple-agent proxy`. |
 
 ```sh
-cargo build --release -p maple-gpui --no-default-features --features acp
-cargo build --release -p maple-gpui --no-default-features --features proxy
+cargo build --release -p maple-agent-app --no-default-features --features acp
+cargo build --release -p maple-agent-app --no-default-features --features proxy
 ```
 
 A mode that is compiled out exits with status 2 and a message that names
@@ -446,8 +445,8 @@ The roots follow the platform, the same way the Tauri app's
 
 | Root | Linux | macOS | Windows |
 | --- | --- | --- | --- |
-| Config | `~/.config/maple-gpui/` | `~/Library/Application Support/maple-gpui/` | `%APPDATA%\maple-gpui\` |
-| Local data | `~/.local/share/maple-gpui/` | `~/Library/Application Support/maple-gpui/` | `%LOCALAPPDATA%\maple-gpui\` |
+| Config | `~/.config/maple-agent/` | `~/Library/Application Support/maple-agent/` | `%APPDATA%\maple-agent\` |
+| Local data | `~/.local/share/maple-agent/` | `~/Library/Application Support/maple-agent/` | `%LOCALAPPDATA%\maple-agent\` |
 
 | Path | Content |
 | --- | --- |
@@ -462,7 +461,12 @@ The roots follow the platform, the same way the Tauri app's
 | `<local data>/agent/accounts/<scope>/tool_summaries.db` | Model-written one-line summaries of tool calls (SQLite, WAL). |
 | `<local data>/agent/accounts/<scope>/attachments/` | Image attachments. |
 | `<local data>/agent/acp/accounts/<scope>/config.json` | ACP configuration. |
-| `<local data>/logs/maple-gpui.log` | Log file. Panics are logged here too. |
+| `<local data>/logs/maple-agent.log` | Log file. Panics are logged here too. |
+
+Releases before the package rename used `maple-gpui` for both roots. On its
+first start the app renames an existing `maple-gpui` directory to `maple-agent`
+when the new one does not exist yet, so sign-in, settings, and history carry
+over in place.
 
 `<scope>` is the SHA-256 of the account's user id. Small JSON files are
 written atomically (temp file, sync, rename) with owner-only permissions.

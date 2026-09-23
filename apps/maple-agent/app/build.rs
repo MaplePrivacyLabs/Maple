@@ -41,7 +41,7 @@ fn main() {
         // system runtime and application fallback paths on Maple's binary
         // target. Prefer the system runtime so Apple frameworks and Maple do
         // not load duplicate copies on current macOS releases.
-        println!("cargo:rustc-link-arg-bin=maple-gpui=-Wl,-rpath,/usr/lib/swift");
-        println!("cargo:rustc-link-arg-bin=maple-gpui=-Wl,-rpath,@executable_path/../Frameworks");
+        println!("cargo:rustc-link-arg-bin=maple-agent=-Wl,-rpath,/usr/lib/swift");
+        println!("cargo:rustc-link-arg-bin=maple-agent=-Wl,-rpath,@executable_path/../Frameworks");
     }
 }

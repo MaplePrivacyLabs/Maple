@@ -145,7 +145,7 @@ pub(super) fn save_config_for_scope(
     crate::private_file::set_owner_only_dir(parent)
         .map_err(|error| format!("Failed to secure Maple ACP configuration directory: {error}"))?;
     // Atomic replace: a crash mid-write must not leave a truncated file
-    // that `load_config` rejects, which would block `maple-gpui acp`.
+    // that `load_config` rejects, which would block `maple-agent acp`.
     crate::private_file::write_private_json(&path, config)
         .map_err(|error| format!("Failed to save Maple ACP configuration: {error}"))?;
     Ok(())

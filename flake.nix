@@ -584,7 +584,7 @@
           if [ -z "''${CI:-}" ] \
             && [ "''${MAPLE_DISABLE_SHARED_CARGO_BUILD_DIR:-0}" != "1" ] \
             && [ -z "''${CARGO_BUILD_BUILD_DIR:-}" ]; then
-            export CARGO_BUILD_BUILD_DIR="$HOME/.cache/opensecret-workspaces/cargo-build/maple/${system}/rust-${versions.rust}"
+            export CARGO_BUILD_BUILD_DIR="$HOME/.cache/cargo-build/maple/${system}/rust-${versions.rust}"
           fi
           echo "Maple Nix toolchain: bun $(bun --version), $(rustc --version)"
           if [ -n "''${CARGO_BUILD_BUILD_DIR:-}" ]; then

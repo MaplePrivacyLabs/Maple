@@ -70,7 +70,7 @@
         in
         {
           default = rustPlatform.buildRustPackage {
-            pname = "maple-gpui";
+            pname = "maple-agent";
             version = "0.1.0";
 
             src = pkgs.lib.fileset.toSource {
@@ -119,7 +119,7 @@
 
             cargoBuildFlags = [
               "-p"
-              "maple-gpui"
+              "maple-agent-app"
             ];
 
             # The upstream CI runs the complete workspace and feature matrix.
@@ -130,7 +130,7 @@
             # not discovered by ELF dependency scanning. Prefer the NixOS GPU
             # driver link and retain Mesa as a portable fallback elsewhere.
             postFixup = pkgs.lib.optionalString pkgs.stdenv.hostPlatform.isLinux ''
-              wrapProgram "$out/bin/maple-gpui" \
+              wrapProgram "$out/bin/maple-agent" \
                 --prefix LD_LIBRARY_PATH : "${pkgs.addDriverRunpath.driverLink}/lib:${pkgs.lib.makeLibraryPath linuxRuntimeInputs}" \
                 --suffix VK_ADD_DRIVER_FILES : "${pkgs.addDriverRunpath.driverLink}/share/vulkan/icd.d:${pkgs.mesa}/share/vulkan/icd.d"
             '';
@@ -139,7 +139,7 @@
               description = "Native Maple desktop app built with GPUI";
               homepage = "https://github.com/MaplePrivacyLabs/Maple/tree/master/apps/maple-agent";
               license = pkgs.lib.licenses.mit;
-              mainProgram = "maple-gpui";
+              mainProgram = "maple-agent";
               platforms = packageSystems;
             };
           };
@@ -200,16 +200,16 @@
 
             shellHook = ''
               if [ -z "''${CI:-}" ] \
-                && [ "''${MAPLE_GPUI_DISABLE_SHARED_CARGO_BUILD_DIR:-0}" != "1" ] \
+                && [ "''${MAPLE_DISABLE_SHARED_CARGO_BUILD_DIR:-0}" != "1" ] \
                 && [ -z "''${CARGO_BUILD_BUILD_DIR:-}" ] \
                 && command -v rustc >/dev/null 2>&1; then
-                maple_gpui_rust_host="$(rustc -vV | awk '/^host:/{print $2}')"
-                maple_gpui_rust_version="$(rustc --version | awk '{print $2}')"
-                export CARGO_BUILD_BUILD_DIR="$HOME/.cache/cargo-build/maple-gpui/''${maple_gpui_rust_host}/rust-''${maple_gpui_rust_version}"
-                unset maple_gpui_rust_host maple_gpui_rust_version
+                maple_agent_rust_host="$(rustc -vV | awk '/^host:/{print $2}')"
+                maple_agent_rust_version="$(rustc --version | awk '{print $2}')"
+                export CARGO_BUILD_BUILD_DIR="$HOME/.cache/cargo-build/maple-agent/''${maple_agent_rust_host}/rust-''${maple_agent_rust_version}"
+                unset maple_agent_rust_host maple_agent_rust_version
               fi
               if [ -n "''${CARGO_BUILD_BUILD_DIR:-}" ]; then
-                echo "maple-gpui Cargo build cache: $CARGO_BUILD_BUILD_DIR"
+                echo "Maple Agent Cargo build cache: $CARGO_BUILD_BUILD_DIR"
               fi
             '' + pkgs.lib.optionalString pkgs.stdenv.hostPlatform.isLinux ''
               export LD_LIBRARY_PATH="${pkgs.addDriverRunpath.driverLink}/lib:${pkgs.lib.makeLibraryPath linuxRuntimeInputs}''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"

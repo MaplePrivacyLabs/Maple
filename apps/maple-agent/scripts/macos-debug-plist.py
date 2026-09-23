@@ -15,7 +15,7 @@ PUBLIC_CONFIG = (
 
 
 def configure(plist: dict, environment: dict[str, str]) -> dict:
-    bundle_id = environment.get("MAPLE_DEBUG_BUNDLE_ID") or "cloud.opensecret.maple.gpui.dev"
+    bundle_id = environment.get("MAPLE_DEBUG_BUNDLE_ID") or "cloud.opensecret.maple.agent.dev"
     if not re.fullmatch(r"[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+", bundle_id):
         raise ValueError("MAPLE_DEBUG_BUNDLE_ID must be a dotted bundle identifier")
     result = {**plist, "CFBundleIdentifier": bundle_id}

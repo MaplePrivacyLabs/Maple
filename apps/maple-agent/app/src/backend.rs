@@ -12,7 +12,7 @@
 
 use std::collections::HashMap;
 use std::future::Future;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 #[cfg(target_os = "macos")]
 use std::process::Command;
 use std::sync::Arc;
@@ -154,7 +154,45 @@ impl AgentEventSink for ChannelEventSink {
     }
 }
 
-pub(crate) const APP_DIR_NAME: &str = "maple-gpui";
+pub(crate) const APP_DIR_NAME: &str = "maple-agent";
+/// Directory name used before the package rename. An existing directory is
+/// adopted in place on first start; see [`adopt_legacy_app_dirs`].
+const LEGACY_APP_DIR_NAME: &str = "maple-gpui";
+
+/// Rename state written under the previous directory name into the current
+/// one, once per distinct root, before anything opens files. Only a missing
+/// current directory is filled: an already-current or partially migrated
+/// layout is never touched. Returns one line per root for the caller to log
+/// once logging is up.
+pub fn adopt_legacy_app_dirs() -> Vec<String> {
+    let mut notes = Vec::new();
+    let mut seen: Vec<PathBuf> = Vec::new();
+    for root in [config_root(), local_data_root()] {
+        if seen.contains(&root) {
+            continue;
+        }
+        if let Some(note) = adopt_legacy_app_dir(&root) {
+            notes.push(note);
+        }
+        seen.push(root);
+    }
+    notes
+}
+
+fn adopt_legacy_app_dir(root: &Path) -> Option<String> {
+    let legacy = root.parent()?.join(LEGACY_APP_DIR_NAME);
+    if root.exists() || !legacy.is_dir() {
+        return None;
+    }
+    Some(match std::fs::rename(&legacy, root) {
+        Ok(()) => format!("adopted {} as {}", legacy.display(), root.display()),
+        Err(error) => format!(
+            "could not adopt {} as {}: {error}",
+            legacy.display(),
+            root.display()
+        ),
+    })
+}
 
 /// Maple's public OpenSecret project id. The backend rejects unknown
 /// client ids, so this must match the registered project.
@@ -2571,5 +2609,56 @@ mod tests {
             next_integration_setup_settings_url(&macos_permissions(true, true)),
             None
         );
+    }
+}
+
+#[cfg(test)]
+mod app_dir_tests {
+    use super::{APP_DIR_NAME, LEGACY_APP_DIR_NAME, adopt_legacy_app_dir};
+
+    #[test]
+    fn legacy_app_dir_is_adopted_only_when_the_current_one_is_absent() {
+        let base = std::env::temp_dir().join(format!(
+            "maple-agent-adopt-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::UNIX_EPOCH
+                .elapsed()
+                .map(|d| d.as_nanos())
+                .unwrap_or_default()
+        ));
+        let legacy = base.join(LEGACY_APP_DIR_NAME);
+        let root = base.join(APP_DIR_NAME);
+        std::fs::create_dir_all(legacy.join("logs")).unwrap();
+        std::fs::write(legacy.join("auth.json"), "saved").unwrap();
+
+        let note = adopt_legacy_app_dir(&root).expect("first start adopts the legacy dir");
+        assert!(note.starts_with("adopted "), "{note}");
+        assert_eq!(
+            std::fs::read_to_string(root.join("auth.json")).unwrap(),
+            "saved"
+        );
+        assert!(root.join("logs").is_dir());
+        assert!(!legacy.exists());
+
+        // Nothing to do once the current directory exists.
+        assert_eq!(adopt_legacy_app_dir(&root), None);
+
+        // A legacy directory that reappears next to a current one is left alone.
+        std::fs::create_dir_all(&legacy).unwrap();
+        std::fs::write(legacy.join("auth.json"), "stale").unwrap();
+        assert_eq!(adopt_legacy_app_dir(&root), None);
+        assert_eq!(
+            std::fs::read_to_string(root.join("auth.json")).unwrap(),
+            "saved"
+        );
+        assert!(legacy.join("auth.json").is_file());
+
+        // No legacy directory: nothing happens and nothing is created.
+        let fresh = base.join("fresh").join(APP_DIR_NAME);
+        std::fs::create_dir_all(fresh.parent().unwrap()).unwrap();
+        assert_eq!(adopt_legacy_app_dir(&fresh), None);
+        assert!(!fresh.exists());
+
+        std::fs::remove_dir_all(&base).unwrap();
     }
 }

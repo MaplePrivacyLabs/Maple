@@ -60,7 +60,7 @@ const ACP_SESSION_CLOSE_TIMEOUT: std::time::Duration = std::time::Duration::from
 
 /// Serve ACP on this process's stdin and stdout for one signed-in account.
 ///
-/// `maple-gpui acp` calls this after it started the agent runtime. The
+/// `maple-agent acp` calls this after it started the agent runtime. The
 /// editor that spawned the process owns the connection: when its stdin
 /// closes, every open session is cleaned up and the call returns. The
 /// bridge environment (Buzz credentials and `PATH`) is read from this

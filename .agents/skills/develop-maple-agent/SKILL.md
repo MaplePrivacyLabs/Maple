@@ -7,8 +7,8 @@ description: Develop the GPUI Maple Agent desktop-v2 prototype, transport-neutra
 
 Read root `AGENTS.md`, `apps/maple-agent/AGENTS.md` (the component's
 `CLAUDE.md`), its README, and the affected source and tests. The component
-retains the internal `maple-gpui` Cargo package/executable; that name does not
-identify an arbitrary running development instance.
+builds the `maple-agent-app` Cargo package into the `maple-agent` executable;
+that name does not identify an arbitrary running development instance.
 
 `app/src/backend.rs` adapts the transport-neutral runtime under
 `crates/maple-agent/` to GPUI. Keep window/UI concerns in `app`, and shared
@@ -64,7 +64,7 @@ bundle path. Managed debug bundles record only public service configuration
 and both XDG roots in `LSEnvironment`, so GUI launches preserve isolation;
 Missing roots fail packaging. The default signing identity is ad hoc; this
 proves local package startup, not official distribution signing or TCC grants. Track and stop only
-the process started by the current task. Never kill all `maple-gpui` processes.
+the process started by the current task. Never kill all `maple-agent` processes.
 
 Shared Cargo intermediates belong to other worktrees too. Preserve inherited
 build settings; use only this component's `just clean-local` for authorized

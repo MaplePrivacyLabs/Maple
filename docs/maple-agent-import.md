@@ -28,8 +28,9 @@ preserves upstream history rather than flattening it into a squash commit.
   consuming the local `maple-proxy` library. Local SDK links remain supported
   by the [consumer version policy](sdk-publishing.md#consumer-version-policy);
   [SDK publication](sdk-publishing.md) has its own protected manual workflow.
-- Keep the GPUI component's Cargo/Nix environment and internal `maple-gpui`
-  binary name. Root commands, CI, and agent guidance route to the component.
+- Keep the GPUI component's Cargo/Nix environment and, at import time, its
+  internal `maple-gpui` binary name (since renamed to package `maple-agent-app`,
+  executable `maple-agent`). Root commands, CI, and agent guidance route to the component.
   Linux exposes pure Nix packages; macOS uses the Nix development shell plus
   full Xcode, because the pinned pure Swift/SDK combination cannot build CUA.
 - Root CI replaces the inactive nested workflows. PR builds use read-only

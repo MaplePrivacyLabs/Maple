@@ -578,7 +578,7 @@ fn is_unprompted_acp_session(session: &Session) -> bool {
 }
 
 /// How long a zero-message ACP task may sit before the desktop runtime
-/// treats it as stranded. A live `maple-gpui acp` process creates its
+/// treats it as stranded. A live `maple-agent acp` process creates its
 /// provisional row moments before the first prompt; only rows well past
 /// that window are crash leftovers.
 const UNPROMPTED_ACP_SESSION_SWEEP_AGE: chrono::Duration = chrono::Duration::minutes(10);

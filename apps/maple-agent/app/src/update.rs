@@ -77,7 +77,7 @@ pub async fn check() -> Option<UpdateInfo> {
     let repo = repo()?;
     let current = Version::parse(env!("CARGO_PKG_VERSION")).ok()?;
     let client = reqwest::Client::builder()
-        .user_agent(concat!("maple-gpui/", env!("CARGO_PKG_VERSION")))
+        .user_agent(concat!("maple-agent/", env!("CARGO_PKG_VERSION")))
         // A moved repository must be explicitly configured, not silently
         // followed to a different release source.
         .redirect(reqwest::redirect::Policy::none())

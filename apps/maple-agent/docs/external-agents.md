@@ -151,7 +151,7 @@ sleeping child for descendant cleanup; they need no installed `sleep` program
 or Claude account. On Linux, the ignored `native_question_card_fixture` app
 test mounts the real chat screen with multi-select and single-select questions
 for interactive checks on a private desktop. Build it with `cargo test -p
-maple-gpui native_question_card_fixture --no-run` through the component build
+maple-agent-app native_question_card_fixture --no-run` through the component build
 environment, then launch the reported test binary on the private display with
 `native_question_card_fixture --ignored --nocapture --test-threads=1` and
 isolated XDG directories. It supplies fixture questions without authenticating
