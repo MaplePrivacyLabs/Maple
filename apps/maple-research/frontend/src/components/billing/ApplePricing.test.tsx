@@ -63,9 +63,11 @@ describe("Apple pricing interactions", () => {
     if (renderer) act(() => renderer?.unmount());
     renderer = null;
   });
-  function mount(input: Props) {
+  function mount(input: Props, scrollIntoView = mock(() => {})) {
     act(() => {
-      renderer = create(<ApplePricing {...input} />);
+      renderer = create(<ApplePricing {...input} />, {
+        createNodeMock: (element) => (element.type === "p" ? { scrollIntoView } : null)
+      });
     });
   }
   function button(label: string) {
@@ -102,6 +104,34 @@ describe("Apple pricing interactions", () => {
     expect(input.retry).toHaveBeenCalledTimes(1);
     expect(input.manageApple).toHaveBeenCalledTimes(1);
     expect(input.purchase).not.toHaveBeenCalled();
+  });
+  test("explicit restore errors and successes are brought into view, with accurate failure wording", async () => {
+    const input = props();
+    const scrollIntoView = mock(() => {});
+    input.restore = mock(async () => {
+      throw new Error("sync_failed");
+    });
+    mount(input, scrollIntoView);
+    expect(scrollIntoView).not.toHaveBeenCalled();
+    await click("Restore purchases");
+    expect(text(renderer!.root)).toContain("Purchases could not be restored");
+    expect(text(renderer!.root.findByProps({ role: "alert" }))).not.toContain("cancelled");
+    expect(text(renderer!.root)).not.toContain("Your purchase could not be confirmed");
+    expect(scrollIntoView).toHaveBeenCalledWith({ block: "nearest" });
+    expect(scrollIntoView).toHaveBeenCalledTimes(1);
+    act(() => renderer!.update(<ApplePricing {...input} restore={async () => []} />));
+    await click("Restore purchases");
+    expect(text(renderer!.root)).toContain("No purchases were found");
+    expect(scrollIntoView).toHaveBeenCalledTimes(2);
+  });
+  test("background recovery notifications do not scroll the paywall", () => {
+    const input = props();
+    const scrollIntoView = mock(() => {});
+    mount(input, scrollIntoView);
+    act(() => renderer!.update(<ApplePricing {...input} recoveryError="recovery failed" />));
+    expect(text(renderer!.root)).toContain("Some purchases still need confirmation");
+    act(() => renderer!.update(<ApplePricing {...input} recoveryError={null} />));
+    expect(scrollIntoView).not.toHaveBeenCalled();
   });
   test("missing flag and unknown or failed status cannot start a purchase", () => {
     for (const override of [

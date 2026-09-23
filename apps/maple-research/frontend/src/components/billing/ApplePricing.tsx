@@ -43,6 +43,7 @@ export function ApplePricing(props: ApplePricingProps) {
   const [operation, setOperation] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const feedbackRef = useRef<HTMLParagraphElement>(null);
   const [pendingPlan, setPendingPlan] = useState<ApplePlan | null>(null);
   const operationLock = useRef(false);
   const active = useRef(true);
@@ -58,6 +59,11 @@ export function ApplePricing(props: ApplePricingProps) {
       lifetime.current = generation + 1;
     };
   }, []);
+  useEffect(() => {
+    // Restore/management controls can be below the fold. Bring only an explicit
+    // action's result into view; background recovery updates must not move the page.
+    if (message || error) feedbackRef.current?.scrollIntoView({ block: "nearest" });
+  }, [message, error]);
 
   const conflict = applePurchaseConflict(props.status);
   const working = props.busy || operation !== null;
@@ -86,7 +92,9 @@ export function ApplePricing(props: ApplePricingProps) {
               ? "The Apple license agreement could not be opened. Please try again."
               : action === "manage"
                 ? "Apple subscription management could not be opened. You can also manage subscriptions in your device's Settings."
-                : "Your purchase could not be confirmed. Do not purchase again; use Retry purchases when connected."
+                : action === "restore"
+                  ? "Purchases could not be restored. Try Restore purchases again and complete Apple's sign-in prompt if asked."
+                  : "Your purchase could not be confirmed. Do not purchase again; use Retry purchases when connected."
         );
       }
     } finally {
@@ -157,13 +165,17 @@ export function ApplePricing(props: ApplePricingProps) {
         </p>
       )}
       {(error || props.recoveryError) && (
-        <p role="alert" className="rounded-lg border border-destructive/40 p-4 text-sm">
+        <p
+          ref={error ? feedbackRef : undefined}
+          role="alert"
+          className="rounded-lg border border-destructive/40 p-4 text-sm"
+        >
           {error ??
             "Some purchases still need confirmation. Retry purchases when connected; do not buy again."}
         </p>
       )}
       {message && (
-        <p role="status" className="rounded-lg border p-4 text-sm">
+        <p ref={feedbackRef} role="status" className="rounded-lg border p-4 text-sm">
           {message}
         </p>
       )}
