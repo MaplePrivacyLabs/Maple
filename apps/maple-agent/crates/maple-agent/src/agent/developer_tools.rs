@@ -3615,7 +3615,7 @@ mod tests {
         )
         .unwrap();
         let provider = goose::providers::openai::OpenAiProvider::new(api_client);
-        let model_config = side_model_config(
+        let mut model_config = side_model_config(
             provider.get_name(),
             IMAGE_DESCRIPTION_MODEL,
             Some(thinking_disabled_request_params()),
@@ -3623,6 +3623,7 @@ mod tests {
             IMAGE_DESCRIPTION_MAX_TOKENS,
         )
         .unwrap();
+        model_config.supports_vision = Some(true);
         let messages = [Message::user()
             .with_text(contextual_image_prompt(
                 "icon.png",

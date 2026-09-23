@@ -23,8 +23,8 @@ once_cell = { workspace = true }
 http = { workspace = true }
 reqwest = { workspace = true }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
-goose = { git = "https://github.com/AnthonyRonning/goose.git", rev = "58b05d7ff794d31a1bb01f642ff485f2feea52cb", package = "goose", default-features = false }
-goose-providers = { git = "https://github.com/AnthonyRonning/goose.git", rev = "58b05d7ff794d31a1bb01f642ff485f2feea52cb", package = "goose-providers", default-features = false }
+goose = { git = "https://github.com/AnthonyRonning/goose.git", rev = "38e965550cf8db3a101edddd0874ac9ed8dedfd8", package = "goose", default-features = false }
+goose-providers = { git = "https://github.com/AnthonyRonning/goose.git", rev = "38e965550cf8db3a101edddd0874ac9ed8dedfd8", package = "goose-providers", default-features = false }
 maple-sdk = { workspace = true }
 maple-proxy = { workspace = true }
 rand = "0.8.6"

@@ -8594,7 +8594,10 @@ async fn install_maple_provider_config<T>(
 where
     T: provider::MapleInferenceTransport + 'static,
 {
-    let provider = Arc::new(MapleProvider::new(Arc::clone(transport)));
+    let provider = Arc::new(
+        MapleProvider::new(Arc::clone(transport))
+            .with_context_limit(&model_config.model_name, model_config.context_limit),
+    );
     agent
         .update_provider(provider, model_config, session_id)
         .await
