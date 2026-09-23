@@ -16,6 +16,7 @@ use maple_agent::agent::{
 };
 
 use crate::ui::icons::icon;
+use crate::ui::popup::{Menu, MenuItem, Placement, Popup};
 use crate::ui::text_input::TextInput;
 
 use crate::backend::AgentBackend;
@@ -124,10 +125,7 @@ pub struct SettingsScreen {
     theme: theme::Preference,
     section: Section,
     /// The multi-value row whose dropdown is open, if any.
-    open_menu: Option<SettingMenu>,
-    /// Highlighted option inside the open dropdown; keyboard picking
-    /// (Application Vim or focus) starts on the saved value.
-    menu_selected: Option<usize>,
+    popup: Popup<SettingsScreen, SettingMenu>,
     account: AccountState,
     billing: BillingState,
     api_keys: ApiKeysState,
@@ -287,8 +285,7 @@ impl SettingsScreen {
             theme: theme::Preference::parse(&settings.theme),
             settings,
             section,
-            open_menu: None,
-            menu_selected: None,
+            popup: Popup::new(|this| &mut this.popup, cx),
             account: AccountState::new(application_vim_enabled, application_focus.clone(), cx),
             billing: BillingState::new(),
             api_keys: ApiKeysState::new(application_vim_enabled, application_focus.clone(), cx),
@@ -742,28 +739,23 @@ impl SettingsScreen {
     }
 
     /// Open or close one row's dropdown. Opening a row closes another
-    /// open one; the highlight starts on the saved value so activating
-    /// twice keeps it.
+    /// open one. Like a native popup button, the menu opens on the saved
+    /// value.
     pub(super) fn toggle_setting_menu(&mut self, menu: SettingMenu, cx: &mut Context<Self>) {
-        if self.open_menu == Some(menu) {
-            self.close_setting_menu(cx);
+        if self.popup.is_open(&menu) {
+            self.popup.close(cx);
         } else {
-            self.open_menu = Some(menu);
-            self.menu_selected = Some(
-                self.menu_options(menu)
-                    .iter()
-                    .position(|option| option.current)
-                    .unwrap_or(0),
-            );
-            cx.notify();
+            let current = self
+                .menu_options(menu)
+                .iter()
+                .position(|option| option.current)
+                .unwrap_or(0);
+            self.popup.open_at_row(menu, Some(current), cx);
         }
     }
 
     pub(super) fn close_setting_menu(&mut self, cx: &mut Context<Self>) {
-        if self.open_menu.take().is_some() {
-            self.menu_selected = None;
-            cx.notify();
-        }
+        self.popup.close(cx);
     }
 
     /// The choices a dropdown offers, in display order. Render and pick
@@ -996,21 +988,6 @@ impl SettingsScreen {
         self.close_setting_menu(cx);
     }
 
-    /// Move the dropdown highlight for Application Vim's j/k, wrapping
-    /// around the list the way dropdown menus do.
-    pub(super) fn move_setting_menu_selection(&mut self, direction: isize, count: usize) {
-        let Some(menu) = self.open_menu else {
-            return;
-        };
-        let len = self.menu_options(menu).len();
-        if len == 0 {
-            return;
-        }
-        let current = self.menu_selected.unwrap_or(0) as isize;
-        let next = (current + direction * count.max(1) as isize).rem_euclid(len as isize);
-        self.menu_selected = Some(next as usize);
-    }
-
     fn toggle_web_default(&mut self, cx: &mut Context<Self>) {
         let next = !self.settings.default_web_enabled;
         self.edit_setting(move |settings| settings.default_web_enabled = next, cx);
@@ -1079,10 +1056,43 @@ impl SettingsScreen {
         menu: SettingMenu,
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<Div> {
-        let open = self.open_menu == Some(menu);
-        let highlighted = self.menu_selected;
-        let options = self.menu_options(menu);
-        let mut row = widgets::card_row()
+        let dropdown = self.popup.is_open(&menu).then(|| {
+            let options = self.menu_options(menu);
+            let dropdown = Menu::new(
+                gpui::SharedString::from(format!("setting-menu-{}", menu.id())),
+                px(260.),
+            )
+            .label(title.to_string())
+            .max_height(px(320.))
+            .application_vim(self.settings.application_vim_enabled)
+            .items(options.into_iter().enumerate().map(|(index, option)| {
+                let item = MenuItem::new(
+                    gpui::SharedString::from(format!("setting-menu-{}-{index}", menu.id())),
+                    option.label,
+                    move |this: &mut Self, _: &mut Window, cx: &mut Context<Self>| {
+                        this.pick_setting_option(menu, index, cx);
+                    },
+                )
+                .current(option.current);
+                // Each font option previews itself.
+                match crate::ui::typography::ChatFontFamily::ALL.get(index) {
+                    Some(&family) if menu == SettingMenu::ChatFont => {
+                        item.style(move |row| crate::ui::typography::with_family(row, family))
+                    }
+                    _ => item,
+                }
+            }));
+            self.popup.render(dropdown, Placement::BelowEnd, cx)
+        });
+        let slug = title.to_lowercase().replace(' ', "-");
+        let button =
+            widgets::secondary_button(gpui::SharedString::from(format!("setting-value-{slug}")))
+                .debug_selector(move || format!("setting-value-{slug}"))
+                .py_1p5()
+                .gap_1()
+                .child(self.menu_value_label(menu))
+                .child(icon("chevron-down", px(12.), theme::text_muted()));
+        widgets::card_row()
             .id(setting_row_id(title))
             .flex()
             .items_center()
@@ -1090,62 +1100,14 @@ impl SettingsScreen {
             .gap_4()
             .child(setting_copy(title, description))
             .child(
-                widgets::secondary_button(gpui::SharedString::from(format!(
-                    "setting-value-{}",
-                    title.to_lowercase().replace(' ', "-")
-                )))
-                .flex_none()
-                .py_1p5()
-                .gap_1()
-                .on_click(cx.listener(move |this, _event, _window, cx| {
-                    this.toggle_setting_menu(menu, cx);
-                }))
-                .child(self.menu_value_label(menu))
-                .child(icon("chevron-down", px(12.), theme::text_muted())),
-            );
-        if open {
-            let mut panel = widgets::popup_panel(
-                gpui::SharedString::from(format!("setting-menu-{}", menu.id())),
-                px(260.),
+                div()
+                    .relative()
+                    .flex_none()
+                    .child(self.popup.trigger(menu, button, cx, move |this, _, cx| {
+                        this.toggle_setting_menu(menu, cx)
+                    }))
+                    .children(dropdown),
             )
-            .absolute()
-            .top(px(42.))
-            .right_0()
-            .max_h(px(320.))
-            .overflow_y_scroll()
-            .on_mouse_down_out(cx.listener(|this, _event, _window, cx| {
-                this.close_setting_menu(cx);
-            }));
-            for (index, option) in options.iter().enumerate() {
-                let selected = highlighted == Some(index);
-                let mut option_row = widgets::menu_row(
-                    gpui::SharedString::from(format!("setting-menu-{}-{index}", menu.id())),
-                    true,
-                )
-                .flex()
-                .items_center()
-                .justify_between()
-                .gap_2()
-                .when(selected, |row| {
-                    row.bg(gpui::rgb(theme::bg_sidebar_row_selected()))
-                })
-                .on_click(cx.listener(move |this, _event, _window, cx| {
-                    this.pick_setting_option(menu, index, cx);
-                }))
-                .child(option.label.clone())
-                .when(option.current, |row| {
-                    row.child(icon("check", px(14.), theme::accent()))
-                });
-                if menu == SettingMenu::ChatFont
-                    && let Some(family) = crate::ui::typography::ChatFontFamily::ALL.get(index)
-                {
-                    option_row = crate::ui::typography::with_family(option_row, *family);
-                }
-                panel = panel.child(option_row);
-            }
-            row = row.child(gpui::deferred(panel));
-        }
-        row
     }
 
     fn toggle_reduce_motion(&mut self, cx: &mut Context<Self>) {
@@ -1376,6 +1338,9 @@ fn merge_shortcut_overrides(settings: &mut AppSettings, shortcut_overrides: Shor
 
 impl Render for SettingsScreen {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // First, so focus requested below wins over a dropdown handing it
+        // back.
+        self.popup.sync_focus(window, cx);
         if self.application_focus_pending {
             self.application_focus_pending = false;
             if self.settings.application_vim_enabled {
