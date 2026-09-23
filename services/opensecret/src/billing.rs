@@ -81,8 +81,8 @@ pub(crate) enum AccountDeletionError {
     Timeout,
     #[error("transport")]
     Transport,
-    #[error("http_status")]
-    HttpStatus,
+    #[error("http_status_{0}")]
+    HttpStatus(u16),
     #[error("invalid_response")]
     InvalidResponse,
 }
@@ -139,7 +139,7 @@ impl BillingClient {
                 .await
                 .map_err(|_| AccountDeletionError::Transport)?;
             if response.status() != reqwest::StatusCode::OK {
-                return Err(AccountDeletionError::HttpStatus);
+                return Err(AccountDeletionError::HttpStatus(response.status().as_u16()));
             }
             let mut body = Vec::new();
             while let Some(chunk) = response
@@ -440,11 +440,11 @@ mod tests {
                 AccountDeletionError::InvalidResponse,
             ),
         ];
-        for status in [202, 204, 401, 403, 409, 429, 500, 503] {
+        for status in [202, 204, 401, 403, 404, 409, 429, 500, 503] {
             cases.push((
                 status,
                 "sensitive-provider-error".into(),
-                AccountDeletionError::HttpStatus,
+                AccountDeletionError::HttpStatus(status),
             ));
         }
         for (status, body, expected) in cases {
@@ -463,6 +463,9 @@ mod tests {
             let error = client.prepare_account_deletion(user_id).await.unwrap_err();
             assert_eq!(error, expected);
             assert!(!error.to_string().contains("sensitive-provider-error"));
+            if status != 200 {
+                assert_eq!(error.to_string(), format!("http_status_{status}"));
+            }
             assert_eq!(calls.load(Ordering::SeqCst), 1);
             server.abort();
         }
@@ -490,7 +493,7 @@ mod tests {
         let client = BillingClient::new("synthetic-admin-key".into(), url);
         assert_eq!(
             client.prepare_account_deletion(Uuid::new_v4()).await,
-            Err(AccountDeletionError::HttpStatus)
+            Err(AccountDeletionError::HttpStatus(307))
         );
         assert!(matches!(
             client.check_usage(Uuid::new_v4(), false).await,

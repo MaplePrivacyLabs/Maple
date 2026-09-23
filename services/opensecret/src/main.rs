@@ -2901,7 +2901,7 @@ impl AppState {
                 // Billing owns provider mapping, already-cancelled, and no-plan logic.
                 if let Some(billing) = &self.billing_client {
                     if let Err(error) = billing.prepare_account_deletion(user_id).await {
-                        warn!(reason = %error, "Billing cleanup blocked account deletion");
+                        warn!(%user_id, reason = %error, "Billing cleanup blocked account deletion");
                         return Err(Error::BillingCleanupUnavailable);
                     }
                 }
