@@ -1,11 +1,31 @@
 #!/usr/bin/env bash
+set +x
+set +a
 set -euo pipefail
+
+# Keep signing inputs out of dependency, frontend, and unsigned-build children.
+# These shell variables are deliberately not exported, including when a caller
+# has already exported a variable with one of these internal names.
+ios_signing_issuer="${APPLE_API_ISSUER:-}"
+ios_signing_key_id="${APPLE_API_KEY:-}"
+ios_signing_private_key="${APPLE_API_PRIVATE_KEY:-}"
+ios_signing_key_path="${APPLE_API_KEY_PATH:-}"
+ios_signing_team="${APPLE_DEVELOPMENT_TEAM:-}"
+export -n ios_signing_issuer ios_signing_key_id ios_signing_private_key ios_signing_key_path ios_signing_team
+unset APPLE_API_ISSUER APPLE_API_KEY APPLE_API_PRIVATE_KEY APPLE_API_KEY_PATH APPLE_DEVELOPMENT_TEAM APPLE_TEAM_ID
 
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_common.sh"
 source "${SCRIPT_DIR}/ios-variant.sh"
 
 # Fail on unknown variants before dependency installation or signing setup.
 configure_ios_variant
+
+if [ -z "${ios_signing_issuer}" ] || [ -z "${ios_signing_key_id}" ] || \
+  { [ -z "${ios_signing_key_path}" ] && [ -z "${ios_signing_private_key}" ]; } || \
+  [ -z "${ios_signing_team}" ]; then
+  echo "iOS release signing variables are required: APPLE_API_ISSUER, APPLE_API_KEY, APPLE_API_KEY_PATH or APPLE_API_PRIVATE_KEY, APPLE_DEVELOPMENT_TEAM." >&2
+  exit 1
+fi
 
 print_source_provenance
 verify_rust_lockfile
@@ -28,32 +48,38 @@ install_frontend_deps
 configure_reproducible_build_metadata
 build_frontend_dist
 
-if [ -n "${APPLE_API_PRIVATE_KEY:-}" ] && [ -n "${APPLE_API_KEY:-}" ] && [ -z "${APPLE_API_KEY_PATH:-}" ]; then
-  mkdir -p "${HOME}/.private_keys"
-  APPLE_API_KEY_PATH="${HOME}/.private_keys/AuthKey_${APPLE_API_KEY}.p8"
-  decode_base64_string_to_file "${APPLE_API_PRIVATE_KEY}" "${APPLE_API_KEY_PATH}"
-  chmod 600 "${APPLE_API_KEY_PATH}"
-  export APPLE_API_KEY_PATH
-fi
-
-if [ -z "${APPLE_API_ISSUER:-}" ] || [ -z "${APPLE_API_KEY:-}" ] || [ -z "${APPLE_API_KEY_PATH:-}" ] || [ -z "${APPLE_DEVELOPMENT_TEAM:-}" ]; then
-  echo "iOS release signing variables are required: APPLE_API_ISSUER, APPLE_API_KEY, APPLE_API_KEY_PATH or APPLE_API_PRIVATE_KEY, APPLE_DEVELOPMENT_TEAM." >&2
-  exit 1
-fi
-
 ios_project_state_dir=""
-restore_ios_build_state() {
-  if [ -n "${ios_project_state_dir}" ] && [ -d "${ios_project_state_dir}" ]; then
-    python3 "${SCRIPT_DIR}/ios-build-profile.py" restore --state-dir "${ios_project_state_dir}"
-    rm -rf "${ios_project_state_dir}"
+ios_signing_owned_dir=""
+remove_ios_signing_key() {
+  # A supplied APPLE_API_KEY_PATH belongs to the caller. Never modify it.
+  if [ -n "${ios_signing_owned_dir}" ]; then
+    rm -rf -- "${ios_signing_owned_dir}" || return $?
+    ios_signing_owned_dir=""
   fi
 }
 
+cleanup_ios_release() {
+  local status=$?
+  trap - EXIT
+  # Key cleanup must run even when project restoration fails.
+  remove_ios_signing_key || status=1
+  if [ -n "${ios_project_state_dir}" ] && [ -d "${ios_project_state_dir}" ]; then
+    if python3 "${SCRIPT_DIR}/ios-build-profile.py" restore --state-dir "${ios_project_state_dir}"; then
+      rm -rf -- "${ios_project_state_dir}" || status=1
+    else
+      # Preserve the snapshot so an operator can retry a failed restoration.
+      status=1
+    fi
+  fi
+  exit "${status}"
+}
+
 cd "${TAURI_DIR}"
-ios_project_state_dir="$(mktemp -d)"
-trap restore_ios_build_state EXIT
+trap cleanup_ios_release EXIT
 trap 'exit 130' INT
-trap 'exit 143' TERM HUP
+trap 'exit 143' TERM
+trap 'exit 129' HUP
+ios_project_state_dir="$(mktemp -d "${TMPDIR:-/tmp}/maple-ios-profile.XXXXXX")"
 ios_source_sha="$(git -C "${REPO_ROOT}" rev-parse HEAD)"
 if [ "${MAPLE_IOS_VARIANT}" = "dev" ] && [ -z "${MAPLE_IOS_BUILD_NUMBER:-}" ]; then
   echo "MAPLE_IOS_BUILD_NUMBER is required for a Maple Dev TestFlight build." >&2
@@ -190,7 +216,23 @@ cat "${repro_dir}/ios-release-unsigned-app-canonical.sha256"
 write_ios_canonical_app_file_manifest "${unsigned_app}" "${repro_dir}/ios-release-unsigned-app-canonical-files.sha256"
 
 remove_ios_release_outputs
-build_ios_release --export-method app-store-connect
+if [ -z "${ios_signing_key_path}" ]; then
+  ios_signing_owned_dir="$(umask 077; mktemp -d "${TMPDIR:-/tmp}/maple-ios-signing.XXXXXX")"
+  ios_signing_key_path="${ios_signing_owned_dir}/AuthKey.p8"
+  (umask 077; decode_base64_string_to_file "${ios_signing_private_key}" "${ios_signing_key_path}")
+fi
+unset ios_signing_private_key
+# The signed Tauri archive/export still runs native build code with signing
+# authority. This narrows inheritance; it is not an isolated signing service.
+(
+  export APPLE_API_ISSUER="${ios_signing_issuer}"
+  export APPLE_API_KEY="${ios_signing_key_id}"
+  export APPLE_API_KEY_PATH="${ios_signing_key_path}"
+  export APPLE_DEVELOPMENT_TEAM="${ios_signing_team}"
+  build_ios_release --export-method app-store-connect
+)
+remove_ios_signing_key
+unset ios_signing_issuer ios_signing_key_id ios_signing_key_path ios_signing_team
 
 signed_app="$(find_ios_release_app)"
 if [ -z "${signed_app}" ]; then

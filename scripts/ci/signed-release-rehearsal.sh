@@ -104,6 +104,13 @@ normalize_signing_env_aliases() {
   fi
 }
 
+without_ios_api_credentials() (
+  # The ONNX setup and other platform builds do not need the iOS API key.
+  # Keep APPLE_TEAM_ID: the desktop signer uses that separate input.
+  unset APPLE_API_ISSUER APPLE_API_KEY APPLE_API_PRIVATE_KEY APPLE_API_KEY_PATH APPLE_DEVELOPMENT_TEAM
+  "$@"
+)
+
 run_desktop_rehearsal() {
   local missing=0
 
@@ -134,7 +141,7 @@ run_desktop_rehearsal() {
     return 1
   fi
 
-  "${script_dir}/desktop-release.sh"
+  without_ios_api_credentials "${script_dir}/desktop-release.sh"
 }
 
 run_ios_rehearsal() {
@@ -161,7 +168,7 @@ run_ios_rehearsal() {
   fi
 
   export MAPLE_ENFORCE_IOS_SIGNED_REPRODUCIBILITY="${MAPLE_ENFORCE_IOS_SIGNED_REPRODUCIBILITY:-1}"
-  "${script_dir}/ios-onnxruntime.sh"
+  without_ios_api_credentials "${script_dir}/ios-onnxruntime.sh"
   "${script_dir}/ios-release.sh"
 }
 
@@ -181,7 +188,7 @@ run_android_rehearsal() {
     return 1
   fi
 
-  "${script_dir}/android-release.sh"
+  without_ios_api_credentials "${script_dir}/android-release.sh"
 }
 
 target="${1:-}"
