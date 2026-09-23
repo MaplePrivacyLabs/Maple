@@ -72,7 +72,7 @@ export function ComposerHoverTooltip({
       </TooltipTrigger>
       <TooltipContent
         side="bottom"
-        avoidCollisions={false}
+        collisionPadding={8}
         className="pointer-events-none border-0 bg-[hsl(var(--neutral-900))] text-white"
       >
         {label}
