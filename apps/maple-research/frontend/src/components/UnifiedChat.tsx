@@ -1826,6 +1826,39 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
 
   // Web search toggle state - persisted in localStorage, billing-aware initial default
   const [isWebSearchEnabled, setIsWebSearchEnabled] = useState(getInitialWebSearchEnabled);
+  const [hasWebSearchFeedback, setHasWebSearchFeedback] = useState(false);
+  const [isFeedbackDismissed, setIsFeedbackDismissed] = useState(false);
+  const showWebSearchFeedback =
+    hasWebSearchFeedback && !input && !queueEdit && !isRecordingForActive;
+  const placeholderFeedbackClass = `${showWebSearchFeedback ? "placeholder:opacity-0" : ""} ${
+    isFeedbackDismissed
+      ? ""
+      : "placeholder:transition-opacity placeholder:duration-150 placeholder:ease-in-out motion-reduce:placeholder:transition-none"
+  }`;
+  const webSearchFeedbackClass = `pointer-events-none absolute left-4 pr-8 leading-6 text-muted-foreground/60 ${
+    showWebSearchFeedback ? "opacity-100" : "opacity-0"
+  } ${input || queueEdit || isRecordingForActive ? "hidden" : ""} ${
+    isFeedbackDismissed
+      ? ""
+      : "transition-opacity duration-150 ease-in-out motion-reduce:transition-none"
+  }`;
+  const clearWebSearchFeedback = () => {
+    setIsFeedbackDismissed(true);
+    setHasWebSearchFeedback(false);
+  };
+  const toggleWebSearch = () => {
+    const newValue = !isWebSearchEnabled;
+    setIsWebSearchEnabled(newValue);
+    localStorage.setItem("webSearchEnabled", newValue.toString());
+    setIsFeedbackDismissed(false);
+    setHasWebSearchFeedback(true);
+  };
+
+  useEffect(() => {
+    if (!hasWebSearchFeedback) return;
+    const timeout = window.setTimeout(() => setHasWebSearchFeedback(false), 1000);
+    return () => window.clearTimeout(timeout);
+  }, [hasWebSearchFeedback, isWebSearchEnabled]);
 
   // Fullscreen mode for power users - persisted in localStorage
   const [isFullscreen, setIsFullscreen] = useState(() => {
@@ -5931,25 +5964,37 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
                           <Expand className="h-4 w-4" />
                         )}
                       </button>
-                      <Textarea
-                        ref={textareaRef}
-                        value={input}
-                        onChange={(e) => setInput(e.target.value)}
-                        onKeyDown={handleKeyDown}
-                        onBeforeInput={handleBeforeInput}
-                        onPaste={handlePaste}
-                        placeholder={
-                          queueEdit ? QUEUED_MESSAGE_EDIT_PLACEHOLDER : "Message Maple..."
-                        }
-                        disabled={isRecordingForActive}
-                        className={`resize-none border-0 bg-transparent pl-4 pr-8 text-base leading-6 focus-visible:ring-0 focus-visible:ring-offset-0 placeholder:text-muted-foreground/60 ${
-                          isFullscreen
-                            ? "flex-1 min-h-0 pt-3 pb-2"
-                            : "min-h-[52px] max-h-[200px] pt-3 pb-2"
-                        }`}
-                        rows={isFullscreen ? undefined : 1}
-                        id="message"
-                      />
+                      <div
+                        className={`relative flex min-h-0 flex-col ${isFullscreen ? "flex-1" : ""}`}
+                      >
+                        <Textarea
+                          ref={textareaRef}
+                          value={input}
+                          onFocus={clearWebSearchFeedback}
+                          onPointerDown={clearWebSearchFeedback}
+                          onChange={(e) => setInput(e.target.value)}
+                          onKeyDown={handleKeyDown}
+                          onBeforeInput={handleBeforeInput}
+                          onPaste={handlePaste}
+                          placeholder={
+                            queueEdit ? QUEUED_MESSAGE_EDIT_PLACEHOLDER : "Message Maple..."
+                          }
+                          disabled={isRecordingForActive}
+                          className={`resize-none border-0 bg-transparent pl-4 pr-8 text-base leading-6 focus-visible:ring-0 focus-visible:ring-offset-0 placeholder:text-muted-foreground/60 ${placeholderFeedbackClass} ${
+                            isFullscreen
+                              ? "flex-1 min-h-0 pt-3 pb-2"
+                              : "min-h-[52px] max-h-[200px] pt-3 pb-2"
+                          }`}
+                          rows={isFullscreen ? undefined : 1}
+                          id="message"
+                        />
+                        <span
+                          aria-hidden="true"
+                          className={`top-3 text-base ${webSearchFeedbackClass}`}
+                        >
+                          Web search {isWebSearchEnabled ? "enabled" : "disabled"}
+                        </span>
+                      </div>
 
                       <div className="grid shrink-0 grid-cols-[minmax(0,1fr)_auto] items-end gap-x-2 gap-y-2 px-2 pb-2 pt-1">
                         <div className="flex min-w-0 flex-wrap items-center gap-1.5 sm:gap-2">
@@ -5966,11 +6011,7 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
                             variant="ghost"
                             size="sm"
                             className="h-8 w-8 p-0 text-[hsl(var(--maple-secondary-700))] hover:bg-[hsl(var(--maple-primary-container))] hover:text-[hsl(var(--maple-secondary-700))]"
-                            onClick={() => {
-                              const newValue = !isWebSearchEnabled;
-                              setIsWebSearchEnabled(newValue);
-                              localStorage.setItem("webSearchEnabled", newValue.toString());
-                            }}
+                            onClick={toggleWebSearch}
                             aria-label={
                               isWebSearchEnabled ? "Disable web search" : "Enable web search"
                             }
@@ -6173,19 +6214,31 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
                       onRemove={cancelQueuedMessage}
                       onEdit={editQueuedMessage}
                     />
-                    <Textarea
-                      ref={textareaRef}
-                      value={input}
-                      onChange={(e) => setInput(e.target.value)}
-                      onKeyDown={handleKeyDown}
-                      onBeforeInput={handleBeforeInput}
-                      onPaste={handlePaste}
-                      placeholder={queueEdit ? QUEUED_MESSAGE_EDIT_PLACEHOLDER : "Message Maple..."}
-                      disabled={isRecordingForActive}
-                      className={CHAT_COMPOSER_TEXTAREA_CLASS}
-                      rows={1}
-                      id="message"
-                    />
+                    <div className="relative">
+                      <Textarea
+                        ref={textareaRef}
+                        value={input}
+                        onFocus={clearWebSearchFeedback}
+                        onPointerDown={clearWebSearchFeedback}
+                        onChange={(e) => setInput(e.target.value)}
+                        onKeyDown={handleKeyDown}
+                        onBeforeInput={handleBeforeInput}
+                        onPaste={handlePaste}
+                        placeholder={
+                          queueEdit ? QUEUED_MESSAGE_EDIT_PLACEHOLDER : "Message Maple..."
+                        }
+                        disabled={isRecordingForActive}
+                        className={`${CHAT_COMPOSER_TEXTAREA_CLASS} ${placeholderFeedbackClass}`}
+                        rows={1}
+                        id="message"
+                      />
+                      <span
+                        aria-hidden="true"
+                        className={`top-3.5 text-sm landscape-short:top-2 ${webSearchFeedbackClass}`}
+                      >
+                        Web search {isWebSearchEnabled ? "enabled" : "disabled"}
+                      </span>
+                    </div>
 
                     <div className="grid grid-cols-[minmax(0,1fr)_auto] items-end gap-x-2 gap-y-2 px-2 pb-2 landscape-short:pb-1.5 pt-1">
                       <div className="flex min-w-0 flex-wrap items-center gap-1.5 sm:gap-2">
@@ -6196,11 +6249,7 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
                           variant="ghost"
                           size="sm"
                           className="h-8 w-8 p-0 text-[hsl(var(--maple-secondary-700))] hover:bg-[hsl(var(--maple-primary-container))] hover:text-[hsl(var(--maple-secondary-700))]"
-                          onClick={() => {
-                            const newValue = !isWebSearchEnabled;
-                            setIsWebSearchEnabled(newValue);
-                            localStorage.setItem("webSearchEnabled", newValue.toString());
-                          }}
+                          onClick={toggleWebSearch}
                           aria-label={
                             isWebSearchEnabled ? "Disable web search" : "Enable web search"
                           }
