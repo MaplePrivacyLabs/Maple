@@ -45,6 +45,125 @@ fn test_credential(label: &str) -> &'static str {
 
 #[tokio::test]
 #[ignore = "requires AEAD_TAMPER_TEST_DATABASE_URL pointing at disposable migrated local Postgres"]
+async fn db_account_deletion_keeps_confirmation_on_billing_failure_then_retries() {
+    use axum::{http::StatusCode, routing::post, Json, Router};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+    let database_url = std::env::var("AEAD_TAMPER_TEST_DATABASE_URL")
+        .expect("this test requires disposable migrated Postgres");
+    let mut app_state = build_local_test_app_state(database_url).await;
+    let project = first_active_project(&app_state);
+    let user = app_state
+        .db
+        .create_user(NewUser::new(None, None, project.id))
+        .unwrap();
+    let code = Uuid::new_v4();
+    let secret = "synthetic-account-deletion-confirmation-secret";
+    let encrypted_code = crate::encrypt::encrypt_key_deterministic(
+        &SecretKey::from_slice(&app_state.enclave_key).unwrap(),
+        code.as_bytes(),
+    );
+    let confirmation = app_state
+        .db
+        .create_account_deletion_request(
+            crate::models::account_deletion::NewAccountDeletionRequest::new(
+                user.uuid,
+                project.id,
+                generate_reset_hash(secret.into()),
+                encrypted_code.clone(),
+                24,
+            ),
+        )
+        .unwrap();
+    let ready = Arc::new(AtomicBool::new(false));
+    let calls = Arc::new(AtomicUsize::new(0));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let router = Router::new().route(
+        "/v1/admin/account-deletions",
+        post({
+            let ready = ready.clone();
+            let calls = calls.clone();
+            let db = app_state.db.clone();
+            let encrypted_code = encrypted_code.clone();
+            let user_id = user.uuid;
+            move |headers: axum::http::HeaderMap, Json(body): Json<serde_json::Value>| {
+                let db = db.clone();
+                let encrypted_code = encrypted_code.clone();
+                let ready = ready.clone();
+                let calls = calls.clone();
+                async move {
+                    assert_eq!(headers["x-api-key"], "synthetic-admin-key");
+                    assert_eq!(body, serde_json::json!({ "user_id": user_id }));
+                    calls.fetch_add(1, Ordering::SeqCst);
+                    // Billing must run while the account and confirmation still exist.
+                    assert!(db.get_user_by_uuid(user_id).is_ok());
+                    assert!(db
+                        .get_account_deletion_request_by_user_id_and_code(user_id, encrypted_code)
+                        .unwrap()
+                        .is_some());
+                    if ready.load(Ordering::SeqCst) {
+                        (
+                            StatusCode::OK,
+                            Json(serde_json::json!({ "user_id": user_id, "status": "ready" })),
+                        )
+                    } else {
+                        (
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            Json(serde_json::json!({ "error": "synthetic failure" })),
+                        )
+                    }
+                }
+            }
+        }),
+    );
+    let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    app_state.billing_client = Some(crate::billing::BillingClient::new(
+        "synthetic-admin-key".into(),
+        format!("http://{address}"),
+    ));
+
+    assert!(matches!(
+        app_state
+            .confirm_account_deletion(user.uuid, code.to_string(), "wrong secret".into())
+            .await,
+        Err(Error::InvalidAccountDeletionSecret)
+    ));
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+    assert!(matches!(
+        app_state
+            .confirm_account_deletion(user.uuid, code.to_string(), secret.into())
+            .await,
+        Err(Error::BillingCleanupUnavailable)
+    ));
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    assert!(app_state.db.get_user_by_uuid(user.uuid).unwrap() == user);
+    let retained_confirmation = app_state
+        .db
+        .get_account_deletion_request_by_user_id_and_code(user.uuid, encrypted_code)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        serde_json::to_value(&retained_confirmation).unwrap(),
+        serde_json::to_value(&confirmation).unwrap()
+    );
+
+    ready.store(true, Ordering::SeqCst);
+    app_state
+        .confirm_account_deletion(user.uuid, code.to_string(), secret.into())
+        .await
+        .unwrap();
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
+    assert!(matches!(
+        app_state.db.get_user_by_uuid(user.uuid),
+        Err(DBError::UserNotFound)
+    ));
+    server.abort();
+    let _ = server.await;
+}
+
+#[tokio::test]
+#[ignore = "requires AEAD_TAMPER_TEST_DATABASE_URL pointing at disposable migrated local Postgres"]
 async fn db_password_registration_creates_initial_seed_wrap_and_login_works() {
     let Some(database_url) = std::env::var("AEAD_TAMPER_TEST_DATABASE_URL").ok() else {
         eprintln!("skipping: AEAD_TAMPER_TEST_DATABASE_URL is not set");

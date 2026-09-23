@@ -269,6 +269,9 @@ pub enum Error {
     #[error("Encryption error: {0}")]
     EncryptionError(String),
 
+    #[error("Billing account cleanup unavailable")]
+    BillingCleanupUnavailable,
+
     #[error("Authentication error")]
     AuthenticationError,
 
@@ -377,6 +380,9 @@ pub enum ApiError {
     #[error("Internal server error")]
     InternalServerError,
 
+    #[error("Billing cleanup is unavailable. Cancel your subscription manually, then try deleting your account again. Your account has not been deleted.")]
+    BillingCleanupUnavailable,
+
     #[error("Upstream provider temporarily unavailable")]
     ServiceUnavailable,
 
@@ -471,6 +477,7 @@ impl IntoResponse for ApiError {
             ApiError::Unauthorized => StatusCode::UNAUTHORIZED,
             ApiError::InternalServerError => StatusCode::INTERNAL_SERVER_ERROR,
             ApiError::ServiceUnavailable => StatusCode::SERVICE_UNAVAILABLE,
+            ApiError::BillingCleanupUnavailable => StatusCode::SERVICE_UNAVAILABLE,
             ApiError::ImageDescriptionUnavailable => StatusCode::SERVICE_UNAVAILABLE,
             ApiError::InferenceCapacity { status, .. } => *status,
             ApiError::BadRequest => StatusCode::BAD_REQUEST,
@@ -495,6 +502,7 @@ impl IntoResponse for ApiError {
         };
         let error_code = match &self {
             ApiError::SessionNotFound => Some(SESSION_NOT_FOUND_ERROR_CODE),
+            ApiError::BillingCleanupUnavailable => Some("billing_account_deletion_failed"),
             ApiError::AccessTokenExpired => Some(ACCESS_TOKEN_EXPIRED_ERROR_CODE),
             ApiError::ImageDescriptionUnavailable => Some(IMAGE_DESCRIPTION_UNAVAILABLE_ERROR_CODE),
             ApiError::InferenceCapacity { .. } => Some(INFERENCE_CAPACITY_ERROR_CODE),
@@ -642,6 +650,18 @@ mod api_error_contract_tests {
             Some(IMAGE_DESCRIPTION_UNAVAILABLE_ERROR_CODE),
         )
         .await;
+    }
+
+    #[tokio::test]
+    async fn billing_account_deletion_failure_is_actionable_without_automatic_replay() {
+        let response = ApiError::BillingCleanupUnavailable.into_response();
+        assert!(response.headers().get(CLIENT_REPLAY_HEADER).is_none());
+        assert_error_response(
+            ApiError::BillingCleanupUnavailable,
+            StatusCode::SERVICE_UNAVAILABLE,
+            br#"{"status":503,"message":"Billing cleanup is unavailable. Cancel your subscription manually, then try deleting your account again. Your account has not been deleted."}"#,
+            Some("billing_account_deletion_failed"),
+        ).await;
     }
 
     #[tokio::test]
@@ -2876,8 +2896,15 @@ impl AppState {
                 .ct_eq(deletion_request.hashed_secret.as_bytes())
                 .into()
             {
-                // Secret verification succeeded, proceed with account deletion
-                // Use the transaction-based method for atomicity
+                // Billing is a synchronous prerequisite. Failure leaves the user
+                // and confirmation unchanged so the user can cancel manually/retry.
+                // Billing owns provider mapping, already-cancelled, and no-plan logic.
+                if let Some(billing) = &self.billing_client {
+                    if let Err(error) = billing.prepare_account_deletion(user_id).await {
+                        warn!(reason = %error, "Billing cleanup blocked account deletion");
+                        return Err(Error::BillingCleanupUnavailable);
+                    }
+                }
                 self.db.mark_and_delete_user(&user, &deletion_request)?;
 
                 // Send confirmation email in the background if the user has an email

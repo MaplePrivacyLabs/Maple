@@ -23,6 +23,7 @@ import { useChatRuntimeStore } from "@/contexts/ChatRuntimeContext";
 import { useOpenAI } from "@/ai/useOpenAi";
 import { beginAllChatRuntimeDeletionFence } from "@/services/chatRuntimeDeletionFence";
 import { assertChatAccountCredential } from "@/services/chatAccountCredential";
+import { accountDeletionBillingErrorMessage } from "@/services/accountDeletionError";
 import {
   cancelChatResponseForHistoryDeletion,
   quiesceChatRuntimeRunsForHistoryDeletion,
@@ -155,7 +156,7 @@ export function DeleteAccountSettings() {
       allowProgrammaticUnloadRef.current = true;
       window.location.href = "/";
     } catch (confirmError) {
-      console.error(confirmError);
+      console.error("Account deletion confirmation or local cleanup failed.");
       // If remote deletion did not happen, the authenticated user must be able
       // to start a fresh Agent runtime after this attempt.
       if (!deletionConfirmed) {
@@ -179,7 +180,8 @@ export function DeleteAccountSettings() {
               ? "Local Agent Mode history was cleared, but Maple could not reset its native authentication. Your account was not deleted; please retry."
               : !proxyReset
                 ? "Local Agent Mode history was cleared, but Maple could not reset its proxy credentials. Your account was not deleted; please retry."
-                : "Local Agent Mode history was cleared, but account deletion was not confirmed. Verify the code and retry if you still want to delete your account."
+                : (accountDeletionBillingErrorMessage(confirmError) ??
+                  "Local Agent Mode history was cleared, but account deletion was not confirmed. Verify the code and retry if you still want to delete your account.")
       );
       setIsLoading(false);
     } finally {
