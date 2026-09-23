@@ -101,7 +101,6 @@ struct AccountDeletionResponse {
 #[derive(Clone)]
 pub struct BillingClient {
     client: Client,
-    account_deletion_client: Client,
     api_key: String,
     base_url: String,
 }
@@ -109,12 +108,11 @@ pub struct BillingClient {
 impl BillingClient {
     pub fn new(api_key: String, base_url: String) -> Self {
         Self {
-            client: crate::http_client::client(),
-            account_deletion_client: crate::http_client::client_builder()
+            client: crate::http_client::client_builder()
                 .redirect(reqwest::redirect::Policy::none())
                 .retry(reqwest::retry::never())
                 .build()
-                .expect("failed to build billing account-deletion HTTP client"),
+                .expect("failed to build billing HTTP client"),
             api_key,
             base_url,
         }
@@ -130,7 +128,7 @@ impl BillingClient {
     ) -> Result<(), AccountDeletionError> {
         tokio::time::timeout(Duration::from_secs(10), async {
             let mut response = self
-                .account_deletion_client
+                .client
                 .post(format!(
                     "{}/v1/admin/account-deletions",
                     self.base_url.trim_end_matches('/')
@@ -471,35 +469,33 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn account_deletion_never_redirects_the_admin_key() {
-        use axum::{http::StatusCode, routing::post};
+    async fn billing_requests_never_redirect_the_admin_key() {
+        use axum::http::StatusCode;
         use std::sync::{
             atomic::{AtomicUsize, Ordering},
             Arc,
         };
         let calls = Arc::new(AtomicUsize::new(0));
         let observed = calls.clone();
-        let (target_url, target) = deletion_server(Router::new().route(
-            "/collect",
-            post(move || {
-                observed.fetch_add(1, Ordering::SeqCst);
-                async { StatusCode::OK }
-            }),
-        ))
+        let (target_url, target) = deletion_server(Router::new().fallback(move || {
+            observed.fetch_add(1, Ordering::SeqCst);
+            async { StatusCode::OK }
+        }))
         .await;
-        let (url, server) = deletion_server(Router::new().route(
-            "/v1/admin/account-deletions",
-            post(move || {
-                let target_url = format!("{target_url}/collect");
-                async move { (StatusCode::TEMPORARY_REDIRECT, [("location", target_url)]) }
-            }),
-        ))
+        let (url, server) = deletion_server(Router::new().fallback(move || {
+            let target_url = format!("{target_url}/collect");
+            async move { (StatusCode::TEMPORARY_REDIRECT, [("location", target_url)]) }
+        }))
         .await;
         let client = BillingClient::new("synthetic-admin-key".into(), url);
         assert_eq!(
             client.prepare_account_deletion(Uuid::new_v4()).await,
             Err(AccountDeletionError::HttpStatus)
         );
+        assert!(matches!(
+            client.check_usage(Uuid::new_v4(), false).await,
+            Err(BillingError::ServiceError(_))
+        ));
         assert_eq!(calls.load(Ordering::SeqCst), 0);
         server.abort();
         target.abort();
