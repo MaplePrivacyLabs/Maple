@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { AlertDestructive } from "@/components/AlertDestructive";
-import { Loader2, Github, Mail, UserCircle } from "lucide-react";
+import { Loader2, Github, KeyRound, Mail, UserCircle } from "lucide-react";
 import { Google } from "@/components/icons/Google";
 import { Apple } from "@/components/icons/Apple";
 import { AuthMain } from "@/components/AuthMain";
@@ -507,26 +507,28 @@ function LoginPage() {
         </div>
         <div className="grid gap-2">
           <Label htmlFor="password">Password</Label>
-          <Input
-            id="password"
-            name="password"
-            type="password"
-            required
-            autoComplete="current-password"
-          />
+          <div className="relative">
+            <Input
+              id="password"
+              name="password"
+              type="password"
+              required
+              autoComplete="current-password"
+              className={canUseApplePasswords ? "pr-10" : undefined}
+            />
+            {canUseApplePasswords && (
+              <button
+                type="button"
+                className="absolute inset-y-0 right-0 flex w-10 items-center justify-center text-muted-foreground hover:text-foreground disabled:pointer-events-none disabled:opacity-40"
+                aria-label="Apple Passwords"
+                disabled={isLoading}
+                onClick={handleApplePassword}
+              >
+                <KeyRound className="h-4 w-4" aria-hidden="true" />
+              </button>
+            )}
+          </div>
         </div>
-        {canUseApplePasswords && (
-          <Button
-            type="button"
-            variant="outline"
-            className="w-full bg-white/40 dark:bg-white/0"
-            disabled={isLoading}
-            onClick={handleApplePassword}
-          >
-            <Apple className="mr-2 h-4 w-4" />
-            Use Apple Passwords
-          </Button>
-        )}
         <Button type="submit" variant="primary" className="w-full" disabled={isLoading}>
           {isLoading ? (
             <>
