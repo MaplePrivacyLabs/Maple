@@ -28,6 +28,13 @@ import { zapritePaidPlanButtonText, zapriteUpgradeTarget } from "@/billing/zapri
 import { isIOS, isAndroid, isMobile, isTauri } from "@/utils/platform";
 import { cn } from "@/utils/utils";
 import packageJson from "../../package.json";
+import { ApplePricingPage } from "@/components/billing/ApplePricingPage";
+import {
+  hasAppleSubscriptionToManage,
+  hasConfirmedBillingStatus
+} from "@/billing/applePricingPolicy";
+import { openAppleSubscriptionManagement } from "@/billing/appleSubscriptionManagement";
+import { assertChatAccountCredential } from "@/services/chatAccountCredential";
 
 // File type constants for upload features
 const SUPPORTED_IMAGE_FORMATS = [".jpg", ".png", ".webp"];
@@ -239,6 +246,12 @@ function PricingFAQ() {
 }
 
 function PricingPage() {
+  // Keep the legacy checkout effects unmounted on iOS, including selected_plan
+  // callbacks. IAP availability never falls back to Stripe or Zaprite checkout.
+  return isIOS() ? <ApplePricingPage /> : <LegacyPricingPage />;
+}
+
+function LegacyPricingPage() {
   const [checkoutError, setCheckoutError] = useState<string>("");
   const [portalError, setPortalError] = useState<string | null>(null);
   const [loadingProductId, setLoadingProductId] = useState<string | null>(null);
@@ -251,6 +264,7 @@ function PricingPage() {
   const os = useOpenSecret();
   const { setBillingStatus } = useBillingState();
   const isLoggedIn = !!os.auth.user;
+  const billingUserId = os.auth.user?.user.id;
   const isGuestUser = os.auth.user?.user.login_method?.toLowerCase() === "guest";
   const { selected_plan } = Route.useSearch();
 
@@ -260,16 +274,28 @@ function PricingPage() {
   const isMobilePlatform = isMobile();
 
   // Fetch billing status if user is logged in
-  const { data: freshBillingStatus, isLoading: isBillingStatusLoading } = useQuery({
-    queryKey: ["billingStatus"],
+  const {
+    data: freshBillingStatus,
+    isLoading: isBillingStatusLoading,
+    isError: isBillingStatusError,
+    refetch: refetchBillingStatus
+  } = useQuery({
+    queryKey: ["billingStatus", billingUserId],
     queryFn: async () => {
       const billingService = getBillingService();
+      assertChatAccountCredential(billingUserId);
       const status = await billingService.getBillingStatus();
+      assertChatAccountCredential(billingUserId);
       setBillingStatus(status);
       return status;
     },
     enabled: isLoggedIn
   });
+  const billingStatusConfirmed = hasConfirmedBillingStatus(
+    freshBillingStatus,
+    isBillingStatusLoading,
+    isBillingStatusError
+  );
 
   // Auto-enable Bitcoin toggle for Zaprite users (except on mobile platforms) and guest users
   useEffect(() => {
@@ -280,12 +306,15 @@ function PricingPage() {
 
   // Always try to fetch portal URL if logged in
   const { data: portalUrl } = useQuery({
-    queryKey: ["portalUrl"],
+    queryKey: ["portalUrl", billingUserId],
     queryFn: async () => {
       if (!isLoggedIn) return null;
       const billingService = getBillingService();
       try {
-        return await billingService.getPortalUrl();
+        assertChatAccountCredential(billingUserId);
+        const url = await billingService.getPortalUrl();
+        assertChatAccountCredential(billingUserId);
+        return url;
       } catch (error) {
         console.error("Error fetching portal URL:", error);
         return null;
@@ -365,6 +394,10 @@ function PricingPage() {
       return "Start Chatting";
     }
 
+    if (!billingStatusConfirmed) return isFreeplan ? "Start Chatting" : "Reload current plan";
+
+    if (hasAppleSubscriptionToManage(freshBillingStatus)) return "Manage with Apple";
+
     const currentPlanName = freshBillingStatus?.product_name?.toLowerCase();
     const isCurrentPlan = currentPlanName === targetPlanName;
 
@@ -426,6 +459,24 @@ function PricingPage() {
     async (productId: string, quantity?: number) => {
       if (!isLoggedIn) {
         navigate({ to: "/signup" });
+        return;
+      }
+
+      if (!billingStatusConfirmed) {
+        setPortalError(
+          "Your current plan could not be checked. Reload it before starting a subscription."
+        );
+        return;
+      }
+
+      // Apple subscriptions are managed by Apple on every platform. Never
+      // create a second paid subscription through the legacy checkout path.
+      if (hasAppleSubscriptionToManage(freshBillingStatus)) {
+        try {
+          await openAppleSubscriptionManagement();
+        } catch {
+          setPortalError("Unable to open Apple subscription management. Please try again.");
+        }
         return;
       }
 
@@ -515,7 +566,9 @@ function PricingPage() {
       os.auth.user?.user.email_verified,
       isGuestUser,
       useBitcoin,
-      isMobilePlatform
+      isMobilePlatform,
+      freshBillingStatus,
+      billingStatusConfirmed
     ]
   );
 
@@ -545,6 +598,19 @@ function PricingPage() {
           return;
         }
         navigate({ to: "/signup" });
+        return;
+      }
+
+      if (!billingStatusConfirmed) {
+        if (isFreeplan) navigate({ to: "/" });
+        else void refetchBillingStatus();
+        return;
+      }
+
+      if (hasAppleSubscriptionToManage(freshBillingStatus)) {
+        void openAppleSubscriptionManagement().catch(() => {
+          setPortalError("Unable to open Apple subscription management. Please try again.");
+        });
         return;
       }
 
@@ -687,7 +753,9 @@ function PricingPage() {
       portalUrl,
       newHandleSubscribe,
       isIOSPlatform,
-      isMobilePlatform
+      isMobilePlatform,
+      billingStatusConfirmed,
+      refetchBillingStatus
     ]
   );
 
@@ -703,6 +771,11 @@ function PricingPage() {
 
   useEffect(() => {
     let isSubscribed = true;
+
+    // A selected_plan callback from an earlier checkout must not launch a new
+    // provider checkout or repeatedly open Apple's management page.
+    if (hasAppleSubscriptionToManage(freshBillingStatus)) return;
+    if (!billingStatusConfirmed) return;
 
     // If user is logged in and there's a selected plan, trigger checkout (except on iOS for paid plans)
     if (isLoggedIn && selected_plan && !isBillingStatusLoading) {
@@ -723,6 +796,8 @@ function PricingPage() {
     products,
     loadingProductId,
     handleButtonClick,
+    freshBillingStatus,
+    billingStatusConfirmed,
     isIOSPlatform
   ]);
 
@@ -793,6 +868,17 @@ function PricingPage() {
         <PricingHero />
 
         {/* Payment Callback Status Messages */}
+        {isLoggedIn && !billingStatusConfirmed && (
+          <div
+            role="alert"
+            className="mx-auto mt-4 flex w-full max-w-7xl flex-wrap items-center justify-between gap-3 rounded-lg border border-maple-warning/35 bg-maple-warning/10 p-4 text-sm"
+          >
+            <p>Your current plan could not be checked. Reload it before starting a subscription.</p>
+            <Button variant="outline" onClick={() => void refetchBillingStatus()}>
+              Reload current plan
+            </Button>
+          </div>
+        )}
         {success && freshBillingStatus?.payment_provider !== "zaprite" && (
           <div className="w-full max-w-7xl mx-auto mt-4 px-4 sm:px-6 lg:px-8">
             <div className="flex items-center gap-3 rounded-lg border border-maple-success/30 bg-maple-success/10 p-4 text-maple-success">

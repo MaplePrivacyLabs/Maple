@@ -11,6 +11,7 @@ import {
 import { AlertTriangle } from "lucide-react";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
+import { isIOS } from "@/utils/platform";
 
 interface GuestSignupWarningDialogProps {
   open: boolean;
@@ -26,6 +27,7 @@ export function GuestSignupWarningDialog({
   const [bitcoinPaymentAgreed, setBitcoinPaymentAgreed] = useState(false);
   const [noSupportAgreed, setNoSupportAgreed] = useState(false);
   const [backupCredentialsAgreed, setBackupCredentialsAgreed] = useState(false);
+  const applePayments = isIOS();
 
   const allAgreed = bitcoinPaymentAgreed && noSupportAgreed && backupCredentialsAgreed;
 
@@ -68,10 +70,24 @@ export function GuestSignupWarningDialog({
                   htmlFor="bitcoin-payment"
                   className="text-sm font-medium leading-relaxed cursor-pointer break-words"
                 >
-                  I understand I{" "}
-                  <strong>MUST pay for a full year in Bitcoin or redeem a subscription pass</strong>
-                  . No credit card, no Stripe, no monthly payment options, and{" "}
-                  <strong>no free trial</strong> are available for anonymous accounts.
+                  {applePayments ? (
+                    <>
+                      I understand that Apple subscriptions are linked to this Maple account.{" "}
+                      <strong>
+                        Restoring an Apple purchase cannot recover a lost Maple Account ID or
+                        password.
+                      </strong>
+                    </>
+                  ) : (
+                    <>
+                      I understand I{" "}
+                      <strong>
+                        MUST pay for a full year in Bitcoin or redeem a subscription pass
+                      </strong>
+                      . No credit card, no Stripe, no monthly payment options, and{" "}
+                      <strong>no free trial</strong> are available for anonymous accounts.
+                    </>
+                  )}
                 </Label>
               </div>
             </div>

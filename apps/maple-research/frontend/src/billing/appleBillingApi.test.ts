@@ -69,7 +69,7 @@ test("fetches the account token with isolated bearer authentication and strips u
   expect(init).toEqual({
     method: "GET",
     headers: { Authorization: `Bearer ${token}`, Accept: "application/json" },
-    signal: request.signal,
+    signal: expect.any(AbortSignal),
     credentials: "omit",
     redirect: "error",
     cache: "no-store",
@@ -98,9 +98,20 @@ test("posts only the signed transaction and retains a different selected provide
         state: "active",
         renews_at: 1760000000,
         manage: "app_store",
-        environment: "Production"
+        environment: "Production",
+        product_id: "cloud.opensecret.maple.pro.monthly",
+        selected: false,
+        auto_renew_enabled: false
       },
-      { provider: "stripe", plan: "Max", state: "active", renews_at: null, manage: "portal" }
+      {
+        provider: "stripe",
+        plan: "Max",
+        state: "active",
+        renews_at: null,
+        manage: "portal",
+        product_id: "max",
+        selected: true
+      }
     ],
     conflict: { other_provider: "stripe", action: "cancel_other" }
   };
@@ -118,7 +129,8 @@ test("posts only the signed transaction and retains a different selected provide
     Accept: "application/json",
     "Content-Type": "application/json"
   });
-  expect(init?.signal).toBe(request.signal);
+  expect(init?.signal).toBeInstanceOf(AbortSignal);
+  expect(init?.signal?.aborted).toBe(false);
   expect(init?.redirect).toBe("error");
   expect(init?.credentials).toBe("omit");
   expect(init?.cache).toBe("no-store");
@@ -221,6 +233,32 @@ test("rejects malformed account tokens and success envelopes", async () => {
     { app_account_token: `{${accountToken}}` }
   ]) {
     expect((await failure(fetchAppleAccountToken(options(async () => json(body))))).code).toBe(
+      "invalid_response"
+    );
+  }
+});
+
+test("validates management selection and renewal fields without dropping unknown renewal state", async () => {
+  const subscription = {
+    provider: "apple",
+    plan: "Pro",
+    state: "active",
+    renews_at: null,
+    manage: "app_store",
+    product_id: "cloud.opensecret.maple.pro.monthly",
+    selected: true,
+    auto_renew_enabled: null
+  };
+  const body = { ...status(), subscriptions: [subscription] };
+  expect(await submit(options(async () => json(body)))).toEqual(body);
+  for (const invalid of [
+    { product_id: 123 },
+    { selected: "true" },
+    { selected: null },
+    { auto_renew_enabled: "false" }
+  ]) {
+    const response = { ...body, subscriptions: [{ ...subscription, ...invalid }] };
+    expect((await failure(submit(options(async () => json(response))))).code).toBe(
       "invalid_response"
     );
   }
@@ -416,4 +454,147 @@ test("network and parsing failures expose only bounded errors and emit no logs",
   } finally {
     for (const log of logs) log.mockRestore();
   }
+});
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((accept, fail) => {
+    resolve = accept;
+    reject = fail;
+  });
+  return { promise, resolve, reject };
+}
+
+test("bounds a transport that ignores abort, discards its late body, and permits a new retry", async () => {
+  const held = deferred<Response>();
+  let transportSignal: AbortSignal | undefined;
+  const request = {
+    ...options(async (_input, init) => {
+      transportSignal = init?.signal ?? undefined;
+      return held.promise;
+    }),
+    timeoutMs: 5
+  };
+  const error = await failure(fetchAppleAccountToken(request));
+  expect(error.code).toBe("unavailable");
+  expect(error.status).toBeNull();
+  expect(transportSignal?.aborted).toBe(true);
+  expect(request.signal.aborted).toBe(false);
+  const lateResponse = json({ app_account_token: accountToken });
+  const readBody = spyOn(lateResponse, "json");
+  held.resolve(lateResponse);
+  await Promise.resolve();
+  await Promise.resolve();
+  expect(readBody).not.toHaveBeenCalled();
+  expect(
+    await fetchAppleAccountToken({
+      ...request,
+      timeoutMs: 1000,
+      fetch: async () => json({ app_account_token: accountToken })
+    })
+  ).toEqual({ app_account_token: accountToken });
+});
+
+test("one deadline includes a body reader that never resolves and observes its late rejection", async () => {
+  const held = deferred<unknown>();
+  const response = json(status());
+  const readBody = spyOn(response, "json").mockImplementation(() => held.promise);
+  const error = await failure(submit({ ...options(async () => response), timeoutMs: 5 }));
+  expect(error.code).toBe("unavailable");
+  expect(readBody).toHaveBeenCalledTimes(1);
+  held.reject(new Error(`${signedTransaction} ${token}`));
+  await Promise.resolve();
+  await Promise.resolve();
+});
+
+test("account disposal immediately interrupts an abort-ignoring transport or body reader", async () => {
+  for (const stage of ["fetch", "body"] as const) {
+    const controller = new AbortController();
+    const started = deferred<void>();
+    const held = deferred<Response>();
+    let transportSignal: AbortSignal | undefined;
+    const response = json(status());
+    spyOn(response, "json").mockImplementation(() => {
+      started.resolve();
+      return new Promise(() => {});
+    });
+    const pending = failure(
+      submit({
+        ...options(async (_input, init) => {
+          transportSignal = init?.signal ?? undefined;
+          if (stage === "fetch") {
+            started.resolve();
+            return held.promise;
+          }
+          return response;
+        }),
+        signal: controller.signal,
+        timeoutMs: 1000
+      })
+    );
+    await started.promise;
+    controller.abort("fixture-private-disposal-reason");
+    const error = await pending;
+    expect(error.code).toBe("aborted");
+    expect(transportSignal?.aborted).toBe(true);
+    expect(String(error)).not.toContain("fixture-private-disposal-reason");
+    if (stage === "fetch") held.reject(new Error("fixture-late-transport-error"));
+    await Promise.resolve();
+  }
+});
+
+test("explicit disposal wins when triggered by the deadline's transport abort", async () => {
+  const controller = new AbortController();
+  const request = {
+    ...options(async (_input, init) => {
+      init?.signal?.addEventListener("abort", () => controller.abort(), { once: true });
+      return new Promise<Response>(() => {});
+    }),
+    signal: controller.signal,
+    timeoutMs: 5
+  };
+  expect((await failure(fetchAppleAccountToken(request))).code).toBe("aborted");
+});
+
+test("cleans up the deadline and parent abort listener on success, HTTP failure, parse failure, and timeout", async () => {
+  for (const stage of ["success", "http", "parse", "timeout", "abort"] as const) {
+    const controller = new AbortController();
+    const added = spyOn(controller.signal, "addEventListener");
+    const removed = spyOn(controller.signal, "removeEventListener");
+    const cleared = spyOn(globalThis, "clearTimeout");
+    try {
+      const operation = fetchAppleAccountToken({
+        ...options(async () => {
+          if (stage === "timeout" || stage === "abort") return new Promise<Response>(() => {});
+          if (stage === "http") return new Response(null, { status: 503 });
+          if (stage === "parse") return new Response("fixture-invalid-json");
+          return json({ app_account_token: accountToken });
+        }),
+        signal: controller.signal,
+        timeoutMs: stage === "timeout" ? 5 : 1000
+      });
+      if (stage === "abort") controller.abort();
+      if (stage === "success") await operation;
+      else await failure(operation);
+      expect(added).toHaveBeenCalledTimes(1);
+      expect(removed).toHaveBeenCalledTimes(1);
+      expect(removed.mock.calls[0]).toEqual(["abort", added.mock.calls[0][1]]);
+      expect(cleared).toHaveBeenCalledTimes(1);
+    } finally {
+      added.mockRestore();
+      removed.mockRestore();
+      cleared.mockRestore();
+    }
+  }
+});
+
+test("cannot disable or extend the HTTP deadline through request configuration", async () => {
+  const fetch = mock(async () => json({ app_account_token: accountToken }));
+  for (const timeoutMs of [0, -1, 0.5, NaN, Infinity, 30_001]) {
+    expect((await failure(fetchAppleAccountToken({ ...options(fetch), timeoutMs }))).code).toBe(
+      "invalid_configuration"
+    );
+  }
+  expect(fetch).not.toHaveBeenCalled();
 });

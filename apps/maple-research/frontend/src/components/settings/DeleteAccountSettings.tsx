@@ -1,3 +1,4 @@
+import { suspendAppleBillingForAccount } from "@/billing/appleBillingLifecycle";
 import { useRef, useState } from "react";
 import { Link, useBlocker } from "@tanstack/react-router";
 import { useQueryClient } from "@tanstack/react-query";
@@ -91,6 +92,7 @@ export function DeleteAccountSettings() {
     setIsLoading(true);
     setError(null);
     const releaseChatFence = beginAllChatRuntimeDeletionFence(runtimeStore);
+    let releaseAppleBilling = () => {};
     let deletionConfirmed = isAccountDeleted;
     let agentDataCleared = cleanupBlockRef.current !== null;
     let proxyReset = false;
@@ -99,6 +101,7 @@ export function DeleteAccountSettings() {
 
     try {
       assertChatAccountCredential(userId);
+      releaseAppleBilling = suspendAppleBillingForAccount(userId);
       await quiesceChatRuntimeRunsForHistoryDeletion({
         store: runtimeStore,
         responseOwnershipClient: openai,
@@ -179,6 +182,9 @@ export function DeleteAccountSettings() {
                 : "Local Agent Mode history was cleared, but account deletion was not confirmed. Verify the code and retry if you still want to delete your account."
       );
       setIsLoading(false);
+    } finally {
+      // Keep purchases fenced if remote deletion succeeded but sign-out failed.
+      if (!deletionConfirmed) releaseAppleBilling();
     }
   };
 

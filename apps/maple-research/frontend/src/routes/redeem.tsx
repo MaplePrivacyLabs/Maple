@@ -1,4 +1,4 @@
-import { createFileRoute, useNavigate } from "@tanstack/react-router";
+import { createFileRoute, redirect, useNavigate } from "@tanstack/react-router";
 import { useState, useEffect } from "react";
 import { useOpenSecret } from "@mapleai/sdk";
 import { TopNav } from "@/components/TopNav";
@@ -10,6 +10,7 @@ import { Loader2, Check, AlertTriangle, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { VerificationModal } from "@/components/VerificationModal";
+import { isIOS } from "@/utils/platform";
 
 type RedeemSearchParams = {
   code?: string;
@@ -478,6 +479,11 @@ function RedeemPage() {
 }
 
 export const Route = createFileRoute("/redeem")({
+  beforeLoad: () => {
+    // Block direct and callback links before pass queries or redemption controls mount.
+    // Existing pass entitlements are still usable; only new redemption is unavailable on iOS.
+    if (isIOS()) throw redirect({ to: "/pricing", replace: true });
+  },
   component: RedeemPage,
   validateSearch: (search: Record<string, unknown>): RedeemSearchParams => ({
     code: typeof search.code === "string" ? search.code : undefined

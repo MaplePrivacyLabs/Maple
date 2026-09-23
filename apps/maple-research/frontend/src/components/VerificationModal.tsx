@@ -1,3 +1,4 @@
+import { suspendAppleBillingForAccount } from "@/billing/appleBillingLifecycle";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -138,9 +139,11 @@ export function VerificationModal() {
       return;
     }
 
+    const releaseAppleBilling = suspendAppleBillingForAccount(userId);
     try {
       operationBlock = await stopAgentRuntimeForUser(userId);
     } catch (error) {
+      releaseAppleBilling();
       console.error("Error stopping Agent Mode:", error);
       releaseChatFence();
       setSignOutError("Maple couldn't stop Agent Mode. Please try logging out again.");
@@ -179,6 +182,7 @@ export function VerificationModal() {
         "Maple couldn't securely reset Agent Mode or finish logging out. Please try again."
       );
     } finally {
+      releaseAppleBilling();
       if (!signedOut) {
         releaseChatFence();
         if (nativeAuthCleared) {

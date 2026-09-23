@@ -297,7 +297,11 @@ describe("authenticated Apple billing session", () => {
     f.advance();
     held.resolve(json(response()));
     await expect(pending).rejects.toBeInstanceOf(AppleBillingSessionChangedError);
-    expect(signal.aborted).toBe(true);
+    // The HTTP response completed before the session noticed the SDK refresh.
+    // Its deadline/parent listener is already released; the old session itself
+    // remains revoked even though that completed transport is detached.
+    expect(signal.aborted).toBe(false);
+    expect(() => old.assertCurrent()).toThrow(AppleBillingSessionChangedError);
     expect(f.finished).toEqual([]);
     expect(f.notifications).toEqual([]);
     const current = f.session();

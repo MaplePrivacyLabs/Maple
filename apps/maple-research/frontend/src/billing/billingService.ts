@@ -1,4 +1,4 @@
-import { OpenSecretContextType } from "@mapleai/sdk";
+import { readNativeUserAuth, type OpenSecretContextType } from "@mapleai/sdk";
 import {
   fetchBillingStatus,
   fetchPortalUrl,
@@ -58,55 +58,183 @@ import type {
 
 const TOKEN_STORAGE_KEY = "maple_billing_token";
 
-class BillingService {
-  private os: OpenSecretContextType;
+/** Credential identity only; never retain the SDK's credentials or cache root. */
+export interface BillingIdentity {
+  apiOrigin: string;
+  principalId: string | null;
+  revision: number;
+}
 
-  constructor(os: OpenSecretContextType) {
+interface BillingOwner extends BillingIdentity {
+  mintToken: OpenSecretContextType["generateThirdPartyToken"];
+  token?: string;
+  tokenRequest?: Promise<string>;
+}
+
+export class BillingSessionChangedError extends Error {
+  constructor() {
+    super("billing_session_changed");
+    this.name = "BillingSessionChangedError";
+  }
+}
+
+export class BillingService {
+  private os: OpenSecretContextType;
+  private owner: BillingOwner | undefined;
+  private readonly readIdentity: () => BillingIdentity;
+
+  constructor(os: OpenSecretContextType, readIdentity?: () => BillingIdentity) {
     this.os = os;
+    this.readIdentity =
+      readIdentity ??
+      (() => {
+        const { apiOrigin, principalId, revision } = readNativeUserAuth(this.os.apiUrl);
+        return { apiOrigin, principalId, revision };
+      });
+    this.removeLegacyToken();
   }
 
   updateOpenSecret(os: OpenSecretContextType): void {
     this.os = os;
-  }
-
-  private async getStoredToken(): Promise<string | null> {
-    return sessionStorage.getItem(TOKEN_STORAGE_KEY);
-  }
-
-  private async generateAndStoreToken(): Promise<string> {
-    const token = await this.os.generateThirdPartyToken(import.meta.env.VITE_MAPLE_BILLING_API_URL);
-    sessionStorage.setItem(TOKEN_STORAGE_KEY, token.token);
-    return token.token;
-  }
-
-  private async executeWithToken<T>(apiCall: (token: string) => Promise<T>): Promise<T> {
-    // Try with stored token first
-    const storedToken = await this.getStoredToken();
-    if (storedToken) {
+    if (this.owner) {
       try {
-        return await apiCall(storedToken);
-      } catch (error) {
-        // If unauthorized or invalid token, try with new token
-        if (
-          error instanceof Error &&
-          (error.message.includes("unauthorized") ||
-            error.message.includes("Unauthorized") ||
-            error.message.includes("Invalid JWT token") ||
-            error.message.includes("401"))
-        ) {
-          // Clear the invalid token
-          this.clearToken();
-          // Generate new token
-          const newToken = await this.generateAndStoreToken();
-          return await apiCall(newToken);
-        }
-        throw error;
+        this.assertOwner(this.owner);
+      } catch {
+        // React may update the context during logout or a credential refresh.
+        // The revoked owner's pending operations fail at their next boundary.
       }
     }
+  }
 
-    // No stored token, generate new one
-    const newToken = await this.generateAndStoreToken();
-    return await apiCall(newToken);
+  private removeLegacyToken(): void {
+    // Older builds persisted a token without an account or credential revision.
+    // Never adopt it. Keeping the replacement in memory also prevents a reload
+    // from accidentally trusting a revision from a previous SDK runtime.
+    try {
+      sessionStorage.removeItem(TOKEN_STORAGE_KEY);
+    } catch {
+      // Disabled browser storage must not prevent in-memory ownership cleanup.
+    }
+  }
+
+  private identity(): BillingIdentity {
+    try {
+      const { apiOrigin, principalId, revision } = this.readIdentity();
+      if (
+        !principalId ||
+        principalId !== this.os.auth.user?.user.id ||
+        apiOrigin !== new URL(this.os.apiUrl).origin ||
+        !Number.isSafeInteger(revision) ||
+        revision < 0
+      ) {
+        throw new BillingSessionChangedError();
+      }
+      return { apiOrigin, principalId, revision };
+    } catch {
+      throw new BillingSessionChangedError();
+    }
+  }
+
+  private matches(owner: BillingOwner, identity: BillingIdentity): boolean {
+    return (
+      owner.apiOrigin === identity.apiOrigin &&
+      owner.principalId === identity.principalId &&
+      owner.revision === identity.revision
+    );
+  }
+
+  private currentOwner(): BillingOwner {
+    let identity: BillingIdentity;
+    try {
+      identity = this.identity();
+    } catch (error) {
+      this.clearToken();
+      throw error;
+    }
+    if (!this.owner || !this.matches(this.owner, identity)) {
+      this.clearToken();
+      this.owner = {
+        ...identity,
+        mintToken: this.os.generateThirdPartyToken.bind(this.os)
+      };
+    }
+    return this.owner;
+  }
+
+  private assertOwner(owner: BillingOwner): void {
+    try {
+      if (this.owner === owner && this.matches(owner, this.identity())) return;
+    } catch {
+      // A failed authority read revokes the owner just like an account change.
+    }
+    if (this.owner === owner) this.clearToken();
+    throw new BillingSessionChangedError();
+  }
+
+  private billingToken(owner: BillingOwner): Promise<string> {
+    this.assertOwner(owner);
+    if (owner.token) return Promise.resolve(owner.token);
+    if (owner.tokenRequest) return owner.tokenRequest;
+    const request = this.generateToken(owner);
+    owner.tokenRequest = request;
+    void request
+      .finally(() => {
+        if (owner.tokenRequest === request) owner.tokenRequest = undefined;
+      })
+      .catch(() => {});
+    return request;
+  }
+
+  private async generateToken(owner: BillingOwner): Promise<string> {
+    this.assertOwner(owner);
+    let result: { token: string };
+    try {
+      result = await owner.mintToken(import.meta.env.VITE_MAPLE_BILLING_API_URL);
+    } catch {
+      this.assertOwner(owner);
+      throw new Error("Billing authentication unavailable");
+    }
+    this.assertOwner(owner);
+    if (typeof result.token !== "string" || !result.token) {
+      throw new Error("Billing authentication unavailable");
+    }
+    owner.token = result.token;
+    return result.token;
+  }
+
+  private async executeWithToken<T>(
+    apiCall: (token: string, assertCurrent: () => void) => Promise<T>
+  ): Promise<T> {
+    const owner = this.currentOwner();
+    let token = await this.billingToken(owner);
+    for (let attempt = 0; attempt < 2; attempt++) {
+      this.assertOwner(owner);
+      try {
+        const result = await apiCall(token, () => this.assertOwner(owner));
+        this.assertOwner(owner);
+        return result;
+      } catch (error) {
+        this.assertOwner(owner);
+        if (
+          attempt !== 0 ||
+          !(error instanceof Error) ||
+          !/unauthorized|Invalid JWT token|401/i.test(error.message)
+        ) {
+          throw error;
+        }
+        // A concurrent request may already have replaced this rejected token.
+        // A late 401 must not clear that replacement or start another mint.
+        if (owner.token === token) owner.token = undefined;
+        token = await this.billingToken(owner);
+      }
+    }
+    throw new Error("Billing authentication unavailable");
+  }
+
+  /** Fence caller-owned effects that happen after an authenticated API result. */
+  captureSessionGuard(): () => void {
+    const owner = this.currentOwner();
+    return () => this.assertOwner(owner);
   }
 
   async getBillingStatus(): Promise<BillingStatus> {
@@ -132,8 +260,8 @@ class BillingService {
     cancelUrl: string,
     quantity?: number
   ): Promise<void> {
-    return this.executeWithToken((token) =>
-      createCheckoutSession(token, email, productId, successUrl, cancelUrl, quantity)
+    return this.executeWithToken((token, assertCurrent) =>
+      createCheckoutSession(token, email, productId, successUrl, cancelUrl, quantity, assertCurrent)
     );
   }
 
@@ -143,13 +271,18 @@ class BillingService {
     successUrl: string,
     quantity?: number
   ): Promise<void> {
-    return this.executeWithToken((token) =>
-      createZapriteCheckoutSession(token, email, productId, successUrl, quantity)
+    return this.executeWithToken((token, assertCurrent) =>
+      createZapriteCheckoutSession(token, email, productId, successUrl, quantity, assertCurrent)
     );
   }
 
   clearToken(): void {
-    sessionStorage.removeItem(TOKEN_STORAGE_KEY);
+    if (this.owner) {
+      this.owner.token = undefined;
+      this.owner.tokenRequest = undefined;
+    }
+    this.owner = undefined;
+    this.removeLegacyToken();
   }
 
   // Team Management Methods

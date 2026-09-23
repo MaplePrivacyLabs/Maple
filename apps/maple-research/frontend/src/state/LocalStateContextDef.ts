@@ -75,7 +75,7 @@ export type ModelState = {
 
 export type BillingState = {
   billingStatus: BillingStatus | null;
-  setBillingStatus: (status: BillingStatus) => void;
+  setBillingStatus: (status: BillingStatus | null) => void;
 };
 
 export type SidebarSearchState = {

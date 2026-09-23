@@ -1,4 +1,4 @@
-import type { BillingStatus } from "./billingApi";
+import type { BillingStatus, BillingSubscription } from "./billingApi";
 
 export interface AppleBillingRequestOptions {
   billingUrl: string;
@@ -7,35 +7,18 @@ export interface AppleBillingRequestOptions {
   fetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
   /** Explicitly enabled only by callers using a local development server. */
   allowInsecureLoopback?: boolean;
+  /** May shorten, but never extend, the 30-second HTTP deadline (including body parsing). */
+  timeoutMs?: number;
 }
 
 export interface AppleAccountTokenResponse {
   app_account_token: string;
 }
 
-export interface AppleSubscriptionHint {
-  provider: string;
-  plan: string;
-  state: string;
-  renews_at: number | null;
-  manage: string;
-  environment?: string;
-}
+export type AppleSubscriptionHint = BillingSubscription;
 
-export type AppleTransactionResponse = Omit<
-  BillingStatus,
-  "payment_provider" | "product_name" | "subscription_status" | "current_period_end"
-> & {
+export type AppleTransactionResponse = BillingStatus & {
   acknowledged_transaction_id: string;
-  payment_provider: BillingStatus["payment_provider"] | "apple";
-  // The existing HTTP status contract permits null labels and numeric timestamps.
-  product_name: string | null;
-  subscription_status: string | null;
-  current_period_end: number | string | null;
-  ios_iap_enabled?: boolean;
-  ios_us_external_link_enabled?: boolean;
-  subscriptions?: AppleSubscriptionHint[];
-  conflict?: { other_provider: string; action: string } | null;
 };
 
 export type AppleBillingErrorCode =
@@ -117,6 +100,55 @@ async function request(
     throw new AppleBillingApiError("invalid_request");
   }
   assertNotAborted(options.signal);
+  const timeoutMs = options.timeoutMs ?? 30_000;
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 30_000) {
+    throw new AppleBillingApiError("invalid_configuration");
+  }
+  const controller = new AbortController();
+  let expired = false;
+  let interrupt!: (error: AppleBillingApiError) => void;
+  const interrupted = new Promise<never>((_resolve, reject) => {
+    interrupt = reject;
+  });
+  const onAbort = () => {
+    controller.abort();
+    interrupt(new AppleBillingApiError("aborted"));
+  };
+  options.signal.addEventListener("abort", onAbort, { once: true });
+  const timer = setTimeout(() => {
+    expired = true;
+    controller.abort();
+    interrupt(new AppleBillingApiError("unavailable"));
+  }, timeoutMs);
+
+  try {
+    // The race also bounds transports/body readers that ignore AbortSignal.
+    // Promise.race observes a losing operation's later rejection, while the
+    // composed signal stops it before reading a late response body.
+    const body = await Promise.race([
+      fetchResponse(options, url, controller.signal, signedTransaction),
+      interrupted
+    ]);
+    assertNotAborted(options.signal);
+    assertNotAborted(controller.signal);
+    return body;
+  } catch (error) {
+    // Explicit account disposal takes precedence over a simultaneous deadline.
+    assertNotAborted(options.signal);
+    if (expired) throw new AppleBillingApiError("unavailable");
+    throw error;
+  } finally {
+    clearTimeout(timer);
+    options.signal.removeEventListener("abort", onAbort);
+  }
+}
+
+async function fetchResponse(
+  options: AppleBillingRequestOptions,
+  url: string,
+  signal: AbortSignal,
+  signedTransaction?: string
+): Promise<unknown> {
   let response: Response;
   try {
     response = await (options.fetch ?? globalThis.fetch)(url, {
@@ -129,17 +161,17 @@ async function request(
       ...(signedTransaction === undefined
         ? {}
         : { body: JSON.stringify({ signed_transaction: signedTransaction }) }),
-      signal: options.signal,
+      signal,
       credentials: "omit",
       redirect: "error",
       cache: "no-store",
       referrerPolicy: "no-referrer"
     });
   } catch {
-    assertNotAborted(options.signal);
+    assertNotAborted(signal);
     throw new AppleBillingApiError("network_error");
   }
-  assertNotAborted(options.signal);
+  assertNotAborted(signal);
   if (
     response.redirected ||
     response.type === "opaqueredirect" ||
@@ -150,10 +182,10 @@ async function request(
   if (!response.ok) throw httpError(response.status);
   try {
     const body: unknown = await response.json();
-    assertNotAborted(options.signal);
+    assertNotAborted(signal);
     return body;
   } catch {
-    assertNotAborted(options.signal);
+    assertNotAborted(signal);
     throw new AppleBillingApiError("invalid_response");
   }
 }
@@ -192,7 +224,12 @@ function subscription(value: unknown): AppleSubscriptionHint {
     state: string(hint.state),
     renews_at: nullable(hint.renews_at, number),
     manage: string(hint.manage),
-    ...(hint.environment === undefined ? {} : { environment: string(hint.environment) })
+    ...(hint.environment === undefined ? {} : { environment: string(hint.environment) }),
+    ...(hint.product_id === undefined ? {} : { product_id: string(hint.product_id) }),
+    ...(hint.selected === undefined ? {} : { selected: boolean(hint.selected) }),
+    ...(hint.auto_renew_enabled === undefined
+      ? {}
+      : { auto_renew_enabled: nullable(hint.auto_renew_enabled, boolean) })
   };
 }
 
