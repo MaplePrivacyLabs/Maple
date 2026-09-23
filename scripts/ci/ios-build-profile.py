@@ -261,14 +261,17 @@ def verify_ipa(ipa, variant, source_sha, build_number, *, auth_origin=None):
         resource = info_path.removesuffix("Info.plist") + RESOURCE_PATH
         if names.count(resource) != 1:
             raise ValueError("IPA must contain exactly one public build profile")
+        info = plistlib.loads(archive.read(info_path))
         report = verify_bundle(
-            plistlib.loads(archive.read(info_path)), json.loads(archive.read(resource)),
+            info, json.loads(archive.read(resource)),
             variant, source_sha, build_number,
             auth_origin=auth_origin,
             # Preserve production's existing export-managed build numbering.
             # Dev ExportOptions explicitly disables that Xcode behavior.
             allow_exported_build_number=variant == "production",
         )
+        if variant == "dev" and info.get("TFInternalTestingOnly") is not True:
+            raise ValueError("Maple Dev IPA must be restricted to internal TestFlight testing")
     with ipa.open("rb") as handle:
         report["ipa_sha256"] = hashlib.file_digest(handle, "sha256").hexdigest()
     return report

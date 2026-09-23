@@ -2,6 +2,7 @@
 """Focused checks for profile mixups, archive identity and state restoration."""
 
 import importlib.util
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -18,6 +19,9 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 SPEC = importlib.util.spec_from_file_location("ios_build_profile", SCRIPT_DIR / "ios-build-profile.py")
 PROFILE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(PROFILE)
+CANONICAL_SPEC = importlib.util.spec_from_file_location("canonical_ios_app", SCRIPT_DIR / "canonical-ios-app-hash.py")
+CANONICAL = importlib.util.module_from_spec(CANONICAL_SPEC)
+CANONICAL_SPEC.loader.exec_module(CANONICAL)
 SOURCE_SHA = "a" * 40
 FRONTEND_SHA = "b" * 64
 BUILD_NUMBER = "42.1"
@@ -45,6 +49,90 @@ def make_info(variant="dev"):
         "CFBundleShortVersionString": "3.4.2",
         "CFBundleURLTypes": [{"CFBundleURLSchemes": [profile["bundle_identifier"]]}],
     }
+
+
+def reconstructed_dev_plist():
+    # Public metadata reconstructed from the local Dev simulator bundle. With
+    # device platform and existing normalization, its hash exactly matches the
+    # unsigned plist logged by CI run 35833889297. The one-key export mutation
+    # below reproduces that run's exported plist hash; no failed IPA was retained.
+    return {
+        "CFBundleDevelopmentRegion": "en",
+        "CFBundleDisplayName": "Maple Dev",
+        "CFBundleExecutable": "Maple Dev",
+        "CFBundleIcons": {"CFBundlePrimaryIcon": {
+            "CFBundleIconFiles": ["AppIcon60x60"], "CFBundleIconName": "AppIcon"}},
+        "CFBundleIcons~ipad": {"CFBundlePrimaryIcon": {
+            "CFBundleIconFiles": ["AppIcon60x60", "AppIcon76x76"], "CFBundleIconName": "AppIcon"}},
+        "CFBundleIdentifier": "cloud.opensecret.maple.dev",
+        "CFBundleInfoDictionaryVersion": "6.0",
+        "CFBundleName": "Maple Dev",
+        "CFBundlePackageType": "APPL",
+        "CFBundleShortVersionString": "3.4.2",
+        "CFBundleSupportedPlatforms": ["iPhoneOS"],
+        "CFBundleURLTypes": [{"CFBundleURLName": "cloud.opensecret.maple.dev",
+                              "CFBundleURLSchemes": ["cloud.opensecret.maple.dev"]}],
+        "ITSAppUsesNonExemptEncryption": False,
+        "LSApplicationQueriesSchemes": ["https", "http"],
+        "LSRequiresIPhoneOS": True,
+        "MinimumOSVersion": "16.0",
+        "NSCameraUsageDescription": "Maple needs access to your camera to take photos for your AI conversations.",
+        "NSMicrophoneUsageDescription": "Maple needs access to your microphone to record voice messages for your AI conversations.",
+        "NSPhotoLibraryUsageDescription": "Maple needs access to your photo library to upload images to your AI conversations.",
+        "UIBackgroundModes": ["audio"],
+        "UIDeviceFamily": [1, 2],
+        "UILaunchStoryboardName": "LaunchScreen",
+        "UIRequiredDeviceCapabilities": ["arm64", "metal"],
+        "UISupportedInterfaceOrientations": ["UIInterfaceOrientationPortrait",
+                                             "UIInterfaceOrientationLandscapeLeft",
+                                             "UIInterfaceOrientationLandscapeRight"],
+        "UISupportedInterfaceOrientations~ipad": ["UIInterfaceOrientationPortrait",
+                                                  "UIInterfaceOrientationPortraitUpsideDown",
+                                                  "UIInterfaceOrientationLandscapeLeft",
+                                                  "UIInterfaceOrientationLandscapeRight"],
+    }
+
+
+class CanonicalPlistTests(unittest.TestCase):
+    def canonical(self, info):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "Info.plist"
+            path.write_bytes(plistlib.dumps(info, fmt=plistlib.FMT_BINARY))
+            return CANONICAL.canonical_info_plist(path)
+
+    def test_reconstructed_internal_export_matches_both_original_failure_hashes(self):
+        unsigned = reconstructed_dev_plist()
+        exported = dict(unsigned, TFInternalTestingOnly=True)
+        for info, digest in (
+            (unsigned, "99c054b97ae67b26a4df9f7302a7ba16921fd0b13c3d1c3d09660e7de031a10e"),
+            (exported, "f76a0037b05f1a3e29ae65da68a26d72d4bd472ca8a184e910a81e260b5260f3"),
+        ):
+            raw = plistlib.dumps(info, fmt=plistlib.FMT_XML, sort_keys=True)
+            self.assertEqual(hashlib.sha256(raw).hexdigest(), digest)
+        self.assertEqual(self.canonical(unsigned), self.canonical(exported))
+
+    def test_false_and_malformed_markers_remain_part_of_the_comparison(self):
+        info = reconstructed_dev_plist()
+        baseline = self.canonical(info)
+        for marker in (False, 0, 1, "true", "false", [], {}):
+            with self.subTest(marker=marker):
+                self.assertNotEqual(baseline, self.canonical(dict(info, TFInternalTestingOnly=marker)))
+
+    def test_non_device_platforms_and_malformed_platform_values_preserve_marker(self):
+        for platforms in (["iPhoneSimulator"], ["MacOSX"], [], "iPhoneOS"):
+            with self.subTest(platforms=platforms):
+                info = dict(reconstructed_dev_plist(), CFBundleSupportedPlatforms=platforms)
+                self.assertNotEqual(self.canonical(info), self.canonical(dict(info, TFInternalTestingOnly=True)))
+
+    def test_other_metadata_changes_still_fail_comparison(self):
+        info = reconstructed_dev_plist()
+        for key, value in (("CFBundleIdentifier", "cloud.opensecret.maple"),
+                           ("CFBundleDisplayName", "Maple"),
+                           ("CFBundleURLTypes", [{"CFBundleURLSchemes": ["unexpected"]}]),
+                           ("NSCameraUsageDescription", "Changed")):
+            with self.subTest(key=key):
+                changed = dict(info, TFInternalTestingOnly=True, **{key: value})
+                self.assertNotEqual(self.canonical(info), self.canonical(changed))
 
 
 class ProfileTests(unittest.TestCase):
@@ -146,6 +234,10 @@ python3 -c 'import os,json; print(json.dumps({k:v for k,v in os.environ.items() 
                 (app / PROFILE.RESOURCE_PATH).write_text(json.dumps(make_profile(variant)))
                 result = PROFILE.verify_app(app, variant, SOURCE_SHA, BUILD_NUMBER, auth_origin=AUTH_ORIGIN)
                 self.assertEqual(result["bundle_identifier"], PROFILE.PROFILES[variant]["bundle_identifier"])
+                # Xcode adds the restriction only while exporting the archive.
+                if variant == "dev":
+                    (app / "Info.plist").write_bytes(plistlib.dumps(
+                        dict(make_info(variant), TFInternalTestingOnly=True)))
                 ipa = root / "misleading-filename.ipa"
                 with zipfile.ZipFile(ipa, "w") as archive:
                     for path in app.rglob("*"):
@@ -153,6 +245,38 @@ python3 -c 'import os,json; print(json.dumps({k:v for k,v in os.environ.items() 
                             archive.write(path, f"Payload/Anything.app/{path.relative_to(app)}")
                 report = PROFILE.verify_ipa(ipa, variant, SOURCE_SHA, BUILD_NUMBER, auth_origin=AUTH_ORIGIN)
                 self.assertRegex(report["ipa_sha256"], r"^[0-9a-f]{64}$")
+
+    def test_dev_ipa_requires_exact_boolean_internal_testing_marker(self):
+        with tempfile.TemporaryDirectory() as temp:
+            ipa = Path(temp) / "exported.ipa"
+            for marker in (None, False, 0, 1, "true", "false", [], {}, True):
+                with self.subTest(marker=marker):
+                    info = make_info()
+                    if marker is not None:
+                        info["TFInternalTestingOnly"] = marker
+                    with zipfile.ZipFile(ipa, "w") as archive:
+                        archive.writestr("Payload/Maple.app/Info.plist", plistlib.dumps(info))
+                        archive.writestr(f"Payload/Maple.app/{PROFILE.RESOURCE_PATH}",
+                                         json.dumps(make_profile()))
+                    if marker is True:
+                        PROFILE.verify_ipa(ipa, "dev", SOURCE_SHA, BUILD_NUMBER, auth_origin=AUTH_ORIGIN)
+                    else:
+                        with self.assertRaisesRegex(ValueError, "internal TestFlight"):
+                            PROFILE.verify_ipa(ipa, "dev", SOURCE_SHA, BUILD_NUMBER, auth_origin=AUTH_ORIGIN)
+
+    def test_production_ipa_does_not_require_internal_testing_marker(self):
+        with tempfile.TemporaryDirectory() as temp:
+            ipa = Path(temp) / "production.ipa"
+            for marker in (None, False):
+                with self.subTest(marker=marker):
+                    info = make_info("production")
+                    if marker is not None:
+                        info["TFInternalTestingOnly"] = marker
+                    with zipfile.ZipFile(ipa, "w") as archive:
+                        archive.writestr("Payload/Maple.app/Info.plist", plistlib.dumps(info))
+                        archive.writestr(f"Payload/Maple.app/{PROFILE.RESOURCE_PATH}",
+                                         json.dumps(make_profile("production")))
+                    PROFILE.verify_ipa(ipa, "production", SOURCE_SHA, BUILD_NUMBER)
 
     def test_cross_variant_identity_source_version_and_profile_mixups_fail(self):
         for variant in PROFILE.PROFILES:
