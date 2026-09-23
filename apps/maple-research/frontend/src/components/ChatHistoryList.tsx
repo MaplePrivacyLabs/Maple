@@ -74,6 +74,8 @@ const ICON_STROKE = 2;
 const ROW_CONTENT_Z = "z-0";
 const ROW_CHECKBOX_Z = "z-20";
 const ROW_MENU_Z = "z-30";
+const SIDEBAR_TITLE_CLASS =
+  "min-w-0 flex-1 overflow-hidden whitespace-nowrap [mask-image:linear-gradient(to_right,black_calc(100%_-_1rem),transparent)]";
 const SIDEBAR_ELLIPSIS_FADE =
   "pointer-events-none w-4 shrink-0 self-stretch bg-gradient-to-r from-transparent to-[hsl(var(--muted))] dark:to-[hsl(var(--sidebar))]";
 const SIDEBAR_ELLIPSIS_TRIGGER_ROW_BASE = `absolute inset-y-0 right-0 ${ROW_MENU_Z} flex min-h-0 items-stretch`;
@@ -84,7 +86,7 @@ function sidebarEllipsisTriggerRowClass(isMobile: boolean): string {
   return `${SIDEBAR_ELLIPSIS_TRIGGER_ROW_BASE} transition-opacity duration-150 opacity-0 pointer-events-none group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100 has-[[data-state=open]]:pointer-events-auto has-[[data-state=open]]:opacity-100`;
 }
 const SIDEBAR_ELLIPSIS_BTN =
-  "relative z-10 shrink-0 rounded-full border-0 bg-muted p-1.5 text-foreground/40 transition-colors dark:bg-[hsl(var(--sidebar))] hover:text-foreground group-hover:text-foreground focus-visible:text-foreground focus-visible:outline-none";
+  "relative z-10 shrink-0 rounded-full border-0 bg-transparent p-1.5 text-foreground/40 transition-colors hover:text-foreground group-hover:text-foreground focus-visible:text-foreground focus-visible:outline-none";
 
 interface ChatHistoryListProps {
   currentChatId?: string;
@@ -1253,7 +1255,7 @@ export function ChatHistoryList({
     const runtimeKey = createConversationChatKey(conversation.id);
     const isRunning = activeRunKeySet.has(runtimeKey);
     const isUnreadCompleted = !isRunning && completedUnreadKeySet.has(runtimeKey);
-    const titlePaddingClass = "pr-8";
+    const titlePaddingClass = isMobile ? "pr-8" : "";
 
     const isBoldState = (isActive && !isSelectionMode) || (isSelectionMode && isSelected);
     const rowTextClass = isBoldState
@@ -1321,7 +1323,7 @@ export function ChatHistoryList({
                   aria-hidden
                 />
               ) : null}
-              <div className="min-w-0 flex-1 overflow-hidden whitespace-nowrap">{title}</div>
+              <div className={SIDEBAR_TITLE_CLASS}>{title}</div>
             </div>
           </div>
         </button>
@@ -1342,7 +1344,7 @@ export function ChatHistoryList({
           <>
             <div className={sidebarEllipsisTriggerRowClass(isMobile)}>
               <div className={SIDEBAR_ELLIPSIS_FADE} aria-hidden="true" />
-              <div className="flex items-center">
+              <div className="flex items-center bg-muted dark:bg-[hsl(var(--sidebar))]">
                 <DropdownMenu>
                   <DropdownMenuTrigger asChild>
                     <button
@@ -1507,13 +1509,15 @@ export function ChatHistoryList({
                         : "text-foreground"
                     }`}
                   >
-                    <div className="relative z-0 flex items-center gap-2 pr-8">
+                    <div
+                      className={`relative z-0 flex items-center gap-2 ${isMobile ? "pr-8" : ""}`}
+                    >
                       {isProjectExpanded ? (
                         <ChevronDown className="h-4 w-4 shrink-0" strokeWidth={ICON_STROKE} />
                       ) : (
                         <ChevronRight className="h-4 w-4 shrink-0" strokeWidth={ICON_STROKE} />
                       )}
-                      <span className="min-w-0 flex-1 truncate">{project.name}</span>
+                      <span className={SIDEBAR_TITLE_CLASS}>{project.name}</span>
                       {showProjectRunningIndicator ? (
                         <Loader2
                           className="h-3.5 w-3.5 shrink-0 animate-spin text-[hsl(var(--maple-primary))]"
@@ -1529,7 +1533,7 @@ export function ChatHistoryList({
                   </button>
                   <div className={sidebarEllipsisTriggerRowClass(isMobile)}>
                     <div className={SIDEBAR_ELLIPSIS_FADE} aria-hidden="true" />
-                    <div className="flex items-center">
+                    <div className="flex items-center bg-muted dark:bg-[hsl(var(--sidebar))]">
                       <DropdownMenu>
                         <DropdownMenuTrigger asChild>
                           <button
