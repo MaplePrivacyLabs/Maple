@@ -41,15 +41,20 @@ export function ConversationProjectPicker({
           type="button"
           variant="ghost"
           size="sm"
+          pressScale={false}
           className={cn(
-            "h-8 gap-2 px-2 text-muted-foreground",
+            "group h-8 gap-2 px-2 text-muted-foreground",
             isProjectSelected &&
               "bg-[hsl(var(--maple-primary-container))] text-[hsl(var(--maple-primary))] hover:bg-[hsl(var(--maple-primary-container))] hover:text-[hsl(var(--maple-primary))]"
           )}
           disabled={disabled}
           aria-label={selectedProject ? `Project: ${selectedProject.name}` : "No project selected"}
         >
-          {isProjectSelected ? <FolderOpen className="h-4 w-4" /> : <Folder className="h-4 w-4" />}
+          {isProjectSelected ? (
+            <FolderOpen className="h-4 w-4 will-change-transform transition-transform duration-150 ease-out group-active:scale-90 motion-reduce:transition-none" />
+          ) : (
+            <Folder className="h-4 w-4 will-change-transform transition-transform duration-150 ease-out group-active:scale-90 motion-reduce:transition-none" />
+          )}
           {selectedProject ? (
             <span className="hidden max-w-[120px] truncate md:inline">{selectedProject.name}</span>
           ) : null}

@@ -336,10 +336,11 @@ export function ModelSelector({
     return <span className="flex items-center gap-1">{elements}</span>;
   };
 
-  // Show current category or model name in the collapsed view
+  // Keep the dropdown's positioning anchor stationary while its contents press.
   const modelDisplay = (
-    <div className="flex items-center gap-1">
+    <div className="flex items-center gap-1 will-change-transform transition-transform duration-150 ease-out group-active:scale-90 motion-reduce:transition-none">
       <div className="text-xs font-medium">{getDisplayLabel(model)}</div>
+      <ChevronDown className="h-3 w-3" />
     </div>
   );
 
@@ -353,12 +354,12 @@ export function ModelSelector({
             disabled={disabled}
             variant="ghost"
             size="sm"
-            className="h-8 gap-1 px-2 text-[hsl(var(--maple-secondary-700))] hover:bg-[hsl(var(--maple-primary-container))] hover:text-[hsl(var(--maple-secondary-700))]"
+            pressScale={false}
+            className="group h-8 px-2 text-[hsl(var(--maple-secondary-700))] hover:bg-[hsl(var(--maple-primary-container))] hover:text-[hsl(var(--maple-secondary-700))]"
             data-testid="model-selector-button"
             aria-label={`Current model: ${getDisplayNameText(model)}. Click to change model.`}
           >
             {modelDisplay}
-            <ChevronDown className="h-3 w-3" />
           </Button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="start" className="w-64 p-0">

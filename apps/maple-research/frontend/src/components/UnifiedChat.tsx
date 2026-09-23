@@ -5965,7 +5965,8 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
                             type="button"
                             variant="ghost"
                             size="sm"
-                            className="h-8 w-8 p-0 text-[hsl(var(--maple-secondary-700))] hover:bg-[hsl(var(--maple-primary-container))] hover:text-[hsl(var(--maple-secondary-700))]"
+                            pressScale={false}
+                            className="group h-8 w-8 p-0 text-[hsl(var(--maple-secondary-700))] hover:bg-[hsl(var(--maple-primary-container))] hover:text-[hsl(var(--maple-secondary-700))]"
                             onClick={() => {
                               const newValue = !isWebSearchEnabled;
                               setIsWebSearchEnabled(newValue);
@@ -5976,7 +5977,7 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
                             }
                           >
                             <Globe
-                              className={`h-4 w-4 ${
+                              className={`h-4 w-4 will-change-transform transition-transform duration-150 ease-out group-active:scale-90 motion-reduce:transition-none ${
                                 isWebSearchEnabled
                                   ? "text-[hsl(var(--maple-primary))]"
                                   : "text-[hsl(var(--maple-secondary-700))]"
@@ -5990,7 +5991,8 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
                                 type="button"
                                 variant="ghost"
                                 size="sm"
-                                className="h-8 w-8 p-0 text-[hsl(var(--maple-secondary-700))] hover:bg-[hsl(var(--maple-primary-container))] hover:text-[hsl(var(--maple-secondary-700))]"
+                                pressScale={false}
+                                className="group h-8 w-8 p-0 text-[hsl(var(--maple-secondary-700))] hover:bg-[hsl(var(--maple-primary-container))] hover:text-[hsl(var(--maple-secondary-700))]"
                                 disabled={Boolean(queueEdit) || isProcessingDocument}
                                 aria-busy={isProcessingDocument}
                                 aria-label={
@@ -6008,7 +6010,7 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
                                   />
                                 ) : (
                                   <Plus
-                                    className="h-4 w-4 text-[hsl(var(--maple-secondary-700))]"
+                                    className="h-4 w-4 text-[hsl(var(--maple-secondary-700))] will-change-transform transition-transform duration-150 ease-out group-active:scale-90 motion-reduce:transition-none"
                                     aria-hidden="true"
                                   />
                                 )}
@@ -6195,7 +6197,8 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
                           type="button"
                           variant="ghost"
                           size="sm"
-                          className="h-8 w-8 p-0 text-[hsl(var(--maple-secondary-700))] hover:bg-[hsl(var(--maple-primary-container))] hover:text-[hsl(var(--maple-secondary-700))]"
+                          pressScale={false}
+                          className="group h-8 w-8 p-0 text-[hsl(var(--maple-secondary-700))] hover:bg-[hsl(var(--maple-primary-container))] hover:text-[hsl(var(--maple-secondary-700))]"
                           onClick={() => {
                             const newValue = !isWebSearchEnabled;
                             setIsWebSearchEnabled(newValue);
@@ -6206,7 +6209,7 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
                           }
                         >
                           <Globe
-                            className={`h-4 w-4 ${
+                            className={`h-4 w-4 will-change-transform transition-transform duration-150 ease-out group-active:scale-90 motion-reduce:transition-none ${
                               isWebSearchEnabled
                                 ? "text-[hsl(var(--maple-primary))]"
                                 : "text-[hsl(var(--maple-secondary-700))]"
@@ -6220,7 +6223,8 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
                               type="button"
                               variant="ghost"
                               size="sm"
-                              className="h-8 w-8 p-0 text-[hsl(var(--maple-secondary-700))] hover:bg-[hsl(var(--maple-primary-container))] hover:text-[hsl(var(--maple-secondary-700))]"
+                              pressScale={false}
+                              className="group h-8 w-8 p-0 text-[hsl(var(--maple-secondary-700))] hover:bg-[hsl(var(--maple-primary-container))] hover:text-[hsl(var(--maple-secondary-700))]"
                               disabled={Boolean(queueEdit) || isProcessingDocument}
                               aria-busy={isProcessingDocument}
                               aria-label={
@@ -6238,7 +6242,7 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
                                 />
                               ) : (
                                 <Plus
-                                  className="h-4 w-4 text-[hsl(var(--maple-secondary-700))]"
+                                  className="h-4 w-4 text-[hsl(var(--maple-secondary-700))] will-change-transform transition-transform duration-150 ease-out group-active:scale-90 motion-reduce:transition-none"
                                   aria-hidden="true"
                                 />
                               )}
