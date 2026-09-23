@@ -20,6 +20,7 @@ use crate::backend::{AgentBackend, PendingPermission, PendingQuestion};
 use crate::ui::icons::{icon, spinner, wordmark};
 use crate::ui::markdown;
 use crate::ui::motion;
+use crate::ui::popup::{Menu, MenuItem, Placement, Popup};
 use crate::ui::rich_text::{self, RenderCtx};
 use crate::ui::settings::{OpenSettingsSection, Section};
 use crate::ui::text_input::TextInput;
@@ -64,9 +65,6 @@ gpui::actions!(
         NextTask,
         OpenAppSettings,
         PreviousTask,
-        RootMenuConfirm,
-        RootMenuNext,
-        RootMenuPrevious,
         SelectAllTranscript,
         ToggleArchived,
         ToggleSidebar,
@@ -174,6 +172,18 @@ pub(super) struct QuestionSelection {
     picked: BTreeSet<usize>,
 }
 
+/// The chat's popup menus. One is open at a time.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) enum ChatPopup {
+    /// The header chip's project menu.
+    Project,
+    Model,
+    Mode,
+    Integrations,
+    /// The transcript's right-click menu, at a window position.
+    Transcript(gpui::Point<gpui::Pixels>),
+}
+
 pub struct ChatScreen {
     backend: Arc<AgentBackend>,
     user_id: String,
@@ -237,9 +247,6 @@ pub struct ChatScreen {
     slash_entries: Vec<SlashEntry>,
     models: Vec<String>,
     selected_model: Option<String>,
-    models_menu_open: bool,
-    /// Approval-mode dropdown open state, anchored under the composer.
-    mode_menu_open: bool,
     /// Desktop notifications enabled (settings).
     notify_enabled: bool,
     /// Mirrors `window.is_window_active()` from the last render; refreshed
@@ -270,12 +277,9 @@ pub struct ChatScreen {
     /// Existing tasks always execute in their own persisted project root.
     project_root: Option<String>,
     recent_roots: Vec<String>,
-    root_menu_open: bool,
-    /// Row the project menu highlights for the keyboard, if any.
-    root_menu_selected: Option<usize>,
-    /// Focus for the open project menu, so plain arrow keys reach it
-    /// instead of the composer's text handling.
-    root_menu_focus: Option<gpui::FocusHandle>,
+    /// Which of the chat's popup menus is open: the header's project menu,
+    /// a composer chip's menu, or the transcript's right-click menu.
+    popup: Popup<ChatScreen, ChatPopup>,
     /// Focus for whichever modal dialog is open, so Enter and Escape
     /// reach it instead of the composer. Created the first time a dialog
     /// opens: creating it up front shifts the window's focus-id order,
@@ -286,10 +290,10 @@ pub struct ChatScreen {
     /// Whether the project-trust question may open its dialog. Tests that
     /// drive typing turn it off, since the dialog rightly takes focus.
     trust_prompts: bool,
-    /// The menu was just opened and still needs the focus.
-    root_menu_focus_pending: bool,
     /// Manual path entry for the project selector.
     root_input: Option<Entity<TextInput>>,
+    /// The path field was just offered; the next render gives it focus.
+    root_input_focus_pending: bool,
     root_selecting: bool,
     /// Header label for the project root; set when the root changes so
     /// render does not format it.
@@ -320,7 +324,6 @@ pub struct ChatScreen {
     session_mcp: Vec<AgentSessionMcpServer>,
     /// Count of enabled servers in `session_mcp`, for the composer chip.
     mcp_enabled_count: usize,
-    mcp_menu_open: bool,
     /// Composer fills the pane (fullscreen editing).
     composer_expanded: bool,
     /// Latest todo list from the selected task, pinned above the composer.
@@ -382,8 +385,6 @@ pub struct ChatScreen {
     attachment_requests: HashSet<String>,
     /// Shared drag-selection state for transcript text.
     selection: Option<Entity<rich_text::TextSelection>>,
-    /// Window position of the transcript's right-click menu while open.
-    transcript_menu: Option<gpui::Point<gpui::Pixels>>,
     /// Focus handle of the transcript; a selection press moves focus here
     /// so the copy keybinding applies.
     transcript_focus: Option<gpui::FocusHandle>,
@@ -496,7 +497,6 @@ impl ChatScreen {
         this.markdown_cache.attach(weak.clone(), cx.to_async());
         this.selection = Some(cx.new(|_| rich_text::TextSelection::default()));
         this.transcript_focus = Some(cx.focus_handle());
-        this.root_menu_focus = Some(cx.focus_handle());
         this.application_focus = Some(cx.focus_handle());
         this.initialize_application_vim_surface();
         this
@@ -653,18 +653,6 @@ impl ChatScreen {
     #[cfg(test)]
     fn unsettle_task(&mut self, session_id: &str, cx: &mut Context<Self>) {
         self.set_task_state(session_id, AgentTaskState::Active, cx);
-    }
-
-    #[cfg(test)]
-    fn step_sidebar_popup(&mut self, delta: isize, count: usize, cx: &mut Context<Self>) -> bool {
-        self.sidebar
-            .update(cx, |sidebar, cx| sidebar.step_popup(delta, count, cx))
-    }
-
-    #[cfg(test)]
-    fn activate_sidebar_popup(&mut self, cx: &mut Context<Self>) -> bool {
-        self.sidebar
-            .update(cx, |sidebar, cx| sidebar.activate_popup(cx))
     }
 
     #[cfg(test)]
@@ -892,8 +880,6 @@ impl ChatScreen {
             slash_entries: Vec::new(),
             models: Vec::new(),
             selected_model: None,
-            models_menu_open: false,
-            mode_menu_open: false,
             notify_enabled: settings.desktop_notifications,
             window_active: true,
             sidebar_plan: None,
@@ -913,13 +899,10 @@ impl ChatScreen {
             uses_default_permission_mode: std::env::var("MAPLE_PERMISSION_MODE").is_err(),
             project_root: None,
             recent_roots: Vec::new(),
-            root_menu_open: false,
-            root_menu_selected: None,
-            root_menu_focus: None,
+            popup: Popup::new(|this| &mut this.popup, cx),
             dialog_focus: None,
             dialog_focus_pending: false,
             trust_prompts: true,
-            root_menu_focus_pending: false,
             sidebar_collapsed: false,
             draft_images: Vec::new(),
             draft_counter: 0,
@@ -927,7 +910,6 @@ impl ChatScreen {
             model_vision: HashMap::new(),
             session_mcp: Vec::new(),
             mcp_enabled_count: 0,
-            mcp_menu_open: false,
             composer_expanded: false,
             web_enabled: true,
             default_web_enabled: settings.default_web_enabled,
@@ -938,6 +920,7 @@ impl ChatScreen {
             timeline_index: HashMap::new(),
             selected_title: DEFAULT_TASK_TITLE.into(),
             root_input: None,
+            root_input_focus_pending: false,
             root_selecting: false,
             project_label: SharedString::from("Choose folder"),
             project_branch: None,
@@ -951,7 +934,6 @@ impl ChatScreen {
             attachment_requests: HashSet::new(),
             timeline_revisions: HashMap::new(),
             selection: None,
-            transcript_menu: None,
             transcript_focus: None,
             awaiting_first_token: false,
             toggled_tools: HashSet::new(),
@@ -1201,7 +1183,7 @@ impl ChatScreen {
         // that fails leaves loads in flight alive, while a task clicked after
         // this point advances the generation and wins over the callback.
         let selection_generation = self.selection_generation;
-        self.root_menu_open = false;
+        self.popup.close(cx);
         self.root_input = None;
         self.notice = None;
         cx.notify();
@@ -1436,7 +1418,7 @@ impl ChatScreen {
             return false;
         }
         self.root_picker_open = true;
-        self.root_menu_open = false;
+        self.popup.close(cx);
         cx.notify();
         true
     }
@@ -1446,6 +1428,7 @@ impl ChatScreen {
         // The native picker could not open: offer manual entry.
         if self.root_input.is_none() {
             let chat = cx.entity().downgrade();
+            let apply = chat.clone();
             let application_vim_enabled = self.application_vim_enabled;
             let input = cx.new(move |cx| {
                 TextInput::new("/absolute/path/to/project", cx)
@@ -1456,24 +1439,33 @@ impl ChatScreen {
                             chat.update(cx, |chat, cx| chat.focus_application_vim(window, cx));
                         }
                     })
+                    // Enter applies the typed path, like the Go button.
+                    .on_enter(move |path, window, cx| {
+                        let apply = apply.clone();
+                        window.defer(cx, move |_, cx| {
+                            apply
+                                .update(cx, |chat, cx| chat.select_project_root(path, cx))
+                                .ok();
+                        });
+                    })
             });
             self.root_input = Some(input);
         }
-        self.root_menu_open = true;
-        cx.notify();
+        self.popup.open(ChatPopup::Project, cx);
+        self.root_input_focus_pending = true;
     }
 
     /// Open or close the project menu from the header chip.
     pub fn toggle_root_menu(&mut self, cx: &mut Context<Self>) {
-        self.models_menu_open = false;
-        self.mode_menu_open = false;
-        self.mcp_menu_open = false;
-        self.root_menu_open = !self.root_menu_open;
-        self.root_menu_selected = None;
-        // The next frame moves the focus; from there the arrow keys and
-        // Enter reach the menu instead of the composer.
-        self.root_menu_focus_pending = self.root_menu_open;
-        cx.notify();
+        self.popup.toggle(ChatPopup::Project, cx);
+    }
+
+    /// Open or close one of the composer chips' menus. Opening the
+    /// integrations menu refreshes the task's servers.
+    pub(super) fn toggle_popup(&mut self, popup: ChatPopup, cx: &mut Context<Self>) {
+        if self.popup.toggle(popup, cx) && popup == ChatPopup::Integrations {
+            self.refresh_session_mcp(cx);
+        }
     }
 
     /// Text for the header project chip.
@@ -2155,9 +2147,7 @@ impl ChatScreen {
         self.awaiting_first_token = false;
         self.lightbox = None;
         self.permission_responding = false;
-        self.models_menu_open = false;
-        self.root_menu_open = false;
-        self.mcp_menu_open = false;
+        self.popup.close(cx);
     }
 
     /// Make `session` the one on screen. `stored_summaries` are the tool
@@ -2723,51 +2713,6 @@ impl ChatScreen {
         }
     }
 
-    /// Rows the project menu offers: the recent roots it lists, then
-    /// "New project…".
-    fn root_menu_rows(&self) -> usize {
-        self.recent_roots.len().min(ROOT_MENU_RECENTS) + 1
-    }
-
-    /// Move the menu highlight. A menu is short, so it wraps at both
-    /// ends instead of stopping.
-    fn step_root_menu(&mut self, delta: isize, cx: &mut Context<Self>) {
-        if !self.root_menu_open {
-            return;
-        }
-        let rows = self.root_menu_rows() as isize;
-        let next = match self.root_menu_selected {
-            Some(current) => (current as isize + delta).rem_euclid(rows),
-            // Nothing highlighted: enter the menu from the end the key
-            // comes from.
-            None if delta < 0 => rows - 1,
-            None => 0,
-        };
-        self.root_menu_selected = Some(next as usize);
-        cx.notify();
-    }
-
-    /// Enter on the highlighted menu row: switch to that project, or
-    /// open the folder picker on the last row.
-    fn confirm_root_menu(&mut self, cx: &mut Context<Self>) {
-        if !self.root_menu_open {
-            return;
-        }
-        let Some(index) = self.root_menu_selected else {
-            return;
-        };
-        let recent = self
-            .recent_roots
-            .iter()
-            .take(ROOT_MENU_RECENTS)
-            .nth(index)
-            .cloned();
-        match recent {
-            Some(path) => self.select_project_root(path, cx),
-            None => self.choose_root_dialog(cx),
-        }
-    }
-
     /// Open the task before or after the selected one, in sidebar order.
     /// Defaults are Command-Option-Up/Down on macOS and Alt-Up/Down elsewhere.
     fn step_task(&mut self, delta: isize, cx: &mut Context<Self>) {
@@ -2809,10 +2754,22 @@ impl ChatScreen {
     }
 
     fn escape(&mut self, cx: &mut Context<Self>) {
+        // A rename ends first. A project's rename field sits in the
+        // switcher, which passes Escape on and stays open.
         if self
             .sidebar
             .update(cx, |sidebar, cx| sidebar.cancel_rename(cx))
         {
+            return;
+        }
+        // An open menu closes next. It normally has focus and closes on its
+        // own Escape binding; this covers a menu that has not taken focus
+        // yet, and a text field inside a menu.
+        let chat_menu = self.popup.close(cx);
+        let sidebar_menu = self
+            .sidebar
+            .update(cx, |sidebar, cx| sidebar.close_popups(cx));
+        if chat_menu || sidebar_menu {
             return;
         }
         if self.queue_edit.is_some() {
@@ -2834,21 +2791,13 @@ impl ChatScreen {
             self.set_project_trust(path, false, cx);
             return;
         }
-        let popups = self
-            .sidebar
-            .update(cx, |sidebar, cx| sidebar.close_popups(cx));
-        if self.confirm.is_some() || popups {
+        if self.confirm.is_some() {
             self.confirm = None;
             cx.notify();
             return;
         }
         if self.lightbox.is_some() {
             self.lightbox = None;
-            cx.notify();
-            return;
-        }
-        if self.transcript_menu.is_some() {
-            self.transcript_menu = None;
             cx.notify();
             return;
         }
@@ -2867,25 +2816,7 @@ impl ChatScreen {
             cx.notify();
             return;
         }
-        if self.close_menus_on_escape(cx) {
-            return;
-        }
         self.stop(cx);
-    }
-
-    /// Escape with nothing else to dismiss: close whichever chip menu is
-    /// open (including the folder picker). Reports whether one was open.
-    fn close_menus_on_escape(&mut self, cx: &mut Context<Self>) -> bool {
-        if self.models_menu_open || self.mode_menu_open || self.mcp_menu_open || self.root_menu_open
-        {
-            self.models_menu_open = false;
-            self.mode_menu_open = false;
-            self.mcp_menu_open = false;
-            self.root_menu_open = false;
-            cx.notify();
-            return true;
-        }
-        false
     }
 
     fn copy_selected_text(&mut self, cx: &mut Context<Self>) {
@@ -2935,14 +2866,14 @@ impl ChatScreen {
         if self.trust_prompt.is_some() || self.confirm.is_some() {
             return;
         }
-        // A focused text input already receives typing.
-        let focused = window.focused(cx);
-        let typing_here = [self.composer.clone(), self.pending_question_input.clone()]
-            .into_iter()
-            .flatten()
-            .chain(self.sidebar.read(cx).inputs())
-            .any(|input| Some(input.read(cx).focus_handle(cx)) == focused);
-        if typing_here {
+        // A focused text field already receives typing: the composer, the
+        // question card, the sidebar's search or rename, or the path field
+        // in the project menu.
+        if window
+            .context_stack()
+            .iter()
+            .any(|context| context.contains("TextInput"))
+        {
             return;
         }
         let handle = composer.read(cx).focus_handle(cx);
@@ -2994,76 +2925,44 @@ impl ChatScreen {
     }
 
     /// Right-click menu over the transcript: copy the selection, select all.
-    fn render_transcript_menu(&self, cx: &mut Context<Self>) -> Option<gpui::Deferred> {
-        let position = self.transcript_menu?;
+    fn render_transcript_menu(
+        &self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<gpui::AnyElement> {
+        let Some(&ChatPopup::Transcript(position)) = self.popup.open_key() else {
+            return None;
+        };
         let has_selection = self
             .selection
             .as_ref()
             .is_some_and(|selection| selection.read(cx).has_selection());
-        let item = |id: &'static str,
-                    icon_name: &'static str,
-                    label: &'static str,
-                    command: ChatCommand| {
-            div()
-                .id(id)
-                .flex()
-                .items_center()
-                .gap_2()
-                .px_3()
-                .py_1p5()
-                .text_sm()
-                .text_color(gpui::rgb(theme::text_primary()))
-                .hover(|style| {
-                    style
-                        .bg(gpui::rgb(theme::bg_sidebar_row_hover()))
-                        .cursor_pointer()
-                })
-                .on_click(cx.listener(move |this, _event, window, cx| {
-                    cx.stop_propagation();
-                    this.transcript_menu = None;
-                    this.execute_command(command, window, cx);
-                    cx.notify();
-                }))
-                .child(icon(icon_name, px(14.), theme::text_secondary()))
-                .child(label)
+        let command = |command: ChatCommand| {
+            move |this: &mut Self, window: &mut Window, cx: &mut Context<Self>| {
+                this.execute_command(command, window, cx);
+            }
         };
-        Some(gpui::deferred(
-            gpui::anchored()
-                .position(position)
-                .snap_to_window_with_margin(px(8.))
-                .child(
-                    div()
-                        .id("transcript-menu")
-                        .occlude()
-                        .w(px(160.))
-                        .py_1()
-                        .rounded(theme::RADIUS_SM)
-                        .bg(gpui::rgb(theme::bg_elevated()))
-                        .border_1()
-                        .border_color(gpui::rgb(theme::border()))
-                        .shadow_md()
-                        .flex()
-                        .flex_col()
-                        .on_mouse_down_out(cx.listener(|this, _event, _window, cx| {
-                            this.transcript_menu = None;
-                            cx.notify();
-                        }))
-                        .when(has_selection, |menu| {
-                            menu.child(item(
-                                "transcript-menu-copy",
-                                "copy",
-                                "Copy",
-                                ChatCommand::CopySelection,
-                            ))
-                        })
-                        .child(item(
-                            "transcript-menu-select-all",
-                            "text-select",
-                            "Select all",
-                            ChatCommand::SelectAllTranscript,
-                        )),
-                ),
-        ))
+        let menu = Menu::new("transcript-menu", px(160.))
+            .label("Transcript")
+            .application_vim(self.application_vim_enabled)
+            .item(
+                MenuItem::new(
+                    "transcript-menu-copy",
+                    "Copy",
+                    command(ChatCommand::CopySelection),
+                )
+                .icon("copy")
+                .enabled(has_selection),
+            )
+            .item(
+                MenuItem::new(
+                    "transcript-menu-select-all",
+                    "Select all",
+                    command(ChatCommand::SelectAllTranscript),
+                )
+                .icon("text-select"),
+            );
+        Some(self.popup.render(menu, Placement::At(position), window, cx))
     }
 
     /// Toggle one tool card's or thinking row's expansion and re-measure
@@ -3290,11 +3189,7 @@ impl ChatScreen {
             }
             "model" => {
                 if args.is_empty() {
-                    self.models_menu_open = true;
-                    self.mode_menu_open = false;
-                    self.mcp_menu_open = false;
-                    self.root_menu_open = false;
-                    cx.notify();
+                    self.popup.open(ChatPopup::Model, cx);
                 } else {
                     let query = args.to_string();
                     match self
@@ -3427,11 +3322,8 @@ impl ChatScreen {
             // The edit is on its way; give the stashed draft back.
             self.finish_queue_edit(cx);
         }
-        // Sending closes the chip menus anchored under the composer.
-        self.models_menu_open = false;
-        self.mode_menu_open = false;
-        self.mcp_menu_open = false;
-        self.root_menu_open = false;
+        // Sending closes any open menu.
+        self.popup.close(cx);
         self.list_state.scroll_to_end();
         if !run_active {
             self.awaiting_first_token = true;
@@ -3845,8 +3737,7 @@ impl ChatScreen {
 
     fn pick_model(&mut self, model: String, cx: &mut Context<Self>) {
         self.selected_model = Some(model.clone());
-        self.models_menu_open = false;
-        self.root_menu_open = false;
+        self.popup.close(cx);
         cx.notify();
         self.refresh_vision(cx);
         // Remember the choice across launches via the agent config.
@@ -4435,29 +4326,19 @@ impl Render for ChatScreen {
             && self.application_vim.region == self::navigation::ChatRegion::Sidebar;
         self.sidebar
             .update(cx, |sidebar, cx| sidebar.set_vim_active(vim_in_sidebar, cx));
+        // First, so a dialog's focus request below wins over a menu handing
+        // focus back.
+        self.popup.sync_focus(window, cx);
+        // The path field inside the project menu takes the typing, not the
+        // menu.
+        if std::mem::take(&mut self.root_input_focus_pending)
+            && let Some(input) = self.root_input.as_ref()
+        {
+            window.focus(&input.read(cx).focus_handle(cx), cx);
+        }
         if self.dialog_focus_pending {
             self.dialog_focus_pending = false;
             if let Some(handle) = self.dialog_focus.clone() {
-                window.focus(&handle, cx);
-            }
-        }
-        if self.root_menu_focus_pending {
-            self.root_menu_focus_pending = false;
-            if let Some(handle) = self.root_menu_focus.clone() {
-                window.focus(&handle, cx);
-            }
-        } else if !self.root_menu_open
-            && let Some(handle) = self.root_menu_focus.clone()
-            && handle.is_focused(window)
-        {
-            // The menu closed while it held focus. Application Vim returns
-            // to its proxy; Standard mode keeps the legacy composer return.
-            if self.application_vim_enabled {
-                if let Some(handle) = self.application_focus.clone() {
-                    window.focus(&handle, cx);
-                }
-            } else if let Some(composer) = self.composer.clone() {
-                let handle = composer.read(cx).focus_handle(cx);
                 window.focus(&handle, cx);
             }
         }
@@ -4505,7 +4386,7 @@ impl Render for ChatScreen {
         let collapsed = self.sidebar_collapsed;
         let loading_overlay = self.render_loading_overlay();
         let main = if empty {
-            self.render_empty_state(cx)
+            self.render_empty_state(window, cx)
         } else {
             div()
                 .flex()
@@ -4513,8 +4394,8 @@ impl Render for ChatScreen {
                 .flex_1()
                 .h_full()
                 .min_w_0()
-                .child(self.render_header(cx))
-                .child(self.render_transcript(cx))
+                .child(self.render_header(window, cx))
+                .child(self.render_transcript(window, cx))
                 .when(self.awaiting_first_token && self.is_run_active(), |main| {
                     // Same gutter as transcript text so the dots line up
                     main.child(
@@ -4563,9 +4444,8 @@ impl Render for ChatScreen {
                         .children(self.render_btw_card(cx))
                         .children(self.render_subagents_card(cx))
                         .children(self.render_plan_card(cx))
-                        .child(self.render_composer(cx))
-                        .children(self.render_slash_palette(cx))
-                        .children(self.render_menu_panel(cx)),
+                        .child(self.render_composer(window, cx))
+                        .children(self.render_slash_palette(cx)),
                 )
         };
         let main = match loading_overlay {
@@ -4596,9 +4476,6 @@ impl Render for ChatScreen {
             .on_action(cx.listener(Self::toggle_archived))
             .on_action(cx.listener(Self::open_app_settings))
             .on_action(cx.listener(Self::choose_project))
-            .on_action(cx.listener(Self::root_menu_previous))
-            .on_action(cx.listener(Self::root_menu_next))
-            .on_action(cx.listener(Self::root_menu_confirm))
             .on_action(cx.listener(Self::previous_task))
             .on_action(cx.listener(Self::next_task))
             .on_action(cx.listener(Self::allow_permission))
@@ -4667,8 +4544,7 @@ impl Render for ChatScreen {
                                         .child(wordmark(px(14.), theme::text_primary())),
                                 )
                             })
-                            .child(main)
-                            .children(self.render_root_menu(cx)),
+                            .child(main),
                     ),
             )
             .when_some(self.lightbox.clone(), |root, image| {
@@ -4753,7 +4629,7 @@ impl ChatScreen {
 
     /// Hero layout for a task with no messages: display heading, composer,
     /// and privacy note centered in the pane (mirrors EmptyAgentState).
-    fn render_empty_state(&mut self, cx: &mut Context<Self>) -> Div {
+    fn render_empty_state(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Div {
         let expanded = self.composer_expanded;
         let body = div()
             .flex()
@@ -4791,9 +4667,8 @@ impl ChatScreen {
                             .relative()
                             .w_full()
                             .when(expanded, |wrap| wrap.flex_1().min_h_0().flex().flex_col())
-                            .child(self.render_composer(cx))
-                            .children(self.render_slash_palette(cx))
-                            .children(self.render_menu_panel(cx)),
+                            .child(self.render_composer(window, cx))
+                            .children(self.render_slash_palette(cx)),
                     )
                     .when(
                         self.awaiting_first_token && self.is_run_active(),
@@ -4823,7 +4698,7 @@ impl ChatScreen {
             .flex_1()
             .h_full()
             .min_w_0()
-            .child(self.render_header(cx))
+            .child(self.render_header(window, cx))
             .child(body)
     }
 

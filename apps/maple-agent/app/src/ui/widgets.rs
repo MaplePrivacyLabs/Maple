@@ -1,5 +1,5 @@
-//! Shared chrome for the gpui screens: popup panels, menu rows, buttons,
-//! switches, tooltips, card rows, input frames, and banners.
+//! Shared chrome for the gpui screens: popup panels, buttons, switches,
+//! tooltips, card rows, input frames, and banners.
 //!
 //! Every helper returns a bare `div()` builder, so it costs the same as
 //! the inline chain it replaces: no allocation, no parsing, nothing
@@ -50,10 +50,11 @@ fn press_depth(style: StyleRefinement) -> StyleRefinement {
 }
 
 /// Floating panel behind a context menu or dropdown: an elevated surface
-/// with a border and a shadow, stacked as a column.
+/// with a border and a shadow, stacked as a column. It blocks the pointer
+/// from what lies beneath it.
 ///
-/// The caller adds the anchoring (`gpui::anchored` or `absolute`), the
-/// dismiss handler, and the rows.
+/// Build menus with [`super::popup`], which places this panel and wires
+/// its dismissal, keyboard, and rows.
 pub fn popup_panel(id: impl Into<ElementId>, width: Pixels) -> Stateful<Div> {
     div()
         .id(id)
@@ -68,31 +69,6 @@ pub fn popup_panel(id: impl Into<ElementId>, width: Pixels) -> Stateful<Div> {
         .shadow_md()
         .flex()
         .flex_col()
-}
-
-/// One row inside a [`popup_panel`]. A disabled row is dimmed and takes
-/// no hover, so the caller only attaches `on_click` when `enabled`.
-pub fn menu_row(id: impl Into<ElementId>, enabled: bool) -> Stateful<Div> {
-    div()
-        .id(id)
-        .role(Role::MenuItem)
-        .px_3()
-        .py_1p5()
-        .rounded(theme::RADIUS_SM)
-        .text_sm()
-        .text_color(gpui::rgb(if enabled {
-            theme::text_primary()
-        } else {
-            theme::text_muted()
-        }))
-        .when(enabled, |row| {
-            row.hover(|style| {
-                style
-                    .bg(gpui::rgb(theme::bg_sidebar_row_hover()))
-                    .cursor_pointer()
-            })
-            .active(|style| style.bg(gpui::rgb(theme::bg_sidebar_row_selected())))
-        })
 }
 
 /// Shared pill shape for [`primary_button`], [`secondary_button`], and
@@ -198,7 +174,7 @@ pub fn icon_button(
 /// The caller attaches `on_click`. The track is the brand accent when on
 /// and the hairline colour when off, so state reads without a label.
 pub fn switch(id: impl Into<ElementId>, on: bool) -> Stateful<Div> {
-    div()
+    switch_track(on)
         .id(id)
         .role(Role::Switch)
         .aria_toggled(if on {
@@ -206,6 +182,15 @@ pub fn switch(id: impl Into<ElementId>, on: bool) -> Stateful<Div> {
         } else {
             gpui::Toggled::False
         })
+        .focus_visible(focus_ring)
+        .hover(|style| style.cursor_pointer().opacity(0.9))
+        .active(|style| style.opacity(0.8))
+}
+
+/// The look of a [`switch`] without its role or input, for a row that is
+/// itself the control, such as a switch item in a popup menu.
+pub fn switch_track(on: bool) -> Div {
+    div()
         .flex_none()
         .w(px(34.))
         .h(px(20.))
@@ -219,9 +204,6 @@ pub fn switch(id: impl Into<ElementId>, on: bool) -> Stateful<Div> {
         .flex()
         .items_center()
         .when(on, |track| track.justify_end())
-        .focus_visible(focus_ring)
-        .hover(|style| style.cursor_pointer().opacity(0.9))
-        .active(|style| style.opacity(0.8))
         .child(
             div()
                 .size(px(14.))
@@ -297,7 +279,7 @@ pub fn notice(
         .child(icon_button(id, "x", "Dismiss", px(12.), theme::text_muted()).on_click(on_close))
 }
 
-/// Icon size inside a [`menu_row`] or an [`icon_button`] in a list row.
+/// Icon size in a popup menu row or an [`icon_button`] in a list row.
 pub const ROW_ICON: Pixels = px(14.);
 
 // ---- Tooltips -------------------------------------------------------------

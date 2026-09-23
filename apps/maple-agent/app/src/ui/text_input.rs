@@ -7,7 +7,8 @@ mod bounds;
 pub mod vim;
 pub(crate) mod vim_actions;
 
-use super::{application_vim, spell, theme, widgets};
+use super::popup::{Menu, MenuItem, Placement, Popup};
+use super::{application_vim, spell, theme};
 use std::collections::VecDeque;
 use std::ops::Range;
 use std::sync::Arc;
@@ -131,8 +132,8 @@ pub struct TextInput {
     /// from; reused while nothing that affects shaping has changed.
     shape_cache: Option<ShapeCache>,
     is_selecting: bool,
-    /// Window position of the right-click menu while it is open.
-    context_menu: Option<gpui::Point<Pixels>>,
+    /// The right-click menu, keyed by the window position it opened at.
+    popup: Popup<TextInput, gpui::Point<Pixels>>,
     /// Render '*' in place of content characters (password fields).
     mask: bool,
     /// Clear the content once the Enter hook has consumed it (composer behavior).
@@ -187,6 +188,10 @@ pub struct TextInput {
     /// Commits an Insert transaction and clears pending grammar when focus
     /// leaves the composer.
     focus_out_subscription: Option<Subscription>,
+    /// Focus went from the field into its own right-click menu, which
+    /// suspended Vim instead (see `on_right_click`). If the menu closes
+    /// without handing focus back, focus left the field through it.
+    focus_in_menu: bool,
 }
 
 /// How many text states one input remembers for undo.
@@ -262,7 +267,7 @@ impl TextInput {
             measure_cache: None,
             shape_cache: None,
             is_selecting: false,
-            context_menu: None,
+            popup: Popup::new(|this| &mut this.popup, cx),
             mask: false,
             tab_index: None,
             on_enter: None,
@@ -282,6 +287,7 @@ impl TextInput {
             on_vim_leave: None,
             on_application_escape: None,
             focus_out_subscription: None,
+            focus_in_menu: false,
         }
     }
 
@@ -523,7 +529,7 @@ impl TextInput {
         self.content = SharedString::from(text.to_string());
         self.selected_range = self.content.len()..self.content.len();
         self.keep_cursor_visible = true;
-        self.forget_text_positions();
+        self.forget_text_positions(cx);
         if let Some(vim) = &mut self.vim {
             vim.reset_after_external_text(&self.content, self.content.len(), false);
         }
@@ -538,7 +544,7 @@ impl TextInput {
         self.content = "".into();
         self.selected_range = 0..0;
         self.scroll_y = px(0.);
-        self.forget_text_positions();
+        self.forget_text_positions(cx);
         self.misspelled.clear();
         if let Some(vim) = &mut self.vim {
             vim.reset_after_external_text("", 0, true);
@@ -550,14 +556,14 @@ impl TextInput {
     /// Drop every state that holds a byte range into the old content: an
     /// IME composition, a reversed selection, and the menus whose items
     /// point at a word.
-    fn forget_text_positions(&mut self) {
+    fn forget_text_positions(&mut self, cx: &mut Context<Self>) {
         self.vertical_goal_x = None;
         self.cursor_affinity = CursorAffinity::Upstream;
         self.marked_range = None;
         self.vim_ime_baseline = None;
         self.selection_reversed = false;
         self.spell_menu = None;
-        self.context_menu = None;
+        self.popup.close(cx);
     }
 
     fn push_history_snapshot(&mut self, snapshot: HistorySnapshot) {
@@ -783,7 +789,7 @@ impl TextInput {
         self.marked_range.take();
         // Menu items hold ranges into the old text.
         self.spell_menu = None;
-        self.context_menu = None;
+        self.popup.close(cx);
         self.keep_cursor_visible = true;
         self.refresh_spelling();
         cx.notify();
@@ -821,7 +827,7 @@ impl TextInput {
 
     fn restore(&mut self, snapshot: EditSnapshot, cx: &mut Context<Self>) {
         self.content = snapshot.content;
-        self.forget_text_positions();
+        self.forget_text_positions(cx);
         self.selected_range = snapshot.selected_range;
         self.selection_reversed = snapshot.selection_reversed;
         self.cursor_affinity = snapshot.cursor_affinity;
@@ -1609,7 +1615,7 @@ impl TextInput {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.context_menu = None;
+        self.popup.close(cx);
         let index = self.index_for_mouse_position(event.position);
         let affinity = self.affinity_for_mouse_position(index, event.position);
         if self
@@ -1675,7 +1681,6 @@ impl TextInput {
         self.is_selecting = false;
         self.finish_vim_lifecycle(LifecycleEvent::PopupTakeover, cx);
         window.focus(&self.focus_handle, cx);
-        self.context_menu = Some(event.position);
         let index = self.index_for_mouse_position(event.position);
         self.spell_menu = self
             .misspelled
@@ -1686,112 +1691,91 @@ impl TextInput {
                 let suggestions = spell::suggestions(&self.content[range.clone()], 4);
                 (range, suggestions)
             });
-        cx.notify();
+        self.popup.open(event.position, cx);
     }
 
-    /// Right-click menu: cut, copy, paste, select all.
-    fn render_context_menu(&self, cx: &mut Context<Self>) -> Option<gpui::Deferred> {
-        let position = self.context_menu?;
+    /// Right-click menu: spelling fixes for the word under the pointer,
+    /// then cut, copy, paste, select all.
+    fn render_context_menu(
+        &self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<gpui::AnyElement> {
+        let position = *self.popup.open_key()?;
         let has_selection = !self.selected_range.is_empty();
-        let suggestions: Vec<_> = self
-            .spell_menu
-            .as_ref()
-            .map(|(range, suggestions)| {
-                suggestions
-                    .iter()
-                    .enumerate()
-                    .map(|(i, suggestion)| {
-                        let range = range.clone();
-                        let replacement = suggestion.clone();
-                        let label = SharedString::from(suggestion.clone());
-                        widgets::menu_row(
-                            ElementId::NamedInteger("text-input-suggest".into(), i as u64),
-                            true,
-                        )
-                        .on_click(cx.listener(move |this, _event, _window, cx| {
-                            cx.stop_propagation();
-                            this.context_menu = None;
-                            this.spell_menu = None;
-                            this.apply_suggestion(range.clone(), &replacement, cx);
-                        }))
-                        .child(label)
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
-        let add_word = self.spell_menu.as_ref().map(|(range, _)| {
+        let mut menu = Menu::new("text-input-menu", px(160.))
+            .label("Edit")
+            .application_vim(self.application_vim);
+        if let Some((range, suggestions)) = &self.spell_menu {
+            for (i, suggestion) in suggestions.iter().enumerate() {
+                let range = range.clone();
+                let replacement = suggestion.clone();
+                menu = menu.item(MenuItem::new(
+                    ElementId::NamedInteger("text-input-suggest".into(), i as u64),
+                    suggestion.clone(),
+                    move |this: &mut Self, _: &mut Window, cx: &mut Context<Self>| {
+                        this.spell_menu = None;
+                        this.apply_suggestion(range.clone(), &replacement, cx);
+                    },
+                ));
+            }
             let range = range.clone();
-            widgets::menu_row("text-input-add-word", true)
-                .on_click(cx.listener(move |this, _event, _window, cx| {
-                    cx.stop_propagation();
-                    this.context_menu = None;
-                    this.spell_menu = None;
-                    if let Some(word) = this.content.get(range.clone()) {
-                        spell::add_word(word);
-                    }
-                    this.refresh_spelling();
-                    cx.notify();
-                }))
-                .child("Add to dictionary")
-        });
-        let has_spell_items = add_word.is_some();
-        let item = |id: &'static str,
+            menu = menu
+                .item(MenuItem::new(
+                    "text-input-add-word",
+                    "Add to dictionary",
+                    move |this: &mut Self, _: &mut Window, cx: &mut Context<Self>| {
+                        this.spell_menu = None;
+                        if let Some(word) = this.content.get(range.clone()) {
+                            spell::add_word(word);
+                        }
+                        this.refresh_spelling();
+                        cx.notify();
+                    },
+                ))
+                .separator();
+        }
+        let edit = |id: &'static str,
                     label: &'static str,
                     enabled: bool,
                     action: fn(&mut Self, &mut Window, &mut Context<Self>)| {
-            widgets::menu_row(id, enabled)
-                .when(enabled, |item| {
-                    item.on_click(cx.listener(move |this, _event, window, cx| {
-                        cx.stop_propagation();
-                        this.context_menu = None;
-                        action(this, window, cx);
-                        cx.notify();
-                    }))
-                })
-                .child(label)
+            MenuItem::new(
+                id,
+                label,
+                move |this: &mut Self, window: &mut Window, cx: &mut Context<Self>| {
+                    this.spell_menu = None;
+                    action(this, window, cx);
+                    cx.notify();
+                },
+            )
+            .enabled(enabled)
         };
-        Some(gpui::deferred(
-            gpui::anchored()
-                .position(position)
-                .snap_to_window_with_margin(px(8.))
-                .child(
-                    widgets::popup_panel("text-input-menu", px(140.))
-                        .on_mouse_down_out(cx.listener(|this, _event, _window, cx| {
-                            this.context_menu = None;
-                            this.spell_menu = None;
-                            cx.notify();
-                        }))
-                        .children(suggestions)
-                        .children(add_word)
-                        .when(has_spell_items, |menu| {
-                            menu.child(div().my_1().h(px(1.)).bg(gpui::rgb(theme::border())))
-                        })
-                        .child(item(
-                            "text-input-cut",
-                            "Cut",
-                            has_selection,
-                            |this, window, cx| this.cut(&Cut, window, cx),
-                        ))
-                        .child(item(
-                            "text-input-copy",
-                            "Copy",
-                            has_selection,
-                            |this, window, cx| this.copy(&Copy, window, cx),
-                        ))
-                        .child(item(
-                            "text-input-paste",
-                            "Paste",
-                            true,
-                            |this, window, cx| this.paste(&Paste, window, cx),
-                        ))
-                        .child(item(
-                            "text-input-select-all",
-                            "Select all",
-                            !self.content.is_empty(),
-                            |this, window, cx| this.select_all(&SelectAll, window, cx),
-                        )),
-                ),
-        ))
+        let menu = menu
+            .item(edit(
+                "text-input-cut",
+                "Cut",
+                has_selection,
+                |this, window, cx| this.cut(&Cut, window, cx),
+            ))
+            .item(edit(
+                "text-input-copy",
+                "Copy",
+                has_selection,
+                |this, window, cx| this.copy(&Copy, window, cx),
+            ))
+            .item(edit(
+                "text-input-paste",
+                "Paste",
+                true,
+                |this, window, cx| this.paste(&Paste, window, cx),
+            ))
+            .item(edit(
+                "text-input-select-all",
+                "Select all",
+                !self.content.is_empty(),
+                |this, window, cx| this.select_all(&SelectAll, window, cx),
+            ));
+        Some(self.popup.render(menu, Placement::At(position), window, cx))
     }
 
     fn on_mouse_up(&mut self, _: &MouseUpEvent, _window: &mut Window, _: &mut Context<Self>) {
@@ -2177,7 +2161,7 @@ impl EntityInputHandler for TextInput {
                 })
                 .unwrap_or_else(|| range.start + new_text.len()..range.start + new_text.len());
             self.spell_menu = None;
-            self.context_menu = None;
+            self.popup.close(cx);
             self.refresh_spelling();
             cx.notify();
             return;
@@ -2209,7 +2193,7 @@ impl EntityInputHandler for TextInput {
             })
             .unwrap_or_else(|| range.start + new_text.len()..range.start + new_text.len());
         self.spell_menu = None;
-        self.context_menu = None;
+        self.popup.close(cx);
         self.keep_cursor_visible = true;
 
         self.refresh_spelling();
@@ -2960,14 +2944,25 @@ impl Element for TextElement {
 
 impl Render for TextInput {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.popup.sync_focus(window, cx);
         if self.vim.is_some() && self.focus_out_subscription.is_none() {
             let focus = self.focus_handle.clone();
             self.focus_out_subscription =
                 Some(
                     cx.on_focus_out(&focus, window, |input, _event, _window, cx| {
+                        if input.popup.open_key().is_some() {
+                            input.focus_in_menu = true;
+                            return;
+                        }
                         input.finish_vim_lifecycle(LifecycleEvent::TaskOrScreenSwitch, cx);
                     }),
                 );
+        }
+        if self.focus_in_menu && self.popup.open_key().is_none() {
+            self.focus_in_menu = false;
+            if !self.focus_handle.is_focused(window) {
+                self.finish_vim_lifecycle(LifecycleEvent::TaskOrScreenSwitch, cx);
+            }
         }
         let key_context = self.key_context();
         let input = div()
@@ -2983,7 +2978,7 @@ impl Render for TextInput {
             .key_context(key_context)
             .track_focus(&self.focus_handle(cx))
             .cursor(CursorStyle::IBeam);
-        vim_actions::attach_actions(input, cx)
+        let field = vim_actions::attach_actions(input, cx)
             .on_action(cx.listener(Self::application_escape))
             .on_action(cx.listener(Self::backspace))
             .on_action(cx.listener(Self::delete))
@@ -3094,8 +3089,16 @@ impl Render for TextInput {
             })
             .w_full()
             .when(self.multiline && self.fill_height, |el| el.h_full())
-            .child(TextElement { input: cx.entity() })
-            .children(self.render_context_menu(cx))
+            .child(TextElement { input: cx.entity() });
+        // The right-click menu sits beside the field's key context, not in
+        // it: while the menu has focus, keys it does not bind must not edit
+        // the text or reach the field's Vim.
+        let menu = self.render_context_menu(window, cx);
+        div()
+            .w_full()
+            .when(self.multiline && self.fill_height, |el| el.h_full())
+            .child(field)
+            .children(menu)
     }
 }
 
@@ -3341,6 +3344,46 @@ mod tests {
             input.select_to(99, cx);
             assert_eq!(input.selected_range, 0..6);
         });
+    }
+
+    /// The right-click menu takes the keyboard: disabled rows are skipped,
+    /// Enter picks, and the field gets its focus back.
+    #[gpui::test]
+    fn the_right_click_menu_walks_picks_and_returns_focus(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        let input = cx.new(|cx| {
+            crate::desktop::register_key_bindings(cx);
+            let mut input = TextInput::new("", cx);
+            input.set_text("hello world", cx);
+            input
+        });
+        let (_host, cx) = cx.add_window_view(|_window, _cx| InputHost {
+            input: input.clone(),
+        });
+        cx.simulate_resize(gpui::size(px(500.), px(240.)));
+        cx.update(|window, _| window.activate_window());
+        let focus = cx.update(|_window, app| input.read(app).focus_handle(app));
+        cx.update(|window, app| window.focus(&focus, app));
+        cx.run_until_parked();
+
+        let at = gpui::point(px(40.), px(10.));
+        cx.simulate_mouse_down(at, gpui::MouseButton::Right, gpui::Modifiers::default());
+        cx.simulate_mouse_up(at, gpui::MouseButton::Right, gpui::Modifiers::default());
+        assert_eq!(
+            input.update(cx, |input, _| input.popup.open_key().copied()),
+            Some(at)
+        );
+        // Keys the menu does not bind do not edit the text behind it.
+        cx.simulate_keystrokes("backspace");
+        assert_eq!(input.update(cx, |input, _| input.text()), "hello world");
+        // Nothing is selected, so Cut and Copy are disabled: the first Down
+        // lands on Paste, the next on Select all.
+        cx.simulate_keystrokes("down down enter");
+        input.update(cx, |input, _| {
+            assert_eq!(input.popup.open_key(), None);
+            assert_eq!(input.selected_range, 0..input.text_ref().len());
+        });
+        assert_eq!(cx.update(|window, app| window.focused(app)), Some(focus));
     }
 
     #[gpui::test]

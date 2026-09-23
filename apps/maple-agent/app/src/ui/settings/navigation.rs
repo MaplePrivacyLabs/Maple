@@ -399,6 +399,12 @@ impl SettingsScreen {
     }
 
     fn application_escape(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // An open dropdown closes first. It normally has focus and closes
+        // on its own Escape binding; this covers one that has not taken
+        // focus yet.
+        if self.popup.close(cx) {
+            return;
+        }
         if self.application_text_input_focused(window, cx) {
             window.focus(&self.application_focus, cx);
             cx.notify();
@@ -407,11 +413,6 @@ impl SettingsScreen {
         if self.shortcut_recorder.is_some() {
             self.stop_shortcut_recording();
             cx.notify();
-            return;
-        }
-        // An open dropdown closes before Escape leaves Settings.
-        if self.open_menu.is_some() {
-            self.close_setting_menu(cx);
             return;
         }
         self.close(cx);
@@ -446,17 +447,6 @@ impl SettingsScreen {
         match command {
             SettingsApplicationCommand::Next | SettingsApplicationCommand::Previous => {
                 let count = self.application_vim.count.take();
-                // While a dropdown is open, j/k move its highlight instead
-                // of the row selection.
-                if self.open_menu.is_some() {
-                    let direction = match command {
-                        SettingsApplicationCommand::Next => 1,
-                        _ => -1,
-                    };
-                    self.move_setting_menu_selection(direction, count);
-                    cx.notify();
-                    return;
-                }
                 self.move_application_selection(
                     match command {
                         SettingsApplicationCommand::Next => 1,
@@ -469,13 +459,6 @@ impl SettingsScreen {
             }
             SettingsApplicationCommand::First | SettingsApplicationCommand::Last => {
                 self.application_vim.count.clear();
-                if self.open_menu.is_some() {
-                    self.shortcut_notice = Some(
-                        "Application Vim first/last is not available in a dropdown".to_string(),
-                    );
-                    cx.notify();
-                    return;
-                }
                 self.select_application_edge(
                     matches!(command, SettingsApplicationCommand::First),
                     window,
@@ -484,13 +467,6 @@ impl SettingsScreen {
             }
             SettingsApplicationCommand::Activate => {
                 self.application_vim.count.clear();
-                // While a dropdown is open, Enter picks the highlighted
-                // option instead of activating the row.
-                if let Some(menu) = self.open_menu {
-                    let index = self.menu_selected.unwrap_or(0);
-                    self.pick_setting_option(menu, index, cx);
-                    return;
-                }
                 self.activate_application_selection(window, cx);
             }
             SettingsApplicationCommand::Search => {
@@ -672,6 +648,7 @@ fn stepped_index(current: Option<usize>, len: usize, direction: isize, count: us
 
 #[cfg(test)]
 mod tests {
+    use super::super::option_id;
     use super::*;
     use gpui::{AppContext, Context, Entity, IntoElement, Render, TestAppContext, Window, div, px};
 
@@ -980,7 +957,12 @@ mod tests {
     }
     impl Render for DropdownHost {
         fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-            div().w(px(1200.)).h(px(800.)).child(self.settings.clone())
+            div()
+                .w(px(1200.))
+                .h(px(800.))
+                .flex()
+                .flex_col()
+                .child(self.settings.clone())
         }
     }
 
@@ -1010,37 +992,53 @@ mod tests {
         })
     }
 
-    #[gpui::test]
-    fn dropdown_rows_select_highlight_and_close(cx: &mut TestAppContext) {
-        let settings = dropdown_screen(cx, false);
+    /// Settings in an active window with the shipped key bindings, so a
+    /// dropdown takes the keyboard.
+    fn dropdown_window(
+        cx: &mut TestAppContext,
+        application_vim: bool,
+    ) -> (Entity<SettingsScreen>, &mut gpui::VisualTestContext) {
+        cx.update(crate::desktop::register_key_bindings);
+        let settings = dropdown_screen(cx, application_vim);
         let (_host, cx) = cx.add_window_view(|_window, _cx| DropdownHost {
             settings: settings.clone(),
         });
         cx.simulate_resize(gpui::size(px(1200.), px(800.)));
+        cx.update(|window, _| window.activate_window());
+        cx.run_until_parked();
+        (settings, cx)
+    }
 
+    #[gpui::test]
+    fn dropdown_rows_select_highlight_and_close(cx: &mut TestAppContext) {
+        let (settings, cx) = dropdown_window(cx, false);
+        // Opening highlights the saved voice.
         settings.update(cx, |this, cx| {
-            // Opening highlights the saved voice; a second toggle closes.
-            this.toggle_setting_menu(SettingMenu::Voice, cx);
-            assert_eq!(this.open_menu, Some(SettingMenu::Voice));
-            let saved = this
-                .menu_options(SettingMenu::Voice)
+            this.toggle_setting_menu(SettingMenu::Voice, cx)
+        });
+        cx.run_until_parked();
+        let saved = settings.update(cx, |this, _| {
+            assert_eq!(this.popup.open_key(), Some(&SettingMenu::Voice));
+            this.menu_options(SettingMenu::Voice)
                 .iter()
                 .position(|option| option.current)
-                .expect("the saved voice is one of the options");
-            assert_eq!(this.menu_selected, Some(saved));
+                .expect("the saved voice is one of the options")
+        });
+        assert_eq!(
+            settings.update(cx, |this, _| this.popup.highlighted().cloned()),
+            Some(option_id(SettingMenu::Voice, saved).into())
+        );
 
-            this.move_setting_menu_selection(1, 1);
-            assert_eq!(
-                this.menu_selected,
-                Some((saved + 1) % crate::settings::TTS_VOICES.len()),
-                "the highlight advances one option and wraps"
-            );
-
-            // Picking applies the highlighted option and closes the menu.
-            let picked = this.menu_selected.expect("highlighted");
-            this.pick_setting_option(SettingMenu::Voice, picked, cx);
-            assert_eq!(this.open_menu, None, "picking closes the dropdown");
-            assert_eq!(this.menu_selected, None);
+        // Down advances one option, wrapping; Enter picks it and closes.
+        cx.simulate_keystrokes("down");
+        let picked = (saved + 1) % crate::settings::TTS_VOICES.len();
+        assert_eq!(
+            settings.update(cx, |this, _| this.popup.highlighted().cloned()),
+            Some(option_id(SettingMenu::Voice, picked).into())
+        );
+        cx.simulate_keystrokes("enter");
+        settings.update(cx, |this, cx| {
+            assert_eq!(this.popup.open_key(), None, "picking closes the dropdown");
             assert_eq!(
                 this.settings.tts_voice,
                 crate::settings::TTS_VOICES[picked].0,
@@ -1050,50 +1048,82 @@ mod tests {
             // Opening another row replaces the open one.
             this.toggle_setting_menu(SettingMenu::Voice, cx);
             this.toggle_setting_menu(SettingMenu::Appearance, cx);
-            assert_eq!(this.open_menu, Some(SettingMenu::Appearance));
+            assert_eq!(this.popup.open_key(), Some(&SettingMenu::Appearance));
         });
     }
+
+    /// Issue #997: a second press on the value button closes its dropdown.
+    #[gpui::test]
+    fn a_second_press_on_a_dropdown_closes_it(cx: &mut TestAppContext) {
+        let (settings, cx) = dropdown_window(cx, false);
+        for open in [Some(SettingMenu::Appearance), None] {
+            let bounds = cx
+                .debug_bounds("setting-value-appearance")
+                .expect("the appearance value button renders");
+            cx.simulate_click(bounds.center(), gpui::Modifiers::default());
+            assert_eq!(
+                settings.update(cx, |this, _| this.popup.open_key().copied()),
+                open
+            );
+        }
+    }
+
     #[gpui::test]
     fn vim_activation_opens_picks_and_escapes_the_dropdown(cx: &mut TestAppContext) {
-        let settings = dropdown_screen(cx, true);
-        let (_host, cx) = cx.add_window_view(|_window, _cx| DropdownHost {
-            settings: settings.clone(),
-        });
-        cx.simulate_resize(gpui::size(px(1200.), px(800.)));
-
+        let (settings, cx) = dropdown_window(cx, true);
+        let highlighted = |cx: &mut gpui::VisualTestContext| {
+            settings.update(cx, |this, _| this.popup.highlighted().cloned())
+        };
+        let speed = |index| Some(option_id(SettingMenu::SpeechSpeed, index).into());
+        // Enter on the speech-speed row opens its dropdown.
         cx.update(|window, app| {
             settings.update(app, |this, cx| {
-                // Enter on the speech-speed row opens its dropdown.
                 this.application_vim.region = SettingsRegion::Pane;
                 this.application_vim.target =
                     Some(SettingsTarget::General(GeneralTarget::SpeechSpeed));
                 this.execute_application_vim(SettingsApplicationCommand::Activate, window, cx);
-                assert_eq!(this.open_menu, Some(SettingMenu::SpeechSpeed));
-
-                // j moves the menu highlight, not the row selection.
-                let before = this.menu_selected;
-                this.execute_application_vim(SettingsApplicationCommand::Next, window, cx);
-                assert_ne!(this.menu_selected, before);
-                assert_eq!(
-                    this.application_vim.target,
-                    Some(SettingsTarget::General(GeneralTarget::SpeechSpeed)),
-                    "the row selection must not move while the menu is open"
-                );
-
-                // Enter picks the highlighted option and closes the menu.
-                let picked = this.menu_selected.expect("highlighted");
-                this.execute_application_vim(SettingsApplicationCommand::Activate, window, cx);
-                assert_eq!(this.open_menu, None);
-                let expected = crate::settings::TTS_SPEEDS[picked];
-                assert!((this.settings.tts_speed - expected).abs() < 0.01);
-
-                // Escape while a menu is open closes it instead of leaving
-                // Settings.
-                this.toggle_setting_menu(SettingMenu::Voice, cx);
-                this.execute_application_vim(SettingsApplicationCommand::Escape, window, cx);
-                assert_eq!(this.open_menu, None);
-            });
+                assert_eq!(this.popup.open_key(), Some(&SettingMenu::SpeechSpeed));
+            })
         });
+        cx.run_until_parked();
+
+        // The menu has the keyboard: j, G, and g g move its highlight, not
+        // the row selection.
+        let before = highlighted(cx);
+        cx.simulate_keystrokes("j");
+        assert_ne!(highlighted(cx), before);
+        cx.simulate_keystrokes("G");
+        assert_eq!(
+            highlighted(cx),
+            speed(crate::settings::TTS_SPEEDS.len() - 1)
+        );
+        cx.simulate_keystrokes("g g j");
+        assert_eq!(highlighted(cx), speed(1));
+        assert_eq!(
+            settings.update(cx, |this, _| this.application_vim.target.clone()),
+            Some(SettingsTarget::General(GeneralTarget::SpeechSpeed)),
+            "the row selection must not move while the menu is open"
+        );
+
+        // Enter picks the highlighted option and closes the menu.
+        cx.simulate_keystrokes("enter");
+        settings.update(cx, |this, _| {
+            assert_eq!(this.popup.open_key(), None);
+            let expected = crate::settings::TTS_SPEEDS[1];
+            assert!((this.settings.tts_speed - expected).abs() < 0.01);
+        });
+
+        // Escape while a menu is open closes it instead of leaving
+        // Settings.
+        settings.update(cx, |this, cx| {
+            this.toggle_setting_menu(SettingMenu::Voice, cx)
+        });
+        cx.run_until_parked();
+        cx.simulate_keystrokes("escape");
+        assert_eq!(
+            settings.update(cx, |this, _| this.popup.open_key().copied()),
+            None
+        );
     }
 
     #[gpui::test]
