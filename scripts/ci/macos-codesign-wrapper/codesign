@@ -1,0 +1,25 @@
+#!/bin/sh
+# Embed the Maple Developer ID profile immediately before codesign seals
+# Maple.app. codesign then covers Contents/embedded.provisionprofile.
+# MAPLE_REAL_CODESIGN overrides the real codesign binary in tests.
+set -eu
+
+profile="${MAPLE_MACOS_PROVISIONING_PROFILE:-}"
+bundle_marker="cloud.opensecret.maple</string>"
+
+if [ -n "${profile}" ] && [ -f "${profile}" ]; then
+  for arg in "$@"; do
+    case "${arg}" in
+      *.app)
+        info="${arg}/Contents/Info.plist"
+        dest="${arg}/Contents/embedded.provisionprofile"
+        if [ -f "${info}" ] && [ ! -f "${dest}" ] && grep -F -q "${bundle_marker}" "${info}"; then
+          cp "${profile}" "${dest}"
+          chmod 644 "${dest}"
+        fi
+        ;;
+    esac
+  done
+fi
+
+exec "${MAPLE_REAL_CODESIGN:-/usr/bin/codesign}" "$@"

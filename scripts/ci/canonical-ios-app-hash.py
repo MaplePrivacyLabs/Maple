@@ -35,6 +35,7 @@ VOLATILE_FILENAMES = {
     "archived-expanded-entitlements.xcent",
     "CodeResources",
     "embedded.mobileprovision",
+    "embedded.provisionprofile",
 }
 
 MACHO_MAGICS = {

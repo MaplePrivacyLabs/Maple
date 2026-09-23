@@ -2011,6 +2011,7 @@ remove_apple_signing_metadata() {
   find "${root}" \
     \( -name 'CodeResources' \
       -o -name 'embedded.mobileprovision' \
+      -o -name 'embedded.provisionprofile' \
       -o -name 'archived-expanded-entitlements.xcent' \) \
     -type f -delete
 
@@ -4153,4 +4154,43 @@ import_apple_developer_certificate() {
   cert_id="$(printf '%s\n' "${cert_info}" | awk -F'"' '{ print $2 }')"
   export APPLE_SIGNING_IDENTITY="${APPLE_SIGNING_IDENTITY:-${cert_id}}"
   echo "Imported Apple Developer ID certificate."
+}
+
+# The Developer ID profile must authorize this exact app to read the
+# trymaple.ai password. The check looks at the decoded plist text only.
+macos_profile_plist_allows_maple_passwords() {
+  local plist="$1"
+  grep -F -q 'webcredentials:trymaple.ai' "${plist}" \
+    && grep -F -q 'X773Y823TN.cloud.opensecret.maple' "${plist}" \
+    && grep -F -q 'com.apple.developer.associated-domains' "${plist}"
+}
+
+# Decode APPLE_PROVISIONING_PROFILE and point codesign at the wrapper that
+# embeds it before the bundle is signed. No-op unless this build is signing.
+prepare_macos_password_provisioning_profile() {
+  if [ "$(host_os)" != "darwin" ] || [ -z "${APPLE_CERTIFICATE:-}" ]; then
+    return 0
+  fi
+
+  if [ -z "${APPLE_PROVISIONING_PROFILE:-}" ]; then
+    echo "APPLE_PROVISIONING_PROFILE is required. Associated Domains is a restricted entitlement and the signed Mac app needs a Developer ID profile for webcredentials:trymaple.ai." >&2
+    return 1
+  fi
+
+  local decoded plist
+  decoded="$(mktemp)"
+  plist="$(mktemp)"
+  decode_base64_string_to_file "${APPLE_PROVISIONING_PROFILE}" "${decoded}"
+  if ! security cms -D -i "${decoded}" > "${plist}"; then
+    rm -f "${decoded}" "${plist}"
+    echo "APPLE_PROVISIONING_PROFILE is not a provisioning profile." >&2
+    return 1
+  fi
+  if ! macos_profile_plist_allows_maple_passwords "${plist}"; then
+    rm -f "${decoded}" "${plist}"
+    echo "APPLE_PROVISIONING_PROFILE does not authorize webcredentials:trymaple.ai for X773Y823TN.cloud.opensecret.maple." >&2
+    return 1
+  fi
+  rm -f "${plist}"
+  export MAPLE_MACOS_PROVISIONING_PROFILE="${decoded}"
 }

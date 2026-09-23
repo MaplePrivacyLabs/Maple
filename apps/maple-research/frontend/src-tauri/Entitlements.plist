@@ -15,5 +15,13 @@
     <!-- File access permissions -->
     <key>com.apple.security.files.user-selected.read-write</key>
     <true/>
+
+    <!-- Password AutoFill for credentials saved on trymaple.ai.
+         webcredentials only. applinks stays on iOS so this Mac app does not
+         claim https://trymaple.ai links. -->
+    <key>com.apple.developer.associated-domains</key>
+    <array>
+        <string>webcredentials:trymaple.ai</string>
+    </array>
 </dict>
 </plist>

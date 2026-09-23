@@ -86,8 +86,10 @@ libc = "0.2"
 [target.'cfg(target_os = "macos")'.dependencies]
 # Let AppKit persist the frame in its native point coordinate space. This
 # avoids physical-pixel scaling errors on Retina and mixed-DPI displays.
+objc2 = "0.6.4"
 objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSWindow"] }
-objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSString"] }
+objc2-authentication-services = { version = "=0.3.2", default-features = false, features = ["std", "ASAuthorization", "ASAuthorizationController", "ASAuthorizationCredential", "ASAuthorizationError", "ASAuthorizationPasswordProvider", "ASAuthorizationPasswordRequest", "ASAuthorizationRequest", "ASFoundation", "ASPasswordCredential"] }
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSArray", "NSError", "NSString"] }
 
 [target.'cfg(target_os = "ios")'.dependencies]
 tauri-plugin-iap = { path = "plugins/tauri-plugin-iap" }

@@ -9,6 +9,9 @@ mod agent_acp;
 mod agent_host;
 #[cfg(desktop)]
 mod agent_tauri;
+#[cfg(target_os = "macos")]
+mod apple_password;
+mod apple_password_decision;
 #[cfg(test)]
 mod ios_app_variant;
 #[cfg(any(desktop, target_os = "ios"))]
@@ -323,6 +326,8 @@ pub fn run() {
             native_oauth::native_oauth_begin,
             native_oauth::native_oauth_redeem,
             native_oauth::native_oauth_cancel,
+            #[cfg(target_os = "macos")]
+            apple_password::request_apple_password,
             native_transport_root::install_native_transport_root,
             proxy::start_proxy,
             proxy::init_proxy_on_startup,

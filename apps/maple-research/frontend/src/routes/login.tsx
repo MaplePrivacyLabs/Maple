@@ -16,7 +16,8 @@ import { sha256 } from "@noble/hashes/sha256";
 import { bytesToHex } from "@noble/hashes/utils";
 import { AppleAuthProvider } from "@/components/AppleAuthProvider";
 import { getBillingService } from "@/billing/billingService";
-import { isIOS, isTauri } from "@/utils/platform";
+import { signInWithApplePassword } from "@/services/applePassword";
+import { isIOS, isMacOS, isTauri } from "@/utils/platform";
 import { appUrl } from "@/config/domains";
 import { useRouteMeta } from "@/utils/routeMeta";
 import { getSafeInternalRedirect, navigateToSafeInternalRedirect } from "@/utils/internalRedirect";
@@ -59,6 +60,7 @@ function LoginPage() {
   // Use platform detection functions
   const isIOSPlatform = isIOS();
   const isTauriEnv = isTauri();
+  const canUseApplePasswords = isTauriEnv && isMacOS();
 
   // Redirect if already logged in
   useEffect(() => {
@@ -81,6 +83,28 @@ function LoginPage() {
     }
   }, [os.auth.user, navigate, next, selected_plan, code, router]);
 
+  const finishEmailLogin = () => {
+    // Clear any existing billing token to prevent session mixing
+    try {
+      getBillingService().clearToken();
+    } catch (billingError) {
+      console.warn("Failed to clear billing token:", billingError);
+    }
+    setTimeout(() => {
+      if (selected_plan) {
+        navigate({
+          to: "/pricing",
+          search: { selected_plan }
+        });
+      } else {
+        if (!navigateToSafeInternalRedirect(router.history, next)) {
+          navigate({ to: "/" });
+        }
+      }
+      window.scrollTo(0, 0);
+    }, 100);
+  };
+
   const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     setIsLoading(true);
@@ -91,25 +115,7 @@ function LoginPage() {
 
     try {
       await os.signIn(email, password);
-      // Clear any existing billing token to prevent session mixing
-      try {
-        getBillingService().clearToken();
-      } catch (billingError) {
-        console.warn("Failed to clear billing token:", billingError);
-      }
-      setTimeout(() => {
-        if (selected_plan) {
-          navigate({
-            to: "/pricing",
-            search: { selected_plan }
-          });
-        } else {
-          if (!navigateToSafeInternalRedirect(router.history, next)) {
-            navigate({ to: "/" });
-          }
-        }
-        window.scrollTo(0, 0);
-      }, 100);
+      finishEmailLogin();
     } catch (error) {
       console.error(error);
       if (error instanceof Error) {
@@ -117,6 +123,24 @@ function LoginPage() {
       } else {
         setError("Something went wrong. Please try again.");
       }
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleApplePassword = async () => {
+    setIsLoading(true);
+    setError(null);
+    try {
+      const outcome = await signInWithApplePassword({
+        signIn: (email, password) => os.signIn(email, password)
+      });
+      if (outcome.status === "cancelled") return;
+      if (outcome.status !== "signed-in") {
+        setError(outcome.message);
+        return;
+      }
+      finishEmailLogin();
     } finally {
       setIsLoading(false);
     }
@@ -491,6 +515,18 @@ function LoginPage() {
             autoComplete="current-password"
           />
         </div>
+        {canUseApplePasswords && (
+          <Button
+            type="button"
+            variant="outline"
+            className="w-full bg-white/40 dark:bg-white/0"
+            disabled={isLoading}
+            onClick={handleApplePassword}
+          >
+            <Apple className="mr-2 h-4 w-4" />
+            Use Apple Passwords
+          </Button>
+        )}
         <Button type="submit" variant="primary" className="w-full" disabled={isLoading}>
           {isLoading ? (
             <>
