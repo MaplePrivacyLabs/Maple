@@ -16,8 +16,16 @@ Logout and account deletion synchronously suspend this work before awaiting
 other account cleanup. A failed logout can start a new session after cleanup;
 confirmed deletion retains the old account's suspension. A local one-second
 identity check reattaches recovery after SDK refresh without issuing network
-requests itself. Foreground, reconnect, and explicit retry also recover, with
-failed confirmations retried at 15, 30, 60, 120, then 300 seconds. Billing HTTP
+requests itself. Transient confirmation failures retry at 15, 30, 60, 120,
+then 300 seconds; foreground/reconnect events respect that backoff. Unchanged
+transactions rejected with HTTP 400/409 are not automatically resubmitted.
+That in-memory suppression belongs to the Maple account and API origin and
+survives an SDK credential refresh. New signed state for the transaction or
+explicit Retry/Restore permits another attempt, including after support fixes
+ownership. A rejected transaction never blocks independent transactions from
+recovering. Every observed signed revision must be acknowledged before its ID
+is finished; a successful listener completion reconciles all outstanding IDs
+before clearing an earlier recovery error. Billing HTTP
 has a 30-second deadline, including its response body. Apple purchase and
 restore authentication sheets are not timed out by that HTTP deadline.
 
@@ -43,6 +51,9 @@ revision that started the operation.
   selected for quota. Apple uses the native sheet on iOS and Apple's fixed
   subscription-management URL elsewhere. Stripe cancellation management remains
   available independently.
+- Ownership conflicts retain account-specific recovery guidance. Purchase
+  confirmation names the purchased plan as current only when billing actually
+  selects that plan; acknowledgement alone does not imply an entitlement change.
 - Anonymous accounts may buy with Apple, but must preserve their Maple Account
   ID and password. Restoring a purchase does not recover a lost Maple login.
 - The iOS application hides credit purchases, Team seat-purchase prompts,
@@ -70,3 +81,8 @@ Xcode-local StoreKit transactions must not be accepted by hosted billing.
 Real sandbox purchase, restore, renewal, cancellation, refund, and notification
 processing still need the App Store/TestFlight path. A successful simulator
 build or a local acknowledgment fixture is not evidence of that integration.
+
+Before production IAP enablement, OpenSecret account deletion also needs a
+durable server-to-server event that retires billing ownership. The client-side
+session suspension above does not implement that event; retiring ownership
+before deletion commits would incorrectly retire accounts whose deletion fails.
