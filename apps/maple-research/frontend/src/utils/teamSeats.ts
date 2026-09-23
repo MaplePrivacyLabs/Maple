@@ -52,8 +52,17 @@ export function getTeamSeatMismatch(teamStatus?: TeamStatus): TeamSeatMismatch |
 
 export function formatTeamSeatMismatchMessage(
   mismatch: TeamSeatMismatch,
-  audience: "admin" | "member"
+  audience: "admin" | "member",
+  canPurchaseSeats = true
 ): string {
+  const resolution =
+    audience === "admin"
+      ? canPurchaseSeats
+        ? "Team usage is paused until seats are added or members are removed."
+        : "Remove members to match the paid seat count and resume team usage."
+      : canPurchaseSeats
+        ? "Contact your team admin to add paid seats or remove members."
+        : "Contact your team admin to resolve the seat count.";
   if (
     mismatch.hasExactCounts &&
     mismatch.memberCount !== null &&
@@ -62,18 +71,11 @@ export function formatTeamSeatMismatchMessage(
   ) {
     const memberLabel = mismatch.memberCount === 1 ? "member" : "members";
     const seatLabel = mismatch.billedSeatCount === 1 ? "paid seat" : "paid seats";
-    const resolution =
-      audience === "admin"
-        ? "Team usage is paused until seats are added or members are removed."
-        : "Contact your team admin to add paid seats or remove members.";
-
     return (
       `This team has ${mismatch.memberCount} ${memberLabel} but only ` +
       `${mismatch.billedSeatCount} ${seatLabel}. ${resolution}`
     );
   }
 
-  return audience === "admin"
-    ? "This team has more members than paid seats. Team usage is paused until seats are added or members are removed."
-    : "This team has more members than paid seats. Contact your team admin to add paid seats or remove members.";
+  return `This team has more members than paid seats. ${resolution}`;
 }

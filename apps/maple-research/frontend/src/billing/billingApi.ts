@@ -12,20 +12,40 @@ export const MIN_PURCHASE_CREDITS = 10000;
 export const MIN_PURCHASE_AMOUNT = 10;
 export const MIN_PURCHASE_ERROR = `Minimum purchase is ${MIN_PURCHASE_CREDITS.toLocaleString()} credits ($${MIN_PURCHASE_AMOUNT})`;
 
+export type BillingPaymentProvider = "stripe" | "zaprite" | "subscription_pass" | "apple";
+
+/** Management is independent of the provider selected to supply the current quota. */
+export type BillingSubscription = {
+  provider: string;
+  plan: string;
+  product_id?: string;
+  state: string;
+  renews_at: number | null;
+  // Unknown future hints must not be treated as external URLs or executable actions.
+  manage: string;
+  selected?: boolean;
+  environment?: string;
+  auto_renew_enabled?: boolean | null;
+};
+
 export type BillingStatus = {
   is_subscribed: boolean;
-  stripe_customer_id: string | null;
+  stripe_customer_id?: string | null;
   product_id: string;
-  product_name: string;
-  subscription_status: string;
-  current_period_end: string | null;
+  product_name: string | null;
+  subscription_status: string | null;
+  current_period_end: number | string | null;
   can_chat: boolean;
   chats_remaining: number | null;
-  payment_provider: "stripe" | "zaprite" | "subscription_pass" | null;
+  payment_provider: BillingPaymentProvider | null;
   total_tokens: number | null;
   used_tokens: number | null;
   usage_reset_date: string | null;
   api_credit_balance?: number;
+  ios_iap_enabled?: boolean;
+  ios_us_external_link_enabled?: boolean;
+  subscriptions?: BillingSubscription[];
+  conflict?: { other_provider: string; action: string } | null;
   pending_plan_change?: {
     id: string;
     type: string;
@@ -190,7 +210,8 @@ export async function createCheckoutSession(
   productId: string,
   successUrl: string,
   cancelUrl: string,
-  quantity?: number
+  quantity?: number,
+  assertCurrent?: () => void
 ): Promise<void> {
   const requestBody = {
     email,
@@ -221,6 +242,7 @@ export async function createCheckoutSession(
   }
 
   const { checkout_url } = await response.json();
+  assertCurrent?.();
   console.log("Redirecting to checkout:", checkout_url);
 
   // For all Tauri platforms (mobile and desktop), use opener plugin to launch external browser
@@ -230,6 +252,7 @@ export async function createCheckoutSession(
     );
 
     const { invoke } = await import("@tauri-apps/api/core");
+    assertCurrent?.();
 
     // Use the opener plugin directly - required for Tauri platforms
     await invoke("plugin:opener|open_url", { url: checkout_url })
@@ -237,6 +260,7 @@ export async function createCheckoutSession(
         console.log("[Billing] Successfully opened URL in external browser");
       })
       .catch((error: Error) => {
+        assertCurrent?.();
         console.error("[Billing] Failed to open external browser:", error);
         if (isMobile()) {
           throw new Error(
@@ -254,6 +278,7 @@ export async function createCheckoutSession(
   }
 
   // Fall back to regular navigation for web platforms
+  assertCurrent?.();
   window.location.href = checkout_url;
 }
 
@@ -262,7 +287,8 @@ export async function createZapriteCheckoutSession(
   email: string,
   productId: string,
   successUrl: string,
-  quantity?: number
+  quantity?: number,
+  assertCurrent?: () => void
 ): Promise<void> {
   const requestBody = {
     email,
@@ -292,6 +318,7 @@ export async function createZapriteCheckoutSession(
   }
 
   const { checkout_url } = await response.json();
+  assertCurrent?.();
   console.log("Redirecting to Zaprite checkout:", checkout_url);
 
   // For all Tauri platforms (mobile and desktop), use opener plugin to launch external browser
@@ -301,6 +328,7 @@ export async function createZapriteCheckoutSession(
     );
 
     const { invoke } = await import("@tauri-apps/api/core");
+    assertCurrent?.();
 
     // Use the opener plugin directly - required for Tauri platforms
     await invoke("plugin:opener|open_url", { url: checkout_url })
@@ -308,6 +336,7 @@ export async function createZapriteCheckoutSession(
         console.log("[Billing] Successfully opened URL in external browser");
       })
       .catch((error: Error) => {
+        assertCurrent?.();
         console.error("[Billing] Failed to open external browser:", error);
         if (isMobile()) {
           throw new Error(
@@ -325,6 +354,7 @@ export async function createZapriteCheckoutSession(
   }
 
   // Fall back to regular navigation for web platforms
+  assertCurrent?.();
   window.location.href = checkout_url;
 }
 

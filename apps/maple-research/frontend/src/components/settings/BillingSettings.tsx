@@ -1,46 +1,31 @@
-import { useState } from "react";
 import { Link } from "@tanstack/react-router";
-import { CreditCard, KeyRound, Loader2, Sparkles } from "lucide-react";
-import { openBillingPortal } from "@/billing/billingPortal";
-import { Alert, AlertDescription } from "@/components/ui/alert";
+import { useOpenSecret } from "@mapleai/sdk";
+import { CreditCard, KeyRound, Sparkles } from "lucide-react";
+import { billingPeriodDate } from "@/billing/subscriptionManagement";
+import { useAppleBilling } from "@/billing/useAppleBilling";
 import { Button } from "@/components/ui/button";
 import { useBillingState } from "@/state/useLocalState";
+import { isIOS } from "@/utils/platform";
 import { SettingsPage, SettingsSection } from "./SettingsPage";
+import { BillingSubscriptions } from "./BillingSubscriptions";
+import { ApplePurchaseRecovery } from "./ApplePurchaseRecovery";
 
 export function BillingSettings() {
   const { billingStatus } = useBillingState();
-  const [isPortalLoading, setIsPortalLoading] = useState(false);
-  const [portalError, setPortalError] = useState<string | null>(null);
+  const apple = useAppleBilling();
+  const accountId = useOpenSecret().auth.user?.user.id ?? "signed-out";
 
   const productName = billingStatus?.product_name ?? "";
   const normalizedProductName = productName.toLowerCase();
-  const hasStripeAccount = !!billingStatus?.stripe_customer_id;
-  const isPaidPlan = ["pro", "max", "team"].some((plan) => normalizedProductName.includes(plan));
-  const showManage = isPaidPlan && hasStripeAccount;
   const showUpgrade =
     !normalizedProductName.includes("max") && !normalizedProductName.includes("team");
-
-  const handleManageSubscription = async () => {
-    if (!showManage) return;
-    setIsPortalLoading(true);
-    setPortalError(null);
-    try {
-      await openBillingPortal();
-    } catch (error) {
-      console.error("Error opening billing portal:", error);
-      setPortalError(
-        "Unable to open subscription management. Please try again or contact support@trymaple.ai."
-      );
-    } finally {
-      setIsPortalLoading(false);
-    }
-  };
 
   const periodLabel =
     billingStatus?.payment_provider === "subscription_pass" ||
     billingStatus?.payment_provider === "zaprite"
       ? "Expires"
-      : "Renews";
+      : "Current period ends";
+  const endDate = billingPeriodDate(billingStatus?.current_period_end ?? null);
 
   return (
     <SettingsPage title="Billing" description="Review your plan and manage subscription access.">
@@ -50,16 +35,12 @@ export function BillingSettings() {
             <div className="flex items-center gap-2">
               <CreditCard className="h-5 w-5 text-muted-foreground" />
               <p className="text-lg font-semibold">
-                {billingStatus ? `${billingStatus.product_name} Plan` : "Loading plan..."}
+                {billingStatus ? `${productName || "Current"} Plan` : "Loading plan..."}
               </p>
             </div>
-            {billingStatus?.current_period_end && (
+            {endDate && (
               <p className="mt-1.5 text-sm text-muted-foreground">
-                {periodLabel} on{" "}
-                {new Date(Number(billingStatus.current_period_end) * 1000).toLocaleDateString(
-                  undefined,
-                  { year: "numeric", month: "long", day: "numeric" }
-                )}
+                {periodLabel} on {endDate}
               </p>
             )}
           </div>
@@ -72,29 +53,20 @@ export function BillingSettings() {
                 </Link>
               </Button>
             )}
-            {showManage && (
-              <Button
-                type="button"
-                variant="outline"
-                onClick={handleManageSubscription}
-                disabled={isPortalLoading}
-              >
-                {isPortalLoading && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-                {isPortalLoading ? "Opening..." : "Manage subscription"}
-              </Button>
-            )}
           </div>
         </div>
-        {portalError && (
-          <Alert variant="destructive" className="mt-4">
-            <AlertDescription>{portalError}</AlertDescription>
-          </Alert>
-        )}
       </SettingsSection>
+
+      <BillingSubscriptions key={`subscriptions:${accountId}`} status={billingStatus} />
+      <ApplePurchaseRecovery key={`recovery:${accountId}:${apple.ownerKey}`} apple={apple} />
 
       <SettingsSection
         title="API credits"
-        description="View your extra credit balance or purchase credits for API and extended plan usage."
+        description={
+          isIOS()
+            ? "View your extra credit balance and manage API access."
+            : "View your extra credit balance or purchase credits for API and extended plan usage."
+        }
       >
         <Button asChild variant="outline">
           <Link to="/settings/api" replace>

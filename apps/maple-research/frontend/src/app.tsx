@@ -10,6 +10,7 @@ import { LocalStateProvider } from "./state/LocalStateContext";
 import { ErrorFallback } from "./components/ErrorFallback";
 import { NotFoundFallback } from "./components/NotFoundFallback";
 import { BillingServiceProvider } from "./components/BillingServiceProvider";
+import { AppleBillingProvider } from "./billing/AppleBillingProvider";
 import { DeepLinkHandler } from "./components/DeepLinkHandler";
 import { NotificationProvider } from "./contexts/NotificationContext";
 import { ChatTypographyProvider } from "./contexts/ChatTypographyContext";
@@ -66,10 +67,12 @@ export default function App() {
                   <ChatTypographyProvider>
                     <TTSProvider>
                       <BillingServiceProvider>
-                        <ProxyEventListener />
-                        <UpdateEventListener />
-                        <DeepLinkHandler />
-                        <InnerApp />
+                        <AppleBillingProvider>
+                          <ProxyEventListener />
+                          <UpdateEventListener />
+                          <DeepLinkHandler />
+                          <InnerApp />
+                        </AppleBillingProvider>
                       </BillingServiceProvider>
                     </TTSProvider>
                   </ChatTypographyProvider>

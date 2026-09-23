@@ -1,3 +1,4 @@
+import { suspendAppleBillingForAccount } from "@/billing/appleBillingLifecycle";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -21,6 +22,7 @@ import { getBillingService } from "@/billing/billingService";
 import { useChatRuntimeStore } from "@/contexts/ChatRuntimeContext";
 import { beginAllChatRuntimeDeletionFence } from "@/services/chatRuntimeDeletionFence";
 import { assertChatAccountCredential } from "@/services/chatAccountCredential";
+import { isIOS } from "@/utils/platform";
 
 interface GuestPaymentWarningDialogProps {
   open: boolean;
@@ -58,9 +60,11 @@ export function GuestPaymentWarningDialog({ open, onOpenChange }: GuestPaymentWa
       return;
     }
 
+    const releaseAppleBilling = suspendAppleBillingForAccount(userId);
     try {
       operationBlock = await stopAgentRuntimeForUser(userId);
     } catch (error) {
+      releaseAppleBilling();
       console.error("Error stopping Agent Mode:", error);
       releaseChatFence();
       setLogoutError("Maple couldn't stop Agent Mode. Please try logging out again.");
@@ -100,6 +104,7 @@ export function GuestPaymentWarningDialog({ open, onOpenChange }: GuestPaymentWa
         "Maple couldn't securely reset Agent Mode or finish logging out. Please try again."
       );
     } finally {
+      releaseAppleBilling();
       if (!signedOut) {
         releaseChatFence();
         if (nativeAuthCleared) {
@@ -140,8 +145,9 @@ export function GuestPaymentWarningDialog({ open, onOpenChange }: GuestPaymentWa
               Your anonymous account is not activated yet and cannot use the chat feature.
             </p>
             <p className="text-sm text-muted-foreground">
-              To start chatting with Maple AI, you need to subscribe to a paid plan. Anonymous
-              accounts must pay for a full year using Bitcoin or redeem a subscription pass.
+              {isIOS()
+                ? "You can subscribe with Apple or restore an existing Apple purchase. Keep your Maple Account ID and password so you can sign in again."
+                : "To start chatting with Maple AI, you need to subscribe to a paid plan. Anonymous accounts must pay for a full year using Bitcoin or redeem a subscription pass."}
             </p>
           </div>
 

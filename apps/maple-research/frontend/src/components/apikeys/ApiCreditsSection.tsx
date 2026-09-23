@@ -7,7 +7,7 @@ import { Loader2, CreditCard, Bitcoin, Coins, CheckCircle, Edit } from "lucide-r
 import { useQuery } from "@tanstack/react-query";
 import { getBillingService } from "@/billing/billingService";
 import { useOpenSecret } from "@mapleai/sdk";
-import { isMobile, isTauri } from "@/utils/platform";
+import { isIOS, isMobile, isTauri } from "@/utils/platform";
 import {
   MIN_PURCHASE_CREDITS,
   MIN_PURCHASE_AMOUNT,
@@ -31,6 +31,26 @@ const CREDIT_NUMBER_FORMATTER = new Intl.NumberFormat("en-US");
 
 function formatCredits(credits: number): string {
   return CREDIT_NUMBER_FORMATTER.format(credits);
+}
+
+function CreditBalanceCard({ balance }: { balance: number }) {
+  return (
+    <Card className="p-4">
+      <div className="flex items-center justify-between">
+        <div>
+          <p className="text-sm text-muted-foreground">Extra Credit Balance</p>
+          <p className="text-2xl font-bold flex items-center gap-2">
+            <Coins className="h-5 w-5" />
+            {formatCredits(balance)}
+          </p>
+          <p className="text-xs text-muted-foreground mt-1">
+            {!isIOS() && "$1 per 1,000 credits • "}
+            Extends your subscription when plan credits run out
+          </p>
+        </div>
+      </div>
+    </Card>
+  );
 }
 
 interface ApiCreditsSectionProps {
@@ -75,6 +95,8 @@ export function ApiCreditsSection({ showSuccessMessage = false }: ApiCreditsSect
   });
 
   const handlePurchase = async (method: "stripe" | "zaprite") => {
+    // Credits are consumed on iOS, but are not sold there in this IAP version.
+    if (isIOS()) return;
     // Clear any previous errors
     setPurchaseError(null);
 
@@ -194,6 +216,10 @@ export function ApiCreditsSection({ showSuccessMessage = false }: ApiCreditsSect
     );
   }
 
+  if (isIOS()) {
+    return <CreditBalanceCard balance={creditBalance?.balance ?? 0} />;
+  }
+
   return (
     <div className="space-y-4">
       {/* Success Message */}
@@ -214,20 +240,7 @@ export function ApiCreditsSection({ showSuccessMessage = false }: ApiCreditsSect
       )}
 
       {/* Current Balance */}
-      <Card className="p-4">
-        <div className="flex items-center justify-between">
-          <div>
-            <p className="text-sm text-muted-foreground">Extra Credit Balance</p>
-            <p className="text-2xl font-bold flex items-center gap-2">
-              <Coins className="h-5 w-5" />
-              {formatCredits(creditBalance?.balance || 0)}
-            </p>
-            <p className="text-xs text-muted-foreground mt-1">
-              $1 per 1,000 credits • Extends your subscription when plan credits run out
-            </p>
-          </div>
-        </div>
-      </Card>
+      <CreditBalanceCard balance={creditBalance?.balance ?? 0} />
 
       {/* Purchase Credits */}
       <Card className="p-4">

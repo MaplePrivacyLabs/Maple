@@ -1,5 +1,6 @@
 import { readNativeUserAuth, type OpenSecretContextType } from "@mapleai/sdk";
 import { isIOS } from "@/utils/platform";
+import { AppleBillingRetryPolicy } from "./appleBillingRetryPolicy";
 import {
   storeKit,
   StoreKitRecovery,
@@ -39,9 +40,12 @@ export interface AppleBillingSessionOptions {
   bridge: StoreKitBridge;
   fetch?: AppleBillingRequestOptions["fetch"];
   allowInsecureLoopback?: boolean;
+  retryPolicy?: AppleBillingRetryPolicy;
   /** Synchronous notification only; consumers fence their own later async work. */
   onAcknowledged?: (response: AppleTransactionResponse) => void;
   onListenerError?: (error: unknown) => void;
+  /** Called only after a listener-delivered transaction has also finished. */
+  onListenerRecovered?: () => void;
 }
 
 export type AppleBillingPurchaseResult =
@@ -62,6 +66,7 @@ export class AppleBillingSession {
   private readonly identity: AppleBillingIdentity;
   private readonly abort = new AbortController();
   private readonly recovery: StoreKitRecovery<AppleTransactionResponse>;
+  private readonly retryPolicy: AppleBillingRetryPolicy;
   private active = true;
   private token: string | undefined;
   private tokenRequest: Promise<string> | undefined;
@@ -75,6 +80,7 @@ export class AppleBillingSession {
       auth: { generateThirdPartyToken: input.auth.generateThirdPartyToken.bind(input.auth) }
     };
     this.options = options;
+    this.retryPolicy = options.retryPolicy ?? new AppleBillingRetryPolicy();
     // Project even an injected reader's result: credential-bearing extra fields
     // must not become part of the retained session owner.
     const { apiOrigin, revision, principalId } = options.readIdentity();
@@ -90,14 +96,27 @@ export class AppleBillingSession {
     }
     this.recovery = new StoreKitRecovery(
       {
-        getSignedTransactions: () => this.native(() => options.bridge.getSignedTransactions()),
+        getSignedTransactions: async () => {
+          const result = await this.native(() => options.bridge.getSignedTransactions());
+          for (const transaction of result.transactions) this.observe(transaction);
+          return result;
+        },
         sync: () => this.native(() => options.bridge.sync()),
         finishTransaction: (id) => this.native(() => options.bridge.finishTransaction(id))
       },
       async (signedTransaction, expectedTransactionId) => {
-        const response = await this.request((request) =>
-          submitAppleTransaction({ ...request, signedTransaction, expectedTransactionId })
-        );
+        this.assertCurrent();
+        this.retryPolicy.assertMaySubmit(expectedTransactionId, signedTransaction);
+        let response: AppleTransactionResponse;
+        try {
+          response = await this.request((request) =>
+            submitAppleTransaction({ ...request, signedTransaction, expectedTransactionId })
+          );
+        } catch (error) {
+          this.assertCurrent();
+          this.retryPolicy.failed(expectedTransactionId, signedTransaction, error);
+          throw error;
+        }
         this.notify(options.onAcknowledged, response);
         this.assertCurrent();
         return response;
@@ -231,7 +250,12 @@ export class AppleBillingSession {
 
   acknowledge(transaction: SignedStoreKitTransaction): Promise<AppleTransactionResponse> {
     this.assertCurrent();
+    this.observe(transaction);
     return this.recovery.acknowledge(transaction);
+  }
+
+  private observe(transaction: SignedStoreKitTransaction): void {
+    this.retryPolicy.observe(transaction.transactionId, transaction.jws);
   }
 
   recover(): Promise<AppleTransactionResponse[]> {
@@ -241,6 +265,7 @@ export class AppleBillingSession {
 
   restore(): Promise<AppleTransactionResponse[]> {
     this.assertCurrent();
+    this.retryPolicy.retry();
     return this.recovery.restore();
   }
 
@@ -264,8 +289,9 @@ export class AppleBillingSession {
       try {
         // Register observed revisions synchronously, before an older pending
         // submission can continue into finish on its next microtask.
-        void this.acknowledge(transaction).catch((error: unknown) =>
-          this.notify(this.options.onListenerError, error)
+        void this.acknowledge(transaction).then(
+          () => this.notify(this.options.onListenerRecovered, undefined),
+          (error: unknown) => this.notify(this.options.onListenerError, error)
         );
       } catch (error) {
         this.notify(this.options.onListenerError, error);

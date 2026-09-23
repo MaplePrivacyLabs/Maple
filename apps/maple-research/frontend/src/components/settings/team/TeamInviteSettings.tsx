@@ -23,6 +23,7 @@ import {
 } from "@/contexts/SettingsNavigationLockContext";
 import { useBillingState } from "@/state/useLocalState";
 import type { TeamStatus } from "@/types/team";
+import { isIOS } from "@/utils/platform";
 import { getTeamSeatMismatch } from "@/utils/teamSeats";
 import { SettingsPage, SettingsSection } from "../SettingsPage";
 
@@ -215,8 +216,9 @@ export function TeamInviteSettings() {
         <Alert variant="destructive">
           <AlertCircle className="h-4 w-4" />
           <AlertDescription>
-            Team usage is paused while the team has more members than paid seats. Add seats or
-            remove members before inviting anyone else.
+            {isIOS()
+              ? "Team usage is paused while the team has more members than paid seats. Remove members before inviting anyone else."
+              : "Team usage is paused while the team has more members than paid seats. Add seats or remove members before inviting anyone else."}
           </AlertDescription>
         </Alert>
         {canOpenBillingPortal && (
@@ -282,8 +284,9 @@ export function TeamInviteSettings() {
               <Alert variant="destructive">
                 <AlertCircle className="h-4 w-4" />
                 <AlertDescription>
-                  No seats are available. Purchase additional seats or remove existing members
-                  before inviting new ones.
+                  {isIOS()
+                    ? "No seats are available. Remove existing members before inviting new ones."
+                    : "No seats are available. Purchase additional seats or remove existing members before inviting new ones."}
                 </AlertDescription>
               </Alert>
               {canOpenBillingPortal && (

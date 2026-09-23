@@ -11,6 +11,7 @@ import type { DiscountResponse } from "@/billing/billingApi";
 import { appUrl } from "@/config/domains";
 import { useRouteMeta } from "@/utils/routeMeta";
 import { getSafeInternalRedirect } from "@/utils/internalRedirect";
+import { isIOS } from "@/utils/platform";
 
 const appHomeUrl = appUrl("/");
 
@@ -43,6 +44,7 @@ function Index() {
   const navigate = useNavigate();
   const os = useOpenSecret();
   const queryClient = useQueryClient();
+  const showWebPromotions = !isIOS();
   const { setBillingStatus, billingStatus } = useBillingState();
 
   useRouteMeta({
@@ -88,7 +90,7 @@ function Index() {
       return await billingService.getDiscount();
     },
     staleTime: 5 * 60 * 1000,
-    enabled: !!os.auth.user
+    enabled: !!os.auth.user && showWebPromotions
   });
 
   // Preserve legacy Team setup URLs by routing them into the dedicated Team settings page.
@@ -135,7 +137,7 @@ function Index() {
   // Show promo dialog for free users with active discount (one-time per promo)
   // This has LOWEST priority - don't show if other important dialogs should be visible
   useEffect(() => {
-    if (!os.auth.user || !billingStatus || !discount?.active) return;
+    if (!showWebPromotions || !os.auth.user || !billingStatus || !discount?.active) return;
 
     // Check if higher-priority dialogs should be shown
     const needsEmailVerification =
@@ -155,7 +157,8 @@ function Index() {
     discount,
     isGuestUser,
     isOnFreePlan,
-    shouldShowGuestPaymentWarning
+    shouldShowGuestPaymentWarning,
+    showWebPromotions
   ]);
 
   // Signed-out apex is now an app entry point; rich marketing lives on www.trymaple.ai.
@@ -174,7 +177,7 @@ function Index() {
       />
 
       {/* Promo Dialog - shows once per promo for free users */}
-      {discount?.active && (
+      {showWebPromotions && discount?.active && (
         <PromoDialog open={promoDialogOpen} onOpenChange={setPromoDialogOpen} discount={discount} />
       )}
     </>

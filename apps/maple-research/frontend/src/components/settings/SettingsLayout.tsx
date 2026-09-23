@@ -1,3 +1,4 @@
+import { suspendAppleBillingForAccount } from "@/billing/appleBillingLifecycle";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, Outlet, useLocation, useRouter } from "@tanstack/react-router";
 import { useOpenSecret } from "@mapleai/sdk";
@@ -41,10 +42,8 @@ import { beginAllChatRuntimeDeletionFence } from "@/services/chatRuntimeDeletion
 import { assertChatAccountCredential } from "@/services/chatAccountCredential";
 import { useBillingState } from "@/state/useLocalState";
 import type { TeamStatus } from "@/types/team";
-import { isIOS } from "@/utils/platform";
 import { getTeamSeatMismatch } from "@/utils/teamSeats";
 import { cn } from "@/utils/utils";
-import packageJson from "../../../package.json";
 import {
   AgentConnectionsAvailabilityProvider,
   useAgentConnectionsAvailability
@@ -234,14 +233,8 @@ function SettingsLayoutContent() {
     enabled: !!os.auth.user && isTeamPlan
   });
 
-  const isIOSPlatform = isIOS();
   const agentConnectionsAvailability = useAgentConnectionsAvailability();
   const supportsAgentConnections = agentConnectionsAvailability === "available";
-  const { data: products, isError: productsError } = useQuery({
-    queryKey: ["products-version-check", isIOSPlatform],
-    queryFn: () => getBillingService().getProducts(`v${packageJson.version}`),
-    enabled: isIOSPlatform && !!os.auth.user
-  });
 
   if (os.auth.loading || !os.auth.user) {
     return null;
@@ -249,10 +242,6 @@ function SettingsLayoutContent() {
 
   const teamSeatMismatch = getTeamSeatMismatch(teamStatus);
   const needsTeamSetup = !!teamStatus?.has_team_subscription && teamStatus.team_created === false;
-  const showApiManagement =
-    !isIOSPlatform ||
-    productsError ||
-    !!products?.some((product) => product.is_available !== false);
 
   const sections: Array<{ label: string; items: SettingsNavItem[] }> = [
     {
@@ -283,9 +272,7 @@ function SettingsLayoutContent() {
     {
       label: "Developer",
       items: [
-        ...(showApiManagement
-          ? [{ label: "API & credits", to: "/settings/api" as const, icon: KeyRound }]
-          : []),
+        { label: "API & credits", to: "/settings/api" as const, icon: KeyRound },
         ...(supportsAgentConnections
           ? [
               {
@@ -332,9 +319,11 @@ function SettingsLayoutContent() {
     }
 
     // Never sign out while this account may still have Agent tools executing.
+    const releaseAppleBilling = suspendAppleBillingForAccount(userId);
     try {
       operationBlock = await stopAgentRuntimeForUser(userId);
     } catch (error) {
+      releaseAppleBilling();
       console.error("Error stopping Agent Mode:", error);
       releaseChatFence();
       setSignOutError("Maple could not stop Agent Mode. Please try logging out again.");
@@ -379,6 +368,7 @@ function SettingsLayoutContent() {
         "Maple could not securely reset Agent Mode or finish logging out. Please try again."
       );
     } finally {
+      releaseAppleBilling();
       if (!signedOut) {
         releaseChatFence();
         if (nativeAuthCleared) {
