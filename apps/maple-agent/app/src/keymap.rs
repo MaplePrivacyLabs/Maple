@@ -8,7 +8,7 @@ use std::rc::Rc;
 use gpui::{Action, App, DummyKeyboardMapper, KeyBinding, KeyBindingContextPredicate};
 
 use crate::{
-    desktop::QuitApp,
+    desktop::{Hide, HideOthers, QuitApp},
     ui::{
         application_vim::{self, SpatialDirection},
         chat, popup,
@@ -50,6 +50,8 @@ impl ShortcutCategory {
 #[derive(Clone, Copy)]
 enum SlotAction {
     QuitApp,
+    Hide,
+    HideOthers,
     ChatEscape,
     NewTask,
     FocusSearch,
@@ -143,6 +145,8 @@ impl SlotAction {
     fn build(self) -> Box<dyn Action> {
         match self {
             Self::QuitApp => Box::new(QuitApp),
+            Self::Hide => Box::new(Hide),
+            Self::HideOthers => Box::new(HideOthers),
             Self::ChatEscape => Box::new(chat::ChatEscape),
             Self::NewTask => Box::new(chat::NewTask),
             Self::FocusSearch => Box::new(chat::FocusSearch),
@@ -410,6 +414,29 @@ fn catalog_for(os: HostOs) -> Vec<ShortcutSlot> {
             SlotAction::AllowPermission,
         ),
     ];
+    if matches!(os, HostOs::Macos) {
+        slots.splice(
+            1..1,
+            [
+                slot(
+                    "app.hide",
+                    "Hide Maple",
+                    ShortcutCategory::Application,
+                    None,
+                    "cmd-h",
+                    SlotAction::Hide,
+                ),
+                slot(
+                    "app.hide_others",
+                    "Hide Others",
+                    ShortcutCategory::Application,
+                    None,
+                    "alt-cmd-h",
+                    SlotAction::HideOthers,
+                ),
+            ],
+        );
+    }
     for (id, label, sequence, index) in [
         (
             "chat.pick_question_option_1",
@@ -1622,8 +1649,18 @@ mod tests {
         let mac = catalog_for(HostOs::Macos);
         let linux = catalog_for(HostOs::Linux);
         let windows = catalog_for(HostOs::Windows);
-        assert_eq!(mac.len(), linux.len() + 14);
+        assert_eq!(mac.len(), linux.len() + 16);
         assert_eq!(linux.len(), windows.len());
+        assert_eq!(sequence(&mac, "app.hide"), "cmd-h");
+        assert_eq!(sequence(&mac, "app.hide_others"), "alt-cmd-h");
+        for id in ["app.hide", "app.hide_others"] {
+            assert!(linux.iter().all(|slot| slot.id != id), "{id} off Linux");
+            assert!(windows.iter().all(|slot| slot.id != id), "{id} off Windows");
+        }
+        for slot in &mac {
+            build_binding(slot, slot.default_sequence)
+                .unwrap_or_else(|error| panic!("macOS shortcut '{}' is invalid: {error}", slot.id));
+        }
         for (id, mac_sequence, other_sequence) in [
             ("text_input.word_left", "alt-left", "ctrl-left"),
             ("text_input.word_right", "alt-right", "ctrl-right"),
