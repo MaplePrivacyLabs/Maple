@@ -648,6 +648,7 @@ fn stepped_index(current: Option<usize>, len: usize, direction: isize, count: us
 
 #[cfg(test)]
 mod tests {
+    use super::super::option_id;
     use super::*;
     use gpui::{AppContext, Context, Entity, IntoElement, Render, TestAppContext, Window, div, px};
 
@@ -1024,16 +1025,16 @@ mod tests {
                 .expect("the saved voice is one of the options")
         });
         assert_eq!(
-            settings.update(cx, |this, _| this.popup.highlighted()),
-            Some(saved)
+            settings.update(cx, |this, _| this.popup.highlighted().cloned()),
+            Some(option_id(SettingMenu::Voice, saved).into())
         );
 
         // Down advances one option, wrapping; Enter picks it and closes.
         cx.simulate_keystrokes("down");
         let picked = (saved + 1) % crate::settings::TTS_VOICES.len();
         assert_eq!(
-            settings.update(cx, |this, _| this.popup.highlighted()),
-            Some(picked)
+            settings.update(cx, |this, _| this.popup.highlighted().cloned()),
+            Some(option_id(SettingMenu::Voice, picked).into())
         );
         cx.simulate_keystrokes("enter");
         settings.update(cx, |this, cx| {
@@ -1071,8 +1072,9 @@ mod tests {
     fn vim_activation_opens_picks_and_escapes_the_dropdown(cx: &mut TestAppContext) {
         let (settings, cx) = dropdown_window(cx, true);
         let highlighted = |cx: &mut gpui::VisualTestContext| {
-            settings.update(cx, |this, _| this.popup.highlighted())
+            settings.update(cx, |this, _| this.popup.highlighted().cloned())
         };
+        let speed = |index| Some(option_id(SettingMenu::SpeechSpeed, index).into());
         // Enter on the speech-speed row opens its dropdown.
         cx.update(|window, app| {
             settings.update(app, |this, cx| {
@@ -1091,9 +1093,12 @@ mod tests {
         cx.simulate_keystrokes("j");
         assert_ne!(highlighted(cx), before);
         cx.simulate_keystrokes("G");
-        assert_eq!(highlighted(cx), Some(crate::settings::TTS_SPEEDS.len() - 1));
+        assert_eq!(
+            highlighted(cx),
+            speed(crate::settings::TTS_SPEEDS.len() - 1)
+        );
         cx.simulate_keystrokes("g g j");
-        assert_eq!(highlighted(cx), Some(1));
+        assert_eq!(highlighted(cx), speed(1));
         assert_eq!(
             settings.update(cx, |this, _| this.application_vim.target.clone()),
             Some(SettingsTarget::General(GeneralTarget::SpeechSpeed)),

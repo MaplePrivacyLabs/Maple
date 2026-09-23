@@ -2536,12 +2536,12 @@ mod state_tests {
         cx.simulate_keystrokes("j j");
         assert_eq!(
             sidebar.update(cx, |sidebar, _| sidebar.popup_highlight()),
-            Some(1)
+            Some("pin-task-s1".into())
         );
         cx.simulate_keystrokes("k");
         assert_eq!(
             sidebar.update(cx, |sidebar, _| sidebar.popup_highlight()),
-            Some(0)
+            Some("rename-task-s1".into())
         );
     }
 
@@ -2586,7 +2586,7 @@ mod state_tests {
         cx.run_until_parked();
         assert_eq!(
             sidebar.update(cx, |sidebar, _| sidebar.popup_highlight()),
-            Some(0)
+            Some("switcher-all-projects".into())
         );
         // Rows: "All projects", "/b", "/a", "New project…".
         cx.simulate_keystrokes("j enter");
@@ -2714,17 +2714,21 @@ mod state_tests {
             this.sync_sidebar(cx);
         });
         press(cx, "menu-session-s1");
-        let menu = cx.debug_bounds("task-menu-s1").expect("the task menu");
         let beneath = cx.debug_bounds("menu-session-s2").expect("s2's button");
+        let rename = cx.debug_bounds("rename-task-s1").expect("s1's Rename item");
         assert!(
-            menu.contains(&beneath.center()),
-            "the fixture puts s2's button under s1's menu"
+            rename.contains(&beneath.center()),
+            "the fixture puts s2's button under s1's Rename item"
         );
         cx.simulate_click(beneath.center(), gpui::Modifiers::default());
-        assert_eq!(
-            open_menu(&chat, cx),
-            "",
-            "the press picked an item of s1's menu"
+        assert_eq!(open_menu(&chat, cx), "", "s2's menu did not open");
+        let sidebar = chat.update(cx, |this, _| this.sidebar.clone());
+        assert!(
+            matches!(
+                sidebar.update(cx, |sidebar, _| sidebar.rename_target()),
+                Some(RenameTarget::Task(ref target)) if target == "s1"
+            ),
+            "the press ran s1's Rename"
         );
     }
 
@@ -2751,7 +2755,11 @@ mod state_tests {
         cx.run_until_parked();
         let input = chat.update(cx, |this, _| this.root_input.clone().expect("path field"));
         let handle = cx.update(|_, app| input.read(app).focus_handle(app));
-        cx.update(|window, app| window.focus(&handle, app));
+        assert_eq!(
+            cx.update(|window, app| window.focused(app)),
+            Some(handle),
+            "the path field takes the focus when it is offered"
+        );
         cx.simulate_input("relative");
         assert_eq!(input.update(cx, |input, _| input.text()), "relative");
         let composer = chat.update(cx, |this, _| this.composer.clone().expect("composer"));
@@ -2763,6 +2771,131 @@ mod state_tests {
             Some("Enter an absolute directory path".into()),
             "Enter applies what was typed"
         );
+    }
+
+    /// Escape in the path field closes the project menu and hands the
+    /// keyboard back to where it was.
+    #[gpui::test]
+    fn test_escape_in_the_path_field_closes_the_project_menu(cx: &mut TestAppContext) {
+        let (chat, cx) = chat_window(cx, |_, _| {});
+        let composer = chat.update(cx, |this, cx| {
+            this.composer
+                .clone()
+                .expect("composer")
+                .read(cx)
+                .focus_handle(cx)
+        });
+        cx.update(|window, app| window.focus(&composer, app));
+        chat.update(cx, |this, cx| this.show_root_input(cx));
+        cx.run_until_parked();
+        cx.simulate_keystrokes("escape");
+        assert_eq!(open_menu(&chat, cx), "");
+        assert_eq!(cx.update(|window, app| window.focused(app)), Some(composer));
+    }
+
+    /// Under Application Vim, `g g` belongs to the menu itself, not to a
+    /// field inside it: "logging" typed into the path field keeps every
+    /// letter.
+    #[gpui::test]
+    fn test_application_vim_leaves_a_field_in_a_menu_its_letters(cx: &mut TestAppContext) {
+        let (chat, cx) = chat_window(cx, |this, cx| this.set_application_vim_enabled(true, cx));
+        chat.update(cx, |this, cx| this.show_root_input(cx));
+        cx.run_until_parked();
+        cx.simulate_keystrokes("l o g g i n g");
+        let input = chat.update(cx, |this, _| this.root_input.clone().expect("path field"));
+        assert_eq!(input.update(cx, |input, _| input.text()), "logging");
+    }
+
+    /// The path field's own right-click menu opens inside the project menu
+    /// and reaches past its edge. Its rows take their presses, and the
+    /// project menu stays open.
+    #[gpui::test]
+    fn test_a_fields_menu_inside_a_menu_takes_its_presses(cx: &mut TestAppContext) {
+        let (chat, cx) = chat_window(cx, |_, _| {});
+        chat.update(cx, |this, cx| this.show_root_input(cx));
+        cx.run_until_parked();
+        cx.simulate_input("/tmp/somewhere");
+        let input = chat.update(cx, |this, _| this.root_input.clone().expect("path field"));
+        let field = cx.debug_bounds("root-path-field").expect("path field");
+        let project_menu = cx.debug_bounds("project-menu").expect("project menu");
+        for item in ["text-input-select-all", "text-input-cut"] {
+            let at = field.center();
+            cx.simulate_mouse_down(at, gpui::MouseButton::Right, gpui::Modifiers::default());
+            cx.simulate_mouse_up(at, gpui::MouseButton::Right, gpui::Modifiers::default());
+            let row = cx.debug_bounds(item).expect("the field's menu row");
+            if item == "text-input-select-all" {
+                assert!(
+                    !project_menu.contains(&row.center()),
+                    "the fixture puts Select all past the project menu's edge"
+                );
+            }
+            cx.simulate_click(row.center(), gpui::Modifiers::default());
+            assert_eq!(open_menu(&chat, cx), "Project", "after {item}");
+        }
+        assert_eq!(input.update(cx, |input, _| input.text()), "");
+    }
+
+    /// A project's rename field sits in the switcher. Escape ends the
+    /// rename and Enter commits it; either way the switcher stays open and
+    /// has the keyboard again.
+    #[gpui::test]
+    fn test_a_project_rename_ends_inside_the_switcher(cx: &mut TestAppContext) {
+        let (chat, cx) = chat_window(cx, |this, cx| {
+            this.sessions = vec![summary("s1", "One")];
+            this.sync_sidebar(cx);
+        });
+        let sidebar = chat.update(cx, |this, _| this.sidebar.clone());
+        for commit in [false, true] {
+            sidebar.update(cx, |sidebar, cx| {
+                sidebar.set_switcher_menu_open(true, cx);
+                sidebar.begin_rename(RenameTarget::Project("/tmp/proj".to_string()), cx);
+            });
+            cx.run_until_parked();
+            if commit {
+                cx.simulate_keystrokes("secondary-a");
+                cx.simulate_input("Nice");
+                cx.simulate_keystrokes("enter");
+            } else {
+                cx.simulate_keystrokes("escape");
+            }
+            assert!(sidebar.update(cx, |sidebar, _| sidebar.rename_target().is_none()));
+            assert_eq!(open_menu(&chat, cx), "Switcher", "commit: {commit}");
+            cx.simulate_keystrokes("down");
+            assert_eq!(
+                sidebar.update(cx, |sidebar, _| sidebar.popup_highlight()),
+                Some("switcher-/tmp/proj".into()),
+                "the switcher has the keyboard, commit: {commit}"
+            );
+            cx.simulate_keystrokes("escape");
+            assert_eq!(open_menu(&chat, cx), "");
+        }
+        assert_eq!(
+            sidebar.update(cx, |sidebar, _| sidebar.root_name("/tmp/proj")),
+            "Nice"
+        );
+    }
+
+    /// Hiding the sidebar while one of its menus has the keyboard hands the
+    /// keyboard back, though the hidden sidebar no longer renders.
+    #[gpui::test]
+    fn test_hiding_the_sidebar_hands_its_menus_focus_back(cx: &mut TestAppContext) {
+        let (chat, cx) = chat_window(cx, |this, cx| {
+            this.sessions = vec![summary("s1", "One")];
+            this.sync_sidebar(cx);
+        });
+        let composer = chat.update(cx, |this, cx| {
+            this.composer
+                .clone()
+                .expect("composer")
+                .read(cx)
+                .focus_handle(cx)
+        });
+        cx.update(|window, app| window.focus(&composer, app));
+        press(cx, "menu-session-s1");
+        assert_eq!(open_menu(&chat, cx), "Task(s1)");
+        cx.simulate_keystrokes("secondary-b");
+        assert_eq!(open_menu(&chat, cx), "");
+        assert_eq!(cx.update(|window, app| window.focused(app)), Some(composer));
     }
 
     /// Escape closes whichever sidebar popup is open.
@@ -3570,16 +3703,14 @@ mod state_tests {
             chat: Entity<ChatScreen>,
         }
         impl Render for TranscriptHost {
-            fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
                 // Fixed size: the test window's own bounds are not applied
                 // to the root view in the harness, and a percentage height
                 // collapses to zero.
-                div()
-                    .w(px(1200.))
-                    .h(px(800.))
-                    .flex()
-                    .flex_col()
-                    .child(self.chat.update(cx, |chat, cx| chat.render_transcript(cx)))
+                div().w(px(1200.)).h(px(800.)).flex().flex_col().child(
+                    self.chat
+                        .update(cx, |chat, cx| chat.render_transcript(window, cx)),
+                )
             }
         }
 
@@ -4234,34 +4365,29 @@ mod state_tests {
 
         // Two recent roots and the "New project…" row: down, down, down
         // wraps back to the first.
+        let highlighted = |cx: &mut gpui::VisualTestContext| {
+            cx.update(|_window, app| chat.read(app).popup.highlighted().cloned())
+        };
+        let root = |name: &str| {
+            Some(gpui::ElementId::from(SharedString::from(format!(
+                "root-{}",
+                absolute_fixture_root(name)
+            ))))
+        };
+        let choose = || Some(gpui::ElementId::from("root-choose"));
         cx.simulate_keystrokes("down");
-        assert_eq!(
-            cx.update(|_window, app| chat.read(app).popup.highlighted()),
-            Some(0)
-        );
+        assert_eq!(highlighted(cx), root("one"));
         cx.simulate_keystrokes("down down");
-        assert_eq!(
-            cx.update(|_window, app| chat.read(app).popup.highlighted()),
-            Some(2)
-        );
+        assert_eq!(highlighted(cx), choose());
         cx.simulate_keystrokes("down");
-        assert_eq!(
-            cx.update(|_window, app| chat.read(app).popup.highlighted()),
-            Some(0)
-        );
+        assert_eq!(highlighted(cx), root("one"));
         cx.simulate_keystrokes("up");
-        assert_eq!(
-            cx.update(|_window, app| chat.read(app).popup.highlighted()),
-            Some(2)
-        );
+        assert_eq!(highlighted(cx), choose());
 
         // Enter on a recent root asks for the switch and closes the menu;
         // the composer takes the typing back.
         cx.simulate_keystrokes("up up");
-        assert_eq!(
-            cx.update(|_window, app| chat.read(app).popup.highlighted()),
-            Some(0)
-        );
+        assert_eq!(highlighted(cx), root("one"));
         cx.simulate_keystrokes("enter");
         assert!(!cx.update(|_window, app| { chat.read(app).popup.is_open(&ChatPopup::Project) }));
         assert_eq!(
@@ -4276,15 +4402,9 @@ mod state_tests {
         cx.simulate_keystrokes("secondary-p");
         assert!(cx.update(|_window, app| { chat.read(app).popup.is_open(&ChatPopup::Project) }));
         cx.simulate_keystrokes("j j");
-        assert_eq!(
-            cx.update(|_window, app| chat.read(app).popup.highlighted()),
-            Some(1)
-        );
+        assert_eq!(highlighted(cx), root("two"));
         cx.simulate_keystrokes("k");
-        assert_eq!(
-            cx.update(|_window, app| chat.read(app).popup.highlighted()),
-            Some(0)
-        );
+        assert_eq!(highlighted(cx), root("one"));
     }
 
     /// The open composer menu (model picker and friends) floats above the

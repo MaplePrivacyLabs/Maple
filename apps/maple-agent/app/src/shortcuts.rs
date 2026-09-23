@@ -414,14 +414,19 @@ fn context_overlap(left: Option<&str>, right: Option<&str>) -> Option<ShortcutCo
         (left, right),
         (KnownContext::Menu, KnownContext::ApplicationVimMenu)
             | (KnownContext::ApplicationVimMenu, KnownContext::Menu)
-            // A text field inside a menu (the project menu's path field).
+            // A text field inside a menu (the project menu's path field, a
+            // project's rename field in the switcher).
             | (KnownContext::Menu, KnownContext::TextInput)
             | (KnownContext::TextInput, KnownContext::Menu)
             | (KnownContext::Menu, KnownContext::StandardText)
             | (KnownContext::StandardText, KnownContext::Menu)
+            | (KnownContext::Menu, KnownContext::ApplicationVimOtherInput)
+            | (KnownContext::ApplicationVimOtherInput, KnownContext::Menu)
             // The transcript's right-click menu opens inside the transcript.
             | (KnownContext::Menu, KnownContext::Transcript)
             | (KnownContext::Transcript, KnownContext::Menu)
+            | (KnownContext::ApplicationVimMenu, KnownContext::Transcript)
+            | (KnownContext::Transcript, KnownContext::ApplicationVimMenu)
             | (KnownContext::Transcript, KnownContext::ApplicationVimRoot)
             | (KnownContext::ApplicationVimRoot, KnownContext::Transcript)
             | (
@@ -499,7 +504,10 @@ fn context_overlap(left: Option<&str>, right: Option<&str>) -> Option<ShortcutCo
     }
     // A menu, the transcript, ordinary TextInput, and the three mutually
     // exclusive composer modes cannot otherwise be active focus contexts
-    // together.
+    // together. A menu is never inside a text field: a field's own
+    // right-click menu renders beside the field's key context. Application
+    // Vim marks a menu only while the menu itself has focus, never while a
+    // field inside it does.
     None
 }
 #[cfg(test)]
@@ -654,6 +662,35 @@ mod tests {
             context_overlap(standard, Some(vim_actions::VISUAL_CONTEXT)),
             None
         );
+    }
+
+    #[test]
+    fn menus_overlap_the_fields_inside_them_and_the_transcript() {
+        let menu = Some(crate::ui::popup::MENU_CONTEXT);
+        let vim_menu = Some(application_vim::MENU_CONTEXT);
+        for (left, right) in [
+            (menu, Some("TextInput")),
+            (menu, Some(application_vim::OTHER_INPUT_CONTEXT)),
+            (menu, Some("Transcript")),
+            (vim_menu, Some("Transcript")),
+        ] {
+            assert_eq!(
+                context_overlap(left, right),
+                Some(ShortcutContextOverlap::Scoped),
+                "{left:?} and {right:?}"
+            );
+            assert_eq!(
+                context_overlap(right, left),
+                Some(ShortcutContextOverlap::Scoped),
+                "{right:?} and {left:?}"
+            );
+        }
+        // No menu opens inside the composer's text.
+        assert_eq!(
+            context_overlap(menu, Some(vim_actions::NORMAL_CONTEXT)),
+            None
+        );
+        assert_eq!(context_overlap(vim_menu, Some("TextInput")), None);
     }
 
     #[test]

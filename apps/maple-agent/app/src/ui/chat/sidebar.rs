@@ -127,13 +127,16 @@ impl SidebarRow {
     }
 }
 
+/// The switcher's "All projects" row.
+const ALL_PROJECTS_ID: &str = "switcher-all-projects";
+
 /// The sidebar's popup menus. One is open at a time; a project's own menu
 /// opens inside the switcher (see `Sidebar::project_popup`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum SidebarPopup {
     Switcher,
-    /// A task row's overflow menu.
-    Task(String),
+    /// A task row's overflow menu, by the row's shared id.
+    Task(Arc<str>),
 }
 
 /// One row of the virtualized sidebar list, in display order. Rebuilt
@@ -624,7 +627,7 @@ impl Sidebar {
     #[cfg(test)]
     pub(super) fn task_menu(&self) -> Option<&str> {
         match self.popup.open_key() {
-            Some(SidebarPopup::Task(session)) => Some(session),
+            Some(SidebarPopup::Task(session)) => Some(&**session),
             _ => None,
         }
     }
@@ -635,8 +638,8 @@ impl Sidebar {
     }
 
     #[cfg(test)]
-    pub(super) fn popup_highlight(&self) -> Option<usize> {
-        self.popup.highlighted()
+    pub(super) fn popup_highlight(&self) -> Option<gpui::ElementId> {
+        self.popup.highlighted().cloned()
     }
 
     #[cfg(test)]
@@ -679,8 +682,7 @@ impl Sidebar {
 
     #[cfg(test)]
     pub(super) fn open_task_menu_for_test(&mut self, session_id: &str, cx: &mut Context<Self>) {
-        self.popup
-            .open(SidebarPopup::Task(session_id.to_string()), cx);
+        self.popup.open(SidebarPopup::Task(session_id.into()), cx);
     }
 
     #[cfg(test)]
@@ -1082,14 +1084,16 @@ impl Sidebar {
         }
         self.project_popup.close(cx);
         if open {
-            let current = self.project_filter.as_deref().and_then(|filter| {
-                self.switcher_roots
-                    .iter()
-                    .position(|root| root.root == filter)
-                    .map(|index| index + 1)
-            });
+            let current = self
+                .project_filter
+                .as_deref()
+                .and_then(|filter| self.switcher_roots.iter().find(|root| root.root == filter))
+                .map_or_else(
+                    || SharedString::from(ALL_PROJECTS_ID),
+                    |root| root.row_id.clone(),
+                );
             self.popup
-                .open_at_row(SidebarPopup::Switcher, Some(current.unwrap_or(0)), cx);
+                .open_highlighted(SidebarPopup::Switcher, current, cx);
         } else {
             self.popup.close(cx);
         }
@@ -1137,6 +1141,10 @@ impl Sidebar {
         };
         let chat = self.chat.clone();
         let sidebar = cx.entity().downgrade();
+        let escape = sidebar.clone();
+        // A project's field sits in the switcher, which keeps the keyboard
+        // when the rename ends.
+        let in_switcher = matches!(target, RenameTarget::Project(_));
         let application_vim_enabled = self.application_vim_enabled;
         let input = cx.new(move |cx| {
             let mut input = TextInput::new("Name", cx)
@@ -1145,7 +1153,14 @@ impl Sidebar {
             input.set_text(&current, cx);
             input
                 .on_application_escape(move |window, cx| {
-                    if let Some(chat) = chat.upgrade() {
+                    if in_switcher {
+                        let escape = escape.clone();
+                        cx.defer(move |cx| {
+                            if let Some(sidebar) = escape.upgrade() {
+                                sidebar.update(cx, |sidebar, cx| sidebar.cancel_rename(cx));
+                            }
+                        });
+                    } else if let Some(chat) = chat.upgrade() {
                         chat.update(cx, |chat, cx| chat.focus_application_vim(window, cx));
                     }
                 })
@@ -1173,10 +1188,19 @@ impl Sidebar {
         let Some(target) = self.rename.take() else {
             return false;
         };
-        self.remeasure(&target);
-        self.rename_input = None;
-        cx.notify();
+        self.end_rename(&target, cx);
         true
+    }
+
+    /// Put things back once a rename is over: the row's height, and the
+    /// switcher's focus, which a project's field had.
+    fn end_rename(&mut self, target: &RenameTarget, cx: &mut Context<Self>) {
+        self.rename_input = None;
+        self.remeasure(target);
+        if matches!(target, RenameTarget::Project(_)) {
+            self.popup.refocus(cx);
+        }
+        cx.notify();
     }
 
     pub(super) fn commit_rename(&mut self, cx: &mut Context<Self>) {
@@ -1185,12 +1209,11 @@ impl Sidebar {
         };
         let name = self
             .rename_input
-            .take()
+            .as_ref()
             .map(|input| input.read(cx).text())
             .unwrap_or_default();
         let name = name.trim().to_string();
-        self.remeasure(&target);
-        cx.notify();
+        self.end_rename(&target, cx);
         if name.is_empty() {
             return;
         }
@@ -1265,9 +1288,8 @@ impl Sidebar {
     }
 
     /// Open or close the overflow menu of one task row.
-    fn toggle_task_menu(&mut self, session_id: &str, cx: &mut Context<Self>) {
-        self.popup
-            .toggle(SidebarPopup::Task(session_id.to_string()), cx);
+    fn toggle_task_menu(&mut self, session_id: Arc<str>, cx: &mut Context<Self>) {
+        self.popup.toggle(SidebarPopup::Task(session_id), cx);
     }
 
     /// The overflow menu of a task row: rename, then where the task can
@@ -1641,7 +1663,12 @@ impl Sidebar {
     // ---- Render ------------------------------------------------------------
 
     /// One row of the sidebar list.
-    fn render_entry(&mut self, ix: usize, cx: &mut Context<Self>) -> AnyElement {
+    fn render_entry(
+        &mut self,
+        ix: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let selected = self.selected.as_deref();
         let chat = self.chat.clone();
         let entry = match self.entries.get(ix).copied() {
@@ -1679,10 +1706,10 @@ impl Sidebar {
                 .child(icon("square-pen", px(16.), theme::accent()))
                 .child("New Task")
                 .into_any_element(),
-            Some(SidebarEntry::ProjectsHeader) => self.render_projects_header(cx),
+            Some(SidebarEntry::ProjectsHeader) => self.render_projects_header(window, cx),
             Some(SidebarEntry::Task(task)) => {
                 let application_selected = self.vim_selects_row(ix);
-                let row = self.render_task_row(task, selected, application_selected, cx);
+                let row = self.render_task_row(task, selected, application_selected, window, cx);
                 let last_of_section = !task.archived
                     && !matches!(
                         self.entries.get(ix + 1),
@@ -1839,11 +1866,11 @@ impl Sidebar {
     /// The project switcher row: names the scope the task list shows and
     /// opens the menu that picks it. The overflow menu of one project
     /// hangs off its row inside the switcher.
-    fn render_projects_header(&self, cx: &mut Context<Self>) -> AnyElement {
+    fn render_projects_header(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let open = self.switcher_menu_open();
         let menu = open.then(|| {
-            self.popup
-                .render(self.switcher_menu(cx), Placement::BelowStart, cx)
+            let menu = self.switcher_menu(window, cx);
+            self.popup.render(menu, Placement::BelowStart, window, cx)
         });
         let header = div()
             .id("projects-header")
@@ -1932,15 +1959,14 @@ impl Sidebar {
 
     /// The menu the project switcher opens: every project, each with an
     /// overflow menu of its own, plus a way back to all projects.
-    fn switcher_menu(&self, cx: &mut Context<Self>) -> Menu<Self> {
+    fn switcher_menu(&self, window: &mut Window, cx: &mut Context<Self>) -> Menu<Self> {
         let mut menu = Menu::new("switcher-menu", px(260.))
             .label("Projects")
             .max_height(px(360.))
             .application_vim(self.application_vim_enabled)
-            .nested(&self.project_popup)
             .item(
                 MenuItem::new(
-                    "switcher-all-projects",
+                    ALL_PROJECTS_ID,
                     "All projects",
                     |this: &mut Self, _: &mut Window, cx: &mut Context<Self>| {
                         this.set_project_filter(None, cx);
@@ -1961,7 +1987,7 @@ impl Sidebar {
             .current(self.project_filter.as_deref() == Some(root.root.as_str()))
             // The row's overflow button shows while the row is hovered.
             .style(move |row| row.group(group))
-            .trailing(self.project_menu_trigger(root, cx));
+            .trailing(self.project_menu_trigger(root, window, cx));
             if let Some(field) = self.project_rename_field(&root.root) {
                 item = item.content(field);
             }
@@ -1981,7 +2007,12 @@ impl Sidebar {
 
     /// A switcher row's overflow button, with the project's menu under it
     /// while open.
-    fn project_menu_trigger(&self, root: &SwitcherRoot, cx: &mut Context<Self>) -> Div {
+    fn project_menu_trigger(
+        &self,
+        root: &SwitcherRoot,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Div {
         let open = self.project_popup.is_open(&root.root);
         let menu = open.then(|| {
             let menu = Menu::new(
@@ -1996,7 +2027,8 @@ impl Sidebar {
                     .into_iter()
                     .map(menu_item),
             );
-            self.project_popup.render(menu, Placement::BelowEnd, cx)
+            self.project_popup
+                .render(menu, Placement::BelowEnd, window, cx)
         });
         let toggle = root.root.clone();
         div()
@@ -2021,25 +2053,26 @@ impl Sidebar {
         &self,
         row: &SidebarRow,
         task: SidebarTaskEntry,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Div {
-        let key = SidebarPopup::Task(row.id.to_string());
+        let key = SidebarPopup::Task(row.id.clone());
         let open = self.popup.is_open(&key);
         let menu = open.then(|| {
             let menu = Menu::new(row.menu_panel_id.clone(), px(180.))
                 .label("Task options")
                 .application_vim(self.application_vim_enabled)
                 .items(self.task_menu_items(task).into_iter().map(menu_item));
-            self.popup.render(menu, Placement::BelowEnd, cx)
+            self.popup.render(menu, Placement::BelowEnd, window, cx)
         });
-        let session = row.id.to_string();
+        let session = row.id.clone();
         div()
             .relative()
             .child(self.popup.trigger(
                 key,
                 row_menu_button(row.menu_id.clone(), &row.group, "More", open),
                 cx,
-                move |this, _, cx| this.toggle_task_menu(&session, cx),
+                move |this, _, cx| this.toggle_task_menu(session.clone(), cx),
             ))
             .children(menu)
     }
@@ -2083,6 +2116,7 @@ impl Sidebar {
         task: SidebarTaskEntry,
         selected: Option<&str>,
         application_selected: bool,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<Div> {
         let SidebarTaskEntry {
@@ -2202,7 +2236,7 @@ impl Sidebar {
                     .group_hover(row.group.clone(), |style| {
                         style.bg(gpui::rgb(theme::bg_sidebar_row_hover()))
                     })
-                    .child(self.task_menu_trigger(row, task, cx))
+                    .child(self.task_menu_trigger(row, task, window, cx))
                     .child(row_action(
                         row.rename_id.clone(),
                         &row.group,
@@ -2300,6 +2334,12 @@ impl Render for Sidebar {
         // handing focus back.
         self.popup.sync_focus(window, cx);
         self.project_popup.sync_focus(window, cx);
+        // A project's rename field lives in the switcher and ends with it,
+        // however the switcher closed.
+        if matches!(self.rename, Some(RenameTarget::Project(_))) && !self.switcher_menu_open() {
+            self.rename = None;
+            self.rename_input = None;
+        }
         if self.rename_focus_pending {
             self.rename_focus_pending = false;
             if let Some(input) = self.rename_input.clone() {
@@ -2308,11 +2348,11 @@ impl Render for Sidebar {
             }
         }
         let entity = cx.entity().downgrade();
-        let list = gpui::list(self.list.clone(), move |ix, _window, cx| {
+        let list = gpui::list(self.list.clone(), move |ix, window, cx| {
             let Some(sidebar) = entity.upgrade() else {
                 return div().into_any_element();
             };
-            sidebar.update(cx, |sidebar, cx| sidebar.render_entry(ix, cx))
+            sidebar.update(cx, |sidebar, cx| sidebar.render_entry(ix, window, cx))
         })
         .size_full();
         let active = !self.filter.is_empty();
@@ -2461,8 +2501,8 @@ fn row_button(
     label: &'static str,
 ) -> gpui::Stateful<Div> {
     div()
-        .id(id.clone())
         .debug_selector(|| id.to_string())
+        .id(id)
         .role(gpui::Role::Button)
         .aria_label(label)
         .flex_none()

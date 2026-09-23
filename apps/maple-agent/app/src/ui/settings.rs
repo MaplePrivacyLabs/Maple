@@ -114,6 +114,11 @@ impl SettingMenu {
     }
 }
 
+/// The id of choice `index` in `menu`'s dropdown.
+fn option_id(menu: SettingMenu, index: usize) -> gpui::SharedString {
+    gpui::SharedString::from(format!("setting-menu-{}-{index}", menu.id()))
+}
+
 pub struct SettingsScreen {
     /// Backend-call bridges retained for thread-affinity; see
     /// [`crate::ui::task::call`].
@@ -750,7 +755,8 @@ impl SettingsScreen {
                 .iter()
                 .position(|option| option.current)
                 .unwrap_or(0);
-            self.popup.open_at_row(menu, Some(current), cx);
+            self.popup
+                .open_highlighted(menu, option_id(menu, current), cx);
         }
     }
 
@@ -1054,6 +1060,7 @@ impl SettingsScreen {
         title: &str,
         description: &str,
         menu: SettingMenu,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<Div> {
         let dropdown = self.popup.is_open(&menu).then(|| {
@@ -1067,7 +1074,7 @@ impl SettingsScreen {
             .application_vim(self.settings.application_vim_enabled)
             .items(options.into_iter().enumerate().map(|(index, option)| {
                 let item = MenuItem::new(
-                    gpui::SharedString::from(format!("setting-menu-{}-{index}", menu.id())),
+                    option_id(menu, index),
                     option.label,
                     move |this: &mut Self, _: &mut Window, cx: &mut Context<Self>| {
                         this.pick_setting_option(menu, index, cx);
@@ -1082,12 +1089,14 @@ impl SettingsScreen {
                     _ => item,
                 }
             }));
-            self.popup.render(dropdown, Placement::BelowEnd, cx)
+            self.popup.render(dropdown, Placement::BelowEnd, window, cx)
         });
         let slug = title.to_lowercase().replace(' ', "-");
         let button =
             widgets::secondary_button(gpui::SharedString::from(format!("setting-value-{slug}")))
                 .debug_selector(move || format!("setting-value-{slug}"))
+                .aria_label(title.to_string())
+                .aria_value(self.menu_value(menu))
                 .py_1p5()
                 .gap_1()
                 .child(self.menu_value_label(menu))
@@ -1443,7 +1452,7 @@ impl Render for SettingsScreen {
                             .flex_1()
                             .min_w_0()
                             .h_full()
-                            .child(self.render_pane(cx))
+                            .child(self.render_pane(window, cx))
                             .child(crate::ui::scrollbar::scrollbar(
                                 "settings-scrollbar",
                                 self.pane_scroll.clone(),
@@ -1509,7 +1518,7 @@ impl SettingsScreen {
             }))
     }
 
-    fn render_pane(&self, cx: &mut Context<Self>) -> gpui::Stateful<Div> {
+    fn render_pane(&self, window: &mut Window, cx: &mut Context<Self>) -> gpui::Stateful<Div> {
         let mut pane = div()
             .id("settings-pane")
             .role(gpui::Role::TabPanel)
@@ -1535,6 +1544,7 @@ impl SettingsScreen {
                                 "Default permission mode",
                                 mode.note(),
                                 SettingMenu::Permission,
+                                window,
                                 cx,
                             ),
                         )
@@ -1557,6 +1567,7 @@ impl SettingsScreen {
                             "Appearance",
                             "Follow the system theme, or force dark or light.",
                             SettingMenu::Appearance,
+                            window,
                             cx,
                         ),
                     ))
@@ -1570,6 +1581,7 @@ impl SettingsScreen {
                             )
                             .note(),
                             SettingMenu::ChatFont,
+                            window,
                             cx,
                         ),
                     ))
@@ -1579,6 +1591,7 @@ impl SettingsScreen {
                             "Text size",
                             "Size of conversation and composer text. Sidebar and buttons stay Manrope.",
                             SettingMenu::ChatSize,
+                            window,
                             cx,
                         ),
                     ))
@@ -1660,6 +1673,7 @@ impl SettingsScreen {
                             "Speech voice",
                             "The voice that reads messages aloud.",
                             SettingMenu::Voice,
+                            window,
                             cx,
                         ),
                     ))
@@ -1669,6 +1683,7 @@ impl SettingsScreen {
                             "Speech speed",
                             "How fast messages are read aloud.",
                             SettingMenu::SpeechSpeed,
+                            window,
                             cx,
                         ),
                     ));

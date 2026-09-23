@@ -24,7 +24,11 @@ use crate::ui::titlebar;
 use crate::ui::widgets;
 
 impl ChatScreen {
-    pub(super) fn render_header(&self, cx: &mut Context<Self>) -> gpui::Stateful<Div> {
+    pub(super) fn render_header(
+        &self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> gpui::Stateful<Div> {
         let title = self.selected_title.clone();
         titlebar::drag_region(
             div()
@@ -73,8 +77,8 @@ impl ChatScreen {
                     cx.stop_propagation();
                 }),
                 Placement::BelowStart,
+                window,
                 cx,
-                |this, window, cx| this.execute_command(ChatCommand::ChooseProject, window, cx),
                 Self::project_menu,
             )
             .flex_none(),
@@ -100,18 +104,32 @@ impl ChatScreen {
         popup: ChatPopup,
         button: gpui::Stateful<Div>,
         placement: Placement,
+        window: &mut Window,
         cx: &mut Context<Self>,
-        toggle: impl Fn(&mut Self, &mut Window, &mut Context<Self>) + 'static,
         menu: impl FnOnce(&Self, &mut Context<Self>) -> Menu<Self>,
     ) -> Div {
         let menu = self.popup.is_open(&popup).then(|| {
             let menu = menu(self, cx);
-            self.popup.render(menu, placement, cx)
+            self.popup.render(menu, placement, window, cx)
         });
         div()
             .relative()
-            .child(self.popup.trigger(popup, button, cx, toggle))
+            .child(
+                self.popup
+                    .trigger(popup, button, cx, move |this, window, cx| {
+                        this.press_chip(popup, window, cx)
+                    }),
+            )
             .children(menu)
+    }
+
+    /// A press on a chip: the header's project chip runs the command it
+    /// shares with its shortcut; a composer chip opens or closes its menu.
+    fn press_chip(&mut self, popup: ChatPopup, window: &mut Window, cx: &mut Context<Self>) {
+        match popup {
+            ChatPopup::Project => self.execute_command(ChatCommand::ChooseProject, window, cx),
+            popup => self.toggle_popup(popup, cx),
+        }
     }
 
     /// The header chip's menu: recent projects, then "New project…", then
@@ -163,7 +181,12 @@ impl ChatScreen {
                 .gap_2()
                 .px_3()
                 .pb_2()
-                .child(div().flex_1().child(input))
+                .child(
+                    div()
+                        .flex_1()
+                        .debug_selector(|| "root-path-field".to_string())
+                        .child(input),
+                )
                 .child(
                     div()
                         .id("root-apply")
@@ -705,7 +728,7 @@ impl ChatScreen {
         Some(card)
     }
 
-    pub(super) fn render_composer(&mut self, cx: &mut Context<Self>) -> Div {
+    pub(super) fn render_composer(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Div {
         let running = self.is_run_active();
         let disabled = self.booting;
         let has_text = self.composer_has_text;
@@ -910,8 +933,8 @@ impl ChatScreen {
                             false,
                         ),
                         Placement::AboveStart,
+                        window,
                         cx,
-                        |this, _, cx| this.toggle_popup(ChatPopup::Model, cx),
                         |this, _| this.model_menu(),
                     ))
                     .child(self.with_menu(
@@ -925,8 +948,8 @@ impl ChatScreen {
                             false,
                         ),
                         Placement::AboveStart,
+                        window,
                         cx,
-                        |this, _, cx| this.toggle_popup(ChatPopup::Mode, cx),
                         |this, _| this.mode_menu(),
                     ))
                     .child(self.with_menu(
@@ -944,8 +967,8 @@ impl ChatScreen {
                             false,
                         ),
                         Placement::AboveStart,
+                        window,
                         cx,
-                        |this, _, cx| this.toggle_popup(ChatPopup::Integrations, cx),
                         |this, _| this.integrations_menu(),
                     ))
                     .child(

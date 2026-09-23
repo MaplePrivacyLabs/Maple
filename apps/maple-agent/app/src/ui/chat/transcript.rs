@@ -27,7 +27,11 @@ use crate::ui::typography;
 use crate::ui::widgets;
 
 impl ChatScreen {
-    pub(super) fn render_transcript(&mut self, cx: &mut Context<Self>) -> gpui::Stateful<Div> {
+    pub(super) fn render_transcript(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> gpui::Stateful<Div> {
         // The list follows its own tail: it snaps to the end on each
         // layout until the user scrolls up, and re-engages when the view
         // returns to the bottom. Every mutation goes through splice or
@@ -131,7 +135,7 @@ impl ChatScreen {
                         .open(super::ChatPopup::Transcript(event.position), cx);
                 }),
             )
-            .children(self.render_transcript_menu(cx))
+            .children(self.render_transcript_menu(window, cx))
             .child(
                 // The list element does not apply padding itself, so the
                 // gutter lives here. Same column width as the composer.

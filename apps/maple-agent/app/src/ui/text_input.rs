@@ -188,6 +188,10 @@ pub struct TextInput {
     /// Commits an Insert transaction and clears pending grammar when focus
     /// leaves the composer.
     focus_out_subscription: Option<Subscription>,
+    /// Focus went from the field into its own right-click menu, which
+    /// suspended Vim instead (see `on_right_click`). If the menu closes
+    /// without handing focus back, focus left the field through it.
+    focus_in_menu: bool,
 }
 
 /// How many text states one input remembers for undo.
@@ -283,6 +287,7 @@ impl TextInput {
             on_vim_leave: None,
             on_application_escape: None,
             focus_out_subscription: None,
+            focus_in_menu: false,
         }
     }
 
@@ -1691,7 +1696,11 @@ impl TextInput {
 
     /// Right-click menu: spelling fixes for the word under the pointer,
     /// then cut, copy, paste, select all.
-    fn render_context_menu(&self, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
+    fn render_context_menu(
+        &self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<gpui::AnyElement> {
         let position = *self.popup.open_key()?;
         let has_selection = !self.selected_range.is_empty();
         let mut menu = Menu::new("text-input-menu", px(160.))
@@ -1766,7 +1775,7 @@ impl TextInput {
                 !self.content.is_empty(),
                 |this, window, cx| this.select_all(&SelectAll, window, cx),
             ));
-        Some(self.popup.render(menu, Placement::At(position), cx))
+        Some(self.popup.render(menu, Placement::At(position), window, cx))
     }
 
     fn on_mouse_up(&mut self, _: &MouseUpEvent, _window: &mut Window, _: &mut Context<Self>) {
@@ -2941,9 +2950,19 @@ impl Render for TextInput {
             self.focus_out_subscription =
                 Some(
                     cx.on_focus_out(&focus, window, |input, _event, _window, cx| {
+                        if input.popup.open_key().is_some() {
+                            input.focus_in_menu = true;
+                            return;
+                        }
                         input.finish_vim_lifecycle(LifecycleEvent::TaskOrScreenSwitch, cx);
                     }),
                 );
+        }
+        if self.focus_in_menu && self.popup.open_key().is_none() {
+            self.focus_in_menu = false;
+            if !self.focus_handle.is_focused(window) {
+                self.finish_vim_lifecycle(LifecycleEvent::TaskOrScreenSwitch, cx);
+            }
         }
         let key_context = self.key_context();
         let input = div()
@@ -2959,7 +2978,7 @@ impl Render for TextInput {
             .key_context(key_context)
             .track_focus(&self.focus_handle(cx))
             .cursor(CursorStyle::IBeam);
-        vim_actions::attach_actions(input, cx)
+        let field = vim_actions::attach_actions(input, cx)
             .on_action(cx.listener(Self::application_escape))
             .on_action(cx.listener(Self::backspace))
             .on_action(cx.listener(Self::delete))
@@ -3070,8 +3089,16 @@ impl Render for TextInput {
             })
             .w_full()
             .when(self.multiline && self.fill_height, |el| el.h_full())
-            .child(TextElement { input: cx.entity() })
-            .children(self.render_context_menu(cx))
+            .child(TextElement { input: cx.entity() });
+        // The right-click menu sits beside the field's key context, not in
+        // it: while the menu has focus, keys it does not bind must not edit
+        // the text or reach the field's Vim.
+        let menu = self.render_context_menu(window, cx);
+        div()
+            .w_full()
+            .when(self.multiline && self.fill_height, |el| el.h_full())
+            .child(field)
+            .children(menu)
     }
 }
 
@@ -3346,6 +3373,9 @@ mod tests {
             input.update(cx, |input, _| input.popup.open_key().copied()),
             Some(at)
         );
+        // Keys the menu does not bind do not edit the text behind it.
+        cx.simulate_keystrokes("backspace");
+        assert_eq!(input.update(cx, |input, _| input.text()), "hello world");
         // Nothing is selected, so Cut and Copy are disabled: the first Down
         // lands on Paste, the next on Select all.
         cx.simulate_keystrokes("down down enter");

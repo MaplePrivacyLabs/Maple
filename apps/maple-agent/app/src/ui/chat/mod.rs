@@ -292,6 +292,8 @@ pub struct ChatScreen {
     trust_prompts: bool,
     /// Manual path entry for the project selector.
     root_input: Option<Entity<TextInput>>,
+    /// The path field was just offered; the next render gives it focus.
+    root_input_focus_pending: bool,
     root_selecting: bool,
     /// Header label for the project root; set when the root changes so
     /// render does not format it.
@@ -918,6 +920,7 @@ impl ChatScreen {
             timeline_index: HashMap::new(),
             selected_title: DEFAULT_TASK_TITLE.into(),
             root_input: None,
+            root_input_focus_pending: false,
             root_selecting: false,
             project_label: SharedString::from("Choose folder"),
             project_branch: None,
@@ -1449,6 +1452,7 @@ impl ChatScreen {
             self.root_input = Some(input);
         }
         self.popup.open(ChatPopup::Project, cx);
+        self.root_input_focus_pending = true;
     }
 
     /// Open or close the project menu from the header chip.
@@ -2750,20 +2754,22 @@ impl ChatScreen {
     }
 
     fn escape(&mut self, cx: &mut Context<Self>) {
-        // An open menu closes first. It normally has focus and closes on
-        // its own Escape binding; this covers a menu that has not taken
-        // focus yet.
+        // A rename ends first. A project's rename field sits in the
+        // switcher, which passes Escape on and stays open.
+        if self
+            .sidebar
+            .update(cx, |sidebar, cx| sidebar.cancel_rename(cx))
+        {
+            return;
+        }
+        // An open menu closes next. It normally has focus and closes on its
+        // own Escape binding; this covers a menu that has not taken focus
+        // yet, and a text field inside a menu.
         let chat_menu = self.popup.close(cx);
         let sidebar_menu = self
             .sidebar
             .update(cx, |sidebar, cx| sidebar.close_popups(cx));
         if chat_menu || sidebar_menu {
-            return;
-        }
-        if self
-            .sidebar
-            .update(cx, |sidebar, cx| sidebar.cancel_rename(cx))
-        {
             return;
         }
         if self.queue_edit.is_some() {
@@ -2919,7 +2925,11 @@ impl ChatScreen {
     }
 
     /// Right-click menu over the transcript: copy the selection, select all.
-    fn render_transcript_menu(&self, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
+    fn render_transcript_menu(
+        &self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<gpui::AnyElement> {
         let Some(&ChatPopup::Transcript(position)) = self.popup.open_key() else {
             return None;
         };
@@ -2952,7 +2962,7 @@ impl ChatScreen {
                 )
                 .icon("text-select"),
             );
-        Some(self.popup.render(menu, Placement::At(position), cx))
+        Some(self.popup.render(menu, Placement::At(position), window, cx))
     }
 
     /// Toggle one tool card's or thinking row's expansion and re-measure
@@ -4319,6 +4329,13 @@ impl Render for ChatScreen {
         // First, so a dialog's focus request below wins over a menu handing
         // focus back.
         self.popup.sync_focus(window, cx);
+        // The path field inside the project menu takes the typing, not the
+        // menu.
+        if std::mem::take(&mut self.root_input_focus_pending)
+            && let Some(input) = self.root_input.as_ref()
+        {
+            window.focus(&input.read(cx).focus_handle(cx), cx);
+        }
         if self.dialog_focus_pending {
             self.dialog_focus_pending = false;
             if let Some(handle) = self.dialog_focus.clone() {
@@ -4369,7 +4386,7 @@ impl Render for ChatScreen {
         let collapsed = self.sidebar_collapsed;
         let loading_overlay = self.render_loading_overlay();
         let main = if empty {
-            self.render_empty_state(cx)
+            self.render_empty_state(window, cx)
         } else {
             div()
                 .flex()
@@ -4377,8 +4394,8 @@ impl Render for ChatScreen {
                 .flex_1()
                 .h_full()
                 .min_w_0()
-                .child(self.render_header(cx))
-                .child(self.render_transcript(cx))
+                .child(self.render_header(window, cx))
+                .child(self.render_transcript(window, cx))
                 .when(self.awaiting_first_token && self.is_run_active(), |main| {
                     // Same gutter as transcript text so the dots line up
                     main.child(
@@ -4427,7 +4444,7 @@ impl Render for ChatScreen {
                         .children(self.render_btw_card(cx))
                         .children(self.render_subagents_card(cx))
                         .children(self.render_plan_card(cx))
-                        .child(self.render_composer(cx))
+                        .child(self.render_composer(window, cx))
                         .children(self.render_slash_palette(cx)),
                 )
         };
@@ -4612,7 +4629,7 @@ impl ChatScreen {
 
     /// Hero layout for a task with no messages: display heading, composer,
     /// and privacy note centered in the pane (mirrors EmptyAgentState).
-    fn render_empty_state(&mut self, cx: &mut Context<Self>) -> Div {
+    fn render_empty_state(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Div {
         let expanded = self.composer_expanded;
         let body = div()
             .flex()
@@ -4650,7 +4667,7 @@ impl ChatScreen {
                             .relative()
                             .w_full()
                             .when(expanded, |wrap| wrap.flex_1().min_h_0().flex().flex_col())
-                            .child(self.render_composer(cx))
+                            .child(self.render_composer(window, cx))
                             .children(self.render_slash_palette(cx)),
                     )
                     .when(
@@ -4681,7 +4698,7 @@ impl ChatScreen {
             .flex_1()
             .h_full()
             .min_w_0()
-            .child(self.render_header(cx))
+            .child(self.render_header(window, cx))
             .child(body)
     }
 

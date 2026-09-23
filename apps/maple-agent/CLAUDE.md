@@ -60,19 +60,24 @@ release binary that keeps line tables for usable backtraces.
 Every dropdown, overflow menu, and context menu goes through
 `ui/popup.rs`. Do not wire a floating panel by hand. A view keeps one
 `Popup` per nesting level and wires each opener with `Popup::trigger`.
-Commands and keys that open a menu call `Popup::open`. The view rebuilds
-the open `Menu` on every render and calls `Popup::sync_focus` first thing
-in its render. The popup handles the rest:
+Commands and keys that open a menu call `Popup::open` (or
+`open_highlighted` to start on the current choice). The view rebuilds the
+open `Menu` on every render, as a child of a `relative` box around the
+trigger, and calls `Popup::sync_focus` first thing in its render (an outer
+popup before a nested one). The popup handles the rest:
 
 - a second press on the trigger closes the menu
-- a press outside closes it
-- occlusion
+- a press outside closes it; a menu opened inside it counts as inside
+- occlusion, and placement beside the trigger that flips instead of
+  covering it
 - one open menu per window
-- keyboard and Application Vim navigation
-- returning focus when the menu closes
+- keyboard and Application Vim navigation; a text field inside the menu
+  keeps its keys, and its Escape goes to the view first
+- returning focus when the menu closes, even if the view stops drawing it
 - accessibility
 
-Menu keys live in the keymap's `Menu` context.
+A text field inside a menu that goes away calls `Popup::refocus`, so the
+menu keeps the keyboard. Menu keys live in the keymap's `Menu` context.
 
 ## Performance
 
