@@ -401,7 +401,10 @@ where
         .map_err(|_| ApiError::BadRequest)?;
 
     let decrypted: T = serde_json::from_slice(&decrypted_data).map_err(|e| {
-        tracing::error!("Failed to deserialize decrypted data: {:?}", e);
+        tracing::error!(
+            "Failed to deserialize decrypted data: {}",
+            crate::log_redaction::JsonErrorSummary(&e)
+        );
         ApiError::BadRequest
     })?;
 

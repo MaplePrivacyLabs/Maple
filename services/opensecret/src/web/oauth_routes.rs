@@ -1,4 +1,5 @@
 use crate::apple_signin::{generate_apple_client_secret, validate_apple_native_token};
+use crate::log_redaction::JsonErrorSummary;
 #[cfg(test)]
 use crate::models::oauth::NewUserOAuthConnection;
 use crate::models::oauth::UserOAuthConnection;
@@ -31,7 +32,8 @@ use axum::{
 use base64::Engine as _;
 use oauth2::TokenResponse;
 use oauth2::{
-    basic::BasicTokenType, AuthorizationCode, EmptyExtraTokenFields, StandardTokenResponse,
+    basic::BasicTokenType, AuthorizationCode, EmptyExtraTokenFields, RequestTokenError,
+    StandardTokenResponse,
 };
 use reqwest::header::AUTHORIZATION;
 use secp256k1::SecretKey;
@@ -836,7 +838,11 @@ pub async fn oauth_callback(
 
         // Parse the JSON using our custom AppleTokenResponse struct
         let apple_token: AppleTokenResponse = serde_json::from_str(&token_json).map_err(|e| {
-            error!("Failed to parse Apple token response: {:?}", e);
+            error!(
+                "Failed to parse Apple token response: {} (response_bytes={})",
+                JsonErrorSummary(&e),
+                token_json.len()
+            );
             ApiError::InternalServerError
         })?;
 
@@ -869,7 +875,21 @@ pub async fn oauth_callback(
             exchange
         };
         let token = exchange.request_async(&http_client).await.map_err(|e| {
-            error!("Failed to exchange code for access token: {:?}", e);
+            match &e {
+                // The raw body may hold tokens; log only where parsing failed.
+                RequestTokenError::Parse(parse_error, body) => error!(
+                    "Failed to parse {} token response at {}: {} (response_bytes={})",
+                    provider_name,
+                    parse_error.path(),
+                    JsonErrorSummary(parse_error.inner()),
+                    body.len()
+                ),
+                RequestTokenError::Request(request_error) => error!(
+                    "Failed to exchange code for access token: {:?}",
+                    request_error
+                ),
+                _ => error!("Failed to exchange code for access token: {}", e),
+            }
             ApiError::InternalServerError
         })?;
 
@@ -1072,7 +1092,7 @@ async fn fetch_github_user(
     let mut github_user: GithubUser = serde_json::from_str(&user_body).map_err(|e| {
         error!(
             "Failed to parse GitHub user JSON: {} (response_bytes={})",
-            e,
+            JsonErrorSummary(&e),
             user_body.len()
         );
         ApiError::InternalServerError
@@ -1112,7 +1132,7 @@ async fn fetch_github_user(
         let emails: Vec<GithubEmail> = serde_json::from_str(&emails_body).map_err(|e| {
             error!(
                 "Failed to parse GitHub emails JSON: {} (response_bytes={})",
-                e,
+                JsonErrorSummary(&e),
                 emails_body.len()
             );
             ApiError::InternalServerError
@@ -1158,7 +1178,7 @@ async fn fetch_google_user(
     }
 
     let google_user: GoogleUser = response.json().await.map_err(|e| {
-        error!("Failed to parse Google user JSON: {:?}", e);
+        error!("Failed to parse Google user JSON: {}", e);
         ApiError::InternalServerError
     })?;
 
