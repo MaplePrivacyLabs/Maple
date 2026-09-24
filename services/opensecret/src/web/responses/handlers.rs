@@ -575,8 +575,9 @@ fn finalize_first_model_tool_call(tool_calls: &[StreamedToolCall]) -> Option<Mod
     let name = tool_call.name.clone()?;
     let arguments = serde_json::from_str(&tool_call.arguments).unwrap_or_else(|e| {
         warn!(
-            "Failed to parse tool arguments for {} as JSON: {:?}. Using empty object.",
-            name, e
+            "Failed to parse tool arguments for {} as JSON: {}. Using empty object.",
+            name,
+            crate::log_redaction::JsonErrorSummary(&e)
         );
         json!({})
     });

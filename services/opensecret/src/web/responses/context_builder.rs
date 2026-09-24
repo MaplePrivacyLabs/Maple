@@ -285,9 +285,12 @@ pub fn build_prompt_with_token_reserve<D: DBConnection + ?Sized>(
                 let arguments_str = String::from_utf8_lossy(&plain).into_owned();
 
                 // Parse arguments as JSON - if malformed, use empty object but continue safely
-                let arguments: serde_json::Value =
-                    serde_json::from_str(&arguments_str).unwrap_or_else(|e| {
-                        error!("Failed to parse tool call arguments as JSON: {:?}. Using empty object.", e);
+                let arguments: serde_json::Value = serde_json::from_str(&arguments_str)
+                    .unwrap_or_else(|e| {
+                        error!(
+                            "Failed to parse tool call arguments as JSON: {}. Using empty object.",
+                            crate::log_redaction::JsonErrorSummary(&e)
+                        );
                         serde_json::json!({})
                     });
 
