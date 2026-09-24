@@ -4,7 +4,10 @@ import { Link, useBlocker } from "@tanstack/react-router";
 import { useQueryClient } from "@tanstack/react-query";
 import { generateSecureSecret, hashSecret, useOpenSecret } from "@mapleai/sdk";
 import { AlertTriangle, Loader2 } from "lucide-react";
-import { shouldWarnBeforeAccountDeletion } from "@/billing/billingAccess";
+import {
+  accountDeletionBillingDescription,
+  shouldWarnBeforeAccountDeletion
+} from "@/billing/billingAccess";
 import { getBillingService } from "@/billing/billingService";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import {
@@ -196,8 +199,7 @@ export function DeleteAccountSettings() {
       return;
     }
 
-    // Billing does not currently expose cancel-at-period-end, so paid users can
-    // still proceed if they already canceled and are waiting for the period to end.
+    // Explain billing consequences without requiring paid time to expire first.
     if (!paidPlanWarningAcknowledgedRef.current && shouldWarnBeforeAccountDeletion(billingStatus)) {
       setShowPaidPlanWarning(true);
       return;
@@ -206,7 +208,7 @@ export function DeleteAccountSettings() {
     void handleRequestDeletion();
   };
 
-  const handleProceedAnyway = () => {
+  const handleContinueDeletion = () => {
     paidPlanWarningAcknowledgedRef.current = true;
     setShowPaidPlanWarning(false);
     void handleRequestDeletion();
@@ -299,16 +301,14 @@ export function DeleteAccountSettings() {
       <AlertDialog open={showPaidPlanWarning} onOpenChange={setShowPaidPlanWarning}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Cancel your plan first?</AlertDialogTitle>
+            <AlertDialogTitle>Before you delete your account</AlertDialogTitle>
             <AlertDialogDescription>
-              This account is still on a paid plan. Cancel the subscription from the manage plan
-              page before deleting the account. If you already canceled and are waiting for the
-              period to end, you can proceed anyway.
+              {accountDeletionBillingDescription(billingStatus)}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <Button type="button" variant="outline" onClick={handleProceedAnyway}>
-              Proceed anyway
+            <Button type="button" variant="outline" onClick={handleContinueDeletion}>
+              Continue deletion
             </Button>
             <Button asChild>
               <Link to="/settings/billing" replace>
