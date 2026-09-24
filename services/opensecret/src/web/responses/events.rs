@@ -309,6 +309,41 @@ mod tests {
         );
         assert!(serialized.get("error").is_none());
         assert_eq!(serialized["opensecret"]["error_code"], "inference_capacity");
+
+        let provider_failure = crate::inference::AttemptFailure::new(
+            crate::inference::AttemptFailureKind::HttpStatus,
+            crate::inference::AttemptStage::AwaitingResponse,
+            crate::inference::ReplaySafety::NotProvenPreAcceptance,
+        )
+        .with_upstream_response(400, None, None);
+        let public =
+            crate::web::provider_error::PublicProviderError::from_failure(&provider_failure)
+                .unwrap();
+        let mut provider_failed = failed_payload.clone();
+        provider_failed.response.error = Some(ResponseError {
+            code: public.code().to_string(),
+            message: public.message().to_string(),
+        });
+        provider_failed.opensecret = Some(OpenSecretResponseError {
+            error_contract: "1",
+            error_code: public.code(),
+        });
+        let serialized = serde_json::to_value(&provider_failed).unwrap();
+        assert_eq!(serialized["type"], EVENT_RESPONSE_FAILED);
+        assert_eq!(serialized["response"]["status"], STATUS_FAILED);
+        assert_eq!(
+            serialized["response"]["error"]["code"],
+            "upstream_invalid_request"
+        );
+        assert_eq!(serialized["opensecret"]["error_contract"], "1");
+        assert_eq!(
+            serialized["opensecret"]["error_code"],
+            "upstream_invalid_request"
+        );
+        assert!(serialized.get("error").is_none());
+        // A failed response is already accepted work; it carries no retry or
+        // replay permission despite its provider-side invalid-request category.
+        assert_eq!(serialized["opensecret"].as_object().unwrap().len(), 2);
         assert_eq!(
             ResponseEvent::Failed(failed_payload).event_type(),
             EVENT_RESPONSE_FAILED

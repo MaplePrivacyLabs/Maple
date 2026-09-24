@@ -281,6 +281,46 @@ describe("Transport V2 authentication runtime", () => {
     expect(harness.request).toHaveBeenCalledTimes(1);
   });
 
+  test("safe upstream errors do not refresh or clear user credentials", async () => {
+    const api = apiUrl("upstream-errors");
+    const initial = credentialPair("user", "user-1", NOW + 3_600, 7);
+    const harness = runtimeWith(async () => {
+      throw new Error("upstream errors must not trigger authentication requests");
+    });
+    const auth = new TransportV2AuthRuntime({
+      runtime: harness.runtime,
+      nowUnixSeconds: () => NOW
+    });
+    const installed = installTransportV2Credentials(api, "user", initial.access, initial.refresh);
+    const sent = await auth.authority(api, undefined, "user");
+
+    for (const [status, code] of [
+      [400, "upstream_invalid_request"],
+      [400, "upstream_context_limit"],
+      [502, "upstream_provider_error"],
+      [504, "upstream_timeout"]
+    ] as const) {
+      auth.noteResponse(
+        Response.json(
+          { status, message: "Safe upstream error fixture" },
+          {
+            status,
+            headers: {
+              "x-opensecret-error-contract": "1",
+              "x-opensecret-error-code": code
+            }
+          }
+        ),
+        api,
+        undefined,
+        "user",
+        sent
+      );
+      expect(readTransportV2Credentials(api, "user")).toEqual(installed);
+    }
+    expect(harness.request).not.toHaveBeenCalled();
+  });
+
   test("keeps an authenticated expiry response and refreshes only for a later request", async () => {
     const api = apiUrl("post-response");
     const initial = credentialPair("user", "user-1", NOW + 3_600, 7);

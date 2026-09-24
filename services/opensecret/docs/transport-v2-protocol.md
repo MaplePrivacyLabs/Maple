@@ -453,6 +453,45 @@ do not receive these recovery markers. These
 outer headers are unauthenticated hints, not evidence the original request
 never executed; see the retry rules below.
 
+### Completion provider errors
+
+Before Chat Completions or Responses starts its public response, provider errors
+use the existing `{"status":400,"message":"..."}` shape with static messages,
+`x-opensecret-error-contract: 1`, and a static `x-opensecret-error-code`. V2
+authenticates the logical status, headers and body; V1 uses its existing HTTP
+error representation with the classified status/message.
+
+| Failure | Public HTTP status | Error code |
+| --- | --- | --- |
+| Provider rejects a request with 400 or 422 | 400 or 422 respectively | `upstream_invalid_request`, or a recognized detail below |
+| Provider rejects payload size with 413 | 413 | `upstream_payload_too_large` |
+| Provider 408/504 or response-start timeout | 504 | `upstream_timeout` |
+| Other provider HTTP failure, connection/send failure, unreadable or invalid response | 502 | `upstream_provider_error` |
+| Provider 429 | 429 | Existing `inference_capacity` |
+| Provider 503/529 | 503 | Existing `inference_capacity` |
+
+For 400/422 only, the bounded diagnostic can select
+`upstream_invalid_parameter`, `upstream_unsupported_parameter`,
+`upstream_invalid_messages`, or `upstream_context_limit`, each with a locally
+written message. Unknown, unreadable or oversized bodies fall back to the status
+category. Raw text, parameter names/values, request IDs and provider headers are
+never copied. Diagnostics cannot override HTTP categories: HTTP429 remains a
+capacity error even with an `invalid_request_error` label; provider 401/403/404
+becomes 502, never a Maple authentication, entitlement or resource error. A
+provider rejection need not mean the caller violated Maple's schema.
+
+Routing, billing, retries and capacity feedback are unchanged. Capacity retains
+its existing `Retry-After` and client-replay rules. New `upstream_*` codes grant
+no replay permission and request no session recreation or token refresh.
+
+After streaming starts, Chat emits one encrypted OpenAI-shaped error; Responses
+emits encrypted `response.failed` through its existing storage-terminal path,
+with the safe code/message and error-contract metadata. Neither changes the
+started HTTP status or grants retry permission. Mid-stream timeouts use
+`upstream_timeout`; malformed/error payloads and unexpected EOF use
+`upstream_provider_error`. Consumer drops, internal build failures, discovery
+unavailability and helper-specific failure contracts remain separate.
+
 ### Cryptographic interoperability fixture
 
 `crypto::tests::deterministic_key_and_record_vector` fixes the following

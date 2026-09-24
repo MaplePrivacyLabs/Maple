@@ -66,6 +66,7 @@ async function responseFor(
   options: {
     status?: number;
     logicalHeaders?: { name: string; value: string }[];
+    body?: string;
     truncate?: boolean;
     corrupt?: boolean;
   } = {}
@@ -75,7 +76,7 @@ async function responseFor(
       new Uint8Array([1]),
       utf8(JSON.stringify({ status: options.status ?? 200, headers: options.logicalHeaders ?? [] }))
     ),
-    concatBytes(new Uint8Array([2]), utf8("ok"))
+    concatBytes(new Uint8Array([2]), utf8(options.body ?? "ok"))
   ];
   if (!options.truncate) records.push(new Uint8Array([3]));
   const frames = await Promise.all(
@@ -252,6 +253,45 @@ describe("Transport V2 inference budget across session repair", () => {
 });
 
 beforeEach(() => globalThis.sessionStorage.clear());
+
+describe("Transport V2 safe upstream error contract", () => {
+  for (const [status, code] of [
+    [400, "upstream_invalid_request"],
+    [400, "upstream_context_limit"],
+    [502, "upstream_provider_error"],
+    [504, "upstream_timeout"]
+  ] as const) {
+    for (const target of ["/v1/chat/completions", "/v1/responses"]) {
+      test(`${target} preserves ${code} without session repair or replay`, async () => {
+        const body = JSON.stringify({ status, message: "Safe upstream error fixture" });
+        const fixture = await harness((attempt) =>
+          responseFor(attempt, {
+            status,
+            body,
+            logicalHeaders: [
+              { name: "content-type", value: "application/json" },
+              { name: CONTRACT, value: "1" },
+              { name: CODE, value: code }
+            ]
+          })
+        );
+        const response = await inferenceFetch(fixture.runtime)(`${API_URL}${target}`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ model: "fixture-model", stream: true })
+        });
+
+        expect(response.status).toBe(status);
+        expect(response.headers.get(CONTRACT)).toBe("1");
+        expect(response.headers.get(CODE)).toBe(code);
+        expect(response.headers.has("x-opensecret-client-replay")).toBe(false);
+        expect(await response.text()).toBe(body);
+        expect(fixture.attempts).toHaveLength(1);
+        expect(fixture.establish).toHaveBeenCalledTimes(1);
+      });
+    }
+  }
+});
 
 describe("Transport V2 bounded session repair", () => {
   for (const code of CODES) {

@@ -493,6 +493,50 @@ describe("simplified Transport V2 encrypted API seam", () => {
     });
   }
 
+  test("OpenAI calls retain safe upstream messages, statuses, and codes", async () => {
+    for (const [status, code] of [
+      [400, "upstream_invalid_request"],
+      [400, "upstream_context_limit"],
+      [502, "upstream_provider_error"],
+      [504, "upstream_timeout"]
+    ] as const) {
+      for (const target of ["/v1/chat/completions", "/v1/responses"]) {
+        const testHarness = harness(async () =>
+          exchange(
+            jsonResponse(
+              { status, message: "Safe upstream error fixture" },
+              {
+                status,
+                headers: {
+                  "x-opensecret-error-contract": "1",
+                  "x-opensecret-error-code": code
+                }
+              }
+            )
+          )
+        );
+        let failure: unknown;
+        try {
+          await openAiAuthenticatedApiCallWithDependencies<{ model: string }, unknown>(
+            `${appApiUrl}${target}`,
+            "POST",
+            { model: "fixture-model" },
+            undefined,
+            "fixture-api-key",
+            testHarness.dependencies
+          );
+        } catch (error) {
+          failure = error;
+        }
+        expect(failure).toBeInstanceOf(Error);
+        expect(failure).toMatchObject({ status, message: "Safe upstream error fixture" });
+        expect((failure as { headers: Headers }).headers.get("x-opensecret-error-code")).toBe(code);
+        expect(testHarness.request).toHaveBeenCalledTimes(1);
+        expect(testHarness.authority).not.toHaveBeenCalled();
+      }
+    }
+  });
+
   test("surfaces authenticated logical errors and notifies user auth without retrying", async () => {
     const logicalError = jsonResponse(
       { message: "operation denied" },

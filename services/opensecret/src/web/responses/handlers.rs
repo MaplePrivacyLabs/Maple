@@ -36,6 +36,7 @@ use crate::{
             ResolvedInferenceModel, StartedCompletion,
         },
         openai_auth::AuthMethod,
+        provider_error::PublicProviderError,
         responses::{
             build_prompt, build_prompt_with_token_reserve, build_usage,
             constants::*,
@@ -302,6 +303,7 @@ impl ResponseExecutionPolicy {
 pub enum PublicResponseFailure {
     CapacityRateLimited,
     CapacityOverloaded,
+    Provider(PublicProviderError),
     DeadlineExceeded,
     Internal,
 }
@@ -309,13 +311,7 @@ pub enum PublicResponseFailure {
 impl PublicResponseFailure {
     fn from_completion_error(error: &CompletionExecutionError) -> Self {
         match error {
-            CompletionExecutionError::Request(ApiError::InferenceCapacity { status, .. }) => {
-                if *status == axum::http::StatusCode::TOO_MANY_REQUESTS {
-                    Self::CapacityRateLimited
-                } else {
-                    Self::CapacityOverloaded
-                }
-            }
+            CompletionExecutionError::Request(error) => Self::from_api_error(error),
             CompletionExecutionError::Attempt {
                 terminal: AttemptTerminal::Failed { failure, .. },
                 ..
@@ -326,6 +322,22 @@ impl PublicResponseFailure {
                     Self::CapacityOverloaded
                 }
             }
+            CompletionExecutionError::Attempt { public_error, .. } => {
+                Self::from_api_error(public_error)
+            }
+        }
+    }
+
+    fn from_api_error(error: &ApiError) -> Self {
+        match error {
+            ApiError::InferenceCapacity { status, .. } => {
+                if *status == axum::http::StatusCode::TOO_MANY_REQUESTS {
+                    Self::CapacityRateLimited
+                } else {
+                    Self::CapacityOverloaded
+                }
+            }
+            ApiError::InferenceProvider(error) => Self::Provider(*error),
             _ => Self::Internal,
         }
     }
@@ -333,6 +345,7 @@ impl PublicResponseFailure {
     fn openai_code(self) -> &'static str {
         match self {
             Self::CapacityRateLimited => "rate_limit_exceeded",
+            Self::Provider(error) => error.code(),
             Self::CapacityOverloaded | Self::DeadlineExceeded | Self::Internal => "server_error",
         }
     }
@@ -343,17 +356,21 @@ impl PublicResponseFailure {
                 "Inference capacity is temporarily unavailable."
             }
             Self::DeadlineExceeded => "The response exceeded its execution deadline.",
+            Self::Provider(error) => error.message(),
             Self::Internal => "The response could not be completed.",
         }
     }
 
     fn contract_metadata(self) -> Option<OpenSecretResponseError> {
-        matches!(self, Self::CapacityRateLimited | Self::CapacityOverloaded).then_some(
-            OpenSecretResponseError {
-                error_contract: ERROR_CONTRACT_VERSION,
-                error_code: INFERENCE_CAPACITY_ERROR_CODE,
-            },
-        )
+        let error_code = match self {
+            Self::CapacityRateLimited | Self::CapacityOverloaded => INFERENCE_CAPACITY_ERROR_CODE,
+            Self::Provider(error) => error.code(),
+            Self::DeadlineExceeded | Self::Internal => return None,
+        };
+        Some(OpenSecretResponseError {
+            error_contract: ERROR_CONTRACT_VERSION,
+            error_code,
+        })
     }
 }
 
@@ -619,7 +636,10 @@ mod tests {
         model_config::{ModelAliasTargets, ModelPlan},
         models::responses::ResponseStatus,
         provider_registry::{ProviderId, RouteSelectionSource},
-        web::openai::{CompletionChunk, CompletionExecutionError, CompletionUsage},
+        web::{
+            openai::{CompletionChunk, CompletionExecutionError, CompletionUsage},
+            provider_error::PublicProviderError,
+        },
         ApiError, ResponseMessageReservation, ResponseMessageReservations,
     };
     use axum::{routing::get, Json, Router};
@@ -1860,7 +1880,7 @@ mod tests {
     }
 
     #[test]
-    fn only_capacity_failures_expose_opensecret_terminal_metadata() {
+    fn typed_failures_expose_only_safe_opensecret_terminal_metadata() {
         let rate_limit = PublicResponseFailure::CapacityRateLimited;
         assert_eq!(rate_limit.openai_code(), "rate_limit_exceeded");
         let metadata = rate_limit.contract_metadata().unwrap();
@@ -1877,6 +1897,93 @@ mod tests {
         assert!(PublicResponseFailure::DeadlineExceeded
             .contract_metadata()
             .is_none());
+    }
+
+    #[test]
+    fn provider_rejections_keep_safe_details_before_and_after_persistence() {
+        use axum::response::IntoResponse;
+
+        for upstream_status in [400, 502] {
+            let failure = AttemptFailure::new(
+                AttemptFailureKind::HttpStatus,
+                AttemptStage::AwaitingResponse,
+                ReplaySafety::NotProvenPreAcceptance,
+            )
+            .with_upstream_response(upstream_status, None, None);
+            let public = PublicProviderError::from_failure(&failure).unwrap();
+            let CompletionChunk::Terminal(AttemptTerminal::Completed { attempt, .. }) =
+                completed_attempt_chunk()
+            else {
+                panic!("fixture must contain an attempt");
+            };
+            let execution_error = CompletionExecutionError::Attempt {
+                terminal: AttemptTerminal::Failed { attempt, failure },
+                public_error: ApiError::InferenceProvider(public),
+            };
+
+            // Later model turns have already started the Responses stream: keep
+            // these details in response.failed, never as a new HTTP response.
+            let terminal = PublicResponseFailure::from_completion_error(&execution_error);
+            assert_eq!(terminal, PublicResponseFailure::Provider(public));
+            assert_eq!(terminal.message(), public.message());
+            assert_eq!(terminal.openai_code(), public.code());
+            let metadata = terminal.contract_metadata().unwrap();
+            assert_eq!(metadata.error_contract, "1");
+            assert_eq!(metadata.error_code, public.code());
+
+            let response =
+                responses_pre_persistence_api_error(execution_error, true).into_response();
+            assert_eq!(response.status(), public.status());
+            assert_eq!(response.headers()[crate::ERROR_CODE_HEADER], public.code());
+            assert!(!response.headers().contains_key(crate::CLIENT_REPLAY_HEADER));
+            assert!(!response
+                .headers()
+                .contains_key(axum::http::header::RETRY_AFTER));
+        }
+    }
+
+    #[tokio::test]
+    async fn assistant_turn_preserves_safe_provider_failure_without_synthesizing_completion() {
+        let failure = AttemptFailure::new(
+            AttemptFailureKind::StreamTimeout,
+            AttemptStage::Stream,
+            ReplaySafety::NotProvenPreAcceptance,
+        );
+        let public = PublicProviderError::from_failure(&failure).unwrap();
+        let CompletionChunk::Terminal(AttemptTerminal::Completed { attempt, .. }) =
+            completed_attempt_chunk()
+        else {
+            panic!("fixture must contain an attempt");
+        };
+        let (tx_completion, rx_completion) = mpsc::channel(1);
+        tx_completion
+            .send(CompletionChunk::Terminal(AttemptTerminal::Failed {
+                attempt,
+                failure,
+            }))
+            .await
+            .unwrap();
+        drop(tx_completion);
+        let (tx_storage, mut rx_storage) = mpsc::channel(1);
+        let (tx_client, mut rx_client) = mpsc::channel(1);
+        let error = consume_assistant_turn(
+            rx_completion,
+            false,
+            &tx_client,
+            &tx_storage,
+            &mut Some(Uuid::new_v4()),
+            Uuid::new_v4(),
+        )
+        .await
+        .expect_err("failed provider stream must stay failed");
+        assert_eq!(
+            PublicResponseFailure::from_api_error(&error),
+            PublicResponseFailure::Provider(public)
+        );
+        assert_eq!(public.code(), "upstream_timeout");
+        // Only the existing storage supervisor may emit the final terminal.
+        assert!(rx_storage.try_recv().is_err());
+        assert!(rx_client.try_recv().is_err());
     }
 
     #[test]
@@ -5052,7 +5159,9 @@ async fn consume_assistant_turn(
                     "Received failed inference terminal: kind={:?}, stage={:?}",
                     failure.kind, failure.stage
                 );
-                return Err(ApiError::InternalServerError);
+                return Err(PublicProviderError::from_failure(&failure)
+                    .map(ApiError::InferenceProvider)
+                    .unwrap_or(ApiError::InternalServerError));
             }
             crate::web::openai::CompletionChunk::FullResponse(_) => {
                 error!("Received FullResponse in streaming mode");
@@ -5157,7 +5266,9 @@ async fn setup_completion_processor(
         .await
         {
             Ok(turn) => turn,
-            Err(_) => return ResponseTerminal::Failed(PublicResponseFailure::Internal),
+            Err(error) => {
+                return ResponseTerminal::Failed(PublicResponseFailure::from_api_error(&error));
+            }
         };
 
         match turn {
