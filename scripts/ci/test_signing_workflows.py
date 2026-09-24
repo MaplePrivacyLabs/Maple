@@ -6,9 +6,11 @@ these tests prevent a workflow change from accidentally bypassing that boundary.
 
 import functools
 import json
+import os
 from pathlib import Path
 import re
 import subprocess
+import tempfile
 import unittest
 
 
@@ -94,13 +96,49 @@ class SigningWorkflowTests(unittest.TestCase):
                     self.assertEqual(workflows()[name]["jobs"][job]["environment"], environment)
 
     def test_master_release_and_unsigned_pr_triggers_are_preserved(self):
-        for name in ("desktop-build.yml", "mobile-build.yml", "android-build.yml"):
+        for name in ("desktop-build.yml", "android-build.yml"):
             self.assertEqual(workflows()[name]["on"], {"push": {"branches": ["master"]}})
         self.assertEqual(workflows()["release.yml"]["on"], {"release": {"types": ["created"]}})
         for name in ("desktop-pr-build.yml", "mobile-pr-build.yml", "android-pr-build.yml"):
             self.assertFalse(signing_references(workflows()[name]))
             for job in workflows()[name]["jobs"].values():
                 self.assertNotIn(job.get("environment", ""), ENVIRONMENTS)
+
+    def test_production_testflight_serializes_export_through_upload_on_trusted_master(self):
+        config = workflows()["mobile-build.yml"]
+        self.assertEqual(config["on"], {"push": {"branches": ["master"]}, "workflow_dispatch": None})
+        self.assertEqual(config["concurrency"], {
+            "group": "maple-ios-production-testflight", "cancel-in-progress": False, "queue": "max",
+        })
+        self.assertNotEqual(config["concurrency"]["group"], workflows()["ios-dev-testflight.yml"]["concurrency"]["group"])
+        guard = (
+            "github.repository == 'MaplePrivacyLabs/Maple' && "
+            "github.ref == 'refs/heads/master' && "
+            "(github.event_name == 'push' || github.event_name == 'workflow_dispatch')"
+        )
+        jobs = config["jobs"]
+        for name in ("changes", "build-ios", "submit-ios-testflight", "warm-ios-pr-onnx-cache"):
+            self.assertIn(guard, " ".join(jobs[name]["if"].split()))
+        self.assertEqual(jobs["build-ios"]["needs"], "changes")
+        self.assertEqual(jobs["verify-ios-artifacts"]["needs"], "build-ios")
+        self.assertEqual(jobs["submit-ios-testflight"]["needs"], "verify-ios-artifacts")
+        for job in jobs.values():
+            self.assertNotIn("concurrency", job)
+        for name in ("build-ios", "warm-ios-pr-onnx-cache"):
+            self.assertIn("always() && !cancelled()", jobs[name]["if"])
+            self.assertIn("needs.changes.result != 'success'", jobs[name]["if"])
+
+    def test_manual_testflight_dispatch_forces_a_fresh_build_without_a_path_diff(self):
+        steps = workflows()["app-change-detection.yml"]["jobs"]["detect"]["steps"]
+        classify = next(step for step in steps if step.get("id") == "classify")
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "outputs"
+            subprocess.run(["bash", "-c", classify["run"]], check=True, capture_output=True,
+                           cwd=directory, env={**os.environ, "GITHUB_EVENT_NAME": "workflow_dispatch",
+                                               "GITHUB_OUTPUT": str(output), "BASE_SHA": "", "HEAD_SHA": ""})
+            self.assertEqual(dict(line.split("=", 1) for line in output.read_text().splitlines()), {
+                name: "true" for name in ("frontend", "macos", "linux", "windows", "ios", "android", "ios_onnx")
+            })
 
     def test_windows_oidc_keeps_its_federated_environment_identity(self):
         for name in ("desktop-build.yml", "release.yml"):
