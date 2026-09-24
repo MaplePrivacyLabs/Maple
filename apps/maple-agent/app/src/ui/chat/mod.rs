@@ -1341,6 +1341,14 @@ impl ChatScreen {
         if self.root_selecting {
             return;
         }
+        // The new-task screen's first send is creating its task in the
+        // visible project. Switching now would move the draft away from
+        // the task its message is going to; the create is short, so wait.
+        if self.selected_session.is_none() && self.session_setup_pending {
+            self.notice = Some("Wait for the new task to be created, then switch projects".into());
+            cx.notify();
+            return;
+        }
         let path = path.trim().to_string();
         if path.is_empty() || !std::path::Path::new(&path).is_absolute() {
             self.notice = Some("Enter an absolute directory path".into());
@@ -1834,6 +1842,30 @@ impl ChatScreen {
         self.fill_empty_composer(&text, cx)
     }
 
+    /// Another task is opened while the first send is still creating its
+    /// task. The message is not sent, and it does not follow the user: it
+    /// leaves the composer for the prompt history at once, so the task
+    /// opened never shows it and the late create has nothing to put back
+    /// (its task is deleted when it lands).
+    fn withdraw_first_send(&mut self, cx: &mut Context<Self>) {
+        let Some(action) = self.pending_first_send.take() else {
+            return;
+        };
+        let text = self
+            .composer_text(cx)
+            .filter(|shown| !shown.trim().is_empty())
+            .unwrap_or_else(|| action.text());
+        self.remember_prompt(&text);
+        if let Some(composer) = self.composer.clone() {
+            composer.update(cx, |input, cx| input.clear(cx));
+        }
+        self.notice = Some(
+            "Message not sent: another task was opened first. Press Up in the composer to recall it"
+                .into(),
+        );
+        cx.notify();
+    }
+
     /// Run the send the task was created for, against the task now on
     /// screen. The composer showed the message while the task was being
     /// created, so what it holds now goes out, edits included; only an
@@ -2160,6 +2192,9 @@ impl ChatScreen {
         // The side thread belongs to the task it forked.
         if self.btw.is_some() && self.selected_session.as_deref() != Some(session_id) {
             self.close_side_thread(cx);
+        }
+        if self.selected_session.is_none() {
+            self.withdraw_first_send(cx);
         }
         self.load_session(session_id, LoadMode::Select, LOAD_RETRIES, cx);
     }

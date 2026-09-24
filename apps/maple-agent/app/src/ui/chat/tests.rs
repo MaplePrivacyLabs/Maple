@@ -2153,6 +2153,90 @@ mod state_tests {
         });
     }
 
+    /// Opening another task while the first send is still creating its
+    /// task takes the message out of the composer at once, into the
+    /// history: the task opened never shows it, and the late create, whose
+    /// task is deleted, puts nothing back. Before, the message stayed live
+    /// in the other task's composer, and a late create put it back even
+    /// after it had been sent there, inviting a duplicate.
+    #[gpui::test]
+    fn test_opening_another_task_takes_the_first_send_along(cx: &mut TestAppContext) {
+        let root = absolute_fixture_root("work");
+        let (chat, cx) = chat_window(cx, |this, cx| {
+            this.project_root = Some(root.clone());
+            this.selected_session = None;
+            this.new_session(cx);
+        });
+        chat.update(cx, |this, cx| {
+            this.booting = false;
+            let composer = this.composer.clone().unwrap();
+            composer.update(cx, |input, cx| input.set_text("hello", cx));
+            this.send_text("hello".to_string(), cx);
+            assert!(this.session_setup_pending);
+            let generation = this.selection_generation;
+
+            // Task B is opened while the create is in flight.
+            this.select_session("b", cx);
+            assert!(this.pending_first_send.is_none());
+            assert_eq!(this.composer_text(cx).as_deref(), Some(""));
+            assert_eq!(
+                this.prompt_history.last().map(String::as_str),
+                Some("hello")
+            );
+            assert!(
+                this.notice
+                    .as_ref()
+                    .is_some_and(|notice| notice.starts_with("Message not sent")),
+                "{:?}",
+                this.notice
+            );
+
+            // B lands, and what is sent there stays sent: the late create
+            // puts nothing back.
+            this.set_active_session(summary_at("b", "B", &root), Vec::new(), HashMap::new(), cx);
+            assert_eq!(this.composer_text(cx).as_deref(), Some(""));
+            composer.update(cx, |input, cx| input.set_text("for b", cx));
+            this.send_text("for b".to_string(), cx);
+            assert_eq!(this.composer_text(cx).as_deref(), Some(""));
+            this.finish_new_session(summary_at("late", "New Task", &root), generation, cx);
+            assert!(!this.session_setup_pending);
+            assert_eq!(this.selected_session.as_deref(), Some("b"));
+            assert_eq!(
+                this.composer_text(cx).as_deref(),
+                Some(""),
+                "nothing put back"
+            );
+        });
+    }
+
+    /// The project cannot be switched while the first send is creating its
+    /// task in the visible one. Before, the draft moved away with the
+    /// message still in it, waited for the old create to land, and was then
+    /// told another task had been opened.
+    #[gpui::test]
+    fn test_project_switch_waits_for_the_first_send(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        let screen = screen(cx);
+        screen.update(cx, |this, cx| {
+            this.project_root = Some("/work/alpha".to_string());
+            this.selected_session = None;
+            this.session_setup_pending = true;
+
+            this.select_project_root(absolute_fixture_root("beta"), cx);
+            assert!(!this.root_selecting, "the switch did not start");
+            assert_eq!(this.project_root.as_deref(), Some("/work/alpha"));
+            assert_eq!(
+                this.notice.as_ref().map(SharedString::as_ref),
+                Some("Wait for the new task to be created, then switch projects")
+            );
+
+            // From a task on screen the switch goes ahead as before.
+            this.selected_session = Some("s1".to_string());
+            this.select_project_root(absolute_fixture_root("beta"), cx);
+            assert!(this.root_selecting);
+        });
+    }
+
     /// A failed create leaves nothing behind and gives the message back.
     #[gpui::test]
     fn test_failed_create_keeps_the_draft(cx: &mut TestAppContext) {
