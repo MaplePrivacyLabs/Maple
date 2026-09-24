@@ -12,13 +12,14 @@ import { getBillingService } from "@/billing/billingService";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import {
   AlertDialog,
+  AlertDialogCancel,
   AlertDialogContent,
   AlertDialogDescription,
   AlertDialogFooter,
   AlertDialogHeader,
   AlertDialogTitle
 } from "@/components/ui/alert-dialog";
-import { Button } from "@/components/ui/button";
+import { Button, buttonVariants } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useSettingsNavigationLock } from "@/contexts/SettingsNavigationLockContext";
@@ -310,11 +311,7 @@ export function DeleteAccountSettings() {
             <Button type="button" variant="outline" onClick={handleContinueDeletion}>
               Continue deletion
             </Button>
-            <Button asChild>
-              <Link to="/settings/billing" replace>
-                Manage plan
-              </Link>
-            </Button>
+            <AlertDialogCancel className={buttonVariants()}>Cancel</AlertDialogCancel>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
