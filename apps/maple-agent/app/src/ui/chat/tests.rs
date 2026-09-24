@@ -103,6 +103,23 @@ mod state_tests {
         cx: &mut TestAppContext,
         setup: impl FnOnce(&mut ChatScreen, &mut Context<ChatScreen>),
     ) -> (Entity<ChatScreen>, &mut gpui::VisualTestContext) {
+        let backend = {
+            let _guard = SETTINGS_LOCK.lock();
+            std::sync::Arc::new(
+                crate::backend::AgentBackend::new("http://127.0.0.1:9".to_string(), String::new())
+                    .expect("backend"),
+            )
+        };
+        chat_window_in(cx, backend, setup)
+    }
+
+    /// `chat_window` on a backend the test built, for tests that read
+    /// something back through it.
+    fn chat_window_in(
+        cx: &mut TestAppContext,
+        backend: Arc<crate::backend::AgentBackend>,
+        setup: impl FnOnce(&mut ChatScreen, &mut Context<ChatScreen>),
+    ) -> (Entity<ChatScreen>, &mut gpui::VisualTestContext) {
         struct ChatHost {
             chat: Entity<ChatScreen>,
         }
@@ -125,10 +142,6 @@ mod state_tests {
         cx.executor().allow_parking();
         let chat = cx.new(|cx| {
             let _guard = SETTINGS_LOCK.lock();
-            let backend = std::sync::Arc::new(
-                crate::backend::AgentBackend::new("http://127.0.0.1:9".to_string(), String::new())
-                    .expect("backend"),
-            );
             crate::desktop::register_key_bindings(cx);
             let mut chat = ChatScreen::new_without_start(backend, "user".to_string(), cx);
             chat.selected_session = Some("s1".to_string());
@@ -1845,29 +1858,50 @@ mod state_tests {
         });
     }
 
+    /// A configured MCP server, as the settings page saves it.
+    fn mcp_server(name: &str, enabled: bool) -> AgentMcpServer {
+        AgentMcpServer {
+            name: name.to_string(),
+            description: String::new(),
+            enabled,
+            timeout_seconds: 30,
+            transport: AgentMcpTransport::Stdio {
+                command: format!("{name}-mcp"),
+                environment: Vec::new(),
+            },
+        }
+    }
+
     /// Chip changes on the empty screen are draft state: nothing is
-    /// persisted, and the create applies them once the task exists.
+    /// persisted. The servers switched on go into the create request by
+    /// name, so one switched off never starts, and a reload of the rows
+    /// keeps the switches.
     #[gpui::test]
     fn test_draft_chips_change_only_the_screen(cx: &mut TestAppContext) {
         cx.executor().allow_parking();
         let screen = screen(cx);
         screen.update(cx, |this, cx| {
+            this.project_root = Some("/work/alpha".to_string());
             this.selected_session = None;
+            this.draft = true;
             this.web_enabled = true;
             this.set_web_enabled(false, cx);
             assert!(!this.web_enabled);
+            assert_eq!(
+                this.new_session_request().unwrap().mcp_server_names,
+                None,
+                "before the rows load the task takes the defaults"
+            );
 
-            this.set_session_mcp(vec![draft_mcp_row(AgentMcpServer {
-                name: "docs".to_string(),
-                description: String::new(),
-                enabled: true,
-                timeout_seconds: 30,
-                transport: AgentMcpTransport::Stdio {
-                    command: "docs-mcp".to_string(),
-                    environment: Vec::new(),
-                },
-            })]);
+            this.set_draft_mcp_defaults(vec![
+                draft_mcp_row(mcp_server("docs", true)),
+                draft_mcp_row(mcp_server("wiki", false)),
+            ]);
             assert_eq!(this.mcp_enabled_count, 1);
+            assert_eq!(
+                this.new_session_request().unwrap().mcp_server_names,
+                Some(vec!["docs".to_string()])
+            );
             this.toggle_session_mcp(
                 "docs".to_string(),
                 AgentSessionIntegrationKind::Mcp,
@@ -1884,18 +1918,210 @@ mod state_tests {
                     enabled: false,
                 }]
             );
+            assert_eq!(
+                this.new_session_request().unwrap().mcp_server_names,
+                Some(Vec::new()),
+                "a server switched off is left out, not defaulted back in"
+            );
+            // The rows reload (the chip opened again, settings returned):
+            // the switch survives, and a row that went away drops its toggle.
+            this.set_draft_mcp_defaults(vec![
+                draft_mcp_row(mcp_server("docs", true)),
+                draft_mcp_row(mcp_server("wiki", false)),
+            ]);
+            assert!(!this.session_mcp[0].enabled, "the toggle carries over");
+            assert_eq!(this.mcp_enabled_count, 0);
+            this.set_draft_mcp_defaults(vec![draft_mcp_row(mcp_server("wiki", false))]);
+            assert!(this.draft_mcp_changes.is_empty());
             // Toggling back replaces the entry instead of stacking.
             this.toggle_session_mcp(
-                "docs".to_string(),
+                "wiki".to_string(),
                 AgentSessionIntegrationKind::Mcp,
                 true,
                 cx,
             );
+            this.toggle_session_mcp(
+                "wiki".to_string(),
+                AgentSessionIntegrationKind::Mcp,
+                false,
+                cx,
+            );
             assert_eq!(this.draft_mcp_changes.len(), 1);
-            assert!(this.draft_mcp_changes[0].enabled);
+            assert!(!this.draft_mcp_changes[0].enabled);
             // A task selection ends the draft.
             this.clear_selected_session_presentation(cx);
             assert!(this.draft_mcp_changes.is_empty());
+            assert!(this.draft_mcp_defaults.is_none());
+        });
+    }
+
+    /// Run the executor until `done` holds. Backend calls answer from the
+    /// tokio runtime, which the test executor does not drive, so the wait
+    /// polls with a bound instead of parking once.
+    fn wait_until(
+        chat: &Entity<ChatScreen>,
+        cx: &mut gpui::VisualTestContext,
+        what: &str,
+        done: impl Fn(&ChatScreen) -> bool,
+    ) {
+        for _ in 0..500 {
+            cx.run_until_parked();
+            if chat.update(cx, |this, _| done(this)) {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        panic!("{what} did not happen");
+    }
+
+    /// A backend whose configuration and data live under a temporary XDG
+    /// root, with `servers` saved through its own API, so a test can read
+    /// them back without touching the real configuration.
+    fn backend_with_mcp_servers(
+        cx: &mut TestAppContext,
+        tag: &str,
+        servers: Vec<AgentMcpServer>,
+    ) -> Arc<crate::backend::AgentBackend> {
+        let dir =
+            std::env::temp_dir().join(format!("maple-agent-test-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let backend = {
+            // The roots are read at construction; no other test may build
+            // a backend or read settings while the swap is live.
+            let _guard = SETTINGS_LOCK.lock();
+            let previous_config = std::env::var_os("XDG_CONFIG_HOME");
+            let previous_data = std::env::var_os("XDG_DATA_HOME");
+            unsafe {
+                std::env::set_var("XDG_CONFIG_HOME", dir.join("config"));
+                std::env::set_var("XDG_DATA_HOME", dir.join("data"));
+            }
+            let backend =
+                crate::backend::AgentBackend::new("http://127.0.0.1:9".to_string(), String::new());
+            unsafe {
+                match previous_config {
+                    Some(value) => std::env::set_var("XDG_CONFIG_HOME", value),
+                    None => std::env::remove_var("XDG_CONFIG_HOME"),
+                }
+                match previous_data {
+                    Some(value) => std::env::set_var("XDG_DATA_HOME", value),
+                    None => std::env::remove_var("XDG_DATA_HOME"),
+                }
+            }
+            Arc::new(backend.expect("backend"))
+        };
+        // The save runs on the backend's own runtime; wait for it here.
+        let (sender, receiver) = std::sync::mpsc::channel();
+        {
+            let backend = backend.clone();
+            backend.clone().spawn(async move {
+                let _ = sender.send(backend.save_mcp_servers("user", servers).await);
+            });
+        }
+        receiver
+            .recv_timeout(std::time::Duration::from_secs(30))
+            .expect("save task")
+            .expect("servers saved");
+        cx.executor().allow_parking();
+        backend
+    }
+
+    /// The integrations chip on the draft goes through the same handler
+    /// as on a task. It shows the rows a new task would get, read from the
+    /// configuration; a switch flipped there survives the chip being
+    /// opened again and decides the create request; and the Send button
+    /// starts the create with that request. Before, opening the chip
+    /// emptied the rows ("No integrations available for this task").
+    #[gpui::test]
+    fn test_integrations_chip_lists_and_toggles_the_drafts_rows(cx: &mut TestAppContext) {
+        let backend = backend_with_mcp_servers(
+            cx,
+            "draft-chip",
+            vec![mcp_server("docs", true), mcp_server("wiki", false)],
+        );
+        let (chat, cx) = chat_window_in(cx, backend, |this, cx| {
+            this.project_root = Some(absolute_fixture_root("work"));
+            this.selected_session = None;
+            this.new_session(cx);
+        });
+        wait_until(&chat, cx, "the draft's rows loading", |this| {
+            this.draft_mcp_defaults.is_some()
+        });
+        chat.update(cx, |this, _| {
+            let rows: Vec<(&str, bool)> = this
+                .session_mcp
+                .iter()
+                .map(|row| (row.name.as_str(), row.enabled))
+                .collect();
+            assert_eq!(rows, vec![("docs", true), ("wiki", false)]);
+            assert_eq!(this.mcp_enabled_count, 1);
+        });
+
+        press(cx, "mcp-menu");
+        assert_eq!(open_menu(&chat, cx), "Integrations");
+        chat.update(cx, |this, _| {
+            assert_eq!(this.session_mcp.len(), 2, "opening the chip keeps the rows");
+        });
+        assert!(
+            cx.debug_bounds("mcp-Mcp-docs").is_some(),
+            "the docs row is in the menu"
+        );
+
+        press(cx, "mcp-Mcp-docs");
+        chat.update(cx, |this, _| {
+            assert!(!this.session_mcp[0].enabled);
+            assert_eq!(this.mcp_enabled_count, 0);
+            assert_eq!(
+                this.new_session_request().unwrap().mcp_server_names,
+                Some(Vec::new())
+            );
+        });
+
+        // Opening the chip again reloads the rows; the switch stays off.
+        chat.update(cx, |this, cx| {
+            this.popup.close(cx);
+            this.draft_mcp_defaults = None;
+        });
+        press(cx, "mcp-menu");
+        wait_until(&chat, cx, "the rows reloading", |this| {
+            this.draft_mcp_defaults.is_some()
+        });
+        chat.update(cx, |this, _| {
+            assert!(
+                !this.session_mcp[0].enabled,
+                "the toggle survived the reload"
+            );
+        });
+        press(cx, "mcp-Mcp-wiki");
+        chat.update(cx, |this, _| {
+            assert_eq!(
+                this.new_session_request().unwrap().mcp_server_names,
+                Some(vec!["wiki".to_string()])
+            );
+        });
+
+        // The Send button starts the create with the draft's request.
+        chat.update(cx, |this, cx| {
+            this.popup.close(cx);
+            this.composer
+                .clone()
+                .unwrap()
+                .update(cx, |input, cx| input.set_text("hello", cx));
+        });
+        press(cx, "send-message");
+        // The create runs against a backend without a runtime and fails
+        // at once; that failure is the proof the button reached it.
+        wait_until(&chat, cx, "the create settling", |this| {
+            !this.session_setup_pending
+        });
+        chat.update(cx, |this, cx| {
+            assert!(this.notice.is_some(), "the create's failure is reported");
+            assert_eq!(
+                this.composer.clone().unwrap().read(cx).text(),
+                "hello",
+                "the text is back in the composer"
+            );
+            assert!(this.draft, "the draft is still on screen");
         });
     }
 

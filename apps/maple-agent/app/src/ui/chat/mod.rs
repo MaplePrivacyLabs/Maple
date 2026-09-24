@@ -256,10 +256,15 @@ pub struct ChatScreen {
     /// The send that is creating the task, run once the task lands. A
     /// selection change meanwhile drops it.
     pending_first_send: Option<FirstSend>,
-    /// Integration toggles made on the draft. The create request's name
-    /// list would replace the integration defaults wholesale, so each
-    /// toggle is applied to the new task the way the chip applies it to
-    /// a live one.
+    /// The integration rows a new task would start with, once the draft's
+    /// chip has loaded them. `None` until then: the create request then
+    /// names no servers and the task takes the defaults, rather than an
+    /// empty list that would start nothing.
+    draft_mcp_defaults: Option<Vec<AgentSessionMcpServer>>,
+    /// Integration toggles made on the draft, applied over the defaults
+    /// (they survive a reload of the rows). The MCP servers switched on go
+    /// into the create request's name list; the rest are applied to the
+    /// new task the way the chip applies them to a live one.
     draft_mcp_changes: Vec<DraftMcpChange>,
     /// An ask_user question waiting for the user's text answer.
     /// Questions waiting for the user, oldest first. The model can issue
@@ -917,6 +922,7 @@ impl ChatScreen {
             session_setup_pending: false,
             draft: false,
             pending_first_send: None,
+            draft_mcp_defaults: None,
             draft_mcp_changes: Vec::new(),
             pending_questions: Vec::new(),
             pending_question_input: None,
@@ -1741,7 +1747,14 @@ impl ChatScreen {
         let backend = self.backend.clone();
         let user_id = self.user_id.clone();
         let web_enabled = self.web_enabled;
-        let mcp_changes = self.draft_mcp_changes.clone();
+        // MCP servers went into the request's name list; the toggles left
+        // are the ones a create request cannot carry.
+        let mcp_changes: Vec<DraftMcpChange> = self
+            .draft_mcp_changes
+            .iter()
+            .filter(|change| change.kind != AgentSessionIntegrationKind::Mcp)
+            .cloned()
+            .collect();
         self.call(
             async move {
                 let mut session = backend
@@ -1858,9 +1871,11 @@ impl ChatScreen {
             // runtime's SmartApprove startup default, and adopting that
             // summary would reset the chip to Ask First.
             mode: Some(self.permission_mode.as_str().to_string()),
-            // Integration toggles are applied after creation: a name list
-            // here would also decide the curated integrations.
-            mcp_server_names: None,
+            // The draft's switches decide which servers start with the
+            // task; the runtime reads curated MCP integrations (CUA) from
+            // this list too. External agents are not servers and are
+            // applied after creation.
+            mcp_server_names: self.draft_mcp_names(),
             system_prompt: None,
         })
     }
@@ -2102,11 +2117,7 @@ impl ChatScreen {
             self.apply_permission_mode(cx);
         }
         // Servers may have been added or removed in settings.
-        if self.selected_session.is_some() {
-            self.refresh_session_mcp(cx);
-        } else {
-            self.refresh_draft_mcp(cx);
-        }
+        self.refresh_session_mcp(cx);
         cx.notify();
     }
 
@@ -2353,6 +2364,7 @@ impl ChatScreen {
         self.selected_session = None;
         // Leaving a draft ends it; "New Task" starts the next one itself.
         self.draft = false;
+        self.draft_mcp_defaults = None;
         self.draft_mcp_changes.clear();
         self.sync_sidebar_selection(cx);
         self.set_queue(Vec::new());
@@ -2524,10 +2536,16 @@ impl ChatScreen {
         );
     }
 
-    /// Reload the MCP server list for the selected task.
+    /// Reload the integrations chip: the selected task's servers, or on
+    /// the draft the rows a new task would get. Before, opening the chip
+    /// on the draft emptied it.
     pub fn refresh_session_mcp(&mut self, cx: &mut Context<Self>) {
         let Some(session_id) = self.selected_session.clone() else {
-            self.set_session_mcp(Vec::new());
+            if self.draft {
+                self.refresh_draft_mcp(cx);
+            } else {
+                self.set_session_mcp(Vec::new());
+            }
             return;
         };
         let backend = self.backend.clone();
@@ -2551,29 +2569,63 @@ impl ChatScreen {
 
     /// Load the integrations a new task would start with, for the draft's
     /// chip: the configured MCP servers with their defaults. Curated
-    /// integrations join once the task exists.
+    /// integrations join once the task exists. The rows on screen stay
+    /// until the fresh ones land, and the user's toggles carry over.
     fn refresh_draft_mcp(&mut self, cx: &mut Context<Self>) {
-        self.draft_mcp_changes.clear();
-        self.set_session_mcp(Vec::new());
         let backend = self.backend.clone();
         let user_id = self.user_id.clone();
         self.call(
             async move { backend.list_mcp_servers(&user_id).await },
             cx,
             move |this, result, cx| {
-                if this.selected_session.is_some() {
+                if !this.draft {
                     return;
                 }
                 match result {
-                    Ok(servers) => {
-                        this.draft_mcp_changes.clear();
-                        this.set_session_mcp(servers.into_iter().map(draft_mcp_row).collect());
-                    }
+                    Ok(servers) => this
+                        .set_draft_mcp_defaults(servers.into_iter().map(draft_mcp_row).collect()),
                     Err(message) => log::debug!("mcp list failed: {message}"),
                 }
                 cx.notify();
             },
         );
+    }
+
+    /// Install the rows a new task would start with. Toggles the user made
+    /// on rows that still exist are applied over them; the others go.
+    fn set_draft_mcp_defaults(&mut self, defaults: Vec<AgentSessionMcpServer>) {
+        self.draft_mcp_changes.retain(|change| {
+            defaults
+                .iter()
+                .any(|row| row.name == change.name && row.kind == change.kind)
+        });
+        let mut rows = defaults.clone();
+        for row in &mut rows {
+            if let Some(change) = self
+                .draft_mcp_changes
+                .iter()
+                .find(|change| change.name == row.name && change.kind == row.kind)
+            {
+                row.enabled = change.enabled;
+            }
+        }
+        self.draft_mcp_defaults = Some(defaults);
+        self.set_session_mcp(rows);
+    }
+
+    /// The MCP servers the create request starts: every configured server
+    /// and curated MCP integration switched on in the draft, so one the
+    /// user switched off never starts. `None` while the rows have not
+    /// loaded, so the task takes the defaults rather than nothing.
+    fn draft_mcp_names(&self) -> Option<Vec<String>> {
+        self.draft_mcp_defaults.as_ref()?;
+        Some(
+            self.session_mcp
+                .iter()
+                .filter(|row| row.kind == AgentSessionIntegrationKind::Mcp && row.enabled)
+                .map(|row| row.name.clone())
+                .collect(),
+        )
     }
 
     fn toggle_session_mcp(

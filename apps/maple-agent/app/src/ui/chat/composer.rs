@@ -1098,6 +1098,7 @@ impl ChatScreen {
                     .child(
                         div()
                             .id("send-message")
+                            .debug_selector(|| "send-message".to_string())
                             .size_8()
                             .flex()
                             .items_center()
