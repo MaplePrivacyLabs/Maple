@@ -3,7 +3,34 @@ use syn::visit::{self, Visit};
 
 const REQUEST_TIME_SCAN_ROOTS: &[&str] = &["src/main.rs", "src/web"];
 
-const SENSITIVE_LOG_IDENTIFIERS: &[&str] = &["session_key", "refresh_token", "alphanumeric_code"];
+/// Logs leave the enclave from every module, not only request handlers.
+const LOG_SCAN_ROOTS: &[&str] = &["src"];
+
+const SENSITIVE_LOG_IDENTIFIERS: &[&str] = &[
+    "session_key",
+    "refresh_token",
+    "alphanumeric_code",
+    "access_token",
+    "id_token",
+    "new_password",
+    "current_password",
+    "plaintext_secret",
+    "client_secret",
+    "csrf_token",
+    "private_key",
+    "secret_key",
+    "decrypted_data",
+];
+
+/// Trace output is disabled in every deployment (the attested entrypoint pins
+/// `RUST_LOG`), so trace macros are dead code that invites accidental leaks.
+const FORBIDDEN_LOG_MACROS: &[&str] = &["trace", "trace_span"];
+
+/// `serde_json` errors quote the offending value; parse failures must be
+/// logged through `JsonErrorSummary` instead.
+const SERDE_JSON_PARSE_FUNCTIONS: &[&str] =
+    &["from_str", "from_slice", "from_value", "from_reader"];
+const ERROR_HANDLER_METHODS: &[&str] = &["map_err", "unwrap_or_else", "inspect_err"];
 
 const SENSITIVE_LOG_MESSAGES: &[&str] = &[
     "session key:",
@@ -95,11 +122,11 @@ fn request_time_paths_do_not_use_legacy_seed_decrypt_helpers() {
 }
 
 #[test]
-fn request_time_logs_do_not_include_session_keys_tokens_or_reset_codes() {
+fn logs_do_not_include_secrets_trace_macros_or_raw_json_errors() {
     let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
     let mut findings = Vec::new();
 
-    for root in REQUEST_TIME_SCAN_ROOTS {
+    for root in LOG_SCAN_ROOTS {
         collect_sensitive_log_findings_in_path(
             &manifest_dir.join(root),
             manifest_dir,
@@ -109,7 +136,7 @@ fn request_time_logs_do_not_include_session_keys_tokens_or_reset_codes() {
 
     assert!(
         findings.is_empty(),
-        "request-time log macros must not reference session keys, refresh tokens, or reset codes:\n{}",
+        "log macros must not reference secrets, use trace level, or format raw serde_json errors:\n{}",
         findings.join("\n")
     );
 }
@@ -124,7 +151,7 @@ fn example(request: Request, session_key: [u8; 32], alphanumeric_code: String) {
     );
     debug!("generated key: {session_key:?}");
     tracing::event!(Level::WARN, alphanumeric_code, "reset failed");
-    trace!("Generated session key: redacted");
+    info!("Generated session key: redacted");
 }
 "#;
 
@@ -160,6 +187,53 @@ fn example(refresh_token: String, session_key: [u8; 32], alphanumeric_code: Stri
 "#;
 
     assert!(collect_sensitive_log_findings("example.rs", source).is_empty());
+}
+
+#[test]
+fn log_scanner_rejects_trace_macros() {
+    let source = r#"
+fn example() {
+    trace!("stream chunk");
+    tracing::trace_span!("request");
+    debug!("stream chunk");
+}
+"#;
+
+    let findings = collect_sensitive_log_findings("example.rs", source);
+
+    assert_eq!(findings.len(), 2, "unexpected findings: {findings:#?}");
+    assert!(findings.iter().all(|finding| finding.contains("trace")));
+}
+
+#[test]
+fn log_scanner_requires_json_error_summary_for_serde_json_parse_errors() {
+    let source = r#"
+fn example(body: &str) {
+    let a: Typed = serde_json::from_str(body).map_err(|e| {
+        error!("parse failed: {:?}", e);
+    })?;
+    let b: Typed = serde_json::from_slice(body).map_err(|err| {
+        tracing::warn!(error = %err, "parse failed");
+    })?;
+    let c: Value = serde_json::from_str(body).unwrap_or_else(|e| {
+        error!("parse failed: {e}");
+        Value::Null
+    });
+    let d: Typed = serde_json::from_str(body).map_err(|error| {
+        error!("parse failed: error={}", JsonErrorSummary(&error));
+    })?;
+    let f: Typed = other::from_str(body).map_err(|e| {
+        error!("not serde_json: {:?}", e);
+    })?;
+}
+"#;
+
+    let findings = collect_sensitive_log_findings("example.rs", source);
+
+    assert_eq!(findings.len(), 3, "unexpected findings: {findings:#?}");
+    assert!(findings
+        .iter()
+        .all(|finding| finding.contains("JsonErrorSummary")));
 }
 
 #[test]
@@ -975,6 +1049,13 @@ impl<'ast> Visit<'ast> for SensitiveLogVisitor<'_> {
             return;
         };
 
+        if FORBIDDEN_LOG_MACROS.contains(&macro_name.as_str()) {
+            self.findings.push(format!(
+                "{}: `{}!` is forbidden; trace output is never enabled, use `debug!`",
+                self.source_path, macro_name
+            ));
+        }
+
         if LOG_MACROS.contains(&macro_name.as_str()) {
             let body = log_macro.tokens.to_string();
             let mut sensitive_references = SENSITIVE_LOG_IDENTIFIERS
@@ -1001,6 +1082,132 @@ impl<'ast> Visit<'ast> for SensitiveLogVisitor<'_> {
 
         visit::visit_macro(self, log_macro);
     }
+
+    fn visit_expr_method_call(&mut self, call: &'ast syn::ExprMethodCall) {
+        if ERROR_HANDLER_METHODS.contains(&call.method.to_string().as_str())
+            && is_serde_json_parse_call(&call.receiver)
+        {
+            if let Some((error_name, closure_body)) = single_argument_closure(call) {
+                let mut raw_uses = RawErrorLogVisitor {
+                    error_name: &error_name,
+                    macros: Vec::new(),
+                };
+                raw_uses.visit_expr(closure_body);
+                for macro_name in raw_uses.macros {
+                    self.findings.push(format!(
+                        "{}: `{}!` formats serde_json error `{}` directly; wrap it in `JsonErrorSummary`",
+                        self.source_path, macro_name, error_name
+                    ));
+                }
+            }
+        }
+
+        visit::visit_expr_method_call(self, call);
+    }
+}
+
+fn is_serde_json_parse_call(expr: &syn::Expr) -> bool {
+    let syn::Expr::Call(call) = expr else {
+        return false;
+    };
+    let syn::Expr::Path(function) = call.func.as_ref() else {
+        return false;
+    };
+    let segments = function
+        .path
+        .segments
+        .iter()
+        .map(|segment| segment.ident.to_string())
+        .collect::<Vec<_>>();
+    matches!(
+        segments.as_slice(),
+        [.., module, function] if module == "serde_json"
+            && SERDE_JSON_PARSE_FUNCTIONS.contains(&function.as_str())
+    )
+}
+
+fn single_argument_closure(call: &syn::ExprMethodCall) -> Option<(String, &syn::Expr)> {
+    let syn::Expr::Closure(closure) = call.args.first()? else {
+        return None;
+    };
+    let [syn::Pat::Ident(error)] = closure.inputs.iter().collect::<Vec<_>>().as_slice() else {
+        return None;
+    };
+    Some((error.ident.to_string(), closure.body.as_ref()))
+}
+
+/// Finds log macros in an error-handling closure that use the error value
+/// other than as `JsonErrorSummary(&error)`.
+struct RawErrorLogVisitor<'a> {
+    error_name: &'a str,
+    macros: Vec<String>,
+}
+
+impl<'ast> Visit<'ast> for RawErrorLogVisitor<'_> {
+    fn visit_macro(&mut self, log_macro: &'ast syn::Macro) {
+        let Some(macro_name) = log_macro
+            .path
+            .segments
+            .last()
+            .map(|segment| segment.ident.to_string())
+        else {
+            return;
+        };
+
+        if LOG_MACROS.contains(&macro_name.as_str())
+            && formats_raw_error(&log_macro.tokens.to_string(), self.error_name)
+        {
+            self.macros.push(macro_name);
+        }
+
+        visit::visit_macro(self, log_macro);
+    }
+}
+
+/// Whether macro tokens use `name` outside `JsonErrorSummary(&name)`, either
+/// as an argument or as an inline `{name}` capture in a format string. Words in
+/// the message text itself do not count.
+fn formats_raw_error(tokens: &str, name: &str) -> bool {
+    let mut code = String::new();
+    let mut inline_capture = false;
+    let mut rest = tokens;
+    while let Some(start) = rest.find('"') {
+        code.push_str(&rest[..start]);
+        let literal = &rest[start + 1..];
+        let mut end = 0;
+        let mut escaped = false;
+        for (index, character) in literal.char_indices() {
+            if escaped {
+                escaped = false;
+            } else if character == '\\' {
+                escaped = true;
+            } else if character == '"' {
+                end = index;
+                break;
+            }
+        }
+        let text = &literal[..end];
+        inline_capture |=
+            text.contains(&format!("{{{name}}}")) || text.contains(&format!("{{{name}:"));
+        rest = &literal[end + 1..];
+    }
+    code.push_str(rest);
+
+    let code: String = code
+        .chars()
+        .filter(|character| !character.is_whitespace())
+        .collect();
+    let uses = code
+        .match_indices(name)
+        .filter(|(start, _)| {
+            let before = code[..*start].chars().next_back();
+            let after = code[start + name.len()..].chars().next();
+            !before.is_some_and(is_identifier_character)
+                && !after.is_some_and(is_identifier_character)
+        })
+        .count();
+    let summarized = code.matches(&format!("JsonErrorSummary(&{name})")).count();
+    inline_capture || uses > summarized
 }
 
 fn contains_identifier(source: &str, identifier: &str) -> bool {

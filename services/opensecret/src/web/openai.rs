@@ -1276,7 +1276,7 @@ async fn read_non_streaming_completion_response(
     let mut response_json: Value = serde_json::from_slice(&body_bytes).map_err(|error| {
         error!(
             "Failed to parse inference response JSON: request_id={}, execution_id={}, attempt_id={}, error={}",
-            attempt.request_id, attempt.execution_id, attempt.attempt_id, error
+            attempt.request_id, attempt.execution_id, attempt.attempt_id, crate::log_redaction::JsonErrorSummary(&error)
         );
         AttemptFailure::new(
             AttemptFailureKind::InvalidResponse,
@@ -3565,7 +3565,10 @@ async fn fetch_provider_models(
     })?;
 
     serde_json::from_slice(&body_bytes).map_err(|e| {
-        error!("Failed to parse models response: {:?}", e);
+        error!(
+            "Failed to parse models response: {}",
+            crate::log_redaction::JsonErrorSummary(&e)
+        );
         ApiError::InternalServerError
     })
 }
@@ -4005,7 +4008,10 @@ async fn send_transcription_request(
                 })?;
 
                 let response_json: Value = serde_json::from_slice(&body_bytes).map_err(|e| {
-                    error!("Failed to parse transcription response: {:?}", e);
+                    error!(
+                        "Failed to parse transcription response: {}",
+                        crate::log_redaction::JsonErrorSummary(&e)
+                    );
                     ApiError::InternalServerError
                 })?;
 
@@ -4279,7 +4285,10 @@ async fn proxy_embeddings(
     })?;
 
     let response_json: Value = serde_json::from_slice(&body_bytes).map_err(|e| {
-        error!("Failed to parse embeddings response: {:?}", e);
+        error!(
+            "Failed to parse embeddings response: {}",
+            crate::log_redaction::JsonErrorSummary(&e)
+        );
         ApiError::InternalServerError
     })?;
 
