@@ -1971,40 +1971,6 @@ impl OpenSecretClient {
         Ok(())
     }
 
-    // Key-Value Storage APIs
-    pub async fn kv_get(&self, key: &str) -> Result<String> {
-        let encoded_key = utf8_percent_encode(key, NON_ALPHANUMERIC).to_string();
-        let url = format!("/protected/kv/{}", encoded_key);
-        self.authenticated_api_call(&url, "GET", None::<()>).await
-    }
-
-    pub async fn kv_put(&self, key: &str, value: String) -> Result<String> {
-        let encoded_key = utf8_percent_encode(key, NON_ALPHANUMERIC).to_string();
-        let url = format!("/protected/kv/{}", encoded_key);
-        self.authenticated_api_call(&url, "PUT", Some(value)).await
-    }
-
-    pub async fn kv_delete(&self, key: &str) -> Result<()> {
-        let encoded_key = utf8_percent_encode(key, NON_ALPHANUMERIC).to_string();
-        let url = format!("/protected/kv/{}", encoded_key);
-        let _: serde_json::Value = self
-            .authenticated_api_call(&url, "DELETE", None::<()>)
-            .await?;
-        Ok(())
-    }
-
-    pub async fn kv_delete_all(&self) -> Result<()> {
-        let _: serde_json::Value = self
-            .authenticated_api_call("/protected/kv", "DELETE", None::<()>)
-            .await?;
-        Ok(())
-    }
-
-    pub async fn kv_list(&self) -> Result<Vec<KVListItem>> {
-        self.authenticated_api_call("/protected/kv", "GET", None::<()>)
-            .await
-    }
-
     // Private Key APIs
     pub async fn get_private_key(&self, options: Option<KeyOptions>) -> Result<PrivateKeyResponse> {
         let mut url = "/protected/private_key".to_string();
