@@ -329,8 +329,8 @@ mod tests {
 
         assert_eq!(intent.requested_model_id, AUTO_POWERFUL_MODEL_ID);
         assert_eq!(plan.selected.public_model_id, GLM_5_3_FLASH_MODEL_ID);
-        assert_eq!(plan.selected.provider_model_id, GLM_5_3_FLASH_MODEL_ID);
-        assert_eq!(plan.selected.provider, ProviderId::Tinfoil);
+        assert_eq!(plan.selected.provider_model_id, "glm-5.3-flash");
+        assert_eq!(plan.selected.provider, ProviderId::Continuum);
         assert_eq!(plan.selected.bucket, Some(73));
         assert_eq!(plan.decision, PlanDecision::StaticBucket);
         assert_eq!(plan.eligible_routes.len(), 2);
@@ -452,9 +452,9 @@ mod tests {
     }
 
     #[test]
-    fn glm_and_flash_use_their_own_account_splits_on_every_surface() {
+    fn glm_and_flash_send_seventy_five_percent_of_accounts_to_continuum_on_every_surface() {
         use crate::inference::{InferenceSurface, WorkloadClass};
-        for (model, continuum_percent) in [(GLM_5_3_MODEL_ID, 75), (GLM_5_3_FLASH_MODEL_ID, 30)] {
+        for model in [GLM_5_3_MODEL_ID, GLM_5_3_FLASH_MODEL_ID] {
             for (surface, workload) in [
                 (InferenceSurface::Responses, WorkloadClass::Interactive),
                 (
@@ -483,7 +483,7 @@ mod tests {
                         },
                     )
                     .expect("weighted GLM or Flash plan");
-                    let expected = if bucket < continuum_percent {
+                    let expected = if bucket < 75 {
                         continuum_count += 1;
                         ProviderId::Continuum
                     } else {
@@ -497,7 +497,7 @@ mod tests {
                     assert_eq!(plan.decision, PlanDecision::StaticBucket);
                     assert_eq!(plan.selected.public_model_id, model);
                 }
-                assert_eq!(continuum_count, continuum_percent);
+                assert_eq!(continuum_count, 75);
             }
         }
     }

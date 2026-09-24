@@ -557,8 +557,9 @@ const MODEL_CONFIGS: &[ModelConfigEntry] = &[
         true,
         false,
         25,
-        // Shared window: Continuum supports 262,144; Tinfoil supports 1,048,576.
-        262_144,
+        // Both providers support 1,048,576 tokens; Privatemode v1.57.0 uses
+        // --max-model-len=1048576 for glm-5.3-flash.
+        1_048_576,
     )
     .with_catalog_metadata(ModelCatalogMetadata::new(
         &["text", "image"],
@@ -598,7 +599,7 @@ const MODEL_CONFIGS: &[ModelConfigEntry] = &[
         true,
         false,
         50,
-        // Shared window: Continuum supports 262,144; Tinfoil supports 1,048,576.
+        // GLM 5.3 retains its configured window independently of Flash.
         262_144,
     )
     .with_catalog_provider("continuum", "glm-5.3")
@@ -883,7 +884,7 @@ mod tests {
         assert_eq!(model_context_window("gpt-oss-safeguard-120b"), 131_072);
         assert_eq!(model_context_window("gemma4-31b"), 262_144);
         assert_eq!(model_context_window("glm-5-3"), 262_144);
-        assert_eq!(model_context_window("glm-5-3-flash"), 262_144);
+        assert_eq!(model_context_window("glm-5-3-flash"), 1_048_576);
         assert_eq!(model_context_window("kimi-k3"), 262_144);
         assert_eq!(model_context_window("deepseek-v4-1-flash"), 1_048_576);
         assert_eq!(model_context_window(AUTO_QUICK_MODEL_ID), 131_072);
@@ -1406,7 +1407,7 @@ mod tests {
     }
 
     #[test]
-    fn test_catalog_adds_glm_5_3_flash_through_tinfoil_with_image_and_shared_256k_context() {
+    fn test_catalog_adds_glm_5_3_flash_through_tinfoil_with_image_and_shared_1m_context() {
         let catalog = model_catalog_response(ModelAliasTargets::for_plan(ModelPlan::Paid));
         let glm = catalog_model(&catalog, GLM_5_3_FLASH_MODEL_ID);
 
@@ -1414,7 +1415,8 @@ mod tests {
         assert_eq!(glm["provider_id"], GLM_5_3_FLASH_MODEL_ID);
         assert_eq!(glm["display_name"], "GLM-5.3 Flash");
         assert_eq!(glm["access"], "pro");
-        assert_eq!(glm["context_window"], 262_144);
+        assert_eq!(glm["context_window"], 1_048_576);
+        assert_eq!(glm["max_context_tokens"], 1_048_576);
         assert_eq!(glm["input_modalities"], json!(["text", "image"]));
         assert_eq!(glm["output_modalities"], json!(["text"]));
         assert_eq!(glm["capabilities"]["vision"], true);

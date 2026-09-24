@@ -528,7 +528,7 @@ mod tests {
             .expect("legacy Flash provider flag");
         for mode in [InferenceRoutingMode::Legacy, InferenceRoutingMode::V2] {
             for enabled in [None, Some(false), Some(true)] {
-                for bucket in [0, 9, 10, 29, 30, 99] {
+                for bucket in [0, 29, 30, 74, 75, 99] {
                     let intent = InferenceIntent::new(
                         uuid::Uuid::from_u128(bucket),
                         candidate.public_model_id,
@@ -547,7 +547,7 @@ mod tests {
                         .expect("ordinary image-helper route");
                     let expected = match mode {
                         InferenceRoutingMode::Legacy if enabled == Some(true) => "continuum",
-                        InferenceRoutingMode::V2 if bucket < 30 => "continuum",
+                        InferenceRoutingMode::V2 if bucket < 75 => "continuum",
                         _ => "tinfoil",
                     };
                     assert_eq!(route.provider.as_str(), expected);

@@ -1734,7 +1734,7 @@ mod tests {
             .select_active_completion_route(
                 &proxy_router,
                 &InferenceIntent::new(
-                    uuid_for_bucket(50),
+                    uuid_for_bucket(75),
                     GLM_5_3_FLASH_MODEL_ID,
                     GLM_5_3_FLASH_MODEL_ID,
                     ModelPlan::Paid,
@@ -1759,7 +1759,7 @@ mod tests {
                 ProviderId::Tinfoil,
             ),
             (
-                73,
+                75,
                 ProviderId::Tinfoil,
                 GLM_5_3_FLASH_MODEL_ID,
                 ProviderId::Continuum,
@@ -1974,7 +1974,7 @@ mod tests {
                     (InferenceRoutingMode::Legacy, expected_legacy),
                     (
                         InferenceRoutingMode::V2,
-                        if bucket < 30 {
+                        if bucket < 75 {
                             ProviderId::Continuum
                         } else {
                             ProviderId::Tinfoil
