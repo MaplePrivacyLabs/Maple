@@ -3049,6 +3049,79 @@ async fn get_secret(key_name: &str) -> Result<String, Error> {
     }
 }
 
+fn decode_decrypted_url(
+    bytes: Vec<u8>,
+    allowed_schemes: &[&str],
+    error_message: &'static str,
+) -> Result<String, Error> {
+    let invalid_url = || Error::EncryptionError(error_message.to_string());
+    let value = String::from_utf8(bytes).map_err(|_| invalid_url())?;
+    let parsed = url::Url::parse(&value).map_err(|_| invalid_url())?;
+    if parsed.host().is_none() || !allowed_schemes.contains(&parsed.scheme()) {
+        return Err(invalid_url());
+    }
+    Ok(value)
+}
+
+#[cfg(test)]
+mod decrypted_url_tests {
+    use super::*;
+
+    #[test]
+    fn accepts_supported_configuration_urls() {
+        for database in [
+            "postgres://user:password@db.example.test/app",
+            "postgresql://user:password@db.example.test/app",
+        ] {
+            assert_eq!(
+                decode_decrypted_url(
+                    database.as_bytes().to_vec(),
+                    &["postgres", "postgresql"],
+                    "Invalid database URL",
+                )
+                .unwrap(),
+                database
+            );
+        }
+
+        let queue = "https://sqs.example.test/queue";
+        assert_eq!(
+            decode_decrypted_url(
+                queue.as_bytes().to_vec(),
+                &["http", "https"],
+                "Invalid SQS queue URL",
+            )
+            .unwrap(),
+            queue
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_configuration_urls_without_echoing_them() {
+        for (schemes, message, malformed_url) in [
+            (
+                &["postgres", "postgresql"][..],
+                "Invalid database URL",
+                &b"postgres://fixture-secret .example.test/app"[..],
+            ),
+            (
+                &["http", "https"][..],
+                "Invalid SQS queue URL",
+                &b"https://fixture-secret .example.test/queue"[..],
+            ),
+        ] {
+            for bytes in [b"fixture-secret-\xff".to_vec(), malformed_url.to_vec()] {
+                let error = decode_decrypted_url(bytes, schemes, message).unwrap_err();
+                assert_eq!(error.to_string(), format!("Encryption error: {message}"));
+                assert_eq!(
+                    format!("{error:?}"),
+                    format!("EncryptionError({message:?})")
+                );
+            }
+        }
+    }
+}
+
 async fn get_or_create_enclave_key(
     app_mode: &AppMode,
     aws_credential_manager: Arc<tokio::sync::RwLock<Option<AwsCredentialManager>>>,
@@ -3968,7 +4041,6 @@ async fn main() -> Result<(), Error> {
                     .await
                     .expect("should have just waited for credentials");
 
-                tracing::info!("Retrieved and decrypting database URL from Secrets Manager");
                 let url_vec = decrypt_with_kms(
                     &creds.region,
                     &creds.access_key_id,
@@ -3981,7 +4053,7 @@ async fn main() -> Result<(), Error> {
                     Error::EncryptionError(e.to_string())
                 })?;
 
-                String::from_utf8(url_vec).expect("should parse url")
+                decode_decrypted_url(url_vec, &["postgres", "postgresql"], "Invalid database URL")?
             }
             Err(e) => {
                 tracing::error!(
@@ -4123,7 +4195,11 @@ async fn main() -> Result<(), Error> {
                 Error::EncryptionError(e.to_string())
             })?;
 
-            Some(String::from_utf8(url_vec).expect("should parse url"))
+            Some(decode_decrypted_url(
+                url_vec,
+                &["http", "https"],
+                "Invalid SQS queue URL",
+            )?)
         } else {
             // URL not found in database - this is optional so we'll return None
             None

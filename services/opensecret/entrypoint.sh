@@ -191,8 +191,7 @@ vsock_request() {
     
     # Check if the response contains an error
     if echo "$response" | jq -e 'has("error")' > /dev/null; then
-        error_message=$(echo "$response" | jq -r '.error')
-        log "VSOCK request failed: $error_message"
+        log "VSOCK request failed"
         return 1
     fi
 
@@ -287,7 +286,6 @@ get_tinfoil_proxy_api_key_secret() {
 }
 
 # Get AWS credentials
-log "Fetching AWS credentials"
 aws_creds=$(get_aws_credentials)
 if [ -z "$aws_creds" ]; then
     log "Error: Failed to get AWS credentials"
@@ -297,7 +295,6 @@ fi
 # Add error checking for jq parsing
 if ! access_key_id=$(echo "$aws_creds" | jq -r '.response_value.AccessKeyId'); then
     log "Error: Failed to parse AccessKeyId from AWS credentials"
-    log "AWS credentials response: $aws_creds"
     exit 1
 fi
 if ! secret_access_key=$(echo "$aws_creds" | jq -r '.response_value.SecretAccessKey'); then
@@ -313,25 +310,17 @@ if ! region=$(echo "$aws_creds" | jq -r '.response_value.Region'); then
     exit 1
 fi
 
-log "AWS credentials retrieved and parsed successfully"
-
 # Get encrypted database URL from Secrets Manager
-log "Fetching encrypted database URL"
 secret_response=$(get_database_url_secret)
-log "Retrieved raw secret response"
 
 # Extract the database_url value from the JSON structure
 encrypted_db_url=$(echo "$secret_response" | jq -r '.response_value | fromjson | .database_url')
 if [ -z "$encrypted_db_url" ]; then
     log "Error: Failed to get encrypted database URL"
-    log "Secret response: $secret_response"
     exit 1
 fi
 
-log "Encrypted database URL retrieved successfully"
-
 # Decrypt the database URL using kmstool_enclave_cli
-log "Decrypting database URL"
 decryption_output=$(kmstool_enclave_cli decrypt \
     --region "$region" \
     --proxy-port 8000 \
@@ -340,17 +329,12 @@ decryption_output=$(kmstool_enclave_cli decrypt \
     --aws-session-token "$session_token" \
     --ciphertext "$encrypted_db_url" 2>&1)
 
-log "Got decryption output, parsing URL"
-
 decrypted_db_url=$(echo "$decryption_output" | sed -n 's/PLAINTEXT: //p')
 
 if [ -z "$decrypted_db_url" ]; then
     log "Error: Failed to decrypt database URL"
-    log "Decryption output: $decryption_output"
     exit 1
 fi
-
-log "Database URL decrypted successfully"
 
 # Decode the base64 decrypted URL
 decoded_db_url=$(echo "$decrypted_db_url" | base64 -d)
@@ -368,7 +352,6 @@ if [ -z "$DB_HOSTNAME" ]; then
 fi
 
 echo "127.0.0.1 $DB_HOSTNAME" >> /etc/hosts
-log "Added $DB_HOSTNAME to /etc/hosts"
 
 # Add OpenAI API hostname to /etc/hosts
 echo "127.0.0.1 api.openai.com" >> /etc/hosts
@@ -459,7 +442,6 @@ log "Created /app/libnsm.so"
 log "Network configuration:"
 ip addr show
 ip route
-cat /etc/hosts
 
 # Start the traffic forwarder for the database in the background
 log "Starting database traffic forwarder"
@@ -866,14 +848,11 @@ fi
 # Start the continuum-proxy if we're in AWS Nitro mode
 if [ "$APP_MODE" != "local" ]; then
     # Get Continuum Proxy API key from Secrets Manager
-    log "Fetching Continuum Proxy API key"
     continuum_proxy_api_key_response=$(get_continuum_proxy_api_key_secret)
-    log "Retrieved raw Continuum Proxy API key response"
 
     # Check if the response is an error
     if echo "$continuum_proxy_api_key_response" | jq -e '.response_type == "error"' > /dev/null; then
-        error_message=$(echo "$continuum_proxy_api_key_response" | jq -r '.response_value')
-        log "Error: Failed to get Continuum Proxy API key. Error message: $error_message"
+        log "Error: Failed to get Continuum Proxy API key"
         exit 1
     fi
 
@@ -881,12 +860,10 @@ if [ "$APP_MODE" != "local" ]; then
     continuum_proxy_api_key_encrypted=$(echo "$continuum_proxy_api_key_response" | jq -r '.response_value | fromjson | .api_key')
     if [ -z "$continuum_proxy_api_key_encrypted" ]; then
         log "Error: Failed to extract Continuum Proxy API key from the response"
-        log "Secret response: $continuum_proxy_api_key_response"
         exit 1
     fi
 
     # Decrypt the API key using kmstool_enclave_cli
-    log "Decrypting Continuum Proxy API key"
     decryption_output=$(kmstool_enclave_cli decrypt \
         --region "$region" \
         --proxy-port 8000 \
@@ -899,7 +876,6 @@ if [ "$APP_MODE" != "local" ]; then
 
     if [ -z "$decrypted_api_key" ]; then
         log "Error: Failed to decrypt Continuum Proxy API key"
-        log "Decryption output: $decryption_output"
         exit 1
     fi
 
@@ -911,8 +887,6 @@ if [ "$APP_MODE" != "local" ]; then
         exit 1
     fi
 
-    log "Continuum Proxy API key retrieved, decrypted, and decoded successfully"
-
     log "Starting continuum-proxy on port 8092 with user-scoped salts and per-request fallback"
     run_forever continuum_proxy /app/continuum-proxy --port 8092 --apiKey "$continuum_proxy_api_key" &
 
@@ -923,14 +897,11 @@ if [ "$APP_MODE" != "local" ]; then
     export OPENAI_API_BASE="http://127.0.0.1:8092"
     
     # Get Tinfoil Proxy API key from Secrets Manager
-    log "Fetching Tinfoil Proxy API key"
     tinfoil_proxy_api_key_response=$(get_tinfoil_proxy_api_key_secret)
-    log "Retrieved raw Tinfoil Proxy API key response"
 
     # Check if the response is an error
     if echo "$tinfoil_proxy_api_key_response" | jq -e '.response_type == "error"' > /dev/null; then
-        error_message=$(echo "$tinfoil_proxy_api_key_response" | jq -r '.response_value')
-        log "Error: Failed to get Tinfoil Proxy API key. Error message: $error_message"
+        log "Error: Failed to get Tinfoil Proxy API key"
         exit 1
     fi
 
@@ -938,12 +909,10 @@ if [ "$APP_MODE" != "local" ]; then
     tinfoil_proxy_api_key_encrypted=$(echo "$tinfoil_proxy_api_key_response" | jq -r '.response_value | fromjson | .api_key')
     if [ -z "$tinfoil_proxy_api_key_encrypted" ]; then
         log "Error: Failed to extract Tinfoil Proxy API key from the response"
-        log "Secret response: $tinfoil_proxy_api_key_response"
         exit 1
     fi
 
     # Decrypt the API key using kmstool_enclave_cli
-    log "Decrypting Tinfoil Proxy API key"
     decryption_output=$(kmstool_enclave_cli decrypt \
         --region "$region" \
         --proxy-port 8000 \
@@ -956,7 +925,6 @@ if [ "$APP_MODE" != "local" ]; then
 
     if [ -z "$decrypted_api_key" ]; then
         log "Error: Failed to decrypt Tinfoil Proxy API key"
-        log "Decryption output: $decryption_output"
         exit 1
     fi
 
@@ -968,7 +936,6 @@ if [ "$APP_MODE" != "local" ]; then
         exit 1
     fi
 
-    log "Tinfoil Proxy API key retrieved, decrypted, and decoded successfully"
 else
     # For local mode, use the default OpenAI API base or the one set in the environment
     export OPENAI_API_BASE=${OPENAI_API_BASE:-"https://api.openai.com"}
