@@ -86,6 +86,8 @@ class HookChangeDetectionTests(unittest.TestCase):
         self.assert_selects(["proxy/deny.toml"])
         self.assert_selects(["services/opensecret/src/main.rs"], "opensecret")
         self.assert_selects(["services/opensecret/migrations/0001/up.sql"], "opensecret")
+        self.assert_selects(["services/opensecret/entrypoint.sh"], "opensecret")
+        self.assert_selects(["services/opensecret/tests/entrypoint_entropy_preflight.sh"], "opensecret")
         self.assert_selects(["services/opensecret/nix/eif.nix"])
         self.assert_selects(["services/updates/src/index.ts"], "updates")
 
