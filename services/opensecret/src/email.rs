@@ -377,6 +377,7 @@ pub async fn send_hello_email(
         .with_html(WELCOME_EMAIL_HTML)
         .with_scheduled_at(&scheduled_at);
 
+    let email = with_account_reply_to(email, &project.name);
     let _email = resend.emails.send(email).await.map_err(|e| {
         tracing::error!("Failed to send email: {}", e);
         EmailError::UnknownError
@@ -405,6 +406,23 @@ fn account_support_email(project_name: &str) -> &'static str {
         "support@trymaple.ai"
     } else {
         "support@opensecret.cloud"
+    }
+}
+
+/// Maple sends from email.trymaple.ai, which has no inbox, so a reply to that
+/// address bounces. Point replies at support instead. Other projects keep
+/// whatever their own sending address does with replies.
+fn account_reply_to(project_name: &str) -> Option<&'static str> {
+    is_maple_project(project_name).then_some(account_support_email(project_name))
+}
+
+fn with_account_reply_to(
+    email: CreateEmailBaseOptions,
+    project_name: &str,
+) -> CreateEmailBaseOptions {
+    match account_reply_to(project_name) {
+        Some(address) => email.with_reply(address),
+        None => email,
     }
 }
 
@@ -501,6 +519,7 @@ pub async fn send_verification_email(
 
     let email = CreateEmailBaseOptions::new(from_email, to, subject).with_html(&html_content);
 
+    let email = with_account_reply_to(email, &project.name);
     let _email = resend.emails.send(email).await.map_err(|e| {
         tracing::error!("Failed to send email: {}", e);
         EmailError::UnknownError
@@ -571,6 +590,7 @@ pub async fn send_password_reset_email(
 
     let email = CreateEmailBaseOptions::new(from_email, to, subject).with_html(&html_content);
 
+    let email = with_account_reply_to(email, &project.name);
     let _email = resend.emails.send(email).await.map_err(|e| {
         tracing::error!("Failed to send email: {}", e);
         EmailError::UnknownError
@@ -643,6 +663,7 @@ pub async fn send_password_reset_confirmation_email(
 
     let email = CreateEmailBaseOptions::new(from_email, to, subject).with_html(&html_content);
 
+    let email = with_account_reply_to(email, &project.name);
     let _email = resend.emails.send(email).await.map_err(|e| {
         tracing::error!("Failed to send email: {}", e);
         EmailError::UnknownError
@@ -1001,6 +1022,7 @@ pub async fn send_account_deletion_email(
 
     let email = CreateEmailBaseOptions::new(from_email, to, subject).with_html(&html_content);
 
+    let email = with_account_reply_to(email, &project.name);
     let _email = resend.emails.send(email).await.map_err(|e| {
         tracing::error!("Failed to send email: {}", e);
         EmailError::UnknownError
@@ -1068,6 +1090,7 @@ pub async fn send_account_deletion_confirmation_email(
 
     let email = CreateEmailBaseOptions::new(from_email, to, subject).with_html(&html_content);
 
+    let email = with_account_reply_to(email, &project.name);
     let _email = resend.emails.send(email).await.map_err(|e| {
         tracing::error!("Failed to send email: {}", e);
         EmailError::UnknownError
@@ -1099,5 +1122,13 @@ mod tests {
         assert_eq!(account_team_name("Other", "OpenSecret"), "OpenSecret");
         assert_eq!(account_support_email("Other"), "support@opensecret.cloud");
         assert_eq!(account_mark_html("Other"), "");
+    }
+
+    #[test]
+    fn maple_replies_go_to_support() {
+        use super::account_reply_to;
+
+        assert_eq!(account_reply_to("Maple"), Some("support@trymaple.ai"));
+        assert_eq!(account_reply_to("Other"), None);
     }
 }
