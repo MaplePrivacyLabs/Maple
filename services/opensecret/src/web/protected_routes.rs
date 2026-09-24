@@ -1254,6 +1254,7 @@ pub async fn confirm_account_deletion(
             result
         }
         Err(e) => match e {
+            Error::BillingCleanupUnavailable => Err(ApiError::BillingCleanupUnavailable),
             Error::AccountDeletionExpired => {
                 warn!("Account deletion confirmation has expired: {:?}", e);
                 Err(ApiError::BadRequest)

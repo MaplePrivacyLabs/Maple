@@ -1,5 +1,6 @@
 use reqwest::Client;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
+use std::time::Duration;
 use tracing::warn;
 use uuid::Uuid;
 
@@ -74,6 +75,29 @@ pub enum BillingError {
     FreeTokenLimitExceeded,
 }
 
+#[derive(Debug, PartialEq, Eq, thiserror::Error)]
+pub(crate) enum AccountDeletionError {
+    #[error("timeout")]
+    Timeout,
+    #[error("transport")]
+    Transport,
+    #[error("http_status_{0}")]
+    HttpStatus(u16),
+    #[error("invalid_response")]
+    InvalidResponse,
+}
+
+#[derive(Serialize)]
+struct AccountDeletionRequest {
+    user_id: Uuid,
+}
+
+#[derive(Deserialize)]
+struct AccountDeletionResponse {
+    user_id: Uuid,
+    status: String,
+}
+
 #[derive(Clone)]
 pub struct BillingClient {
     client: Client,
@@ -84,10 +108,59 @@ pub struct BillingClient {
 impl BillingClient {
     pub fn new(api_key: String, base_url: String) -> Self {
         Self {
-            client: crate::http_client::client(),
+            client: crate::http_client::client_builder()
+                .redirect(reqwest::redirect::Policy::none())
+                .retry(reqwest::retry::never())
+                .build()
+                .expect("failed to build billing HTTP client"),
             api_key,
             base_url,
         }
+    }
+
+    /// Billing owns cancellation/no-op decisions. A response only permits the
+    /// caller to delete the account when billing confirms this exact user is ready.
+    /// No retry, redirect, provider response body, or credential-bearing error is
+    /// exposed across this boundary.
+    pub(crate) async fn prepare_account_deletion(
+        &self,
+        user_id: Uuid,
+    ) -> Result<(), AccountDeletionError> {
+        tokio::time::timeout(Duration::from_secs(10), async {
+            let mut response = self
+                .client
+                .post(format!(
+                    "{}/v1/admin/account-deletions",
+                    self.base_url.trim_end_matches('/')
+                ))
+                .header("x-api-key", &self.api_key)
+                .json(&AccountDeletionRequest { user_id })
+                .send()
+                .await
+                .map_err(|_| AccountDeletionError::Transport)?;
+            if response.status() != reqwest::StatusCode::OK {
+                return Err(AccountDeletionError::HttpStatus(response.status().as_u16()));
+            }
+            let mut body = Vec::new();
+            while let Some(chunk) = response
+                .chunk()
+                .await
+                .map_err(|_| AccountDeletionError::Transport)?
+            {
+                if body.len().saturating_add(chunk.len()) > 4096 {
+                    return Err(AccountDeletionError::InvalidResponse);
+                }
+                body.extend_from_slice(&chunk);
+            }
+            let ready: AccountDeletionResponse =
+                serde_json::from_slice(&body).map_err(|_| AccountDeletionError::InvalidResponse)?;
+            if ready.user_id != user_id || ready.status != "ready" {
+                return Err(AccountDeletionError::InvalidResponse);
+            }
+            Ok(())
+        })
+        .await
+        .map_err(|_| AccountDeletionError::Timeout)?
     }
 
     async fn check_usage(
@@ -314,6 +387,149 @@ mod tests {
 
         assert!(!access.can_use());
         assert!(!access.is_paid());
+        server.abort();
+    }
+
+    async fn deletion_server(router: Router) -> (String, tokio::task::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let handle = tokio::spawn(async move {
+            axum::serve(listener, router).await.unwrap();
+        });
+        (format!("http://{address}"), handle)
+    }
+
+    #[tokio::test]
+    async fn account_deletion_requires_exact_ready_ack_and_sends_only_user_id() {
+        use axum::{http::HeaderMap, routing::post};
+        let user_id = Uuid::new_v4();
+        let (url, server) = deletion_server(Router::new().route(
+            "/v1/admin/account-deletions",
+            post(
+                move |headers: HeaderMap, Json(body): Json<serde_json::Value>| async move {
+                    assert_eq!(headers["x-api-key"], "synthetic-admin-key");
+                    assert_eq!(body, serde_json::json!({"user_id": user_id}));
+                    Json(serde_json::json!({"user_id": user_id, "status": "ready"}))
+                },
+            ),
+        ))
+        .await;
+        let client = BillingClient::new("synthetic-admin-key".into(), format!("{url}/"));
+        assert_eq!(client.prepare_account_deletion(user_id).await, Ok(()));
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn account_deletion_rejects_failure_mismatched_or_pending_ack_without_retry() {
+        use axum::{http::StatusCode, routing::post};
+        use std::sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc,
+        };
+        let user_id = Uuid::new_v4();
+        let wrong_user =
+            serde_json::json!({"user_id": Uuid::new_v4(), "status":"ready"}).to_string();
+        let pending = serde_json::json!({"user_id": user_id, "status":"accepted"}).to_string();
+        let mut cases = vec![
+            (200, wrong_user, AccountDeletionError::InvalidResponse),
+            (200, pending, AccountDeletionError::InvalidResponse),
+            (200, "x".repeat(4097), AccountDeletionError::InvalidResponse),
+            (
+                200,
+                "sensitive-provider-error".into(),
+                AccountDeletionError::InvalidResponse,
+            ),
+        ];
+        for status in [202, 204, 401, 403, 404, 409, 429, 500, 503] {
+            cases.push((
+                status,
+                "sensitive-provider-error".into(),
+                AccountDeletionError::HttpStatus(status),
+            ));
+        }
+        for (status, body, expected) in cases {
+            let calls = Arc::new(AtomicUsize::new(0));
+            let observed = calls.clone();
+            let (url, server) = deletion_server(Router::new().route(
+                "/v1/admin/account-deletions",
+                post(move || {
+                    observed.fetch_add(1, Ordering::SeqCst);
+                    let body = body.clone();
+                    async move { (StatusCode::from_u16(status).unwrap(), body) }
+                }),
+            ))
+            .await;
+            let client = BillingClient::new("synthetic-admin-key".into(), url);
+            let error = client.prepare_account_deletion(user_id).await.unwrap_err();
+            assert_eq!(error, expected);
+            assert!(!error.to_string().contains("sensitive-provider-error"));
+            if status != 200 {
+                assert_eq!(error.to_string(), format!("http_status_{status}"));
+            }
+            assert_eq!(calls.load(Ordering::SeqCst), 1);
+            server.abort();
+        }
+    }
+
+    #[tokio::test]
+    async fn billing_requests_never_redirect_the_admin_key() {
+        use axum::http::StatusCode;
+        use std::sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc,
+        };
+        let calls = Arc::new(AtomicUsize::new(0));
+        let observed = calls.clone();
+        let (target_url, target) = deletion_server(Router::new().fallback(move || {
+            observed.fetch_add(1, Ordering::SeqCst);
+            async { StatusCode::OK }
+        }))
+        .await;
+        let (url, server) = deletion_server(Router::new().fallback(move || {
+            let target_url = format!("{target_url}/collect");
+            async move { (StatusCode::TEMPORARY_REDIRECT, [("location", target_url)]) }
+        }))
+        .await;
+        let client = BillingClient::new("synthetic-admin-key".into(), url);
+        assert_eq!(
+            client.prepare_account_deletion(Uuid::new_v4()).await,
+            Err(AccountDeletionError::HttpStatus(307))
+        );
+        assert!(matches!(
+            client.check_usage(Uuid::new_v4(), false).await,
+            Err(BillingError::ServiceError(_))
+        ));
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        server.abort();
+        target.abort();
+    }
+
+    #[tokio::test]
+    async fn account_deletion_timeout_is_bounded_and_not_retried() {
+        use axum::{http::StatusCode, routing::post};
+        use std::sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc,
+        };
+        let calls = Arc::new(AtomicUsize::new(0));
+        let observed = calls.clone();
+        let (url, server) = deletion_server(Router::new().route(
+            "/v1/admin/account-deletions",
+            post(move || {
+                observed.fetch_add(1, Ordering::SeqCst);
+                pending::<StatusCode>()
+            }),
+        ))
+        .await;
+        let client = BillingClient::new("synthetic-admin-key".into(), url);
+        let result = tokio::time::timeout(
+            Duration::from_secs(12),
+            client.prepare_account_deletion(Uuid::new_v4()),
+        )
+        .await
+        .expect("billing request must respect its total deadline");
+        assert_eq!(result, Err(AccountDeletionError::Timeout));
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
         server.abort();
     }
 }
