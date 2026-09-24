@@ -51,10 +51,9 @@ def vsock_request(cid, port, request, max_retries=5, retry_delay=10, initial_del
                         decoded_response = response.decode()
                         print(f"Decoded response length: {len(decoded_response)}", file=sys.stderr)
                         return decoded_response
-                    except UnicodeDecodeError as e:
-                        print(f"Error decoding response: {e}", file=sys.stderr)
-                        print(f"Raw response: {response}", file=sys.stderr)
-                        raise
+                    except UnicodeDecodeError:
+                        print("Invalid VSOCK response encoding", file=sys.stderr)
+                        return json.dumps({"error": "Invalid VSOCK response encoding"})
                 else:
                     print("No response received, retrying...", file=sys.stderr)
                     continue

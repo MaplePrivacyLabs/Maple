@@ -363,9 +363,7 @@ pub fn decrypt_with_kms(
         })?;
 
     if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        tracing::error!("kmstool_enclave_cli decryption failed: {}", stderr);
-        return Err(EncryptError::KmsError(stderr.to_string()));
+        return Err(EncryptError::KmsError("kmstool decrypt failed".to_string()));
     }
 
     let output_str =
@@ -512,9 +510,7 @@ pub fn create_new_encryption_key(
         })?;
 
     if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        tracing::error!("kmstool_enclave_cli failed: {}", stderr);
-        return Err(EncryptError::KmsError(stderr.to_string()));
+        return Err(EncryptError::KmsError("kmstool genkey failed".to_string()));
     }
 
     let output_str =
@@ -590,12 +586,9 @@ pub async fn generate_random_bytes_from_enclave(
         })?;
 
     if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        tracing::error!(
-            "kmstool_enclave_cli random byte generation failed: {}",
-            stderr
-        );
-        return Err(EncryptError::KmsError(stderr.to_string()));
+        return Err(EncryptError::KmsError(
+            "kmstool genrandom failed".to_string(),
+        ));
     }
 
     let output_str =
