@@ -2198,6 +2198,135 @@ mod state_tests {
         backend
     }
 
+    /// A curated integration card as the runtime catalog projects it.
+    fn integration_card(
+        id: &str,
+        availability: maple_agent::agent::AgentIntegrationAvailability,
+        backend: Option<maple_agent::agent::AgentIntegrationBackend>,
+        enabled_for_new_tasks: bool,
+    ) -> maple_agent::agent::AgentIntegration {
+        maple_agent::agent::AgentIntegration {
+            id: id.to_string(),
+            name: id.to_uppercase(),
+            description: format!("{id} card"),
+            availability,
+            backend,
+            version: None,
+            standalone_version: None,
+            permissions: None,
+            setup_available: false,
+            enabled_for_new_tasks,
+            detail: None,
+        }
+    }
+
+    /// The draft's rows are the rows a new task would get: the configured
+    /// servers, the external agents enabled in Settings (off until
+    /// selected for the task, available when installed), and the CUA
+    /// integration under its own id, on when it is the default. Before,
+    /// only custom servers were listed, so Codex, Claude Code and CUA
+    /// could not be enabled for the first turn.
+    #[test]
+    fn test_draft_rows_include_the_curated_integrations() {
+        use maple_agent::agent::{AgentIntegrationAvailability, AgentIntegrationBackend};
+        let rows = draft_mcp_rows(
+            vec![mcp_server("docs", true), mcp_server("Cua Driver", true)],
+            &[
+                integration_card(
+                    "cua-driver",
+                    AgentIntegrationAvailability::Available,
+                    Some(AgentIntegrationBackend::Embedded),
+                    true,
+                ),
+                integration_card("codex", AgentIntegrationAvailability::Available, None, true),
+                integration_card(
+                    "claude",
+                    AgentIntegrationAvailability::SetupRequired,
+                    None,
+                    true,
+                ),
+                integration_card("other", AgentIntegrationAvailability::Available, None, true),
+            ],
+        );
+        let summary: Vec<(&str, AgentSessionIntegrationKind, bool, bool, &str)> = rows
+            .iter()
+            .map(|row| {
+                (
+                    row.name.as_str(),
+                    row.kind,
+                    row.enabled,
+                    row.available,
+                    row.transport.as_str(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            summary,
+            vec![
+                (
+                    "docs",
+                    AgentSessionIntegrationKind::Mcp,
+                    true,
+                    true,
+                    "stdio"
+                ),
+                (
+                    "codex",
+                    AgentSessionIntegrationKind::ExternalAgent,
+                    false,
+                    true,
+                    "external_agent"
+                ),
+                (
+                    "claude",
+                    AgentSessionIntegrationKind::ExternalAgent,
+                    false,
+                    false,
+                    "external_agent"
+                ),
+                (
+                    "cua-driver",
+                    AgentSessionIntegrationKind::Mcp,
+                    true,
+                    true,
+                    "embedded"
+                ),
+            ],
+            "the CUA-named custom server is shadowed; Claude Code is listed but not installed; an unknown card is not an external agent"
+        );
+        assert_eq!(rows[1].display_name, "CODEX");
+
+        // Without a stored CUA choice the row is unconfigured and off; an
+        // external backend that is not installed is on but unavailable.
+        let rows = draft_mcp_rows(
+            Vec::new(),
+            &[integration_card(
+                "cua-driver",
+                AgentIntegrationAvailability::NotDetected,
+                None,
+                false,
+            )],
+        );
+        assert_eq!(rows.len(), 1);
+        assert!(!rows[0].enabled && !rows[0].available);
+        assert_eq!(rows[0].transport, "unconfigured");
+        let rows = draft_mcp_rows(
+            Vec::new(),
+            &[integration_card(
+                "cua-driver",
+                AgentIntegrationAvailability::SetupRequired,
+                Some(AgentIntegrationBackend::External),
+                true,
+            )],
+        );
+        assert!(rows[0].enabled && !rows[0].available);
+        assert_eq!(rows[0].transport, "stdio");
+        // No catalog at all: the servers alone, as before.
+        let rows = draft_mcp_rows(vec![mcp_server("docs", false)], &[]);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].name, "docs");
+    }
+
     /// The integrations chip on the draft goes through the same handler
     /// as on a task. It shows the rows a new task would get, read from the
     /// configuration; a switch flipped there survives the chip being
@@ -2225,14 +2354,20 @@ mod state_tests {
                 .iter()
                 .map(|row| (row.name.as_str(), row.enabled))
                 .collect();
-            assert_eq!(rows, vec![("docs", true), ("wiki", false)]);
+            // The curated CUA row follows the servers, unconfigured here;
+            // no external agent is enabled in this fresh configuration.
+            assert_eq!(
+                rows,
+                vec![("docs", true), ("wiki", false), ("cua-driver", false)]
+            );
+            assert!(!this.session_mcp[2].available);
             assert_eq!(this.mcp_enabled_count, 1);
         });
 
         press(cx, "mcp-menu");
         assert_eq!(open_menu(&chat, cx), "Integrations");
         chat.update(cx, |this, _| {
-            assert_eq!(this.session_mcp.len(), 2, "opening the chip keeps the rows");
+            assert_eq!(this.session_mcp.len(), 3, "opening the chip keeps the rows");
         });
         assert!(
             cx.debug_bounds("mcp-Mcp-docs").is_some(),

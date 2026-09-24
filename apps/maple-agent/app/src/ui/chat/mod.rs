@@ -11,10 +11,11 @@ use gpui::{
     Window, div, prelude::*, px,
 };
 use maple_agent::agent::{
-    AgentCreateSessionRequest, AgentImageUpload, AgentMcpServer, AgentMcpTransport,
-    AgentProjectTrustStatus, AgentQueuedMessage, AgentSendMessageRequest, AgentServiceEvent,
-    AgentSessionIntegrationKind, AgentSessionMcpServer, AgentSessionSummary, AgentSlashCommand,
-    AgentSubagent, AgentTaskState, AgentTimelineItem, SideQuestionEvent,
+    AgentCreateSessionRequest, AgentImageUpload, AgentIntegration, AgentIntegrationAvailability,
+    AgentIntegrationBackend, AgentMcpServer, AgentMcpTransport, AgentProjectTrustStatus,
+    AgentQueuedMessage, AgentSendMessageRequest, AgentServiceEvent, AgentSessionIntegrationKind,
+    AgentSessionMcpServer, AgentSessionSummary, AgentSlashCommand, AgentSubagent, AgentTaskState,
+    AgentTimelineItem, SideQuestionEvent,
 };
 
 use crate::backend::{AgentBackend, PendingPermission, PendingQuestion};
@@ -236,6 +237,71 @@ fn draft_mcp_row(server: AgentMcpServer) -> AgentSessionMcpServer {
         enabled: server.enabled,
         available: true,
     }
+}
+
+/// The curated CUA integration's id, which is also the name the runtime
+/// reads it under in a create request's server list.
+const CUA_DRIVER_ID: &str = "cua-driver";
+
+/// A name reduced to what the runtime keys servers by, so every spelling
+/// of the CUA integration a configured server may carry matches its card.
+fn integration_key(name: &str) -> String {
+    name.chars()
+        .filter(char::is_ascii_alphanumeric)
+        .map(|c| c.to_ascii_lowercase())
+        .collect()
+}
+
+/// The rows the draft's integrations chip shows: what a new task would
+/// start with, laid out as the runtime lays out a task's rows. The
+/// configured servers come first (a custom one spelled like the CUA
+/// integration is shadowed by it, as at creation); then the external
+/// agents enabled in Settings, off until selected for the task; then the
+/// CUA integration, on when it is the default for new tasks.
+fn draft_mcp_rows(
+    servers: Vec<AgentMcpServer>,
+    integrations: &[AgentIntegration],
+) -> Vec<AgentSessionMcpServer> {
+    let cua = integrations.iter().find(|card| card.id == CUA_DRIVER_ID);
+    let mut rows: Vec<AgentSessionMcpServer> = servers
+        .into_iter()
+        .filter(|server| {
+            cua.is_none() || integration_key(&server.name) != integration_key(CUA_DRIVER_ID)
+        })
+        .map(draft_mcp_row)
+        .collect();
+    rows.extend(
+        integrations
+            .iter()
+            .filter(|card| card.is_external_agent() && card.enabled_for_new_tasks)
+            .map(|card| AgentSessionMcpServer {
+                name: card.id.clone(),
+                kind: AgentSessionIntegrationKind::ExternalAgent,
+                display_name: card.name.clone(),
+                description: card.description.clone(),
+                transport: "external_agent".to_string(),
+                enabled: false,
+                available: card.availability == AgentIntegrationAvailability::Available,
+            }),
+    );
+    if let Some(card) = cua {
+        rows.push(AgentSessionMcpServer {
+            name: card.id.clone(),
+            kind: AgentSessionIntegrationKind::Mcp,
+            display_name: card.name.clone(),
+            description: card.description.clone(),
+            transport: match card.backend {
+                Some(AgentIntegrationBackend::Embedded) => "embedded",
+                Some(AgentIntegrationBackend::External) => "stdio",
+                None => "unconfigured",
+            }
+            .to_string(),
+            enabled: card.backend.is_some() && card.enabled_for_new_tasks,
+            available: card.backend.is_some()
+                && card.availability == AgentIntegrationAvailability::Available,
+        });
+    }
+    rows
 }
 
 pub struct ChatScreen {
@@ -2712,22 +2778,34 @@ impl ChatScreen {
     }
 
     /// Load the integrations a new task would start with, for the draft's
-    /// chip: the configured MCP servers with their defaults. Curated
-    /// integrations join once the task exists. The rows on screen stay
-    /// until the fresh ones land, and the user's toggles carry over.
+    /// chip: the configured MCP servers with their defaults and the
+    /// curated integrations (external agents, CUA), so they can be
+    /// switched on for the first turn. The rows on screen stay until the
+    /// fresh ones land, and the user's toggles carry over.
     fn refresh_draft_mcp(&mut self, cx: &mut Context<Self>) {
         let backend = self.backend.clone();
         let user_id = self.user_id.clone();
         self.call(
-            async move { backend.list_mcp_servers(&user_id).await },
+            async move {
+                let (servers, integrations) = tokio::join!(
+                    backend.list_mcp_servers(&user_id),
+                    backend.list_integrations(&user_id)
+                );
+                // The configured servers are the chip's floor; a catalog
+                // that cannot be read costs only the curated rows.
+                let integrations = integrations.unwrap_or_else(|message| {
+                    log::debug!("integration list failed: {message}");
+                    Vec::new()
+                });
+                Ok(draft_mcp_rows(servers?, &integrations))
+            },
             cx,
             move |this, result, cx| {
                 if !this.draft {
                     return;
                 }
                 match result {
-                    Ok(servers) => this
-                        .set_draft_mcp_defaults(servers.into_iter().map(draft_mcp_row).collect()),
+                    Ok(rows) => this.set_draft_mcp_defaults(rows),
                     Err(message) => log::debug!("mcp list failed: {message}"),
                 }
                 cx.notify();
