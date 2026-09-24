@@ -187,7 +187,8 @@ pub(super) enum ChatPopup {
 }
 
 /// What the composer asked for while no task existed. The first send
-/// creates the task and then runs this against it.
+/// creates the task and then runs this against it. The composer keeps
+/// showing the text meanwhile; it clears when the send goes out.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum FirstSend {
     /// Plain text (with the staged images) for the new task.
@@ -196,6 +197,20 @@ enum FirstSend {
     Command(String),
     /// A `/btw` question for the new task.
     SideQuestion(String),
+}
+
+impl FirstSend {
+    /// The message as it was typed, for the composer and the history.
+    fn text(&self) -> String {
+        match self {
+            FirstSend::Message { text, .. } | FirstSend::Command(text) => text.clone(),
+            FirstSend::SideQuestion(question) => format!("/btw {question}"),
+        }
+    }
+
+    fn steer(&self) -> bool {
+        matches!(self, FirstSend::Message { steer: true, .. })
+    }
 }
 
 /// An integration toggled on the draft, applied once the task exists.
@@ -1766,54 +1781,70 @@ impl ChatScreen {
     }
 
     /// Create the task the draft describes, then run `action` against it.
-    /// The composer clears now, as for a send; every failure gives the
-    /// text back.
+    /// The text stays in the composer, which shows the create in
+    /// progress, until the send goes out; a create that does not happen
+    /// leaves it there.
     fn create_for_first_send(&mut self, action: FirstSend, cx: &mut Context<Self>) {
         self.slash_selected = None;
-        if let Some(composer) = self.composer.clone() {
-            composer.update(cx, |input, cx| input.clear(cx));
-        }
+        // A command path cleared the composer before it got here; put the
+        // message back on show.
+        self.fill_empty_composer(&action.text(), cx);
         if self.root_selecting {
             self.notice = Some("Wait for the project selection to finish, then try again".into());
-            self.restore_first_send(action, cx);
             cx.notify();
             return;
         }
         let Some(request) = self.new_session_request() else {
             self.notice = Some("Choose a project before creating a task".into());
-            self.restore_first_send(action, cx);
             cx.notify();
             return;
         };
         self.pending_first_send = Some(action);
-        self.notice = Some("Creating the task…".into());
         cx.notify();
         self.create_session(request, cx);
     }
 
-    /// Put a first send that did not happen back into the composer.
-    fn restore_first_send(&mut self, action: FirstSend, cx: &mut Context<Self>) {
-        let text = match action {
-            FirstSend::Message { text, .. } | FirstSend::Command(text) => text,
-            FirstSend::SideQuestion(question) => format!("/btw {question}"),
-        };
-        if let Some(composer) = self.composer.clone() {
-            composer.update(cx, |input, cx| input.set_text(&text, cx));
-        }
+    fn composer_text(&self, cx: &Context<Self>) -> Option<String> {
+        self.composer
+            .as_ref()
+            .map(|composer| composer.read(cx).text())
     }
 
-    /// Run the send the task was created for.
-    fn run_first_send(&mut self, session_id: &str, action: FirstSend, cx: &mut Context<Self>) {
-        self.notice = None;
-        match action {
-            FirstSend::Message { text, steer } => {
-                self.send_to_session(session_id, text, steer, None, cx)
-            }
-            FirstSend::Command(text) => {
-                self.try_command(Some(session_id), &text, cx);
-            }
-            FirstSend::SideQuestion(question) => self.ask_side_question(session_id, &question, cx),
+    /// Show `text` in the composer unless it already holds something.
+    /// Returns whether it was shown.
+    fn fill_empty_composer(&mut self, text: &str, cx: &mut Context<Self>) -> bool {
+        let Some(composer) = self.composer.clone() else {
+            return false;
+        };
+        if !composer.read(cx).text_ref().trim().is_empty() {
+            return false;
         }
+        composer.update(cx, |input, cx| input.set_text(text, cx));
+        true
+    }
+
+    /// A first send that will not happen: the message goes to the prompt
+    /// history, and back into the composer when that is empty. Returns
+    /// whether the composer shows it. The composer belongs to whatever is
+    /// on screen; a message for a draft the user left does not replace
+    /// what they typed since, Up recalls it instead.
+    fn give_back_first_send(&mut self, action: FirstSend, cx: &mut Context<Self>) -> bool {
+        let text = action.text();
+        self.remember_prompt(&text);
+        self.fill_empty_composer(&text, cx)
+    }
+
+    /// Run the send the task was created for, against the task now on
+    /// screen. The composer showed the message while the task was being
+    /// created, so what it holds now goes out, edits included; only an
+    /// emptied composer falls back to the message as typed.
+    fn run_first_send(&mut self, action: FirstSend, cx: &mut Context<Self>) {
+        self.notice = None;
+        let text = self
+            .composer_text(cx)
+            .filter(|shown| !shown.trim().is_empty())
+            .unwrap_or_else(|| action.text());
+        self.send_text_with(text, action.steer(), cx);
     }
 
     /// Create a task from `request`. What the composer shows and the
@@ -1986,16 +2017,13 @@ impl ChatScreen {
     }
 
     /// The create failed: nothing exists, so the draft stays as it was,
-    /// with the message back in the composer.
+    /// with the message still in the composer (or, if the user left the
+    /// draft meanwhile, in the history).
     fn fail_new_session(&mut self, message: String, cx: &mut Context<Self>) {
         self.session_setup_pending = false;
         self.notice = Some(message.into());
-        if let Some(action) = self.pending_first_send.take()
-            && self.selected_session.is_none()
-        {
-            // The composer belongs to the task on screen; a draft left for
-            // another task does not land in it.
-            self.restore_first_send(action, cx);
+        if let Some(action) = self.pending_first_send.take() {
+            self.give_back_first_send(action, cx);
         }
         cx.notify();
     }
@@ -2012,11 +2040,9 @@ impl ChatScreen {
         cx: &mut Context<Self>,
     ) {
         if self.selection_generation != selection_generation {
-            // The user left meanwhile; the message has no screen to go
-            // back to, as for a create that lands late.
-            self.finish_new_session(session, selection_generation, cx);
-            self.notice = Some(message.into());
-            cx.notify();
+            // The user left meanwhile: the task is as unwanted as one
+            // whose create lands late.
+            self.abandon_new_session(session, cx);
             return;
         }
         self.session_setup_pending = false;
@@ -2024,7 +2050,7 @@ impl ChatScreen {
         self.begin_navigation();
         self.set_active_session(session, Vec::new(), HashMap::new(), cx);
         if let Some(action) = self.pending_first_send.take() {
-            self.restore_first_send(action, cx);
+            self.give_back_first_send(action, cx);
         }
         self.notice = Some(message.into());
         cx.notify();
@@ -2036,35 +2062,73 @@ impl ChatScreen {
         selection_generation: u64,
         cx: &mut Context<Self>,
     ) {
-        self.session_setup_pending = false;
-        // The SessionCreated event may arrive before this callback; upsert so
-        // the sidebar never shows the task twice, even when its navigation is
-        // no longer current.
-        self.upsert_session(session.clone(), cx);
-        if self.selection_generation == selection_generation {
-            self.begin_navigation();
-            let session_id = session.id.clone();
-            self.set_active_session(session, Vec::new(), HashMap::new(), cx);
-            if let Some(action) = self.pending_first_send.take() {
-                self.run_first_send(&session_id, action, cx);
-            }
+        if self.selection_generation != selection_generation {
+            // Creation still succeeded, but an older callback must never
+            // override a newer task or project choice.
+            self.abandon_new_session(session, cx);
             return;
         }
-
-        // Creation still succeeded, but an older callback must never override
-        // a newer task or project choice. The message it was created for has
-        // no screen to go back to; say so rather than send it into a task
-        // the user left.
-        if self.pending_first_send.take().is_some() {
-            self.notice = Some("Message not sent: another task was opened first".into());
+        self.session_setup_pending = false;
+        // The SessionCreated event may arrive before this callback; upsert
+        // so the sidebar never shows the task twice.
+        self.upsert_session(session.clone(), cx);
+        self.begin_navigation();
+        self.set_active_session(session, Vec::new(), HashMap::new(), cx);
+        if let Some(action) = self.pending_first_send.take() {
+            self.run_first_send(action, cx);
         }
+    }
+
+    /// The task landed after the user left the draft: a task or project
+    /// was opened meanwhile, so the message has no screen to go to and
+    /// is not sent. It goes back to the composer when that is empty and
+    /// to the history either way, and the empty task is deleted rather
+    /// than left in the list.
+    fn abandon_new_session(&mut self, session: AgentSessionSummary, cx: &mut Context<Self>) {
+        self.session_setup_pending = false;
+        if let Some(action) = self.pending_first_send.take() {
+            let shown = self.give_back_first_send(action, cx);
+            self.notice = Some(
+                if shown {
+                    "Message not sent: another task was opened first. It is back in the composer"
+                } else {
+                    "Message not sent: another task was opened first. Press Up in the composer to recall it"
+                }
+                .into(),
+            );
+        }
+        self.discard_new_session(session, cx);
         // If the project choice left the view empty while the
         // one-create-at-a-time fence was held, let it settle now.
         self.sync_sidebar(cx);
-        if self.selected_session.is_none() {
+        if self.selected_session.is_none() && !self.draft {
             self.refresh_sessions(cx);
         }
         cx.notify();
+    }
+
+    /// Delete a task created for a message that will not be sent. Its row
+    /// goes when the runtime confirms; a delete the runtime refuses leaves
+    /// the task listed as what it is rather than hidden.
+    fn discard_new_session(&mut self, session: AgentSessionSummary, cx: &mut Context<Self>) {
+        // The SessionCreated event may have listed it already; one row
+        // until the delete confirms.
+        self.upsert_session(session.clone(), cx);
+        let backend = self.backend.clone();
+        let user_id = self.user_id.clone();
+        let session_id = session.id;
+        let deleted = session_id.clone();
+        self.call(
+            async move { backend.delete_session(&user_id, &session_id).await },
+            cx,
+            move |this, result, cx| {
+                match result {
+                    Ok(()) => this.remove_session(&deleted, cx),
+                    Err(error) => log::warn!("Cannot delete the unused task {deleted}: {error}"),
+                }
+                cx.notify();
+            },
+        );
     }
 
     /// Build an explicit request so new-task placement never depends on the
@@ -3550,17 +3614,19 @@ impl ChatScreen {
     /// from the Send button.
     /// Send without a Window, callable from the Send button. The button
     /// path owns no composer lease, so it clears the input here.
+    /// The Send button. The text stays in the composer until a send path
+    /// clears it, so a send that cannot go out yet (the task still being
+    /// created, a question waiting) keeps it, as Enter does.
     fn send_inner(&mut self, cx: &mut Context<Self>) {
         let Some(composer) = self.composer.clone() else {
             return;
         };
         let text = composer.read(cx).text();
-        composer.update(cx, |input, cx| input.clear(cx));
         self.send_text(text, cx);
     }
 
-    /// Send the given text; used by the composer Enter hook, which already
-    /// holds the text and clears the input itself.
+    /// Send the given text; used by the composer Enter hook, which hands
+    /// over the text and leaves the input to the send path.
     fn send_text(&mut self, text: String, cx: &mut Context<Self>) {
         self.send_text_with(text, false, cx);
     }
@@ -3578,11 +3644,11 @@ impl ChatScreen {
             return;
         }
         // With no task the first send creates one and runs there. One
-        // create at a time: while it is in flight the text stays in the
-        // composer.
+        // create at a time: while it is in flight the composer shows it
+        // and keeps the text; Enter changes nothing.
         let session_id = self.selected_session.clone();
         if session_id.is_none() && self.session_setup_pending {
-            self.notice = Some("Creating the task…".into());
+            self.notice = Some("The task is still being created".into());
             cx.notify();
             return;
         }

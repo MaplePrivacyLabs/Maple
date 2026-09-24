@@ -730,7 +730,15 @@ impl ChatScreen {
 
     pub(super) fn render_composer(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Div {
         let running = self.is_run_active();
-        let disabled = self.booting;
+        // The first send's create keeps the composer's text on show and
+        // the composer waiting, like the runtime boot does.
+        let pending_create = self.selected_session.is_none() && self.session_setup_pending;
+        let disabled = self.booting || pending_create;
+        let status_label = if self.booting {
+            "Starting Maple…"
+        } else {
+            "Creating the task…"
+        };
         let has_text = self.composer_has_text;
         let has_images = !self.draft_images.is_empty();
         let images_ready = self.draft_images.iter().all(DraftImage::ready);
@@ -1050,14 +1058,15 @@ impl ChatScreen {
                     .when(disabled, |row| {
                         row.child(
                             div()
+                                .debug_selector(|| "composer-status".to_string())
                                 .flex()
                                 .items_center()
                                 .gap_1p5()
                                 .px_2()
                                 .text_xs()
                                 .text_color(gpui::rgb(theme::text_muted()))
-                                .child(spinner("runtime-boot", px(12.), theme::text_muted()))
-                                .child("Starting Maple…"),
+                                .child(spinner("composer-status", px(12.), theme::text_muted()))
+                                .child(status_label),
                         )
                     })
                     .child(div().flex_1())

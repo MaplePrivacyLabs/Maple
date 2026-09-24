@@ -1965,6 +1965,138 @@ mod state_tests {
         });
     }
 
+    /// The text typed into the draft stays in the composer until the send
+    /// goes out. While the create is in flight the composer shows it as
+    /// waiting, the Send button and Enter keep the text; a failed create
+    /// leaves it there and in the history; a create that lands sends what
+    /// the composer shows; one that lands after the user opened another
+    /// task sends nothing, gives the text back, and discards the task.
+    /// Before, the Send button cleared the text ahead of the pending
+    /// check, and a stale or failed create dropped it.
+    #[gpui::test]
+    fn test_the_composer_keeps_the_text_until_the_first_send_goes_out(cx: &mut TestAppContext) {
+        let root = absolute_fixture_root("work");
+        let (chat, cx) = chat_window(cx, |this, cx| {
+            this.project_root = Some(root.clone());
+            this.selected_session = None;
+            this.new_session(cx);
+        });
+        let composer = chat.update(cx, |this, _| this.composer.clone().unwrap());
+        let pending = |text: &str| {
+            Some(FirstSend::Message {
+                text: text.to_string(),
+                steer: false,
+            })
+        };
+
+        // A create in flight for "hello".
+        chat.update(cx, |this, cx| {
+            composer.update(cx, |input, cx| input.set_text("hello", cx));
+            this.session_setup_pending = true;
+            this.pending_first_send = pending("hello");
+        });
+        cx.update(|window, _| window.refresh());
+        cx.run_until_parked();
+        assert!(
+            cx.debug_bounds("composer-status").is_some(),
+            "the composer shows the create in progress"
+        );
+        press(cx, "send-message");
+        assert_eq!(
+            composer.update(cx, |input, _| input.text()),
+            "hello",
+            "the Send button keeps the text while the create is pending"
+        );
+        chat.update(cx, |this, cx| {
+            this.send_text("hello".to_string(), cx);
+            assert!(this.session_setup_pending);
+            assert_eq!(this.pending_first_send, pending("hello"));
+            assert_eq!(
+                this.composer_text(cx).as_deref(),
+                Some("hello"),
+                "Enter keeps it too"
+            );
+
+            // The create fails: the text stays, and the history has it.
+            this.fail_new_session("no runtime".to_string(), cx);
+            assert_eq!(this.composer_text(cx).as_deref(), Some("hello"));
+            assert!(this.prompt_history.contains(&"hello".to_string()));
+            assert!(this.draft);
+        });
+        cx.update(|window, _| window.refresh());
+        cx.run_until_parked();
+        assert!(
+            cx.debug_bounds("composer-status").is_none(),
+            "the composer is live again"
+        );
+
+        // The user edits while the next create is in flight; when it
+        // lands, what the composer shows goes out and the composer clears.
+        chat.update(cx, |this, cx| {
+            this.session_setup_pending = true;
+            this.pending_first_send = pending("hello");
+            composer.update(cx, |input, cx| input.set_text("hello, edited", cx));
+            let generation = this.selection_generation;
+            this.finish_new_session(summary_at("created", "New Task", &root), generation, cx);
+            assert_eq!(this.selected_session.as_deref(), Some("created"));
+            assert!(this.awaiting_first_token, "the send was dispatched");
+            assert_eq!(
+                this.prompt_history.last().map(String::as_str),
+                Some("hello, edited")
+            );
+            assert_eq!(this.composer_text(cx).as_deref(), Some(""), "sent");
+        });
+
+        // A create that lands after another task was opened: nothing is
+        // sent, the text goes back into the empty composer and into the
+        // history, and the unused task's delete is requested.
+        chat.update(cx, |this, cx| {
+            this.set_active_session(
+                summary_at("other", "Other", &root),
+                Vec::new(),
+                HashMap::new(),
+                cx,
+            );
+            this.awaiting_first_token = false;
+            this.session_setup_pending = true;
+            this.pending_first_send = pending("late");
+            let stale = this.selection_generation - 1;
+            this.finish_new_session(summary_at("late-task", "New Task", &root), stale, cx);
+            assert!(!this.session_setup_pending);
+            assert!(this.pending_first_send.is_none());
+            assert!(!this.awaiting_first_token, "nothing was sent");
+            assert_eq!(this.selected_session.as_deref(), Some("other"));
+            assert_eq!(this.composer_text(cx).as_deref(), Some("late"));
+            assert!(this.prompt_history.contains(&"late".to_string()));
+            assert!(
+                this.notice
+                    .as_ref()
+                    .is_some_and(|notice| notice.contains("back in the composer")),
+                "{:?}",
+                this.notice
+            );
+
+            // With text of its own in the composer, the message waits in
+            // the history instead of replacing it.
+            this.session_setup_pending = true;
+            this.pending_first_send = pending("later");
+            let stale = this.selection_generation - 1;
+            this.finish_new_session(summary_at("later-task", "New Task", &root), stale, cx);
+            assert_eq!(this.composer_text(cx).as_deref(), Some("late"), "untouched");
+            assert_eq!(
+                this.prompt_history.last().map(String::as_str),
+                Some("later")
+            );
+            assert!(
+                this.notice
+                    .as_ref()
+                    .is_some_and(|notice| notice.contains("Press Up")),
+                "{:?}",
+                this.notice
+            );
+        });
+    }
+
     /// A failed create leaves nothing behind and gives the message back.
     #[gpui::test]
     fn test_failed_create_keeps_the_draft(cx: &mut TestAppContext) {
