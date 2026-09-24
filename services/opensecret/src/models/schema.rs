@@ -156,6 +156,14 @@ diesel::table! {
 }
 
 diesel::table! {
+    email_opt_outs (user_id) {
+        user_id -> Uuid,
+        source -> Text,
+        opted_out_at -> Timestamptz,
+    }
+}
+
+diesel::table! {
     email_verifications (id) {
         id -> Int4,
         user_id -> Uuid,
@@ -648,6 +656,7 @@ diesel::allow_tables_to_appear_in_same_query!(
     conversation_projects,
     conversation_summaries,
     conversations,
+    email_opt_outs,
     email_verifications,
     enclave_secrets,
     invite_codes,

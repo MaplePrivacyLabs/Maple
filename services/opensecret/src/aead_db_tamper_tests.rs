@@ -4,6 +4,7 @@ use crate::{
     generate_reset_hash,
     login_routes::RegisterCredentials,
     models::{
+        email_opt_outs::{EmailOptOut, OptOutSource},
         oauth::NewUserOAuthConnection,
         org_projects::OrgProject,
         password_reset::NewPasswordResetRequest,
@@ -1962,6 +1963,111 @@ fn assert_response_transaction_row_counts(
         expected,
         "response transaction row counts"
     );
+}
+
+#[tokio::test]
+#[ignore = "requires AEAD_TAMPER_TEST_DATABASE_URL pointing at disposable migrated local Postgres"]
+async fn db_email_opt_outs_are_idempotent_and_removed_with_the_user() {
+    let Some(database_url) = std::env::var("AEAD_TAMPER_TEST_DATABASE_URL").ok() else {
+        eprintln!("skipping: AEAD_TAMPER_TEST_DATABASE_URL is not set");
+        return;
+    };
+
+    let app_state = build_local_test_app_state(database_url).await;
+    let project = first_active_project(&app_state);
+    let user = app_state
+        .db
+        .create_user(NewUser::new(None, None, project.id))
+        .unwrap();
+    let conn = &mut app_state
+        .db
+        .get_pool()
+        .get()
+        .expect("test database connection should be available");
+
+    assert!(EmailOptOut::get_by_user_id(conn, user.uuid)
+        .unwrap()
+        .is_none());
+
+    EmailOptOut::opt_out(conn, user.uuid, OptOutSource::OneClick).unwrap();
+    EmailOptOut::opt_out(conn, user.uuid, OptOutSource::Page).unwrap();
+    let opt_out = EmailOptOut::get_by_user_id(conn, user.uuid)
+        .unwrap()
+        .expect("user should be opted out");
+    assert_eq!(
+        opt_out.source, "one_click",
+        "a repeat opt-out keeps the first record"
+    );
+
+    EmailOptOut::opt_in(conn, user.uuid).unwrap();
+    EmailOptOut::opt_in(conn, user.uuid).unwrap();
+    assert!(EmailOptOut::get_by_user_id(conn, user.uuid)
+        .unwrap()
+        .is_none());
+
+    EmailOptOut::opt_out(conn, user.uuid, OptOutSource::Support).unwrap();
+    app_state.db.delete_user(&user).unwrap();
+    assert!(
+        EmailOptOut::get_by_user_id(conn, user.uuid)
+            .unwrap()
+            .is_none(),
+        "deleting the user removes the opt-out"
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires AEAD_TAMPER_TEST_DATABASE_URL pointing at disposable migrated local Postgres"]
+async fn db_destructive_password_reset_keeps_email_opt_out() {
+    let Some(database_url) = std::env::var("AEAD_TAMPER_TEST_DATABASE_URL").ok() else {
+        eprintln!("skipping: AEAD_TAMPER_TEST_DATABASE_URL is not set");
+        return;
+    };
+
+    let app_state = build_local_test_app_state(database_url).await;
+    let project = first_active_project(&app_state);
+    let marker = Uuid::new_v4();
+    let email = format!("aead-reset-keeps-opt-out-{marker}@example.com");
+    let reset_code = "OPTOUT01";
+    let reset_secret = format!("opt-out-reset-secret-{marker}");
+
+    let user = create_password_wrapped_user(
+        &app_state,
+        project.id,
+        email.clone(),
+        test_credential("old-before-opt-out-reset"),
+    )
+    .await;
+    let conn = &mut app_state
+        .db
+        .get_pool()
+        .get()
+        .expect("test database connection should be available");
+    EmailOptOut::opt_out(conn, user.uuid, OptOutSource::Page).unwrap();
+    let before = EmailOptOut::get_by_user_id(conn, user.uuid)
+        .unwrap()
+        .expect("user should be opted out");
+
+    insert_valid_reset_request_for_user(&app_state, project.id, &user, reset_code, &reset_secret);
+    app_state
+        .confirm_password_reset(
+            email,
+            reset_code.to_string(),
+            reset_secret,
+            test_credential("new-after-opt-out-reset").to_string(),
+            project.id,
+        )
+        .await
+        .expect("destructive password reset should complete");
+
+    let after = EmailOptOut::get_by_user_id(conn, user.uuid)
+        .unwrap()
+        .expect("a password reset must not resubscribe the user");
+    assert_eq!(
+        (after.source.as_str(), after.opted_out_at),
+        (before.source.as_str(), before.opted_out_at)
+    );
+
+    let _ = app_state.db.delete_user(&user);
 }
 
 async fn build_local_test_app_state(database_url: String) -> AppState {

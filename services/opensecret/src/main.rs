@@ -129,6 +129,8 @@ mod sqs;
 mod tokens;
 #[allow(dead_code)] // Includes client-side vector helpers shared with the SDK implementation.
 mod transport_v2;
+#[allow(dead_code)] // Used by the unsubscribe routes in the follow-up PR.
+mod unsubscribe_token;
 mod web;
 
 #[cfg(test)]

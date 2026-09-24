@@ -1,5 +1,7 @@
 pub mod account_deletion;
 pub mod app_data_migrations;
+#[allow(dead_code)] // Used by the unsubscribe routes in the follow-up PR.
+pub mod email_opt_outs;
 pub mod email_verification;
 pub mod enclave_secrets;
 pub mod invite_codes;
