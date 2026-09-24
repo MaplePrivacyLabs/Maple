@@ -878,7 +878,10 @@ pub fn build_prompt_from_chat_messages_with_token_reserve(
                 // User messages are stored as MessageContent - convert to OpenAI format
                 use crate::web::responses::{MessageContent, MessageContentConverter};
                 let mc: MessageContent = serde_json::from_str(&m.content).map_err(|e| {
-                    error!("Failed to deserialize user message content: {:?}", e);
+                    error!(
+                        "Failed to deserialize user message content: {}",
+                        crate::log_redaction::JsonErrorSummary(&e)
+                    );
                     crate::ApiError::InternalServerError
                 })?;
                 MessageContentConverter::to_model_format(&mc)

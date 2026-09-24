@@ -413,7 +413,10 @@ impl ConversationItemConverter {
     ) -> Result<ConversationItem, ApiError> {
         // User messages MUST be stored as MessageContent
         let message_content: MessageContent = serde_json::from_str(&content).map_err(|e| {
-            error!("Failed to deserialize message content: {:?}", e);
+            error!(
+                "Failed to deserialize message content: {}",
+                crate::log_redaction::JsonErrorSummary(&e)
+            );
             ApiError::InternalServerError
         })?;
 

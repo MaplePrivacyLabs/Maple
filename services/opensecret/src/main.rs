@@ -108,6 +108,7 @@ mod jwt;
 mod kagi;
 mod kv;
 mod lease_aware_cache;
+mod log_redaction;
 mod message_signing;
 mod migrations;
 mod model_config;
