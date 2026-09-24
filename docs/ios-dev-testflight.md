@@ -73,9 +73,10 @@ web-before-native ordering for future handoff protocol changes.
 `.github/workflows/ios-dev-testflight.yml` starts for every push to `master`,
 including documentation-only pushes. A manual dispatch is also available from
 `master`. Other branches, forks, pull requests, tags, and GitHub Releases cannot
-enter this workflow's signing or upload jobs. The existing production
-`mobile-build.yml` keeps its current triggers, change selection, artifact names,
-and TestFlight destination.
+enter this workflow's signing or upload jobs. The independent production
+`mobile-build.yml` keeps its change selection,
+artifact names, and TestFlight destination. Its own serial lane also supports
+a master-only manual dispatch to force a fresh production build.
 
 The development workflow calls the shared `scripts/ci/ios-release.sh` with
 `MAPLE_IOS_VARIANT=dev`. Omitting that variable continues to build production

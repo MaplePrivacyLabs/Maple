@@ -14,6 +14,11 @@ commit, external effect, and authority provided by the user.
 - A push to `master` starts production-shaped desktop, Android, iOS, web,
   frontend, and Rust workflows. The iOS master workflow uploads its verified
   IPA to TestFlight automatically.
+- `Mobile App CI` serializes production iOS build/export, verification, and
+  upload so concurrent master pushes cannot reuse an export-assigned build
+  number. Its master-only manual dispatch forces a fresh build even without
+  app changes. After a duplicate-build rejection, dispatch this full workflow
+  from master; retrying only submission reuses the rejected IPA's build number.
 - The independent `Maple Dev TestFlight` workflow also builds every master
   push and uploads the distinct `cloud.opensecret.maple.dev` application for
   internal testing against the existing development services. Manual dispatch

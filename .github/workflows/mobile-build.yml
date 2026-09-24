@@ -6,15 +6,34 @@ permissions:
 on:
   push:
     branches: [ master ]
+  workflow_dispatch:
+
+# Xcode allocates the production build number during export. Keep that export
+# and its eventual upload in one lane so another run cannot choose the same
+# number while the first IPA is still being verified. Retain pending app builds
+# even when a later push only changes backend files.
+concurrency:
+  group: maple-ios-production-testflight
+  cancel-in-progress: false
+  queue: max
 
 jobs:
   changes:
+    if: >-
+      github.repository == 'MaplePrivacyLabs/Maple' &&
+      github.ref == 'refs/heads/master' &&
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
     uses: ./.github/workflows/app-change-detection.yml
 
   build-ios:
     environment: apple-signing
     needs: changes
-    if: ${{ always() && !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.frontend != 'false' || needs.changes.outputs.ios != 'false') }}
+    if: >-
+      always() && !cancelled() &&
+      github.repository == 'MaplePrivacyLabs/Maple' &&
+      github.ref == 'refs/heads/master' &&
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
+      (needs.changes.result != 'success' || needs.changes.outputs.frontend != 'false' || needs.changes.outputs.ios != 'false')
     runs-on: macos-26-xlarge
     permissions:
       contents: read
@@ -140,7 +159,10 @@ jobs:
 
   submit-ios-testflight:
     environment: apple-signing
-    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+    if: >-
+      github.repository == 'MaplePrivacyLabs/Maple' &&
+      github.ref == 'refs/heads/master' &&
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
     needs: verify-ios-artifacts
     runs-on: macos-26-xlarge
     permissions:
@@ -206,7 +228,12 @@ jobs:
 
   warm-ios-pr-onnx-cache:
     needs: changes
-    if: ${{ always() && !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.ios_onnx != 'false') }}
+    if: >-
+      always() && !cancelled() &&
+      github.repository == 'MaplePrivacyLabs/Maple' &&
+      github.ref == 'refs/heads/master' &&
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
+      (needs.changes.result != 'success' || needs.changes.outputs.ios_onnx != 'false')
     runs-on: macos-26-xlarge
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # was v4
