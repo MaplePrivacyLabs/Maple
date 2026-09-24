@@ -312,19 +312,6 @@ pub fn encrypt_key_deterministic(encryption_key: &SecretKey, key: &[u8]) -> Vec<
     cipher.encrypt(&nonce, key).expect("encryption failure!")
 }
 
-pub fn decrypt_key_deterministic(
-    encryption_key: &SecretKey,
-    encrypted: &[u8],
-) -> Result<Vec<u8>, EncryptError> {
-    let key_bytes: [u8; 32] = encryption_key.secret_bytes();
-    let extended_key = extend_key(&key_bytes);
-    let cipher = Aes256SivAead::new(&extended_key);
-    let nonce = SivNonce::default();
-    cipher
-        .decrypt(&nonce, encrypted)
-        .map_err(|_| EncryptError::FailedToDecrypt)
-}
-
 fn extend_key(key: &[u8; 32]) -> GenericArray<u8, typenum::U64> {
     let mut hasher = Sha512::new();
     hasher.update(key);
@@ -717,8 +704,8 @@ mod tests {
         let content = b"test_key";
 
         let encrypted = encrypt_key_deterministic(&key, content);
-        let decrypted = decrypt_key_deterministic(&key, &encrypted).unwrap();
-        assert_eq!(content.to_vec(), decrypted);
+        assert_eq!(encrypted, encrypt_key_deterministic(&key, content));
+        assert_ne!(encrypted, content.to_vec());
     }
 
     #[test]
