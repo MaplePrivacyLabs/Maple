@@ -81,7 +81,6 @@ BACKEND_INERT_FILES = frozenset(
         "deny.toml",
         "justfile",
         "secretspec.toml",
-        "entrypoint.sh",
         "continuum-proxy",
         "continuum-proxy-x86_64",
         "pcrDev.json",

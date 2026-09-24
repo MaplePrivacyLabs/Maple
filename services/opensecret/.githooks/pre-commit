@@ -2,8 +2,9 @@
 # OpenSecret backend pre-commit checks. Runs from services/opensecret inside
 # its own flake with OPENSECRET_DEV_POSTGRES/ENV/CONTAINERS=0 so the dev shell
 # does not start PostgreSQL, containers, or rewrite .env.
-# CI equivalent: the `rust` job of opensecret-ci.yml. The nix build, cargo-deny
-# audit, EIF, and PCR checks stay in CI.
+# CI equivalent: the `rust` job of opensecret-ci.yml, plus the entrypoint flake
+# checks from its `nix` job when the entrypoint or its test is staged. The nix
+# package build, cargo-deny audit, EIF, and PCR checks stay in CI.
 
 set -u
 . "${MAPLE_HOOK_REPO_ROOT:?}/.githooks/lib/common.sh"
@@ -12,3 +13,19 @@ hook_require cargo
 hook_run cargo fmt --all -- --check
 hook_run cargo clippy --locked --all-targets --all-features -- -D warnings
 hook_run cargo test --locked --all-features
+
+# The flake checks that read entrypoint.sh are small runCommand derivations,
+# not the EIF build, so run them whenever the entrypoint changes.
+if [ -n "$(hook_staged_matching '^services/opensecret/(entrypoint\.sh|tests/entrypoint_entropy_preflight\.sh)$')" ]; then
+    if [ "${MAPLE_HOOK_IN_NIX:-0}" = "1" ] && nix_bin=$(hook_find_nix); then
+        system=$("$nix_bin" eval --raw --impure --expr builtins.currentSystem) ||
+            hook_fail "could not determine the Nix system"
+        hook_run "$nix_bin" build --no-link --no-update-lock-file \
+            ".?submodules=1#checks.$system.entrypoint-entropy-preflight" \
+            ".?submodules=1#checks.$system.provider-cache-defaults"
+    else
+        hook_require bash
+        hook_run bash -n entrypoint.sh
+        hook_run bash tests/entrypoint_entropy_preflight.sh
+    fi
+fi
