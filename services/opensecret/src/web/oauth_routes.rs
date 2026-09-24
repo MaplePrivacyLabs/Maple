@@ -37,7 +37,7 @@ use reqwest::header::AUTHORIZATION;
 use secp256k1::SecretKey;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-use tracing::{debug, error, trace};
+use tracing::{debug, error};
 use uuid::Uuid;
 
 pub fn router(app_state: Arc<AppState>) -> Router {
@@ -1052,11 +1052,8 @@ async fn fetch_github_user(
             ApiError::InternalServerError
         })?;
 
-    // Get status and headers before consuming the response
     let status = response.status();
-    let headers = response.headers().clone();
     debug!("GitHub API response status: {}", status);
-    trace!("GitHub API response headers: {:?}", headers);
 
     if !status.is_success() {
         error!(
@@ -1071,8 +1068,6 @@ async fn fetch_github_user(
         error!("Failed to read GitHub user response body: {:?}", e);
         ApiError::InternalServerError
     })?;
-
-    trace!("GitHub user response body: {}", user_body);
 
     let mut github_user: GithubUser = serde_json::from_str(&user_body).map_err(|e| {
         error!(
@@ -1099,9 +1094,6 @@ async fn fetch_github_user(
             })?;
 
         let emails_status = emails_response.status();
-        let emails_headers = emails_response.headers().clone();
-        trace!("GitHub emails API response status: {}", emails_status);
-        trace!("GitHub emails API response headers: {:?}", emails_headers);
 
         if !emails_status.is_success() {
             error!(
@@ -1116,8 +1108,6 @@ async fn fetch_github_user(
             error!("Failed to read GitHub emails response body: {:?}", e);
             ApiError::InternalServerError
         })?;
-
-        trace!("GitHub emails response body: {}", emails_body);
 
         let emails: Vec<GithubEmail> = serde_json::from_str(&emails_body).map_err(|e| {
             error!(

@@ -85,7 +85,7 @@ use tokio::spawn;
 use tokio::sync::RwLock;
 use tokio::task::{self};
 use tower_http::cors::{Any, CorsLayer};
-use tracing::{debug, error, info, trace, warn};
+use tracing::{debug, error, info, warn};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 use uuid::Uuid;
 use vsock::{VsockAddr, VsockStream};
@@ -1433,10 +1433,6 @@ impl AppState {
         }
 
         let Some(client) = &self.os_flags_client else {
-            trace!(
-                "os-flags client not configured; using default paid model aliases (user_uuid={})",
-                user_uuid
-            );
             return ModelAliasTargets::for_plan(model_plan);
         };
 
@@ -1472,11 +1468,6 @@ impl AppState {
     pub(crate) async fn inference_routing_mode(&self, user_uuid: Uuid) -> InferenceRoutingMode {
         let flag_key = os_flags::INFERENCE_ROUTER_V2_FLAG_KEY;
         let Some(client) = &self.os_flags_client else {
-            trace!(
-                user_uuid = %user_uuid,
-                flag_key,
-                "os-flags client not configured; retaining legacy inference router"
-            );
             return InferenceRoutingMode::Legacy;
         };
         if self.router_v2_flag_failure_backoff.is_active().await {
@@ -1485,13 +1476,6 @@ impl AppState {
                 .flatten()
                 .map(|value| InferenceRoutingMode::from_router_v2_flag(Some(value)))
                 .unwrap_or(InferenceRoutingMode::Legacy);
-            trace!(
-                user_uuid = %user_uuid,
-                flag_key,
-                cache_hit = cached_value.is_some(),
-                routing_mode = ?mode,
-                "os-flags routing checks are in failure backoff; using cached inference-router decision"
-            );
             return mode;
         }
 
@@ -1550,10 +1534,6 @@ impl AppState {
         let flag_key = provider_flag.key();
 
         let Some(client) = &self.os_flags_client else {
-            trace!(
-                "os-flags client not configured; using default provider routing for model {}",
-                requested_model
-            );
             return None;
         };
         match tokio::time::timeout(
@@ -1596,10 +1576,6 @@ impl AppState {
         is_api: bool,
     ) -> Option<ChatBillingAccess> {
         let Some(client) = &self.billing_client else {
-            trace!(
-                "billing client not configured; using free model access (user_uuid={})",
-                user_uuid
-            );
             return None;
         };
 
@@ -2333,16 +2309,12 @@ impl AppState {
         session_lease: &SessionLease,
         encrypted_data: &str,
     ) -> Result<Vec<u8>, ApiError> {
-        tracing::trace!("decrypting session data for session_id: {}", session_id);
-
         let decoded_data = general_purpose::STANDARD
             .decode(encrypted_data)
             .map_err(|e| {
                 tracing::error!("Failed to decode base64 data: {:?}", e);
                 ApiError::BadRequest
             })?;
-
-        tracing::trace!("decoded session data length: {}", decoded_data.len());
 
         if decoded_data.len() < 12 {
             tracing::error!("Decoded data is too short");
@@ -2354,9 +2326,6 @@ impl AppState {
             tracing::error!("Failed to convert nonce: {:?}", e);
             ApiError::BadRequest
         })?;
-
-        tracing::trace!("nonce: {:?}", nonce_array);
-        tracing::trace!("ciphertext length: {}", ciphertext.len());
 
         let decrypted = session_lease
             .value()
@@ -2645,8 +2614,6 @@ impl AppState {
         plaintext_secret: String,
         new_password: String,
     ) -> Result<(), Error> {
-        trace!("Confirm platform password reset for {email}");
-
         let platform_user = match self.db.get_platform_user_by_email(&email) {
             Ok(Some(user)) => user,
             Ok(None) => return Err(Error::UserNotFound),

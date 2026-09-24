@@ -884,8 +884,6 @@ pub async fn validate_jwt(
         }
     };
 
-    tracing::trace!("Validating JWT");
-
     let expected_audience = if is_transport_v2 {
         TRANSPORT_V2_USER_ACCESS
     } else {
@@ -965,8 +963,6 @@ pub async fn validate_platform_jwt(
             None => return ApiError::InvalidJwt.into_response(),
         }
     };
-
-    tracing::trace!("Validating platform JWT");
 
     let expected_audience = if is_transport_v2 {
         TRANSPORT_V2_PLATFORM_ACCESS
@@ -1052,8 +1048,6 @@ fn validate_token_with_keys_for_auth(
     let es256k = Es256k::<Sha256>::new(jwt_keys.secp.clone());
     let public_key = jwt_keys.public_key();
 
-    tracing::trace!("Attempting to validate ES256K token");
-
     // First parse the token with the correct type
     let parsed_token = match UntrustedToken::new(original_token) {
         Ok(token) => token,
@@ -1067,8 +1061,6 @@ fn validate_token_with_keys_for_auth(
     let (token, access_token_expired): (Token<CustomClaims>, bool) =
         match es256k.validator(&public_key).validate(&parsed_token) {
             Ok(token) => {
-                tracing::trace!("ES256K signature validation successful");
-
                 // Validate the audience before classifying expiration. This ensures
                 // an expired token for another audience is never a refresh signal.
                 let claims: &Claims<CustomClaims> = token.claims();
