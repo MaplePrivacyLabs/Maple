@@ -205,6 +205,21 @@ struct DraftMcpChange {
     enabled: bool,
 }
 
+/// What the composer shows that a task just created does not have yet.
+/// Applied before the first send.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct NewSessionChanges {
+    web: Option<bool>,
+    mode: Option<String>,
+    mcp: Vec<DraftMcpChange>,
+}
+
+impl NewSessionChanges {
+    fn is_empty(&self) -> bool {
+        self.web.is_none() && self.mode.is_none() && self.mcp.is_empty()
+    }
+}
+
 /// The row the draft's integrations chip shows for a configured MCP
 /// server: what a new task would start with.
 fn draft_mcp_row(server: AgentMcpServer) -> AgentSessionMcpServer {
@@ -1735,8 +1750,9 @@ impl ChatScreen {
         }
     }
 
-    /// Create a task from `request`, then apply the draft's web access and
-    /// integration toggles, which the request cannot carry.
+    /// Create a task from `request`. What the composer shows and the
+    /// request cannot carry is applied once the task exists, before the
+    /// first send (`settle_new_session`).
     fn create_session(&mut self, request: AgentCreateSessionRequest, cx: &mut Context<Self>) {
         // Creating a task is a navigation intent, but the generation moves
         // only when the task lands: a failed create leaves loads in flight
@@ -1746,37 +1762,130 @@ impl ChatScreen {
         self.session_setup_pending = true;
         let backend = self.backend.clone();
         let user_id = self.user_id.clone();
-        let web_enabled = self.web_enabled;
-        // MCP servers went into the request's name list; the toggles left
-        // are the ones a create request cannot carry.
-        let mcp_changes: Vec<DraftMcpChange> = self
-            .draft_mcp_changes
-            .iter()
-            .filter(|change| change.kind != AgentSessionIntegrationKind::Mcp)
-            .cloned()
-            .collect();
+        let requested_mcp = request.mcp_server_names.clone();
         self.call(
             async move {
-                let mut session = backend
+                backend
                     .create_session(&user_id, Some(request))
-                    .await?
-                    .session;
-                // The task exists from here on: a draft setting that does
-                // not apply is reported, not a reason to lose the task.
-                let mut warning = None;
-                if session.web_enabled != web_enabled {
-                    match backend
-                        .set_session_web_enabled(&user_id, &session.id, web_enabled)
-                        .await
-                    {
-                        Ok(updated) => session = updated,
-                        Err(message) => {
-                            warning = Some(format!("Could not change web access: {message}"))
-                        }
-                    }
+                    .await
+                    .map(|detail| detail.session)
+            },
+            cx,
+            move |this, result, cx| match result {
+                Ok(session) => {
+                    let task_mcp = this.created_task_mcp(requested_mcp.as_deref());
+                    this.settle_new_session(session, task_mcp, selection_generation, cx);
                 }
-                for change in mcp_changes {
-                    if let Err(message) = backend
+                Err(message) => this.fail_new_session(message, cx),
+            },
+        );
+    }
+
+    /// What a task just created from `requested` has for each row of the
+    /// draft's integrations chip: the servers named in the request (or
+    /// the defaults when it named none), and external agents off, which
+    /// no request can switch on.
+    fn created_task_mcp(&self, requested: Option<&[String]>) -> Vec<DraftMcpChange> {
+        let defaults = self.draft_mcp_defaults.as_deref().unwrap_or(&[]);
+        self.session_mcp
+            .iter()
+            .map(|row| {
+                let enabled = match row.kind {
+                    AgentSessionIntegrationKind::Mcp => match requested {
+                        Some(names) => names.iter().any(|name| name == &row.name),
+                        None => defaults
+                            .iter()
+                            .find(|default| default.name == row.name && default.kind == row.kind)
+                            .is_some_and(|default| default.enabled),
+                    },
+                    AgentSessionIntegrationKind::ExternalAgent => false,
+                };
+                DraftMcpChange {
+                    name: row.name.clone(),
+                    kind: row.kind,
+                    enabled,
+                }
+            })
+            .collect()
+    }
+
+    /// The settings the composer shows that `session`, just created, does
+    /// not have: web access, the permission mode, and the integration
+    /// rows whose switch differs from `task_mcp`. Chips flipped while the
+    /// create was in flight show up here like any other.
+    fn new_session_changes(
+        &self,
+        session: &AgentSessionSummary,
+        task_mcp: &[DraftMcpChange],
+    ) -> NewSessionChanges {
+        let mode = self.permission_mode.as_str();
+        NewSessionChanges {
+            web: (self.web_enabled != session.web_enabled).then_some(self.web_enabled),
+            mode: (mode != session.mode).then(|| mode.to_string()),
+            mcp: self
+                .session_mcp
+                .iter()
+                .filter(|row| {
+                    let has = task_mcp
+                        .iter()
+                        .find(|state| state.name == row.name && state.kind == row.kind)
+                        .is_some_and(|state| state.enabled);
+                    row.enabled != has
+                })
+                .map(|row| DraftMcpChange {
+                    name: row.name.clone(),
+                    kind: row.kind,
+                    enabled: row.enabled,
+                })
+                .collect(),
+        }
+    }
+
+    /// The task exists. Apply what the composer shows and the task does
+    /// not have yet, then re-check (a chip may have moved meanwhile), and
+    /// only once everything has applied select the task and run the first
+    /// send. Nothing is sent on a failure: the task is kept and opened,
+    /// the text stays in the composer, and the error is shown, so a task
+    /// meant to run without web access or a server never runs with it.
+    fn settle_new_session(
+        &mut self,
+        session: AgentSessionSummary,
+        task_mcp: Vec<DraftMcpChange>,
+        selection_generation: u64,
+        cx: &mut Context<Self>,
+    ) {
+        if self.selection_generation != selection_generation {
+            // The user left; the draft's chips no longer describe this task.
+            self.finish_new_session(session, selection_generation, cx);
+            return;
+        }
+        let changes = self.new_session_changes(&session, &task_mcp);
+        if changes.is_empty() {
+            self.finish_new_session(session, selection_generation, cx);
+            return;
+        }
+        let backend = self.backend.clone();
+        let user_id = self.user_id.clone();
+        let fallback = session.clone();
+        let applied = changes.mcp.clone();
+        self.call(
+            async move {
+                let mut session = session;
+                if let Some(enabled) = changes.web {
+                    session = backend
+                        .set_session_web_enabled(&user_id, &session.id, enabled)
+                        .await
+                        .map_err(|message| format!("Could not change web access: {message}"))?;
+                }
+                if let Some(mode) = changes.mode {
+                    backend
+                        .set_permission_mode(&user_id, &session.id, &mode)
+                        .await
+                        .map_err(|message| format!("Could not set permission mode: {message}"))?;
+                    session.mode = mode;
+                }
+                for change in &changes.mcp {
+                    backend
                         .set_session_mcp_server_enabled(
                             &user_id,
                             &session.id,
@@ -1785,22 +1894,27 @@ impl ChatScreen {
                             change.enabled,
                         )
                         .await
-                    {
-                        warning = Some(format!("Could not change {}: {message}", change.name));
-                    }
+                        .map_err(|message| {
+                            format!("Could not change {}: {message}", change.name)
+                        })?;
                 }
-                Ok((session, warning))
+                Ok(session)
             },
             cx,
             move |this, result, cx| match result {
-                Ok((session, warning)) => {
-                    this.finish_new_session(session, selection_generation, cx);
-                    if let Some(warning) = warning {
-                        this.notice = Some(warning.into());
-                        cx.notify();
+                Ok(session) => {
+                    let mut task_mcp = task_mcp;
+                    for change in applied {
+                        task_mcp.retain(|state| {
+                            !(state.name == change.name && state.kind == change.kind)
+                        });
+                        task_mcp.push(change);
                     }
+                    this.settle_new_session(session, task_mcp, selection_generation, cx);
                 }
-                Err(message) => this.fail_new_session(message, cx),
+                Err(message) => {
+                    this.fail_new_session_setup(fallback, message, selection_generation, cx)
+                }
             },
         );
     }
@@ -1817,6 +1931,36 @@ impl ChatScreen {
             // another task does not land in it.
             self.restore_first_send(action, cx);
         }
+        cx.notify();
+    }
+
+    /// A composer setting did not apply to the task just created. The
+    /// task exists, so it opens (its chips then show what it really has),
+    /// but nothing is sent: the text goes back to the composer with the
+    /// error, for the user to fix the setting and send again.
+    fn fail_new_session_setup(
+        &mut self,
+        session: AgentSessionSummary,
+        message: String,
+        selection_generation: u64,
+        cx: &mut Context<Self>,
+    ) {
+        if self.selection_generation != selection_generation {
+            // The user left meanwhile; the message has no screen to go
+            // back to, as for a create that lands late.
+            self.finish_new_session(session, selection_generation, cx);
+            self.notice = Some(message.into());
+            cx.notify();
+            return;
+        }
+        self.session_setup_pending = false;
+        self.upsert_session(session.clone(), cx);
+        self.begin_navigation();
+        self.set_active_session(session, Vec::new(), HashMap::new(), cx);
+        if let Some(action) = self.pending_first_send.take() {
+            self.restore_first_send(action, cx);
+        }
+        self.notice = Some(message.into());
         cx.notify();
     }
 

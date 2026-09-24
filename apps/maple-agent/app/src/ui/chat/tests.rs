@@ -1793,6 +1793,178 @@ mod state_tests {
         });
     }
 
+    /// The created task is compared with the composer before anything is
+    /// sent: web access and the mode the create could not carry, a server
+    /// switched on after Enter, and an external agent, which no request
+    /// switches on. With a difference the send waits for the apply; with
+    /// none it goes out at once. Before, the first turn ran under the
+    /// mode and web access the task happened to be created with.
+    #[gpui::test]
+    fn test_first_send_applies_the_composer_before_sending(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        let screen = screen(cx);
+        screen.update(cx, |this, cx| {
+            this.booting = false;
+            this.selected_session = None;
+            this.project_root = Some("/work/alpha".to_string());
+            this.draft = true;
+            this.default_web_enabled = false;
+            this.web_enabled = false;
+            this.permission_mode = PermissionMode::Auto;
+            this.set_draft_mcp_defaults(vec![
+                draft_mcp_row(mcp_server("docs", true)),
+                draft_mcp_row(mcp_server("wiki", false)),
+                AgentSessionMcpServer {
+                    name: "codex".to_string(),
+                    kind: AgentSessionIntegrationKind::ExternalAgent,
+                    display_name: "Codex".to_string(),
+                    description: String::new(),
+                    transport: "external_agent".to_string(),
+                    enabled: false,
+                    available: true,
+                },
+            ]);
+            let request = this.new_session_request().expect("draft request");
+            assert_eq!(request.mode.as_deref(), Some("auto"));
+            assert_eq!(request.mcp_server_names, Some(vec!["docs".to_string()]));
+            this.send_text("hello".to_string(), cx);
+            assert!(this.session_setup_pending);
+            let generation = this.selection_generation;
+
+            // While the create is in flight: Approve all -> Ask first, wiki
+            // on, Codex on.
+            this.permission_mode = PermissionMode::SmartApprove;
+            this.toggle_session_mcp(
+                "wiki".to_string(),
+                AgentSessionIntegrationKind::Mcp,
+                true,
+                cx,
+            );
+            this.toggle_session_mcp(
+                "codex".to_string(),
+                AgentSessionIntegrationKind::ExternalAgent,
+                true,
+                cx,
+            );
+
+            // The create lands with what it was asked for.
+            let mut created = summary_at("created", "New Task", "/work/alpha");
+            created.mode = "auto".to_string();
+            created.web_enabled = true;
+            let task_mcp = this.created_task_mcp(request.mcp_server_names.as_deref());
+            assert_eq!(
+                task_mcp,
+                vec![
+                    DraftMcpChange {
+                        name: "docs".to_string(),
+                        kind: AgentSessionIntegrationKind::Mcp,
+                        enabled: true,
+                    },
+                    DraftMcpChange {
+                        name: "wiki".to_string(),
+                        kind: AgentSessionIntegrationKind::Mcp,
+                        enabled: false,
+                    },
+                    DraftMcpChange {
+                        name: "codex".to_string(),
+                        kind: AgentSessionIntegrationKind::ExternalAgent,
+                        enabled: false,
+                    },
+                ]
+            );
+            assert_eq!(
+                this.new_session_changes(&created, &task_mcp),
+                NewSessionChanges {
+                    web: Some(false),
+                    mode: Some("smart_approve".to_string()),
+                    mcp: vec![
+                        DraftMcpChange {
+                            name: "wiki".to_string(),
+                            kind: AgentSessionIntegrationKind::Mcp,
+                            enabled: true,
+                        },
+                        DraftMcpChange {
+                            name: "codex".to_string(),
+                            kind: AgentSessionIntegrationKind::ExternalAgent,
+                            enabled: true,
+                        },
+                    ],
+                }
+            );
+            // A request that named no servers means the task took the
+            // defaults: docs on, wiki off.
+            assert_eq!(
+                this.created_task_mcp(None)[..2],
+                task_mcp[..2],
+                "no names: the defaults"
+            );
+
+            this.settle_new_session(created.clone(), task_mcp.clone(), generation, cx);
+            assert!(this.session_setup_pending, "the apply is in flight");
+            assert!(this.pending_first_send.is_some(), "nothing sent yet");
+            assert_eq!(this.selected_session, None);
+            assert!(!this.awaiting_first_token);
+
+            // Once the task matches the composer the send goes out.
+            created.mode = "smart_approve".to_string();
+            created.web_enabled = false;
+            let mut task_mcp = task_mcp;
+            task_mcp[1].enabled = true;
+            task_mcp[2].enabled = true;
+            assert!(this.new_session_changes(&created, &task_mcp).is_empty());
+            this.settle_new_session(created, task_mcp, generation, cx);
+            assert!(!this.session_setup_pending);
+            assert!(this.pending_first_send.is_none());
+            assert_eq!(this.selected_session.as_deref(), Some("created"));
+            assert_eq!(this.permission_mode, PermissionMode::SmartApprove);
+            assert!(!this.web_enabled, "the chip is not clobbered");
+            assert!(this.awaiting_first_token, "the send was dispatched");
+        });
+    }
+
+    /// A composer setting that fails to apply keeps the created task,
+    /// opens it, shows the error, and sends nothing: the text stays for
+    /// the user to fix the setting and send again. Before, the send ran
+    /// anyway with only a warning.
+    #[gpui::test]
+    fn test_failed_restriction_keeps_the_task_and_sends_nothing(cx: &mut TestAppContext) {
+        let (chat, cx) = chat_window(cx, |this, cx| {
+            this.project_root = Some(absolute_fixture_root("work"));
+            this.selected_session = None;
+            this.new_session(cx);
+        });
+        chat.update(cx, |this, cx| {
+            this.session_setup_pending = true;
+            this.pending_first_send = Some(FirstSend::Message {
+                text: "hello".to_string(),
+                steer: false,
+            });
+            let generation = this.selection_generation;
+
+            this.fail_new_session_setup(
+                summary_at("created", "New Task", &absolute_fixture_root("work")),
+                "Could not change web access: boom".to_string(),
+                generation,
+                cx,
+            );
+
+            assert!(!this.session_setup_pending);
+            assert!(this.pending_first_send.is_none());
+            assert_eq!(this.selected_session.as_deref(), Some("created"));
+            assert!(!this.draft);
+            assert!(!this.awaiting_first_token, "nothing was sent");
+            assert_eq!(
+                this.notice.as_ref().map(SharedString::as_ref),
+                Some("Could not change web access: boom")
+            );
+            assert_eq!(this.composer.clone().unwrap().read(cx).text(), "hello");
+            assert!(
+                this.sessions.iter().any(|session| session.id == "created"),
+                "the task stays in the list"
+            );
+        });
+    }
+
     /// A failed create leaves nothing behind and gives the message back.
     #[gpui::test]
     fn test_failed_create_keeps_the_draft(cx: &mut TestAppContext) {
