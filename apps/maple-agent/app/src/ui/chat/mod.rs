@@ -248,6 +248,11 @@ pub struct ChatScreen {
     permission_responding: bool,
     /// Suppresses duplicate session creation while one is in flight.
     session_setup_pending: bool,
+    /// The new-task screen is a draft the user started (or the auto-select
+    /// fell back to). Nothing is selected while it shows, and no session
+    /// list or boot fallback may open a task over it: the text typed into
+    /// it belongs to the task the first send creates.
+    draft: bool,
     /// The send that is creating the task, run once the task lands. A
     /// selection change meanwhile drops it.
     pending_first_send: Option<FirstSend>,
@@ -910,6 +915,7 @@ impl ChatScreen {
             pending_permissions: Vec::new(),
             permission_responding: false,
             session_setup_pending: false,
+            draft: false,
             pending_first_send: None,
             draft_mcp_changes: Vec::new(),
             pending_questions: Vec::new(),
@@ -1095,25 +1101,7 @@ impl ChatScreen {
                             crate::startup_elapsed(),
                             boot.sessions.len()
                         );
-                        this.project_root = boot.project_root;
-                        this.project_root_changed(cx);
-                        this.check_project_trust(cx);
-                        this.recent_roots = boot.recent_roots;
-                        this.sessions = boot.sessions;
-                        this.sync_sidebar(cx);
-                        // A click that landed before this callback wins.
-                        if let Some(detail) =
-                            boot.latest.filter(|_| this.selected_session.is_none())
-                        {
-                            let summaries = summaries
-                                .into_iter()
-                                .map(|(id, summary)| (id, SharedString::from(summary)))
-                                .collect();
-                            this.upsert_session(detail.session.clone(), cx);
-                            this.set_active_session(detail.session, detail.timeline, summaries, cx);
-                            this.queue = detail.queue.items;
-                        }
-                        cx.notify();
+                        this.apply_bootstrap(boot, summaries, cx);
                     }
                     // Not fatal: the runtime start below retreads all of it.
                     Err(message) => log::debug!("local bootstrap unavailable: {message}"),
@@ -1122,6 +1110,37 @@ impl ChatScreen {
                 this.start_runtime(cx);
             },
         );
+    }
+
+    /// Take what the local bootstrap read from disk. The newest transcript
+    /// opens only while nothing is on screen: a click that landed before
+    /// this callback wins, and so does a draft the user started while the
+    /// app was still loading, whose text belongs to the task it creates.
+    fn apply_bootstrap(
+        &mut self,
+        boot: crate::backend::LocalBootstrap,
+        summaries: HashMap<String, String>,
+        cx: &mut Context<Self>,
+    ) {
+        self.project_root = boot.project_root;
+        self.project_root_changed(cx);
+        self.check_project_trust(cx);
+        self.recent_roots = boot.recent_roots;
+        self.sessions = boot.sessions;
+        self.sync_sidebar(cx);
+        if let Some(detail) = boot
+            .latest
+            .filter(|_| self.selected_session.is_none() && !self.draft)
+        {
+            let summaries = summaries
+                .into_iter()
+                .map(|(id, summary)| (id, SharedString::from(summary)))
+                .collect();
+            self.upsert_session(detail.session.clone(), cx);
+            self.set_active_session(detail.session, detail.timeline, summaries, cx);
+            self.queue = detail.queue.items;
+        }
+        cx.notify();
     }
 
     /// Phase two of `start`: bring the agent runtime up and fill in what
@@ -1246,17 +1265,11 @@ impl ChatScreen {
                 match result {
                     Ok(registration) => {
                         this.apply_recent_roots(registration.roots, cx);
-                        if this.selection_generation != selection_generation {
-                            // Registration still succeeded, so the project
-                            // stays listed without overriding the newer
-                            // navigation intent.
-                            cx.notify();
-                            return;
-                        }
-                        this.begin_navigation();
-                        this.clear_selected_session_presentation(cx);
-                        this.set_project_context(Some(registration.project_root), cx);
-                        this.refresh_sessions(cx);
+                        this.land_project_selection(
+                            registration.project_root,
+                            selection_generation,
+                            cx,
+                        );
                     }
                     Err(message) => {
                         this.notice = Some(message.into());
@@ -1265,6 +1278,29 @@ impl ChatScreen {
                 cx.notify();
             },
         );
+    }
+
+    /// The project registration landed. A task or project selected since
+    /// wins; otherwise the project becomes the visible context. A draft
+    /// moves with it: its text and chips stay, and the list refresh must
+    /// not open that project's latest task over the message being typed.
+    fn land_project_selection(
+        &mut self,
+        project_root: String,
+        selection_generation: u64,
+        cx: &mut Context<Self>,
+    ) {
+        if self.selection_generation != selection_generation {
+            // Registration still succeeded, so the project stays listed
+            // without overriding the newer navigation intent.
+            return;
+        }
+        self.begin_navigation();
+        if !self.draft {
+            self.clear_selected_session_presentation(cx);
+        }
+        self.set_project_context(Some(project_root), cx);
+        self.refresh_sessions(cx);
     }
 
     /// Persist `root` as the default for new tasks and the next launch
@@ -1575,7 +1611,10 @@ impl ChatScreen {
     /// task of the visible project or show the new-task screen, but only
     /// when no task or project was selected since the list was requested:
     /// a click whose load is still in flight leaves the selection empty
-    /// too, and the auto-select would supersede it.
+    /// too, and the auto-select would supersede it. A draft is not
+    /// "nothing on screen": the list that lands after "New Task" (the boot
+    /// refresh, a project switch) must not open a task under the text
+    /// being typed.
     fn apply_session_list(
         &mut self,
         sessions: Vec<AgentSessionSummary>,
@@ -1584,7 +1623,8 @@ impl ChatScreen {
     ) {
         self.sessions = sessions;
         self.sync_sidebar(cx);
-        if self.selected_session.is_some() || self.selection_generation != generation {
+        if self.selected_session.is_some() || self.draft || self.selection_generation != generation
+        {
             return;
         }
         let root = self.project_root.clone();
@@ -1623,10 +1663,13 @@ impl ChatScreen {
             return;
         }
         // Starting a draft is navigation: a task load in flight must not
-        // land on top of the empty screen.
+        // land on top of the empty screen. It works while the runtime
+        // boots too (no task is needed); the boot's own auto-select then
+        // yields to it.
         self.begin_navigation();
         self.loading_session = None;
         self.clear_selected_session_presentation(cx);
+        self.draft = true;
         // The draft starts from the settings defaults; the chips edit it
         // on screen only, until the task exists.
         self.web_enabled = self.default_web_enabled;
@@ -2308,6 +2351,8 @@ impl ChatScreen {
         // Release the hold while the previous session id is still selected.
         self.abandon_queue_edit(cx);
         self.selected_session = None;
+        // Leaving a draft ends it; "New Task" starts the next one itself.
+        self.draft = false;
         self.draft_mcp_changes.clear();
         self.sync_sidebar_selection(cx);
         self.set_queue(Vec::new());
@@ -2365,6 +2410,7 @@ impl ChatScreen {
         // the active inbox.
         self.completed_unread_sessions.remove(&session.id);
         self.selected_session = Some(session.id);
+        self.draft = false;
         self.sync_sidebar(cx);
         let previous_root = self.project_root.clone();
         if self.set_project_context(Some(project_root.clone()), cx) && previous_root.is_some() {

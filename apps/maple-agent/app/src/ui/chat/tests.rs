@@ -1917,8 +1917,11 @@ mod state_tests {
             assert_eq!(this.selected_session, None);
             assert!(!this.session_setup_pending);
             assert_eq!(this.selected_title.as_ref(), "New Task");
+            assert!(this.draft, "the fallback is a draft like any other");
 
-            // A task with a message under the same root still opens.
+            // On a fresh screen (the draft left), a task with a message
+            // under the same root still opens.
+            this.clear_selected_session_presentation(cx);
             this.selection_generation = requested;
             this.apply_session_list(
                 vec![
@@ -1937,6 +1940,118 @@ mod state_tests {
                 cx,
             );
             assert_eq!(this.loading_session.as_deref(), Some("real"));
+        });
+    }
+
+    /// "New Task" during boot is a draft: the boot's list refresh, which
+    /// captures the generation after the click, and the local bootstrap's
+    /// newest transcript both leave it alone. Before, the old task opened
+    /// under the text being typed, and Enter sent it there.
+    #[gpui::test]
+    fn test_boot_auto_select_does_not_replace_a_draft(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        let screen = screen(cx);
+        screen.update(cx, |this, cx| {
+            this.project_root = Some("/work/alpha".to_string());
+            this.selected_session = None;
+            this.booting = true;
+
+            this.new_session(cx);
+            assert!(this.draft, "New Task works while the runtime boots");
+            assert_eq!(this.selected_session, None);
+
+            let generation = this.selection_generation;
+            let old = summary_at("old", "Old", "/work/alpha");
+            this.apply_session_list(vec![old.clone()], generation, cx);
+            assert!(this.draft);
+            assert_eq!(this.selected_session, None);
+            assert_eq!(this.loading_session, None, "no task load started");
+            assert_eq!(this.sessions.len(), 1, "the list still updates");
+
+            this.apply_bootstrap(
+                crate::backend::LocalBootstrap {
+                    project_root: Some("/work/alpha".to_string()),
+                    sessions: vec![old.clone()],
+                    recent_roots: Vec::new(),
+                    latest: Some(maple_agent::agent::AgentSessionDetail {
+                        session: old.clone(),
+                        timeline: vec![user_item("u1", "earlier")],
+                        mcp_errors: Vec::new(),
+                        queue: maple_agent::agent::AgentDesktopQueueSnapshot {
+                            revision: 0,
+                            items: Vec::new(),
+                        },
+                    }),
+                },
+                HashMap::new(),
+                cx,
+            );
+            assert!(this.draft);
+            assert_eq!(this.selected_session, None);
+            assert!(this.timeline.is_empty());
+
+            // Opening a task ends the draft; the next list may auto-select.
+            this.set_active_session(old, Vec::new(), HashMap::new(), cx);
+            assert!(!this.draft);
+            this.clear_selected_session_presentation(cx);
+            assert!(!this.draft);
+            let generation = this.selection_generation;
+            this.apply_session_list(
+                vec![summary_at("old", "Old", "/work/alpha")],
+                generation,
+                cx,
+            );
+            assert_eq!(this.loading_session.as_deref(), Some("old"));
+        });
+    }
+
+    /// A project switched while a draft shows moves the draft: its chips
+    /// stay, and the new project's latest task is not opened over it.
+    /// Without a draft the switch clears the screen and the list refresh
+    /// auto-selects as before.
+    #[gpui::test]
+    fn test_project_switch_keeps_the_draft(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        let screen = screen(cx);
+        screen.update(cx, |this, cx| {
+            this.project_root = Some("/work/alpha".to_string());
+            this.default_web_enabled = true;
+            this.new_session(cx);
+            this.set_web_enabled(false, cx);
+            let generation = this.selection_generation;
+
+            this.land_project_selection("/work/beta".to_string(), generation, cx);
+
+            assert!(this.draft);
+            assert_eq!(this.selected_session, None);
+            assert_eq!(this.project_root.as_deref(), Some("/work/beta"));
+            assert!(!this.web_enabled, "the draft's chips stay");
+            let generation = this.selection_generation;
+            this.apply_session_list(vec![summary_at("b1", "Beta", "/work/beta")], generation, cx);
+            assert_eq!(this.selected_session, None);
+            assert_eq!(this.loading_session, None);
+
+            // A stale landing (a task clicked meanwhile) changes nothing.
+            this.land_project_selection("/work/stale".to_string(), generation - 1, cx);
+            assert_eq!(this.project_root.as_deref(), Some("/work/beta"));
+
+            this.set_active_session(
+                summary_at("b1", "Beta", "/work/beta"),
+                Vec::new(),
+                HashMap::new(),
+                cx,
+            );
+            let generation = this.selection_generation;
+            this.land_project_selection("/work/gamma".to_string(), generation, cx);
+            assert!(!this.draft);
+            assert_eq!(this.selected_session, None);
+            let generation = this.selection_generation;
+            this.apply_session_list(
+                vec![summary_at("g1", "Gamma", "/work/gamma")],
+                generation,
+                cx,
+            );
+            assert_eq!(this.loading_session.as_deref(), Some("g1"));
         });
     }
 
