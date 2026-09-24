@@ -3709,11 +3709,18 @@ impl ChatScreen {
             self.try_command(session_id.as_deref(), &format!("/{command}"), cx);
             return;
         }
+        // A command that acts on a task becomes the draft's first send and,
+        // like a message, stays on show until it runs (or is refused).
+        // Clearing it would let whatever is typed during the create go out
+        // in its place.
+        let first_send = session_id.is_none()
+            && Self::parse_command(text.trim())
+                .is_some_and(|(name, _)| self.command_needs_task(name));
         if self.try_command(session_id.as_deref(), text.trim(), cx) {
             // Commands never echo into the transcript; drop the typed text
             // so the palette cannot survive the execution.
             self.slash_selected = None;
-            if let Some(composer) = self.composer.clone() {
+            if !first_send && let Some(composer) = self.composer.clone() {
                 composer.update(cx, |input, cx| input.clear(cx));
             }
             return;
@@ -3794,6 +3801,29 @@ impl ChatScreen {
         cx.notify();
     }
 
+    /// A `/command` as typed: its name and its arguments. `None` for text
+    /// that is not one, such as a path that merely starts with a slash.
+    fn parse_command(text: &str) -> Option<(&str, &str)> {
+        let body = text.strip_prefix('/')?;
+        let (name, args) = match body.split_once(char::is_whitespace) {
+            Some((name, args)) => (name, args.trim()),
+            None => (body, ""),
+        };
+        (!name.is_empty() && !name.contains('/')).then_some((name, args))
+    }
+
+    fn is_skill_command(&self, name: &str) -> bool {
+        self.slash_commands
+            .iter()
+            .any(|command| command.name.eq_ignore_ascii_case(name))
+    }
+
+    /// Whether the `/command` named `name` acts on a task. On the draft it
+    /// creates the task first and runs as the first send.
+    fn command_needs_task(&self, name: &str) -> bool {
+        matches!(name, "compact" | "btw") || self.is_skill_command(name)
+    }
+
     /// Execute a `/command` when it matches a built-in or a skill. Unknown
     /// commands fall through and are sent to the model as plain text. With
     /// no task (`session_id` is `None`) a command that acts on one creates
@@ -3804,21 +3834,11 @@ impl ChatScreen {
         text: &str,
         cx: &mut Context<Self>,
     ) -> bool {
-        let Some(body) = text.strip_prefix('/') else {
+        let Some((name, args)) = Self::parse_command(text) else {
             return false;
         };
-        let (name, args) = match body.split_once(char::is_whitespace) {
-            Some((name, args)) => (name, args.trim()),
-            None => (body, ""),
-        };
-        if name.is_empty() || name.contains('/') {
-            return false;
-        }
-        let is_skill = self
-            .slash_commands
-            .iter()
-            .any(|command| command.name.eq_ignore_ascii_case(name));
-        let needs_task = matches!(name, "compact" | "btw") || is_skill;
+        let is_skill = self.is_skill_command(name);
+        let needs_task = self.command_needs_task(name);
         let session_id = match session_id {
             Some(session_id) => Some(session_id.to_string()),
             None if needs_task => {

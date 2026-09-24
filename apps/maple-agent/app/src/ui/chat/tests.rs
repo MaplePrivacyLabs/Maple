@@ -2097,6 +2097,62 @@ mod state_tests {
         });
     }
 
+    /// A typed command that needs a task becomes the draft's first send
+    /// and, like a message, stays in the composer until it runs; a create
+    /// that is refused leaves it there too. A command that needs no task
+    /// still clears. Before, the composer cleared once the create started,
+    /// so text typed meanwhile went out in the command's place and the
+    /// command never ran.
+    #[gpui::test]
+    fn test_a_typed_command_stays_on_show_until_it_runs(cx: &mut TestAppContext) {
+        let root = absolute_fixture_root("work");
+        let (chat, cx) = chat_window(cx, |this, cx| {
+            this.project_root = Some(root.clone());
+            this.selected_session = None;
+            this.new_session(cx);
+        });
+        chat.update(cx, |this, cx| {
+            this.booting = false;
+            this.slash_commands = vec![AgentSlashCommand {
+                name: "deploy".to_string(),
+                description: "Deploy the app".to_string(),
+                input_hint: None,
+            }];
+            let composer = this.composer.clone().unwrap();
+
+            composer.update(cx, |input, cx| input.set_text("/help", cx));
+            this.send_text("/help".to_string(), cx);
+            assert_eq!(this.composer_text(cx).as_deref(), Some(""), "/help ran");
+
+            // Refused while a project selection lands: the command stays.
+            this.root_selecting = true;
+            composer.update(cx, |input, cx| input.set_text("/deploy staging", cx));
+            this.send_text("/deploy staging".to_string(), cx);
+            assert!(!this.session_setup_pending);
+            assert_eq!(this.composer_text(cx).as_deref(), Some("/deploy staging"));
+            this.root_selecting = false;
+
+            // The create starts, and the command stays on show meanwhile.
+            this.send_text("/deploy staging".to_string(), cx);
+            assert!(this.session_setup_pending);
+            assert_eq!(
+                this.pending_first_send,
+                Some(FirstSend::Command("/deploy staging".to_string()))
+            );
+            assert_eq!(this.composer_text(cx).as_deref(), Some("/deploy staging"));
+
+            // The task lands and the command runs, not a plain send.
+            let generation = this.selection_generation;
+            this.finish_new_session(summary_at("created", "New Task", &root), generation, cx);
+            assert_eq!(
+                this.notice.as_ref().map(SharedString::as_ref),
+                Some("Loading skill…")
+            );
+            assert!(!this.awaiting_first_token, "no plain message went out");
+            assert_eq!(this.composer_text(cx).as_deref(), Some(""));
+        });
+    }
+
     /// A failed create leaves nothing behind and gives the message back.
     #[gpui::test]
     fn test_failed_create_keeps_the_draft(cx: &mut TestAppContext) {
