@@ -455,12 +455,11 @@ never executed; see the retry rules below.
 
 ### Completion provider errors
 
-Chat Completions and Responses preserve useful provider error categories without
-returning provider response bodies. Before the public response starts, the
-existing JSON shape remains `{"status":400,"message":"..."}`, with
-`x-opensecret-error-contract: 1` and a static `x-opensecret-error-code`. In V2,
-these are authenticated logical status, headers and body; in V1, the existing
-HTTP error representation is unchanged apart from the classified status/message.
+Before Chat Completions or Responses starts its public response, provider errors
+use the existing `{"status":400,"message":"..."}` shape with static messages,
+`x-opensecret-error-contract: 1`, and a static `x-opensecret-error-code`. V2
+authenticates the logical status, headers and body; V1 uses its existing HTTP
+error representation with the classified status/message.
 
 | Failure | Public HTTP status | Error code |
 | --- | --- | --- |
@@ -471,34 +470,27 @@ HTTP error representation is unchanged apart from the classified status/message.
 | Provider 429 | 429 | Existing `inference_capacity` |
 | Provider 503/529 | 503 | Existing `inference_capacity` |
 
-For 400/422 only, the bounded diagnostic can select one of
+For 400/422 only, the bounded diagnostic can select
 `upstream_invalid_parameter`, `upstream_unsupported_parameter`,
-`upstream_invalid_messages`, or `upstream_context_limit`. Each has a locally
-written message describing what to check. Unknown, unreadable, oversized or
-unrecognized error bodies fall back to the status category. No raw error text,
-parameter names/values, provider request IDs, or provider headers are copied.
-Diagnostics cannot override the HTTP category: for example, an
-`invalid_request_error` label on HTTP429 remains a capacity error. Provider
-401/403/404 becomes 502, rather than impersonating Maple authentication,
-entitlement, or resource errors. A provider rejection does not establish that
-the caller violated Maple's schema; model/provider capabilities or the translated
-request may differ.
+`upstream_invalid_messages`, or `upstream_context_limit`, each with a locally
+written message. Unknown, unreadable or oversized bodies fall back to the status
+category. Raw text, parameter names/values, request IDs and provider headers are
+never copied. Diagnostics cannot override HTTP categories: HTTP429 remains a
+capacity error even with an `invalid_request_error` label; provider 401/403/404
+becomes 502, never a Maple authentication, entitlement or resource error. A
+provider rejection need not mean the caller violated Maple's schema.
 
-These categories do not change routing, billing, retries, or capacity feedback.
-The existing capacity `Retry-After` and explicit client-replay rules remain in
-force. The new `upstream_*` codes carry no replay-safe marker, and never request
-session recreation or token refresh. A provider response or ambiguous timeout
-is not proof that resending would be side-effect-free.
+Routing, billing, retries and capacity feedback are unchanged. Capacity retains
+its existing `Retry-After` and client-replay rules. New `upstream_*` codes grant
+no replay permission and request no session recreation or token refresh.
 
-After streaming starts, failures stay in the encrypted application stream.
-Chat emits one OpenAI-shaped error with the safe code/message; Responses emits
-`response.failed` through its existing storage-terminal path, including the safe
-code/message and error-contract metadata. Neither changes an already-started
-HTTP status or grants retry permission. Mid-stream timeouts use
+After streaming starts, Chat emits one encrypted OpenAI-shaped error; Responses
+emits encrypted `response.failed` through its existing storage-terminal path,
+with the safe code/message and error-contract metadata. Neither changes the
+started HTTP status or grants retry permission. Mid-stream timeouts use
 `upstream_timeout`; malformed/error payloads and unexpected EOF use
-`upstream_provider_error` without copying payload fields. Consumer drops,
-internal build failures, discovery unavailability and internal helper-specific
-failure contracts remain separate.
+`upstream_provider_error`. Consumer drops, internal build failures, discovery
+unavailability and helper-specific failure contracts remain separate.
 
 ### Cryptographic interoperability fixture
 

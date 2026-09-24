@@ -5906,6 +5906,18 @@ mod tests {
             assert!(!String::from_utf8(bytes.to_vec())
                 .unwrap()
                 .contains("private-"));
+            let payload = completion_failure_payload(&failure);
+            assert_eq!(payload["error"]["code"], code);
+            assert_eq!(
+                payload["error"]["type"],
+                if public_status < 500 {
+                    "invalid_request_error"
+                } else {
+                    "server_error"
+                }
+            );
+            assert!(payload["error"]["param"].is_null());
+            assert!(!payload.to_string().contains("private-"));
         }
     }
 

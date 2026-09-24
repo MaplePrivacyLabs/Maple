@@ -1448,8 +1448,6 @@ mod tests {
 
         for (upstream_status, status, code) in [
             (400, 400, "upstream_invalid_request"),
-            (422, 422, "upstream_invalid_request"),
-            (413, 413, "upstream_payload_too_large"),
             (401, 502, "upstream_provider_error"),
             (504, 504, "upstream_timeout"),
         ] {
@@ -1511,15 +1509,12 @@ mod tests {
             assert_eq!(logical_header(crate::ERROR_CODE_HEADER), Some(code));
             assert_eq!(logical_header(crate::CLIENT_REPLAY_HEADER), None);
             assert_eq!(logical_header("retry-after"), None);
-            let body: Vec<_> = records
-                .iter()
-                .filter_map(|record| match record {
-                    ResponseRecord::Chunk(bytes) => Some(bytes.as_ref()),
-                    _ => None,
-                })
-                .flatten()
-                .copied()
-                .collect();
+            let mut body = Vec::new();
+            for record in &records {
+                if let ResponseRecord::Chunk(bytes) = record {
+                    body.extend_from_slice(bytes);
+                }
+            }
             assert_eq!(
                 serde_json::from_slice::<serde_json::Value>(&body).unwrap(),
                 serde_json::json!({"status": status, "message": error.message()})

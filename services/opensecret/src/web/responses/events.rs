@@ -319,21 +319,15 @@ mod tests {
         let public =
             crate::web::provider_error::PublicProviderError::from_failure(&provider_failure)
                 .unwrap();
-        let provider_failed = ResponseFailedEvent {
-            event_type: EVENT_RESPONSE_FAILED,
-            response: ResponsesCreateResponse {
-                error: Some(ResponseError {
-                    code: public.code().to_string(),
-                    message: public.message().to_string(),
-                }),
-                ..failed_payload.response.clone()
-            },
-            sequence_number: 2,
-            opensecret: Some(OpenSecretResponseError {
-                error_contract: "1",
-                error_code: public.code(),
-            }),
-        };
+        let mut provider_failed = failed_payload.clone();
+        provider_failed.response.error = Some(ResponseError {
+            code: public.code().to_string(),
+            message: public.message().to_string(),
+        });
+        provider_failed.opensecret = Some(OpenSecretResponseError {
+            error_contract: "1",
+            error_code: public.code(),
+        });
         let serialized = serde_json::to_value(&provider_failed).unwrap();
         assert_eq!(serialized["type"], EVENT_RESPONSE_FAILED);
         assert_eq!(serialized["response"]["status"], STATUS_FAILED);

@@ -164,21 +164,6 @@ provider before selecting a non-default callback. An older backend ignores
 the new field and uses its default; the SDK does not silently retry with a
 different callback. Native Apple sign-in and the Rust SDK are unchanged.
 
-### Inference errors
-
-Before a stream starts, TypeScript OpenAI calls retain the backend's HTTP status,
-safe message, and response headers, including `x-opensecret-error-code` when
-present. When the non-streaming Responses helper collects an SSE stream,
-`response.failed.response.error` supplies the thrown error's message and optional
-`code`. Only those fields are projected; the collector keeps its existing
-synthetic `status: 500` for a failed stream, rather than treating that terminal
-as a new HTTP rejection. These errors do not grant permission to replay a request.
-
-The nested Responses error handling is prepared in TypeScript SDK `4.1.2`.
-Installed clients need that SDK published and their selected dependency updated
-to receive this collector fix; merging or deploying a backend does not upgrade
-an independently pinned SDK. See the [SDK rollout order](../docs/sdk-publishing.md#rolling-an-sdk-fix-out-to-clients).
-
 ### Development
 
 Use the pinned Nix shell and Bun version. `bun.lock` is the supported dependency

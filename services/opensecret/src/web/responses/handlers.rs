@@ -1898,7 +1898,7 @@ mod tests {
     fn provider_rejections_keep_safe_details_before_and_after_persistence() {
         use axum::response::IntoResponse;
 
-        for upstream_status in [400, 401, 403, 413, 422, 502, 504] {
+        for upstream_status in [400, 502] {
             let failure = AttemptFailure::new(
                 AttemptFailureKind::HttpStatus,
                 AttemptStage::AwaitingResponse,

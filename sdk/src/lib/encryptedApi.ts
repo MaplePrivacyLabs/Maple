@@ -25,7 +25,6 @@ interface ApiResponse<T> {
   hasData: boolean;
   data?: T;
   error?: string;
-  errorCode?: string;
   headers?: Headers;
 }
 
@@ -135,35 +134,13 @@ function logicalHeaders(body: Uint8Array | undefined): TransportV2Header[] | und
   return body === undefined ? undefined : [{ name: "content-type", value: "application/json" }];
 }
 
-class ResponsesStreamError extends Error {
-  constructor(
-    message: string,
-    readonly code?: string
-  ) {
-    super(message);
-  }
-}
-
-function streamErrorDetails(value: unknown): ResponsesStreamError | undefined {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
-  const record = value as Record<string, unknown>;
-  if (typeof record.message !== "string") return undefined;
-  return new ResponsesStreamError(
-    record.message,
-    typeof record.code === "string" ? record.code : undefined
-  );
-}
-
-function streamEventError(value: unknown, fallback: string, failedResponse = false): Error {
+function streamEventError(value: unknown, fallback: string): Error {
   if (typeof value === "object" && value !== null) {
     const record = value as Record<string, unknown>;
-    const directError = streamErrorDetails(record) ?? streamErrorDetails(record.error);
-    if (directError) return directError;
-    // response.failed carries the persisted public error inside the response
-    // object. Project only its message/code, never output or arbitrary fields.
-    if (failedResponse && typeof record.response === "object" && record.response !== null) {
-      const error = streamErrorDetails((record.response as Record<string, unknown>).error);
-      if (error) return error;
+    if (typeof record.message === "string") return new Error(record.message);
+    if (typeof record.error === "object" && record.error !== null) {
+      const error = record.error as Record<string, unknown>;
+      if (typeof error.message === "string") return new Error(error.message);
     }
   }
   return new Error(fallback);
@@ -199,7 +176,7 @@ function completedResponseFromSse(text: string): unknown {
       return completed;
     }
     if (type === "response.error" || type === "response.failed" || type === "error") {
-      throw streamEventError(value, "The response failed.", type === "response.failed");
+      throw streamEventError(value, "The response failed.");
     }
     if (type === "response.cancelled") {
       throw streamEventError(value, "The response was cancelled.");
@@ -333,10 +310,7 @@ async function performTransportV2Call<T, U>(
     return {
       status: 500,
       hasData: false,
-      error: error instanceof Error ? error.message : "Unknown error occurred",
-      ...(error instanceof ResponsesStreamError && error.code !== undefined
-        ? { errorCode: error.code }
-        : {})
+      error: error instanceof Error ? error.message : "Unknown error occurred"
     };
   } finally {
     body?.fill(0);
@@ -348,8 +322,7 @@ function unwrapApiResponse<U>(response: ApiResponse<U>, missingDataMessage: stri
   if (response.error)
     throw Object.assign(new Error(response.error), {
       status: response.status,
-      headers: response.headers,
-      ...(response.errorCode !== undefined ? { code: response.errorCode } : {})
+      headers: response.headers
     });
   if (!response.hasData) throw new Error(missingDataMessage);
   return response.data as U;
