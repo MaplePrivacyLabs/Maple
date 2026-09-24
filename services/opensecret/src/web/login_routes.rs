@@ -169,8 +169,6 @@ pub async fn login(
     Decrypted(creds): Decrypted<Credentials>,
     Extension(session_id): Extension<TransportSession>,
 ) -> Result<Response, ApiError> {
-    tracing::trace!("call login");
-
     let auth_response = login_internal(data.clone(), creds, session_id.is_v2()).await?;
     let result = encrypt_response(&data, &session_id, &auth_response).await;
     result
@@ -295,8 +293,6 @@ pub async fn register(
     Decrypted(creds): Decrypted<RegisterCredentials>,
     Extension(session_id): Extension<TransportSession>,
 ) -> Result<Response, ApiError> {
-    tracing::trace!("call register");
-
     let user = match data.register_user(creds.clone()).await {
         Ok(user) => user,
         Err(Error::UserAlreadyExists) => {

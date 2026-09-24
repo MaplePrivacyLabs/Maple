@@ -3,7 +3,7 @@
 use crate::{web::encryption_middleware::TransportSession, AppState};
 use axum::response::sse::Event;
 use serde::Serialize;
-use tracing::{error, trace};
+use tracing::error;
 
 use super::constants::{
     ERROR_DATA_ENCRYPTION_FAILED, ERROR_DATA_SERIALIZATION_FAILED, EVENT_RESPONSE_CANCELLED,
@@ -69,11 +69,6 @@ impl<'a> SseEventEmitter<'a> {
                 match encrypt_event(self.state, &self.transport_session, event_type, &json).await {
                     Ok(event) => {
                         self.sequence_number += 1;
-                        trace!(
-                            "Emitted {} event (seq: {})",
-                            event_type,
-                            self.sequence_number
-                        );
                         event
                     }
                     Err(e) => {

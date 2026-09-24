@@ -21,7 +21,7 @@ use std::{
     time::{Duration, Instant},
 };
 use tokio::sync::{mpsc, oneshot};
-use tracing::{debug, error, trace, warn};
+use tracing::{debug, error, warn};
 use uuid::Uuid;
 
 use super::handlers::{PublicResponseFailure, ResponseTerminal, StorageMessage};
@@ -736,7 +736,6 @@ pub async fn storage_task(
     while let Some(msg) = rx.recv().await {
         match msg {
             StorageMessage::MessageStarted { item_id } => {
-                trace!("Storage: message started {}", item_id);
                 let pending = pending_messages.entry(item_id).or_default();
                 let created_at = pending
                     .created_at
@@ -755,11 +754,6 @@ pub async fn storage_task(
                 }
             }
             StorageMessage::ContentDelta { item_id, delta } => {
-                trace!(
-                    "Storage: content delta for {} ({} chars)",
-                    item_id,
-                    delta.len()
-                );
                 pending_messages
                     .entry(item_id)
                     .or_default()
@@ -817,7 +811,6 @@ pub async fn storage_task(
                 }
             }
             StorageMessage::ReasoningStarted { item_id } => {
-                trace!("Storage: reasoning started {}", item_id);
                 let pending = pending_reasoning.entry(item_id).or_default();
                 let created_at = pending
                     .created_at
@@ -836,11 +829,6 @@ pub async fn storage_task(
                 }
             }
             StorageMessage::ReasoningDelta { item_id, delta } => {
-                trace!(
-                    "Storage: reasoning delta for {} ({} chars)",
-                    item_id,
-                    delta.len()
-                );
                 pending_reasoning
                     .entry(item_id)
                     .or_default()
@@ -880,9 +868,7 @@ pub async fn storage_task(
                     );
                 }
             }
-            StorageMessage::Usage { .. } => {
-                trace!("Storage: usage message ignored for item persistence");
-            }
+            StorageMessage::Usage { .. } => {}
             StorageMessage::Terminal(mut requested) => {
                 if storage_failed && matches!(requested, ResponseTerminal::Completed { .. }) {
                     requested = ResponseTerminal::Failed(PublicResponseFailure::Internal);

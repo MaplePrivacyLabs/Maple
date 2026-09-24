@@ -29,7 +29,7 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tracing::warn;
-use tracing::{debug, error, trace};
+use tracing::{debug, error};
 use uuid::Uuid;
 
 // ============================================================================
@@ -298,14 +298,10 @@ async fn create_instruction(
         is_default: body.is_default,
     };
 
-    trace!("Creating instruction with: {:?}", new_instruction);
-
     let instruction = state
         .db
         .create_user_instruction(new_instruction)
         .map_err(error_mapping::map_generic_db_error)?;
-
-    trace!("Created instruction: {:?}", instruction);
 
     let response = InstructionResponseBuilder::new(instruction)
         .name(body.name.clone())

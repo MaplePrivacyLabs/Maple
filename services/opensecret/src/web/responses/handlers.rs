@@ -79,7 +79,7 @@ use std::{
 };
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::Instant as TokioInstant;
-use tracing::{debug, error, info, trace, warn};
+use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
 const RESPONSES_SSE_KEEPALIVE_INTERVAL_SECS: u64 = 1;
@@ -3932,7 +3932,6 @@ fn spawn_title_generation_task(
                             .and_then(|c| c.as_str())
                         {
                             let title = title.trim();
-                            trace!("Generated title for conversation {}", conversation_uuid);
                             // Get current conversation metadata
                             match state
                                 .db
@@ -4227,12 +4226,6 @@ async fn build_context_and_check_billing(
     normalize_tool_call_ids_for_model(&mut prompt_messages, &body.model);
 
     ensure_prompt_fits_model(user.uuid, total_prompt_tokens, &body.model, "prompt")?;
-
-    trace!(
-        "Built prompt with {} total tokens, {} messages (including new user message)",
-        total_prompt_tokens,
-        prompt_messages.len()
-    );
 
     // Check billing with token validation (BEFORE any persistence).
     if let Some(billing_access) = billing_access {
@@ -5352,7 +5345,6 @@ async fn create_response_stream(
     cache_namespace_root: Option<Extension<CacheNamespaceRoot>>,
     Decrypted(mut body): Decrypted<ResponsesCreateRequest>,
 ) -> Result<Response, ApiError> {
-    trace!("=== ENTERING create_response_stream ===");
     let require_explicit_terminal = session_id.is_v2();
     let cache_policy = CompletionCachePolicy::for_request(
         &session_id,
@@ -5393,34 +5385,6 @@ async fn create_response_stream(
         );
     }
     body.model = resolved_model;
-
-    trace!("Stream requested: {}", body.stream);
-    let (input_kind, input_message_count) = match &body.input {
-        InputMessage::String(_) => ("string", 1),
-        InputMessage::Messages(messages) => ("messages", messages.len()),
-    };
-    let tools_count = body
-        .tools
-        .as_ref()
-        .and_then(Value::as_array)
-        .map(Vec::len)
-        .unwrap_or_default();
-    trace!(
-        "Request body metadata: model={}, stream={}, input_kind={}, input_message_count={}, instructions_present={}, tools_count={}, tool_choice_present={}, metadata_present={}, max_output_tokens_present={}, temperature_present={}, top_p_present={}, parallel_tool_calls={}, store={}",
-        body.model,
-        body.stream,
-        input_kind,
-        input_message_count,
-        body.instructions.is_some(),
-        tools_count,
-        body.tool_choice.is_some(),
-        body.metadata.is_some(),
-        body.max_output_tokens.is_some(),
-        body.temperature.is_some(),
-        body.top_p.is_some(),
-        body.parallel_tool_calls,
-        body.store
-    );
 
     // Phase 1: Validate and normalize input, then bind the checks that do not
     // depend on the executing model: the user key, conversation ownership, the
@@ -5867,9 +5831,7 @@ async fn create_response_stream(
 
     // Storage and execution are already running; the body only translates the
     // ordered client channel into encrypted SSE events.
-    trace!("Creating SSE event stream for client");
     let event_stream = async_stream::stream! {
-        trace!("=== STARTING SSE STREAM ===");
         let mut emitter = SseEventEmitter::new(&state, session_id, 0);
         let created_response = ResponseBuilder::from_response(&response_for_stream)
             .status(STATUS_IN_PROGRESS)
@@ -5888,13 +5850,11 @@ async fn create_response_stream(
         };
         yield Ok(ResponseEvent::InProgress(in_progress_event).to_sse_event(&mut emitter).await);
 
-        trace!("Starting event loop to receive messages from background tasks");
         let mut client_state = ClientResponseState::default();
         let mut total_prompt_tokens_used = 0i32;
         let mut total_completion_tokens = 0i32;
         let mut saw_terminal = false;
         while let Some(msg) = rx_client.recv().await {
-            trace!("Client stream received message from upstream processor");
             match msg {
                 StorageMessage::MessageStarted { item_id } => {
                     let output_index = client_state.push_message(item_id);
@@ -5922,7 +5882,6 @@ async fn create_response_stream(
                     yield Ok(ResponseEvent::ContentPartAdded(content_part_added_event).to_sse_event(&mut emitter).await);
                 }
                 StorageMessage::ContentDelta { item_id, delta } => {
-                    trace!("Client stream received content delta bytes={}", delta.len());
                     let Some(output_index) = client_state.append_message_delta(item_id, &delta) else {
                         warn!("Received content delta for unknown message item {}", item_id);
                         continue;
@@ -6001,7 +5960,6 @@ async fn create_response_stream(
                     yield Ok(ResponseEvent::OutputItemAdded(reasoning_item_added).to_sse_event(&mut emitter).await);
                 }
                 StorageMessage::ReasoningDelta { item_id, delta } => {
-                    trace!("Client stream received reasoning delta bytes={}", delta.len());
                     let Some(output_index) = client_state.append_reasoning_delta(item_id, &delta) else {
                         warn!("Received reasoning delta for unknown item {}", item_id);
                         continue;
@@ -6059,7 +6017,6 @@ async fn create_response_stream(
                     client_state.mark_reasoning_completed(item_id);
                 }
                 StorageMessage::Usage { prompt_tokens, completion_tokens } => {
-                    trace!("Client stream received usage data");
                     total_prompt_tokens_used += prompt_tokens;
                     total_completion_tokens += completion_tokens;
                 }
@@ -6262,10 +6219,8 @@ async fn create_response_stream(
         }
 
         // Client stream is done, but storage and upstream tasks continue independently
-        trace!("Client SSE stream ending");
     };
 
-    trace!("Returning SSE stream");
     Ok(responses_sse_response(event_stream))
 }
 
@@ -6311,7 +6266,6 @@ pub async fn encrypt_event(
     event_type: &str,
     payload: &Value,
 ) -> Result<Event, ApiError> {
-    trace!("encrypt_event called for event type: {}", event_type);
     let payload_str = payload.to_string();
     let event_data = transport_session
         .encode_sse_data(state, &payload_str)

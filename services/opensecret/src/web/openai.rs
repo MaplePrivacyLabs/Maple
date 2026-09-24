@@ -62,7 +62,7 @@ use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio::time::{sleep, timeout};
-use tracing::{debug, error, info, trace, warn};
+use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
 // Maximum audio file size (100MB) - sanity check, CF already limits to 50MB
@@ -2103,7 +2103,6 @@ async fn proxy_openai(
                 }
                 CompletionChunk::Usage(_usage) => {
                     // Billing already handled internally, no need to send to client
-                    trace!("Received usage chunk (billing already processed)");
                 }
                 CompletionChunk::Terminal(terminal) => {
                     saw_terminal = true;

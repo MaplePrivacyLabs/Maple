@@ -17,7 +17,7 @@ use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::sync::{Arc, LazyLock};
 use tokio::{sync::Semaphore, task};
-use tracing::{error, trace};
+use tracing::error;
 use uuid::Uuid;
 use yasna::models::ObjectIdentifier;
 use yasna::{construct_der, Tag};
@@ -38,10 +38,6 @@ impl SessionState {
     }
 
     pub fn decrypt(&self, encrypted_data: &[u8], nonce: &[u8; 12]) -> Result<Vec<u8>, ApiError> {
-        tracing::trace!("decrypting encrypted data");
-        tracing::trace!("nonce: {:?}", nonce);
-        tracing::trace!("encrypted data length: {}", encrypted_data.len());
-
         let key = Key::from_slice(self.session_key.as_ref());
         let cipher = ChaCha20Poly1305::new(key);
         let nonce = Nonce::from_slice(nonce);
@@ -82,9 +78,7 @@ async fn get_attestation(
     axum::extract::Path(nonce): axum::extract::Path<String>,
 ) -> Result<(StatusCode, Json<AttestationResponse>), ApiError> {
     // Create an ephemeral key pair for this request
-    trace!("Creating ephemeral key");
     let enclave_public_key = data.create_ephemeral_key(&nonce).await?;
-    trace!("Ephemeral key created");
 
     // Create a request for the attestation document
     let request = Request::Attestation {
@@ -93,7 +87,6 @@ async fn get_attestation(
         nonce: Some(ByteBuf::from(nonce.into_bytes())),
     };
 
-    trace!("Generating attestation based on app mode");
     let document = generate_attestation_document(data, request).await?;
     Ok(attestation_response(document))
 }
@@ -180,39 +173,29 @@ async fn generate_mock_attestation_document(
     };
 
     // Create a mock attestation document
-    trace!("Creating mock attestation document");
     let mock_document =
         create_mock_attestation_document(data.clone(), user_data, nonce, public_key).await;
-    trace!("Mock attestation document created");
 
     // Encode the mock document
-    trace!("Encoding mock document");
     let encoded_document = serde_cbor::to_vec(&mock_document).map_err(|e| {
         error!("Failed to encode mock document: {}", e);
         ApiError::InternalServerError
     })?;
-    trace!("Mock document encoded");
 
     // Sign the mock document
-    trace!("Signing mock document");
     let (signature, _) = sign_mock_document(&encoded_document).map_err(|e| {
         error!("Failed to sign mock document: {}", e);
         ApiError::InternalServerError
     })?;
-    trace!("Mock document signed");
 
     // Create the COSE_Sign1 structure
-    trace!("Creating COSE_Sign1 structure");
     let cose_sign1 = create_cose_sign1(encoded_document, signature);
-    trace!("COSE_Sign1 structure created");
 
     // Encode the COSE_Sign1 structure
-    trace!("Encoding COSE_Sign1 structure");
     let final_document = serde_cbor::to_vec(&cose_sign1).map_err(|e| {
         error!("Failed to encode COSE_Sign1 structure: {}", e);
         ApiError::InternalServerError
     })?;
-    trace!("COSE_Sign1 structure encoded");
 
     Ok(final_document)
 }
@@ -225,7 +208,6 @@ async fn create_mock_attestation_document(
 ) -> Value {
     let mut pcrs = BTreeMap::new();
     for i in 0..3 {
-        trace!("Generating random bytes for PCR {}", i);
         let random_bytes = generate_random::<48>();
         pcrs.insert(
             Value::Integer(i.into()),
@@ -233,19 +215,15 @@ async fn create_mock_attestation_document(
         );
     }
 
-    trace!("Generating module_id");
     let module_id = format!("i-{}", hex::encode(generate_random::<8>()));
 
     // Create a mock certificate
-    trace!("Creating mock certificate");
     let mock_cert = create_mock_certificate(data.clone()).await;
-    trace!("Creating cabundle");
     let cabundle = vec![
         create_mock_certificate(data.clone()).await,
         create_mock_certificate(data.clone()).await,
     ];
 
-    trace!("Building attestation document");
     let mut document = BTreeMap::new();
     document.insert(Value::Text("module_id".into()), Value::Text(module_id));
     document.insert(Value::Text("digest".into()), Value::Text("SHA384".into()));
@@ -281,11 +259,9 @@ async fn create_mock_attestation_document(
 }
 
 async fn create_mock_certificate(_data: Arc<AppState>) -> Vec<u8> {
-    trace!("Generating random bytes");
     let random_8_bytes = generate_random::<8>();
     let random_32_bytes = generate_random::<32>();
 
-    trace!("Constructing DER");
     let result = construct_der(|writer| {
         writer.write_sequence(|writer| {
             // TBSCertificate
@@ -428,8 +404,6 @@ async fn key_exchange(
     State(data): State<Arc<AppState>>,
     Json(payload): Json<KeyExchangeRequest>,
 ) -> Result<Json<KeyExchangeResponse>, ApiError> {
-    trace!("Starting key exchange");
-
     let client_public_key_bytes = general_purpose::STANDARD
         .decode(&payload.client_public_key)
         .map_err(|_| ApiError::BadRequest)?;
