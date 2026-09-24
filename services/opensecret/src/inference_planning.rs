@@ -347,12 +347,12 @@ mod tests {
                 remembered_provider: None,
             },
         )
-        .expect("GLM 5.3 Tinfoil plan");
+        .expect("GLM 5.3 Continuum plan");
 
         assert_eq!(intent.requested_model_id, AUTO_POWERFUL_MODEL_ID);
         assert_eq!(intent.public_model_id, GLM_5_3_MODEL_ID);
-        assert_eq!(plan.selected.provider, ProviderId::Tinfoil);
-        assert_eq!(plan.selected.provider_model_id, GLM_5_3_MODEL_ID);
+        assert_eq!(plan.selected.provider, ProviderId::Continuum);
+        assert_eq!(plan.selected.provider_model_id, "glm-5.3");
         assert_eq!(plan.selected.bucket, Some(73));
         assert_eq!(
             plan.selected.selection_source,
@@ -452,51 +452,53 @@ mod tests {
     }
 
     #[test]
-    fn flash_split_sends_thirty_percent_of_accounts_to_continuum_on_every_surface() {
+    fn glm_and_flash_use_their_own_account_splits_on_every_surface() {
         use crate::inference::{InferenceSurface, WorkloadClass};
-        for (surface, workload) in [
-            (InferenceSurface::Responses, WorkloadClass::Interactive),
-            (
-                InferenceSurface::ChatCompletions,
-                WorkloadClass::Interactive,
-            ),
-            (InferenceSurface::Internal, WorkloadClass::Interactive),
-            (InferenceSurface::Internal, WorkloadClass::Background),
-        ] {
-            let mut continuum_count = 0;
-            for bucket in 0..100u8 {
-                let intent = InferenceIntent::new(
-                    Uuid::from_u128(u128::from(bucket)),
-                    GLM_5_3_FLASH_MODEL_ID,
-                    GLM_5_3_FLASH_MODEL_ID,
-                    ModelPlan::Paid,
-                    surface,
-                    workload,
-                );
-                let plan = plan_completion_route(
-                    &PROVIDER_REGISTRY,
-                    RoutePlanningInput {
-                        intent: &intent,
-                        configured_providers: ConfiguredProviders::all(),
-                        remembered_provider: None,
-                    },
-                )
-                .expect("Flash plan");
-                let expected = if bucket < 30 {
-                    continuum_count += 1;
-                    ProviderId::Continuum
-                } else {
-                    ProviderId::Tinfoil
-                };
-                assert_eq!(
-                    plan.selected.provider, expected,
-                    "bucket {bucket}, {surface:?}"
-                );
-                assert_eq!(plan.selected.bucket, Some(bucket));
-                assert_eq!(plan.decision, PlanDecision::StaticBucket);
-                assert_eq!(plan.selected.public_model_id, GLM_5_3_FLASH_MODEL_ID);
+        for (model, continuum_percent) in [(GLM_5_3_MODEL_ID, 75), (GLM_5_3_FLASH_MODEL_ID, 30)] {
+            for (surface, workload) in [
+                (InferenceSurface::Responses, WorkloadClass::Interactive),
+                (
+                    InferenceSurface::ChatCompletions,
+                    WorkloadClass::Interactive,
+                ),
+                (InferenceSurface::Internal, WorkloadClass::Interactive),
+                (InferenceSurface::Internal, WorkloadClass::Background),
+            ] {
+                let mut continuum_count = 0;
+                for bucket in 0..100u8 {
+                    let intent = InferenceIntent::new(
+                        Uuid::from_u128(u128::from(bucket)),
+                        model,
+                        model,
+                        ModelPlan::Paid,
+                        surface,
+                        workload,
+                    );
+                    let plan = plan_completion_route(
+                        &PROVIDER_REGISTRY,
+                        RoutePlanningInput {
+                            intent: &intent,
+                            configured_providers: ConfiguredProviders::all(),
+                            remembered_provider: None,
+                        },
+                    )
+                    .expect("weighted GLM or Flash plan");
+                    let expected = if bucket < continuum_percent {
+                        continuum_count += 1;
+                        ProviderId::Continuum
+                    } else {
+                        ProviderId::Tinfoil
+                    };
+                    assert_eq!(
+                        plan.selected.provider, expected,
+                        "{model}, bucket {bucket}, {surface:?}"
+                    );
+                    assert_eq!(plan.selected.bucket, Some(bucket));
+                    assert_eq!(plan.decision, PlanDecision::StaticBucket);
+                    assert_eq!(plan.selected.public_model_id, model);
+                }
+                assert_eq!(continuum_count, continuum_percent);
             }
-            assert_eq!(continuum_count, 30);
         }
     }
 
@@ -536,8 +538,9 @@ mod tests {
 
     #[test]
     fn remembered_provider_beats_the_bucket_only_when_eligible_and_different() {
-        let intent = intent(GLM_5_3_MODEL_ID, GLM_5_3_MODEL_ID);
-        // Bucket 73 lands on Tinfoil by weight.
+        let mut intent = intent(GLM_5_3_MODEL_ID, GLM_5_3_MODEL_ID);
+        intent.account_uuid = Uuid::from_u128(75);
+        // Bucket 75 lands on Tinfoil by weight.
         let weighted = plan_completion_route(
             &PROVIDER_REGISTRY,
             RoutePlanningInput {

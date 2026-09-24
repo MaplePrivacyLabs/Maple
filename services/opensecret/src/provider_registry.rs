@@ -10,7 +10,7 @@ use crate::model_config::{
     QUICK_MODEL_ID,
 };
 
-pub(crate) const SHADOW_ROUTING_POLICY_VERSION: &str = "routing-v2-weighted-v4";
+pub(crate) const SHADOW_ROUTING_POLICY_VERSION: &str = "routing-v2-weighted-v5";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) enum ProviderId {
@@ -149,13 +149,15 @@ const KIMI_K3_ROUTES: &[ModelRouteSpec] = &[ModelRouteSpec {
     enabled: true,
 }];
 
+// Combined with the provider weights, 30 * 700 : 70 * 100 allocates healthy
+// GLM 5.3 account buckets 75% to Continuum and 25% to Tinfoil.
 const GLM_5_3_ROUTES: &[ModelRouteSpec] = &[
     ModelRouteSpec {
         provider: ProviderId::Continuum,
         provider_model_id: "glm-5.3",
         response_model_id: GLM_5_3_MODEL_ID,
         rate_limit_scope: RateLimitScope::ProviderAccount,
-        weight: 100,
+        weight: 700,
         enabled: true,
     },
     ModelRouteSpec {
