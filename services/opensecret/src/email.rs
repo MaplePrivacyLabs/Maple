@@ -373,7 +373,7 @@ pub async fn send_hello_email(
     let scheduled_time = Utc::now() + Duration::minutes(5);
     let scheduled_at = scheduled_time.to_rfc3339();
 
-    let email = CreateEmailBaseOptions::new(from_email, to, subject)
+    let email = CreateEmailBaseOptions::new(sender(&project.name, &from_email), to, subject)
         .with_html(WELCOME_EMAIL_HTML)
         .with_scheduled_at(&scheduled_at);
 
@@ -383,6 +383,23 @@ pub async fn send_hello_email(
         EmailError::UnknownError
     });
     Ok(())
+}
+
+/// Pair the project name with its sending address so inboxes show "Maple"
+/// rather than the address's local part ("hello"). The project settings only
+/// store a bare address, so the display name is added here.
+fn sender(project_name: &str, address: &str) -> String {
+    // Keep only characters that are safe unquoted in a From display name.
+    let name: String = project_name
+        .chars()
+        .filter(|c| c.is_alphanumeric() || " !#$%&'*+-/=?^_`{|}~".contains(*c))
+        .collect();
+    let name = name.split_whitespace().collect::<Vec<_>>().join(" ");
+    if name.is_empty() {
+        address.to_string()
+    } else {
+        format!("{name} <{address}>")
+    }
 }
 
 const MAPLE_MARK_HTML: &str = r#"<img src="https://www.trymaple.ai/apple-touch-icon.png" alt="Maple" width="48" height="48" style="display:block;width:48px;height:48px;border-radius:12px;margin:0 0 16px;">"#;
@@ -517,7 +534,8 @@ pub async fn send_verification_email(
         team_name
     );
 
-    let email = CreateEmailBaseOptions::new(from_email, to, subject).with_html(&html_content);
+    let email = CreateEmailBaseOptions::new(sender(&project.name, &from_email), to, subject)
+        .with_html(&html_content);
 
     let email = with_account_reply_to(email, &project.name);
     let _email = resend.emails.send(email).await.map_err(|e| {
@@ -588,7 +606,8 @@ pub async fn send_password_reset_email(
         project.name, mark, project.name, project.name, alphanumeric_code, team_name
     );
 
-    let email = CreateEmailBaseOptions::new(from_email, to, subject).with_html(&html_content);
+    let email = CreateEmailBaseOptions::new(sender(&project.name, &from_email), to, subject)
+        .with_html(&html_content);
 
     let email = with_account_reply_to(email, &project.name);
     let _email = resend.emails.send(email).await.map_err(|e| {
@@ -661,7 +680,8 @@ pub async fn send_password_reset_confirmation_email(
         mark, project.name, support_email, support_email, team_name
     );
 
-    let email = CreateEmailBaseOptions::new(from_email, to, subject).with_html(&html_content);
+    let email = CreateEmailBaseOptions::new(sender(&project.name, &from_email), to, subject)
+        .with_html(&html_content);
 
     let email = with_account_reply_to(email, &project.name);
     let _email = resend.emails.send(email).await.map_err(|e| {
@@ -1020,7 +1040,8 @@ pub async fn send_account_deletion_email(
         mark, project.name, confirmation_code, team_name
     );
 
-    let email = CreateEmailBaseOptions::new(from_email, to, subject).with_html(&html_content);
+    let email = CreateEmailBaseOptions::new(sender(&project.name, &from_email), to, subject)
+        .with_html(&html_content);
 
     let email = with_account_reply_to(email, &project.name);
     let _email = resend.emails.send(email).await.map_err(|e| {
@@ -1088,7 +1109,8 @@ pub async fn send_account_deletion_confirmation_email(
         mark, project.name, support_email, support_email, team_name
     );
 
-    let email = CreateEmailBaseOptions::new(from_email, to, subject).with_html(&html_content);
+    let email = CreateEmailBaseOptions::new(sender(&project.name, &from_email), to, subject)
+        .with_html(&html_content);
 
     let email = with_account_reply_to(email, &project.name);
     let _email = resend.emails.send(email).await.map_err(|e| {
@@ -1100,7 +1122,9 @@ pub async fn send_account_deletion_confirmation_email(
 
 #[cfg(test)]
 mod tests {
-    use super::{account_mark_html, account_support_email, account_team_name, WELCOME_EMAIL_HTML};
+    use super::{
+        account_mark_html, account_support_email, account_team_name, sender, WELCOME_EMAIL_HTML,
+    };
 
     #[test]
     fn maple_account_mail_uses_the_maple_mark_and_signoff() {
@@ -1115,6 +1139,23 @@ mod tests {
         assert!(!WELCOME_EMAIL_HTML.contains("maple-app-icon-rounded"));
         assert!(!WELCOME_EMAIL_HTML.contains("#a855f7"));
         assert!(!WELCOME_EMAIL_HTML.contains("Maple AI"));
+    }
+
+    #[test]
+    fn project_mail_is_sent_under_the_project_name() {
+        assert_eq!(
+            sender("Maple", "hello@email.trymaple.ai"),
+            "Maple <hello@email.trymaple.ai>"
+        );
+        assert_eq!(
+            sender("Acme, Inc.", "hi@acme.test"),
+            "Acme Inc <hi@acme.test>"
+        );
+        assert_eq!(
+            sender("Evil\r\nBcc: x@y.z <a>", "hi@acme.test"),
+            "EvilBcc xyz a <hi@acme.test>"
+        );
+        assert_eq!(sender("<>", "hi@acme.test"), "hi@acme.test");
     }
 
     #[test]
