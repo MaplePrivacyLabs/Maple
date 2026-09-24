@@ -1038,7 +1038,7 @@ mod tests {
     fn test_prompt_budget_uses_model_context_window() {
         assert_eq!(prompt_token_budget("llama3-3-70b"), 131_072);
         assert_eq!(prompt_token_budget("glm-5-3"), 262_144);
-        assert_eq!(prompt_token_budget("glm-5-3-flash"), 262_144);
+        assert_eq!(prompt_token_budget("glm-5-3-flash"), 1_048_576);
         assert_eq!(prompt_token_budget("deepseek-v4-1-flash"), 1_048_576);
     }
 
@@ -2291,9 +2291,9 @@ mod tests {
     }
 
     #[test]
-    fn history_that_fits_deepseek_is_truncated_by_the_existing_contract_for_glm_flash() {
-        // A DeepSeek-sized conversation: 450k tokens fits DeepSeek's 1M window
-        // but not GLM Flash's 256k window. Token counts are supplied directly
+    fn history_uses_the_shared_flash_window_and_preserves_smaller_model_truncation() {
+        // A 450k-token conversation fits DeepSeek and GLM Flash's 1M windows
+        // but not GLM 5.3's configured 256k window. Token counts are supplied directly
         // so the test does not tokenize megabytes of text.
         let history = || {
             vec![
@@ -2306,7 +2306,9 @@ mod tests {
         };
         let deepseek_budget = prompt_token_budget("deepseek-v4-1-flash");
         let flash_budget = prompt_token_budget("glm-5-3-flash");
-        assert!(flash_budget < 450_000 && 450_000 < deepseek_budget);
+        let glm_budget = prompt_token_budget("glm-5-3");
+        assert_eq!(flash_budget, deepseek_budget);
+        assert!(glm_budget < 450_000 && 450_000 < flash_budget);
 
         let (deepseek_prompt, deepseek_tokens) =
             build_prompt_from_chat_messages(history(), "deepseek-v4-1-flash")
@@ -2318,27 +2320,23 @@ mod tests {
             .any(|message| message["content"]
                 == "[Previous messages truncated due to context limits]"));
 
-        // The fallback model receives the same lawful middle truncation that an
-        // explicit GLM Flash request would: first user turn, marker, newest
-        // tail that fits, and the latest user message always present.
         let (flash_prompt, flash_tokens) =
             build_prompt_from_chat_messages(history(), "glm-5-3-flash").expect("Flash prompt");
-        assert!(
-            flash_tokens <= flash_budget,
-            "{flash_tokens} > {flash_budget}"
-        );
-        assert_eq!(flash_prompt.first().unwrap()["content"], "first question");
+        assert_eq!(flash_prompt, deepseek_prompt);
+        assert_eq!(flash_tokens, deepseek_tokens);
+
+        // A smaller model keeps the existing middle truncation: first user turn, marker, newest
+        // tail that fits, and the latest user message always present.
+        let (glm_prompt, glm_tokens) =
+            build_prompt_from_chat_messages(history(), "glm-5-3").expect("GLM prompt");
+        assert!(glm_tokens <= glm_budget, "{glm_tokens} > {glm_budget}");
+        assert_eq!(glm_prompt.first().unwrap()["content"], "first question");
         assert_eq!(
-            flash_prompt[1]["content"],
+            glm_prompt[1]["content"],
             "[Previous messages truncated due to context limits]"
         );
-        assert_eq!(flash_prompt.last().unwrap()["content"], "latest question");
-        assert_eq!(flash_prompt.last().unwrap()["role"], ROLE_USER);
-        assert!(flash_prompt.len() < deepseek_prompt.len());
-
-        let (explicit_prompt, explicit_tokens) =
-            build_prompt_from_chat_messages(history(), "glm-5-3-flash").expect("explicit Flash");
-        assert_eq!(explicit_prompt, flash_prompt);
-        assert_eq!(explicit_tokens, flash_tokens);
+        assert_eq!(glm_prompt.last().unwrap()["content"], "latest question");
+        assert_eq!(glm_prompt.last().unwrap()["role"], ROLE_USER);
+        assert!(glm_prompt.len() < flash_prompt.len());
     }
 }

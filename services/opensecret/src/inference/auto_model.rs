@@ -610,13 +610,17 @@ mod tests {
     }
 
     #[test]
-    fn alternates_are_skipped_when_the_request_needs_more_context_than_they_offer() {
+    fn flash_fallback_accepts_the_shared_one_million_token_window() {
         let table = availability(&[
             (DEEPSEEK_V4_1_FLASH_MODEL_ID, unavailable(30)),
             (GLM_5_3_FLASH_MODEL_ID, available()),
         ]);
         let flash_window = model_context_window(GLM_5_3_FLASH_MODEL_ID);
-        assert!(flash_window < model_context_window(DEEPSEEK_V4_1_FLASH_MODEL_ID));
+        assert_eq!(flash_window, 1_048_576);
+        assert_eq!(
+            flash_window,
+            model_context_window(DEEPSEEK_V4_1_FLASH_MODEL_ID)
+        );
 
         let fits = select(
             ModelSelectionMode::AutoQuick,
@@ -628,95 +632,86 @@ mod tests {
             },
             &table,
         )
-        .expect("fits the smaller window");
+        .expect("fits the shared window");
         assert_eq!(fits.chosen_model_id, GLM_5_3_FLASH_MODEL_ID);
+        assert_eq!(fits.reason, AutoModelReason::HealthFallback);
+    }
 
-        let error = select(
-            ModelSelectionMode::AutoQuick,
-            ModelPlan::Paid,
-            None,
-            AutoModelRequirements {
-                prompt_tokens: PromptTokenEstimate::Known(flash_window),
-                ..requirements()
-            },
-            &table,
-        )
-        .expect_err("too large for the alternate");
-        assert_eq!(
-            error,
-            AutoModelError::NoEligibleCandidate {
-                selector: AUTO_QUICK_MODEL_ID,
-                preferred_model_id: DEEPSEEK_V4_1_FLASH_MODEL_ID,
-                retry_after: Some(Duration::from_secs(30)),
-                rejected: vec![
-                    (
-                        DEEPSEEK_V4_1_FLASH_MODEL_ID,
-                        AutoCandidateRejection::Unavailable {
-                            retry_after: Duration::from_secs(30)
-                        }
-                    ),
-                    (
-                        GLM_5_3_FLASH_MODEL_ID,
-                        AutoCandidateRejection::IncompatibleContext {
-                            required: flash_window,
-                            available: flash_window,
-                        }
-                    ),
-                ],
-            }
-        );
+    #[test]
+    fn smaller_alternate_rejects_a_prompt_at_its_context_boundary() {
+        // Synthetic pairing exercises the generic guard: the current Auto tiers
+        // have equal-size windows, but Kimi is smaller than a 1M preferred model.
+        let preferred_window = model_context_window(DEEPSEEK_V4_1_FLASH_MODEL_ID);
+        let candidate_window = model_context_window(KIMI_K3_MODEL_ID);
+        assert!(candidate_window < preferred_window);
+        for tokens in [candidate_window - 1, candidate_window, candidate_window + 1] {
+            let rejection = incompatible_alternate(
+                KIMI_K3_MODEL_ID,
+                preferred_window,
+                &AutoModelRequirements {
+                    prompt_tokens: PromptTokenEstimate::Known(tokens),
+                    ..requirements()
+                },
+                &OnceCell::new(),
+            );
+            let expected = (tokens >= candidate_window).then_some(
+                AutoCandidateRejection::IncompatibleContext {
+                    required: tokens,
+                    available: candidate_window,
+                },
+            );
+            assert_eq!(rejection, expected);
+        }
     }
 
     #[test]
     fn bounded_estimates_tokenize_only_when_the_cheap_bound_cannot_admit_a_candidate() {
-        let flash_window = model_context_window(GLM_5_3_FLASH_MODEL_ID);
+        // Synthetic smaller-window pairing keeps the lazy exact-count contract
+        // covered without changing the production Auto candidate lists.
+        let preferred_window = model_context_window(DEEPSEEK_V4_1_FLASH_MODEL_ID);
+        let candidate_window = model_context_window(KIMI_K3_MODEL_ID);
         let calls = std::cell::Cell::new(0usize);
         let exact = || {
             calls.set(calls.get() + 1);
-            flash_window - 1
+            candidate_window - 1
         };
-        let quick_table = availability(&[
-            (DEEPSEEK_V4_1_FLASH_MODEL_ID, unavailable(30)),
-            (GLM_5_3_FLASH_MODEL_ID, available()),
-        ]);
+        let exact_tokens = OnceCell::new();
 
         // A byte bound below the window admits the alternate without counting.
-        let decision = select(
-            ModelSelectionMode::AutoQuick,
-            ModelPlan::Paid,
-            None,
-            AutoModelRequirements {
+        let rejection = incompatible_alternate(
+            KIMI_K3_MODEL_ID,
+            preferred_window,
+            &AutoModelRequirements {
                 vision: false,
                 kimi_tool_history_compatible: true,
                 prompt_tokens: PromptTokenEstimate::Bounded {
-                    upper_bound: flash_window - 1,
+                    upper_bound: candidate_window - 1,
                     exact: &exact,
                 },
             },
-            &quick_table,
-        )
-        .expect("admitted by bound");
-        assert_eq!(decision.chosen_model_id, GLM_5_3_FLASH_MODEL_ID);
+            &exact_tokens,
+        );
+        assert_eq!(rejection, None);
         assert_eq!(calls.get(), 0);
 
-        // A bound at or above the window requires the exact count, once.
-        let decision = select(
-            ModelSelectionMode::AutoQuick,
-            ModelPlan::Paid,
-            Some(GLM_5_3_FLASH_MODEL_ID),
-            AutoModelRequirements {
-                vision: false,
-                kimi_tool_history_compatible: true,
-                prompt_tokens: PromptTokenEstimate::Bounded {
-                    upper_bound: flash_window * 3,
-                    exact: &exact,
+        // Repeated checks above the window share a single exact count.
+        for _ in 0..2 {
+            let rejection = incompatible_alternate(
+                KIMI_K3_MODEL_ID,
+                preferred_window,
+                &AutoModelRequirements {
+                    vision: false,
+                    kimi_tool_history_compatible: true,
+                    prompt_tokens: PromptTokenEstimate::Bounded {
+                        upper_bound: candidate_window * 3,
+                        exact: &exact,
+                    },
                 },
-            },
-            &quick_table,
-        )
-        .expect("admitted by exact count");
-        assert_eq!(decision.chosen_model_id, GLM_5_3_FLASH_MODEL_ID);
-        assert_eq!(calls.get(), 1);
+                &exact_tokens,
+            );
+            assert_eq!(rejection, None);
+            assert_eq!(calls.get(), 1);
+        }
 
         // Kimi's window equals GLM 5.3's, so Powerful never counts tokens, and
         // an unavailable candidate is rejected before any compatibility work.
@@ -995,46 +990,40 @@ mod tests {
                 if retry_after == MIN_CAPACITY_COOLDOWN
         ));
 
-        // Paid Quick whose alternate cannot hold the request: the preferred
+        // Paid Powerful whose alternate rejects the tool history: the preferred
         // model's capacity result survives with both causes recorded.
         let paid = availability(&[
-            (DEEPSEEK_V4_1_FLASH_MODEL_ID, available()),
-            (GLM_5_3_FLASH_MODEL_ID, available()),
+            (GLM_5_3_MODEL_ID, available()),
+            (KIMI_K3_MODEL_ID, available()),
         ]);
-        let flash_window = model_context_window(GLM_5_3_FLASH_MODEL_ID);
-        let lost = ExcludedAutoCandidate::unavailable(
-            DEEPSEEK_V4_1_FLASH_MODEL_ID,
-            Some(Duration::from_secs(35)),
-        );
+        let lost =
+            ExcludedAutoCandidate::unavailable(GLM_5_3_MODEL_ID, Some(Duration::from_secs(35)));
         assert_eq!(
             select_excluding(
-                ModelSelectionMode::AutoQuick,
+                ModelSelectionMode::AutoPowerful,
                 ModelPlan::Paid,
                 None,
                 Some(&lost),
                 AutoModelRequirements {
-                    prompt_tokens: PromptTokenEstimate::Known(flash_window),
+                    kimi_tool_history_compatible: false,
                     ..requirements()
                 },
                 &paid,
             ),
             Err(AutoModelError::NoEligibleCandidate {
-                selector: AUTO_QUICK_MODEL_ID,
-                preferred_model_id: DEEPSEEK_V4_1_FLASH_MODEL_ID,
+                selector: AUTO_POWERFUL_MODEL_ID,
+                preferred_model_id: GLM_5_3_MODEL_ID,
                 retry_after: Some(Duration::from_secs(35)),
                 rejected: vec![
                     (
-                        DEEPSEEK_V4_1_FLASH_MODEL_ID,
+                        GLM_5_3_MODEL_ID,
                         AutoCandidateRejection::Unavailable {
                             retry_after: Duration::from_secs(35),
                         },
                     ),
                     (
-                        GLM_5_3_FLASH_MODEL_ID,
-                        AutoCandidateRejection::IncompatibleContext {
-                            required: flash_window,
-                            available: flash_window,
-                        },
+                        KIMI_K3_MODEL_ID,
+                        AutoCandidateRejection::IncompatibleToolHistory,
                     ),
                 ],
             })
@@ -1042,7 +1031,7 @@ mod tests {
 
         // With a compatible alternate the second decision simply moves on.
         let moved = select_excluding(
-            ModelSelectionMode::AutoQuick,
+            ModelSelectionMode::AutoPowerful,
             ModelPlan::Paid,
             None,
             Some(&lost),
@@ -1050,12 +1039,12 @@ mod tests {
             &paid,
         )
         .expect("alternate takes the request");
-        assert_eq!(moved.chosen_model_id, GLM_5_3_FLASH_MODEL_ID);
+        assert_eq!(moved.chosen_model_id, KIMI_K3_MODEL_ID);
         assert_eq!(moved.reason, AutoModelReason::HealthFallback);
         assert_eq!(
             moved.rejected,
             vec![(
-                DEEPSEEK_V4_1_FLASH_MODEL_ID,
+                GLM_5_3_MODEL_ID,
                 AutoCandidateRejection::Unavailable {
                     retry_after: Duration::from_secs(35),
                 },

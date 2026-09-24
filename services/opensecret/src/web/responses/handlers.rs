@@ -1239,7 +1239,7 @@ mod tests {
 
     #[test]
     fn normalized_input_is_model_independent_and_the_budget_check_uses_the_final_model() {
-        use crate::model_config::{DEEPSEEK_V4_1_FLASH_MODEL_ID, GLM_5_3_FLASH_MODEL_ID};
+        use crate::model_config::{GLM_5_3_FLASH_MODEL_ID, GLM_5_3_MODEL_ID};
         use crate::web::responses::prompt_token_budget;
 
         let mut request = responses_request_for_model("auto:quick");
@@ -1270,17 +1270,22 @@ mod tests {
             MessageContent::Parts(ref parts) if parts.len() == 2
         ));
 
-        // A message that only DeepSeek's window can hold makes GLM Flash an
-        // incompatible alternate; the check is against each model's literal
-        // window and nothing smaller.
+        // Flash's larger window holds a message that GLM 5.3's configured
+        // window cannot. Each model still rejects its literal context boundary.
+        let glm_window = prompt_token_budget(GLM_5_3_MODEL_ID);
         let flash_window = prompt_token_budget(GLM_5_3_FLASH_MODEL_ID);
+        assert_eq!(flash_window, 1_048_576);
         assert!(ensure_prompt_fits_model(
             Uuid::nil(),
-            flash_window,
-            DEEPSEEK_V4_1_FLASH_MODEL_ID,
+            glm_window,
+            GLM_5_3_FLASH_MODEL_ID,
             "user message"
         )
         .is_ok());
+        assert!(matches!(
+            ensure_prompt_fits_model(Uuid::nil(), glm_window, GLM_5_3_MODEL_ID, "user message"),
+            Err(ApiError::MessageExceedsContextLimit)
+        ));
         assert!(matches!(
             ensure_prompt_fits_model(
                 Uuid::nil(),

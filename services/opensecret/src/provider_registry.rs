@@ -10,7 +10,7 @@ use crate::model_config::{
     QUICK_MODEL_ID,
 };
 
-pub(crate) const SHADOW_ROUTING_POLICY_VERSION: &str = "routing-v2-weighted-v4";
+pub(crate) const SHADOW_ROUTING_POLICY_VERSION: &str = "routing-v2-weighted-v5";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) enum ProviderId {
@@ -149,13 +149,15 @@ const KIMI_K3_ROUTES: &[ModelRouteSpec] = &[ModelRouteSpec {
     enabled: true,
 }];
 
+// Combined with the provider weights, 30 * 700 : 70 * 100 allocates healthy
+// GLM 5.3 account buckets 75% to Continuum and 25% to Tinfoil.
 const GLM_5_3_ROUTES: &[ModelRouteSpec] = &[
     ModelRouteSpec {
         provider: ProviderId::Continuum,
         provider_model_id: "glm-5.3",
         response_model_id: GLM_5_3_MODEL_ID,
         rate_limit_scope: RateLimitScope::ProviderAccount,
-        weight: 100,
+        weight: 700,
         enabled: true,
     },
     ModelRouteSpec {
@@ -168,14 +170,14 @@ const GLM_5_3_ROUTES: &[ModelRouteSpec] = &[
     },
 ];
 
-// Equal model-route weights retain the provider split: 70% Tinfoil / 30% Continuum.
+// Use the same healthy 75% Continuum / 25% Tinfoil allocation as GLM 5.3.
 const GLM_5_3_FLASH_ROUTES: &[ModelRouteSpec] = &[
     ModelRouteSpec {
         provider: ProviderId::Continuum,
         provider_model_id: "glm-5.3-flash",
         response_model_id: GLM_5_3_FLASH_MODEL_ID,
         rate_limit_scope: RateLimitScope::ProviderAccount,
-        weight: 100,
+        weight: 700,
         enabled: true,
     },
     ModelRouteSpec {
@@ -439,7 +441,7 @@ mod tests {
     }
 
     #[test]
-    fn glm_flash_retains_a_thirty_percent_continuum_split() {
+    fn glm_flash_uses_a_seventy_five_percent_continuum_split() {
         let flash = PROVIDER_REGISTRY
             .completion_model(GLM_5_3_FLASH_MODEL_ID)
             .expect("Flash model");
@@ -449,7 +451,7 @@ mod tests {
                 .iter()
                 .map(|route| (route.provider, route.weight))
                 .collect::<Vec<_>>(),
-            vec![(ProviderId::Continuum, 100), (ProviderId::Tinfoil, 100)]
+            vec![(ProviderId::Continuum, 700), (ProviderId::Tinfoil, 100)]
         );
 
         let effective_weight = |provider| {
@@ -463,6 +465,6 @@ mod tests {
         };
         let tinfoil = effective_weight(ProviderId::Tinfoil);
         let continuum = effective_weight(ProviderId::Continuum);
-        assert_eq!(continuum * 100 / (tinfoil + continuum), 30);
+        assert_eq!(continuum * 100 / (tinfoil + continuum), 75);
     }
 }

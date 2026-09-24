@@ -1099,7 +1099,7 @@ mod tests {
                     }
                 );
 
-                let (expected_v2, upstream_model) = if bucket < 30 {
+                let (expected_v2, upstream_model) = if bucket < 75 {
                     continuum_count += 1;
                     (ProviderId::Continuum, "glm-5.3")
                 } else {
@@ -1113,7 +1113,7 @@ mod tests {
                 assert_eq!(v2.bucket, Some(bucket));
                 assert_eq!(v2.selection_source, RouteSelectionSource::StaticSplit);
             }
-            assert_eq!((tinfoil_count, continuum_count), (70, 30));
+            assert_eq!((tinfoil_count, continuum_count), (25, 75));
         }
     }
 
@@ -1384,7 +1384,7 @@ mod tests {
 
         for proxy_router in [&both, &tinfoil_only] {
             for model in PROVIDER_REGISTRY.completion_models() {
-                for bucket in [0, 29, 30, 69, 70, 99] {
+                for bucket in [0, 29, 30, 69, 70, 74, 75, 99] {
                     let mut intent = intent(model.public_model_id, model.public_model_id);
                     intent.account_uuid = uuid_for_bucket(bucket);
                     let active = router.select_active_completion_route(proxy_router, &intent);
@@ -1447,7 +1447,7 @@ mod tests {
     fn legacy_selector_and_baseline_planner_remain_health_independent() {
         let router = ProviderRouter::default();
         let proxy_router = proxy_router_with_both_providers();
-        let account_uuid = uuid_for_bucket(73);
+        let account_uuid = uuid_for_bucket(75);
         let provider_preference = Some(ProviderPreference::feature_flag(ProviderId::Tinfoil));
         let intent = InferenceIntent::new(
             account_uuid,
@@ -1522,7 +1522,7 @@ mod tests {
                 GLM_5_3_MODEL_ID,
             ),
             (
-                73,
+                75,
                 ProviderId::Tinfoil,
                 GLM_5_3_MODEL_ID,
                 ProviderId::Continuum,
@@ -1734,7 +1734,7 @@ mod tests {
             .select_active_completion_route(
                 &proxy_router,
                 &InferenceIntent::new(
-                    uuid_for_bucket(50),
+                    uuid_for_bucket(75),
                     GLM_5_3_FLASH_MODEL_ID,
                     GLM_5_3_FLASH_MODEL_ID,
                     ModelPlan::Paid,
@@ -1759,7 +1759,7 @@ mod tests {
                 ProviderId::Tinfoil,
             ),
             (
-                73,
+                75,
                 ProviderId::Tinfoil,
                 GLM_5_3_FLASH_MODEL_ID,
                 ProviderId::Continuum,
@@ -1974,7 +1974,7 @@ mod tests {
                     (InferenceRoutingMode::Legacy, expected_legacy),
                     (
                         InferenceRoutingMode::V2,
-                        if bucket < 30 {
+                        if bucket < 75 {
                             ProviderId::Continuum
                         } else {
                             ProviderId::Tinfoil

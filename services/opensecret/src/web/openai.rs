@@ -7790,8 +7790,8 @@ mod tests {
             ProviderClient::for_test(tinfoil_url.clone()).expect("test provider client");
         let proxy_router = ProxyRouter::new(continuum_url, None, tinfoil_url);
         let provider_router = ProviderRouter::default();
-        // Bucket 50 keeps GLM Flash on Tinfoil so one mock observes every send.
-        let account = Uuid::from_u128(50);
+        // Bucket 75 keeps GLM Flash on Tinfoil so one mock observes every send.
+        let account = Uuid::from_u128(75);
         let surface = InferenceSurface::ChatCompletions;
         let plan = ModelPlan::Paid;
         let sent_to = |model: &str| {
@@ -8295,7 +8295,7 @@ mod tests {
     #[test]
     fn reselection_without_an_alternate_keeps_the_capacity_contract_and_zero_sends() {
         use crate::model_config::{
-            AUTO_QUICK_MODEL_ID, DEEPSEEK_V4_1_FLASH_MODEL_ID, GLM_5_3_FLASH_MODEL_ID,
+            AUTO_POWERFUL_MODEL_ID, AUTO_QUICK_MODEL_ID, GLM_5_3_MODEL_ID, KIMI_K3_MODEL_ID,
             QUICK_MODEL_ID,
         };
         let provider_router = ProviderRouter::default();
@@ -8354,29 +8354,26 @@ mod tests {
             );
             assert_eq!(response.headers()[header::RETRY_AFTER], "20");
 
-            // Paid Quick whose only alternate cannot hold the request keeps the
+            // Paid Powerful whose only alternate rejects the tool history keeps the
             // preferred model's capacity result and hint.
-            let flash_window = crate::model_config::model_context_window(GLM_5_3_FLASH_MODEL_ID);
-            let lost = ExcludedAutoCandidate::unavailable(
-                DEEPSEEK_V4_1_FLASH_MODEL_ID,
-                Some(Duration::from_secs(35)),
-            );
+            let lost =
+                ExcludedAutoCandidate::unavailable(GLM_5_3_MODEL_ID, Some(Duration::from_secs(35)));
             let error = resolve_inference_model(
                 &provider_router,
                 &proxy_router,
                 ModelResolutionRequest {
                     account_uuid: account,
                     surface,
-                    requested_model_id: AUTO_QUICK_MODEL_ID,
-                    alias_target: DEEPSEEK_V4_1_FLASH_MODEL_ID,
+                    requested_model_id: AUTO_POWERFUL_MODEL_ID,
+                    alias_target: GLM_5_3_MODEL_ID,
                     model_plan: ModelPlan::Paid,
                     routing_mode: InferenceRoutingMode::V2,
                     excluded: Some(&lost),
                 },
                 || AutoModelRequirements {
                     vision: false,
-                    kimi_tool_history_compatible: true,
-                    prompt_tokens: PromptTokenEstimate::Known(flash_window),
+                    kimi_tool_history_compatible: false,
+                    prompt_tokens: PromptTokenEstimate::Known(0),
                 },
             )
             .expect_err("alternate is incompatible");
@@ -8395,13 +8392,13 @@ mod tests {
                 &proxy_router,
                 account,
                 surface,
-                AUTO_QUICK_MODEL_ID,
+                AUTO_POWERFUL_MODEL_ID,
                 ModelPlan::Paid,
                 InferenceRoutingMode::V2,
                 Some(&lost),
             )
             .expect("alternate takes the request");
-            assert_eq!(moved.public_model_id(), GLM_5_3_FLASH_MODEL_ID);
+            assert_eq!(moved.public_model_id(), KIMI_K3_MODEL_ID);
         }
         // The decision stage has no provider client and records nothing.
         assert_eq!(provider_router.sticky_routes().len(), 0);
