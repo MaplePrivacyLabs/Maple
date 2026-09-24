@@ -963,7 +963,7 @@ fi
 
 # Start the opensecret
 log "Starting opensecret..."
-RUST_LOG_STYLE=never RUST_LOG="${RUST_LOG:-debug,hyper=info,aws_smithy_runtime=info,aws_smithy_runtime_api=info,aws_sdk_sqs=info,aws_config=info}" APP_MODE="$APP_MODE" OPENAI_API_BASE="$OPENAI_API_BASE" TINFOIL_API_KEY="$tinfoil_proxy_api_key" /app/opensecret &
+RUST_LOG_STYLE=never RUST_LOG="${RUST_LOG:-info,opensecret=debug}" APP_MODE="$APP_MODE" OPENAI_API_BASE="$OPENAI_API_BASE" TINFOIL_API_KEY="$tinfoil_proxy_api_key" /app/opensecret &
 
 # Wait for the opensecret to start
 log "Waiting for opensecret to start"
