@@ -55,6 +55,10 @@ pinned consumers define the contract.
   transport, and route orchestration in their owning layers.
 - Treat current-turn reasoning and replay of prior reasoning as separate model
   capabilities. Prove provider-specific behavior before encoding it as policy.
+- Take each catalog model's Responses sampling and reasoning-history rule from
+  its creator's model card, generation config, or usage guide, and cite the
+  source beside the entry in `src/model_config.rs`. Do not invent shared
+  defaults. Chat Completions forwards the caller's own sampling.
 
 When billing or feature flags affect the path, treat them only as configured
 external HTTP APIs. Keep their credentials backend-only and test the changed
