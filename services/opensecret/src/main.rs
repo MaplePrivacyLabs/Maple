@@ -65,7 +65,6 @@ use chacha20poly1305::aead::Aead;
 use chacha20poly1305::KeyInit;
 use chacha20poly1305::{ChaCha20Poly1305, Key, Nonce};
 use diesel::Connection;
-use kv::{KVPair, StoreError, StoreResult};
 use password_auth::{generate_hash, verify_password, VerifyError};
 use rand_core::{CryptoRng, RngCore};
 use secp256k1::SecretKey;
@@ -106,7 +105,6 @@ mod inference;
 mod inference_planning;
 mod jwt;
 mod kagi;
-mod kv;
 mod lease_aware_cache;
 mod log_redaction;
 mod message_signing;
@@ -2163,66 +2161,6 @@ impl AppState {
         }
 
         result
-    }
-
-    async fn get(
-        &self,
-        user: &User,
-        auth_context: &AuthContext,
-        key: String,
-    ) -> StoreResult<Option<String>> {
-        let user_key = self
-            .get_user_key(user, auth_context, None, None)
-            .await
-            .map_err(|_| StoreError::Unauthorized)?;
-        kv::get(self.db.get_pool(), user.uuid, &key, &user_key)
-    }
-
-    async fn put(
-        &self,
-        user: &User,
-        auth_context: &AuthContext,
-        key: String,
-        value: String,
-    ) -> StoreResult<()> {
-        let user_key = self
-            .get_user_key(user, auth_context, None, None)
-            .await
-            .map_err(|_| StoreError::Unauthorized)?;
-        kv::put(
-            self.db.get_pool(),
-            user.uuid,
-            key,
-            value,
-            &user_key,
-            self.aws_credential_manager.clone(),
-        )
-        .await
-    }
-
-    async fn delete(
-        &self,
-        user: &User,
-        auth_context: &AuthContext,
-        key: String,
-    ) -> StoreResult<()> {
-        let user_key = self
-            .get_user_key(user, auth_context, None, None)
-            .await
-            .map_err(|_| StoreError::Unauthorized)?;
-        kv::delete(self.db.get_pool(), user.uuid, &key, &user_key)
-    }
-
-    async fn delete_all(&self, user_id: Uuid) -> StoreResult<()> {
-        kv::delete_all(self.db.get_pool(), user_id)
-    }
-
-    async fn list(&self, user: &User, auth_context: &AuthContext) -> StoreResult<Vec<KVPair>> {
-        let user_key = self
-            .get_user_key(user, auth_context, None, None)
-            .await
-            .map_err(|_| StoreError::Unauthorized)?;
-        kv::list(self.db.get_pool(), user.uuid, &user_key)
     }
 
     pub async fn get_aws_credentials(&self) -> Option<AwsCredentials> {

@@ -129,70 +129,6 @@ export type OpenSecretContextType = {
    */
   signOut: () => Promise<void>;
 
-  /**
-   * Retrieves a value from key-value storage
-   * @param key - The unique identifier for the stored value
-   * @returns A promise resolving to the stored value
-   * @throws {Error} If the key cannot be retrieved
-   *
-   *
-   * - Calls the authenticated API endpoint to fetch a value
-   * - Returns undefined if the key does not exist
-   * - Requires an active authentication session
-   * - Logs any retrieval errors
-   */
-  get: typeof api.fetchGet;
-
-  /**
-   * Stores a key-value pair in the user's storage
-   * @param key - The unique identifier for the value
-   * @param value - The string value to be stored
-   * @returns A promise resolving to the server's response
-   * @throws {Error} If the value cannot be stored
-   *
-   *
-   * - Calls the authenticated API endpoint to store a value
-   * - Requires an active authentication session
-   * - Overwrites any existing value for the given key
-   * - Logs any storage errors
-   */
-  put: typeof api.fetchPut;
-
-  /**
-   * Retrieves all key-value pairs stored by the user
-   * @returns A promise resolving to an array of stored items
-   * @throws {Error} If the list cannot be retrieved
-   *
-   *
-   * - Calls the authenticated API endpoint to fetch all stored items
-   * - Returns an array of key-value pairs with metadata
-   * - Requires an active authentication session
-   * - Each item includes key, value, creation, and update timestamps
-   * - Logs any listing errors
-   */
-  list: typeof api.fetchList;
-
-  /**
-   * Deletes a key-value pair from the user's storage
-   * @param key - The unique identifier for the value to be deleted
-   * @returns A promise resolving when the deletion is complete
-   * @throws {Error} If the key cannot be deleted
-   *
-   *
-   * - Calls the authenticated API endpoint to remove a specific key
-   * - Requires an active authentication session
-   * - Throws an error if the deletion fails (including for non-existent keys)
-   * - Propagates any server-side errors directly
-   */
-  del: typeof api.fetchDelete;
-
-  /**
-   * Deletes all key-value pairs from the user's storage
-   * @returns A promise resolving when the deletion is complete
-   * @throws {Error} If the deletion fails
-   */
-  delAll: typeof api.fetchDeleteAllKV;
-
   verifyEmail: typeof api.verifyEmail;
   requestNewVerificationCode: typeof api.requestNewVerificationCode;
   requestNewVerificationEmail: typeof api.requestNewVerificationCode;
@@ -933,11 +869,6 @@ export const OpenSecretContext = createContext<OpenSecretContextType>({
     refresh_token: ""
   }),
   signOut: async () => {},
-  get: api.fetchGet,
-  put: api.fetchPut,
-  list: api.fetchList,
-  del: api.fetchDelete,
-  delAll: api.fetchDeleteAllKV,
   verifyEmail: api.verifyEmail,
   requestNewVerificationCode: api.requestNewVerificationCode,
   requestNewVerificationEmail: api.requestNewVerificationCode,
@@ -1017,7 +948,7 @@ export const OpenSecretContext = createContext<OpenSecretContextType>({
 });
 
 /**
- * Provider component for OpenSecret authentication and key-value storage.
+ * Provider component for OpenSecret authentication and API access.
  *
  * @param props - Configuration properties for the OpenSecret provider
  * @param props.children - React child components to be wrapped by the provider
@@ -1029,7 +960,6 @@ export const OpenSecretContext = createContext<OpenSecretContextType>({
  * This provider manages:
  * - User authentication state
  * - Authentication methods (sign in, sign up, sign out)
- * - Key-value storage operations
  * - Project/tenant identification via clientId
  *
  * @example
@@ -1355,11 +1285,6 @@ export function OpenSecretProvider({
     signOut,
     signUp,
     signUpGuest,
-    get: api.fetchGet,
-    put: api.fetchPut,
-    list: api.fetchList,
-    del: (key) => api.fetchDelete(key, authenticatedUserId),
-    delAll: () => api.fetchDeleteAllKV(authenticatedUserId),
     refetchUser: fetchUser,
     verifyEmail: api.verifyEmail,
     requestNewVerificationCode: api.requestNewVerificationCode,

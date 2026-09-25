@@ -59,33 +59,8 @@ async fn main() -> Result<()> {
     println!("   Created: {}", user.user.created_at);
     println!();
 
-    // Step 4: Key-Value Storage
-    println!("4️⃣  Key-Value Storage");
-
-    // Store a value
-    let key = "user_preference";
-    let value = r#"{"theme": "dark", "language": "en"}"#;
-    client.kv_put(key, value.to_string()).await?;
-    println!("   ✓ Stored: {} = {}", key, value);
-
-    // Retrieve the value
-    let retrieved = client.kv_get(key).await?;
-    println!("   ✓ Retrieved: {}", retrieved);
-
-    // List all keys
-    let keys = client.kv_list().await?;
-    println!("   ✓ Total keys: {}", keys.len());
-    for item in keys.iter().take(3) {
-        println!("     - {}: {}", item.key, item.value);
-    }
-
-    // Clean up
-    client.kv_delete(key).await?;
-    println!("   ✓ Deleted key: {}", key);
-    println!();
-
-    // Step 5: Private Key Generation
-    println!("5️⃣  Private Key Generation");
+    // Step 4: Private Key Generation
+    println!("4️⃣  Private Key Generation");
 
     // Generate default mnemonic (12 words)
     let private_key = client.get_private_key(None).await?;
@@ -118,8 +93,8 @@ async fn main() -> Result<()> {
     );
     println!();
 
-    // Step 6: Message Signing
-    println!("6️⃣  Digital Signatures");
+    // Step 5: Message Signing
+    println!("5️⃣  Digital Signatures");
     let message = "Sign this important message";
 
     // Sign with Schnorr (Bitcoin Taproot compatible)
@@ -157,8 +132,8 @@ async fn main() -> Result<()> {
     );
     println!();
 
-    // Step 7: Public Keys
-    println!("7️⃣  Public Keys");
+    // Step 6: Public Keys
+    println!("6️⃣  Public Keys");
 
     // Get public keys for different algorithms
     let schnorr_pub = client
@@ -186,8 +161,8 @@ async fn main() -> Result<()> {
     );
     println!();
 
-    // Step 8: Data Encryption
-    println!("8️⃣  End-to-End Encryption");
+    // Step 7: Data Encryption
+    println!("7️⃣  End-to-End Encryption");
     let secret_data = "This is highly confidential information";
 
     // Encrypt data
@@ -215,8 +190,8 @@ async fn main() -> Result<()> {
     );
     println!();
 
-    // Step 9: Third-Party Tokens
-    println!("9️⃣  Third-Party Token Generation");
+    // Step 8: Third-Party Tokens
+    println!("8️⃣  Third-Party Token Generation");
 
     // Generate token without audience
     let token = client.generate_third_party_token(None).await?;
@@ -234,8 +209,8 @@ async fn main() -> Result<()> {
     );
     println!();
 
-    // Step 10: Session Management
-    println!("🔟 Session Management");
+    // Step 9: Session Management
+    println!("9️⃣  Session Management");
 
     // Refresh access token
     println!("   Refreshing tokens...");

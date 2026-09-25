@@ -98,13 +98,6 @@ function installCredentialUpdate(
   );
 }
 
-export type KVListItem = {
-  key: string;
-  value: string;
-  created_at: number;
-  updated_at: number;
-};
-
 export async function fetchLogin(
   email: string,
   password: string,
@@ -213,59 +206,6 @@ export async function fetchUserWithTransportV2Authority(
     undefined,
     "Failed to fetch user",
     { apiUrl: targetApiUrl, pcrConfig, kind: "user", authority }
-  );
-}
-
-export async function fetchPut(key: string, value: string): Promise<string> {
-  return authenticatedApiCall<string, string>(
-    `${apiUrl}/protected/kv/${key}`,
-    "PUT",
-    value,
-    "Failed to put key-value pair"
-  );
-}
-
-export async function fetchDelete(key: string, expectedUserId?: string): Promise<void> {
-  return authenticatedApiCall<void, void>(
-    `${apiUrl}/protected/kv/${key}`,
-    "DELETE",
-    undefined,
-    "Failed to delete key-value pair",
-    expectedUserId
-  );
-}
-
-export async function fetchDeleteAllKV(expectedUserId?: string): Promise<void> {
-  return authenticatedApiCall<void, void>(
-    `${apiUrl}/protected/kv`,
-    "DELETE",
-    undefined,
-    "Failed to delete all key-value pairs",
-    expectedUserId
-  );
-}
-
-export async function fetchGet(key: string): Promise<string | undefined> {
-  try {
-    const data = await authenticatedApiCall<void, string>(
-      `${apiUrl}/protected/kv/${key}`,
-      "GET",
-      undefined,
-      "Failed to get key-value pair"
-    );
-    return data;
-  } catch (error) {
-    console.error(`Error fetching key "${key}":`, error);
-    return undefined;
-  }
-}
-
-export async function fetchList(): Promise<KVListItem[]> {
-  return authenticatedApiCall<void, KVListItem[]>(
-    `${apiUrl}/protected/kv`,
-    "GET",
-    undefined,
-    "Failed to list key-value pairs"
   );
 }
 

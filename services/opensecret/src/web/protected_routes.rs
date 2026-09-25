@@ -21,7 +21,7 @@ use axum::Extension;
 use axum::{
     extract::{Path, Query, State},
     response::Response,
-    routing::{delete, get, post, put},
+    routing::{delete, get, post},
     Router,
 };
 use base64::{engine::general_purpose, Engine as _};
@@ -442,30 +442,6 @@ pub fn router(app_state: Arc<AppState>) -> Router<()> {
             get(user_protected).layer(from_fn_with_state(app_state.clone(), decrypt_request::<()>)),
         )
         .route(
-            "/protected/kv/:key",
-            get(get_kv).layer(from_fn_with_state(app_state.clone(), decrypt_request::<()>)),
-        )
-        .route(
-            "/protected/kv/:key",
-            put(put_kv).layer(from_fn_with_state(
-                app_state.clone(),
-                decrypt_request::<String>,
-            )),
-        )
-        .route(
-            "/protected/kv/:key",
-            delete(delete_kv).layer(from_fn_with_state(app_state.clone(), decrypt_request::<()>)),
-        )
-        .route(
-            "/protected/kv",
-            get(list_kv).layer(from_fn_with_state(app_state.clone(), decrypt_request::<()>)),
-        )
-        .route(
-            "/protected/kv",
-            delete(delete_all_kv)
-                .layer(from_fn_with_state(app_state.clone(), decrypt_request::<()>)),
-        )
-        .route(
             "/protected/request_verification",
             post(request_new_verification_code)
                 .layer(from_fn_with_state(app_state.clone(), decrypt_request::<()>)),
@@ -618,95 +594,6 @@ pub async fn user_protected(
 
     let response = ProtectedUserData { user: app_user };
     encrypt_response(&data, &session_id, &response).await
-}
-
-pub async fn get_kv(
-    State(data): State<Arc<AppState>>,
-    Extension(user): Extension<User>,
-    Extension(auth_context): Extension<AuthContext>,
-    Extension(session_id): Extension<TransportSession>,
-    Path(key): Path<String>,
-) -> Result<Response, ApiError> {
-    let value = match data.get(&user, &auth_context, key).await {
-        Ok(kv) => kv,
-        Err(e) => {
-            tracing::error!("Error getting key-value pair: {:?}", e);
-            return Err(ApiError::InternalServerError);
-        }
-    };
-    encrypt_response(&data, &session_id, &value).await
-}
-
-pub async fn put_kv(
-    State(data): State<Arc<AppState>>,
-    Extension(user): Extension<User>,
-    Extension(auth_context): Extension<AuthContext>,
-    Extension(session_id): Extension<TransportSession>,
-    Path(key): Path<String>,
-    Decrypted(value): Decrypted<String>,
-) -> Result<Response, ApiError> {
-    match data.put(&user, &auth_context, key, value.clone()).await {
-        Ok(kv) => kv,
-        Err(e) => {
-            tracing::error!("Error putting key-value pair: {:?}", e);
-            return Err(ApiError::InternalServerError);
-        }
-    };
-    encrypt_response(&data, &session_id, &value).await
-}
-
-pub async fn delete_kv(
-    State(data): State<Arc<AppState>>,
-    Extension(user): Extension<User>,
-    Extension(auth_context): Extension<AuthContext>,
-    Extension(session_id): Extension<TransportSession>,
-    Path(key): Path<String>,
-) -> Result<Response, ApiError> {
-    match data.delete(&user, &auth_context, key).await {
-        Ok(_) => {
-            let response = json!({ "message": "Resource deleted successfully" });
-            encrypt_response(&data, &session_id, &response).await
-        }
-        Err(e) => {
-            tracing::error!("Error deleting key-value pair: {:?}", e);
-            Err(ApiError::InternalServerError)
-        }
-    }
-}
-
-pub async fn delete_all_kv(
-    State(data): State<Arc<AppState>>,
-    Extension(user): Extension<User>,
-    Extension(session_id): Extension<TransportSession>,
-) -> Result<Response, ApiError> {
-    match data.delete_all(user.uuid).await {
-        Ok(_) => {
-            let response = json!({
-                "message": "All key-value pairs deleted successfully"
-            });
-            encrypt_response(&data, &session_id, &response).await
-        }
-        Err(e) => {
-            tracing::error!("Error deleting all key-value pairs: {:?}", e);
-            Err(ApiError::InternalServerError)
-        }
-    }
-}
-
-pub async fn list_kv(
-    State(data): State<Arc<AppState>>,
-    Extension(user): Extension<User>,
-    Extension(auth_context): Extension<AuthContext>,
-    Extension(session_id): Extension<TransportSession>,
-) -> Result<Response, ApiError> {
-    let kvs = match data.list(&user, &auth_context).await {
-        Ok(kvs) => kvs,
-        Err(e) => {
-            tracing::error!("Error listing key-value pairs: {:?}", e);
-            return Err(ApiError::InternalServerError);
-        }
-    };
-    encrypt_response(&data, &session_id, &kvs).await
 }
 
 pub async fn request_new_verification_code(

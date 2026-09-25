@@ -355,15 +355,6 @@ pub struct DeletedPushDeviceResponse {
     pub deleted: bool,
 }
 
-// Key-Value Storage Types
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct KVListItem {
-    pub key: String,
-    pub value: String,
-    pub created_at: i64, // Unix timestamp
-    pub updated_at: i64, // Unix timestamp
-}
-
 // Private Key Types
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct KeyOptions {

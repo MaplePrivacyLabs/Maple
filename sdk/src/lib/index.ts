@@ -1,6 +1,5 @@
 // Export types from api
 export type {
-  KVListItem,
   LoginResponse,
   UserResponse,
   GithubAuthResponse,
