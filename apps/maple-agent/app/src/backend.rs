@@ -1475,12 +1475,15 @@ impl AgentBackend {
             .into_iter()
             .map(|root| root.path)
             .collect();
-        // Same choice refresh_sessions makes: the newest unarchived task
-        // under the root that the runtime will start in.
+        // Same choice the screen's auto-select makes: the newest unarchived
+        // task under the root that the runtime will start in. An empty task
+        // is a draft an older build persisted; the screen's own new-task
+        // draft stands in for it.
         let latest_id = sessions
             .iter()
             .find(|session| {
                 session.state != AgentTaskState::Archived
+                    && session.message_count > 0
                     && Some(&session.project_root) == project_root.as_ref()
             })
             .map(|session| session.id.clone());
