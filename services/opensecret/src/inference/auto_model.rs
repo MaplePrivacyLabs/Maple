@@ -15,21 +15,21 @@ use super::ModelSelectionMode;
 use crate::inference::health::MIN_CAPACITY_COOLDOWN;
 use crate::inference_planning::ConfiguredProviders;
 use crate::model_config::{
-    model_capabilities, model_context_window, ModelAliasTargets, ModelPlan, GLM_5_3_FLASH_MODEL_ID,
-    KIMI_K3_MODEL_ID,
+    model_capabilities, model_context_window, ModelAliasTargets, ModelPlan,
+    DEEPSEEK_V4_1_FLASH_MODEL_ID, KIMI_K3_MODEL_ID,
 };
 use crate::web::responses::context_builder::model_uses_kimi_tool_call_ids;
 use std::cell::OnceCell;
 use std::time::Duration;
 
-pub(crate) const AUTO_MODEL_POLICY_VERSION: &str = "auto-model-v1";
+pub(crate) const AUTO_MODEL_POLICY_VERSION: &str = "auto-model-v2";
 
 // Alternates are product policy and are tried in order only after every earlier
 // candidate is unavailable or incompatible. The tier's preferred model is the
 // alias target from `ModelAliasTargets::for_plan`, so healthy
 // requests keep today's model. Free tiers keep their single target; free
 // Powerful still resolves to a paid model and is denied by the plan check.
-const PAID_QUICK_ALTERNATES: &[&str] = &[GLM_5_3_FLASH_MODEL_ID];
+const PAID_QUICK_ALTERNATES: &[&str] = &[DEEPSEEK_V4_1_FLASH_MODEL_ID];
 const PAID_POWERFUL_ALTERNATES: &[&str] = &[KIMI_K3_MODEL_ID];
 const FREE_ALTERNATES: &[&str] = &[];
 
@@ -361,7 +361,7 @@ mod tests {
     use super::*;
     use crate::model_config::{
         enabled_api_completion_model_ids, AUTO_POWERFUL_MODEL_ID, AUTO_QUICK_MODEL_ID,
-        DEEPSEEK_V4_1_FLASH_MODEL_ID, GLM_5_3_MODEL_ID, QUICK_MODEL_ID,
+        GLM_5_3_FLASH_MODEL_ID, GLM_5_3_MODEL_ID, QUICK_MODEL_ID,
     };
     use crate::provider_registry::{ProviderId, PROVIDER_REGISTRY};
     use std::collections::HashMap;
@@ -470,7 +470,7 @@ mod tests {
         }
         assert_eq!(
             auto_model_candidates(ModelSelectionMode::AutoQuick, ModelPlan::Paid),
-            Some(vec![DEEPSEEK_V4_1_FLASH_MODEL_ID, GLM_5_3_FLASH_MODEL_ID])
+            Some(vec![GLM_5_3_FLASH_MODEL_ID, DEEPSEEK_V4_1_FLASH_MODEL_ID])
         );
         assert_eq!(
             auto_model_candidates(ModelSelectionMode::AutoPowerful, ModelPlan::Paid),
@@ -484,14 +484,14 @@ mod tests {
             auto_model_candidates(ModelSelectionMode::AutoPowerful, ModelPlan::Free),
             Some(vec![GLM_5_3_MODEL_ID])
         );
-        assert_eq!(AUTO_MODEL_POLICY_VERSION, "auto-model-v1");
+        assert_eq!(AUTO_MODEL_POLICY_VERSION, "auto-model-v2");
     }
 
     #[test]
     fn healthy_preferred_model_wins_without_consulting_alternates() {
         let table = availability(&[
-            (DEEPSEEK_V4_1_FLASH_MODEL_ID, available()),
-            (GLM_5_3_FLASH_MODEL_ID, unavailable(60)),
+            (GLM_5_3_FLASH_MODEL_ID, available()),
+            (DEEPSEEK_V4_1_FLASH_MODEL_ID, unavailable(60)),
         ]);
         let decision = select(
             ModelSelectionMode::AutoQuick,
@@ -503,8 +503,8 @@ mod tests {
         .expect("primary");
 
         assert_eq!(decision.selector, AUTO_QUICK_MODEL_ID);
-        assert_eq!(decision.preferred_model_id, DEEPSEEK_V4_1_FLASH_MODEL_ID);
-        assert_eq!(decision.chosen_model_id, DEEPSEEK_V4_1_FLASH_MODEL_ID);
+        assert_eq!(decision.preferred_model_id, GLM_5_3_FLASH_MODEL_ID);
+        assert_eq!(decision.chosen_model_id, GLM_5_3_FLASH_MODEL_ID);
         assert_eq!(decision.reason, AutoModelReason::Primary);
         assert!(!decision.changed_model());
         assert!(decision.rejected.is_empty());
@@ -514,8 +514,8 @@ mod tests {
     #[test]
     fn unavailable_preferred_model_falls_back_to_the_approved_alternate() {
         let table = availability(&[
-            (DEEPSEEK_V4_1_FLASH_MODEL_ID, unavailable(45)),
-            (GLM_5_3_FLASH_MODEL_ID, available()),
+            (GLM_5_3_FLASH_MODEL_ID, unavailable(45)),
+            (DEEPSEEK_V4_1_FLASH_MODEL_ID, available()),
         ]);
         let decision = select(
             ModelSelectionMode::AutoQuick,
@@ -526,13 +526,13 @@ mod tests {
         )
         .expect("fallback");
 
-        assert_eq!(decision.chosen_model_id, GLM_5_3_FLASH_MODEL_ID);
+        assert_eq!(decision.chosen_model_id, DEEPSEEK_V4_1_FLASH_MODEL_ID);
         assert_eq!(decision.reason, AutoModelReason::HealthFallback);
         assert!(decision.changed_model());
         assert_eq!(
             decision.rejected,
             vec![(
-                DEEPSEEK_V4_1_FLASH_MODEL_ID,
+                GLM_5_3_FLASH_MODEL_ID,
                 AutoCandidateRejection::Unavailable {
                     retry_after: Duration::from_secs(45)
                 }
@@ -558,34 +558,34 @@ mod tests {
     #[test]
     fn remembered_alternate_is_retained_while_healthy_and_ignored_otherwise() {
         let both_available = availability(&[
-            (DEEPSEEK_V4_1_FLASH_MODEL_ID, available()),
             (GLM_5_3_FLASH_MODEL_ID, available()),
+            (DEEPSEEK_V4_1_FLASH_MODEL_ID, available()),
         ]);
         let decision = select(
             ModelSelectionMode::AutoQuick,
             ModelPlan::Paid,
-            Some(GLM_5_3_FLASH_MODEL_ID),
+            Some(DEEPSEEK_V4_1_FLASH_MODEL_ID),
             requirements(),
             &both_available,
         )
         .expect("retained");
-        assert_eq!(decision.chosen_model_id, GLM_5_3_FLASH_MODEL_ID);
+        assert_eq!(decision.chosen_model_id, DEEPSEEK_V4_1_FLASH_MODEL_ID);
         assert_eq!(decision.reason, AutoModelReason::RetainedHealthyChoice);
         assert!(decision.rejected.is_empty());
 
         let alternate_open = availability(&[
-            (DEEPSEEK_V4_1_FLASH_MODEL_ID, available()),
-            (GLM_5_3_FLASH_MODEL_ID, unavailable(20)),
+            (GLM_5_3_FLASH_MODEL_ID, available()),
+            (DEEPSEEK_V4_1_FLASH_MODEL_ID, unavailable(20)),
         ]);
         let decision = select(
             ModelSelectionMode::AutoQuick,
             ModelPlan::Paid,
-            Some(GLM_5_3_FLASH_MODEL_ID),
+            Some(DEEPSEEK_V4_1_FLASH_MODEL_ID),
             requirements(),
             &alternate_open,
         )
         .expect("primary after sticky opened");
-        assert_eq!(decision.chosen_model_id, DEEPSEEK_V4_1_FLASH_MODEL_ID);
+        assert_eq!(decision.chosen_model_id, GLM_5_3_FLASH_MODEL_ID);
         assert_eq!(decision.reason, AutoModelReason::Primary);
         assert_eq!(decision.rejected.len(), 1);
 
@@ -593,7 +593,7 @@ mod tests {
         // changes nothing.
         for sticky in [
             Some(KIMI_K3_MODEL_ID),
-            Some(DEEPSEEK_V4_1_FLASH_MODEL_ID),
+            Some(GLM_5_3_FLASH_MODEL_ID),
             Some("unknown"),
         ] {
             let decision = select(
@@ -604,16 +604,16 @@ mod tests {
                 &both_available,
             )
             .expect("primary");
-            assert_eq!(decision.chosen_model_id, DEEPSEEK_V4_1_FLASH_MODEL_ID);
+            assert_eq!(decision.chosen_model_id, GLM_5_3_FLASH_MODEL_ID);
             assert_eq!(decision.reason, AutoModelReason::Primary);
         }
     }
 
     #[test]
-    fn flash_fallback_accepts_the_shared_one_million_token_window() {
+    fn deepseek_fallback_preserves_vision_and_the_shared_one_million_token_window() {
         let table = availability(&[
-            (DEEPSEEK_V4_1_FLASH_MODEL_ID, unavailable(30)),
-            (GLM_5_3_FLASH_MODEL_ID, available()),
+            (GLM_5_3_FLASH_MODEL_ID, unavailable(30)),
+            (DEEPSEEK_V4_1_FLASH_MODEL_ID, available()),
         ]);
         let flash_window = model_context_window(GLM_5_3_FLASH_MODEL_ID);
         assert_eq!(flash_window, 1_048_576);
@@ -627,13 +627,14 @@ mod tests {
             ModelPlan::Paid,
             None,
             AutoModelRequirements {
+                vision: true,
                 prompt_tokens: PromptTokenEstimate::Known(flash_window - 1),
                 ..requirements()
             },
             &table,
         )
         .expect("fits the shared window");
-        assert_eq!(fits.chosen_model_id, GLM_5_3_FLASH_MODEL_ID);
+        assert_eq!(fits.chosen_model_id, DEEPSEEK_V4_1_FLASH_MODEL_ID);
         assert_eq!(fits.reason, AutoModelReason::HealthFallback);
     }
 
@@ -641,7 +642,7 @@ mod tests {
     fn smaller_alternate_rejects_a_prompt_at_its_context_boundary() {
         // Synthetic pairing exercises the generic guard: the current Auto tiers
         // have equal-size windows, but Kimi is smaller than a 1M preferred model.
-        let preferred_window = model_context_window(DEEPSEEK_V4_1_FLASH_MODEL_ID);
+        let preferred_window = model_context_window(GLM_5_3_FLASH_MODEL_ID);
         let candidate_window = model_context_window(KIMI_K3_MODEL_ID);
         assert!(candidate_window < preferred_window);
         for tokens in [candidate_window - 1, candidate_window, candidate_window + 1] {
@@ -668,7 +669,7 @@ mod tests {
     fn bounded_estimates_tokenize_only_when_the_cheap_bound_cannot_admit_a_candidate() {
         // Synthetic smaller-window pairing keeps the lazy exact-count contract
         // covered without changing the production Auto candidate lists.
-        let preferred_window = model_context_window(DEEPSEEK_V4_1_FLASH_MODEL_ID);
+        let preferred_window = model_context_window(GLM_5_3_FLASH_MODEL_ID);
         let candidate_window = model_context_window(KIMI_K3_MODEL_ID);
         let calls = std::cell::Cell::new(0usize);
         let exact = || {
@@ -734,13 +735,13 @@ mod tests {
         })
         .expect("powerful");
         let flash_open = availability(&[
-            (DEEPSEEK_V4_1_FLASH_MODEL_ID, available()),
-            (GLM_5_3_FLASH_MODEL_ID, unavailable(10)),
+            (GLM_5_3_FLASH_MODEL_ID, available()),
+            (DEEPSEEK_V4_1_FLASH_MODEL_ID, unavailable(10)),
         ]);
         select(
             ModelSelectionMode::AutoQuick,
             ModelPlan::Paid,
-            Some(GLM_5_3_FLASH_MODEL_ID),
+            Some(DEEPSEEK_V4_1_FLASH_MODEL_ID),
             AutoModelRequirements {
                 vision: false,
                 kimi_tool_history_compatible: true,
@@ -795,21 +796,21 @@ mod tests {
         assert!(model_capabilities(KIMI_K3_MODEL_ID).expect("kimi").vision);
         assert!(!model_capabilities(GLM_5_3_MODEL_ID).expect("glm").vision);
         assert!(model_uses_kimi_tool_call_ids(KIMI_K3_MODEL_ID));
-        assert!(!model_uses_kimi_tool_call_ids(GLM_5_3_FLASH_MODEL_ID));
+        assert!(!model_uses_kimi_tool_call_ids(DEEPSEEK_V4_1_FLASH_MODEL_ID));
     }
 
     #[test]
     fn free_callers_keep_their_single_target_and_paid_gates() {
         let table = availability(&[
             (QUICK_MODEL_ID, unavailable(30)),
-            (DEEPSEEK_V4_1_FLASH_MODEL_ID, available()),
             (GLM_5_3_FLASH_MODEL_ID, available()),
+            (DEEPSEEK_V4_1_FLASH_MODEL_ID, available()),
             (GLM_5_3_MODEL_ID, available()),
         ]);
         let error = select(
             ModelSelectionMode::AutoQuick,
             ModelPlan::Free,
-            Some(GLM_5_3_FLASH_MODEL_ID),
+            Some(DEEPSEEK_V4_1_FLASH_MODEL_ID),
             requirements(),
             &table,
         )
@@ -835,8 +836,8 @@ mod tests {
     #[test]
     fn no_eligible_candidate_reports_recovery_only_for_health_rejections() {
         let table = availability(&[
-            (DEEPSEEK_V4_1_FLASH_MODEL_ID, unavailable(90)),
-            (GLM_5_3_FLASH_MODEL_ID, unavailable(40)),
+            (GLM_5_3_FLASH_MODEL_ID, unavailable(90)),
+            (DEEPSEEK_V4_1_FLASH_MODEL_ID, unavailable(40)),
         ]);
         let error = select(
             ModelSelectionMode::AutoQuick,
@@ -865,7 +866,7 @@ mod tests {
             ),
             Err(AutoModelError::PreferredModelNotConfigured)
         );
-        let alternate_missing = availability(&[(DEEPSEEK_V4_1_FLASH_MODEL_ID, unavailable(30))]);
+        let alternate_missing = availability(&[(GLM_5_3_FLASH_MODEL_ID, unavailable(30))]);
         let error = select(
             ModelSelectionMode::AutoQuick,
             ModelPlan::Paid,
@@ -877,45 +878,45 @@ mod tests {
         assert!(matches!(
             error,
             AutoModelError::NoEligibleCandidate { retry_after: Some(_), ref rejected, .. }
-                if rejected.contains(&(GLM_5_3_FLASH_MODEL_ID, AutoCandidateRejection::NotConfigured))
+                if rejected.contains(&(DEEPSEEK_V4_1_FLASH_MODEL_ID, AutoCandidateRejection::NotConfigured))
         ));
     }
 
     #[test]
     fn an_alternate_that_overflowed_is_excluded_from_the_bounded_second_decision() {
         let both_available = availability(&[
-            (DEEPSEEK_V4_1_FLASH_MODEL_ID, available()),
             (GLM_5_3_FLASH_MODEL_ID, available()),
+            (DEEPSEEK_V4_1_FLASH_MODEL_ID, available()),
         ]);
         // The remembered alternate wins the first decision...
         let first = select(
             ModelSelectionMode::AutoQuick,
             ModelPlan::Paid,
-            Some(GLM_5_3_FLASH_MODEL_ID),
+            Some(DEEPSEEK_V4_1_FLASH_MODEL_ID),
             requirements(),
             &both_available,
         )
         .expect("retained");
-        assert_eq!(first.chosen_model_id, GLM_5_3_FLASH_MODEL_ID);
+        assert_eq!(first.chosen_model_id, DEEPSEEK_V4_1_FLASH_MODEL_ID);
 
         // ...and the healthy preferred model wins once it is excluded, even
         // though the memory still names it.
-        let overflowed = ExcludedAutoCandidate::context_overflow(GLM_5_3_FLASH_MODEL_ID);
+        let overflowed = ExcludedAutoCandidate::context_overflow(DEEPSEEK_V4_1_FLASH_MODEL_ID);
         let second = select_excluding(
             ModelSelectionMode::AutoQuick,
             ModelPlan::Paid,
-            Some(GLM_5_3_FLASH_MODEL_ID),
+            Some(DEEPSEEK_V4_1_FLASH_MODEL_ID),
             Some(&overflowed),
             requirements(),
             &both_available,
         )
         .expect("preferred after overflow");
-        assert_eq!(second.chosen_model_id, DEEPSEEK_V4_1_FLASH_MODEL_ID);
+        assert_eq!(second.chosen_model_id, GLM_5_3_FLASH_MODEL_ID);
         assert_eq!(second.reason, AutoModelReason::Primary);
         assert_eq!(
             second.rejected,
             vec![(
-                GLM_5_3_FLASH_MODEL_ID,
+                DEEPSEEK_V4_1_FLASH_MODEL_ID,
                 AutoCandidateRejection::ContextOverflow
             )]
         );
@@ -923,8 +924,8 @@ mod tests {
         // With the preferred model down, the exclusion leaves a health
         // condition with the preferred model's recovery hint.
         let preferred_open = availability(&[
-            (DEEPSEEK_V4_1_FLASH_MODEL_ID, unavailable(25)),
-            (GLM_5_3_FLASH_MODEL_ID, available()),
+            (GLM_5_3_FLASH_MODEL_ID, unavailable(25)),
+            (DEEPSEEK_V4_1_FLASH_MODEL_ID, available()),
         ]);
         let error = select_excluding(
             ModelSelectionMode::AutoQuick,
@@ -939,7 +940,7 @@ mod tests {
             error,
             AutoModelError::NoEligibleCandidate { retry_after: Some(retry_after), ref rejected, .. }
                 if retry_after == Duration::from_secs(25)
-                    && rejected.contains(&(GLM_5_3_FLASH_MODEL_ID, AutoCandidateRejection::ContextOverflow))
+                    && rejected.contains(&(DEEPSEEK_V4_1_FLASH_MODEL_ID, AutoCandidateRejection::ContextOverflow))
         ));
     }
 
