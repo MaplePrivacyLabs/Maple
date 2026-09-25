@@ -7794,9 +7794,7 @@ mod tests {
         )
     }
 
-    fn model_dispatching_tinfoil_mock(
-        count_by_model: Arc<std::sync::Mutex<Vec<String>>>,
-    ) -> Router {
+    fn model_dispatching_quick_mock(count_by_model: Arc<std::sync::Mutex<Vec<String>>>) -> Router {
         Router::new().route(
             "/v1/chat/completions",
             post(move |Json(body): Json<Value>| {
@@ -7807,12 +7805,12 @@ mod tests {
                         .lock()
                         .expect("model log lock")
                         .push(model.clone());
-                    if model == crate::model_config::DEEPSEEK_V4_1_FLASH_MODEL_ID {
+                    if matches!(model.as_str(), "glm-5-3-flash" | "glm-5.3-flash") {
                         return axum::http::Response::builder()
                             .status(StatusCode::SERVICE_UNAVAILABLE)
                             .header(header::RETRY_AFTER, "40")
                             .body(axum::body::Body::empty())
-                            .expect("mock DeepSeek 503");
+                            .expect("mock GLM Flash 503");
                     }
                     axum::http::Response::builder()
                         .status(StatusCode::OK)
@@ -7827,7 +7825,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn auto_quick_outage_moves_the_next_request_to_glm_flash_without_replaying() {
+    async fn auto_quick_exhausts_glm_providers_before_deepseek_without_replaying() {
         use crate::inference::auto_model::{AutoCandidateRejection, AutoModelReason};
         use crate::inference::sticky_routes::StickyRoute;
         use crate::model_config::{
@@ -7835,253 +7833,189 @@ mod tests {
             GLM_5_3_FLASH_MODEL_ID, QUICK_MODEL_ID,
         };
 
-        let sent_models = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let tinfoil_sends = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let continuum_sends = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
         let (tinfoil_url, tinfoil_server) =
-            start_mock_provider(model_dispatching_tinfoil_mock(Arc::clone(&sent_models))).await;
-        let continuum_count = Arc::new(AtomicUsize::new(0));
-        let continuum_app = {
-            let count = Arc::clone(&continuum_count);
-            Router::new().route(
-                "/v1/chat/completions",
-                post(move || {
-                    let count = Arc::clone(&count);
-                    async move {
-                        count.fetch_add(1, Ordering::SeqCst);
-                        StatusCode::OK
-                    }
-                }),
-            )
-        };
-        let (continuum_url, continuum_server) = start_mock_provider(continuum_app).await;
+            start_mock_provider(model_dispatching_quick_mock(Arc::clone(&tinfoil_sends))).await;
+        let (continuum_url, continuum_server) =
+            start_mock_provider(model_dispatching_quick_mock(Arc::clone(&continuum_sends))).await;
         let provider_client =
             ProviderClient::for_test(tinfoil_url.clone()).expect("test provider client");
         let proxy_router = ProxyRouter::new(continuum_url, None, tinfoil_url);
         let provider_router = ProviderRouter::default();
-        // Bucket 75 keeps GLM Flash on Tinfoil so one mock observes every send.
-        let account = Uuid::from_u128(75);
+        // A fresh account in bucket zero starts on Continuum under the unchanged weights.
+        let account = Uuid::from_u128(0);
         let surface = InferenceSurface::ChatCompletions;
         let plan = ModelPlan::Paid;
-        let sent_to = |model: &str| {
-            sent_models
-                .lock()
-                .expect("model log")
-                .iter()
-                .filter(|sent| sent.as_str() == model)
-                .count()
-        };
 
-        // 1. Healthy: Auto Quick keeps DeepSeek and that request discovers the outage.
-        let first = resolve_for_test(
-            &provider_router,
-            &proxy_router,
-            account,
-            surface,
-            AUTO_QUICK_MODEL_ID,
-            plan,
-        )
-        .expect("healthy resolution");
-        assert_eq!(first.public_model_id(), DEEPSEEK_V4_1_FLASH_MODEL_ID);
-        let first_decision = first.auto_decision().cloned().expect("auto decision");
-        assert_eq!(first_decision.reason, AutoModelReason::Primary);
-        let first_intent = first.intent(
-            account,
-            AUTO_QUICK_MODEL_ID,
-            plan,
-            surface,
-            WorkloadClass::Interactive,
-        );
-        assert_eq!(first_intent.requested_model_id, AUTO_QUICK_MODEL_ID);
-        assert_eq!(
-            first_intent.preferred_model_id(),
-            DEEPSEEK_V4_1_FLASH_MODEL_ID
-        );
-        assert_eq!(first_intent.public_model_id, DEEPSEEK_V4_1_FLASH_MODEL_ID);
-        assert_eq!(
-            first_intent.auto_model_reason(),
-            Some(AutoModelReason::Primary)
-        );
-        let first_baseline = provider_router.shadow_completion_plan(&proxy_router, &first_intent);
-        let first_route = select_prepared_completion_route(
-            &provider_router,
-            &proxy_router,
-            &first_intent,
-            first_baseline,
-        )
-        .expect("DeepSeek route");
-        assert_eq!(first_route.provider, ProviderId::Tinfoil);
-        let first_pinned = PinnedCompletionRequest::new(first_intent.clone(), first_route);
-        let first_claim = claim_completion_turn(&provider_router, &proxy_router, &first_pinned)
-            .expect("first claim");
-        let first_trace = try_provider(
-            &provider_client,
-            &first_claim.route.proxy,
-            json!({
-                "model": first_claim.route.provider_model_id,
-                "messages": [{"role": "user", "content": "one"}]
-            })
-            .to_string(),
-            &HeaderMap::new(),
-        )
-        .await;
-        let first_error = match first_trace.result {
-            Err(error) => error,
-            Ok(_) => panic!("mock DeepSeek unexpectedly succeeded"),
-        };
-        let first_failure = attempt_failure_from_provider_error(&first_error);
-        assert_eq!(first_failure.kind, AttemptFailureKind::CapacityRejected);
-        assert_eq!(first_failure.status, Some(503));
-        let surfaced = public_completion_error(&first_error, &first_failure);
-        let _ = failed_completion_execution(
-            &provider_router,
-            first_intent
+        // Each row is a distinct logical request. Its actual 503 is surfaced;
+        // only the following request can use another provider or public model.
+        for (index, (expected_model, expected_provider)) in [
+            (GLM_5_3_FLASH_MODEL_ID, ProviderId::Continuum),
+            (GLM_5_3_FLASH_MODEL_ID, ProviderId::Tinfoil),
+            (DEEPSEEK_V4_1_FLASH_MODEL_ID, ProviderId::Tinfoil),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let resolved = resolve_for_test(
+                &provider_router,
+                &proxy_router,
+                account,
+                surface,
+                AUTO_QUICK_MODEL_ID,
+                plan,
+            )
+            .expect("Auto Quick resolution");
+            assert_eq!(resolved.public_model_id(), expected_model);
+            let decision = resolved.auto_decision().expect("Auto decision");
+            assert_eq!(decision.preferred_model_id, GLM_5_3_FLASH_MODEL_ID);
+            let expected_reason = if index < 2 {
+                AutoModelReason::Primary
+            } else {
+                AutoModelReason::HealthFallback
+            };
+            assert_eq!(decision.reason, expected_reason);
+            if index == 2 {
+                assert!(matches!(
+                    decision.rejected.as_slice(),
+                    [(model, AutoCandidateRejection::Unavailable { retry_after })]
+                        if *model == GLM_5_3_FLASH_MODEL_ID && !retry_after.is_zero()
+                ));
+            }
+            let intent = resolved.intent(
+                account,
+                AUTO_QUICK_MODEL_ID,
+                plan,
+                surface,
+                WorkloadClass::Interactive,
+            );
+            assert_eq!(intent.requested_model_id, AUTO_QUICK_MODEL_ID);
+            assert_eq!(intent.preferred_model_id(), GLM_5_3_FLASH_MODEL_ID);
+            assert_eq!(intent.public_model_id, expected_model);
+            assert_eq!(intent.auto_model_reason(), Some(expected_reason));
+            let baseline = provider_router.shadow_completion_plan(&proxy_router, &intent);
+            let selected = select_prepared_completion_route(
+                &provider_router,
+                &proxy_router,
+                &intent,
+                baseline,
+            )
+            .expect("prepared route");
+            assert_eq!(selected.provider, expected_provider);
+            assert_eq!(selected.public_model_id, expected_model);
+            let pinned = PinnedCompletionRequest::new(intent.clone(), selected);
+            let claim = claim_completion_turn(&provider_router, &proxy_router, &pinned)
+                .expect("first-send claim");
+            // Selection and claims do not warm route memory.
+            assert_eq!(
+                provider_router.sticky_route(account, surface, AUTO_QUICK_MODEL_ID),
+                None
+            );
+            let trace = try_provider(
+                &provider_client,
+                &claim.route.proxy,
+                json!({
+                    "model": claim.route.provider_model_id,
+                    "messages": [{"role": "user", "content": "hello"}]
+                })
+                .to_string(),
+                &HeaderMap::new(),
+            )
+            .await;
+            assert!(trace.prior_failures.is_empty());
+            let attempt = intent
                 .begin_execution()
-                .begin_attempt(first_claim.route.identity()),
-            first_failure,
-            surfaced,
-        );
-        drop(first_claim);
-        // The discovering request made exactly one send, was not replayed to
-        // the alternate model, and earned no route memory.
-        assert_eq!(sent_to(DEEPSEEK_V4_1_FLASH_MODEL_ID), 1);
-        assert_eq!(sent_to(GLM_5_3_FLASH_MODEL_ID), 0);
-        assert_eq!(
-            provider_router.sticky_route(account, surface, AUTO_QUICK_MODEL_ID),
-            None
-        );
+                .begin_attempt(claim.route.identity());
+            if index < 2 {
+                let error = match trace.result {
+                    Err(error) => error,
+                    Ok(_) => panic!("mock GLM Flash unexpectedly succeeded"),
+                };
+                let failure = attempt_failure_from_provider_error(&error);
+                assert_eq!(failure.kind, AttemptFailureKind::CapacityRejected);
+                assert_eq!(failure.status, Some(503));
+                let public_error = public_completion_error(&error, &failure);
+                let surfaced =
+                    failed_completion_execution(&provider_router, attempt, failure, public_error);
+                assert!(matches!(
+                    surfaced.into_pre_persistence_api_error(),
+                    ApiError::InferenceCapacity {
+                        client_replay_safe: false,
+                        ..
+                    }
+                ));
+                assert_eq!(
+                    provider_router.sticky_route(account, surface, AUTO_QUICK_MODEL_ID),
+                    None
+                );
+            } else {
+                let response = trace.result.expect("mock DeepSeek succeeds");
+                remember_started_route(&provider_router, &pinned, &claim.route);
+                let canonical = read_non_streaming_completion_response(
+                    response,
+                    &claim.route.response_model_id,
+                    &attempt,
+                    None,
+                )
+                .await
+                .expect("canonical response");
+                assert_eq!(canonical["model"], DEEPSEEK_V4_1_FLASH_MODEL_ID);
+                assert_eq!(attempt.route.public_model_id, DEEPSEEK_V4_1_FLASH_MODEL_ID);
+                assert_eq!(attempt.route.provider, ProviderId::Tinfoil);
+                assert_eq!(
+                    provider_router.sticky_route(account, surface, AUTO_QUICK_MODEL_ID),
+                    Some(StickyRoute {
+                        public_model_id: DEEPSEEK_V4_1_FLASH_MODEL_ID.to_string(),
+                        provider: ProviderId::Tinfoil,
+                        provider_model_id: DEEPSEEK_V4_1_FLASH_MODEL_ID.to_string(),
+                    })
+                );
+            }
+            drop(claim);
+            assert_eq!(
+                continuum_sends.lock().expect("Continuum sends").as_slice(),
+                &["glm-5.3-flash"]
+            );
+            let expected_tinfoil: &[&str] = match index {
+                0 => &[],
+                1 => &[GLM_5_3_FLASH_MODEL_ID],
+                _ => &[GLM_5_3_FLASH_MODEL_ID, DEEPSEEK_V4_1_FLASH_MODEL_ID],
+            };
+            assert_eq!(
+                tinfoil_sends.lock().expect("Tinfoil sends").as_slice(),
+                expected_tinfoil
+            );
+        }
 
-        // 2. The next Auto Quick request chooses GLM Flash before any send.
-        let second = resolve_for_test(
-            &provider_router,
-            &proxy_router,
-            account,
-            surface,
-            AUTO_QUICK_MODEL_ID,
-            plan,
-        )
-        .expect("fallback resolution");
-        assert_eq!(second.public_model_id(), GLM_5_3_FLASH_MODEL_ID);
-        let second_decision = second.auto_decision().cloned().expect("auto decision");
-        assert_eq!(second_decision.reason, AutoModelReason::HealthFallback);
-        assert_eq!(
-            second_decision.preferred_model_id,
-            DEEPSEEK_V4_1_FLASH_MODEL_ID
-        );
-        assert!(matches!(
-            second_decision.rejected.as_slice(),
-            [(model, AutoCandidateRejection::Unavailable { retry_after })]
-                if *model == DEEPSEEK_V4_1_FLASH_MODEL_ID && *retry_after == Duration::from_secs(40)
-        ));
-        let second_intent = second.intent(
-            account,
-            AUTO_QUICK_MODEL_ID,
-            plan,
-            surface,
-            WorkloadClass::Interactive,
-        );
-        assert_eq!(
-            second_intent.preferred_model_id(),
-            DEEPSEEK_V4_1_FLASH_MODEL_ID
-        );
-        assert_eq!(second_intent.public_model_id, GLM_5_3_FLASH_MODEL_ID);
-        assert_eq!(
-            second_intent.auto_model_reason(),
-            Some(AutoModelReason::HealthFallback)
-        );
-        let second_baseline = provider_router.shadow_completion_plan(&proxy_router, &second_intent);
-        let second_route = select_prepared_completion_route(
-            &provider_router,
-            &proxy_router,
-            &second_intent,
-            second_baseline,
-        )
-        .expect("GLM Flash route");
-        assert_eq!(second_route.public_model_id, GLM_5_3_FLASH_MODEL_ID);
-        assert_eq!(second_route.provider, ProviderId::Tinfoil);
-        assert_eq!(second_route.provider_model_id, GLM_5_3_FLASH_MODEL_ID);
-        let second_pinned =
-            PinnedCompletionRequest::new(second_intent.clone(), second_route.clone());
-        let second_claim = claim_completion_turn(&provider_router, &proxy_router, &second_pinned)
-            .expect("GLM Flash claim");
-        assert_eq!(second_pinned.public_model_id(), GLM_5_3_FLASH_MODEL_ID);
-        // A claim is not a warmed cache: nothing is remembered before the send.
-        assert_eq!(
-            provider_router.sticky_route(account, surface, AUTO_QUICK_MODEL_ID),
-            None
-        );
-        let second_trace = try_provider(
-            &provider_client,
-            &second_claim.route.proxy,
-            json!({
-                "model": second_claim.route.provider_model_id,
-                "messages": [{"role": "user", "content": "two"}]
-            })
-            .to_string(),
-            &HeaderMap::new(),
-        )
-        .await;
-        let response = second_trace.result.expect("mock GLM Flash succeeds");
-        // The executor remembers the route when the provider accepts the send.
-        remember_started_route(&provider_router, &second_pinned, &second_claim.route);
-        assert_eq!(
-            provider_router.sticky_route(account, surface, AUTO_QUICK_MODEL_ID),
-            Some(StickyRoute {
-                public_model_id: GLM_5_3_FLASH_MODEL_ID.to_string(),
-                provider: ProviderId::Tinfoil,
-                provider_model_id: GLM_5_3_FLASH_MODEL_ID.to_string(),
-            })
-        );
-        let second_attempt = second_intent
-            .begin_execution()
-            .begin_attempt(second_claim.route.identity());
-        let canonical = read_non_streaming_completion_response(
-            response,
-            &second_claim.route.response_model_id,
-            &second_attempt,
-            None,
-        )
-        .await
-        .expect("canonical response");
-        assert_eq!(canonical["model"], GLM_5_3_FLASH_MODEL_ID);
-        assert_eq!(second_attempt.route.public_model_id, GLM_5_3_FLASH_MODEL_ID);
-        assert_eq!(sent_to(GLM_5_3_FLASH_MODEL_ID), 1);
-        assert_eq!(sent_to(DEEPSEEK_V4_1_FLASH_MODEL_ID), 1);
-        assert_eq!(continuum_count.load(Ordering::SeqCst), 0);
-        drop(second_claim);
-
-        // 3. An explicit DeepSeek request never changes model: it gets the
-        // established capacity contract with zero sends.
+        // Both GLM providers are open. Explicit Flash remains Flash and makes
+        // zero additional sends even though the Auto alternate is healthy.
         let explicit = resolve_for_test(
             &provider_router,
             &proxy_router,
             account,
             surface,
-            DEEPSEEK_V4_1_FLASH_MODEL_ID,
+            GLM_5_3_FLASH_MODEL_ID,
             plan,
         )
         .expect("explicit resolution");
         assert!(explicit.auto_decision().is_none());
-        assert_eq!(explicit.public_model_id(), DEEPSEEK_V4_1_FLASH_MODEL_ID);
+        assert_eq!(explicit.public_model_id(), GLM_5_3_FLASH_MODEL_ID);
         let explicit_intent = explicit.intent(
             account,
-            DEEPSEEK_V4_1_FLASH_MODEL_ID,
+            GLM_5_3_FLASH_MODEL_ID,
             plan,
             surface,
             WorkloadClass::Interactive,
         );
-        assert_eq!(explicit_intent.auto_model_reason(), None);
-        assert_eq!(
-            explicit_intent.preferred_model_id(),
-            DEEPSEEK_V4_1_FLASH_MODEL_ID
-        );
-        let explicit_baseline =
-            provider_router.shadow_completion_plan(&proxy_router, &explicit_intent);
+        let baseline = provider_router.shadow_completion_plan(&proxy_router, &explicit_intent);
         let error = select_prepared_completion_route(
             &provider_router,
             &proxy_router,
             &explicit_intent,
-            explicit_baseline,
+            baseline,
         )
-        .expect_err("explicit DeepSeek stays unavailable");
+        .expect_err("explicit Flash stays unavailable");
         assert!(matches!(
             error,
             ApiError::InferenceCapacity {
@@ -8090,11 +8024,10 @@ mod tests {
                 ..
             }
         ));
-        assert_eq!(sent_to(DEEPSEEK_V4_1_FLASH_MODEL_ID), 1);
+        assert_eq!(continuum_sends.lock().expect("Continuum sends").len(), 1);
+        assert_eq!(tinfoil_sends.lock().expect("Tinfoil sends").len(), 2);
 
-        // 4. While DeepSeek stays open the account keeps its remembered model
-        // on this surface; the other surface still decides for itself.
-        let fourth = resolve_for_test(
+        let retained = resolve_for_test(
             &provider_router,
             &proxy_router,
             account,
@@ -8103,12 +8036,12 @@ mod tests {
             plan,
         )
         .expect("retained resolution");
-        assert_eq!(fourth.public_model_id(), GLM_5_3_FLASH_MODEL_ID);
+        assert_eq!(retained.public_model_id(), DEEPSEEK_V4_1_FLASH_MODEL_ID);
         assert_eq!(
-            fourth.auto_decision().expect("decision").reason,
+            retained.auto_decision().expect("decision").reason,
             AutoModelReason::RetainedHealthyChoice
         );
-        let responses_surface = resolve_for_test(
+        let other_surface = resolve_for_test(
             &provider_router,
             &proxy_router,
             account,
@@ -8116,19 +8049,15 @@ mod tests {
             AUTO_QUICK_MODEL_ID,
             plan,
         )
-        .expect("responses resolution");
+        .expect("independent Responses resolution");
         assert_eq!(
-            responses_surface.auto_decision().expect("decision").reason,
+            other_surface.auto_decision().expect("decision").reason,
             AutoModelReason::HealthFallback
         );
-
-        // 5. The account's Auto Powerful memory is untouched.
         assert_eq!(
             provider_router.sticky_route(account, surface, AUTO_POWERFUL_MODEL_ID),
             None
         );
-
-        // 6. Free callers keep their entitlement errors and single target.
         assert!(matches!(
             resolve_for_test(
                 &provider_router,
@@ -8136,7 +8065,7 @@ mod tests {
                 account,
                 surface,
                 AUTO_POWERFUL_MODEL_ID,
-                ModelPlan::Free,
+                ModelPlan::Free
             ),
             Err(ApiError::ModelNotAvailableOnPlan)
         ));
@@ -8157,6 +8086,83 @@ mod tests {
 
         tinfoil_server.abort();
         continuum_server.abort();
+    }
+
+    #[test]
+    fn auto_quick_remembers_deepseek_until_idle_expiry_after_glm_recovers() {
+        use crate::inference::auto_model::AutoModelReason;
+        use crate::inference::sticky_routes::{StickyRoute, STICKY_ROUTE_IDLE_TTL};
+        use crate::model_config::{
+            AUTO_QUICK_MODEL_ID, DEEPSEEK_V4_1_FLASH_MODEL_ID, GLM_5_3_FLASH_MODEL_ID,
+        };
+
+        let router = ProviderRouter::default();
+        let proxy_router = probe_test_proxy_router();
+        let account = Uuid::from_u128(0);
+        for surface in [
+            InferenceSurface::ChatCompletions,
+            InferenceSurface::Responses,
+        ] {
+            let deepseek = StickyRoute {
+                public_model_id: DEEPSEEK_V4_1_FLASH_MODEL_ID.to_string(),
+                provider: ProviderId::Tinfoil,
+                provider_model_id: DEEPSEEK_V4_1_FLASH_MODEL_ID.to_string(),
+            };
+            // Both GLM providers are healthy again, but the last accepted Auto
+            // request warmed DeepSeek. A recent entry must retain that model.
+            router
+                .sticky_routes()
+                .record(account, surface, AUTO_QUICK_MODEL_ID, deepseek.clone());
+            let retained = resolve_for_test(
+                &router,
+                &proxy_router,
+                account,
+                surface,
+                AUTO_QUICK_MODEL_ID,
+                ModelPlan::Paid,
+            )
+            .expect("retained DeepSeek");
+            assert_eq!(retained.public_model_id(), DEEPSEEK_V4_1_FLASH_MODEL_ID);
+            assert_eq!(
+                retained.auto_decision().expect("decision").reason,
+                AutoModelReason::RetainedHealthyChoice
+            );
+
+            // Expiration is deterministic: no sleeps or provider traffic. The
+            // full idle interval since acceptance restores normal model policy.
+            router.sticky_routes().record_at(
+                account,
+                surface,
+                AUTO_QUICK_MODEL_ID,
+                deepseek,
+                std::time::Instant::now() - STICKY_ROUTE_IDLE_TTL,
+            );
+            let primary = resolve_for_test(
+                &router,
+                &proxy_router,
+                account,
+                surface,
+                AUTO_QUICK_MODEL_ID,
+                ModelPlan::Paid,
+            )
+            .expect("GLM primary after idle");
+            assert_eq!(primary.public_model_id(), GLM_5_3_FLASH_MODEL_ID);
+            assert_eq!(
+                primary.auto_decision().expect("decision").reason,
+                AutoModelReason::Primary
+            );
+            let intent = primary.intent(
+                account,
+                AUTO_QUICK_MODEL_ID,
+                ModelPlan::Paid,
+                surface,
+                WorkloadClass::Interactive,
+            );
+            let selected = router
+                .select_active_completion_route(&proxy_router, &intent)
+                .expect("weighted GLM route");
+            assert_eq!(selected.provider, ProviderId::Continuum);
+        }
     }
 
     #[test]
@@ -8274,9 +8280,9 @@ mod tests {
             surface,
             AUTO_QUICK_MODEL_ID,
             StickyRoute {
-                public_model_id: GLM_5_3_FLASH_MODEL_ID.to_string(),
+                public_model_id: DEEPSEEK_V4_1_FLASH_MODEL_ID.to_string(),
                 provider: ProviderId::Tinfoil,
-                provider_model_id: GLM_5_3_FLASH_MODEL_ID.to_string(),
+                provider_model_id: DEEPSEEK_V4_1_FLASH_MODEL_ID.to_string(),
             },
         );
 
@@ -8289,7 +8295,7 @@ mod tests {
             ModelPlan::Paid,
         )
         .expect("retained alternate");
-        assert_eq!(first.public_model_id(), GLM_5_3_FLASH_MODEL_ID);
+        assert_eq!(first.public_model_id(), DEEPSEEK_V4_1_FLASH_MODEL_ID);
         assert_eq!(
             first.auto_decision().expect("decision").reason,
             AutoModelReason::RetainedHealthyChoice
@@ -8298,7 +8304,7 @@ mod tests {
         // The Responses context builder could not hold the conversation on the
         // alternate: the bounded second decision excludes it and the healthy
         // preferred model takes the request instead of a capacity error.
-        let overflowed = ExcludedAutoCandidate::context_overflow(GLM_5_3_FLASH_MODEL_ID);
+        let overflowed = ExcludedAutoCandidate::context_overflow(DEEPSEEK_V4_1_FLASH_MODEL_ID);
         let second = resolve_excluding_for_test(
             &provider_router,
             &proxy_router,
@@ -8309,13 +8315,13 @@ mod tests {
             Some(&overflowed),
         )
         .expect("preferred model after overflow");
-        assert_eq!(second.public_model_id(), DEEPSEEK_V4_1_FLASH_MODEL_ID);
+        assert_eq!(second.public_model_id(), GLM_5_3_FLASH_MODEL_ID);
         let decision = second.auto_decision().expect("decision");
         assert_eq!(decision.reason, AutoModelReason::Primary);
         assert_eq!(
             decision.rejected,
             vec![(
-                GLM_5_3_FLASH_MODEL_ID,
+                DEEPSEEK_V4_1_FLASH_MODEL_ID,
                 AutoCandidateRejection::ContextOverflow
             )]
         );
@@ -8325,7 +8331,7 @@ mod tests {
             provider_router
                 .sticky_route(account, surface, AUTO_QUICK_MODEL_ID)
                 .map(|route| route.public_model_id),
-            Some(GLM_5_3_FLASH_MODEL_ID.to_string())
+            Some(DEEPSEEK_V4_1_FLASH_MODEL_ID.to_string())
         );
     }
 
