@@ -1,10 +1,10 @@
-//! Router v2 Auto model policy.
+//! Auto model policy.
 //!
-//! An Auto selector names a product tier, not a model. Router v2 resolves the
+//! An Auto selector names a product tier, not a model. The router resolves the
 //! tier's preferred model exactly as before, but when every provider route of
 //! that model is unavailable it may choose another approved model from the same
 //! tier before any model-dependent preparation happens. Explicit model requests
-//! never enter this policy, and Router v1 never calls it.
+//! never enter this policy.
 //!
 //! The stage is pure: it consumes one coherent availability snapshot supplied by
 //! the caller, never contacts a provider, and never claims a health gate. The
@@ -26,7 +26,7 @@ pub(crate) const AUTO_MODEL_POLICY_VERSION: &str = "auto-model-v1";
 
 // Alternates are product policy and are tried in order only after every earlier
 // candidate is unavailable or incompatible. The tier's preferred model is the
-// Router v2 alias target from `ModelAliasTargets::for_router_v2`, so healthy
+// alias target from `ModelAliasTargets::for_plan`, so healthy
 // requests keep today's model. Free tiers keep their single target; free
 // Powerful still resolves to a paid model and is denied by the plan check.
 const PAID_QUICK_ALTERNATES: &[&str] = &[GLM_5_3_FLASH_MODEL_ID];
@@ -40,7 +40,7 @@ pub(crate) fn auto_model_candidates(
     plan: ModelPlan,
 ) -> Option<Vec<&'static str>> {
     let selector = mode.alias()?;
-    let preferred = ModelAliasTargets::for_router_v2(plan).resolve(selector);
+    let preferred = ModelAliasTargets::for_plan(plan).resolve(selector);
     let alternates = match (mode, plan) {
         (ModelSelectionMode::AutoQuick, ModelPlan::Paid) => PAID_QUICK_ALTERNATES,
         (ModelSelectionMode::AutoPowerful, ModelPlan::Paid) => PAID_POWERFUL_ALTERNATES,
@@ -78,7 +78,7 @@ impl AutoModelReason {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum AutoCandidateRejection {
     PlanDenied,
-    /// No Router v2 route or no catalog entry exists for the candidate.
+    /// No provider route or no catalog entry exists for the candidate.
     NotConfigured,
     Unavailable {
         retry_after: Duration,
@@ -195,7 +195,7 @@ pub(crate) enum AutoModelError {
     /// The plan does not include the tier's preferred model. Reported with
     /// the existing plan error so an alias never becomes an access grant.
     PreferredModelDenied,
-    /// The tier's preferred model has no Router v2 route at all. This is a
+    /// The tier's preferred model has no provider route at all. This is a
     /// configuration error that alternates must not mask.
     PreferredModelNotConfigured,
     /// No candidate is eligible. `retry_after` is present only when at least
@@ -425,9 +425,9 @@ mod tests {
     }
 
     #[test]
-    fn candidate_tables_start_with_the_router_v2_alias_target_and_stay_in_plan() {
+    fn candidate_tables_start_with_the_alias_target_and_stay_in_plan() {
         for plan in [ModelPlan::Free, ModelPlan::Paid] {
-            let targets = ModelAliasTargets::for_router_v2(plan);
+            let targets = ModelAliasTargets::for_plan(plan);
             for (mode, selector) in [
                 (ModelSelectionMode::AutoQuick, AUTO_QUICK_MODEL_ID),
                 (ModelSelectionMode::AutoPowerful, AUTO_POWERFUL_MODEL_ID),
@@ -447,7 +447,7 @@ mod tests {
                     );
                     assert!(
                         PROVIDER_REGISTRY.completion_model(candidate).is_some(),
-                        "{candidate} has no Router v2 routes"
+                        "{candidate} has no provider routes"
                     );
                     assert!(
                         model_capabilities(candidate)
