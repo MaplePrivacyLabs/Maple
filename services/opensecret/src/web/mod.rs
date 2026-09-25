@@ -11,6 +11,7 @@ pub mod platform;
 pub mod protected_routes;
 pub mod provider_error;
 pub mod responses;
+mod system_one;
 pub mod web_routes;
 pub(crate) mod web_safety;
 
@@ -26,6 +27,7 @@ pub use responses::conversation_projects_router as conversation_projects_routes;
 pub use responses::conversations_router as conversations_routes;
 pub use responses::instructions_router as instructions_routes;
 pub use responses::responses_router as responses_routes;
+pub use system_one::router as system_one_routes;
 pub use web_routes::router as web_routes;
 
 pub use platform::login_routes as platform_login_routes;
