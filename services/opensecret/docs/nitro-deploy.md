@@ -809,15 +809,22 @@ Add the following content:
 [Unit]
 Description=Vsock Continuum API Proxy Service
 After=network.target
+StartLimitIntervalSec=0
 
 [Service]
 User=root
 ExecStart=/usr/bin/vsock-proxy 8004 api.privatemode.ai 443
 Restart=always
+RestartSec=15s
 
 [Install]
 WantedBy=multi-user.target
 ```
+
+A DNS lookup failure can cause `vsock-proxy` to exit. These settings retry after
+15 seconds and disable systemd's start limit, so repeated DNS failures do not
+leave the service permanently stopped. A manual `systemctl stop` still stops
+the service; a healthy process is not periodically restarted.
 
 #### Continuum CDN
 ```
