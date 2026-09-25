@@ -45,8 +45,10 @@ remove Tauri:
   sink are injectable traits
 - public visibility opened on the service surface the app consumes
 
-Goose is pinned to the aaif-goose fork revision recorded in this component’s
-Cargo manifests and lockfile; Research has an independent dependency graph.
+Goose is pinned to a fork revision based on upstream v1.52.0 in this
+component’s Cargo manifests and lockfile. The fork forwards subagent approvals
+to the parent and supports ephemeral native clients for embedded CUA. Research
+has an independent dependency graph.
 
 ## Features
 
@@ -63,13 +65,10 @@ Cargo manifests and lockfile; Research has an independent dependency graph.
   `/help`. The account's skills appear in the same list.
 - The task's latest todo list stays pinned above the composer.
 - Subagents: the task can give a piece of work to a subagent with the
-  `delegate` tool, which runs it in its own context. Known limitation:
-  a subagent does not inherit the task's permission mode. Goose runs
-  every subagent with all tools approved, so even in Read only mode a
-  subagent can run shell commands and edit files without a prompt. The
-  fix needs the Goose fork to forward subagent approvals to the parent
-  (summon.rs hard-codes Auto because an approval would hang). The
-  subagents that work now show above the composer with the tool each one
+  `delegate` tool, which runs it in its own context. The Goose fork makes
+  the subagent inherit the task's permission mode and forwards its approval
+  requests to the parent session. Maple also asks before each handoff in
+  Read only mode. Subagents show above the composer with the tool each one
   runs and how long it has worked. A subagent that runs in the background
   keeps its row after the turn ends, and Maple tells the task when it
   finishes, with a bounded result in the running turn or a new turn Maple

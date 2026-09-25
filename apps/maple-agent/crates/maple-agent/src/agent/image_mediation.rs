@@ -234,7 +234,7 @@ async fn describe_image_for_text_model(
     let provider = contextual_image_provider(context).await?;
     // Gemma's OpenAI-compatible endpoint needs the thinking knobs spelled out
     // in the request body, so they survive into the materialized config.
-    let model_config = side_model_config(
+    let mut model_config = side_model_config(
         provider.get_name(),
         IMAGE_DESCRIPTION_MODEL,
         Some(thinking_disabled_request_params()),
@@ -244,6 +244,7 @@ async fn describe_image_for_text_model(
     .map_err(|error| {
         format!("could not configure image description model {IMAGE_DESCRIPTION_MODEL}: {error}")
     })?;
+    model_config.supports_vision = Some(true);
 
     let messages = [Message::user()
         .with_text(profile.prompt(image.index, image.count))

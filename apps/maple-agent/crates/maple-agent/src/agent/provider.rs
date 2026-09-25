@@ -160,6 +160,7 @@ impl MapleInferenceTransport for OpenSecretClient {
 
 pub(crate) struct MapleProvider {
     transport: Arc<dyn MapleInferenceTransport>,
+    context_limit: Option<(String, usize)>,
     #[cfg(test)]
     test_retry_config: Option<RetryConfig>,
 }
@@ -220,9 +221,17 @@ impl MapleProvider {
     {
         Self {
             transport,
+            context_limit: None,
             #[cfg(test)]
             test_retry_config: None,
         }
+    }
+
+    pub(crate) fn with_context_limit(mut self, model: &str, limit: Option<usize>) -> Self {
+        self.context_limit = limit
+            .filter(|limit| *limit > 0)
+            .map(|limit| (model.to_string(), limit));
+        self
     }
 
     #[cfg(test)]
@@ -248,6 +257,7 @@ impl MapleProvider {
             true,
             OpenAiFormatOptions {
                 preserve_thinking_context: true,
+                supports_vision: model_config.supports_vision.unwrap_or_default(),
                 thinking_preservation_format: None,
             },
         )
@@ -404,7 +414,21 @@ impl MapleProvider {
             LinesCodec::new_with_max_length(MAX_STREAM_LINE_BYTES),
         )
         .map_err(anyhow::Error::from);
-        let parsed = response_to_streaming_message(lines);
+        let parsed = response_to_streaming_message(lines).filter_map(|result| async move {
+            // Goose 1.51 adds a synthetic usage-only item at EOF when it saw a
+            // response ID but no completed output. Do not turn an abandoned
+            // tool call into the first successful stream item: Goose's empty
+            // stream recovery still needs to see the empty response.
+            if matches!(&result, Ok((None, Some(usage)))
+                if usage.response_id.is_some()
+                    && usage.finish_reasons.is_none()
+                    && usage.usage == Default::default())
+            {
+                None
+            } else {
+                Some(result)
+            }
+        });
 
         Box::pin(parsed.map(move |result| {
             result.map_err(|error| {
@@ -539,6 +563,12 @@ impl MapleProvider {
 impl Provider for MapleProvider {
     fn get_name(&self) -> &str {
         MAPLE_PROVIDER_NAME
+    }
+
+    async fn get_context_limit(&self, model: &str, override_limit: Option<usize>) -> usize {
+        goose_providers::context_limit::ContextLimitResolver::new(MAPLE_PROVIDER_NAME)
+            .with_configured_limits(self.context_limit.clone())
+            .resolve_local(model, override_limit)
     }
 
     fn retry_config(&self) -> RetryConfig {
@@ -1042,6 +1072,21 @@ mod tests {
     use std::sync::Mutex;
     use tokio::sync::Notify;
 
+    #[tokio::test]
+    async fn context_limit_applies_only_to_the_selected_maple_model() {
+        let provider = MapleProvider::new(Arc::new(FakeTransport::queued(vec![])))
+            .with_context_limit("glm-5-2", Some(384_000));
+        assert_eq!(provider.get_context_limit("glm-5-2", None).await, 384_000);
+        assert_eq!(
+            provider.get_context_limit("other-model", None).await,
+            goose_providers::model::DEFAULT_CONTEXT_LIMIT
+        );
+        assert_eq!(
+            provider.get_context_limit("glm-5-2", Some(64_000)).await,
+            64_000
+        );
+    }
+
     #[derive(Debug)]
     struct CapturedRequest {
         method: String,
@@ -1355,7 +1400,7 @@ mod tests {
                 .with_content(MessageContent::thinking("private chain", ""))
                 .with_text("Prior answer"),
         ];
-        let model_config =
+        let mut model_config =
             ModelConfig::new("test-model").with_merged_request_params(HashMap::from([
                 ("include_reasoning".to_string(), json!(false)),
                 (
@@ -1363,6 +1408,7 @@ mod tests {
                     json!({ "enable_thinking": false }),
                 ),
             ]));
+        model_config.supports_vision = Some(true);
 
         let stream = provider
             .stream(&model_config, "Maple system prompt", &messages, &[])
@@ -1455,9 +1501,8 @@ mod tests {
             )),
         );
 
-        // Positive control: Goose turns an MCP image result into a synthetic
-        // user image message. This is the exact path a text-only provider
-        // rejects if Maple's CUA adapter fails to mediate the screenshot.
+        // Positive control: a vision-capable model receives the raw MCP image.
+        // Maple's CUA adapter still mediates screenshots for text-only models.
         let raw_transport = Arc::new(FakeTransport::new(fragmented_success_response()));
         let raw_provider = MapleProvider::new(Arc::clone(&raw_transport));
         let raw_response = Message::user().with_tool_response(
@@ -1467,9 +1512,11 @@ mod tests {
                 rmcp::model::ContentBlock::image("cua-image-sentinel", "image/png"),
             ])),
         );
+        let mut vision_model = ModelConfig::new("vision-model");
+        vision_model.supports_vision = Some(true);
         let raw_stream = raw_provider
             .stream(
-                &ModelConfig::new("deepseek-v4-1-flash"),
+                &vision_model,
                 "system",
                 &[initial.clone(), tool_request.clone(), raw_response],
                 &[],

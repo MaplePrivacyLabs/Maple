@@ -75,12 +75,10 @@ pub(super) fn conversation_to_timeline_items(
         }
 
         let mut thinking = message_thinking_projection(&visible_message);
-        let has_tool_request = visible_message.content.iter().any(|content| {
-            matches!(
-                content,
-                MessageContent::ToolRequest(_) | MessageContent::FrontendToolRequest(_)
-            )
-        });
+        let has_tool_request = visible_message
+            .content
+            .iter()
+            .any(|content| matches!(content, MessageContent::ToolRequest(_)));
 
         // Goose intentionally copies reasoning onto every persisted split
         // tool-request message for provider history. Its live AgentEvent stream
@@ -339,38 +337,6 @@ pub(super) fn message_to_timeline_items_with_thinking(
                 merge: "replace".to_string(),
             }),
             MessageContent::ActionRequired(action) => action_required_item(action, created_ms),
-            MessageContent::FrontendToolRequest(request) => {
-                let (title, text, input, status) = match &request.tool_call {
-                    Ok(call) => (
-                        descriptive_tool_title(call.name.as_ref(), &call.arguments)
-                            .unwrap_or_else(|| format_tool_title(call.name.as_ref())),
-                        None,
-                        Some(serde_json::to_value(&call.arguments).unwrap_or(Value::Null)),
-                        "pending".to_string(),
-                    ),
-                    Err(error) => (
-                        "Tool call parse failed".to_string(),
-                        Some(bounded_timeline_text(
-                            &error.to_string(),
-                            MAX_AGENT_ERROR_CHARS,
-                        )),
-                        None,
-                        "failed".to_string(),
-                    ),
-                };
-                Some(AgentTimelineItem {
-                    id: request.id.clone(),
-                    item_type: "tool".to_string(),
-                    role: Some("assistant".to_string()),
-                    title: Some(title),
-                    text,
-                    status: Some(status),
-                    input,
-                    output: None,
-                    created_ms,
-                    merge: "replace".to_string(),
-                })
-            }
             MessageContent::SystemNotification(notification) => Some(system_notification_item(
                 &base_id,
                 index,
@@ -383,7 +349,7 @@ pub(super) fn message_to_timeline_items_with_thinking(
             // Images are provider-history payloads, not timeline events. The
             // read_image tool request/result already gives users the useful,
             // bounded presentation without exposing base64 metadata.
-            MessageContent::Image(_) => None,
+            MessageContent::Image(_) | MessageContent::Document(_) => None,
         })
         .collect()
 }
