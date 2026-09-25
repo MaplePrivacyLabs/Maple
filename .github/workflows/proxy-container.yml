@@ -14,9 +14,6 @@ on:
       - "proxy/Cargo.toml"
       - "proxy/Cargo.lock"
       - "proxy/src/**"
-      - "sdk/rust/Cargo.toml"
-      - "sdk/rust/src/**"
-      - "sdk/rust/assets/**"
   pull_request:
     paths:
       - ".github/workflows/proxy-container.yml"
@@ -26,9 +23,6 @@ on:
       - "proxy/Cargo.toml"
       - "proxy/Cargo.lock"
       - "proxy/src/**"
-      - "sdk/rust/Cargo.toml"
-      - "sdk/rust/src/**"
-      - "sdk/rust/assets/**"
 
 jobs:
   proxy-container:

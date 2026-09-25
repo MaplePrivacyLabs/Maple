@@ -29,11 +29,7 @@ class AgentChangeDetectionTests(unittest.TestCase):
                 self.assertEqual(research_routes(path), frozenset())
 
     def test_shared_rust_runtime_inputs_select_both_desktop_apps(self):
-        for path in (
-            "sdk/rust/Cargo.toml", "sdk/rust/src/client.rs",
-            "sdk/rust/assets/aws_nitro_root.der", "sdk/rust/build.rs",
-            "proxy/Cargo.toml", "proxy/src/proxy.rs", "proxy/build.rs",
-        ):
+        for path in ("proxy/Cargo.toml", "proxy/src/proxy.rs", "proxy/build.rs"):
             with self.subTest(path=path):
                 self.assertTrue(affects_agent(path))
                 self.assertEqual(research_routes(path), DESKTOP_PLATFORMS)
@@ -59,6 +55,8 @@ class AgentChangeDetectionTests(unittest.TestCase):
             "apps/maple-agent/CLAUDE.md", "apps/maple-agent/LICENSE",
             "apps/maple-agent/docs/development.md", "README.md",
             "sdk/rust/README.md", "sdk/rust/tests/client.rs", "sdk/rust/Cargo.lock",
+            "sdk/rust/Cargo.toml", "sdk/rust/src/client.rs", "sdk/rust/build.rs",
+            "sdk/src/lib/index.ts", "sdk/package.json",
             "proxy/README.md", "proxy/tests/health.rs", "proxy/Cargo.lock",
             "proxy/Dockerfile", "proxy/flake.nix",
         ):

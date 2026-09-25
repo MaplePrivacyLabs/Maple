@@ -114,10 +114,11 @@ local gate before the GitHub Actions cycle, not full CI parity. Keep the
 classifier, its table-driven tests, and the component scripts in step with the
 workflows when a lane changes.
 
-`scripts/ci/change_detection.py` routes expensive app packaging. It conservatively
-selects Research frontend builds for TypeScript SDK runtime inputs and desktop
-builds for Rust SDK and proxy runtime inputs, including when a consumer uses a
-published SDK pin. Tests, docs, container-only inputs, and standalone
+`scripts/ci/change_detection.py` routes expensive app packaging. It selects
+desktop builds for proxy runtime inputs (a path dependency) and never selects
+app builds for SDK-only changes: each client builds the SDK source its own
+manifest selects, so changing that manifest (a pin bump or a local link) is
+what selects its lanes. Tests, docs, container-only inputs, and standalone
 component lockfiles retain their independent lanes. Update the classifier and
 its table-driven tests when the dependency graph or component layout changes.
 The backend has its own root `opensecret-ci.yml` workflow and change selector;

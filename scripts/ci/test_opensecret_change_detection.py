@@ -62,14 +62,14 @@ class OpenSecretChangeDetectionTests(unittest.TestCase):
                 self.assertEqual(research_routes(path), frozenset())
                 self.assertFalse(affects_agent(path))
 
-    def test_sdk_changes_select_compatibility_and_retain_existing_app_routing(self):
+    def test_sdk_changes_select_compatibility_without_app_routing(self):
         for path in ("sdk/src/lib/client.ts", "sdk/src/lib/test/integration/api.test.ts",
                      "sdk/rust/src/client.rs", "sdk/rust/Cargo.lock", "sdk/test/integration/bootstrap.sql",
                      "sdk/flake.nix", "sdk/bun.lock", "sdk/package.json"):
             with self.subTest(path=path):
                 self.assert_routes([path], "integration")
-        self.assertEqual(research_routes("sdk/src/lib/client.ts"), frozenset({"frontend"}))
-        self.assertTrue(affects_agent("sdk/rust/src/client.rs"))
+        self.assertEqual(research_routes("sdk/src/lib/client.ts"), frozenset())
+        self.assertFalse(affects_agent("sdk/rust/src/client.rs"))
 
     def test_independent_components_and_docs_skip_backend_checks(self):
         for path in ("apps/maple-research/frontend/src/main.tsx", "apps/maple-agent/app/src/main.rs",

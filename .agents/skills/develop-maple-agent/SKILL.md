@@ -39,9 +39,9 @@ shell when Agent files are staged; set `MAPLE_HOOK_FULL=1` for the complete
 --no-update-lock-file` additionally validates workflow selection and security
 contracts when CI, Nix, or routing changes.
 
-Agent has its own Cargo and Nix lockfiles. CI conservatively selects Agent for
-shared Rust SDK/proxy runtime changes even when its SDK is registry-pinned;
-passing that build does not validate unpublished SDK source. Component-only
+Agent has its own Cargo and Nix lockfiles. CI selects Agent for proxy runtime
+changes (a path dependency) but not for SDK-only changes; the Agent builds the
+SDK source its own manifest selects. Component-only
 changes should not unnecessarily select Research packaging. Maintain the root
 selectors, their tests, and `.github/workflows/agent-ci.yml` together.
 

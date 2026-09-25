@@ -44,15 +44,15 @@ SDK work under `sdk/` has its own component checks. Load
 and add the in-tree OpenSecret integration when the public protocol or
 backend compatibility changes. Follow the [SDK consumer version policy](../../../docs/sdk-publishing.md#consumer-version-policy)
 and inspect the consumer's manifest/lockfile: a published pin and a local link
-exercise different SDK source. CI conservatively selects proxy and desktop
-checks for Rust SDK runtime changes; add local-source consumer coverage when
-claiming an unpublished SDK edit works in that client. SDK tests/docs/examples
-and standalone lockfile changes remain independent. Do not run unrelated mobile
-packaging for desktop-only Rust SDK or proxy inputs.
+exercise different SDK source. CI runs a client's checks only when that
+client's own files change (including a pin bump or a local link in its
+manifest), never for SDK-only changes, even when a client links the local SDK;
+run that client's checks yourself when claiming an SDK edit works in it. Do not
+run unrelated mobile packaging for desktop-only proxy inputs.
 
 Proxy work under `proxy/` likewise has component and application boundaries.
-Load `$develop-maple-proxy`. Proxy or Rust SDK runtime inputs route to desktop
-Maple, not iOS or Android; proxy tests, examples, docs, its standalone
+Load `$develop-maple-proxy`. Proxy runtime inputs route to desktop Maple, not
+iOS or Android; proxy tests, examples, docs, its standalone
 `Cargo.lock`, and container-only inputs remain independently scoped unless the
 dependency graph or public runtime contract changes.
 
