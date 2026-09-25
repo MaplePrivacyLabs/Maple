@@ -11,13 +11,6 @@ pub struct ProxyRouter {
     tinfoil_proxy: ProxyConfig,
 }
 
-pub fn canonicalize_tinfoil_model(model: &str) -> String {
-    match model {
-        "whisper-large-v3-turbo" => "whisper-large-v3".to_string(),
-        _ => model.to_string(),
-    }
-}
-
 impl ProxyRouter {
     pub fn new(openai_base: String, openai_key: Option<String>, tinfoil_base: String) -> Self {
         assert!(
@@ -135,14 +128,5 @@ mod tests {
 
         assert_eq!(router.get_completion_proxy().provider_name, "tinfoil");
         assert_eq!(router.get_tinfoil_proxy().provider_name, "tinfoil");
-    }
-
-    #[test]
-    fn test_tinfoil_model_canonicalization() {
-        assert_eq!(canonicalize_tinfoil_model("llama3-3-70b"), "llama3-3-70b");
-        assert_eq!(
-            canonicalize_tinfoil_model("whisper-large-v3-turbo"),
-            "whisper-large-v3"
-        );
     }
 }

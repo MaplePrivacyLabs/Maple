@@ -509,11 +509,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn flash_accepts_both_providers_selected_by_v1_or_v2_without_model_fallback() {
+    async fn flash_accepts_both_weighted_providers_without_model_fallback() {
         use crate::{
             inference::{InferenceIntent, InferenceSurface, WorkloadClass},
             model_config::ModelPlan,
-            provider_routing::{InferenceRoutingMode, ProviderRouter},
+            provider_routing::ProviderRouter,
             proxy_config::ProxyRouter,
         };
         let router = ProviderRouter::default();
@@ -523,51 +523,35 @@ mod tests {
             "http://tinfoil.example.com".to_string(),
         );
         let candidate = IMAGE_DESCRIPTION_CANDIDATES[0];
-        let flag = router
-            .provider_routing_flag_for_completion_model(candidate.public_model_id)
-            .expect("legacy Flash provider flag");
-        for mode in [InferenceRoutingMode::Legacy, InferenceRoutingMode::V2] {
-            for enabled in [None, Some(false), Some(true)] {
-                for bucket in [0, 29, 30, 74, 75, 99] {
-                    let intent = InferenceIntent::new(
-                        uuid::Uuid::from_u128(bucket),
-                        candidate.public_model_id,
-                        candidate.public_model_id,
-                        ModelPlan::Paid,
-                        InferenceSurface::Internal,
-                        WorkloadClass::Interactive,
-                    );
-                    let route = router
-                        .select_completion_route_for_mode(
-                            &proxies,
-                            &intent,
-                            enabled.map(|value| flag.preference_for(value)),
-                            mode,
-                        )
-                        .expect("ordinary image-helper route");
-                    let expected = match mode {
-                        InferenceRoutingMode::Legacy if enabled == Some(true) => "continuum",
-                        InferenceRoutingMode::V2 if bucket < 75 => "continuum",
-                        _ => "tinfoil",
-                    };
-                    assert_eq!(route.provider.as_str(), expected);
-                    let mut executor = FakeExecutor::new(vec![PlannedAttempt::Return(Ok(
-                        successful_response("A red square."),
-                    ))]);
-                    executor.provider = route.provider.as_str();
-                    let outcome = describe_image_with_fallback(
-                        &executor,
-                        &RetryNonTerminalImageDescriptionFallbackPolicy,
-                        input(),
-                    )
-                    .await
-                    .expect("either routed provider can describe the image");
-                    assert_eq!(outcome.candidate, candidate);
-                    assert_eq!(outcome.provider, expected);
-                    assert_eq!(outcome.attempt_count, 1);
-                    assert_eq!(executor.observed_candidates(), [candidate]);
-                }
-            }
+        for bucket in [0, 29, 30, 74, 75, 99] {
+            let intent = InferenceIntent::new(
+                uuid::Uuid::from_u128(bucket),
+                candidate.public_model_id,
+                candidate.public_model_id,
+                ModelPlan::Paid,
+                InferenceSurface::Internal,
+                WorkloadClass::Interactive,
+            );
+            let route = router
+                .select_active_completion_route(&proxies, &intent)
+                .expect("ordinary image-helper route");
+            let expected = if bucket < 75 { "continuum" } else { "tinfoil" };
+            assert_eq!(route.provider.as_str(), expected);
+            let mut executor = FakeExecutor::new(vec![PlannedAttempt::Return(Ok(
+                successful_response("A red square."),
+            ))]);
+            executor.provider = route.provider.as_str();
+            let outcome = describe_image_with_fallback(
+                &executor,
+                &RetryNonTerminalImageDescriptionFallbackPolicy,
+                input(),
+            )
+            .await
+            .expect("either routed provider can describe the image");
+            assert_eq!(outcome.candidate, candidate);
+            assert_eq!(outcome.provider, expected);
+            assert_eq!(outcome.attempt_count, 1);
+            assert_eq!(executor.observed_candidates(), [candidate]);
         }
     }
 

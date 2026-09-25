@@ -1,47 +1,15 @@
 //! Deterministic, credential-free completion route planning.
 //!
 //! The plan describes route identity and ordered same-model candidates without
-//! naming or invoking an executable endpoint. Router v2 applies the configured
+//! naming or invoking an executable endpoint. Routing applies the configured
 //! weights after filtering providers through one health snapshot, preferring
 //! the account's remembered provider for the same model when it is still
-//! eligible. Legacy provider flags and default-provider preferences are not
-//! planner inputs.
+//! eligible.
 
 use crate::inference::{InferenceIntent, RouteIdentity};
 use crate::provider_registry::{
     ProviderId, ProviderRegistry, RouteSelectionSource, SHADOW_ROUTING_POLICY_VERSION,
 };
-
-/// Router v1 preference, deliberately absent from Router v2 planning inputs.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct ProviderPreference {
-    provider: ProviderId,
-    source: RouteSelectionSource,
-}
-
-impl ProviderPreference {
-    pub(crate) const fn feature_flag(provider: ProviderId) -> Self {
-        Self {
-            provider,
-            source: RouteSelectionSource::FeatureFlag,
-        }
-    }
-
-    pub(crate) const fn default_provider(provider: ProviderId) -> Self {
-        Self {
-            provider,
-            source: RouteSelectionSource::DefaultProvider,
-        }
-    }
-
-    pub(crate) const fn provider(self) -> ProviderId {
-        self.provider
-    }
-
-    pub(crate) const fn source(self) -> RouteSelectionSource {
-        self.source
-    }
-}
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct ConfiguredProviders {
@@ -175,8 +143,7 @@ pub(crate) fn plan_completion_route(
         ));
     }
 
-    // Report fallback when a configured route is unavailable, without turning
-    // a legacy default or feature flag into a preferred Router v2 provider.
+    // Report fallback when a configured route is unavailable.
     let enabled_route_count = model
         .routes
         .iter()

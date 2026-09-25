@@ -1,9 +1,8 @@
 //! Credential-free provider topology for completion routing.
 //!
 //! This registry is intentionally independent from executable credentials.
-//! Router v2 consumes its route eligibility and weights for every completion
-//! model. Legacy feature flags and default-provider preferences stay in the
-//! separate Router v1 configuration.
+//! Completion routing consumes its route eligibility and weights for every
+//! completion model.
 
 use crate::model_config::{
     DEEPSEEK_V4_1_FLASH_MODEL_ID, GLM_5_3_FLASH_MODEL_ID, GLM_5_3_MODEL_ID, KIMI_K3_MODEL_ID,
@@ -30,10 +29,8 @@ impl ProviderId {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RouteSelectionSource {
     StaticSplit,
-    FeatureFlag,
-    DefaultProvider,
     Fallback,
-    /// Router v2 kept the account's remembered same-model provider instead of
+    /// Routing kept the account's remembered same-model provider instead of
     /// its weighted bucket while that provider stays eligible.
     Sticky,
 }
