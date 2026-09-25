@@ -84,6 +84,11 @@ accepts a request) while it stays eligible and the account has not been idle
 for the sticky window. Do not infer inactive behavior from historical `Shadow`
 type names: active V2 selection consumes health snapshots.
 
+Capacity gates are keyed by provider and upstream model for every provider.
+A 429, 503, or 529 opens only that model's capacity gate; route-health state
+remains separate. Preserve atomic probe claims and lease-fenced recovery so
+ordinary in-flight successes cannot close a gate opened by another request.
+
 Preserve first-send claim handling and later-turn pinning. A claim lost before
 the first send may select another same-model provider; later Responses tool
 turns remain pinned and may fail locally. Neither permits replaying an upstream
