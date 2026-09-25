@@ -34,28 +34,6 @@ INERT_FILES = frozenset(
 INERT_PREFIXES = (".agents/", ".githooks/", "docs/", "apps/maple-research/docs/", "apps/maple-research/.githooks/", "services/updates/", "services/opensecret/", "apps/maple-agent/", "apps/maple-auth/")
 PURE_FRONTEND_PREFIXES = ("apps/maple-research/frontend/public/", "apps/maple-research/frontend/src/")
 PURE_FRONTEND_FILES = frozenset({"apps/maple-research/frontend/icon.svg", "apps/maple-research/frontend/index.html"})
-SDK_FRONTEND_PREFIXES = ("sdk/src/",)
-SDK_TEST_PREFIXES = ("sdk/src/lib/test/",)
-SDK_FRONTEND_FILES = frozenset(
-    {
-        "sdk/bun.lock",
-        "sdk/bunfig.toml",
-        "sdk/package.json",
-        "sdk/tsconfig.build.json",
-        "sdk/tsconfig.json",
-        "sdk/vite.config.ts",
-    }
-)
-SDK_RUST_RUNTIME_PREFIXES = ("sdk/rust/src/", "sdk/rust/assets/")
-SDK_RUST_INERT_PREFIXES = ("sdk/rust/tests/", "sdk/rust/examples/")
-SDK_RUST_INERT_FILES = frozenset(
-    {
-        "sdk/rust/.env.example",
-        "sdk/rust/Cargo.lock",
-        "sdk/rust/LICENSE",
-        "sdk/rust/README.md",
-    }
-)
 PROXY_RUNTIME_PREFIXES = ("proxy/src/",)
 PROXY_INERT_PREFIXES = ("proxy/tests/", "proxy/examples/", "proxy/.githooks/")
 PROXY_INERT_FILES = frozenset(
@@ -189,18 +167,9 @@ def classify_path(path: str) -> frozenset[str]:
         return ALL_OUTPUTS
     if path in INERT_FILES or path.startswith(INERT_PREFIXES):
         return frozenset()
-    if path.startswith(SDK_TEST_PREFIXES):
-        return frozenset()
-    if path in SDK_FRONTEND_FILES or path.startswith(SDK_FRONTEND_PREFIXES):
-        return frozenset({"frontend"})
-    if path == "sdk/rust/Cargo.toml" or path.startswith(SDK_RUST_RUNTIME_PREFIXES):
-        return DESKTOP_PLATFORMS
-    if path in SDK_RUST_INERT_FILES or path.startswith(SDK_RUST_INERT_PREFIXES):
-        return frozenset()
-    if path.startswith("sdk/rust/"):
-        # Unknown files in a consumed Rust crate may be build inputs.
-        return DESKTOP_PLATFORMS
     if path.startswith("sdk/"):
+        # Apps build whatever SDK source their own manifests select. Changing
+        # that manifest (a pin bump or a local link) selects the app's lanes.
         return frozenset()
     if path == "proxy/Cargo.toml" or path.startswith(PROXY_RUNTIME_PREFIXES):
         return DESKTOP_PLATFORMS

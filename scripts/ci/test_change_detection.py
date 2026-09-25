@@ -43,7 +43,7 @@ class ChangeDetectionTests(unittest.TestCase):
                 self.assert_routes([path])
         # A mixed PR still selects the lanes needed by a shared crate change.
         self.assert_routes(
-            ["apps/maple-agent/app/src/main.rs", "sdk/rust/src/client.rs"],
+            ["apps/maple-agent/app/src/main.rs", "proxy/src/proxy.rs"],
             "macos", "linux", "windows",
         )
 
@@ -65,11 +65,7 @@ class ChangeDetectionTests(unittest.TestCase):
         for path in (
             "proxy/Cargo.toml",
             "proxy/src/proxy.rs",
-            "sdk/rust/Cargo.toml",
-            "sdk/rust/src/client.rs",
-            "sdk/rust/assets/aws_nitro_root.der",
             "proxy/build.rs",
-            "sdk/rust/build.rs",
         ):
             with self.subTest(path=path):
                 self.assert_routes([path], "macos", "linux", "windows")
@@ -86,10 +82,18 @@ class ChangeDetectionTests(unittest.TestCase):
             with self.subTest(path=path):
                 self.assert_routes([path])
 
-    def test_typescript_sdk_inputs_mark_only_the_frontend_lane(self) -> None:
-        self.assert_routes(["sdk/src/lib/index.ts"], "frontend")
-        self.assert_routes(["sdk/package.json"], "frontend")
-        self.assert_routes(["sdk/bun.lock"], "frontend")
+    def test_sdk_changes_do_not_select_app_lanes(self) -> None:
+        for path in (
+            "sdk/src/lib/index.ts",
+            "sdk/package.json",
+            "sdk/bun.lock",
+            "sdk/rust/Cargo.toml",
+            "sdk/rust/src/client.rs",
+            "sdk/rust/assets/aws_nitro_root.der",
+            "sdk/rust/build.rs",
+        ):
+            with self.subTest(path=path):
+                self.assert_routes([path])
 
     def test_renderer_changes_only_mark_the_frontend_lane(self) -> None:
         self.assert_routes(["apps/maple-research/frontend/src/routes/index.tsx"], "frontend")

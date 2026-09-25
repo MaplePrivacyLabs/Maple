@@ -55,11 +55,12 @@ def affects_agent(path: str) -> bool:
     if path.startswith(AGENT_PREFIX):
         relative = path.removeprefix(AGENT_PREFIX)
         return relative not in AGENT_INERT_FILES and not relative.startswith(AGENT_INERT_PREFIXES)
-    if path.startswith(("sdk/rust/", "proxy/")):
-        # Both desktop apps consume these same local crates. Reuse the existing
+    if path.startswith("proxy/"):
+        # Both desktop apps consume the local proxy crate. Reuse the existing
         # distinction between runtime/build inputs and standalone docs/tests/locks.
         return bool(research_routes(path) & DESKTOP_PLATFORMS)
     if path.startswith("sdk/"):
+        # The Agent builds the SDK source its own manifest selects.
         return False
     if path in KNOWN_INDEPENDENT_FILES or path.startswith(KNOWN_INDEPENDENT_PREFIXES):
         return False

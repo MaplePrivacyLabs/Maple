@@ -19,9 +19,6 @@ on:
       - "proxy/tests/**"
       - "proxy/examples/**"
       - "scripts/ci/proxy-release.sh"
-      - "sdk/rust/Cargo.toml"
-      - "sdk/rust/src/**"
-      - "sdk/rust/assets/**"
   pull_request:
     paths:
       - ".github/workflows/proxy-rust.yml"
@@ -36,9 +33,6 @@ on:
       - "proxy/tests/**"
       - "proxy/examples/**"
       - "scripts/ci/proxy-release.sh"
-      - "sdk/rust/Cargo.toml"
-      - "sdk/rust/src/**"
-      - "sdk/rust/assets/**"
 
 env:
   CARGO_TERM_COLOR: always

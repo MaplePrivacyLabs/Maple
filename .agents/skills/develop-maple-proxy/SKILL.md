@@ -62,10 +62,10 @@ Root workflows own proxy Rust, daily supply-chain, non-publishing container,
 and native-release rehearsal checks. `proxy/src/**`, `proxy/Cargo.toml`, and
 unknown proxy build inputs are desktop application inputs; tests, examples,
 docs, the standalone lockfile, and container-only files do not by themselves
-route expensive Maple app builds. `sdk/rust` runtime changes conservatively
-select proxy checks and desktop Maple even with a published SDK pin; verify
-the selected source when testing an SDK edit. When a new input changes either
-graph, update
+route expensive Maple app builds. `sdk/rust` changes do not select proxy or
+desktop checks; the proxy and apps build the SDK source their manifests select,
+so verify that source yourself when testing an SDK edit against them. When a new
+input changes either graph, update
 `scripts/ci/change_detection.py`, its table-driven tests, and workflow paths in
 the same change.
 

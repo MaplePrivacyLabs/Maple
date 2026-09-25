@@ -8,7 +8,6 @@ on:
       - "apps/maple-research/frontend/src-tauri/Cargo.toml"
       - "apps/maple-research/frontend/src-tauri/Cargo.lock"
       - "proxy/Cargo.toml"
-      - "sdk/rust/Cargo.toml"
   push:
     branches: [master]
     paths:
@@ -17,7 +16,6 @@ on:
       - "apps/maple-research/frontend/src-tauri/Cargo.toml"
       - "apps/maple-research/frontend/src-tauri/Cargo.lock"
       - "proxy/Cargo.toml"
-      - "sdk/rust/Cargo.toml"
   schedule:
     - cron: "41 6 * * *"
   workflow_dispatch:
