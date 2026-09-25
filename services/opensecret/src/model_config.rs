@@ -1,8 +1,6 @@
 //! Central model-specific configuration and public model catalog.
 
-use crate::os_flags::PAID_POWERFUL_GLM_5_3_ALIAS_FLAG_KEY;
 use serde_json::{json, Value};
-use std::collections::HashMap;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ModelConfig {
@@ -41,7 +39,6 @@ impl SamplingConfig {
 #[derive(Debug, Clone, Copy)]
 struct ModelConfigEntry {
     id: &'static str,
-    provider_id: &'static str,
     catalog_provider: &'static str,
     catalog_provider_id: &'static str,
     display_name: &'static str,
@@ -101,11 +98,6 @@ struct ModelAliasEntry {
 pub(crate) struct ModelAliasTargets {
     quick: &'static str,
     powerful: &'static str,
-}
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub(crate) struct PaidModelAliasOverrides {
-    powerful_glm_5_3: bool,
 }
 
 pub const DEFAULT_CONTEXT_WINDOW: usize = 64_000;
@@ -175,7 +167,6 @@ impl ModelConfigEntry {
     ) -> Self {
         Self {
             id,
-            provider_id: id,
             catalog_provider: "tinfoil",
             catalog_provider_id: id,
             display_name,
@@ -212,7 +203,6 @@ impl ModelConfigEntry {
     ) -> Self {
         Self {
             id,
-            provider_id: id,
             catalog_provider: "tinfoil",
             catalog_provider_id: id,
             display_name,
@@ -247,7 +237,6 @@ impl ModelConfigEntry {
     ) -> Self {
         Self {
             id,
-            provider_id: id,
             catalog_provider: "tinfoil",
             catalog_provider_id: id,
             display_name,
@@ -393,36 +382,12 @@ impl ModelPlan {
 }
 
 impl ModelAliasTargets {
+    /// Fixed alias targets for the account plan. Resolving an alias does not
+    /// grant access to its target model.
     pub(crate) const fn for_plan(plan: ModelPlan) -> Self {
         match plan {
             ModelPlan::Free => FREE_MODEL_ALIAS_TARGETS,
             ModelPlan::Paid => PAID_MODEL_ALIAS_TARGETS,
-        }
-    }
-
-    /// Router v2 uses fixed alias policy rather than legacy model-selector flags.
-    /// Resolving an alias does not grant access to its target model.
-    pub(crate) const fn for_router_v2(plan: ModelPlan) -> Self {
-        Self {
-            powerful: GLM_5_3_MODEL_ID,
-            ..Self::for_plan(plan)
-        }
-    }
-
-    pub(crate) const fn for_plan_with_overrides(
-        plan: ModelPlan,
-        overrides: PaidModelAliasOverrides,
-    ) -> Self {
-        match plan {
-            ModelPlan::Free => FREE_MODEL_ALIAS_TARGETS,
-            ModelPlan::Paid => Self {
-                quick: PAID_MODEL_ALIAS_TARGETS.quick,
-                powerful: if overrides.powerful_glm_5_3 {
-                    GLM_5_3_MODEL_ID
-                } else {
-                    PAID_MODEL_ALIAS_TARGETS.powerful
-                },
-            },
         }
     }
 
@@ -439,17 +404,6 @@ impl ModelAliasTargets {
             AUTO_QUICK_MODEL_ID => Some(self.quick),
             AUTO_POWERFUL_MODEL_ID => Some(self.powerful),
             _ => None,
-        }
-    }
-}
-
-impl PaidModelAliasOverrides {
-    pub(crate) fn from_flag_values(flags: &HashMap<String, bool>) -> Self {
-        Self {
-            powerful_glm_5_3: flags
-                .get(PAID_POWERFUL_GLM_5_3_ALIAS_FLAG_KEY)
-                .copied()
-                .unwrap_or(false),
         }
     }
 }
@@ -672,10 +626,6 @@ fn alias_target(model: &str) -> Option<&'static str> {
     ModelAliasTargets::default().target_for(model)
 }
 
-pub(crate) fn model_alias_requires_flag_lookup(model: &str) -> bool {
-    model == AUTO_POWERFUL_MODEL_ID
-}
-
 fn model_entry(model: &str) -> Option<ModelConfigEntry> {
     MODEL_CONFIGS
         .iter()
@@ -694,14 +644,6 @@ pub(crate) fn enabled_api_completion_model_ids() -> impl Iterator<Item = &'stati
         .iter()
         .filter(|entry| entry.api_listed && entry.enabled && entry.capabilities.chat)
         .map(|entry| entry.id)
-}
-
-pub fn resolve_completion_model_id(model: &str) -> Option<&'static str> {
-    let canonical = alias_target(model).unwrap_or(model);
-    MODEL_CONFIGS
-        .iter()
-        .find(|entry| entry.id == canonical && entry.api_listed && entry.enabled)
-        .map(|entry| entry.provider_id)
 }
 
 pub fn resolve_public_model_id(model: &str) -> Option<&'static str> {
@@ -1003,38 +945,6 @@ mod tests {
     }
 
     #[test]
-    fn test_resolve_completion_model_aliases() {
-        assert_eq!(
-            resolve_completion_model_id(AUTO_QUICK_MODEL_ID),
-            Some(QUICK_MODEL_ID)
-        );
-        assert_eq!(
-            resolve_completion_model_id(AUTO_POWERFUL_MODEL_ID),
-            Some(POWERFUL_MODEL_ID)
-        );
-        assert_eq!(
-            resolve_completion_model_id("gpt-oss-safeguard-120b"),
-            Some("gpt-oss-safeguard-120b")
-        );
-        assert_eq!(resolve_completion_model_id("voxtral-small-24b"), None);
-        assert_eq!(resolve_completion_model_id("quick"), None);
-        assert_eq!(resolve_completion_model_id("kimi-k2-5"), None);
-        assert_eq!(resolve_completion_model_id("kimi-k2-6"), None);
-        assert_eq!(resolve_completion_model_id("kimi-k3"), Some("kimi-k3"));
-        assert_eq!(resolve_completion_model_id("glm-5-3"), Some("glm-5-3"));
-        assert_eq!(
-            resolve_completion_model_id("glm-5-3-flash"),
-            Some("glm-5-3-flash")
-        );
-        assert_eq!(resolve_completion_model_id("deepseek-v4-flash"), None);
-        assert_eq!(
-            resolve_completion_model_id("deepseek-v4-1-flash"),
-            Some("deepseek-v4-1-flash")
-        );
-        assert_eq!(resolve_completion_model_id("unknown-model"), None);
-    }
-
-    #[test]
     fn test_resolve_public_model_aliases() {
         assert_eq!(
             resolve_public_model_id(AUTO_QUICK_MODEL_ID),
@@ -1048,6 +958,8 @@ mod tests {
             resolve_public_model_id("gpt-oss-safeguard-120b"),
             Some("gpt-oss-safeguard-120b")
         );
+        assert_eq!(resolve_public_model_id("voxtral-small-24b"), None);
+        assert_eq!(resolve_public_model_id("quick"), None);
         assert_eq!(resolve_public_model_id("kimi-k2-5"), None);
         assert_eq!(resolve_public_model_id("kimi-k2-6"), None);
         assert_eq!(resolve_public_model_id("kimi-k3"), Some("kimi-k3"));
@@ -1082,12 +994,12 @@ mod tests {
     }
 
     #[test]
-    fn test_router_v2_auto_targets_use_glm_5_3_and_preserve_plan_specific_quick() {
+    fn test_auto_targets_use_glm_5_3_and_preserve_plan_specific_quick() {
         for (plan, expected_quick) in [
             (ModelPlan::Free, QUICK_MODEL_ID),
             (ModelPlan::Paid, DEEPSEEK_V4_1_FLASH_MODEL_ID),
         ] {
-            let targets = ModelAliasTargets::for_router_v2(plan);
+            let targets = ModelAliasTargets::for_plan(plan);
             assert_eq!(targets.resolve(AUTO_QUICK_MODEL_ID), expected_quick);
             assert_eq!(targets.resolve(AUTO_POWERFUL_MODEL_ID), GLM_5_3_MODEL_ID);
             assert_eq!(
@@ -1102,18 +1014,14 @@ mod tests {
     }
 
     #[test]
-    fn test_router_v2_alias_policy_preserves_explicit_model_identities() {
+    fn test_alias_policy_preserves_explicit_model_identities() {
         for plan in [ModelPlan::Free, ModelPlan::Paid] {
-            let targets = ModelAliasTargets::for_router_v2(plan);
+            let targets = ModelAliasTargets::for_plan(plan);
             for model in enabled_api_completion_model_ids() {
                 assert_eq!(targets.resolve(model), model, "plan={plan:?}");
                 assert_eq!(resolve_public_model_id(targets.resolve(model)), Some(model));
             }
             assert_eq!(targets.resolve(GLM_5_3_MODEL_ID), GLM_5_3_MODEL_ID);
-            assert_eq!(
-                resolve_completion_model_id(targets.resolve(GLM_5_3_MODEL_ID)),
-                Some(GLM_5_3_MODEL_ID)
-            );
             assert_eq!(targets.resolve("unknown-model"), "unknown-model");
             assert_eq!(
                 resolve_public_model_id(targets.resolve("unknown-model")),
@@ -1123,9 +1031,9 @@ mod tests {
     }
 
     #[test]
-    fn test_router_v2_catalog_alias_metadata_matches_resolved_models() {
+    fn test_catalog_alias_metadata_matches_resolved_models() {
         for plan in [ModelPlan::Free, ModelPlan::Paid] {
-            let targets = ModelAliasTargets::for_router_v2(plan);
+            let targets = ModelAliasTargets::for_plan(plan);
             let catalog = model_catalog_response(targets);
             for alias in catalog["aliases"].as_array().expect("aliases") {
                 let selector = alias["id"].as_str().expect("alias ID");
@@ -1144,9 +1052,9 @@ mod tests {
     }
 
     #[test]
-    fn test_router_v2_auto_targets_preserve_model_entitlements() {
+    fn test_auto_targets_preserve_model_entitlements() {
         for plan in [ModelPlan::Free, ModelPlan::Paid] {
-            let targets = ModelAliasTargets::for_router_v2(plan);
+            let targets = ModelAliasTargets::for_plan(plan);
             assert!(plan.allows_model(targets.resolve(AUTO_QUICK_MODEL_ID)));
             assert_eq!(
                 plan.allows_model(targets.resolve(AUTO_POWERFUL_MODEL_ID)),
@@ -1156,65 +1064,6 @@ mod tests {
                 assert_eq!(plan.allows_model(targets.resolve(model)), plan.is_paid());
             }
         }
-    }
-
-    #[test]
-    fn test_paid_powerful_glm_5_3_alias_override_is_plan_gated_and_default_off() {
-        for powerful_enabled in [false, true] {
-            let flags = HashMap::from([(
-                PAID_POWERFUL_GLM_5_3_ALIAS_FLAG_KEY.to_string(),
-                powerful_enabled,
-            )]);
-            let overrides = PaidModelAliasOverrides::from_flag_values(&flags);
-
-            let free = ModelAliasTargets::for_plan_with_overrides(ModelPlan::Free, overrides);
-            assert_eq!(free.resolve(AUTO_QUICK_MODEL_ID), QUICK_MODEL_ID);
-            assert_eq!(free.resolve(AUTO_POWERFUL_MODEL_ID), GLM_5_3_MODEL_ID);
-
-            let paid = ModelAliasTargets::for_plan_with_overrides(ModelPlan::Paid, overrides);
-            assert_eq!(
-                paid.resolve(AUTO_QUICK_MODEL_ID),
-                DEEPSEEK_V4_1_FLASH_MODEL_ID
-            );
-            assert_eq!(paid.resolve(AUTO_POWERFUL_MODEL_ID), GLM_5_3_MODEL_ID);
-        }
-
-        assert_eq!(
-            PaidModelAliasOverrides::from_flag_values(&HashMap::new()),
-            PaidModelAliasOverrides::default()
-        );
-        assert_eq!(
-            PAID_POWERFUL_GLM_5_3_ALIAS_FLAG_KEY,
-            "model-alias.paid.powerful.glm-5-3"
-        );
-        assert_eq!(
-            crate::os_flags::PAID_MODEL_ALIAS_FLAG_KEYS,
-            &[PAID_POWERFUL_GLM_5_3_ALIAS_FLAG_KEY]
-        );
-        assert!(model_alias_requires_flag_lookup(AUTO_POWERFUL_MODEL_ID));
-        assert!(!model_alias_requires_flag_lookup(AUTO_QUICK_MODEL_ID));
-        assert!(!model_alias_requires_flag_lookup(GLM_5_3_MODEL_ID));
-    }
-
-    #[test]
-    fn test_catalog_alias_metadata_tracks_paid_glm_5_3_override() {
-        let flags = HashMap::from([(PAID_POWERFUL_GLM_5_3_ALIAS_FLAG_KEY.to_string(), true)]);
-        let targets = ModelAliasTargets::for_plan_with_overrides(
-            ModelPlan::Paid,
-            PaidModelAliasOverrides::from_flag_values(&flags),
-        );
-        let catalog = model_catalog_response(targets);
-        let powerful = catalog["aliases"]
-            .as_array()
-            .expect("aliases")
-            .iter()
-            .find(|alias| alias["id"] == AUTO_POWERFUL_MODEL_ID)
-            .expect("powerful alias");
-
-        assert_eq!(powerful["target_model"], GLM_5_3_MODEL_ID);
-        assert_eq!(powerful["access"], "pro");
-        assert_eq!(powerful["capabilities"]["reasoning"], true);
-        assert_eq!(powerful["capabilities"]["vision"], false);
     }
 
     #[test]
@@ -1374,7 +1223,6 @@ mod tests {
 
         assert!(!has_model(&catalog, "kimi-k2-6"));
         assert!(!has_model(&openai_models, "kimi-k2-6"));
-        assert_eq!(resolve_completion_model_id("kimi-k2-6"), None);
         assert_eq!(resolve_public_model_id("kimi-k2-6"), None);
     }
 
@@ -1392,10 +1240,6 @@ mod tests {
         assert_eq!(glm["capabilities"]["vision"], false);
         assert_eq!(glm["capabilities"]["reasoning"], true);
         assert_eq!(glm["capabilities"]["tool_use"], true);
-        assert_eq!(
-            resolve_completion_model_id(GLM_5_3_MODEL_ID),
-            Some(GLM_5_3_MODEL_ID)
-        );
 
         let powerful = catalog["aliases"]
             .as_array()
@@ -1423,10 +1267,6 @@ mod tests {
         assert_eq!(glm["capabilities"]["reasoning"], true);
         assert_eq!(glm["capabilities"]["tool_use"], true);
         assert_eq!(glm["tasks"], json!(["generate", "vision"]));
-        assert_eq!(
-            resolve_completion_model_id(GLM_5_3_FLASH_MODEL_ID),
-            Some(GLM_5_3_FLASH_MODEL_ID)
-        );
     }
 
     #[test]
@@ -1445,10 +1285,6 @@ mod tests {
         assert_eq!(deepseek["capabilities"]["reasoning"], true);
         assert_eq!(deepseek["capabilities"]["tool_use"], true);
         assert_eq!(deepseek["tasks"], json!(["generate", "vision"]));
-        assert_eq!(
-            resolve_completion_model_id(DEEPSEEK_V4_1_FLASH_MODEL_ID),
-            Some(DEEPSEEK_V4_1_FLASH_MODEL_ID)
-        );
         assert!(!has_model(&catalog, "deepseek-v4-flash"));
     }
 

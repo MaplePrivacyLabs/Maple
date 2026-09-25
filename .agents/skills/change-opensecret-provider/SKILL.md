@@ -23,8 +23,8 @@ inventories:
   visibility, and access.
 - `src/provider_registry.rs` and `src/inference_planning.rs`: V2 route topology,
   deterministic planning, and eligible same-model providers.
-- `src/provider_routing.rs` and `src/os_flags.rs`: V1/V2 dispatch, V1 provider
-  preferences, and integration with V2 health-aware selection.
+- `src/provider_routing.rs`: provider selection using coherent health snapshots
+  and accepted-route stickiness.
 - `src/inference.rs` and `src/inference/health.rs`: inference intent and IDs,
   typed outcomes, capacity/circuit state, snapshots, and probe leases.
 - `src/proxy_config.rs`: provider endpoints and credentials.
@@ -62,10 +62,11 @@ call site's unavailable, timeout, denial, fallback, and success semantics.
 
 ## Preserve routing context
 
-Router V1 evaluates provider preferences; Router V2 does not consume those V1
-preferences. Keep image and title helpers on the request's appropriate routing
-context. A helper candidate identifies a public model; resolve its provider
-through shared routing rather than pinning an independently guessed provider.
+Completion requests use Router V2. Keep image and title helpers on the request's
+authenticated account and plan routing context. A helper candidate identifies
+a public model; resolve its provider through shared routing rather than pinning
+an independently guessed provider. Router retirement does not remove Transport
+V1 or change the public API versions.
 
 Trace alias resolution separately from model selection and provider selection.
 Router V2 resolves an Auto alias to its tier's preferred model, then
@@ -80,9 +81,8 @@ first send the logical response stays pinned. Router V2 also
 prefers the account's remembered route from `src/inference/sticky_routes.rs`
 (model and provider, per surface and selector, recorded once the provider
 accepts a request) while it stays eligible and the account has not been idle
-for the sticky window; Router V1 never consults either. Do not
-infer inactive behavior from historical `Shadow` type names: active V2
-selection consumes health snapshots.
+for the sticky window. Do not infer inactive behavior from historical `Shadow`
+type names: active V2 selection consumes health snapshots.
 
 Preserve first-send claim handling and later-turn pinning. A claim lost before
 the first send may select another same-model provider; later Responses tool
@@ -90,8 +90,8 @@ turns remain pinned and may fail locally. Neither permits replaying an upstream
 attempt with an ambiguous outcome. Rebuild provider-specific request fields
 when a permitted pre-send selection changes the route.
 
-Validate the affected combinations of V1/V2, explicit/Auto model, Responses/
-Chat Completions, and main/title/image execution. Keep live rollout percentages,
+Validate the affected combinations of explicit/Auto model, Free/Paid access,
+Responses/Chat Completions, and main/title/image execution. Keep live rollout percentages,
 account allocations, and operator procedures out of this public skill.
 
 ## Preserve transport and retry safety

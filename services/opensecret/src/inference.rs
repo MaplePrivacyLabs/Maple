@@ -87,7 +87,7 @@ pub(crate) struct InferenceIntent {
     /// preparation, persistence, and usage all use this identity.
     pub(crate) public_model_id: String,
     /// The Router v2 Auto decision that produced `public_model_id`, when one
-    /// ran. Explicit selections and Router v1 requests carry none.
+    /// ran. Explicit selections carry none.
     pub(crate) auto_model: Option<AutoModelDecision>,
     pub(crate) selection_mode: ModelSelectionMode,
     pub(crate) model_plan: ModelPlan,
@@ -433,7 +433,7 @@ mod tests {
             "glm-5-3",
             "glm-5.3",
             "glm-5-3",
-            RouteSelectionSource::FeatureFlag,
+            RouteSelectionSource::StaticSplit,
             None,
         );
 

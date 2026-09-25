@@ -11,8 +11,7 @@ use crate::inference::{
 };
 use crate::inference_planning::{RoutePlan, RoutePlanningError};
 use crate::model_config::{
-    model_alias_requires_flag_lookup, model_catalog_response, openai_models_response,
-    ModelAliasTargets, ModelPlan,
+    model_catalog_response, openai_models_response, ModelAliasTargets, ModelPlan,
 };
 use crate::models::token_usage::NewTokenUsage;
 use crate::models::users::User;
@@ -26,8 +25,8 @@ use crate::provider_client::{
 };
 use crate::provider_registry::{ProviderId, RouteSelectionSource, SHADOW_ROUTING_POLICY_VERSION};
 use crate::provider_routing::{
-    compare_shadow_route, InferenceRoutingMode, ProviderRouter, ProviderRoutingError,
-    SelectedProviderRoute, ShadowRouteComparison,
+    compare_shadow_route, ProviderRouter, ProviderRoutingError, SelectedProviderRoute,
+    ShadowRouteComparison,
 };
 use crate::proxy_config::{ProxyConfig, ProxyRouter};
 use crate::sqs::UsageEvent;
@@ -611,7 +610,7 @@ impl<'a> CompletionExecutionContext<'a> {
     ) -> Self {
         Self::new(
             billing,
-            InferenceRoutingContext::new(pinned.intent.model_plan, pinned.routing_mode()),
+            InferenceRoutingContext::new(pinned.intent.model_plan),
             cache,
         )
     }
@@ -639,30 +638,25 @@ impl BillingContext {
     }
 }
 
-/// Immutable routing policy captured at an authenticated inference entrypoint.
-/// Internal child requests may use a different entitlement plan while retaining
-/// the same Router v1/v2 decision for the parent request's complete lifetime.
+/// Immutable request plan policy captured at an authenticated inference entrypoint.
+/// Internal child requests may use a different entitlement plan. Authenticated
+/// account identity is checked separately when preparing the completion.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct InferenceRoutingContext {
     model_plan: ModelPlan,
-    mode: InferenceRoutingMode,
 }
 
 impl InferenceRoutingContext {
-    pub(crate) const fn new(model_plan: ModelPlan, mode: InferenceRoutingMode) -> Self {
-        Self { model_plan, mode }
+    pub(crate) const fn new(model_plan: ModelPlan) -> Self {
+        Self { model_plan }
     }
 
     pub(crate) const fn with_model_plan(self, model_plan: ModelPlan) -> Self {
-        Self { model_plan, ..self }
+        Self { model_plan }
     }
 
     pub(crate) const fn model_plan(self) -> ModelPlan {
         self.model_plan
-    }
-
-    pub(crate) const fn mode(self) -> InferenceRoutingMode {
-        self.mode
     }
 }
 
@@ -829,30 +823,20 @@ pub(crate) struct PinnedCompletionRequest {
     /// The route selected during request preparation. It remains provisional
     /// until the first provider turn atomically claims any half-open gates.
     route: SelectedProviderRoute,
-    routing_mode: InferenceRoutingMode,
     finalized_route: Arc<OnceLock<SelectedProviderRoute>>,
 }
 
 impl PinnedCompletionRequest {
-    fn new(
-        intent: InferenceIntent,
-        route: SelectedProviderRoute,
-        routing_mode: InferenceRoutingMode,
-    ) -> Self {
+    fn new(intent: InferenceIntent, route: SelectedProviderRoute) -> Self {
         Self {
             intent,
             route,
-            routing_mode,
             finalized_route: Arc::new(OnceLock::new()),
         }
     }
 
     pub(crate) fn intent(&self) -> &InferenceIntent {
         &self.intent
-    }
-
-    pub(crate) const fn routing_mode(&self) -> InferenceRoutingMode {
-        self.routing_mode
     }
 
     pub(crate) fn public_model_id(&self) -> &str {
@@ -1573,7 +1557,7 @@ pub fn models_router(app_state: Arc<AppState>) -> Router<()> {
 /// model-dependent preparation.
 #[derive(Debug, Clone)]
 pub(crate) enum ResolvedInferenceModel {
-    /// Router v1 requests and explicit selections: the alias target as is.
+    /// Explicit selections keep the requested model.
     Explicit(String),
     /// A Router v2 Auto decision; the chosen model is the executed identity.
     Auto(AutoModelDecision),
@@ -1626,7 +1610,6 @@ pub(crate) struct ModelResolutionRequest<'a> {
     pub(crate) requested_model_id: &'a str,
     pub(crate) alias_target: &'a str,
     pub(crate) model_plan: ModelPlan,
-    pub(crate) routing_mode: InferenceRoutingMode,
     /// An Auto candidate that already failed this request's model-dependent
     /// preparation or lost its routes before any send; the bounded second
     /// decision never returns to it and carries its cause forward.
@@ -1634,15 +1617,14 @@ pub(crate) struct ModelResolutionRequest<'a> {
 }
 
 /// Whether a request reaches the Router v2 Auto model stage at all.
-fn needs_auto_model_decision(requested_model_id: &str, routing_mode: InferenceRoutingMode) -> bool {
-    routing_mode == InferenceRoutingMode::V2
-        && ModelSelectionMode::from_requested_model(requested_model_id).is_auto()
+fn needs_auto_model_decision(requested_model_id: &str) -> bool {
+    ModelSelectionMode::from_requested_model(requested_model_id).is_auto()
 }
 
 /// Resolves the public model a logical request executes.
 ///
-/// Router v1 and explicit selections keep the alias target exactly. Router v2
-/// Auto selectors may move to another approved model of the same tier when the
+/// Explicit selections keep the model exactly. Auto selectors may move to
+/// another approved model of the same tier when the
 /// preferred model has no eligible provider route, evaluated from one health
 /// snapshot together with the account's remembered route. This runs before
 /// context assembly, persistence, and route pinning, contacts no provider, and
@@ -1655,7 +1637,7 @@ pub(crate) fn resolve_inference_model<'a>(
     request: ModelResolutionRequest<'_>,
     requirements: impl FnOnce() -> AutoModelRequirements<'a>,
 ) -> Result<ResolvedInferenceModel, ApiError> {
-    if !needs_auto_model_decision(request.requested_model_id, request.routing_mode) {
+    if !needs_auto_model_decision(request.requested_model_id) {
         return Ok(ResolvedInferenceModel::Explicit(
             request.alias_target.to_string(),
         ));
@@ -1949,15 +1931,8 @@ async fn proxy_openai(
         })?
         .to_string();
 
-    let routing =
-        InferenceRoutingContext::new(model_plan, state.inference_routing_mode(user.uuid).await);
-    let alias_targets = if model_alias_requires_flag_lookup(&requested_model_name) {
-        state
-            .model_alias_targets(user.uuid, model_plan, routing.mode())
-            .await
-    } else {
-        ModelAliasTargets::for_plan(model_plan)
-    };
+    let routing = InferenceRoutingContext::new(model_plan);
+    let alias_targets = ModelAliasTargets::for_plan(model_plan);
     let alias_target = alias_targets.resolve(&requested_model_name).to_string();
     let billing_context = BillingContext::new(auth_method, requested_model_name.clone());
 
@@ -1980,7 +1955,6 @@ async fn proxy_openai(
                 requested_model_id: &requested_model_name,
                 alias_target: &alias_target,
                 model_plan,
-                routing_mode: routing.mode(),
                 excluded: excluded.as_ref(),
             },
             || chat_requirements.requirements(&exact),
@@ -2276,62 +2250,43 @@ pub(crate) async fn prepare_completion_request(
     }
 
     ensure_completion_model_access(&intent.public_model_id, intent.model_plan)?;
-    let route = match routing.mode() {
-        InferenceRoutingMode::Legacy => {
-            let provider_preference = state
-                .provider_routing_preference(user.uuid, &intent.public_model_id)
-                .await;
-            state
-                .provider_router
-                .select_completion_route_for_mode(
-                    &state.proxy_router,
-                    &intent,
-                    provider_preference,
-                    InferenceRoutingMode::Legacy,
+    let shadow = state
+        .provider_router
+        .shadow_completion_plan(&state.proxy_router, &intent);
+    if let Ok(plan) = &shadow {
+        let candidate_health = plan
+            .eligible_routes
+            .iter()
+            .map(|candidate| {
+                let route_key = crate::inference::RouteKey {
+                    provider: candidate.provider,
+                    provider_model_id: candidate.provider_model_id.clone(),
+                };
+                (
+                    candidate.provider.as_str(),
+                    candidate.provider_model_id.as_str(),
+                    state.provider_router.shadow_health_snapshot(&route_key),
                 )
-                .map_err(provider_routing_api_error)?
-        }
-        InferenceRoutingMode::V2 => {
-            let shadow = state
-                .provider_router
-                .shadow_completion_plan(&state.proxy_router, &intent);
-            if let Ok(plan) = &shadow {
-                let candidate_health = plan
-                    .eligible_routes
-                    .iter()
-                    .map(|candidate| {
-                        let route_key = crate::inference::RouteKey {
-                            provider: candidate.provider,
-                            provider_model_id: candidate.provider_model_id.clone(),
-                        };
-                        (
-                            candidate.provider.as_str(),
-                            candidate.provider_model_id.as_str(),
-                            state.provider_router.shadow_health_snapshot(&route_key),
-                        )
-                    })
-                    .collect::<Vec<_>>();
-                debug!(
-                    "Shadow route health remained observational: request_id={}, public_model={}, routing_policy_version={}, candidate_health={:?}",
-                    intent.request_id,
-                    intent.public_model_id,
-                    plan.policy_version,
-                    candidate_health
-                );
-            }
-            select_prepared_completion_route(
-                &state.provider_router,
-                &state.proxy_router,
-                &intent,
-                shadow,
-            )?
-        }
-    };
+            })
+            .collect::<Vec<_>>();
+        debug!(
+            "Shadow route health remained observational: request_id={}, public_model={}, routing_policy_version={}, candidate_health={:?}",
+            intent.request_id,
+            intent.public_model_id,
+            plan.policy_version,
+            candidate_health
+        );
+    }
+    let route = select_prepared_completion_route(
+        &state.provider_router,
+        &state.proxy_router,
+        &intent,
+        shadow,
+    )?;
 
     debug!(
-        "Pinned inference route: request_id={}, routing_mode={:?}, selection_mode={:?}, auto={}, surface={:?}, workload={:?}, requested_model={}, preferred_model={}, public_model={}, auto_model_reason={:?}, provider={}, provider_model={}, bucket={:?}, source={:?}",
+        "Pinned inference route: request_id={}, routing_mode=V2, selection_mode={:?}, auto={}, surface={:?}, workload={:?}, requested_model={}, preferred_model={}, public_model={}, auto_model_reason={:?}, provider={}, provider_model={}, bucket={:?}, source={:?}",
         intent.request_id,
-        routing.mode(),
         intent.selection_mode,
         intent.selection_mode.is_auto(),
         intent.surface,
@@ -2346,7 +2301,7 @@ pub(crate) async fn prepare_completion_request(
         route.selection_source
     );
 
-    Ok(PinnedCompletionRequest::new(intent, route, routing.mode()))
+    Ok(PinnedCompletionRequest::new(intent, route))
 }
 
 fn probe_api_error(retry_after: Duration) -> ApiError {
@@ -2422,13 +2377,6 @@ fn claim_completion_turn(
     proxy_router: &ProxyRouter,
     pinned: &PinnedCompletionRequest,
 ) -> Result<ClaimedProviderTurn, ApiError> {
-    if pinned.routing_mode() == InferenceRoutingMode::Legacy {
-        return Ok(ClaimedProviderTurn {
-            route: pinned.route.clone(),
-            probe: None,
-        });
-    }
-
     if let Some(route) = pinned.finalized_route.get() {
         return claim_finalized_completion_turn(provider_router, pinned, route);
     }
@@ -2483,15 +2431,13 @@ fn claim_completion_turn(
 
 /// Remembers the route once the provider has accepted the request, which is
 /// when its prompt cache is warmed for this account. A route whose send never
-/// starts earns no memory. Router v1 keeps no memory at all.
+/// starts earns no memory.
 fn remember_started_route(
     provider_router: &ProviderRouter,
     pinned: &PinnedCompletionRequest,
     route: &SelectedProviderRoute,
 ) {
-    if pinned.routing_mode() == InferenceRoutingMode::V2 {
-        provider_router.remember_route(&pinned.intent, route);
-    }
+    provider_router.remember_route(&pinned.intent, route);
 }
 
 /// Ensures cancellation or panic cannot make an in-flight attempt disappear
@@ -2675,7 +2621,7 @@ pub(crate) async fn start_chat_completion_response_for_execution(
 }
 
 /// Run an entitled internal completion with a bounded response body. Provider
-/// selection follows the request's ordinary V1 or V2 routing policy; plan checks,
+/// selection follows the request's ordinary routing policy; plan checks,
 /// provider-managed fields, and billing are shared with other completions.
 pub(crate) async fn get_bounded_chat_completion_response(
     state: &Arc<AppState>,
@@ -2729,9 +2675,6 @@ struct CompletionExecutionOptions {
 /// preparation choice. IDs join this decision to provider starts/terminals;
 /// it does not imply a successful fallback or client receipt.
 fn log_selected_inference_route(pinned: &PinnedCompletionRequest, attempt: &InferenceAttempt) {
-    if pinned.routing_mode() != InferenceRoutingMode::V2 {
-        return;
-    }
     let auto_reason = pinned.intent.auto_model_reason();
     if !matches!(
         auto_reason,
@@ -2743,11 +2686,10 @@ fn log_selected_inference_route(pinned: &PinnedCompletionRequest, attempt: &Infe
         return;
     }
     info!(
-        "Inference routing decision: request_id={}, execution_id={}, attempt_id={}, routing_mode={:?}, selection_mode={:?}, surface={:?}, workload={:?}, preferred_model={}, public_model={}, provider={}, provider_model={}, auto_model_reason={:?}, source={:?}, routing_policy_version={}, auto_model_policy_version={:?}, auto_rejected={:?}",
+        "Inference routing decision: request_id={}, execution_id={}, attempt_id={}, routing_mode=V2, selection_mode={:?}, surface={:?}, workload={:?}, preferred_model={}, public_model={}, provider={}, provider_model={}, auto_model_reason={:?}, source={:?}, routing_policy_version={}, auto_model_policy_version={:?}, auto_rejected={:?}",
         attempt.request_id,
         attempt.execution_id,
         attempt.attempt_id,
-        pinned.routing_mode(),
         pinned.intent.selection_mode,
         pinned.intent.surface,
         pinned.intent.workload_class,
@@ -2779,7 +2721,7 @@ async fn get_chat_completion_response_with_options(
         response_execution,
         response_execution_guard,
     } = execution;
-    if routing.model_plan() != pinned.intent.model_plan || routing.mode() != pinned.routing_mode() {
+    if routing.model_plan() != pinned.intent.model_plan {
         error!("Completion policy did not match its pinned inference route");
         return Err(ApiError::InternalServerError.into());
     }
@@ -2862,10 +2804,9 @@ async fn get_chat_completion_response_with_options(
     // report more than one attempt when Tinfoil safely refreshes a stale
     // attested route after a proven pre-connect failure.
     debug!(
-        "Sending inference execution: request_id={}, execution_id={}, routing_mode={:?}, public_model={}, provider_model={}, provider={}",
+        "Sending inference execution: request_id={}, execution_id={}, routing_mode=V2, public_model={}, provider_model={}, provider={}",
         execution.request_id,
         execution.execution_id,
-        pinned.routing_mode(),
         selected_route.public_model_id,
         selected_route.provider_model_id,
         selected_route.provider.as_str()
@@ -3605,10 +3546,7 @@ async fn proxy_model_catalog(
     let model_plan = ModelPlan::from_is_paid(
         billing_access.is_some_and(crate::billing::ChatBillingAccess::is_paid),
     );
-    let routing_mode = state.inference_routing_mode(user.uuid).await;
-    let alias_targets = state
-        .model_alias_targets(user.uuid, model_plan, routing_mode)
-        .await;
+    let alias_targets = ModelAliasTargets::for_plan(model_plan);
     let catalog_response = model_catalog_response(alias_targets);
     encrypt_response(&state, &session_id, &catalog_response).await
 }
@@ -4523,6 +4461,7 @@ mod tests {
             format!("request_id={}", attempt.request_id),
             format!("execution_id={}", attempt.execution_id),
             format!("attempt_id={}", attempt.attempt_id),
+            "routing_mode=V2".to_string(),
             "provider=continuum".to_string(),
             "source=Fallback".to_string(),
         ] {
@@ -4534,7 +4473,7 @@ mod tests {
     }
 
     #[test]
-    fn routing_info_covers_auto_and_sticky_but_not_primary_or_legacy() {
+    fn routing_info_covers_auto_and_sticky_but_not_primary() {
         let mut pinned = pinned_test_completion();
         let attempt = pinned
             .begin_execution()
@@ -4584,9 +4523,6 @@ mod tests {
             capture_info_logs(|| log_selected_inference_route(&pinned, &attempt))
                 .contains("source=Sticky")
         );
-        let legacy =
-            PinnedCompletionRequest::new(pinned.intent, pinned.route, InferenceRoutingMode::Legacy);
-        assert!(capture_info_logs(|| log_selected_inference_route(&legacy, &attempt)).is_empty());
     }
 
     #[test]
@@ -4738,9 +4674,8 @@ mod tests {
                 provider_model_id: "glm-5-3".to_string(),
                 response_model_id: "glm-5-3".to_string(),
                 bucket: None,
-                selection_source: crate::provider_registry::RouteSelectionSource::DefaultProvider,
+                selection_source: crate::provider_registry::RouteSelectionSource::StaticSplit,
             },
-            InferenceRoutingMode::V2,
         )
     }
 
@@ -4768,7 +4703,7 @@ mod tests {
             .select_active_completion_route(proxy_router, &intent)
             .expect("initial GLM 5.3 route");
         assert_eq!(route.provider, ProviderId::Continuum);
-        PinnedCompletionRequest::new(intent, route, InferenceRoutingMode::V2)
+        PinnedCompletionRequest::new(intent, route)
     }
 
     fn open_and_claim_probe_at_boundary(
@@ -4797,42 +4732,6 @@ mod tests {
     }
 
     #[test]
-    fn legacy_router_bypasses_probe_claims_and_replanning() {
-        let provider_router = ProviderRouter::default();
-        let proxy_router = probe_test_proxy_router();
-        let intent = InferenceIntent::new(
-            Uuid::nil(),
-            crate::model_config::KIMI_K3_MODEL_ID,
-            crate::model_config::KIMI_K3_MODEL_ID,
-            ModelPlan::Paid,
-            InferenceSurface::ChatCompletions,
-            WorkloadClass::Interactive,
-        );
-        let route = provider_router
-            .select_completion_route_with_preference(
-                &proxy_router,
-                intent.account_uuid,
-                &intent.public_model_id,
-                None,
-            )
-            .expect("legacy K3 route");
-        let pinned = PinnedCompletionRequest::new(
-            intent.clone(),
-            route.clone(),
-            InferenceRoutingMode::Legacy,
-        );
-        let winning_probe = open_and_claim_probe_at_boundary(&provider_router, &intent, &route);
-
-        let claimed = claim_completion_turn(&provider_router, &proxy_router, &pinned)
-            .expect("legacy routing ignores Router v2 recovery state");
-
-        assert_eq!(claimed.route.identity(), route.identity());
-        assert!(claimed.probe.is_none());
-        assert!(pinned.finalized_route.get().is_none());
-        drop(winning_probe);
-    }
-
-    #[test]
     fn lost_auto_powerful_probe_claim_replans_within_glm_before_send() {
         let provider_router = ProviderRouter::default();
         let proxy_router = probe_test_proxy_router();
@@ -4848,8 +4747,7 @@ mod tests {
             .select_active_completion_route(&proxy_router, &intent)
             .expect("initial GLM route");
         assert_eq!(route.provider, ProviderId::Continuum);
-        let pinned =
-            PinnedCompletionRequest::new(intent.clone(), route.clone(), InferenceRoutingMode::V2);
+        let pinned = PinnedCompletionRequest::new(intent.clone(), route.clone());
         let winning_probe = open_and_claim_probe_at_boundary(&provider_router, &intent, &route);
 
         let claimed = claim_completion_turn(&provider_router, &proxy_router, &pinned)
@@ -4881,8 +4779,7 @@ mod tests {
         let route = provider_router
             .select_active_completion_route(&proxy_router, &intent)
             .expect("initial K3 route");
-        let pinned =
-            PinnedCompletionRequest::new(intent.clone(), route.clone(), InferenceRoutingMode::V2);
+        let pinned = PinnedCompletionRequest::new(intent.clone(), route.clone());
         let winning_probe = open_and_claim_probe_at_boundary(&provider_router, &intent, &route);
 
         let error = claim_completion_turn(&provider_router, &proxy_router, &pinned)
@@ -4926,7 +4823,7 @@ mod tests {
                 .expect("initial image route");
             assert_eq!(route.provider, first_provider);
             let winning_probe = open_and_claim_probe_at_boundary(&provider_router, &intent, &route);
-            let pinned = PinnedCompletionRequest::new(intent, route, InferenceRoutingMode::V2);
+            let pinned = PinnedCompletionRequest::new(intent, route);
 
             let claimed = claim_completion_turn(&provider_router, &proxy_router, &pinned)
                 .expect("image helper can use the same-model alternate before sending");
@@ -5498,7 +5395,7 @@ mod tests {
         let route =
             select_prepared_completion_route(&provider_router, &proxy_router, &intent, baseline)
                 .expect("initial GLM route");
-        let pinned = PinnedCompletionRequest::new(intent, route, InferenceRoutingMode::V2);
+        let pinned = PinnedCompletionRequest::new(intent, route);
         let provider_router_ref = &provider_router;
         let proxy_router_ref = &proxy_router;
 
@@ -6576,7 +6473,6 @@ mod tests {
             crate::model_config::AUTO_POWERFUL_MODEL_ID
         );
         assert!(pinned.intent().selection_mode.is_auto());
-        assert_eq!(pinned.routing_mode(), InferenceRoutingMode::V2);
     }
 
     #[test]
@@ -7861,7 +7757,6 @@ mod tests {
         surface: InferenceSurface,
         requested: &str,
         plan: ModelPlan,
-        mode: InferenceRoutingMode,
     ) -> Result<ResolvedInferenceModel, ApiError> {
         resolve_excluding_for_test(
             provider_router,
@@ -7870,12 +7765,10 @@ mod tests {
             surface,
             requested,
             plan,
-            mode,
             None,
         )
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn resolve_excluding_for_test(
         provider_router: &ProviderRouter,
         proxy_router: &ProxyRouter,
@@ -7883,10 +7776,9 @@ mod tests {
         surface: InferenceSurface,
         requested: &str,
         plan: ModelPlan,
-        mode: InferenceRoutingMode,
         excluded: Option<&ExcludedAutoCandidate>,
     ) -> Result<ResolvedInferenceModel, ApiError> {
-        let alias_target = ModelAliasTargets::for_router_v2(plan).resolve(requested);
+        let alias_target = ModelAliasTargets::for_plan(plan).resolve(requested);
         resolve_inference_model(
             provider_router,
             proxy_router,
@@ -7896,7 +7788,6 @@ mod tests {
                 requested_model_id: requested,
                 alias_target,
                 model_plan: plan,
-                routing_mode: mode,
                 excluded,
             },
             auto_requirements,
@@ -7987,7 +7878,6 @@ mod tests {
             surface,
             AUTO_QUICK_MODEL_ID,
             plan,
-            InferenceRoutingMode::V2,
         )
         .expect("healthy resolution");
         assert_eq!(first.public_model_id(), DEEPSEEK_V4_1_FLASH_MODEL_ID);
@@ -8019,11 +7909,7 @@ mod tests {
         )
         .expect("DeepSeek route");
         assert_eq!(first_route.provider, ProviderId::Tinfoil);
-        let first_pinned = PinnedCompletionRequest::new(
-            first_intent.clone(),
-            first_route,
-            InferenceRoutingMode::V2,
-        );
+        let first_pinned = PinnedCompletionRequest::new(first_intent.clone(), first_route);
         let first_claim = claim_completion_turn(&provider_router, &proxy_router, &first_pinned)
             .expect("first claim");
         let first_trace = try_provider(
@@ -8071,7 +7957,6 @@ mod tests {
             surface,
             AUTO_QUICK_MODEL_ID,
             plan,
-            InferenceRoutingMode::V2,
         )
         .expect("fallback resolution");
         assert_eq!(second.public_model_id(), GLM_5_3_FLASH_MODEL_ID);
@@ -8113,11 +7998,8 @@ mod tests {
         assert_eq!(second_route.public_model_id, GLM_5_3_FLASH_MODEL_ID);
         assert_eq!(second_route.provider, ProviderId::Tinfoil);
         assert_eq!(second_route.provider_model_id, GLM_5_3_FLASH_MODEL_ID);
-        let second_pinned = PinnedCompletionRequest::new(
-            second_intent.clone(),
-            second_route.clone(),
-            InferenceRoutingMode::V2,
-        );
+        let second_pinned =
+            PinnedCompletionRequest::new(second_intent.clone(), second_route.clone());
         let second_claim = claim_completion_turn(&provider_router, &proxy_router, &second_pinned)
             .expect("GLM Flash claim");
         assert_eq!(second_pinned.public_model_id(), GLM_5_3_FLASH_MODEL_ID);
@@ -8175,7 +8057,6 @@ mod tests {
             surface,
             DEEPSEEK_V4_1_FLASH_MODEL_ID,
             plan,
-            InferenceRoutingMode::V2,
         )
         .expect("explicit resolution");
         assert!(explicit.auto_decision().is_none());
@@ -8220,7 +8101,6 @@ mod tests {
             surface,
             AUTO_QUICK_MODEL_ID,
             plan,
-            InferenceRoutingMode::V2,
         )
         .expect("retained resolution");
         assert_eq!(fourth.public_model_id(), GLM_5_3_FLASH_MODEL_ID);
@@ -8235,7 +8115,6 @@ mod tests {
             InferenceSurface::Responses,
             AUTO_QUICK_MODEL_ID,
             plan,
-            InferenceRoutingMode::V2,
         )
         .expect("responses resolution");
         assert_eq!(
@@ -8243,24 +8122,11 @@ mod tests {
             AutoModelReason::HealthFallback
         );
 
-        // 5. The account's Auto Powerful memory is untouched and Router v1
-        // never leaves the alias target even during the outage.
+        // 5. The account's Auto Powerful memory is untouched.
         assert_eq!(
             provider_router.sticky_route(account, surface, AUTO_POWERFUL_MODEL_ID),
             None
         );
-        let legacy = resolve_for_test(
-            &provider_router,
-            &proxy_router,
-            account,
-            surface,
-            AUTO_QUICK_MODEL_ID,
-            plan,
-            InferenceRoutingMode::Legacy,
-        )
-        .expect("legacy resolution");
-        assert_eq!(legacy.public_model_id(), DEEPSEEK_V4_1_FLASH_MODEL_ID);
-        assert!(legacy.auto_decision().is_none());
 
         // 6. Free callers keep their entitlement errors and single target.
         assert!(matches!(
@@ -8271,7 +8137,6 @@ mod tests {
                 surface,
                 AUTO_POWERFUL_MODEL_ID,
                 ModelPlan::Free,
-                InferenceRoutingMode::V2,
             ),
             Err(ApiError::ModelNotAvailableOnPlan)
         ));
@@ -8282,7 +8147,6 @@ mod tests {
             surface,
             AUTO_QUICK_MODEL_ID,
             ModelPlan::Free,
-            InferenceRoutingMode::V2,
         )
         .expect("free quick");
         assert_eq!(free_quick.public_model_id(), QUICK_MODEL_ID);
@@ -8363,7 +8227,6 @@ mod tests {
                 InferenceSurface::ChatCompletions,
                 AUTO_QUICK_MODEL_ID,
                 ModelPlan::Paid,
-                InferenceRoutingMode::V2,
             )
         };
         match resolve().expect_err("no eligible Quick candidate") {
@@ -8424,7 +8287,6 @@ mod tests {
             surface,
             AUTO_QUICK_MODEL_ID,
             ModelPlan::Paid,
-            InferenceRoutingMode::V2,
         )
         .expect("retained alternate");
         assert_eq!(first.public_model_id(), GLM_5_3_FLASH_MODEL_ID);
@@ -8444,7 +8306,6 @@ mod tests {
             surface,
             AUTO_QUICK_MODEL_ID,
             ModelPlan::Paid,
-            InferenceRoutingMode::V2,
             Some(&overflowed),
         )
         .expect("preferred model after overflow");
@@ -8494,7 +8355,6 @@ mod tests {
                 surface,
                 AUTO_QUICK_MODEL_ID,
                 ModelPlan::Free,
-                InferenceRoutingMode::V2,
                 Some(&lost),
             )
             .expect_err("no alternate for free quick");
@@ -8517,7 +8377,6 @@ mod tests {
                 surface,
                 AUTO_QUICK_MODEL_ID,
                 ModelPlan::Free,
-                InferenceRoutingMode::V2,
                 Some(&lost),
             )
             .expect_err("no alternate for free quick")
@@ -8543,7 +8402,6 @@ mod tests {
                     requested_model_id: AUTO_POWERFUL_MODEL_ID,
                     alias_target: GLM_5_3_MODEL_ID,
                     model_plan: ModelPlan::Paid,
-                    routing_mode: InferenceRoutingMode::V2,
                     excluded: Some(&lost),
                 },
                 || AutoModelRequirements {
@@ -8570,7 +8428,6 @@ mod tests {
                 surface,
                 AUTO_POWERFUL_MODEL_ID,
                 ModelPlan::Paid,
-                InferenceRoutingMode::V2,
                 Some(&lost),
             )
             .expect("alternate takes the request");
@@ -8581,7 +8438,7 @@ mod tests {
     }
 
     #[test]
-    fn started_routes_are_remembered_for_router_v2_only_and_per_surface() {
+    fn started_routes_are_remembered_per_surface() {
         let provider_router = ProviderRouter::default();
         let proxy_router = probe_test_proxy_router();
         let intent = InferenceIntent::new(
@@ -8592,30 +8449,10 @@ mod tests {
             InferenceSurface::Responses,
             WorkloadClass::Interactive,
         );
-        let legacy_route = provider_router
-            .select_completion_route_with_preference(
-                &proxy_router,
-                intent.account_uuid,
-                &intent.public_model_id,
-                None,
-            )
-            .expect("legacy route");
-        let legacy_pinned = PinnedCompletionRequest::new(
-            intent.clone(),
-            legacy_route.clone(),
-            InferenceRoutingMode::Legacy,
-        );
-        remember_started_route(&provider_router, &legacy_pinned, &legacy_route);
-        assert_eq!(provider_router.sticky_routes().len(), 0);
-
         let v2_route = provider_router
             .select_active_completion_route(&proxy_router, &intent)
             .expect("v2 route");
-        let v2_pinned = PinnedCompletionRequest::new(
-            intent.clone(),
-            v2_route.clone(),
-            InferenceRoutingMode::V2,
-        );
+        let v2_pinned = PinnedCompletionRequest::new(intent.clone(), v2_route.clone());
         let claimed = claim_completion_turn(&provider_router, &proxy_router, &v2_pinned)
             .expect("first v2 claim");
         assert_eq!(
@@ -8722,19 +8559,9 @@ mod tests {
         let plain_requirements = plain_chat.requirements(&plain_exact);
         assert!(!plain_requirements.vision);
         assert!(plain_requirements.kimi_tool_history_compatible);
-        assert!(needs_auto_model_decision(
-            "auto:quick",
-            InferenceRoutingMode::V2
-        ));
-        assert!(!needs_auto_model_decision(
-            "auto:quick",
-            InferenceRoutingMode::Legacy
-        ));
-        assert!(!needs_auto_model_decision(
-            "glm-5-3",
-            InferenceRoutingMode::V2
-        ));
-        // Requirements are never evaluated for Router v1 or explicit selections.
+        assert!(needs_auto_model_decision("auto:quick"));
+        assert!(!needs_auto_model_decision("glm-5-3"));
+        // Requirements are never evaluated for explicit selections.
         let provider_router = ProviderRouter::default();
         let proxy_router = probe_test_proxy_router();
         let evaluated = std::cell::Cell::new(false);
@@ -8744,10 +8571,9 @@ mod tests {
             ModelResolutionRequest {
                 account_uuid: Uuid::nil(),
                 surface: InferenceSurface::ChatCompletions,
-                requested_model_id: "auto:quick",
+                requested_model_id: crate::model_config::DEEPSEEK_V4_1_FLASH_MODEL_ID,
                 alias_target: crate::model_config::DEEPSEEK_V4_1_FLASH_MODEL_ID,
                 model_plan: ModelPlan::Paid,
-                routing_mode: InferenceRoutingMode::Legacy,
                 excluded: None,
             },
             || {
@@ -8755,7 +8581,7 @@ mod tests {
                 auto_requirements()
             },
         )
-        .expect("legacy");
+        .expect("explicit selection");
         assert!(resolved.auto_decision().is_none());
         assert!(!evaluated.get());
     }

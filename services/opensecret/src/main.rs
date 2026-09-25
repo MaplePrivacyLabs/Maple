@@ -11,7 +11,6 @@ use crate::encrypt::{
 };
 use crate::jwt::validate_platform_jwt;
 use crate::login_routes::RegisterCredentials;
-use crate::model_config::{ModelAliasTargets, ModelPlan, PaidModelAliasOverrides};
 use crate::models::account_deletion::{AccountDeletionError, NewAccountDeletionRequest};
 use crate::models::email_verification::{EmailVerificationError, NewEmailVerification};
 use crate::models::oauth::{NewUserOAuthConnection, OAuthError};
@@ -134,10 +133,9 @@ mod web;
 mod aead_db_tamper_tests;
 
 use apple_signin::AppleJwtVerifier;
-use inference_planning::ProviderPreference;
 use oauth::{AppleProvider, GithubProvider, GoogleProvider, OAuthManager};
 use provider_client::{ProviderClient, ProviderRequestError};
-use provider_routing::{InferenceRoutingMode, ProviderRouter};
+use provider_routing::ProviderRouter;
 use proxy_config::ProxyRouter;
 
 const ENCLAVE_KEY_NAME: &str = "enclave_key";
@@ -156,9 +154,6 @@ const BILLING_SERVER_URL_NAME: &str = "billing_server_url";
 const KAGI_API_KEY_NAME: &str = "kagi_api_key";
 const OS_FLAGS_API_KEY_NAME: &str = "os_flags_api_key";
 const OS_FLAGS_BASE_URL_NAME: &str = "os_flags_base_url";
-const MODEL_ALIAS_FLAGS_TIMEOUT_SECS: u64 = 5;
-const PROVIDER_ROUTING_FLAGS_TIMEOUT_SECS: u64 = 5;
-const ROUTING_FLAGS_FAILURE_BACKOFF_SECS: u64 = 30;
 const BILLING_ACCESS_TIMEOUT_SECS: u64 = 5;
 const MAX_ATTESTATION_NONCE_BYTES: usize = 512;
 const MAX_PENDING_ATTESTATIONS: usize = 65_536;
@@ -888,7 +883,6 @@ pub struct AppState {
     sqs_publisher: Option<Arc<SqsEventPublisher>>,
     billing_client: Option<BillingClient>,
     os_flags_client: Option<os_flags::OsFlagsClient>,
-    router_v2_flag_failure_backoff: RoutingFlagsFailureBackoff,
     responses_message_reservations: ResponseMessageReservations,
     apple_jwt_verifier: Arc<AppleJwtVerifier>,
     response_executions: web::responses::ResponseExecutionRegistry,
@@ -989,62 +983,6 @@ mod response_message_reservations_tests {
         release_tx.send(()).expect("release owner");
         owner.join().expect("owner thread exits");
         assert!(reservations.try_reserve(message_uuid).is_ok());
-    }
-}
-
-#[derive(Clone, Debug)]
-struct RoutingFlagsFailureBackoff {
-    unavailable_until: Arc<RwLock<Option<tokio::time::Instant>>>,
-    duration: Duration,
-}
-
-impl Default for RoutingFlagsFailureBackoff {
-    fn default() -> Self {
-        Self {
-            unavailable_until: Arc::new(RwLock::new(None)),
-            duration: Duration::from_secs(ROUTING_FLAGS_FAILURE_BACKOFF_SECS),
-        }
-    }
-}
-
-impl RoutingFlagsFailureBackoff {
-    async fn is_active(&self) -> bool {
-        self.unavailable_until
-            .read()
-            .await
-            .is_some_and(|deadline| deadline > tokio::time::Instant::now())
-    }
-
-    async fn record_failure(&self) {
-        *self.unavailable_until.write().await = Some(tokio::time::Instant::now() + self.duration);
-    }
-
-    async fn record_success(&self) {
-        *self.unavailable_until.write().await = None;
-    }
-}
-
-#[cfg(test)]
-mod routing_flags_failure_backoff_tests {
-    use super::*;
-
-    #[tokio::test]
-    async fn failure_backoff_opens_closes_and_expires() {
-        let backoff = RoutingFlagsFailureBackoff {
-            unavailable_until: Arc::new(RwLock::new(None)),
-            duration: Duration::from_millis(1),
-        };
-
-        assert!(!backoff.is_active().await);
-        backoff.record_failure().await;
-        assert!(backoff.is_active().await);
-
-        backoff.record_success().await;
-        assert!(!backoff.is_active().await);
-
-        backoff.record_failure().await;
-        tokio::time::sleep(Duration::from_millis(5)).await;
-        assert!(!backoff.is_active().await);
     }
 }
 
@@ -1384,7 +1322,6 @@ impl AppStateBuilder {
             sqs_publisher,
             billing_client,
             os_flags_client,
-            router_v2_flag_failure_backoff: RoutingFlagsFailureBackoff::default(),
             responses_message_reservations: ResponseMessageReservations::default(),
             apple_jwt_verifier,
             response_executions: web::responses::ResponseExecutionRegistry::default(),
@@ -1411,157 +1348,6 @@ impl AppState {
                     user_uuid, flag_key, e
                 );
                 false
-            }
-        }
-    }
-
-    /// Resolve automatic aliases under the request's router policy. Router v2
-    /// uses fixed aliases without consulting legacy selector flags. Legacy paid
-    /// overrides default off on missing configuration, failure, or timeout.
-    pub(crate) async fn model_alias_targets(
-        &self,
-        user_uuid: Uuid,
-        model_plan: ModelPlan,
-        routing_mode: InferenceRoutingMode,
-    ) -> ModelAliasTargets {
-        if routing_mode == InferenceRoutingMode::V2 {
-            return ModelAliasTargets::for_router_v2(model_plan);
-        }
-        if !model_plan.is_paid() {
-            return ModelAliasTargets::for_plan(model_plan);
-        }
-
-        let Some(client) = &self.os_flags_client else {
-            return ModelAliasTargets::for_plan(model_plan);
-        };
-
-        let overrides = match tokio::time::timeout(
-            Duration::from_secs(MODEL_ALIAS_FLAGS_TIMEOUT_SECS),
-            client.get_user_flags(user_uuid, Some(os_flags::PAID_MODEL_ALIAS_FLAG_KEYS)),
-        )
-        .await
-        {
-            Ok(Ok(response)) => PaidModelAliasOverrides::from_flag_values(&response.flags),
-            Ok(Err(e)) => {
-                warn!(
-                    "os-flags paid model alias check failed (user_uuid={}): {}; using default aliases",
-                    user_uuid, e
-                );
-                PaidModelAliasOverrides::default()
-            }
-            Err(_) => {
-                warn!(
-                    "os-flags paid model alias check timed out after {}s (user_uuid={}); using default aliases",
-                    MODEL_ALIAS_FLAGS_TIMEOUT_SECS, user_uuid
-                );
-                PaidModelAliasOverrides::default()
-            }
-        };
-
-        ModelAliasTargets::for_plan_with_overrides(model_plan, overrides)
-    }
-
-    /// Resolve the inference router exactly once for an authenticated external
-    /// request. Router v2 is opt-in: absent configuration, a missing or false
-    /// flag, service failure, and timeout all retain the legacy router.
-    pub(crate) async fn inference_routing_mode(&self, user_uuid: Uuid) -> InferenceRoutingMode {
-        let flag_key = os_flags::INFERENCE_ROUTER_V2_FLAG_KEY;
-        let Some(client) = &self.os_flags_client else {
-            return InferenceRoutingMode::Legacy;
-        };
-        if self.router_v2_flag_failure_backoff.is_active().await {
-            let cached_value = client.get_cached_bool_flag(user_uuid, flag_key).await;
-            let mode = cached_value
-                .flatten()
-                .map(|value| InferenceRoutingMode::from_router_v2_flag(Some(value)))
-                .unwrap_or(InferenceRoutingMode::Legacy);
-            return mode;
-        }
-
-        let mode = match tokio::time::timeout(
-            Duration::from_secs(PROVIDER_ROUTING_FLAGS_TIMEOUT_SECS),
-            client.get_bool_flag(user_uuid, flag_key),
-        )
-        .await
-        {
-            Ok(Ok(value)) => {
-                self.router_v2_flag_failure_backoff.record_success().await;
-                InferenceRoutingMode::from_router_v2_flag(value)
-            }
-            Ok(Err(error)) => {
-                self.router_v2_flag_failure_backoff.record_failure().await;
-                warn!(
-                    user_uuid = %user_uuid,
-                    flag_key,
-                    %error,
-                    "os-flags inference-router check failed; retaining legacy router"
-                );
-                InferenceRoutingMode::Legacy
-            }
-            Err(_) => {
-                self.router_v2_flag_failure_backoff.record_failure().await;
-                warn!(
-                    user_uuid = %user_uuid,
-                    flag_key,
-                    timeout_seconds = PROVIDER_ROUTING_FLAGS_TIMEOUT_SECS,
-                    "os-flags inference-router check timed out; retaining legacy router"
-                );
-                InferenceRoutingMode::Legacy
-            }
-        };
-
-        debug!(
-            user_uuid = %user_uuid,
-            flag_key,
-            routing_mode = ?mode,
-            "Resolved request-scoped inference router"
-        );
-        mode
-    }
-
-    /// Resolve an explicit provider preference only for models configured for
-    /// flag-controlled routing. Missing configuration, flags, failures, and
-    /// timeouts retain the model's default provider.
-    pub(crate) async fn provider_routing_preference(
-        &self,
-        user_uuid: Uuid,
-        requested_model: &str,
-    ) -> Option<ProviderPreference> {
-        let provider_flag = self
-            .provider_router
-            .provider_routing_flag_for_completion_model(requested_model)?;
-        let flag_key = provider_flag.key();
-
-        let Some(client) = &self.os_flags_client else {
-            return None;
-        };
-        match tokio::time::timeout(
-            Duration::from_secs(PROVIDER_ROUTING_FLAGS_TIMEOUT_SECS),
-            client.get_bool_flag(user_uuid, flag_key),
-        )
-        .await
-        {
-            Ok(Ok(Some(enabled))) => Some(provider_flag.preference_for(enabled)),
-            Ok(Ok(None)) => {
-                debug!(
-                    "os-flags provider routing flag missing (user_uuid={}, requested_model={}, flag_key={}); using default provider routing",
-                    user_uuid, requested_model, flag_key
-                );
-                None
-            }
-            Ok(Err(e)) => {
-                warn!(
-                    "os-flags provider routing check failed (user_uuid={}, requested_model={}, flag_key={}): {}; using default provider routing",
-                    user_uuid, requested_model, flag_key, e
-                );
-                None
-            }
-            Err(_) => {
-                warn!(
-                    "os-flags provider routing check timed out after {}s (user_uuid={}, requested_model={}, flag_key={}); using default provider routing",
-                    PROVIDER_ROUTING_FLAGS_TIMEOUT_SECS, user_uuid, requested_model, flag_key
-                );
-                None
             }
         }
     }
