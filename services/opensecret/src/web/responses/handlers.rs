@@ -15,7 +15,7 @@ use crate::{
     jwt::AuthContext,
     model_config::{
         model_alias_requires_flag_lookup, model_config, model_reasoning_history_strategy,
-        resolve_public_model_id, ModelAliasTargets, ModelPlan, ReasoningHistoryStrategy,
+        model_reasoning_replay, resolve_public_model_id, ModelAliasTargets, ModelPlan,
         ResponsesModelConfig, SamplingConfig,
     },
     models::responses::{
@@ -89,6 +89,18 @@ const RESPONSE_CANCEL_ACK_POLL_INTERVAL: Duration = Duration::from_millis(20);
 const MAX_WEB_SEARCH_TOOL_TURNS_FREE: usize = 5;
 const MAX_WEB_SEARCH_TOOL_TURNS_PAID: usize = 30;
 const RESPONSE_EXECUTION_DEADLINE: Duration = Duration::from_secs(10 * 60);
+
+/// vLLM's per-request loop guard: generation stops with finish reason
+/// `repetition` once a 4 to 64 token pattern repeats 16 times in a row. Both
+/// inference providers accept it; Tinfoil already applies these values to GLM
+/// 5.3 Flash by default.
+fn responses_repetition_detection() -> Value {
+    json!({
+        "max_pattern_size": 64,
+        "min_pattern_size": 4,
+        "min_count": 16,
+    })
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ResponseCancellationAckDecision {
@@ -173,50 +185,33 @@ fn set_chat_template_kwarg(chat_request: &mut Value, key: &str, value: Value) {
     }
 }
 
-fn apply_reasoning_history_strategy(chat_request: &mut Value, model: &str) {
-    match model_reasoning_history_strategy(model) {
-        Some(ReasoningHistoryStrategy::KimiPreserveThinking) => {
-            set_chat_template_kwarg(chat_request, "preserve_thinking", json!(true));
-        }
-        Some(ReasoningHistoryStrategy::GlmClearThinking) => {
-            set_chat_template_kwarg(chat_request, "clear_thinking", json!(false));
-        }
-        None => {}
-    }
-}
-
 fn apply_responses_model_defaults(
     chat_request: &mut Value,
     config: ResponsesModelConfig,
     model: &str,
 ) {
-    if !config.include_reasoning
-        && !config.enable_thinking
-        && model_reasoning_history_strategy(model).is_none()
-    {
-        return;
-    }
-
-    let Some(obj) = chat_request.as_object_mut() else {
-        return;
-    };
-
     if config.include_reasoning {
-        obj.insert("include_reasoning".to_string(), json!(true));
+        if let Some(obj) = chat_request.as_object_mut() {
+            obj.insert("include_reasoning".to_string(), json!(true));
+        }
     }
 
     if config.enable_thinking {
         set_chat_template_kwarg(chat_request, "enable_thinking", json!(true));
     }
 
-    apply_reasoning_history_strategy(chat_request, model);
+    if let Some((key, value)) = model_reasoning_history_strategy(model).chat_template_kwarg() {
+        set_chat_template_kwarg(chat_request, key, value);
+    }
 }
 
-fn resolve_responses_sampling(body: &ResponsesCreateRequest) -> SamplingConfig {
+/// The model's recommended sampling with any explicit caller values applied.
+/// `None` for a model outside the catalog, whose request omits sampling.
+fn resolve_responses_sampling(body: &ResponsesCreateRequest) -> Option<SamplingConfig> {
     model_config(&body.model)
         .responses
         .sampling
-        .with_overrides(body.temperature, body.top_p)
+        .map(|sampling| sampling.with_overrides(body.temperature, body.top_p))
 }
 
 fn resolve_responses_model(
@@ -492,16 +487,17 @@ fn build_model_turn_request(
 ) -> Value {
     let config_model = resolve_public_model_id(&body.model).unwrap_or(body.model.as_str());
     let responses_config = model_config(config_model).responses;
-    let sampling = resolve_responses_sampling(body);
     let mut chat_request = json!({
         "model": body.model,
         "messages": prompt_messages,
-        "temperature": body.temperature.unwrap_or(sampling.temperature),
-        "top_p": body.top_p.unwrap_or(sampling.top_p),
         "max_tokens": body.max_output_tokens,
         "stream": true,
-        "stream_options": { "include_usage": true }
+        "stream_options": { "include_usage": true },
+        "repetition_detection": responses_repetition_detection(),
     });
+    if let Some(sampling) = resolve_responses_sampling(body) {
+        sampling.apply_to_request(&mut chat_request, web_search_enabled);
+    }
 
     if web_search_enabled {
         let provider_tools = build_provider_tools(&body.tools);
@@ -1222,7 +1218,7 @@ mod tests {
     }
 
     #[test]
-    fn test_apply_responses_model_defaults_preserves_glm_reasoning_history() {
+    fn test_apply_responses_model_defaults_clears_prior_glm_reasoning() {
         let mut chat_request = json!({
             "model": "glm-5-3"
         });
@@ -1233,10 +1229,7 @@ mod tests {
             "glm-5-3",
         );
 
-        assert_eq!(
-            chat_request["chat_template_kwargs"]["clear_thinking"],
-            false
-        );
+        assert_eq!(chat_request["chat_template_kwargs"]["clear_thinking"], true);
         assert!(chat_request.get("include_reasoning").is_none());
     }
 
@@ -2022,15 +2015,58 @@ mod tests {
     }
 
     #[test]
-    fn test_resolve_responses_sampling_uses_model_defaults() {
-        let body = responses_request_for_model("llama3-3-70b");
-        let sampling = resolve_responses_sampling(&body);
+    fn test_resolve_responses_sampling_uses_model_recommendations() {
+        let sampling = resolve_responses_sampling(&responses_request_for_model("llama3-3-70b"))
+            .expect("catalog sampling");
+        assert_eq!(sampling.temperature, 0.6);
+        assert_eq!(sampling.top_p, 0.9);
 
         assert_eq!(
-            sampling.temperature,
-            crate::model_config::DEFAULT_TEMPERATURE
+            resolve_responses_sampling(&responses_request_for_model("unknown-model")),
+            None
         );
-        assert_eq!(sampling.top_p, crate::model_config::DEFAULT_TOP_P);
+    }
+
+    #[test]
+    fn test_build_model_turn_request_sends_recommended_sampling_per_model() {
+        let prompt = [json!({"role": "user", "content": "hello"})];
+        for (model, tools_enabled, temperature, top_p, top_k) in [
+            ("deepseek-v4-1-flash", false, 1.0, 1.0, None),
+            ("glm-5-3-flash", false, 1.0, 0.95, None),
+            ("glm-5-3", true, 1.0, 0.95, None),
+            ("gemma4-31b", false, 1.0, 0.95, Some(64)),
+            ("kimi-k3", false, 1.0, 0.95, None),
+            ("kimi-k3", true, 1.0, 1.0, None),
+            ("gpt-oss-120b", true, 1.0, 1.0, None),
+            ("llama3-3-70b", false, 0.6, 0.9, None),
+        ] {
+            let request = build_model_turn_request(
+                &responses_request_for_model(model),
+                &prompt,
+                tools_enabled,
+            );
+            assert_eq!(request["temperature"], json!(temperature), "{model}");
+            assert_eq!(request["top_p"], json!(top_p), "{model}");
+            assert_eq!(request["top_k"].as_u64(), top_k, "{model}");
+            assert_eq!(
+                request["repetition_detection"],
+                json!({"max_pattern_size": 64, "min_pattern_size": 4, "min_count": 16}),
+                "{model}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_build_model_turn_request_omits_sampling_for_uncataloged_models() {
+        let request = build_model_turn_request(
+            &responses_request_for_model("unknown-model"),
+            &[json!({"role": "user", "content": "hello"})],
+            false,
+        );
+
+        assert!(request.get("temperature").is_none());
+        assert!(request.get("top_p").is_none());
+        assert!(request.get("top_k").is_none());
     }
 
     #[test]
@@ -2182,7 +2218,7 @@ mod tests {
         assert_eq!(glm_5_3_request["model"], "glm-5-3");
         assert_eq!(
             glm_5_3_request["chat_template_kwargs"]["clear_thinking"],
-            false
+            true
         );
 
         let glm_5_3_flash = responses_request_for_model("glm-5-3-flash");
@@ -2194,7 +2230,7 @@ mod tests {
         assert_eq!(glm_5_3_flash_request["model"], "glm-5-3-flash");
         assert_eq!(
             glm_5_3_flash_request["chat_template_kwargs"]["clear_thinking"],
-            false
+            true
         );
 
         let targets = ModelAliasTargets::for_plan(ModelPlan::Paid);
@@ -2207,10 +2243,7 @@ mod tests {
             false,
         );
         assert_eq!(auto_request["model"], crate::model_config::GLM_5_3_MODEL_ID);
-        assert_eq!(
-            auto_request["chat_template_kwargs"]["clear_thinking"],
-            false
-        );
+        assert_eq!(auto_request["chat_template_kwargs"]["clear_thinking"], true);
         assert!(auto_request["chat_template_kwargs"]
             .get("preserve_thinking")
             .is_none());
@@ -2237,7 +2270,7 @@ mod tests {
         );
         assert_eq!(
             flagged_request["chat_template_kwargs"]["clear_thinking"],
-            false
+            true
         );
 
         let paid_quick =
@@ -3971,7 +4004,7 @@ fn spawn_title_generation_task(
         // Truncate content to first 500 characters
         let truncated_content: String = user_content.chars().take(500).collect();
         // Build the title generation request
-        let title_request = json!({
+        let mut title_request = json!({
             "model": "llama3-3-70b",
             "messages": [
                 {
@@ -3983,9 +4016,11 @@ fn spawn_title_generation_task(
                     "content": format!("Generate a concise, contextual title (3-5 words) for a chat that starts with this message: \"{}\"", truncated_content)
                 }
             ],
-            "temperature": DEFAULT_TEMPERATURE,
             "stream": false
         });
+        if let Some(sampling) = model_config("llama3-3-70b").responses.sampling {
+            sampling.apply_to_request(&mut title_request, false);
+        }
 
         // Call the completions API with empty headers (no special headers needed)
         // Responses API always uses JWT auth (not API key)
@@ -4316,6 +4351,7 @@ async fn build_context_and_check_billing(
         body.instructions.as_deref(),
         Some(&internal_system_prompt),
         token_reserve,
+        model_reasoning_replay(&body.model, web_search_enabled).before_new_user_message(),
     )?;
 
     // Add the NEW user message to the context (not yet persisted)
@@ -4388,10 +4424,11 @@ async fn persist_request_data(
     user: &User,
     body: &ResponsesCreateRequest,
     prepared: &PreparedRequest,
-    conversation: &crate::models::responses::Conversation,
+    context: &BuiltContext,
     response_uuid: Uuid,
     image_descriptions: &[ImageDescriptionToolPair],
 ) -> Result<PersistedData, ApiError> {
+    let conversation = &context.conversation;
     use crate::models::responses::{NewResponse, ResponseStatus};
 
     // Encrypt metadata if provided
@@ -4413,8 +4450,8 @@ async fn persist_request_data(
         conversation_id: conversation.id,
         status: ResponseStatus::InProgress,
         model: body.model.clone(),
-        temperature: Some(sampling.temperature),
-        top_p: Some(sampling.top_p),
+        temperature: sampling.map(|sampling| sampling.temperature),
+        top_p: sampling.map(|sampling| sampling.top_p_for(context.web_search_enabled)),
         max_output_tokens: body.max_output_tokens,
         tool_choice: body.tool_choice.clone(),
         parallel_tool_calls: body.parallel_tool_calls,
@@ -5294,6 +5331,7 @@ async fn setup_completion_processor(
 
                 let internal_system_prompt =
                     build_internal_system_prompt(tools_requested, model_plan);
+                let next_turn_tools_enabled = tools_requested && !force_final_without_tools;
                 let (rebuilt_messages, rebuilt_tokens) = match build_prompt(
                     state.db.as_ref(),
                     context.conversation.id,
@@ -5302,6 +5340,7 @@ async fn setup_completion_processor(
                     &body.model,
                     body.instructions.as_deref(),
                     Some(&internal_system_prompt),
+                    model_reasoning_replay(&body.model, next_turn_tools_enabled),
                 ) {
                     Ok(prompt) => prompt,
                     Err(_) => return ResponseTerminal::Failed(PublicResponseFailure::Internal),
@@ -5814,7 +5853,7 @@ async fn create_response_stream(
         &user,
         &body,
         &prepared,
-        &context.conversation,
+        &context,
         response_uuid,
         &image_descriptions,
     )
