@@ -6,14 +6,14 @@
 //! create a probe herd.
 
 use super::{AttemptFailureKind, AttemptTerminal, RouteKey};
-use crate::provider_registry::{ProviderId, ProviderRegistry, RateLimitScope, PROVIDER_REGISTRY};
+use crate::provider_registry::{ProviderRegistry, PROVIDER_REGISTRY};
 use std::collections::{HashMap, VecDeque};
 #[cfg(test)]
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
-pub(crate) const SHADOW_HEALTH_POLICY_VERSION: &str = "routing-v2-health-shadow-v1";
+pub(crate) const SHADOW_HEALTH_POLICY_VERSION: &str = "routing-v2-health-shadow-v2";
 
 // The identifier retains its original shadow-era name for telemetry continuity;
 // these thresholds now drive active circuit and capacity decisions.
@@ -35,7 +35,6 @@ pub(crate) enum ShadowObservationMode {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) enum CapacityPoolKey {
     ProviderModel(RouteKey),
-    ProviderAccount(ProviderId),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -59,6 +58,7 @@ pub(crate) enum ShadowDisposition {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct ShadowRouteSnapshot {
     pub(crate) route_health: ShadowDisposition,
+    // Retain both telemetry labels for the same provider:model capacity gate.
     pub(crate) deployment_capacity: ShadowDisposition,
     pub(crate) rate_limit_capacity: ShadowDisposition,
     pub(crate) effective: ShadowDisposition,
@@ -240,7 +240,6 @@ impl Drop for ProbeLease {
 #[derive(Debug)]
 pub(crate) struct ShadowHealthState {
     policy: ShadowHealthPolicy,
-    rate_limit_pools: HashMap<RouteKey, CapacityPoolKey>,
     inner: Arc<Mutex<ShadowHealthInner>>,
     #[cfg(test)]
     observation_count: AtomicUsize,
@@ -260,7 +259,6 @@ impl ShadowHealthState {
     fn new_with_policy(registry: &'static ProviderRegistry, policy: ShadowHealthPolicy) -> Self {
         let mut route_health = HashMap::new();
         let mut capacity = HashMap::new();
-        let mut rate_limit_pools = HashMap::new();
 
         for model in registry.completion_models() {
             for route in model.routes {
@@ -268,26 +266,14 @@ impl ShadowHealthState {
                     provider: route.provider,
                     provider_model_id: route.provider_model_id.to_string(),
                 };
-                let deployment_pool = CapacityPoolKey::ProviderModel(route_key.clone());
-                let rate_limit_pool = match route.rate_limit_scope {
-                    RateLimitScope::ProviderModel => deployment_pool.clone(),
-                    RateLimitScope::ProviderAccount => {
-                        CapacityPoolKey::ProviderAccount(route.provider)
-                    }
-                };
-
+                let pool = CapacityPoolKey::ProviderModel(route_key.clone());
                 route_health.entry(route_key.clone()).or_default();
-                capacity.entry(deployment_pool).or_default();
-                capacity.entry(rate_limit_pool.clone()).or_default();
-                rate_limit_pools
-                    .entry(route_key.clone())
-                    .or_insert(rate_limit_pool);
+                capacity.entry(pool).or_default();
             }
         }
 
         Self {
             policy,
-            rate_limit_pools,
             inner: Arc::new(Mutex::new(ShadowHealthInner {
                 route_health,
                 capacity,
@@ -366,8 +352,8 @@ impl ShadowHealthState {
             .collect()
     }
 
-    /// Atomically checks the route-health gate, deployment-capacity gate, and
-    /// registry-declared rate-limit gate for one already-selected route.
+    /// Atomically checks the route-health and provider:model capacity gates
+    /// for one already-selected route.
     pub(crate) fn try_claim_probe(&self, route: &RouteKey) -> ProbeClaimResult {
         let mut inner = self.lock();
         self.try_claim_probe_locked(&mut inner, route, Instant::now())
@@ -379,20 +365,10 @@ impl ShadowHealthState {
         route: &RouteKey,
         now: Instant,
     ) -> ProbeClaimResult {
-        let Some(rate_limit_pool) = self.rate_limit_pools.get(route) else {
-            return ProbeClaimResult::Rejected {
-                reason: ProbeRejectionReason::UnknownRoute,
-                retry_after: self.policy.minimum_capacity_cooldown,
-            };
-        };
-
-        let deployment_pool = CapacityPoolKey::ProviderModel(route.clone());
-        let mut gates = Vec::with_capacity(3);
-        gates.push(ProbeGateKey::RouteHealth(route.clone()));
-        gates.push(ProbeGateKey::Capacity(deployment_pool.clone()));
-        if rate_limit_pool != &deployment_pool {
-            gates.push(ProbeGateKey::Capacity(rate_limit_pool.clone()));
-        }
+        let gates = [
+            ProbeGateKey::RouteHealth(route.clone()),
+            ProbeGateKey::Capacity(CapacityPoolKey::ProviderModel(route.clone())),
+        ];
 
         let mut expired = Vec::with_capacity(gates.len());
         let mut open_remaining = None;
@@ -466,7 +442,7 @@ impl ShadowHealthState {
         self.observation_count.fetch_add(1, Ordering::Relaxed);
 
         let route = terminal.attempt().route.route_key();
-        let Some(rate_limit_pool) = self.rate_limit_pools.get(&route).cloned() else {
+        if !inner.route_health.contains_key(&route) {
             return ShadowObservationReport {
                 policy_version: SHADOW_HEALTH_POLICY_VERSION,
                 mode,
@@ -476,7 +452,7 @@ impl ShadowHealthState {
                 snapshot: None,
                 mutated: false,
             };
-        };
+        }
 
         let mut signal = ShadowSignal::Completed;
         let mut capacity_pool = None;
@@ -486,15 +462,7 @@ impl ShadowHealthState {
             let status = failure.status;
             if failure.kind == AttemptFailureKind::CapacityRejected {
                 match status {
-                    Some(429) => {
-                        signal = ShadowSignal::CapacityRejected { status: 429 };
-                        capacity_pool = Some(rate_limit_pool.clone());
-                        mutation = Mutation::Capacity {
-                            pool: rate_limit_pool.clone(),
-                            retry_after: failure.retry_after,
-                        };
-                    }
-                    Some(status @ (503 | 529)) => {
+                    Some(status @ (429 | 503 | 529)) => {
                         let pool = CapacityPoolKey::ProviderModel(route.clone());
                         signal = ShadowSignal::CapacityRejected { status };
                         capacity_pool = Some(pool.clone());
@@ -623,20 +591,14 @@ impl ShadowHealthState {
             self.policy.minimum_capacity_cooldown,
             now,
         );
-        let deployment_pool = CapacityPoolKey::ProviderModel(route.clone());
+        let pool = CapacityPoolKey::ProviderModel(route.clone());
         let deployment_capacity = capacity_disposition(
-            inner.capacity.get(&deployment_pool)?,
+            inner.capacity.get(&pool)?,
             self.policy.minimum_capacity_cooldown,
             now,
         );
-        let rate_limit_pool = self.rate_limit_pools.get(route)?;
-        let rate_limit_capacity = capacity_disposition(
-            inner.capacity.get(rate_limit_pool)?,
-            self.policy.minimum_capacity_cooldown,
-            now,
-        );
-        let effective =
-            strongest_disposition([route_health, deployment_capacity, rate_limit_capacity]);
+        let rate_limit_capacity = deployment_capacity;
+        let effective = strongest_disposition([route_health, deployment_capacity]);
 
         Some(ShadowRouteSnapshot {
             route_health,
@@ -1082,7 +1044,7 @@ mod tests {
         AttemptFailure, AttemptStage, CompletionEvidence, InferenceExecution, ReplaySafety,
         RouteIdentity,
     };
-    use crate::provider_registry::RouteSelectionSource;
+    use crate::provider_registry::{ProviderId, RouteSelectionSource};
     use std::sync::{Arc, Barrier};
     use std::thread;
 
@@ -1243,266 +1205,164 @@ mod tests {
     }
 
     #[test]
-    fn provider_specific_rate_limit_scopes_and_deployment_capacity_are_isolated() {
-        let state = ShadowHealthState::with_policy(test_policy());
+    fn capacity_rejections_are_isolated_by_provider_and_model() {
         let now = Instant::now();
-        let k3 = route(ProviderId::Tinfoil, "kimi-k3", "kimi-k3");
-        let quick = route(ProviderId::Tinfoil, "gpt-oss-120b", "gpt-oss-120b");
-        let k2 = route(ProviderId::Continuum, "glm-5-3-flash", "glm-5.3-flash");
-        let glm_continuum = route(ProviderId::Continuum, "glm-5-3", "glm-5.3");
-        let glm_tinfoil = route(ProviderId::Tinfoil, "glm-5-3", "glm-5-3");
-        let glm_flash = route(ProviderId::Tinfoil, "glm-5-3-flash", "glm-5-3-flash");
+        let routes = [
+            [
+                route(ProviderId::Continuum, "glm-5-3", "glm-5.3"),
+                route(ProviderId::Continuum, "glm-5-3-flash", "glm-5.3-flash"),
+            ],
+            [
+                route(ProviderId::Tinfoil, "glm-5-3", "glm-5-3"),
+                route(ProviderId::Tinfoil, "glm-5-3-flash", "glm-5-3-flash"),
+            ],
+        ];
 
-        let tinfoil = state.observe_terminal_at(
-            &failed(
-                k3.clone(),
-                AttemptFailureKind::CapacityRejected,
-                Some(429),
-                Some(Duration::from_secs(5)),
-            ),
-            ShadowObservationMode::Update,
-            now,
-        );
-        assert_eq!(
-            tinfoil.capacity_pool,
-            Some(CapacityPoolKey::ProviderModel(k3.route_key()))
-        );
-        assert!(matches!(
-            state.snapshot_at(&k3.route_key(), now).unwrap().effective,
-            ShadowDisposition::WouldOpen { .. }
-        ));
-        assert_eq!(
-            state
-                .snapshot_at(&quick.route_key(), now)
-                .unwrap()
-                .effective,
-            ShadowDisposition::Healthy
-        );
-
-        let continuum = state.observe_terminal_at(
-            &failed(
-                k2.clone(),
-                AttemptFailureKind::CapacityRejected,
-                Some(429),
-                Some(Duration::from_secs(5)),
-            ),
-            ShadowObservationMode::Update,
-            now,
-        );
-        assert_eq!(
-            continuum.capacity_pool,
-            Some(CapacityPoolKey::ProviderAccount(ProviderId::Continuum))
-        );
-        assert!(matches!(
-            state
-                .snapshot_at(&glm_continuum.route_key(), now)
-                .unwrap()
-                .effective,
-            ShadowDisposition::WouldOpen { .. }
-        ));
-        assert_eq!(
-            state
-                .snapshot_at(&glm_tinfoil.route_key(), now)
-                .unwrap()
-                .effective,
-            ShadowDisposition::Healthy
-        );
-        assert_eq!(
-            state
-                .snapshot_at(&glm_flash.route_key(), now)
-                .unwrap()
-                .effective,
-            ShadowDisposition::Healthy
-        );
-
-        let tinfoil_glm = state.observe_terminal_at(
-            &failed(
-                glm_tinfoil.clone(),
-                AttemptFailureKind::CapacityRejected,
-                Some(429),
-                Some(Duration::from_secs(5)),
-            ),
-            ShadowObservationMode::Update,
-            now,
-        );
-        assert_eq!(
-            tinfoil_glm.capacity_pool,
-            Some(CapacityPoolKey::ProviderModel(glm_tinfoil.route_key()))
-        );
-        assert!(matches!(
-            state
-                .snapshot_at(&glm_tinfoil.route_key(), now)
-                .unwrap()
-                .effective,
-            ShadowDisposition::WouldOpen { .. }
-        ));
-        assert_eq!(
-            state
-                .snapshot_at(&glm_flash.route_key(), now)
-                .unwrap()
-                .effective,
-            ShadowDisposition::Healthy
-        );
-
-        for status in [503, 529] {
-            let deployment_state = ShadowHealthState::with_policy(test_policy());
-            deployment_state.observe_terminal_at(
-                &failed(
-                    k2.clone(),
-                    AttemptFailureKind::CapacityRejected,
-                    Some(status),
-                    Some(Duration::from_secs(5)),
-                ),
-                ShadowObservationMode::Update,
-                now,
-            );
-            assert!(matches!(
-                deployment_state
-                    .snapshot_at(&k2.route_key(), now)
-                    .unwrap()
-                    .effective,
-                ShadowDisposition::WouldOpen { .. }
-            ));
-            assert_eq!(
-                deployment_state
-                    .snapshot_at(&glm_continuum.route_key(), now)
-                    .unwrap()
-                    .effective,
-                ShadowDisposition::Healthy
-            );
-
-            deployment_state.observe_terminal_at(
-                &failed(
-                    glm_tinfoil.clone(),
-                    AttemptFailureKind::CapacityRejected,
-                    Some(status),
-                    Some(Duration::from_secs(5)),
-                ),
-                ShadowObservationMode::Update,
-                now,
-            );
-            assert!(matches!(
-                deployment_state
-                    .snapshot_at(&glm_tinfoil.route_key(), now)
-                    .unwrap()
-                    .effective,
-                ShadowDisposition::WouldOpen { .. }
-            ));
-            assert_eq!(
-                deployment_state
-                    .snapshot_at(&glm_flash.route_key(), now)
-                    .unwrap()
-                    .effective,
-                ShadowDisposition::Healthy
-            );
+        for provider_routes in &routes {
+            for limited in provider_routes {
+                for status in [429, 503, 529] {
+                    let state = ShadowHealthState::with_policy(test_policy());
+                    let report = state.observe_terminal_at(
+                        &failed(
+                            limited.clone(),
+                            AttemptFailureKind::CapacityRejected,
+                            Some(status),
+                            Some(Duration::from_secs(5)),
+                        ),
+                        ShadowObservationMode::Update,
+                        now,
+                    );
+                    assert_eq!(
+                        report.capacity_pool,
+                        Some(CapacityPoolKey::ProviderModel(limited.route_key()))
+                    );
+                    for candidate in routes.iter().flatten() {
+                        let snapshot = state.snapshot_at(&candidate.route_key(), now).unwrap();
+                        let expected = if candidate.route_key() == limited.route_key() {
+                            ShadowDisposition::WouldOpen {
+                                remaining: Duration::from_secs(5),
+                            }
+                        } else {
+                            ShadowDisposition::Healthy
+                        };
+                        assert_eq!(snapshot.effective, expected, "{status}: {candidate:?}");
+                        assert_eq!(snapshot.deployment_capacity, expected);
+                        assert_eq!(snapshot.rate_limit_capacity, expected);
+                        assert_eq!(snapshot.route_health, ShadowDisposition::Healthy);
+                    }
+                }
+            }
         }
     }
 
     #[test]
     fn capacity_cooldowns_are_bounded_and_success_cannot_clear_them_early() {
-        let state = ShadowHealthState::with_policy(test_policy());
-        let start = Instant::now();
-        let k3 = route(ProviderId::Tinfoil, "kimi-k3", "kimi-k3");
-        let key = k3.route_key();
+        for status in [429, 503, 529] {
+            let state = ShadowHealthState::with_policy(test_policy());
+            let start = Instant::now();
+            let k3 = route(ProviderId::Tinfoil, "kimi-k3", "kimi-k3");
+            let key = k3.route_key();
 
-        state.observe_terminal_at(
-            &failed(
-                k3.clone(),
-                AttemptFailureKind::CapacityRejected,
-                Some(429),
-                None,
-            ),
-            ShadowObservationMode::Update,
-            start,
-        );
-        assert_eq!(
-            state.snapshot_at(&key, start).unwrap().effective,
-            ShadowDisposition::WouldOpen {
-                remaining: Duration::from_secs(4)
-            }
-        );
+            state.observe_terminal_at(
+                &failed(
+                    k3.clone(),
+                    AttemptFailureKind::CapacityRejected,
+                    Some(status),
+                    None,
+                ),
+                ShadowObservationMode::Update,
+                start,
+            );
+            assert_eq!(
+                state.snapshot_at(&key, start).unwrap().effective,
+                ShadowDisposition::WouldOpen {
+                    remaining: Duration::from_secs(4)
+                }
+            );
 
-        state.observe_terminal_at(
-            &completed(k3.clone()),
-            ShadowObservationMode::Update,
-            start + Duration::from_secs(1),
-        );
-        assert!(matches!(
-            state
-                .snapshot_at(&key, start + Duration::from_secs(1))
-                .unwrap()
-                .effective,
-            ShadowDisposition::WouldOpen { .. }
-        ));
-        assert_eq!(
-            state
-                .snapshot_at(&key, start + Duration::from_secs(4))
-                .unwrap()
-                .effective,
-            ShadowDisposition::WouldProbe
-        );
+            state.observe_terminal_at(
+                &completed(k3.clone()),
+                ShadowObservationMode::Update,
+                start + Duration::from_secs(1),
+            );
+            assert!(matches!(
+                state
+                    .snapshot_at(&key, start + Duration::from_secs(1))
+                    .unwrap()
+                    .effective,
+                ShadowDisposition::WouldOpen { .. }
+            ));
+            assert_eq!(
+                state
+                    .snapshot_at(&key, start + Duration::from_secs(4))
+                    .unwrap()
+                    .effective,
+                ShadowDisposition::WouldProbe
+            );
 
-        let lease = expect_probe(state.try_claim_probe_at(&key, start + Duration::from_secs(4)));
-        state.observe_terminal_with_probe_at(
-            &completed(k3.clone()),
-            ShadowObservationMode::Update,
-            Some(lease),
-            start + Duration::from_secs(4),
-        );
-        assert_eq!(
-            state
-                .snapshot_at(&key, start + Duration::from_secs(4))
-                .unwrap()
-                .effective,
-            ShadowDisposition::Healthy
-        );
+            let lease =
+                expect_probe(state.try_claim_probe_at(&key, start + Duration::from_secs(4)));
+            state.observe_terminal_with_probe_at(
+                &completed(k3.clone()),
+                ShadowObservationMode::Update,
+                Some(lease),
+                start + Duration::from_secs(4),
+            );
+            assert_eq!(
+                state
+                    .snapshot_at(&key, start + Duration::from_secs(4))
+                    .unwrap()
+                    .effective,
+                ShadowDisposition::Healthy
+            );
 
-        state.observe_terminal_at(
-            &failed(
-                k3.clone(),
-                AttemptFailureKind::CapacityRejected,
-                Some(429),
-                Some(Duration::ZERO),
-            ),
-            ShadowObservationMode::Update,
-            start + Duration::from_secs(10),
-        );
-        assert_eq!(
-            state
-                .snapshot_at(&key, start + Duration::from_secs(10))
-                .unwrap()
-                .effective,
-            ShadowDisposition::WouldOpen {
-                remaining: Duration::from_secs(4)
-            }
-        );
-        assert_eq!(
-            state
-                .snapshot_at(&key, start + Duration::from_secs(14))
-                .unwrap()
-                .effective,
-            ShadowDisposition::WouldProbe
-        );
+            state.observe_terminal_at(
+                &failed(
+                    k3.clone(),
+                    AttemptFailureKind::CapacityRejected,
+                    Some(status),
+                    Some(Duration::ZERO),
+                ),
+                ShadowObservationMode::Update,
+                start + Duration::from_secs(10),
+            );
+            assert_eq!(
+                state
+                    .snapshot_at(&key, start + Duration::from_secs(10))
+                    .unwrap()
+                    .effective,
+                ShadowDisposition::WouldOpen {
+                    remaining: Duration::from_secs(4)
+                }
+            );
+            assert_eq!(
+                state
+                    .snapshot_at(&key, start + Duration::from_secs(14))
+                    .unwrap()
+                    .effective,
+                ShadowDisposition::WouldProbe
+            );
 
-        state.observe_terminal_at(
-            &failed(
-                k3.clone(),
-                AttemptFailureKind::CapacityRejected,
-                Some(429),
-                Some(Duration::from_secs(100)),
-            ),
-            ShadowObservationMode::Update,
-            start + Duration::from_secs(20),
-        );
-        assert_eq!(
-            state
-                .snapshot_at(&key, start + Duration::from_secs(20))
-                .unwrap()
-                .effective,
-            ShadowDisposition::WouldOpen {
-                remaining: Duration::from_secs(10)
-            }
-        );
+            state.observe_terminal_at(
+                &failed(
+                    k3.clone(),
+                    AttemptFailureKind::CapacityRejected,
+                    Some(status),
+                    Some(Duration::from_secs(100)),
+                ),
+                ShadowObservationMode::Update,
+                start + Duration::from_secs(20),
+            );
+            assert_eq!(
+                state
+                    .snapshot_at(&key, start + Duration::from_secs(20))
+                    .unwrap()
+                    .effective,
+                ShadowDisposition::WouldOpen {
+                    remaining: Duration::from_secs(10)
+                }
+            );
+        }
     }
 
     #[test]
@@ -1790,7 +1650,7 @@ mod tests {
     }
 
     #[test]
-    fn shared_continuum_account_gate_allows_one_probe_across_models() {
+    fn same_provider_model_capacity_gate_allows_one_concurrent_probe() {
         let state = Arc::new(ShadowHealthState::with_policy(test_policy()));
         let start = Instant::now();
         let k2 = route(ProviderId::Continuum, "glm-5-3-flash", "glm-5.3-flash");
@@ -1808,7 +1668,7 @@ mod tests {
 
         let boundary = start + Duration::from_secs(4);
         let barrier = Arc::new(Barrier::new(2));
-        let threads = [k2.route_key(), glm.route_key()]
+        let threads = [k2.route_key(), k2.route_key()]
             .into_iter()
             .map(|key| {
                 let state = Arc::clone(&state);
@@ -1823,16 +1683,17 @@ mod tests {
         let mut leases = Vec::new();
         let mut rejected = 0;
         for thread in threads {
-            match thread.join().expect("shared account probe thread") {
+            match thread.join().expect("same-model probe thread") {
                 ProbeClaimResult::Ready(Some(lease)) => leases.push(lease),
                 ProbeClaimResult::Rejected {
                     reason: ProbeRejectionReason::ProbeInFlight,
                     ..
                 } => rejected += 1,
-                other => panic!("unexpected shared account claim result: {other:?}"),
+                other => panic!("unexpected same-model claim result: {other:?}"),
             }
         }
         assert_eq!(leases.len(), 1);
+        assert_eq!(leases[0].claim_count(), 1);
         assert_eq!(rejected, 1);
         assert!(matches!(
             state
@@ -1841,55 +1702,88 @@ mod tests {
                 .rate_limit_capacity,
             ShadowDisposition::ProbeInFlight { .. }
         ));
-        assert!(matches!(
+        assert_eq!(
             state
                 .snapshot_at(&glm.route_key(), boundary)
                 .unwrap()
-                .rate_limit_capacity,
-            ShadowDisposition::ProbeInFlight { .. }
-        ));
+                .effective,
+            ShadowDisposition::Healthy
+        );
     }
 
     #[test]
-    fn tinfoil_glm_models_probe_independently() {
-        let state = ShadowHealthState::with_policy(test_policy());
-        let start = Instant::now();
-        let base = route(ProviderId::Tinfoil, "glm-5-3", "glm-5-3");
-        let flash = route(ProviderId::Tinfoil, "glm-5-3-flash", "glm-5-3-flash");
+    fn glm_models_probe_and_recover_independently_on_each_provider() {
+        for (provider, base_model, flash_model) in [
+            (ProviderId::Tinfoil, "glm-5-3", "glm-5-3-flash"),
+            (ProviderId::Continuum, "glm-5.3", "glm-5.3-flash"),
+        ] {
+            let state = ShadowHealthState::with_policy(test_policy());
+            let start = Instant::now();
+            let base = route(provider, "glm-5-3", base_model);
+            let flash = route(provider, "glm-5-3-flash", flash_model);
 
-        for route in [&base, &flash] {
-            state.observe_terminal_at(
-                &failed(
-                    route.clone(),
-                    AttemptFailureKind::CapacityRejected,
-                    Some(429),
-                    Some(Duration::from_secs(4)),
-                ),
+            for route in [&base, &flash] {
+                state.observe_terminal_at(
+                    &failed(
+                        route.clone(),
+                        AttemptFailureKind::CapacityRejected,
+                        Some(429),
+                        Some(Duration::from_secs(4)),
+                    ),
+                    ShadowObservationMode::Update,
+                    start,
+                );
+            }
+
+            let boundary = start + Duration::from_secs(4);
+            let base_probe = expect_probe(state.try_claim_probe_at(&base.route_key(), boundary));
+            let flash_probe = expect_probe(state.try_claim_probe_at(&flash.route_key(), boundary));
+            assert_eq!(base_probe.claim_count(), 1);
+            assert_eq!(flash_probe.claim_count(), 1);
+            for route in [&base, &flash] {
+                assert!(matches!(
+                    state
+                        .snapshot_at(&route.route_key(), boundary)
+                        .unwrap()
+                        .effective,
+                    ShadowDisposition::ProbeInFlight { .. }
+                ));
+            }
+
+            state.observe_terminal_with_probe_at(
+                &completed(base.clone()),
                 ShadowObservationMode::Update,
-                start,
+                Some(base_probe),
+                boundary,
+            );
+            assert_eq!(
+                state
+                    .snapshot_at(&base.route_key(), boundary)
+                    .unwrap()
+                    .effective,
+                ShadowDisposition::Healthy
+            );
+            assert!(matches!(
+                state
+                    .snapshot_at(&flash.route_key(), boundary)
+                    .unwrap()
+                    .effective,
+                ShadowDisposition::ProbeInFlight { .. }
+            ));
+            state.observe_terminal_with_probe_at(
+                &completed(flash.clone()),
+                ShadowObservationMode::Update,
+                Some(flash_probe),
+                boundary,
+            );
+            assert_eq!(
+                state
+                    .snapshot_at(&flash.route_key(), boundary)
+                    .unwrap()
+                    .effective,
+                ShadowDisposition::Healthy
             );
         }
-
-        let boundary = start + Duration::from_secs(4);
-        let base_probe = expect_probe(state.try_claim_probe_at(&base.route_key(), boundary));
-        let flash_probe = expect_probe(state.try_claim_probe_at(&flash.route_key(), boundary));
-
-        assert_eq!(base_probe.claim_count(), 1);
-        assert_eq!(flash_probe.claim_count(), 1);
-        assert!(matches!(
-            state
-                .snapshot_at(&base.route_key(), boundary)
-                .unwrap()
-                .rate_limit_capacity,
-            ShadowDisposition::ProbeInFlight { .. }
-        ));
-        assert!(matches!(
-            state
-                .snapshot_at(&flash.route_key(), boundary)
-                .unwrap()
-                .rate_limit_capacity,
-            ShadowDisposition::ProbeInFlight { .. }
-        ));
     }
 
     #[test]
@@ -2060,7 +1954,7 @@ mod tests {
         }
         let boundary = start + Duration::from_secs(5);
         let composite_lease = expect_probe(composite.try_claim_probe_at(&k2.route_key(), boundary));
-        assert_eq!(composite_lease.claim_count(), 3);
+        assert_eq!(composite_lease.claim_count(), 2);
         let snapshot = composite.snapshot_at(&k2.route_key(), boundary).unwrap();
         assert!(matches!(
             snapshot.route_health,
@@ -2156,13 +2050,13 @@ mod tests {
             ShadowDisposition::Healthy
         );
 
-        let only_account_open = ShadowHealthState::with_policy(test_policy());
-        only_account_open.observe_terminal_at(
+        let only_capacity_open = ShadowHealthState::with_policy(test_policy());
+        only_capacity_open.observe_terminal_at(
             &failed(k2.clone(), AttemptFailureKind::StreamTimeout, None, None),
             ShadowObservationMode::Update,
             start,
         );
-        only_account_open.observe_terminal_at(
+        only_capacity_open.observe_terminal_at(
             &failed(
                 k2.clone(),
                 AttemptFailureKind::CapacityRejected,
@@ -2173,17 +2067,17 @@ mod tests {
             start,
         );
         let lease = expect_probe(
-            only_account_open.try_claim_probe_at(&k2.route_key(), start + Duration::from_secs(4)),
+            only_capacity_open.try_claim_probe_at(&k2.route_key(), start + Duration::from_secs(4)),
         );
         assert_eq!(lease.claim_count(), 1);
-        only_account_open.observe_terminal_with_probe_at(
+        only_capacity_open.observe_terminal_with_probe_at(
             &completed(k2.clone()),
             ShadowObservationMode::Update,
             Some(lease),
             start + Duration::from_secs(4),
         );
         assert_eq!(
-            only_account_open
+            only_capacity_open
                 .snapshot_at(&k2.route_key(), start + Duration::from_secs(4))
                 .unwrap()
                 .route_health,
@@ -2250,8 +2144,8 @@ mod tests {
 
         let k2 = route(ProviderId::Continuum, "glm-5-3-flash", "glm-5.3-flash");
         let glm = route(ProviderId::Continuum, "glm-5-3", "glm-5.3");
-        let account_limit = ShadowHealthState::with_policy(test_policy());
-        account_limit.observe_terminal_at(
+        let rate_limit = ShadowHealthState::with_policy(test_policy());
+        rate_limit.observe_terminal_at(
             &failed(
                 k2.clone(),
                 AttemptFailureKind::CapacityRejected,
@@ -2261,10 +2155,9 @@ mod tests {
             ShadowObservationMode::Update,
             start,
         );
-        let account_boundary = start + Duration::from_secs(4);
-        let lease =
-            expect_probe(account_limit.try_claim_probe_at(&k2.route_key(), account_boundary));
-        account_limit.observe_terminal_with_probe_at(
+        let capacity_boundary = start + Duration::from_secs(4);
+        let lease = expect_probe(rate_limit.try_claim_probe_at(&k2.route_key(), capacity_boundary));
+        rate_limit.observe_terminal_with_probe_at(
             &failed(
                 k2.clone(),
                 AttemptFailureKind::CapacityRejected,
@@ -2273,16 +2166,23 @@ mod tests {
             ),
             ShadowObservationMode::Update,
             Some(lease),
-            account_boundary,
+            capacity_boundary,
         );
         assert_eq!(
-            account_limit
-                .snapshot_at(&glm.route_key(), account_boundary)
+            rate_limit
+                .snapshot_at(&k2.route_key(), capacity_boundary)
                 .unwrap()
                 .rate_limit_capacity,
             ShadowDisposition::WouldOpen {
                 remaining: Duration::from_secs(4)
             }
+        );
+        assert_eq!(
+            rate_limit
+                .snapshot_at(&glm.route_key(), capacity_boundary)
+                .unwrap()
+                .effective,
+            ShadowDisposition::Healthy
         );
 
         let deployment_limit = ShadowHealthState::with_policy(test_policy());
@@ -2297,7 +2197,7 @@ mod tests {
             start,
         );
         let lease =
-            expect_probe(deployment_limit.try_claim_probe_at(&k2.route_key(), account_boundary));
+            expect_probe(deployment_limit.try_claim_probe_at(&k2.route_key(), capacity_boundary));
         deployment_limit.observe_terminal_with_probe_at(
             &failed(
                 k2.clone(),
@@ -2307,11 +2207,11 @@ mod tests {
             ),
             ShadowObservationMode::Update,
             Some(lease),
-            account_boundary,
+            capacity_boundary,
         );
         assert_eq!(
             deployment_limit
-                .snapshot_at(&k2.route_key(), account_boundary)
+                .snapshot_at(&k2.route_key(), capacity_boundary)
                 .unwrap()
                 .deployment_capacity,
             ShadowDisposition::WouldOpen {
@@ -2320,7 +2220,7 @@ mod tests {
         );
         assert_eq!(
             deployment_limit
-                .snapshot_at(&glm.route_key(), account_boundary)
+                .snapshot_at(&glm.route_key(), capacity_boundary)
                 .unwrap()
                 .effective,
             ShadowDisposition::Healthy
