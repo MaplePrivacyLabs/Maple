@@ -1,6 +1,6 @@
 [package]
 name = "maple-sdk"
-version = "4.0.2"
+version = "4.1.0"
 edition = "2021"
 authors = ["Maple Privacy Labs"]
 description = "Maple Rust SDK for secure AI APIs, encrypted sessions, and Nitro attestation"
