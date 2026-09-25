@@ -372,18 +372,16 @@ pub(super) fn validate_transient_mcp_key_values(
 pub(super) fn validate_transient_mcp_url(url: &str, server_name: &str) -> Result<(), String> {
     let parsed = reqwest::Url::parse(url)
         .map_err(|_| format!("Transient MCP server '{server_name}' has an invalid URL"))?;
-    let host = parsed
-        .host_str()
-        .ok_or_else(|| format!("Transient MCP server '{server_name}' URL requires a host"))?;
-    // `host_str` keeps the brackets around an IPv6 literal.
-    let host = host.trim_start_matches('[').trim_end_matches(']');
-    let loopback = host.eq_ignore_ascii_case("localhost")
-        || host
-            .parse::<std::net::IpAddr>()
-            .is_ok_and(|address| address.is_loopback());
-    if !loopback || parsed.scheme() != "http" {
+    if parsed.host_str().is_none() {
         return Err(format!(
-            "Transient MCP server '{server_name}' must use loopback HTTP"
+            "Transient MCP server '{server_name}' URL requires a host"
+        ));
+    }
+    // The ACP client owns this choice: remote MCP servers are a normal part
+    // of client-supplied session setups, so any HTTP(S) host is admissible.
+    if parsed.scheme() != "http" && parsed.scheme() != "https" {
+        return Err(format!(
+            "Transient MCP server '{server_name}' must use HTTP or HTTPS"
         ));
     }
     if !parsed.username().is_empty() || parsed.password().is_some() || parsed.fragment().is_some() {

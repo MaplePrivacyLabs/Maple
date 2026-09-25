@@ -503,11 +503,11 @@ impl TransientMcpClient {
         request_timeout: Duration,
         lease_cancel: CancellationToken,
     ) -> Result<Arc<Self>, TransientMcpConnectError> {
-        validate_loopback_http_url(&url)?;
+        validate_http_url(&url)?;
         let headers = parse_http_headers(headers)?;
         let client = reqwest::Client::builder()
-            // Ambient HTTP(S)_PROXY settings must never redirect a bearer
-            // credential intended for Maple's loopback Paseo endpoint.
+            // Ambient HTTP(S)_PROXY settings must never intercept a bearer
+            // credential intended for a transient MCP endpoint.
             .no_proxy()
             .pool_max_idle_per_host(0)
             .redirect(reqwest::redirect::Policy::none())
@@ -923,23 +923,19 @@ fn context_extensions(
     extensions
 }
 
-fn validate_loopback_http_url(url: &str) -> Result<(), TransientMcpConnectError> {
+fn validate_http_url(url: &str) -> Result<(), TransientMcpConnectError> {
     let parsed = reqwest::Url::parse(url)
         .map_err(|_| TransientMcpConnectError::InvalidConfiguration("MCP HTTP URL is invalid"))?;
-    let host = parsed
-        .host_str()
-        .ok_or(TransientMcpConnectError::InvalidConfiguration(
-            "MCP HTTP URL has no host",
-        ))?;
-    // `host_str` keeps the brackets around an IPv6 literal.
-    let host = host.trim_start_matches('[').trim_end_matches(']');
-    let loopback = host.eq_ignore_ascii_case("localhost")
-        || host
-            .parse::<std::net::IpAddr>()
-            .is_ok_and(|address| address.is_loopback());
-    if parsed.scheme() != "http" || !loopback {
+    if parsed.host_str().is_none() {
         return Err(TransientMcpConnectError::InvalidConfiguration(
-            "Transient MCP is restricted to loopback HTTP",
+            "MCP HTTP URL has no host",
+        ));
+    }
+    // Remote MCP servers are admissible: the ACP client owns the endpoint
+    // choice for its session.
+    if parsed.scheme() != "http" && parsed.scheme() != "https" {
+        return Err(TransientMcpConnectError::InvalidConfiguration(
+            "MCP URL must use HTTP or HTTPS",
         ));
     }
     if !parsed.username().is_empty() || parsed.password().is_some() || parsed.fragment().is_some() {
@@ -1039,14 +1035,18 @@ mod tests {
 }
 
 #[cfg(test)]
-mod loopback_url_tests {
-    use super::validate_loopback_http_url;
+mod http_url_tests {
+    use super::validate_http_url;
 
     #[test]
-    fn ipv6_loopback_literal_is_accepted() {
-        assert!(validate_loopback_http_url("http://[::1]:8080/mcp").is_ok());
-        assert!(validate_loopback_http_url("http://127.0.0.1:8080/mcp").is_ok());
-        assert!(validate_loopback_http_url("http://[2606:4700::1111]:8080/mcp").is_err());
-        assert!(validate_loopback_http_url("http://10.0.0.1:8080/mcp").is_err());
+    fn http_urls_allow_remote_hosts_and_reject_other_schemes() {
+        assert!(validate_http_url("http://[::1]:8080/mcp").is_ok());
+        assert!(validate_http_url("http://127.0.0.1:8080/mcp").is_ok());
+        assert!(validate_http_url("http://[2606:4700::1111]:8080/mcp").is_ok());
+        assert!(validate_http_url("http://10.0.0.1:8080/mcp").is_ok());
+        assert!(validate_http_url("https://mcp.example.com/sse").is_ok());
+        assert!(validate_http_url("ftp://127.0.0.1:8080/mcp").is_err());
+        assert!(validate_http_url("ws://127.0.0.1:8080/mcp").is_err());
+        assert!(validate_http_url("http://user:pw@127.0.0.1:8080/mcp").is_err());
     }
 }
