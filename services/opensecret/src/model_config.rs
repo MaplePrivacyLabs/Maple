@@ -118,7 +118,7 @@ const FREE_MODEL_ALIAS_TARGETS: ModelAliasTargets = ModelAliasTargets {
 };
 
 const PAID_MODEL_ALIAS_TARGETS: ModelAliasTargets = ModelAliasTargets {
-    quick: DEEPSEEK_V4_1_FLASH_MODEL_ID,
+    quick: GLM_5_3_FLASH_MODEL_ID,
     powerful: POWERFUL_MODEL_ID,
 };
 
@@ -985,10 +985,7 @@ mod tests {
         assert_eq!(free.resolve(AUTO_POWERFUL_MODEL_ID), GLM_5_3_MODEL_ID);
 
         let paid = ModelAliasTargets::for_plan(ModelPlan::Paid);
-        assert_eq!(
-            paid.resolve(AUTO_QUICK_MODEL_ID),
-            DEEPSEEK_V4_1_FLASH_MODEL_ID
-        );
+        assert_eq!(paid.resolve(AUTO_QUICK_MODEL_ID), GLM_5_3_FLASH_MODEL_ID);
         assert_eq!(paid.resolve(AUTO_POWERFUL_MODEL_ID), GLM_5_3_MODEL_ID);
         assert_eq!(paid.resolve(KIMI_K3_MODEL_ID), KIMI_K3_MODEL_ID);
     }
@@ -997,7 +994,7 @@ mod tests {
     fn test_auto_targets_use_glm_5_3_and_preserve_plan_specific_quick() {
         for (plan, expected_quick) in [
             (ModelPlan::Free, QUICK_MODEL_ID),
-            (ModelPlan::Paid, DEEPSEEK_V4_1_FLASH_MODEL_ID),
+            (ModelPlan::Paid, GLM_5_3_FLASH_MODEL_ID),
         ] {
             let targets = ModelAliasTargets::for_plan(plan);
             assert_eq!(targets.resolve(AUTO_QUICK_MODEL_ID), expected_quick);
@@ -1070,11 +1067,7 @@ mod tests {
     fn test_golden_auto_alias_resolution_matrix_by_plan() {
         for (plan, selector, expected_target) in [
             (ModelPlan::Free, AUTO_QUICK_MODEL_ID, QUICK_MODEL_ID),
-            (
-                ModelPlan::Paid,
-                AUTO_QUICK_MODEL_ID,
-                DEEPSEEK_V4_1_FLASH_MODEL_ID,
-            ),
+            (ModelPlan::Paid, AUTO_QUICK_MODEL_ID, GLM_5_3_FLASH_MODEL_ID),
             (ModelPlan::Free, AUTO_POWERFUL_MODEL_ID, GLM_5_3_MODEL_ID),
             (ModelPlan::Paid, AUTO_POWERFUL_MODEL_ID, GLM_5_3_MODEL_ID),
         ] {
@@ -1117,7 +1110,7 @@ mod tests {
             .find(|alias| alias["id"] == AUTO_POWERFUL_MODEL_ID)
             .expect("powerful alias");
 
-        assert_eq!(quick["target_model"], DEEPSEEK_V4_1_FLASH_MODEL_ID);
+        assert_eq!(quick["target_model"], GLM_5_3_FLASH_MODEL_ID);
         assert_eq!(quick["access"], "pro");
         assert_eq!(quick["capabilities"]["vision"], true);
         assert_eq!(powerful["target_model"], GLM_5_3_MODEL_ID);
@@ -1174,7 +1167,7 @@ mod tests {
 
         for (plan, expected_quick, expected_quick_access) in [
             (ModelPlan::Free, QUICK_MODEL_ID, "free"),
-            (ModelPlan::Paid, DEEPSEEK_V4_1_FLASH_MODEL_ID, "pro"),
+            (ModelPlan::Paid, GLM_5_3_FLASH_MODEL_ID, "pro"),
         ] {
             let catalog = model_catalog_response(ModelAliasTargets::for_plan(plan));
             let aliases = catalog["aliases"].as_array().expect("aliases");
