@@ -3249,7 +3249,7 @@ fn tinfoil_user_cache_secret(user_uuid: Uuid) -> String {
     hex::encode(Sha256::digest(user_uuid.as_bytes()))
 }
 
-fn apply_provider_managed_request_fields(
+pub(crate) fn apply_provider_managed_request_fields(
     body: &mut serde_json::Map<String, Value>,
     provider_name: &str,
     user_uuid: Uuid,
@@ -3374,7 +3374,7 @@ fn find_sse_frame_boundary(buffer: &[u8]) -> Option<(usize, usize)> {
 
 /// Internal billing function - NEVER exposed outside this module
 /// This function publishes usage events to both the database and SQS
-async fn publish_usage_event_internal(
+pub(crate) async fn publish_usage_event_internal(
     state: &Arc<AppState>,
     user: &User,
     billing_context: &BillingContext,

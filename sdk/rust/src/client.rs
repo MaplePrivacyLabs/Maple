@@ -452,6 +452,7 @@ fn is_allowed_inference_endpoint(method: &http::Method, path: &str) -> bool {
             | ("GET", "/v1/models/catalog")
             | ("POST", "/v1/chat/completions")
             | ("POST", "/v1/embeddings")
+            | ("POST", "/v1/systemone")
             | ("POST", "/v1/audio/speech")
             | ("POST", "/v1/audio/transcriptions")
     )
@@ -3371,6 +3372,14 @@ mod tests {
         assert!(is_allowed_inference_endpoint(
             &http::Method::GET,
             "/v1/models"
+        ));
+        assert!(is_allowed_inference_endpoint(
+            &http::Method::POST,
+            "/v1/systemone"
+        ));
+        assert!(!is_allowed_inference_endpoint(
+            &http::Method::GET,
+            "/v1/systemone"
         ));
         assert!(!is_allowed_inference_endpoint(
             &http::Method::POST,

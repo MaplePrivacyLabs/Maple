@@ -24,7 +24,7 @@ use crate::web::platform_login_routes;
 use crate::web::{
     conversation_projects_routes, conversations_routes, health_routes, instructions_routes,
     login_routes, native_handoff_routes, oauth_routes, openai_models_routes, openai_routes,
-    protected_routes, responses_routes, web_routes,
+    protected_routes, responses_routes, system_one_routes, web_routes,
 };
 use crate::{attestation_routes::SessionState, web::platform_routes};
 use bounded_ttl_cache::BoundedTtlCache;
@@ -3826,6 +3826,10 @@ fn application_routes(app_state: Arc<AppState>) -> Router<()> {
                 app_state.clone(),
                 validate_optional_openai_auth,
             )),
+        )
+        .merge(
+            system_one_routes(app_state.clone())
+                .route_layer(from_fn_with_state(app_state.clone(), validate_openai_auth)),
         )
         .merge(
             responses_routes(app_state.clone())
