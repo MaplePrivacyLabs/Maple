@@ -1146,36 +1146,60 @@ mod tests {
     }
 
     #[test]
-    fn continuum_account_429_blocks_continuum_glm_flash_and_keeps_glm_on_tinfoil() {
-        let router = ProviderRouter::default();
+    fn continuum_model_429_isolates_glm_and_flash_in_both_directions() {
         let proxy_router = proxy_router_with_both_providers();
-        router.observe_attempt_terminal(
-            &capacity_terminal(
-                ProviderId::Continuum,
+        let bucket_zero_intent = |model: &str| {
+            InferenceIntent::new(
+                uuid_for_bucket(0),
+                model,
+                model,
+                ModelPlan::Paid,
+                InferenceSurface::Responses,
+                WorkloadClass::Interactive,
+            )
+        };
+        for (limited_model, limited_provider_model, sibling_model, sibling_provider_model) in [
+            (
+                GLM_5_3_MODEL_ID,
+                "glm-5.3",
                 GLM_5_3_FLASH_MODEL_ID,
                 "glm-5.3-flash",
-                429,
-                Duration::from_secs(60),
             ),
-            ShadowObservationMode::Update,
-        );
+            (
+                GLM_5_3_FLASH_MODEL_ID,
+                "glm-5.3-flash",
+                GLM_5_3_MODEL_ID,
+                "glm-5.3",
+            ),
+        ] {
+            let router = ProviderRouter::default();
+            router.observe_attempt_terminal(
+                &capacity_terminal(
+                    ProviderId::Continuum,
+                    limited_model,
+                    limited_provider_model,
+                    429,
+                    Duration::from_secs(60),
+                ),
+                ShadowObservationMode::Update,
+            );
 
-        let glm = router
-            .select_active_completion_route(
-                &proxy_router,
-                &intent(GLM_5_3_MODEL_ID, GLM_5_3_MODEL_ID),
-            )
-            .expect("Tinfoil GLM after Continuum account limit");
-        assert_eq!(glm.provider, ProviderId::Tinfoil);
+            let limited = router
+                .select_active_completion_route(&proxy_router, &bucket_zero_intent(limited_model))
+                .expect("limited model retains its healthy Tinfoil route");
+            assert_eq!(limited.provider, ProviderId::Tinfoil);
+            assert_eq!(limited.public_model_id, limited_model);
+            assert_eq!(limited.provider_model_id, limited_model);
+            assert_eq!(limited.selection_source, RouteSelectionSource::Fallback);
 
-        let flash = router
-            .select_active_completion_route(
-                &proxy_router,
-                &intent(GLM_5_3_FLASH_MODEL_ID, GLM_5_3_FLASH_MODEL_ID),
-            )
-            .expect("Flash still has a healthy Tinfoil route");
-        assert_eq!(flash.provider, ProviderId::Tinfoil);
-        assert_eq!(flash.public_model_id, GLM_5_3_FLASH_MODEL_ID);
+            let sibling = router
+                .select_active_completion_route(&proxy_router, &bucket_zero_intent(sibling_model))
+                .expect("sibling model retains its healthy Continuum route");
+            assert_eq!(sibling.provider, ProviderId::Continuum);
+            assert_eq!(sibling.public_model_id, sibling_model);
+            assert_eq!(sibling.provider_model_id, sibling_provider_model);
+            assert_eq!(sibling.selection_source, RouteSelectionSource::StaticSplit);
+        }
     }
 
     #[test]
@@ -1748,8 +1772,8 @@ mod tests {
             Err(ProviderRoutingError::CapacityUnavailable { .. })
         ));
 
-        // On fresh routes, a Continuum 429 opens the provider-account pool:
-        // GLM and GLM Flash both keep only their Tinfoil routes.
+        // A Continuum GLM 429 opens only that model's capacity pool:
+        // GLM keeps its Tinfoil route, while Flash retains both providers.
         let router = ProviderRouter::default();
         open_route_with_capacity_failure(
             &router,
@@ -1768,9 +1792,7 @@ mod tests {
         );
         assert_eq!(
             after_429[GLM_5_3_FLASH_MODEL_ID],
-            ModelAvailability::Available(
-                ConfiguredProviders::none().with_provider(ProviderId::Tinfoil)
-            )
+            ModelAvailability::Available(ConfiguredProviders::all())
         );
 
         // A 503 on the remaining Tinfoil GLM route leaves GLM fully unavailable
