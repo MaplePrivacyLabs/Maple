@@ -414,8 +414,7 @@ mod tests {
     #[gpui::test]
     fn tab_reaches_password_and_enter_submits(cx: &mut TestAppContext) {
         cx.executor().allow_parking();
-        let backend =
-            Arc::new(AgentBackend::new("http://127.0.0.1:9".to_string(), String::new()).unwrap());
+        let backend = Arc::new(AgentBackend::new("http://127.0.0.1:9".to_string()).unwrap());
         let screen = cx.new(|cx| {
             crate::desktop::register_key_bindings(cx);
             LoginScreen::new(backend, cx)
@@ -481,8 +480,7 @@ mod tests {
     #[gpui::test]
     fn oauth_committed_success_is_delivered_when_back_precedes_ui_receipt(cx: &mut TestAppContext) {
         cx.executor().allow_parking();
-        let backend =
-            Arc::new(AgentBackend::new("http://127.0.0.1:9".to_string(), String::new()).unwrap());
+        let backend = Arc::new(AgentBackend::new("http://127.0.0.1:9".to_string()).unwrap());
         let screen = cx.new(|cx| LoginScreen::new(backend, cx));
         let signed_in = Rc::new(RefCell::new(Vec::new()));
         let observed = Rc::clone(&signed_in);

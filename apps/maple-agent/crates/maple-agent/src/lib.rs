@@ -11,6 +11,7 @@
 pub mod acp;
 pub mod agent;
 mod desktop_environment;
+pub mod host;
 pub use desktop_environment::prepare_process_environment;
 pub mod maple_api;
 pub mod open_secret_config;

@@ -52,7 +52,7 @@ impl ChatScreen {
             ChatCommand::ApplicationVim(command) => {
                 self.execute_application_vim(command, window, cx)
             }
-            ChatCommand::ChooseProject => self.toggle_root_menu(cx),
+            ChatCommand::ChooseProject => self.toggle_project_picker(cx),
             ChatCommand::CopySelection => self.copy_selected_text(cx),
             ChatCommand::Escape if self.application_vim_enabled => {
                 self.application_escape(window, cx)
@@ -210,10 +210,10 @@ mod tests {
     }
 
     fn screen(cx: &mut TestAppContext) -> gpui::Entity<ChatScreen> {
-        let backend = Arc::new(
-            AgentBackend::new("http://127.0.0.1:9".to_string(), String::new()).expect("backend"),
-        );
-        cx.new(|cx| ChatScreen::new_inner(backend, "user".to_string(), cx))
+        let backend =
+            Arc::new(AgentBackend::new("http://127.0.0.1:9".to_string()).expect("backend"));
+        let host = backend.local_host("user");
+        cx.new(|cx| ChatScreen::new_inner(backend, host, "user".to_string(), cx))
     }
 
     #[gpui::test]

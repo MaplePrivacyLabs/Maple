@@ -1,0 +1,32 @@
+[package]
+name = "maple-remote"
+description = "Wire protocol between a Maple client and a host: framing, JSON-RPC over channel 0, the host server, and the remote HostBackend"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+maple-agent = { path = "../maple-agent", default-features = false }
+serde = { workspace = true }
+serde_json = { workspace = true, features = ["raw_value"] }
+tokio = { workspace = true }
+async-trait = { workspace = true }
+futures-util = { workspace = true }
+log = { workspace = true }
+bytes = "1"
+uuid = { version = "1", features = ["v4"] }
+tokio-util = { workspace = true }
+# Noise: pairing runs XXpsk3 with the one-time code as the pre-shared key,
+# later connections run IK with pinned statics. The default resolver builds
+# on the dalek and chacha crates the Rust SDK already brings in.
+snow = "0.10"
+# Plain `ws://` on direct connections; Noise inside is the encryption. TLS
+# features stay off; the relay adds `wss://` to the enclave later.
+tokio-tungstenite = { version = "0.29", default-features = false, features = ["handshake"] }
+sha2 = "0.10"
+rand = "0.8"
+base64 = "0.22"
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
