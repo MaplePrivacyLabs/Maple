@@ -2293,6 +2293,7 @@ mod tests {
             build_model_turn_request(&body, &[json!({"role": "user", "content": "hello"})], false);
 
         assert_eq!(chat_request["model"], crate::model_config::QUICK_MODEL_ID);
+        assert!(chat_request.get("chat_template_kwargs").is_none());
     }
 
     #[test]
@@ -2324,7 +2325,7 @@ mod tests {
                 name: "paid auto quick",
                 plan: ModelPlan::Paid,
                 selector: crate::model_config::AUTO_QUICK_MODEL_ID,
-                expected_model: crate::model_config::DEEPSEEK_V4_1_FLASH_MODEL_ID,
+                expected_model: crate::model_config::GLM_5_3_FLASH_MODEL_ID,
                 expected_access: true,
             },
             Case {
@@ -2407,9 +2408,15 @@ mod tests {
         );
         assert_eq!(
             paid_quick_request["model"],
-            crate::model_config::DEEPSEEK_V4_1_FLASH_MODEL_ID
+            crate::model_config::GLM_5_3_FLASH_MODEL_ID
         );
-        assert!(paid_quick_request.get("chat_template_kwargs").is_none());
+        assert_eq!(
+            paid_quick_request["chat_template_kwargs"]["clear_thinking"],
+            true
+        );
+        assert!(paid_quick_request["chat_template_kwargs"]
+            .get("preserve_thinking")
+            .is_none());
     }
 
     #[test]
