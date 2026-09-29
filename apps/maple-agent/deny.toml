@@ -1,0 +1,26 @@
+[advisories]
+# Scan the whole Agent graph, including transitive dependencies. Do not inherit
+# advisory exceptions from another component or hide new findings at import.
+unsound = "all"
+unmaintained = "all"
+
+[bans]
+# Emergency supply-chain containment for the August 2026 crates.io campaign.
+# Keep these explicit package bans alongside the blocking RustSec checks.
+multiple-versions = "allow"
+wildcards = "allow"
+deny = [
+    # Legitimate crates whose malicious releases were removed. Block the
+    # compromised release and all later releases pending maintainer recovery.
+    { crate = "arrayref@>=0.3.10", reason = "Compromised release: RUSTSEC-2026-0260" },
+    { crate = "append-only-vec@>=0.1.9", reason = "Compromised release: RUSTSEC-2026-0262" },
+    { crate = "internment@>=0.8.7", reason = "Compromised release: RUSTSEC-2026-0266" },
+
+    # Campaign-associated malicious package names. Deny every version.
+    { crate = "arone", reason = "Malicious crate: RUSTSEC-2026-0259" },
+    { crate = "aronenao", reason = "Malicious crate: RUSTSEC-2026-0261" },
+    { crate = "tinymember", reason = "Malicious crate: RUSTSEC-2026-0263" },
+    { crate = "proc-macro-en", reason = "Malicious crate: RUSTSEC-2026-0264" },
+    { crate = "proc-macro1", reason = "Malicious crate: RUSTSEC-2026-0265" },
+    { crate = "aovine", reason = "Campaign-associated malicious crate removed from crates.io" },
+]

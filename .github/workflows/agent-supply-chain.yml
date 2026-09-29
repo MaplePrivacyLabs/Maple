@@ -1,0 +1,46 @@
+name: Agent Rust supply-chain checks
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/agent-supply-chain.yml"
+      - "apps/maple-agent/deny.toml"
+      - "apps/maple-agent/**/Cargo.toml"
+      - "apps/maple-agent/Cargo.lock"
+      - "proxy/Cargo.toml"
+      - "sdk/rust/Cargo.toml"
+  push:
+    branches: [master]
+    paths:
+      - ".github/workflows/agent-supply-chain.yml"
+      - "apps/maple-agent/deny.toml"
+      - "apps/maple-agent/**/Cargo.toml"
+      - "apps/maple-agent/Cargo.lock"
+      - "proxy/Cargo.toml"
+      - "sdk/rust/Cargo.toml"
+  schedule:
+    - cron: "43 7 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  agent-cargo-deny:
+    name: Agent RustSec advisories and malicious crates
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+
+      - name: Check Agent RustSec advisories and incident denylist
+        uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1; cargo-deny 0.20.2
+        with:
+          # Match the component toolchain for Cargo metadata; no crate is built.
+          rust-version: 1.98.0
+          manifest-path: apps/maple-agent/Cargo.toml
+          command: check advisories bans
+          arguments: --config apps/maple-agent/deny.toml --all-features --locked
