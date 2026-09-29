@@ -42,7 +42,11 @@ impl ResponseBuilder {
     /// # Arguments
     /// * `response` - The database Response model to build from
     pub fn from_response(response: &Response) -> Self {
+        // The public fields are non-null. Stored values exist for every catalog
+        // model; otherwise report the OpenAI API default of 1.0.
         let sampling = model_config(&response.model).responses.sampling;
+        let default_temperature = sampling.map_or(1.0, |sampling| sampling.temperature);
+        let default_top_p = sampling.map_or(1.0, |sampling| sampling.top_p);
 
         Self {
             response: ResponsesCreateResponse {
@@ -67,7 +71,7 @@ impl ResponseBuilder {
                 },
                 safety_identifier: None,
                 store: response.store,
-                temperature: response.temperature.unwrap_or(sampling.temperature),
+                temperature: response.temperature.unwrap_or(default_temperature),
                 text: TextFormat {
                     format: TextFormatSpec {
                         format_type: TEXT_FORMAT_TYPE.to_string(),
@@ -79,7 +83,7 @@ impl ResponseBuilder {
                     .unwrap_or_else(|| TOOL_CHOICE_AUTO.to_string()),
                 tools: vec![],
                 top_logprobs: 0,
-                top_p: response.top_p.unwrap_or(sampling.top_p),
+                top_p: response.top_p.unwrap_or(default_top_p),
                 truncation: TRUNCATION_DISABLED,
                 usage: None, // Default to None
                 user: None,
@@ -339,9 +343,13 @@ mod tests {
         response.top_p = None;
 
         let built = ResponseBuilder::from_response(&response).build();
+        assert_eq!(built.temperature, 1.0);
+        assert_eq!(built.top_p, 1.0);
 
-        assert_eq!(built.temperature, crate::model_config::DEFAULT_TEMPERATURE);
-        assert_eq!(built.top_p, crate::model_config::DEFAULT_TOP_P);
+        response.model = "llama3-3-70b".to_string();
+        let built = ResponseBuilder::from_response(&response).build();
+        assert_eq!(built.temperature, 0.6);
+        assert_eq!(built.top_p, 0.9);
     }
 
     #[test]

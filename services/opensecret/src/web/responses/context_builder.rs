@@ -6,7 +6,7 @@ use super::{
     types::MessageContent,
 };
 use crate::encrypt::decrypt_with_key;
-use crate::model_config::model_supports_reasoning_history;
+use crate::model_config::ReasoningReplay;
 use crate::tokens::{count_tokens, model_max_ctx};
 use crate::DBConnection;
 use serde_json::{json, Value};
@@ -87,6 +87,7 @@ pub(crate) fn prompt_token_budget(model: &str) -> usize {
 /// 1. Fetch metadata only (lightweight, no decryption)
 /// 2. Run truncation logic on metadata to determine which messages to keep
 /// 3. Fetch and decrypt only the needed messages
+#[allow(clippy::too_many_arguments)]
 pub fn build_prompt<D: DBConnection + ?Sized>(
     db: &D,
     conversation_id: i64,
@@ -95,6 +96,7 @@ pub fn build_prompt<D: DBConnection + ?Sized>(
     model: &str,
     override_instructions: Option<&str>,
     internal_instructions: Option<&str>,
+    reasoning_replay: ReasoningReplay,
 ) -> Result<(Vec<serde_json::Value>, usize), crate::ApiError> {
     build_prompt_with_token_reserve(
         db,
@@ -105,6 +107,7 @@ pub fn build_prompt<D: DBConnection + ?Sized>(
         override_instructions,
         internal_instructions,
         0,
+        reasoning_replay,
     )
 }
 
@@ -120,6 +123,7 @@ pub fn build_prompt_with_token_reserve<D: DBConnection + ?Sized>(
     override_instructions: Option<&str>,
     internal_instructions: Option<&str>,
     token_reserve: usize,
+    reasoning_replay: ReasoningReplay,
 ) -> Result<(Vec<serde_json::Value>, usize), crate::ApiError> {
     // 1. Get default user instructions if they exist (unless override provided)
     let mut system_tokens = 0usize;
@@ -184,8 +188,13 @@ pub fn build_prompt_with_token_reserve<D: DBConnection + ?Sized>(
         .map_err(|_| crate::ApiError::InternalServerError)?;
 
     // 3. Run truncation logic on metadata to determine which messages we need
-    let (needed_ids, did_truncate) =
-        determine_needed_message_ids(&metadata, model, system_tokens, token_reserve)?;
+    let (needed_ids, did_truncate) = determine_needed_message_ids(
+        &metadata,
+        model,
+        system_tokens,
+        token_reserve,
+        reasoning_replay,
+    )?;
 
     // 4. PASS 2: Fetch and decrypt ONLY the messages we need
     let raw = if needed_ids.is_empty() {
@@ -218,7 +227,6 @@ pub fn build_prompt_with_token_reserve<D: DBConnection + ?Sized>(
         });
     }
 
-    let include_reasoning_history = model_supports_reasoning_history(model);
     let mut pending_reasoning: Option<PendingReasoning> = None;
 
     // Decrypt and add the messages we fetched
@@ -373,7 +381,8 @@ pub fn build_prompt_with_token_reserve<D: DBConnection + ?Sized>(
                 });
             }
             "reasoning" => {
-                if !include_reasoning_history {
+                // Only the reasoning rows selected for this replay were fetched.
+                if reasoning_replay == ReasoningReplay::None {
                     continue;
                 }
 
@@ -467,10 +476,11 @@ fn determine_needed_message_ids(
     model: &str,
     system_tokens: usize,
     token_reserve: usize,
+    reasoning_replay: ReasoningReplay,
 ) -> Result<(Vec<(String, i64)>, bool), crate::ApiError> {
     use tracing::debug;
 
-    let entries = build_context_entries(metadata, model_supports_reasoning_history(model));
+    let entries = build_context_entries(metadata, reasoning_replay);
 
     // Calculate token budget
     let ctx_budget = prompt_token_budget(model).saturating_sub(token_reserve);
@@ -580,8 +590,17 @@ fn determine_needed_message_ids(
 
 fn build_context_entries(
     metadata: &[crate::models::responses::RawThreadMessageMetadata],
-    include_reasoning_history: bool,
+    reasoning_replay: ReasoningReplay,
 ) -> Vec<ContextEntry> {
+    // Current-turn replay keeps only reasoning after the last user message.
+    let last_user_index = metadata
+        .iter()
+        .rposition(|message| message.message_type == "user");
+    let replays_reasoning_at = |index: usize| match reasoning_replay {
+        ReasoningReplay::None => false,
+        ReasoningReplay::CurrentTurn => last_user_index.is_none_or(|user| index > user),
+        ReasoningReplay::All => true,
+    };
     let mut entries = Vec::new();
     let mut pending_reasoning: Vec<crate::models::responses::RawThreadMessageMetadata> = Vec::new();
     let tool_outputs = metadata
@@ -594,7 +613,7 @@ fn build_context_entries(
     while index < metadata.len() {
         let message = &metadata[index];
         match message.message_type.as_str() {
-            "reasoning" if include_reasoning_history => {
+            "reasoning" if replays_reasoning_at(index) => {
                 pending_reasoning.push(message.clone());
                 index += 1;
             }
@@ -605,11 +624,9 @@ fn build_context_entries(
                 let mut ids = Vec::new();
                 let mut tok = 0usize;
 
-                if include_reasoning_history {
-                    for reasoning in pending_reasoning.drain(..) {
-                        tok += metadata_token_count(&reasoning);
-                        ids.push((reasoning.message_type, reasoning.id));
-                    }
+                for reasoning in pending_reasoning.drain(..) {
+                    tok += metadata_token_count(&reasoning);
+                    ids.push((reasoning.message_type, reasoning.id));
                 }
 
                 tok += metadata_token_count(message);
@@ -638,11 +655,9 @@ fn build_context_entries(
                 let mut ids = Vec::new();
                 let mut tok = 0usize;
 
-                if include_reasoning_history {
-                    for reasoning in pending_reasoning.drain(..) {
-                        tok += metadata_token_count(&reasoning);
-                        ids.push((reasoning.message_type, reasoning.id));
-                    }
+                for reasoning in pending_reasoning.drain(..) {
+                    tok += metadata_token_count(&reasoning);
+                    ids.push((reasoning.message_type, reasoning.id));
                 }
 
                 tok += metadata_token_count(message);
@@ -825,7 +840,6 @@ pub fn build_prompt_from_chat_messages_with_token_reserve(
 
     // 5. Convert to JSON array required by chat API
     let mut final_msgs = Vec::new();
-    let include_reasoning_history = model_supports_reasoning_history(model);
     for m in msgs {
         let msg = if m.role == "tool" {
             // tool_call_id should always be present for tool messages
@@ -845,9 +859,10 @@ pub fn build_prompt_from_chat_messages_with_token_reserve(
                     .to_string()
             })
         } else if m.role == ROLE_ASSISTANT {
-            let reasoning = include_reasoning_history
-                .then_some(m.reasoning.as_deref())
-                .flatten()
+            // Reasoning was selected for this model and turn when the context was built.
+            let reasoning = m
+                .reasoning
+                .as_deref()
                 .filter(|reasoning| !reasoning.is_empty());
 
             // Check if this is a tool_call message (JSON with tool_calls field) or regular assistant message
@@ -1279,9 +1294,14 @@ mod tests {
             context_metadata("assistant", 2, 258_144),
             context_metadata("user", 3, 1_000),
         ];
-        let (needed_ids, did_truncate) =
-            determine_needed_message_ids(&metadata, "glm-5-3", 0, incoming_tokens)
-                .expect("select history within the full context window");
+        let (needed_ids, did_truncate) = determine_needed_message_ids(
+            &metadata,
+            "glm-5-3",
+            0,
+            incoming_tokens,
+            ReasoningReplay::CurrentTurn,
+        )
+        .expect("select history within the full context window");
         assert!(!did_truncate);
         assert_eq!(
             needed_ids,
@@ -1903,27 +1923,6 @@ mod tests {
     }
 
     #[test]
-    fn test_build_prompt_omits_reasoning_for_unsupported_models() {
-        let msgs = vec![
-            create_chat_msg("user", "Explain the result", Some(4)),
-            create_chat_msg_with_reasoning(
-                ROLE_ASSISTANT,
-                "The answer is 42.",
-                "This should not be passed to Gemma history.",
-                18,
-            ),
-        ];
-
-        let (messages, total_tokens) =
-            build_prompt_from_chat_messages(msgs, "gemma4-31b").expect("build prompt");
-
-        assert_eq!(messages[1]["role"], ROLE_ASSISTANT);
-        assert_eq!(messages[1]["content"], "The answer is 42.");
-        assert!(messages[1].get("reasoning").is_none());
-        assert_eq!(total_tokens, 4 + 18);
-    }
-
-    #[test]
     fn test_build_prompt_includes_reasoning_on_supported_tool_call_messages() {
         let tool_call_id = uuid::Uuid::new_v4();
         let msgs = vec![
@@ -2008,7 +2007,7 @@ mod tests {
             context_tool_metadata("tool_output", 4, 6, tool_call_id),
         ];
 
-        let entries = build_context_entries(&metadata, true);
+        let entries = build_context_entries(&metadata, ReasoningReplay::All);
 
         assert_eq!(entries.len(), 2);
         assert_eq!(entries[0].ids, vec![("user".to_string(), 1)]);
@@ -2033,7 +2032,7 @@ mod tests {
             context_tool_metadata("tool_output", 4, 6, tool_call_id),
         ];
 
-        let entries = build_context_entries(&metadata, true);
+        let entries = build_context_entries(&metadata, ReasoningReplay::All);
 
         assert_eq!(entries.len(), 3);
         assert_eq!(
@@ -2083,7 +2082,7 @@ mod tests {
         ];
 
         let (needed_ids, did_truncate) =
-            determine_needed_message_ids(&metadata, "test-model", 0, 0)
+            determine_needed_message_ids(&metadata, "test-model", 0, 0, ReasoningReplay::None)
                 .expect("determine context IDs");
 
         assert!(!did_truncate);
@@ -2105,7 +2104,7 @@ mod tests {
         ];
 
         let (needed_ids, did_truncate) =
-            determine_needed_message_ids(&metadata, "test-model", 0, 0)
+            determine_needed_message_ids(&metadata, "test-model", 0, 0, ReasoningReplay::None)
                 .expect("determine context IDs");
         let kept_call = needed_ids.contains(&("tool_call".to_string(), 4));
         let kept_output = needed_ids.contains(&("tool_output".to_string(), 5));
@@ -2126,12 +2125,55 @@ mod tests {
             context_metadata("assistant", 3, 5),
         ];
 
-        let entries = build_context_entries(&metadata, false);
+        let entries = build_context_entries(&metadata, ReasoningReplay::None);
 
         assert_eq!(entries.len(), 2);
         assert_eq!(entries[0].ids, vec![("user".to_string(), 1)]);
         assert_eq!(entries[1].ids, vec![("assistant".to_string(), 3)]);
         assert_eq!(entries[1].tok, 5);
+    }
+
+    #[test]
+    fn test_current_turn_replay_keeps_only_reasoning_after_the_last_user_message() {
+        let earlier_call = uuid::Uuid::new_v4();
+        let current_call = uuid::Uuid::new_v4();
+        let metadata = vec![
+            context_metadata("user", 1, 4),
+            context_metadata("reasoning", 2, 7),
+            context_tool_metadata("tool_call", 3, 5, earlier_call),
+            context_tool_metadata("tool_output", 4, 6, earlier_call),
+            context_metadata("reasoning", 5, 9),
+            context_metadata("assistant", 6, 5),
+            context_metadata("user", 7, 4),
+            context_metadata("reasoning", 8, 11),
+            context_tool_metadata("tool_call", 9, 5, current_call),
+            context_tool_metadata("tool_output", 10, 6, current_call),
+        ];
+
+        let entries = build_context_entries(&metadata, ReasoningReplay::CurrentTurn);
+        let ids = entries
+            .iter()
+            .flat_map(|entry| entry.ids.iter().cloned())
+            .collect::<Vec<_>>();
+
+        assert!(!ids.contains(&("reasoning".to_string(), 2)));
+        assert!(!ids.contains(&("reasoning".to_string(), 5)));
+        assert!(ids.contains(&("reasoning".to_string(), 8)));
+        let current = entries.last().expect("current tool turn");
+        assert_eq!(
+            current.ids,
+            vec![
+                ("reasoning".to_string(), 8),
+                ("tool_call".to_string(), 9),
+                ("tool_output".to_string(), 10),
+            ]
+        );
+        assert_eq!(current.tok, 11 + 5 + 6);
+
+        let all = build_context_entries(&metadata, ReasoningReplay::All);
+        let all_tokens: usize = all.iter().map(|entry| entry.tok).sum();
+        let current_turn_tokens: usize = entries.iter().map(|entry| entry.tok).sum();
+        assert_eq!(all_tokens - current_turn_tokens, 7 + 9);
     }
 
     #[test]

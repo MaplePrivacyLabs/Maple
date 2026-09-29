@@ -12,28 +12,141 @@ pub struct ModelConfig {
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ResponsesModelConfig {
-    pub sampling: SamplingConfig,
+    /// The model creator's recommended sampling. `None` only for models outside
+    /// the catalog, whose requests omit sampling so the provider's default applies.
+    pub sampling: Option<SamplingConfig>,
     pub include_reasoning: bool,
     pub enable_thinking: bool,
+    pub reasoning_history: ReasoningHistoryStrategy,
 }
 
+/// Sampling published by a model's creator. Every catalog model states its own
+/// values with their source; there is no shared default.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SamplingConfig {
     pub temperature: f32,
     pub top_p: f32,
+    /// Replaces `top_p` for turns that offer tools, where the creator publishes
+    /// a separate agentic value.
+    pub tool_use_top_p: Option<f32>,
+    pub top_k: Option<u32>,
 }
 
+/// How a model's creator says prior reasoning must be replayed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReasoningHistoryStrategy {
+    /// The model has no replayable reasoning, or the creator publishes no rule.
+    Omit,
+    /// Drop reasoning from earlier turns; keep it within the current turn's
+    /// tool calls (Gemma 4, gpt-oss harmony).
+    CurrentTurn,
+    /// Kimi K3 was trained with preserved thinking and requires all of it.
     KimiPreserveThinking,
+    /// GLM 5.3 chat use passes `clear_thinking=true`, which keeps only the
+    /// current turn's reasoning.
     GlmClearThinking,
+    /// DeepSeek V4.1 keeps every turn's reasoning when tools are present and
+    /// drops it otherwise.
+    DeepSeekToolsOnly,
+}
+
+/// Serialize an `f32` by its shortest decimal form, so 0.95 is sent as 0.95
+/// rather than its widened `f64` value 0.949999988079071.
+fn exact_json_number(value: f32) -> Value {
+    value
+        .to_string()
+        .parse::<f64>()
+        .map_or_else(|_| json!(value), |exact| json!(exact))
+}
+
+/// The reasoning a request replays, resolved for one model turn.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReasoningReplay {
+    None,
+    /// Only reasoning after the last user message in the context.
+    CurrentTurn,
+    All,
+}
+
+impl ReasoningHistoryStrategy {
+    pub fn replay(self, tools_enabled: bool) -> ReasoningReplay {
+        match self {
+            Self::Omit => ReasoningReplay::None,
+            Self::CurrentTurn | Self::GlmClearThinking => ReasoningReplay::CurrentTurn,
+            Self::KimiPreserveThinking => ReasoningReplay::All,
+            Self::DeepSeekToolsOnly if tools_enabled => ReasoningReplay::All,
+            Self::DeepSeekToolsOnly => ReasoningReplay::None,
+        }
+    }
+
+    /// The chat-template switch that makes the provider render the same history.
+    pub fn chat_template_kwarg(self) -> Option<(&'static str, Value)> {
+        match self {
+            Self::KimiPreserveThinking => Some(("preserve_thinking", json!(true))),
+            Self::GlmClearThinking => Some(("clear_thinking", json!(true))),
+            Self::Omit | Self::CurrentTurn | Self::DeepSeekToolsOnly => None,
+        }
+    }
+}
+
+impl ReasoningReplay {
+    /// Context built before the new user message is persisted has no current
+    /// turn yet, so current-turn replay has nothing to include.
+    pub fn before_new_user_message(self) -> Self {
+        match self {
+            Self::CurrentTurn => Self::None,
+            other => other,
+        }
+    }
 }
 
 impl SamplingConfig {
+    const fn new(temperature: f32, top_p: f32) -> Self {
+        Self {
+            temperature,
+            top_p,
+            tool_use_top_p: None,
+            top_k: None,
+        }
+    }
+
+    const fn with_tool_use_top_p(mut self, top_p: f32) -> Self {
+        self.tool_use_top_p = Some(top_p);
+        self
+    }
+
+    const fn with_top_k(mut self, top_k: u32) -> Self {
+        self.top_k = Some(top_k);
+        self
+    }
+
+    /// Write this sampling into an OpenAI-compatible request.
+    pub fn apply_to_request(self, request: &mut Value, tools_enabled: bool) {
+        request["temperature"] = exact_json_number(self.temperature);
+        request["top_p"] = exact_json_number(self.top_p_for(tools_enabled));
+        if let Some(top_k) = self.top_k {
+            request["top_k"] = json!(top_k);
+        }
+    }
+
+    pub fn top_p_for(self, tools_enabled: bool) -> f32 {
+        match self.tool_use_top_p {
+            Some(top_p) if tools_enabled => top_p,
+            _ => self.top_p,
+        }
+    }
+
+    /// Apply explicit caller values over the recommendation.
     pub fn with_overrides(self, temperature: Option<f32>, top_p: Option<f32>) -> Self {
         Self {
             temperature: temperature.unwrap_or(self.temperature),
             top_p: top_p.unwrap_or(self.top_p),
+            tool_use_top_p: if top_p.is_some() {
+                None
+            } else {
+                self.tool_use_top_p
+            },
+            top_k: self.top_k,
         }
     }
 }
@@ -109,8 +222,6 @@ pub(crate) struct PaidModelAliasOverrides {
 }
 
 pub const DEFAULT_CONTEXT_WINDOW: usize = 64_000;
-pub const DEFAULT_TEMPERATURE: f32 = 0.7;
-pub const DEFAULT_TOP_P: f32 = 1.0;
 pub const AUTO_QUICK_MODEL_ID: &str = "auto:quick";
 pub const AUTO_POWERFUL_MODEL_ID: &str = "auto:powerful";
 pub const QUICK_MODEL_ID: &str = "gpt-oss-120b";
@@ -130,72 +241,37 @@ const PAID_MODEL_ALIAS_TARGETS: ModelAliasTargets = ModelAliasTargets {
     powerful: POWERFUL_MODEL_ID,
 };
 
-const DEFAULT_SAMPLING_CONFIG: SamplingConfig = SamplingConfig {
-    temperature: DEFAULT_TEMPERATURE,
-    top_p: DEFAULT_TOP_P,
-};
-
-const DEFAULT_RESPONSES_MODEL_CONFIG: ResponsesModelConfig = ResponsesModelConfig {
-    sampling: DEFAULT_SAMPLING_CONFIG,
+/// Models outside the catalog send no sampling and replay no reasoning.
+const UNCATALOGED_RESPONSES_MODEL_CONFIG: ResponsesModelConfig = ResponsesModelConfig {
+    sampling: None,
     include_reasoning: false,
     enable_thinking: false,
+    reasoning_history: ReasoningHistoryStrategy::Omit,
 };
 
-impl ModelConfig {
-    const fn new(context_window: usize) -> Self {
+impl ResponsesModelConfig {
+    const fn recommended(
+        sampling: SamplingConfig,
+        reasoning_history: ReasoningHistoryStrategy,
+    ) -> Self {
         Self {
-            context_window,
-            responses: DEFAULT_RESPONSES_MODEL_CONFIG,
+            sampling: Some(sampling),
+            include_reasoning: false,
+            enable_thinking: false,
+            reasoning_history,
         }
     }
 
-    const fn with_responses(context_window: usize, responses: ResponsesModelConfig) -> Self {
-        Self {
-            context_window,
-            responses,
-        }
+    const fn with_thinking_enabled(mut self) -> Self {
+        self.include_reasoning = true;
+        self.enable_thinking = true;
+        self
     }
 }
 
 impl ModelConfigEntry {
     #[allow(clippy::too_many_arguments)]
     const fn new(
-        id: &'static str,
-        display_name: &'static str,
-        short_name: &'static str,
-        description: &'static str,
-        access: ModelAccessTier,
-        capabilities: ModelCapabilities,
-        badges: &'static [&'static str],
-        listed: bool,
-        enabled: bool,
-        deprecated: bool,
-        sort_order: u16,
-        context_window: usize,
-    ) -> Self {
-        Self {
-            id,
-            provider_id: id,
-            catalog_provider: "tinfoil",
-            catalog_provider_id: id,
-            display_name,
-            short_name,
-            description,
-            access,
-            capabilities,
-            badges,
-            listed,
-            api_listed: listed,
-            enabled,
-            deprecated,
-            sort_order,
-            config: ModelConfig::new(context_window),
-            catalog_metadata: None,
-        }
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    const fn with_responses(
         id: &'static str,
         display_name: &'static str,
         short_name: &'static str,
@@ -226,7 +302,10 @@ impl ModelConfigEntry {
             enabled,
             deprecated,
             sort_order,
-            config: ModelConfig::with_responses(context_window, responses),
+            config: ModelConfig {
+                context_window,
+                responses,
+            },
             catalog_metadata: None,
         }
     }
@@ -244,6 +323,7 @@ impl ModelConfigEntry {
         deprecated: bool,
         sort_order: u16,
         context_window: usize,
+        responses: ResponsesModelConfig,
     ) -> Self {
         Self {
             id,
@@ -261,7 +341,10 @@ impl ModelConfigEntry {
             enabled,
             deprecated,
             sort_order,
-            config: ModelConfig::new(context_window),
+            config: ModelConfig {
+                context_window,
+                responses,
+            },
             catalog_metadata: None,
         }
     }
@@ -507,13 +590,59 @@ impl ModelAliasEntry {
     }
 }
 
-const DEFAULT_MODEL_CONFIG: ModelConfig = ModelConfig::new(DEFAULT_CONTEXT_WINDOW);
-
-const GEMMA4_RESPONSES_MODEL_CONFIG: ResponsesModelConfig = ResponsesModelConfig {
-    sampling: DEFAULT_SAMPLING_CONFIG,
-    include_reasoning: true,
-    enable_thinking: true,
+const DEFAULT_MODEL_CONFIG: ModelConfig = ModelConfig {
+    context_window: DEFAULT_CONTEXT_WINDOW,
+    responses: UNCATALOGED_RESPONSES_MODEL_CONFIG,
 };
+
+// Each catalog model uses its creator's published sampling and reasoning-history
+// rules. Change these only from a cited model card, generation config, or
+// official usage guide.
+
+// openai/gpt-oss README, "Recommended Sampling Parameters"; the harmony format
+// guide drops chain of thought from earlier turns but keeps it across tool calls.
+const GPT_OSS_RESPONSES_MODEL_CONFIG: ResponsesModelConfig = ResponsesModelConfig::recommended(
+    SamplingConfig::new(1.0, 1.0),
+    ReasoningHistoryStrategy::CurrentTurn,
+);
+
+// google/gemma-4-31b-it model card, "Sampling Parameters" (all use cases) and
+// "Multi-Turn Conversations" (no thoughts from earlier turns, except tool calls).
+const GEMMA4_RESPONSES_MODEL_CONFIG: ResponsesModelConfig = ResponsesModelConfig::recommended(
+    SamplingConfig::new(1.0, 0.95).with_top_k(64),
+    ReasoningHistoryStrategy::CurrentTurn,
+)
+.with_thinking_enabled();
+
+// zai-org/GLM-5.3 and GLM-5.3-Flash generation_config.json; both model cards say
+// to pass `clear_thinking=true` for chat.
+const GLM_5_3_RESPONSES_MODEL_CONFIG: ResponsesModelConfig = ResponsesModelConfig::recommended(
+    SamplingConfig::new(1.0, 0.95),
+    ReasoningHistoryStrategy::GlmClearThinking,
+);
+
+// moonshotai/Kimi-K3 model card: temperature 1.0, top_p 0.95 for single-step
+// tasks and 1.0 for agentic ones; preserved thinking history is required.
+const KIMI_K3_RESPONSES_MODEL_CONFIG: ResponsesModelConfig = ResponsesModelConfig::recommended(
+    SamplingConfig::new(1.0, 0.95).with_tool_use_top_p(1.0),
+    ReasoningHistoryStrategy::KimiPreserveThinking,
+);
+
+// deepseek-ai/DeepSeek-V4.1-Flash model card, "Recommended sampling parameters"
+// (top_p 0.95 or 1.0), and its encoding guide: reasoning is kept for every
+// turn when tools are present and dropped otherwise.
+const DEEPSEEK_V4_1_FLASH_RESPONSES_MODEL_CONFIG: ResponsesModelConfig =
+    ResponsesModelConfig::recommended(
+        SamplingConfig::new(1.0, 1.0),
+        ReasoningHistoryStrategy::DeepSeekToolsOnly,
+    );
+
+// meta-llama/Llama-3.3-70B-Instruct generation_config.json and the
+// meta-llama/llama-models generation defaults.
+const LLAMA3_3_70B_RESPONSES_MODEL_CONFIG: ResponsesModelConfig = ResponsesModelConfig::recommended(
+    SamplingConfig::new(0.6, 0.9),
+    ReasoningHistoryStrategy::Omit,
+);
 
 const MODEL_CONFIGS: &[ModelConfigEntry] = &[
     ModelConfigEntry::new(
@@ -529,8 +658,9 @@ const MODEL_CONFIGS: &[ModelConfigEntry] = &[
         false,
         10,
         131_072,
+        GPT_OSS_RESPONSES_MODEL_CONFIG,
     ),
-    ModelConfigEntry::with_responses(
+    ModelConfigEntry::new(
         "gemma4-31b",
         "Gemma 4 31B",
         "Gemma 4",
@@ -560,6 +690,7 @@ const MODEL_CONFIGS: &[ModelConfigEntry] = &[
         // Both providers support 1,048,576 tokens; Privatemode v1.57.0 uses
         // --max-model-len=1048576 for glm-5.3-flash.
         1_048_576,
+        GLM_5_3_RESPONSES_MODEL_CONFIG,
     )
     .with_catalog_metadata(ModelCatalogMetadata::new(
         &["text", "image"],
@@ -580,6 +711,7 @@ const MODEL_CONFIGS: &[ModelConfigEntry] = &[
         false,
         30,
         262_144,
+        KIMI_K3_RESPONSES_MODEL_CONFIG,
     )
     .with_catalog_metadata(ModelCatalogMetadata::new(
         &["text", "image"],
@@ -601,6 +733,7 @@ const MODEL_CONFIGS: &[ModelConfigEntry] = &[
         50,
         // GLM 5.3 retains its configured window independently of Flash.
         262_144,
+        GLM_5_3_RESPONSES_MODEL_CONFIG,
     )
     .with_catalog_provider("continuum", "glm-5.3")
     .with_catalog_metadata(ModelCatalogMetadata::new(&["text"], &["text"], None, None)),
@@ -617,6 +750,7 @@ const MODEL_CONFIGS: &[ModelConfigEntry] = &[
         false,
         65,
         1_048_576,
+        DEEPSEEK_V4_1_FLASH_RESPONSES_MODEL_CONFIG,
     )
     .with_catalog_metadata(ModelCatalogMetadata::new(
         &["text", "image"],
@@ -637,6 +771,7 @@ const MODEL_CONFIGS: &[ModelConfigEntry] = &[
         false,
         80,
         131_072,
+        LLAMA3_3_70B_RESPONSES_MODEL_CONFIG,
     ),
     ModelConfigEntry::api_only(
         "gpt-oss-safeguard-120b",
@@ -650,6 +785,7 @@ const MODEL_CONFIGS: &[ModelConfigEntry] = &[
         false,
         900,
         131_072,
+        GPT_OSS_RESPONSES_MODEL_CONFIG,
     ),
 ];
 
@@ -731,27 +867,13 @@ pub fn model_context_window(model: &str) -> usize {
     model_config(model).context_window
 }
 
-pub fn model_reasoning_history_strategy(model: &str) -> Option<ReasoningHistoryStrategy> {
-    let canonical = alias_target(model).unwrap_or(model);
-    let normalized = canonical.to_ascii_lowercase();
-    let normalized = normalized
-        .strip_prefix("openai/")
-        .or_else(|| normalized.strip_prefix("tinfoil/"))
-        .unwrap_or(&normalized);
-
-    match normalized {
-        "kimi-k2-6" | "kimi-k2.6" | "kimi-k3" => {
-            Some(ReasoningHistoryStrategy::KimiPreserveThinking)
-        }
-        "glm-5-2" | "glm-5.2" | "glm-5-3" | "glm-5.3" | "glm-5-3-flash" | "glm-5.3-flash" => {
-            Some(ReasoningHistoryStrategy::GlmClearThinking)
-        }
-        _ => None,
-    }
+pub fn model_reasoning_history_strategy(model: &str) -> ReasoningHistoryStrategy {
+    model_config(model).responses.reasoning_history
 }
 
-pub fn model_supports_reasoning_history(model: &str) -> bool {
-    model_reasoning_history_strategy(model).is_some()
+/// The prior reasoning to replay for one model turn.
+pub fn model_reasoning_replay(model: &str, tools_enabled: bool) -> ReasoningReplay {
+    model_reasoning_history_strategy(model).replay(tools_enabled)
 }
 
 pub(crate) fn model_catalog_response(alias_targets: ModelAliasTargets) -> Value {
@@ -892,22 +1014,43 @@ mod tests {
     }
 
     #[test]
-    fn test_existing_models_use_default_sampling_config() {
-        for model in [
-            "llama3-3-70b",
-            "gpt-oss-120b",
-            "gpt-oss-safeguard-120b",
-            "gemma4-31b",
-            "glm-5-3",
-            "glm-5-3-flash",
-            "kimi-k3",
-            "deepseek-v4-1-flash",
-        ] {
-            let config = model_config(model);
+    fn test_every_catalog_model_uses_its_creators_sampling() {
+        let expected = [
+            ("gpt-oss-120b", 1.0, 1.0, None, None),
+            ("gpt-oss-safeguard-120b", 1.0, 1.0, None, None),
+            ("gemma4-31b", 1.0, 0.95, None, Some(64)),
+            ("glm-5-3", 1.0, 0.95, None, None),
+            ("glm-5-3-flash", 1.0, 0.95, None, None),
+            ("kimi-k3", 1.0, 0.95, Some(1.0), None),
+            ("deepseek-v4-1-flash", 1.0, 1.0, None, None),
+            ("llama3-3-70b", 0.6, 0.9, None, None),
+        ];
+        assert_eq!(expected.len(), MODEL_CONFIGS.len());
 
-            assert_eq!(config.responses.sampling.temperature, DEFAULT_TEMPERATURE);
-            assert_eq!(config.responses.sampling.top_p, DEFAULT_TOP_P);
+        for (model, temperature, top_p, tool_use_top_p, top_k) in expected {
+            let sampling = model_config(model)
+                .responses
+                .sampling
+                .unwrap_or_else(|| panic!("{model} must declare recommended sampling"));
+            assert_eq!(
+                sampling,
+                SamplingConfig {
+                    temperature,
+                    top_p,
+                    tool_use_top_p,
+                    top_k,
+                },
+                "{model}"
+            );
         }
+    }
+
+    #[test]
+    fn test_uncataloged_models_omit_sampling_and_reasoning_history() {
+        let responses = model_config("unknown-model").responses;
+
+        assert_eq!(responses.sampling, None);
+        assert_eq!(responses.reasoning_history, ReasoningHistoryStrategy::Omit);
     }
 
     #[test]
@@ -919,67 +1062,88 @@ mod tests {
     }
 
     #[test]
-    fn test_model_supports_reasoning_history_only_for_validated_models() {
-        assert!(model_supports_reasoning_history("kimi-k2-6"));
-        assert!(model_supports_reasoning_history("kimi-k2.6"));
-        assert!(model_supports_reasoning_history("kimi-k3"));
-        assert!(model_supports_reasoning_history("glm-5-2"));
-        assert!(model_supports_reasoning_history("glm-5.2"));
-        assert!(model_supports_reasoning_history("glm-5-3"));
-        assert!(model_supports_reasoning_history("glm-5.3"));
-        assert!(model_supports_reasoning_history("glm-5-3-flash"));
-        assert!(model_supports_reasoning_history("glm-5.3-flash"));
-        assert!(model_supports_reasoning_history(AUTO_POWERFUL_MODEL_ID));
-
-        assert!(!model_supports_reasoning_history("gpt-oss-120b"));
-        assert!(!model_supports_reasoning_history("openai/gpt-oss-120b"));
-        assert!(!model_supports_reasoning_history(AUTO_QUICK_MODEL_ID));
-        assert!(!model_supports_reasoning_history("gpt-oss-safeguard-120b"));
-        assert!(!model_supports_reasoning_history("gemma4-31b"));
-        assert!(!model_supports_reasoning_history("deepseek-v4-pro"));
-        assert!(!model_supports_reasoning_history("llama3-3-70b"));
-        assert!(!model_supports_reasoning_history("unknown-model"));
+    fn test_model_reasoning_history_strategy_follows_each_creator() {
+        for (model, strategy) in [
+            ("gpt-oss-120b", ReasoningHistoryStrategy::CurrentTurn),
+            (
+                "gpt-oss-safeguard-120b",
+                ReasoningHistoryStrategy::CurrentTurn,
+            ),
+            ("gemma4-31b", ReasoningHistoryStrategy::CurrentTurn),
+            ("glm-5-3", ReasoningHistoryStrategy::GlmClearThinking),
+            ("glm-5-3-flash", ReasoningHistoryStrategy::GlmClearThinking),
+            ("kimi-k3", ReasoningHistoryStrategy::KimiPreserveThinking),
+            (
+                "deepseek-v4-1-flash",
+                ReasoningHistoryStrategy::DeepSeekToolsOnly,
+            ),
+            ("llama3-3-70b", ReasoningHistoryStrategy::Omit),
+            (
+                AUTO_POWERFUL_MODEL_ID,
+                ReasoningHistoryStrategy::GlmClearThinking,
+            ),
+            ("unknown-model", ReasoningHistoryStrategy::Omit),
+        ] {
+            assert_eq!(model_reasoning_history_strategy(model), strategy, "{model}");
+        }
     }
 
     #[test]
-    fn test_model_reasoning_history_strategy_by_model_family() {
+    fn test_reasoning_replay_depends_on_tools_only_for_deepseek() {
+        use ReasoningReplay::{All, CurrentTurn, None};
+
+        for (model, without_tools, with_tools) in [
+            ("gpt-oss-120b", CurrentTurn, CurrentTurn),
+            ("gemma4-31b", CurrentTurn, CurrentTurn),
+            ("glm-5-3", CurrentTurn, CurrentTurn),
+            ("glm-5-3-flash", CurrentTurn, CurrentTurn),
+            ("kimi-k3", All, All),
+            ("deepseek-v4-1-flash", None, All),
+            ("llama3-3-70b", None, None),
+        ] {
+            assert_eq!(
+                model_reasoning_replay(model, false),
+                without_tools,
+                "{model}"
+            );
+            assert_eq!(model_reasoning_replay(model, true), with_tools, "{model}");
+        }
+        assert_eq!(CurrentTurn.before_new_user_message(), None);
+        assert_eq!(All.before_new_user_message(), All);
+    }
+
+    #[test]
+    fn test_reasoning_history_chat_template_kwargs() {
         assert_eq!(
-            model_reasoning_history_strategy("kimi-k2-6"),
-            Some(ReasoningHistoryStrategy::KimiPreserveThinking)
+            ReasoningHistoryStrategy::GlmClearThinking.chat_template_kwarg(),
+            Some(("clear_thinking", json!(true)))
         );
         assert_eq!(
-            model_reasoning_history_strategy("kimi-k2.6"),
-            Some(ReasoningHistoryStrategy::KimiPreserveThinking)
+            ReasoningHistoryStrategy::KimiPreserveThinking.chat_template_kwarg(),
+            Some(("preserve_thinking", json!(true)))
         );
-        assert_eq!(
-            model_reasoning_history_strategy("kimi-k3"),
-            Some(ReasoningHistoryStrategy::KimiPreserveThinking)
-        );
-        assert_eq!(
-            model_reasoning_history_strategy("glm-5-2"),
-            Some(ReasoningHistoryStrategy::GlmClearThinking)
-        );
-        assert_eq!(
-            model_reasoning_history_strategy("glm-5.3"),
-            Some(ReasoningHistoryStrategy::GlmClearThinking)
-        );
-        assert_eq!(
-            model_reasoning_history_strategy("glm-5-3-flash"),
-            Some(ReasoningHistoryStrategy::GlmClearThinking)
-        );
-        assert_eq!(
-            model_reasoning_history_strategy(AUTO_POWERFUL_MODEL_ID),
-            Some(ReasoningHistoryStrategy::GlmClearThinking)
-        );
-        assert_eq!(model_reasoning_history_strategy("gemma4-31b"), None);
+        for strategy in [
+            ReasoningHistoryStrategy::Omit,
+            ReasoningHistoryStrategy::CurrentTurn,
+            ReasoningHistoryStrategy::DeepSeekToolsOnly,
+        ] {
+            assert_eq!(strategy.chat_template_kwarg(), None);
+        }
     }
 
     #[test]
     fn test_sampling_config_applies_overrides() {
-        let sampling = DEFAULT_SAMPLING_CONFIG.with_overrides(Some(0.5), None);
+        let kimi = model_config("kimi-k3").responses.sampling.unwrap();
 
-        assert_eq!(sampling.temperature, 0.5);
-        assert_eq!(sampling.top_p, DEFAULT_TOP_P);
+        let temperature_only = kimi.with_overrides(Some(0.5), None);
+        assert_eq!(temperature_only.temperature, 0.5);
+        assert_eq!(temperature_only.top_p_for(false), 0.95);
+        assert_eq!(temperature_only.top_p_for(true), 1.0);
+
+        // An explicit caller top_p applies to every turn.
+        let top_p = kimi.with_overrides(None, Some(0.8));
+        assert_eq!(top_p.top_p_for(false), 0.8);
+        assert_eq!(top_p.top_p_for(true), 0.8);
     }
 
     #[test]

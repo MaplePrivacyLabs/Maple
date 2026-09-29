@@ -5,6 +5,7 @@
 //! that routes each candidate through the request's V1 or V2 policy, accounts for
 //! every provider response it consumes, and returns a bounded response body.
 
+use crate::model_config::model_config;
 use async_trait::async_trait;
 use serde_json::{json, Value};
 use std::{fmt, time::Duration};
@@ -85,7 +86,6 @@ pub fn build_image_description_request(
     let mut request = json!({
         "model": candidate.public_model_id,
         "stream": false,
-        "temperature": 0.0,
         "messages": [
             {
                 "role": "system",
@@ -106,6 +106,10 @@ pub fn build_image_description_request(
             }
         ],
     });
+
+    if let Some(sampling) = model_config(candidate.public_model_id).responses.sampling {
+        sampling.apply_to_request(&mut request, false);
+    }
 
     // Image description is a bounded preprocessing operation. These models use
     // different native chat-template switches, so keep each model's
@@ -578,6 +582,23 @@ mod tests {
             assert!(request.get("max_tokens").is_none());
             assert!(request.get("max_completion_tokens").is_none());
             assert!(request.get("max_output_tokens").is_none());
+        }
+    }
+
+    #[test]
+    fn image_description_requests_use_each_models_recommended_sampling() {
+        let expected = [
+            ("glm-5-3-flash", 0.95, None),
+            ("gemma4-31b", 0.95, Some(64)),
+            ("kimi-k3", 0.95, None),
+        ];
+        for (candidate, (model, top_p, top_k)) in IMAGE_DESCRIPTION_CANDIDATES.iter().zip(expected)
+        {
+            let request = build_image_description_request(*candidate, input()).expect("request");
+            assert_eq!(request["model"], model);
+            assert_eq!(request["temperature"], json!(1.0), "{model}");
+            assert_eq!(request["top_p"], json!(top_p), "{model}");
+            assert_eq!(request["top_k"].as_u64(), top_k, "{model}");
         }
     }
 
