@@ -265,6 +265,7 @@ struct StreamedToolCall {
 enum AssistantTurnOutcome {
     ToolCall(ModelToolCall),
     Final { finish_reason: String },
+    Failed(PublicResponseFailure),
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -300,6 +301,7 @@ pub enum PublicResponseFailure {
     CapacityOverloaded,
     Provider(PublicProviderError),
     DeadlineExceeded,
+    RepetitionDetected,
     Internal,
 }
 
@@ -341,6 +343,7 @@ impl PublicResponseFailure {
         match self {
             Self::CapacityRateLimited => "rate_limit_exceeded",
             Self::Provider(error) => error.code(),
+            Self::RepetitionDetected => "repetition_detected",
             Self::CapacityOverloaded | Self::DeadlineExceeded | Self::Internal => "server_error",
         }
     }
@@ -352,6 +355,7 @@ impl PublicResponseFailure {
             }
             Self::DeadlineExceeded => "The response exceeded its execution deadline.",
             Self::Provider(error) => error.message(),
+            Self::RepetitionDetected => "The model stopped because it was repeating itself.",
             Self::Internal => "The response could not be completed.",
         }
     }
@@ -360,7 +364,7 @@ impl PublicResponseFailure {
         let error_code = match self {
             Self::CapacityRateLimited | Self::CapacityOverloaded => INFERENCE_CAPACITY_ERROR_CODE,
             Self::Provider(error) => error.code(),
-            Self::DeadlineExceeded | Self::Internal => return None,
+            Self::DeadlineExceeded | Self::RepetitionDetected | Self::Internal => return None,
         };
         Some(OpenSecretResponseError {
             error_contract: ERROR_CONTRACT_VERSION,
@@ -1554,6 +1558,146 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn assistant_turn_repetition_preserves_partial_items_and_trailing_usage() {
+        for partial_field in ["reasoning", "content"] {
+            for tools_enabled in [false, true] {
+                let (tx_completion, rx_completion) = mpsc::channel(4);
+                tx_completion
+                    .send(CompletionChunk::StreamChunk(json!({
+                        "choices": [{"delta": {(partial_field): "Partial output"}}]
+                    })))
+                    .await
+                    .unwrap();
+                tx_completion
+                    .send(CompletionChunk::StreamChunk(json!({
+                        "choices": [{"delta": {}, "finish_reason": "repetition"}]
+                    })))
+                    .await
+                    .unwrap();
+                tx_completion
+                    .send(CompletionChunk::Usage(CompletionUsage {
+                        prompt_tokens: 100,
+                        completion_tokens: 32_768,
+                        cached_prompt_tokens: None,
+                    }))
+                    .await
+                    .unwrap();
+                tx_completion.send(completed_attempt_chunk()).await.unwrap();
+                drop(tx_completion);
+
+                let (tx_storage, mut rx_storage) = mpsc::channel(8);
+                let (tx_client, rx_client) = mpsc::channel(1);
+                drop(rx_client);
+                let mut next_message_id = Some(Uuid::new_v4());
+                let outcome = consume_assistant_turn(
+                    rx_completion,
+                    tools_enabled,
+                    &tx_client,
+                    &tx_storage,
+                    &mut next_message_id,
+                    Uuid::new_v4(),
+                )
+                .await
+                .expect("repetition must retain partial output even after client disconnect");
+                let AssistantTurnOutcome::Failed(failure) = outcome else {
+                    panic!(
+                        "a repetition stop must fail instead of completing or dispatching a tool"
+                    );
+                };
+                assert_eq!(failure, PublicResponseFailure::RepetitionDetected);
+                assert_eq!(
+                    ResponseTerminal::Failed(failure).status(),
+                    ResponseStatus::Failed
+                );
+
+                if partial_field == "reasoning" {
+                    assert!(matches!(
+                        rx_storage.try_recv(),
+                        Ok(StorageMessage::ReasoningStarted { .. })
+                    ));
+                    assert!(matches!(
+                        rx_storage.try_recv(),
+                        Ok(StorageMessage::ReasoningDelta { delta, .. }) if delta == "Partial output"
+                    ));
+                    assert!(next_message_id.is_some(), "no empty assistant placeholder");
+                } else {
+                    assert!(matches!(
+                        rx_storage.try_recv(),
+                        Ok(StorageMessage::MessageStarted { .. })
+                    ));
+                    assert!(matches!(
+                        rx_storage.try_recv(),
+                        Ok(StorageMessage::ContentDelta { delta, .. }) if delta == "Partial output"
+                    ));
+                }
+                assert!(matches!(
+                    rx_storage.try_recv(),
+                    Ok(StorageMessage::Usage {
+                        prompt_tokens: 100,
+                        completion_tokens: 32_768,
+                    })
+                ));
+                // No item Done or terminal is synthesized here. The supervisor
+                // persists pending items as incomplete before emitting response.failed.
+                assert!(rx_storage.try_recv().is_err());
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn assistant_turn_repetition_never_dispatches_buffered_tool_calls() {
+        let (tx_completion, rx_completion) = mpsc::channel(3);
+        tx_completion
+            .send(CompletionChunk::StreamChunk(json!({
+                "choices": [{
+                    "delta": {"tool_calls": [{"index": 0, "function": {
+                        "name": "web_search", "arguments": "{\"query\":\"test\"}"
+                    }}]},
+                    "finish_reason": "repetition"
+                }]
+            })))
+            .await
+            .unwrap();
+        tx_completion
+            .send(CompletionChunk::Usage(CompletionUsage {
+                prompt_tokens: 100,
+                completion_tokens: 200,
+                cached_prompt_tokens: None,
+            }))
+            .await
+            .unwrap();
+        tx_completion.send(completed_attempt_chunk()).await.unwrap();
+        drop(tx_completion);
+
+        let (tx_storage, mut rx_storage) = mpsc::channel(8);
+        let (tx_client, mut rx_client) = mpsc::channel(8);
+        let outcome = consume_assistant_turn(
+            rx_completion,
+            true,
+            &tx_client,
+            &tx_storage,
+            &mut Some(Uuid::new_v4()),
+            Uuid::new_v4(),
+        )
+        .await
+        .unwrap();
+        assert!(matches!(
+            outcome,
+            AssistantTurnOutcome::Failed(PublicResponseFailure::RepetitionDetected)
+        ));
+        for receiver in [&mut rx_storage, &mut rx_client] {
+            assert!(matches!(
+                receiver.try_recv(),
+                Ok(StorageMessage::Usage {
+                    prompt_tokens: 100,
+                    completion_tokens: 200,
+                })
+            ));
+            assert!(receiver.try_recv().is_err());
+        }
+    }
+
+    #[tokio::test]
     async fn assistant_tool_turn_without_usage_remains_executable() {
         let (tx_completion, rx_completion) = mpsc::channel(2);
         tx_completion
@@ -1891,6 +2035,14 @@ mod tests {
         assert!(PublicResponseFailure::DeadlineExceeded
             .contract_metadata()
             .is_none());
+
+        let repetition = PublicResponseFailure::RepetitionDetected;
+        assert_eq!(repetition.openai_code(), "repetition_detected");
+        assert_eq!(
+            repetition.message(),
+            "The model stopped because it was repeating itself."
+        );
+        assert!(repetition.contract_metadata().is_none());
     }
 
     #[test]
@@ -5127,6 +5279,14 @@ async fn consume_assistant_turn(
             crate::web::openai::CompletionChunk::Terminal(AttemptTerminal::Completed {
                 ..
             }) => {
+                if finish_reason.as_deref() == Some("repetition") {
+                    // Wait for the provider terminal so trailing usage is retained, but
+                    // leave partial items pending for failed-response storage cleanup.
+                    // A repetition stop must not complete an empty answer or run a tool.
+                    return Ok(AssistantTurnOutcome::Failed(
+                        PublicResponseFailure::RepetitionDetected,
+                    ));
+                }
                 close_reasoning_if_active(&mut reasoning, tx_storage, tx_client).await?;
 
                 if assistant_turn_finished_with_tool_call(
@@ -5350,6 +5510,9 @@ async fn setup_completion_processor(
             }
             AssistantTurnOutcome::Final { finish_reason } => {
                 return ResponseTerminal::Completed { finish_reason };
+            }
+            AssistantTurnOutcome::Failed(failure) => {
+                return ResponseTerminal::Failed(failure);
             }
         }
     }
