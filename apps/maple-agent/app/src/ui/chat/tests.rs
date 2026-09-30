@@ -1718,6 +1718,60 @@ mod state_tests {
         });
     }
 
+    /// Opening a task with a persisted model points the selector at that
+    /// model without changing the account default. New Task restores it.
+    #[gpui::test]
+    fn test_existing_task_adopts_its_locked_model(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        let screen = screen(cx);
+        screen.update(cx, |this, cx| {
+            this.project_root = Some("/tmp/proj".to_string());
+            this.models = vec!["glm-5-3".into(), "kimi-k3".into()];
+            this.default_model = Some("glm-5-3".into());
+            this.selected_model = Some("glm-5-3".into());
+
+            let mut glm = summary("glm-task", "GLM");
+            glm.model = Some("glm-5-3".into());
+            glm.message_count = 2;
+            let mut kimi = summary("kimi-task", "Kimi");
+            kimi.model = Some("kimi-k3".into());
+            kimi.message_count = 3;
+
+            this.set_active_session(kimi, Vec::new(), HashMap::new(), cx);
+            assert_eq!(this.selected_model.as_deref(), Some("kimi-k3"));
+            assert!(this.model_locked);
+            assert_eq!(this.default_model.as_deref(), Some("glm-5-3"));
+            assert_eq!(this.model_menu_models(), vec!["kimi-k3".to_string()]);
+
+            this.pick_model("glm-5-3".into(), cx);
+            assert_eq!(this.selected_model.as_deref(), Some("kimi-k3"));
+            assert_eq!(this.default_model.as_deref(), Some("glm-5-3"));
+            assert!(
+                this.notice
+                    .as_ref()
+                    .is_some_and(|notice| notice.as_ref().contains("locked to model kimi-k3")),
+                "picking another model on a locked task must not change the selector"
+            );
+
+            this.set_active_session(glm, Vec::new(), HashMap::new(), cx);
+            assert_eq!(this.selected_model.as_deref(), Some("glm-5-3"));
+            assert!(this.model_locked);
+
+            this.new_session(cx);
+            assert_eq!(this.selected_model.as_deref(), Some("glm-5-3"));
+            assert!(!this.model_locked);
+            assert_eq!(
+                this.model_menu_models(),
+                vec!["glm-5-3".to_string(), "kimi-k3".to_string()]
+            );
+
+            this.pick_model("kimi-k3".into(), cx);
+            assert_eq!(this.selected_model.as_deref(), Some("kimi-k3"));
+            assert_eq!(this.default_model.as_deref(), Some("kimi-k3"));
+            assert!(!this.model_locked);
+        });
+    }
+
     /// The first send on the empty screen creates the task, carrying the
     /// draft's mode and model, and sends once the task lands.
     #[gpui::test]
@@ -1729,6 +1783,7 @@ mod state_tests {
             this.selected_session = None;
             this.project_root = Some("/work/alpha".to_string());
             this.selected_model = Some("model-x".to_string());
+            this.default_model = Some("model-x".to_string());
             let request = this.new_session_request().expect("draft request");
             assert_eq!(request.model.as_deref(), Some("model-x"));
             assert_eq!(request.mcp_server_names, None);

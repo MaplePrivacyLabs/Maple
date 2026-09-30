@@ -400,6 +400,10 @@ pub struct ChatScreen {
     slash_entries: Vec<SlashEntry>,
     models: Vec<String>,
     selected_model: Option<String>,
+    /// Last explicit pick / saved default. New tasks restore this.
+    default_model: Option<String>,
+    /// The task on screen has a persisted model after its first message.
+    model_locked: bool,
     /// Desktop notifications enabled (settings).
     notify_enabled: bool,
     /// Mirrors `window.is_window_active()` from the last render; refreshed
@@ -1037,6 +1041,8 @@ impl ChatScreen {
             slash_entries: Vec::new(),
             models: Vec::new(),
             selected_model: None,
+            default_model: None,
+            model_locked: false,
             notify_enabled: settings.desktop_notifications,
             window_active: true,
             sidebar_plan: None,
@@ -1684,11 +1690,14 @@ impl ChatScreen {
             cx,
             move |this, result, cx| {
                 if let Ok((models, saved)) = result {
-                    if this.selected_model.is_none() {
+                    if this.default_model.is_none() {
                         // Env override wins, then the account's saved
                         // default, then the first catalog entry.
-                        this.selected_model =
+                        this.default_model =
                             env_model.or(saved).or_else(|| models.first().cloned());
+                    }
+                    if !this.model_locked && this.selected_model.is_none() {
+                        this.selected_model = this.default_model.clone();
                     }
                     this.models = models;
                     this.refresh_vision(cx);
@@ -1783,6 +1792,7 @@ impl ChatScreen {
         // The draft starts from the settings defaults; the chips edit it
         // on screen only, until the task exists.
         self.web_enabled = self.default_web_enabled;
+        self.restore_default_model(cx);
         self.refresh_draft_mcp(cx);
         self.refresh_selected_title();
         cx.notify();
@@ -2730,7 +2740,7 @@ impl ChatScreen {
         // marker goes. Only an explicit settle ever moves a task out of
         // the active inbox.
         self.completed_unread_sessions.remove(&session.id);
-        self.selected_session = Some(session.id);
+        self.selected_session = Some(session.id.clone());
         self.draft = false;
         self.sync_sidebar(cx);
         let previous_root = self.project_root.clone();
@@ -2748,6 +2758,7 @@ impl ChatScreen {
             self.permission_mode = mode;
         }
         self.web_enabled = session.web_enabled;
+        self.apply_session_model(&session, cx);
         self.replace_timeline(timeline);
         self.load_attachment_images(cx);
         self.refresh_subagents(cx);
@@ -4455,7 +4466,23 @@ impl ChatScreen {
     }
 
     fn pick_model(&mut self, model: String, cx: &mut Context<Self>) {
+        if self.model_locked {
+            self.popup.close(cx);
+            if self.selected_model.as_deref() != Some(model.as_str())
+                && let Some(locked) = self.selected_model.as_deref()
+            {
+                self.notice = Some(
+                    format!(
+                        "This task is locked to model {locked}. Start a new task to use {model}."
+                    )
+                    .into(),
+                );
+            }
+            cx.notify();
+            return;
+        }
         self.selected_model = Some(model.clone());
+        self.default_model = Some(model.clone());
         self.popup.close(cx);
         cx.notify();
         self.refresh_vision(cx);
@@ -4468,6 +4495,41 @@ impl ChatScreen {
             |_this, _result, _cx| {},
         );
         self.refresh_context_usage(cx);
+    }
+
+    /// Point the composer at `model` without changing the account default.
+    fn set_composer_model(&mut self, model: Option<String>, cx: &mut Context<Self>) {
+        if self.selected_model == model {
+            return;
+        }
+        self.selected_model = model;
+        self.refresh_vision(cx);
+        self.refresh_context_usage(cx);
+    }
+
+    /// New Task and unlocked sessions use the account default, not the
+    /// last opened task's locked model.
+    fn restore_default_model(&mut self, cx: &mut Context<Self>) {
+        self.model_locked = false;
+        self.set_composer_model(self.default_model.clone(), cx);
+    }
+
+    fn apply_session_model(&mut self, session: &AgentSessionSummary, cx: &mut Context<Self>) {
+        let locked = session.message_count > 0 && session.model.is_some();
+        if locked {
+            self.model_locked = true;
+            self.set_composer_model(session.model.clone(), cx);
+        } else {
+            self.restore_default_model(cx);
+        }
+    }
+
+    fn model_menu_models(&self) -> Vec<String> {
+        if self.model_locked {
+            self.selected_model.iter().cloned().collect()
+        } else {
+            self.models.clone()
+        }
     }
 
     /// Re-measure one row after it changed in place. The list keeps the

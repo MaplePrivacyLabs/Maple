@@ -217,7 +217,7 @@ impl ChatScreen {
             .label("Model")
             .max_height(px(320.))
             .application_vim(self.application_vim_enabled)
-            .items(self.models.iter().map(|model| {
+            .items(self.model_menu_models().into_iter().map(|model| {
                 let pick = model.clone();
                 MenuItem::new(
                     SharedString::from(format!("model-{model}")),
