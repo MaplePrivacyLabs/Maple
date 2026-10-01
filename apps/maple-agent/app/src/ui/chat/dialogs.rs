@@ -30,8 +30,9 @@ struct ConfirmCopy {
 
 impl ChatScreen {
     /// Ask for a trust decision when the current project provides skills
-    /// or guidance and none is saved yet. Home and the process launch
-    /// directory are already trusted in that case, so this stays closed.
+    /// or guidance and none is saved yet. Home, the process launch
+    /// directory, and the default Maple workspace are already trusted in
+    /// that case, so this stays closed.
     pub(super) fn check_project_trust(&mut self, cx: &mut Context<Self>) {
         self.trust_prompt = None;
         let Some(root) = self.project_root.clone() else {

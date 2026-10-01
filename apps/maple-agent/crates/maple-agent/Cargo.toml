@@ -23,6 +23,7 @@ once_cell = { workspace = true }
 http = { workspace = true }
 reqwest = { workspace = true }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
+dirs = "6"
 goose = { git = "https://github.com/AnthonyRonning/goose.git", rev = "b26ae15dbbed79b22f9758abbcde19b34a8372a9", package = "goose", default-features = false }
 goose-providers = { git = "https://github.com/AnthonyRonning/goose.git", rev = "b26ae15dbbed79b22f9758abbcde19b34a8372a9", package = "goose-providers", default-features = false }
 maple-sdk = { workspace = true }

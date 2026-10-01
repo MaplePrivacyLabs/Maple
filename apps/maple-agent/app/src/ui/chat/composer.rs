@@ -23,6 +23,24 @@ use crate::ui::theme;
 use crate::ui::titlebar;
 use crate::ui::widgets;
 
+/// Recent projects for the header menu. The default Maple workspace stays
+/// listed even when it sits past the recent cap.
+fn header_project_paths(recent_roots: &[String]) -> Vec<String> {
+    let mut paths: Vec<String> = recent_roots
+        .iter()
+        .take(ROOT_MENU_RECENTS)
+        .cloned()
+        .collect();
+    if let Some(workspace) = recent_roots
+        .iter()
+        .find(|path| maple_agent::agent::is_default_maple_workspace(std::path::Path::new(path)))
+        && !paths.iter().any(|path| path == workspace)
+    {
+        paths.push(workspace.clone());
+    }
+    paths
+}
+
 impl ChatScreen {
     pub(super) fn render_header(
         &self,
@@ -138,12 +156,18 @@ impl ChatScreen {
         let mut menu = Menu::new("project-menu", px(480.))
             .label("Projects")
             .application_vim(self.application_vim_enabled);
-        for path in self.recent_roots.iter().take(ROOT_MENU_RECENTS) {
+        for path in header_project_paths(&self.recent_roots) {
             let pick = path.clone();
+            let label =
+                if maple_agent::agent::is_default_maple_workspace(std::path::Path::new(&path)) {
+                    self.sidebar.read(cx).root_name(&path)
+                } else {
+                    path.clone()
+                };
             menu = menu.item(
                 MenuItem::new(
                     SharedString::from(format!("root-{path}")),
-                    path.clone(),
+                    label,
                     move |this: &mut Self, _: &mut Window, cx: &mut Context<Self>| {
                         this.select_project_root(pick.clone(), cx);
                     },
@@ -1242,4 +1266,24 @@ fn chip(
         .children(leading.map(|name| icon(name, px(16.), color)))
         .child(div().whitespace_nowrap().child(label))
         .when(chevron, |el| el.child(icon("chevron-down", px(14.), color)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::header_project_paths;
+
+    #[test]
+    fn the_header_menu_keeps_the_maple_workspace_past_the_recent_cap() {
+        let Some(workspace) = maple_agent::agent::default_maple_workspace_path() else {
+            return;
+        };
+        let workspace = workspace.to_string_lossy().to_string();
+        let mut roots: Vec<String> = (0..8)
+            .map(|index| format!("/tmp/maple-project-{index}"))
+            .collect();
+        roots.push(workspace.clone());
+        let shown = header_project_paths(&roots);
+        assert!(shown.iter().any(|path| path == &workspace));
+        assert!(shown.len() > 6);
+    }
 }

@@ -445,22 +445,41 @@ fn home_dir() -> Option<PathBuf> {
         .filter(|path| path.is_absolute())
 }
 
-/// Root the desktop app opens when the account has no saved root. The GUI
-/// must not depend on the directory it was launched from: that is the job of
-/// the `maple acp` command, not a windowed app started from a launcher.
+/// Create Documents/Maple if it is missing. Called when the window opens,
+/// before sign-in, so the first launch has a workspace ready.
+pub fn ensure_default_workspace() -> Option<std::path::PathBuf> {
+    maple_agent::agent::ensure_default_maple_workspace()
+}
+
+/// Root the desktop app opens when the account has no saved root and the
+/// Documents/Maple workspace cannot be created. The GUI must not depend on
+/// the directory it was launched from: that is the job of the `maple acp`
+/// command, not a windowed app started from a launcher.
 fn fallback_project_root() -> Option<String> {
     home_dir().map(|path| path.to_string_lossy().to_string())
 }
 
-/// Root for a GUI start: the saved default when it still is a folder, else
-/// the home directory. Never the process working directory.
+/// Root for a GUI start: the saved folder when it still exists and was not
+/// removed, otherwise Documents/Maple (created when missing). Home is only
+/// the last resort. Never the process working directory.
 fn gui_project_root(config: &maple_agent::agent::AgentConfig) -> Option<String> {
-    config
-        .default_project_root
-        .as_deref()
-        .filter(|path| !path.trim().is_empty() && std::path::Path::new(path).is_dir())
-        .map(str::to_owned)
+    let workspace = maple_agent::agent::ensure_default_maple_workspace();
+    maple_agent::agent::startup_project_root(config, workspace.as_deref())
         .or_else(fallback_project_root)
+}
+
+/// Recent projects, with the default Maple workspace offered when the user
+/// has not removed it. Existing saved order is left as it is.
+fn offered_project_roots(
+    config: &maple_agent::agent::AgentConfig,
+    roots: Vec<RecentProjectRoot>,
+) -> Vec<RecentProjectRoot> {
+    let workspace = maple_agent::agent::ensure_default_maple_workspace();
+    maple_agent::agent::include_default_maple_workspace(
+        roots,
+        &config.removed_project_roots,
+        workspace.as_deref(),
+    )
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
@@ -1351,7 +1370,7 @@ impl AgentBackend {
         let session = self.session_for(user_id).await?;
         // The agent falls back to the process working directory when no root
         // is given. That is right for `maple acp`, not for the GUI: pick the
-        // saved root or the home directory instead.
+        // saved root or Documents/Maple instead.
         let request = match request {
             Some(AgentStartRequest {
                 project_root: None,
@@ -1410,11 +1429,10 @@ impl AgentBackend {
         &self,
         user_id: &str,
     ) -> Result<Vec<RecentProjectRoot>, String> {
-        self.service
-            .handle_for_user(user_id)
-            .await?
-            .list_recent_project_roots()
-            .await
+        let handle = self.service.handle_for_user(user_id).await?;
+        let config = handle.load_config().await?;
+        let roots = handle.list_recent_project_roots().await?;
+        Ok(offered_project_roots(&config, roots))
     }
 
     /// Register and select the default root for new tasks.
@@ -1423,10 +1441,10 @@ impl AgentBackend {
     /// their persisted working directories and may keep running under other
     /// roots while the UI moves between projects.
     ///
-    /// Choosing a folder does not record a trust decision. Home and the
-    /// process launch directory are already trusted with no saved answer;
-    /// every other root keeps `None` until the one-time prompt. A saved
-    /// "do not trust" answer stays.
+    /// Choosing a folder does not record a trust decision. Home, the
+    /// process launch directory, and the default Maple workspace are
+    /// already trusted with no saved answer; every other root keeps `None`
+    /// until the one-time prompt. A saved "do not trust" answer stays.
     pub async fn select_project_root(
         &self,
         user_id: &str,
@@ -1469,12 +1487,11 @@ impl AgentBackend {
         // Tasks that an ACP client created belong to that client's UI, not
         // to the desktop task list.
         sessions.retain(|session| !session.acp);
-        let recent_roots = handle
-            .list_recent_project_roots()
-            .await?
-            .into_iter()
-            .map(|root| root.path)
-            .collect();
+        let recent_roots =
+            offered_project_roots(&config, handle.list_recent_project_roots().await?)
+                .into_iter()
+                .map(|root| root.path)
+                .collect();
         // Same choice the screen's auto-select makes: the newest unarchived
         // task under the root that the runtime will start in. An empty task
         // is a draft an older build persisted; the screen's own new-task
