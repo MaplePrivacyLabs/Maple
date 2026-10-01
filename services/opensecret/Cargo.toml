@@ -5,7 +5,6 @@ edition = "2021"
 
 [dependencies]
 axum = { version = "0.7.5", features = ["macros", "multipart"] }
-axum-macros = { version = "0.4.1" }
 password-auth = "1.0.0"
 bip39 = { version = "2.0.0" }
 bip85_extended = "1.1.0"
@@ -40,13 +39,11 @@ aes-siv = "0.7"
 hmac = "0.12.1"
 hkdf = "0.12.4"
 generic-array = "0.14"
-cbc = "0.1.2"
 secp256k1 = { version = "0.29.0", features = ["rand"] }
 http-body = "1.0"
 reqwest = { version = "0.13.4", default-features = false, features = ["form", "gzip", "http2", "json", "query", "rustls-no-provider", "stream"] }
 futures = "0.3.30"
 uuid = { version = "1.10.0", features = ["v4", "serde"] }
-tokio-stream = "0.1"
 async-stream = "0.3"
 bytes = "1.0"
 clru = "=0.6.3"
@@ -58,9 +55,7 @@ resend-rs = "0.9.1"
 x25519-dalek = { version = "2.0.1", features = ["zeroize"] }
 rand_core = "0.6"
 serde_cbor = "0.11"
-x509-parser = "0.15"
 yasna = "0.5"
-rcgen = { version = "0.13.1", features = ["crypto"] }
 chacha20poly1305 = "0.10.1"
 getrandom = "0.2.15"
 oauth2 = { version = "5.0.0", default-features = false, features = ["reqwest", "rustls-tls"] }
