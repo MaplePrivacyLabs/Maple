@@ -803,8 +803,7 @@ fn optional_env(name: &str) -> Option<String> {
 
 /// Default `RUST_LOG` when unset. The binary crate is `opensecret`; the old
 /// `sg_backend` default matched no events, so local `cargo run` was silent.
-const DEFAULT_RUST_LOG_FILTER: &str =
-    "opensecret=debug,axum_login=debug,tower_sessions=debug,sqlx=warn,tower_http=debug";
+const DEFAULT_RUST_LOG_FILTER: &str = "opensecret=debug";
 
 fn init_tracing(app_mode: &AppMode) -> Result<(), Error> {
     let filter = EnvFilter::new(
@@ -859,10 +858,18 @@ mod default_log_filter_tests {
                 .any(|directive| directive == "opensecret=debug"),
             "local default must enable opensecret=debug: {DEFAULT_RUST_LOG_FILTER}"
         );
-        assert!(
-            !DEFAULT_RUST_LOG_FILTER.contains("sg_backend"),
-            "stale sg_backend default hides every local application log: {DEFAULT_RUST_LOG_FILTER}"
-        );
+        for stale in [
+            "sg_backend",
+            "axum_login",
+            "tower_sessions",
+            "sqlx",
+            "tower_http",
+        ] {
+            assert!(
+                !DEFAULT_RUST_LOG_FILTER.contains(stale),
+                "default names {stale}, which emits no events here: {DEFAULT_RUST_LOG_FILTER}"
+            );
+        }
     }
 }
 
