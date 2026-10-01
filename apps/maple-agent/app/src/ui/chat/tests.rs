@@ -1718,6 +1718,126 @@ mod state_tests {
         });
     }
 
+    /// Opening a task with a persisted model points the selector at that
+    /// model without changing the account default. New Task restores it.
+    #[gpui::test]
+    fn test_existing_task_adopts_its_locked_model(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        let screen = screen(cx);
+        screen.update(cx, |this, cx| {
+            this.project_root = Some("/tmp/proj".to_string());
+            this.models = vec!["glm-5-3".into(), "kimi-k3".into()];
+            this.default_model = Some("glm-5-3".into());
+            this.selected_model = Some("glm-5-3".into());
+
+            let mut glm = summary("glm-task", "GLM");
+            glm.model = Some("glm-5-3".into());
+            glm.message_count = 2;
+            let mut kimi = summary("kimi-task", "Kimi");
+            kimi.model = Some("kimi-k3".into());
+            kimi.message_count = 3;
+
+            this.set_active_session(kimi, Vec::new(), HashMap::new(), cx);
+            assert_eq!(this.selected_model.as_deref(), Some("kimi-k3"));
+            assert!(this.model_locked);
+            assert_eq!(this.default_model.as_deref(), Some("glm-5-3"));
+            assert_eq!(this.model_menu_models(), vec!["kimi-k3".to_string()]);
+
+            this.pick_model("glm-5-3".into(), cx);
+            assert_eq!(this.selected_model.as_deref(), Some("kimi-k3"));
+            assert_eq!(this.default_model.as_deref(), Some("glm-5-3"));
+            assert!(
+                this.notice
+                    .as_ref()
+                    .is_some_and(|notice| notice.as_ref().contains("locked to model kimi-k3")),
+                "picking another model on a locked task must not change the selector"
+            );
+
+            this.set_active_session(glm, Vec::new(), HashMap::new(), cx);
+            assert_eq!(this.selected_model.as_deref(), Some("glm-5-3"));
+            assert!(this.model_locked);
+
+            this.new_session(cx);
+            assert_eq!(this.selected_model.as_deref(), Some("glm-5-3"));
+            assert!(!this.model_locked);
+            assert_eq!(
+                this.model_menu_models(),
+                vec!["glm-5-3".to_string(), "kimi-k3".to_string()]
+            );
+
+            this.pick_model("kimi-k3".into(), cx);
+            assert_eq!(this.selected_model.as_deref(), Some("kimi-k3"));
+            assert_eq!(this.default_model.as_deref(), Some("kimi-k3"));
+            assert!(!this.model_locked);
+        });
+    }
+
+    /// A task opened before its first message locks as soon as the runtime
+    /// reports that message, without being opened again.
+    #[gpui::test]
+    fn test_first_message_locks_the_task_on_screen(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        use maple_agent::agent::AgentRunEvent;
+        let screen = screen(cx);
+        screen.update(cx, |this, cx| {
+            this.project_root = Some("/tmp/proj".to_string());
+            this.models = vec!["glm-5-3".into(), "kimi-k3".into()];
+            this.default_model = Some("glm-5-3".into());
+            this.selected_model = Some("glm-5-3".into());
+
+            let mut created = summary("new-task", "New");
+            created.model = Some("glm-5-3".into());
+            created.message_count = 0;
+            this.upsert_session(created.clone(), cx);
+            this.set_active_session(created.clone(), Vec::new(), HashMap::new(), cx);
+            assert!(!this.model_locked);
+
+            let mut sent = created;
+            sent.message_count = 1;
+            this.handle_run_event("new-task", "r1", AgentRunEvent::SessionUpdated(sent), cx);
+            assert!(this.model_locked);
+            assert_eq!(this.model_menu_models(), vec!["glm-5-3".to_string()]);
+
+            this.pick_model("kimi-k3".into(), cx);
+            assert_eq!(this.selected_model.as_deref(), Some("glm-5-3"));
+            assert_eq!(this.default_model.as_deref(), Some("glm-5-3"));
+            assert!(
+                this.notice
+                    .as_ref()
+                    .is_some_and(|notice| notice.as_ref().contains("locked to model glm-5-3"))
+            );
+        });
+    }
+
+    /// Deleting the last task of a project leaves an empty screen that uses
+    /// the default model, not the deleted task's lock.
+    #[gpui::test]
+    fn test_leaving_a_locked_task_restores_the_default_model(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        let screen = screen(cx);
+        screen.update(cx, |this, cx| {
+            this.project_root = Some("/tmp/proj".to_string());
+            this.models = vec!["glm-5-3".into(), "kimi-k3".into()];
+            this.default_model = Some("glm-5-3".into());
+            this.selected_model = Some("glm-5-3".into());
+
+            let mut kimi = summary("kimi-task", "Kimi");
+            kimi.model = Some("kimi-k3".into());
+            kimi.message_count = 3;
+            this.sessions = vec![kimi.clone()];
+            this.set_active_session(kimi, Vec::new(), HashMap::new(), cx);
+            assert!(this.model_locked);
+
+            this.remove_session("kimi-task", cx);
+            assert!(this.selected_session.is_none());
+            assert!(!this.model_locked);
+            assert_eq!(this.selected_model.as_deref(), Some("glm-5-3"));
+            assert_eq!(this.model_menu_models().len(), 2);
+            let request = this.new_session_request().expect("request");
+            assert_eq!(request.model.as_deref(), Some("glm-5-3"));
+        });
+    }
+
     /// The first send on the empty screen creates the task, carrying the
     /// draft's mode and model, and sends once the task lands.
     #[gpui::test]
@@ -1729,6 +1849,7 @@ mod state_tests {
             this.selected_session = None;
             this.project_root = Some("/work/alpha".to_string());
             this.selected_model = Some("model-x".to_string());
+            this.default_model = Some("model-x".to_string());
             let request = this.new_session_request().expect("draft request");
             assert_eq!(request.model.as_deref(), Some("model-x"));
             assert_eq!(request.mcp_server_names, None);

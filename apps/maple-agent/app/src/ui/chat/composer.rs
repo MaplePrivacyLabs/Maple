@@ -213,20 +213,27 @@ impl ChatScreen {
 
     fn model_menu(&self) -> Menu<Self> {
         let selected = self.selected_model.as_deref();
+        let locked = self.model_locked;
         Menu::new("model-menu", px(320.))
             .label("Model")
             .max_height(px(320.))
             .application_vim(self.application_vim_enabled)
-            .items(self.models.iter().map(|model| {
+            .items(self.model_menu_models().into_iter().map(|model| {
                 let pick = model.clone();
-                MenuItem::new(
+                let item = MenuItem::new(
                     SharedString::from(format!("model-{model}")),
                     model.clone(),
                     move |this: &mut Self, _: &mut Window, cx: &mut Context<Self>| {
                         this.pick_model(pick.clone(), cx);
                     },
                 )
-                .current(selected == Some(model.as_str()))
+                .current(selected == Some(model.as_str()));
+                // A task keeps the model of its first message.
+                if locked {
+                    item.note("Locked to this task. Start a new task to switch.")
+                } else {
+                    item
+                }
             }))
     }
 
@@ -934,7 +941,7 @@ impl ChatScreen {
                         ChatPopup::Model,
                         chip(
                             "model-picker",
-                            None,
+                            self.model_locked.then_some("lock"),
                             model_label,
                             true,
                             self.popup.is_open(&ChatPopup::Model),
