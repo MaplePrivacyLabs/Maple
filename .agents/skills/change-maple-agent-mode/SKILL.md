@@ -152,8 +152,11 @@ not replace a real desktop smoke.
 
 ## Perform the Exact Desktop Smoke
 
-Use a local open-source OpenSecret backend or an explicitly configured
-development API. Use a disposable account and non-sensitive fixtures. In a
+Choose the [environment/login path](../../../docs/development-environments.md)
+for the change. Backend changes and specific client/backend/log/billing
+interactions use an isolated linked Local stack and supported encrypted local
+password/account fixtures. Intentional small frontend Dev work needs a valid
+Dev account/login. Use disposable accounts and non-sensitive fixtures. In a
 standalone checkout, if remote rollout has not enabled Agent Mode for that
 account, set `VITE_FORCE_FEATURE_FLAGS=agent_mode` in the untracked
 `apps/maple-research/frontend/.env.local` and restart the frontend server. Do not edit an

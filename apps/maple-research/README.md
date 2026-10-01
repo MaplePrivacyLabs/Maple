@@ -25,6 +25,10 @@ Just, CI, and release entry points remain there.
 
 ## Quick start
 
+Choose [the environment and login path](../../docs/development-environments.md)
+first. Preserve generated workspace configuration and lifecycle ownership;
+the standalone examples below apply when those resources are unowned.
+
 The supported development environment is the Nix flake. It pins Bun, Rust,
 platform tools, and native dependencies used by the repository.
 
@@ -43,13 +47,20 @@ values.
 The common recipes below assume the active Nix shell. For an independent call,
 prefix a recipe with `nix develop --no-update-lock-file -c`.
 
-Select the intended OpenSecret API in the ignored `apps/maple-research/frontend/.env.local`:
+For hosted Dev browser work, use the
+[explicit profile launch and account procedure](../../docs/development-environments.md#research-hosted-dev-browser-loop);
+it preserves an existing Local `.env.local`. The standalone configuration and
+runtime recipes below consume the environment already configured for them.
+
+For unowned standalone configuration, select the intended OpenSecret API in
+the ignored `apps/maple-research/frontend/.env.local`:
 
 ```dotenv
 VITE_OPEN_SECRET_API_URL=http://127.0.0.1:3000
 ```
 
-The public Maple client ID is already present in `.env.example`. All `VITE_*`
+Use the project/client ID belonging to that backend; a managed workspace may
+provide its own value. The public Maple client ID is present in `.env.example`. All `VITE_*`
 values are shipped to the client and must never contain secrets.
 
 Start the runtime you intend to exercise:
@@ -76,6 +87,9 @@ present.
 - `VITE_OS_FLAGS_BASE_URL` selects an optional feature-flags API.
 - `VITE_MAPLE_BILLING_API_URL` selects an optional billing API.
 - `VITE_FORCE_FEATURE_FLAGS` is a local preview override, not authorization.
+- Native OAuth also selects a browser auth origin from the app variant and
+  `VITE_MAPLE_DEV_AUTH_ORIGIN`; selecting a local API alone does not make OAuth
+  local. Follow the [auth/environment contract](../../docs/development-environments.md#hosted-dev-and-intentional-oauth-checks).
 
 Flags and billing are independent clients; configure their dev or production
 API URLs for the environment being tested. A working OpenSecret chat does not
@@ -102,7 +116,7 @@ just build              # Local web build
 just format             # Format frontend source
 just lint               # Lint frontend source
 just rust-check         # Check the Tauri Rust crate
-just rust-lint          # Rust formatting check and strict Clippy
+just rust-lint          # Optional strict Clippy diagnostic; not current Research CI/hook
 just clean-local        # Clean only this checkout's Cargo artifacts
 ```
 
@@ -111,6 +125,12 @@ Bun commands run from `apps/maple-research/frontend/`; Cargo commands run from
 directory, so use `just clean-local`.
 
 ## Validation
+
+For routine Local validation use a supported encrypted password/account fixture
+and verify effective API/project and login before dependent behavior. Use
+hosted Dev only deliberately with a valid Dev account; provider/native OAuth
+is a separate intentional integration scenario. Debug/simulator does not imply
+Local.
 
 Use the checked-in CI entry points rather than reconstructing them:
 

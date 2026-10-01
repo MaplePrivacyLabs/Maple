@@ -11,11 +11,17 @@ Maple pins ONNX Runtime 1.23.2 and links it statically on iOS for PDF OCR. ONNX 
 
 ## Prerequisites
 
-- macOS with Xcode installed (16.x+)
-- CMake 3.26+
-- Python 3.8+
-- Git
-- Nix (recommended) or manually install Rust toolchain
+Use macOS with full Xcode and its matching iOS Simulator runtime installed.
+Select the supported Xcode used by the checked-in iOS recipes/workflows. Enter
+the repository's pinned Apple shell, which supplies Rust, CMake, and Python:
+
+```bash
+nix develop --no-update-lock-file .#apple
+```
+
+Commands below run from the monorepo root in that shell. This guide covers
+Research's Tauri/ONNX runtime. Choose [the client environment/login path](../../../docs/development-environments.md)
+separately; a simulator or debug app can still use hosted services.
 
 ## Quick Start
 
@@ -25,13 +31,18 @@ Maple pins ONNX Runtime 1.23.2 and links it statically on iOS for PDF OCR. ONNX 
 just ios-build-onnxruntime
 ```
 
-This builds and hash-verifies ONNX Runtime for both device and simulator, then generates the Cargo config. A valid cached artifact is reused; a stale or differently built artifact fails verification and is rebuilt.
+This builds and hash-verifies ONNX Runtime for ARM64 device and simulator.
+A valid cached artifact is reused; a stale or differently built artifact is
+rebuilt. Cold builds generate Cargo config, but the valid-cache path exits
+after verification. Generate it explicitly in the next step when missing,
+after moving the checkout, or after changing its public native build settings.
 
 The output will be in `apps/maple-research/frontend/src-tauri/onnxruntime-ios/onnxruntime.xcframework/`.
 
-### 2. Regenerate Cargo Config (if needed)
+### 2. Generate Cargo Config
 
-If you move the project or need to regenerate the cargo config:
+After obtaining the verified artifact, generate or refresh the checkout paths
+and public native variant/PCR settings used by Cargo:
 
 ```bash
 just ios-setup-cargo-config
@@ -66,10 +77,13 @@ just ios-dev-sim "iPhone 16 Pro"
 ### 5. Run on Physical Device
 
 ```bash
-just ios-dev
+just ios-dev-device "Device Name"
 ```
 
-Note: If you have a device connected (even wirelessly), `just ios-dev` may deploy to it instead of the simulator. Use `just ios-dev-sim` to explicitly target the simulator.
+Select the target explicitly. `just ios-dev` may pick a connected physical
+device even wirelessly. Physical-device networking to a Mac backend is separate
+from simulator loopback; preserve the SDK's supported attestation/URL contract
+in the [environment guide](../../../docs/development-environments.md#local-baseline-authentication).
 
 ## Troubleshooting
 
@@ -110,7 +124,7 @@ This is fixed by adding `CMAKE_FIND_ROOT_PATH_MODE_LIBRARY=NEVER` to the cmake f
 2. Clean checkout-local artifacts with `nix develop --no-update-lock-file -c just clean-local`, then
    rebuild. Do not use raw `cargo clean` from a local Nix shell because its
    intermediate build directory may be shared with other Maple workspaces.
-3. Verify the library exists: `ls -la onnxruntime-ios/onnxruntime.xcframework/ios-arm64-simulator/`
+3. Verify the library exists: `ls -la apps/maple-research/frontend/src-tauri/onnxruntime-ios/onnxruntime.xcframework/ios-arm64-simulator/`
 
 ## Architecture Notes
 
@@ -144,11 +158,16 @@ apps/maple-research/frontend/src-tauri/
 The cargo config tells the Rust `ort-sys` crate where to find the ONNX Runtime library. The keys are:
 - `[target.aarch64-apple-ios.onnxruntime]` - Device builds
 - `[target.aarch64-apple-ios-sim.onnxruntime]` - Simulator builds (ARM64 Mac)
-- `[target.x86_64-apple-ios.onnxruntime]` - Simulator builds (Intel Mac)
+
+The current generator and artifact pipeline emit only those ARM64 targets;
+they do not provide an Intel simulator library/configuration.
 
 ### CI/CD
 
-The CI workflow (`mobile-build.yml`) builds ONNX Runtime from source and caches it. The cache key includes the version number, so updating `ORT_VERSION` will trigger a rebuild.
+The root iOS workflows build/hash-verify this artifact through the same recipe.
+Cache keys include Xcode/build identity, pinned ONNX version, and relevant
+scripts/toolchain inputs. Change the owning pins and inspect the workflow
+contract rather than assuming a single environment variable controls reuse.
 
 ## Cleaning Up
 

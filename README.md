@@ -11,6 +11,7 @@ application identity.
 | Path | Responsibility |
 | --- | --- |
 | [`apps/maple-research/`](apps/maple-research/README.md) | React/Vite frontend and Tauri desktop/mobile application, app documentation, and distribution configuration |
+| [`apps/maple-auth/`](apps/maple-auth/README.md) | Independent hosted V2 native sign-in, with its own package, configuration, and Pages publisher |
 | [`apps/maple-agent/`](apps/maple-agent/README.md) | GPUI desktop-v2 prototype, ACP agent, and CLI proxy; independent from the shipped Research app |
 | [`sdk/`](sdk/README.md) | Independently published Maple TypeScript/React and Rust SDKs |
 | [`proxy/`](proxy/README.md) | Standalone OpenAI-compatible proxy, also consumed by desktop Maple |
@@ -27,6 +28,11 @@ and upstream follow-up branches are recorded in
 [the Agent migration note](docs/maple-agent-import.md).
 
 ## Development
+
+Choose [Local, hosted Dev, or Prod](docs/development-environments.md) deliberately,
+including the account/login path and effective API/auth endpoints. Backend and
+specific client/backend/log/billing work uses an isolated linked Local stack;
+small frontend work may use hosted Dev with a valid Dev account.
 
 Use the pinned Nix environment and run shared commands from the repository root:
 
