@@ -1,110 +1,70 @@
 ---
 name: develop-opensecret
-description: Set up and run the open-source OpenSecret Rust backend. Use when starting backend work, entering its pinned Nix/PostgreSQL environment, initializing submodules, running Diesel migrations, configuring the local provider stack, or deciding whether behavior belongs in OpenSecret or a client.
+description: Set up and implement the OpenSecret backend using its pinned component shell, isolated local state, SQL migrations, provider stack, and owned API/provider contracts.
 ---
 
 # Develop OpenSecret
 
-## Start safely
+Read root/component `AGENTS.md`, affected source/tests, and choose the Local
+stack required for backend work. Preserve externally owned ignored environments,
+ports, database/account state, and processes; use the owner's lifecycle when
+provided. Commands below use the backend component.
 
-Read the monorepo-root `AGENTS.md` and `services/opensecret/AGENTS.md`, inspect
-the worktree, and preserve unrelated changes. For new work, prefer current
-`origin/master` unless the task names another base. From the monorepo root,
-initialize the remaining public submodule and enter the backend component before building:
+## Enter the owning environment
+
+From the monorepo root, initialize the public dependency before builds/tests:
 
 ```sh
 git submodule update --init --recursive -- services/opensecret/privatemode-public
 cd services/opensecret
-```
-
-`nitro-toolkit/` is ordinary tracked backend source. Edit it in this component;
-no separate checkout or submodule revision update is needed. See the
-[import notes](../../../docs/nitro-toolkit-import.md) when updating an older checkout.
-
-Subsequent paths and commands in this skill are relative to
-`services/opensecret/` unless labeled otherwise. Use its pinned Nix environment
-and run Cargo from that component; it is one Rust package. Keep deployment,
-shared migration, PCR mutation, signing, and
-remote-enclave operations outside routine development unless the user
-authorizes the exact action and environment. Root `opensecret-ci.yml` and
-`sdk-integration.yml` own backend validation; they do not build or publish EIFs
-or deploy the TEE service. Follow `docs/pcr-compatibility.md` for the manual
-signed-PCR publication contract.
-
-## Enter the toolchain deliberately
-
-```sh
 OPENSECRET_DEV_CONTAINERS=0 nix develop --no-update-lock-file '.?submodules=1'
 ```
 
-The repository pre-commit hook runs `cargo fmt --check`, Clippy, and
-`cargo test` through `.githooks/pre-commit` in this shell with
-`OPENSECRET_DEV_POSTGRES=0 OPENSECRET_DEV_ENV=0 OPENSECRET_DEV_CONTAINERS=0`
-when backend files are staged. It refuses to run when the submodules are not
-checked out; the nix build, cargo-deny, EIF, and PCR checks stay in CI.
+This is one Rust package. `nitro-toolkit/` is tracked backend source, not a
+submodule. The shell can reuse/start PostgreSQL, create missing `.env`, and
+change Linux container state. Read [shell controls](../../../services/opensecret/docs/dev-shell.md)
+before pure checks or concurrent startup. Keep private local state ignored;
+never aim local migrations/tests at shared or remote databases.
 
-The shell may reuse a PostgreSQL listener, start `.pgdata`, and create `.env`
-when absent. On Linux, container setup also changes user-level state unless
-disabled. Read `docs/dev-shell.md` for controls and concurrent-checkout
-isolation. Treat `.env`, `.pgdata/`, and `.local/` as private, gitignored state;
-never point local migrations or tests at a shared, preview, or production
-database.
+For pure checks disable all hooks with `OPENSECRET_DEV_POSTGRES=0`,
+`OPENSECRET_DEV_ENV=0`, and `OPENSECRET_DEV_CONTAINERS=0` before `nix develop`.
+The pre-commit hook does this for backend formatting/Clippy/tests; database,
+client, Nix/build, EIF and PCR evidence are separate.
 
-## Prepare PostgreSQL
+## Prepare and run the local stack
 
-Run SQL migrations before starting the backend:
+For standalone state, use [local macOS setup](../../../services/opensecret/docs/local-macos-stack.md)
+and `.env.sample`/startup source. When state is externally owned, use its
+commands and generated configuration instead of recreating standalone defaults.
+Run `just diesel-migration-run-local` against the identified local DB before
+backend startup. `src/migrations.rs` is application-data logic, not Diesel.
+For schema work create a new reversible migration with the owning recipe and
+regenerate `src/models/schema.rs`; do not rewrite deployed history.
 
-```sh
-OPENSECRET_DEV_CONTAINERS=0 nix develop --no-update-lock-file '.?submodules=1' -c just diesel-migration-run-local
-```
+Provider credentials are resolved by explicit service-owned SecretSpec check/
+run recipes; reuse the supported keyring login and never copy values into
+`.env`/secret files. Tinfoil is in-process, with no sidecar; the native
+Continuum proxy is a separate process. Generated JWT/database/account fixtures
+belong to their workspace, independently of provider credentials.
 
-`src/migrations.rs` is application-data migration logic, not the Diesel runner.
-For a schema change, create a new reversible migration and let Diesel regenerate
-`src/models/schema.rs`:
+Follow [client environments and login](../../../docs/development-environments.md)
+for effective API/project values and encrypted local password/account fixtures.
+Health probes are preliminary; protected API smoke uses an SDK/encrypted app
+client. Billing/flags are external HTTP boundaries; link and configure their
+local APIs when the task needs those interactions, keeping server credentials
+on the backend.
 
-```sh
-OPENSECRET_DEV_CONTAINERS=0 nix develop --no-update-lock-file '.?submodules=1' -c \
-  just diesel-migration-generate add_user_preferences
-```
+## Implement and validate
 
-Replace the example name with the change being made. Use
-`$validate-opensecret` for rollback, upgrade-shaped data, encrypted persistence,
-and ignored database-test proof.
+Keep authorization, cryptography, persistence, model/provider policy and usage
+in OpenSecret; clients own UI and device effects. Read only the relevant
+[implementation contracts](../../../services/opensecret/docs/development-contracts.md)
+and load `$change-opensecret-api`, `$change-opensecret-provider`, or
+`$review-opensecret-security` for the boundary being changed.
 
-## Configure and run locally
-
-Derive supported configuration from `.env.sample` and startup source. Tinfoil
-is an in-process provider dependency; the macOS stack can also run the native
-Continuum proxy. Follow `docs/local-macos-stack.md` for the service-owned
-SecretSpec/BWS manifest, explicit credential checks, process topology, and Maple
-wiring. Local run recipes resolve provider credentials from BWS at invocation;
-reuse the existing Keychain login and keep values out of `.env`/secret files. Do not start a Tinfoil sidecar.
-
-Billing and feature flags are optional external HTTP API boundaries. Configure
-their URLs and backend-only credentials only when the task exercises their
-public outcomes; do not pull their server implementations into this setup.
-
-Plain `curl` is suitable for health probes, not protected-route proof. Use the
-SDK in the monorepo-root `sdk/` directory or the corresponding Maple application
-client for authenticated encrypted smoke tests. Preserve externally managed
-environment files, service ports, and processes; use the owning workspace
-manager's lifecycle commands when it provides this stack.
-
-## Follow ownership
-
-Use the source map and frontend/backend boundary in `AGENTS.md`. In particular,
-keep server policy, provider credentials/routing, authorization, durable
-storage, and cryptography in OpenSecret; keep presentation, device integration,
-and local user interaction in clients.
-
-Load the narrow sibling workflow when the task reaches it:
-
-- `$change-opensecret-api` for routes, middleware, encrypted contracts,
-  Responses, or client compatibility.
-- `$change-opensecret-provider` for models, routing, transport, provider
-  adapters, headers, retries, or usage.
-- `$review-opensecret-security` for a trust-boundary change or security review.
-- `$validate-opensecret` before claiming implementation complete.
-
-Apply the union when a task crosses skills, but keep code at the narrowest
-owning layer.
+Use `$validate-opensecret` before handoff for focused then complete component
+gates, disposable DB tests, and changed encrypted-client behavior. Report
+commands/counts, selected services/account, and unverified boundaries.
+Routine development does not authorize shared migrations, signing/PCR changes,
+remote enclave lifecycle, deployment, or publication. Preserve the
+[manual PCR contract](../../../services/opensecret/docs/pcr-compatibility.md).

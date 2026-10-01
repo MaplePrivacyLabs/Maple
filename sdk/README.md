@@ -49,12 +49,11 @@ again. Native authentication and hosted OAuth callbacks must use the matching
 V2 flows; updating only one side of that handoff is insufficient.
 
 The TypeScript SDK, Rust SDK, and Maple app are published independently.
-Research selects `@mapleai/sdk` `4.0.0` from npm. Research's native clients,
-Maple Agent, and the proxy resolve `maple-sdk` `4.0.0` from crates.io in their
-lockfiles. Research and Agent still consume the in-tree proxy library.
-Editing SDK source does not change these registry-pinned consumers; use local
-links when validating an SDK change with an affected consumer. See the
-[publishing guide](../docs/sdk-publishing.md).
+[`package.json`](package.json) and [`rust/Cargo.toml`](rust/Cargo.toml) declare
+the in-tree SDK versions; each consumer's manifest and lockfile declare the
+version and source it actually builds. Editing SDK source does not change a
+registry-pinned consumer; use local links when validating an SDK change with
+that consumer. See the [publishing guide](../docs/sdk-publishing.md).
 
 ## Security model
 
@@ -109,25 +108,48 @@ for future operations without resending the failed operation.
 
 ## TypeScript/React SDK
 
-Install the selected SDK version:
+Install the published version selected for your application and backend. The
+`4.0.0` pin below illustrates the command; it is not a current-version claim:
 
 ```sh
 bun add --exact @mapleai/sdk@4.0.0
 ```
 
 Wrap the application with `OpenSecretProvider` and supply the backend URL and
-client ID:
+project/client ID from the environment you selected. The SDK requires both
+values; it does not select a backend for you.
+
+| Environment | Backend configuration | Authentication for validation |
+| --- | --- | --- |
+| Local | Actual HTTP loopback URL and port, with the project ID registered in that backend | Local email/password or guest fixtures; ordinary local validation does not require provider OAuth |
+| Hosted development | HTTPS development backend, its project ID, and `pcrConfig.environment = "development"` | A valid account in that development backend |
+| Production | HTTPS production backend, its project ID, and production PCR policy | Intentionally selected production account and flow |
+
+The client's API URL, PCR policy, browser OAuth origin, and callback scheme are
+separate settings. Pointing the API at loopback does not change a consuming
+app's hosted OAuth origin. Select a compatible auth flow in that app before
+validation. Keep secrets out of public frontend build configuration.
 
 ```tsx
 import { OpenSecretProvider } from "@mapleai/sdk";
 import type { ReactNode } from "react";
 
-export function AppProviders({ children }: { children: ReactNode }) {
+export function AppProviders({
+  children,
+  apiUrl,
+  clientId,
+  pcrEnvironment
+}: {
+  children: ReactNode;
+  apiUrl: string;
+  clientId: string;
+  pcrEnvironment: "production" | "development";
+}) {
   return (
     <OpenSecretProvider
-      apiUrl="https://api.example.com"
-      clientId="00000000-0000-0000-0000-000000000000"
-      pcrConfig={{ environment: "production" }}
+      apiUrl={apiUrl}
+      clientId={clientId}
+      pcrConfig={{ environment: pcrEnvironment }}
     >
       {children}
     </OpenSecretProvider>
@@ -178,8 +200,9 @@ bun run build
 ```
 
 For tests without a configured backend, use the credential-free selection in
-the root `sdk-typescript.yml` workflow. An unfiltered `bun test` also collects
-integration tests and requires the fixtures described below.
+the root [`sdk-typescript.yml`](../.github/workflows/sdk-typescript.yml) workflow.
+An unfiltered `bun test` also collects integration tests and requires the
+fixtures described below.
 
 Integration tests read the variables documented in `.env.example`. Monorepo
 [`sdk-integration.yml`](../.github/workflows/sdk-integration.yml) migrates
@@ -208,11 +231,12 @@ bun run pack
 
 Only `dist/` is included in the package.
 
-Publishing runs in GitHub Actions. To dispatch validation of the committed
-TypeScript version from `sdk/`:
+Publishing runs in GitHub Actions. To dispatch validation from `sdk/`, replace
+`VERSION` with the exact TypeScript version committed in `package.json` on
+`master`:
 
 ```sh
-just publish-npm 4.0.0
+just publish-npm VERSION
 ```
 
 This defaults to a dry run. See the [SDK publishing guide](../docs/sdk-publishing.md)
@@ -220,7 +244,8 @@ for the protected publish action and the one-time registry setup.
 
 ## Rust SDK
 
-Add the selected SDK version to a Rust application:
+Add the selected published SDK version to a Rust application. This example
+illustrates an exact `4.0.0` pin rather than declaring the current version:
 
 ```toml
 [dependencies]
@@ -228,7 +253,7 @@ maple-sdk = "=4.0.0"
 ```
 
 Import the primary entry point with `use maple_sdk::OpenSecretClient`.
-See `rust/README.md` for native
+See [`rust/README.md`](rust/README.md) for native
 client examples and transport details.
 
 Run the Rust validation from the `sdk/` directory:
@@ -244,13 +269,16 @@ nix develop --no-update-lock-file -c bash -lc '
 '
 ```
 
-Integration tests use the variables documented in `rust/.env.example` and are
-separate from the default local validation path.
+These library checks do not require a backend or account credentials.
+Integration tests use explicit backend fixtures and are separate from this
+default validation path; see [Rust testing](rust/README.md#testing) and
+[`sdk-integration.yml`](../.github/workflows/sdk-integration.yml).
 
-To dispatch validation of the committed Rust version from `sdk/`:
+To dispatch validation from `sdk/`, replace `VERSION` with the exact Rust
+version committed in `rust/Cargo.toml` on `master`:
 
 ```sh
-just publish-cargo 4.0.0
+just publish-cargo VERSION
 ```
 
 This defaults to a dry run. Both recipes only dispatch GitHub Actions; they do

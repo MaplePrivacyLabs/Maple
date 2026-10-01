@@ -1,189 +1,90 @@
 # Maple monorepo agent guide
 
-This file applies to the entire repository. Read the component guide and the
-matching skill under `.agents/skills/` before changing that component. The
-current source and tests take precedence over historical design documents.
+Use current source and tests over historical plans. Read the owning component
+guide and load the skill matching the requested work; keep unrelated workflows
+out of the task.
 
-## Repository map
+## Find the owning component
 
-- `apps/maple-research/`: the existing React/Vite/Tauri Maple application,
-  including desktop Agent Mode. Read its [guide](apps/maple-research/AGENTS.md)
-  for runtime placement, native security, and exact-app validation.
-- `apps/maple-auth/`: standalone V2 hosted native sign-in, with its own
-  package, SDK pin, tests, build, and independent Pages publisher. Read its
-  [guide](apps/maple-auth/AGENTS.md). Research keeps its built-in auth; do not
-  introduce cross-app source imports or coupled release triggers.
-- `apps/maple-agent/`: GPUI desktop-v2 prototype, ACP and proxy CLI. Read its
-  [guide](apps/maple-agent/AGENTS.md) and `$develop-maple-agent`. Its runtime and
-  update discovery are separate from Research and its existing Agent Mode.
-- `sdk/`: TypeScript/React and Rust Maple SDKs for the OpenSecret backend. Read
-  `$develop-opensecret-sdk` and the SDK documentation.
-- `proxy/`: the separate OpenAI-compatible relay, also consumed by the desktop
-  app. Read `$develop-maple-proxy` and the proxy documentation.
-- `services/updates/`: the updater Worker. Preserve its deployed identity,
-  public endpoints, installed-client compatibility, and verified metadata flow.
-- `services/opensecret/`: the OpenSecret Rust backend, including its pinned
-  toolchain, local operator recipes, and signed PCR files. Read its
-  [guide](services/opensecret/AGENTS.md) and `$develop-opensecret`.
-- `docs/`, `scripts/`, `.github/`, `.agents/`, `flake.nix`, `flake.lock`,
-  `justfile`, and `repo.meta.json`: shared documentation, tooling, CI, and
-  repository identity. Keep active workflows and discoverable skills at root.
+| Path | Guide and workflow |
+| --- | --- |
+| `apps/maple-research/` | [Research guide](apps/maple-research/AGENTS.md); `$develop-maple` for existing React/Vite/Tauri web, desktop, and mobile; `$change-maple-agent-mode` for its embedded Goose/ACP/MCP runtime |
+| `apps/maple-auth/` | [Auth guide](apps/maple-auth/AGENTS.md); independent hosted V2 native sign-in, package and publisher; Research keeps built-in auth |
+| `apps/maple-agent/` | [Agent guide](apps/maple-agent/AGENTS.md); `$develop-maple-agent` for the independent GPUI desktop prototype |
+| `sdk/` | [SDK guide](sdk/README.md); `$develop-opensecret-sdk` for TypeScript/React and Rust clients |
+| `proxy/` | [Proxy guide](proxy/README.md); `$develop-maple-proxy` for the separate OpenAI-compatible relay |
+| `services/opensecret/` | [Backend guide](services/opensecret/AGENTS.md); `$develop-opensecret` and its API/provider/validation/security skills |
+| `services/updates/` | [Updater guide](services/updates/README.md); preserve deployed identity and installed-client metadata compatibility |
+| Shared CI, Nix, hooks, docs | [Repository workflows](docs/repository-workflows.md); root `scripts/`, `.github/`, `.agents/`, flake, Just and repository metadata |
 
-For SDK consumption, follow the [consumer version policy](docs/sdk-publishing.md#consumer-version-policy):
-prefer independently pinned published versions, allow local links during active
-development, and review the actual SDK source before a client release. SDK
-publication and upgrading a consumer are separate decisions.
+## Choose the development environment
 
-The `OpenSecret EIF release` workflow builds and attests artifacts and can sign
-PCR approvals behind its protected environment. It creates no GitHub Release
-or tag and does not deploy. Preserve the manual signed-PCR compatibility
-procedure in [the backend guide](services/opensecret/docs/pcr-compatibility.md)
-and the existing `OpenSecretCloud/opensecret` raw URLs used by installed clients.
+Choose Local, hosted Dev, or Prod deliberately before setup or validation; keep
+API, client/project identity, auth route, billing/flags, and account in that
+environment. Read [development environments](docs/development-environments.md)
+for the contract and native-auth traps.
 
-## Start safely
+- **Local:** use an isolated linked stack for any backend change, heavy feature,
+  or work needing frontend/backend interaction, backend logs, or billing linkage.
+- **Dev:** small frontend work may use hosted Dev with a valid Dev account and
+  supported login path. Preserve an explicitly selected environment.
+- **Prod:** use only for intentional, authorized production validation or work.
 
-1. Confirm the checkout, branch, and worktree state. Preserve unrelated user
-   changes and do not switch branches or rewrite history in a dirty checkout.
-2. Read relevant source and tests before proposing placement. Prefer the
-   narrowest existing component; write down cross-component API contracts
-   before changing them.
-3. Before creating configuration or starting or stopping services, determine
-   whether an external development environment owns ignored environment files,
-   the root `.local/tauri-workspace.json` overlay, ports, or processes. Preserve
-   those resources and follow that environment's lifecycle instructions.
-4. Use the versions and platform dependencies pinned by the owning Nix flake.
-   Run shared app recipes from the repository root; enter component directories
-   only where their command instructions require it. Do not add substitute
-   global toolchain bootstraps to docs or CI.
-5. Use `just clean-local` for the Research checkout. Raw `cargo clean` may erase
-   a shared Nix Cargo build directory used by other checkouts. Follow the
-   owning component's cleanup contract for other components.
+A debug build, simulator, or successful secrets check does not select Local.
+Routine local authentication uses an encrypted password/account fixture path;
+native OAuth/provider checks are an intentional hosted integration scenario.
 
-## Shared security and compatibility
+## Essential invariants
 
-- Keep authentication, authorization, encrypted persistence, provider
-  credentials/routing, model policy, and inference-usage truth in OpenSecret.
-  Client UI, feature flags, and billing presentation are not authority.
-- Never log access/refresh tokens, API keys, plaintext prompts/responses,
-  decrypted payloads, or credential-bearing headers/environments. Sanitize
-  errors before exposing them across a trust boundary.
-- Treat network, renderer, model, file, deep-link, and tool input as untrusted.
-  Validate at the boundary that owns the privileged effect. Preserve account
+- Inspect checkout, branch, and changes first. Preserve unrelated work; do not
+  switch branches or rewrite history over a dirty checkout. Read source/tests
+  before placement and define contracts when a change crosses components.
+- Before editing ignored env files, overlays, ports, databases, or processes,
+  identify their owner. An external workspace may manage them; follow its
+  lifecycle/configuration instructions and preserve generated state.
+- Use the owning pinned Nix flake. Shared app recipes run from the monorepo
+  root; backend and other component commands use their documented directory.
+  Avoid substitute global toolchains. Use component `just clean-local`, since
+  raw `cargo clean` can erase shared intermediates.
+- Keep auth, authorization, encrypted persistence, provider secrets/routing,
+  model policy, and usage truth in OpenSecret. UI, flags, and billing presentation
+  are not authority. Inspect every affected SDK/client contract.
+- Validate untrusted input at the privileged boundary. Preserve account
   isolation, cancellation, lifecycle ownership, and fail-closed permissions.
-- Keep secrets out of `VITE_*`; these are public build-time values. Preserve
-  local ignored configuration and do not overwrite it with defaults.
-- Preserve shipped application identity, signing/updater contracts, public
-  APIs, and protocol compatibility unless the user authorizes the change.
-  TypeScript and Rust SDK transports, retry behavior, and API coverage differ;
-  verify every affected client path when a backend contract changes.
-- Follow nearest code, error, accessibility, and test patterns. Avoid unrelated
-  dependency upgrades, rewrites, and generated-file edits. Use the appropriate
-  generators and inspect their deltas; never hide them with Git index flags.
-
-Load `$review-maple-security` for auth, proxy, Agent tooling, native
-capabilities, filesystem/process access, deep links, or persistence work. Keep
-findings in the task review or another authorized destination; keep durable
-standards and methodology in guides and skills.
+  Never log credentials, decrypted content, prompts/responses, or sensitive URLs.
+  `VITE_*` is public build configuration and cannot hold secrets.
+- Preserve shipped identity, API/protocol, signing/updater, and installed-client
+  compatibility. Use existing generators; inspect deltas and never hide them
+  with Git index flags. Keep dependency upgrades and rewrites scoped.
 
 ## Validation and publication authority
 
-Start focused, then run complete gates for the layers changed. The app's
-[validation guide](apps/maple-research/AGENTS.md#validation-is-proportional-evidence)
-and `$validate-maple` describe the change-to-evidence matrix. Component checks,
-unit tests, web/native packages, exact-app runtime smoke, and live deployment
-are separate evidence. Do not claim one proves another.
-
-Run `nix flake check --no-update-lock-file` for flake, workflow, CI-script, or
-release-configuration changes, plus the affected component checks.
+Use `$validate-maple` or `$validate-opensecret` for evidence matching the changed
+boundary, and the matching security skill for trust-boundary work. Focused tests,
+component gates, packages, exact-app runtime, and deployed behavior are distinct.
+Report commands/results, effective environment, and unverified layers. A build
+or hook pass does not prove runtime integration.
 
 ### Pre-commit hook
 
-`./setup-hooks.sh` installs `.githooks/pre-commit`. It classifies staged paths
-with `scripts/ci/hook_change_detection.py` and runs each affected component's
-own `.githooks/pre-commit` inside that component's Nix flake, so the tools match
-CI: the root `.#ci` shell for Research, Auth, `services/updates/`, and repository
-checks; the component flakes for `apps/maple-agent/`, `sdk/`, `proxy/`, and
-`services/opensecret?submodules=1`. Without Nix it runs the same commands from
-`PATH` and warns that results may differ. It runs formatters, Clippy/ESLint,
-type checks, and unit tests for the components whose files are staged; shared
-crates do not fan out to their consumers. It never runs integration suites,
-cargo-deny, `nix flake check`, or packaging. `MAPLE_HOOK_FULL=1` runs the
-slower CI-complete variants (for example the Agent's full `just ci`);
-`MAPLE_HOOK_SKIP=1` or `git commit --no-verify` bypasses it. The hook is a fast
-local gate before the GitHub Actions cycle, not full CI parity. Keep the
-classifier, its table-driven tests, and the component scripts in step with the
-workflows when a lane changes.
+`./setup-hooks.sh` enables component-selected fast gates. Research Rust runs
+formatting and tests; strict Clippy is a separate optional diagnostic, absent
+from current Research CI/hook. Hooks do not run integration, cargo-deny, flake
+checks, or packaging. Read [hook and CI details](docs/repository-workflows.md#pre-commit-hook)
+when those boundaries change; run `nix flake check --no-update-lock-file` for
+flake, workflow, CI-script, or release-configuration changes.
 
-`scripts/ci/change_detection.py` routes expensive app packaging. It selects
-desktop builds for proxy runtime inputs (a path dependency) and never selects
-app builds for SDK-only changes: each client builds the SDK source its own
-manifest selects, so changing that manifest (a pin bump or a local link) is
-what selects its lanes. Tests, docs, container-only inputs, and standalone
-component lockfiles retain their independent lanes. Update the classifier and
-its table-driven tests when the dependency graph or component layout changes.
-The backend has its own root `opensecret-ci.yml` workflow and change selector;
-`sdk-integration.yml` tests both SDKs against `services/opensecret/` from the
-same checkout. Backend changes do not imply Research or Agent packaging.
-The separate `opensecret-eif.yml` compares dev/prod EIF measurements only on PRs
-editing approved PCR JSON, relevant master changes, and manual runs. Preserve
-ordinary backend PRs without fresh approvals and meaningful master mismatches;
-these checks never change approvals, sign, release, or authorize deployment.
-Master and same-repository PR EIF checks receive OIDC for FlakeHub caching.
-Fork PRs and non-master manual runs use GitHub's branch-scoped cache without
-OIDC. Preserve that head-repository boundary and verify cache changes on fresh
-hosted runners, not just a warm local Nix store. See the [cache policy](services/opensecret/docs/nitro-deploy.md#binary-caches-and-cold-run-validation).
-
-For Pages, read [the deployment guide](docs/pages-deployments.md). Preserve
-unprivileged preview builds and separate development/production profiles.
-Credential-bearing publication executes trusted master. Publishing flags,
-protected environments, and native Cloudflare build controls are operator
-configuration, not consequences of merging source.
-
-Routine development never authorizes releases, signing, store submission,
-deployment, or live-service changes. Never push to `master` as a validation
-step: app inputs start production-shaped signed builds and can upload iOS
-artifacts to TestFlight. Creating a GitHub Release starts release builds and
-downstream publication. Use `$release-maple` only for explicitly requested
-release work, and report the tag and commit before publishing.
-
-## Skills
-
-- `$develop-maple`: Research setup and ordinary web/desktop/mobile development.
-- `$develop-maple-agent`: GPUI Agent app, runtime, component CI and isolated launch.
-- `$develop-opensecret-sdk`: SDK implementation, backend compatibility,
-  package-boundary validation, and publishing handoff.
-- `$develop-opensecret`: backend setup, local stack, migrations, and ownership.
-- `$change-opensecret-api`: backend HTTP and encrypted client contracts.
-- `$change-opensecret-provider`: provider routing, transport, and usage.
-- `$validate-opensecret`: backend Rust, database, client, and artifact evidence.
-- `$review-opensecret-security`: backend trust boundaries and evidence claims.
-- `$develop-maple-proxy`: proxy behavior, native/container builds, app dependency
-  boundaries, and publishing handoff.
-- `$validate-maple`: CI parity, exact-app/full-stack smoke, and evidence reporting.
-- `$change-maple-agent-mode`: the shipped Tauri app's Agent Mode, ACP, Goose,
-  permissions, tools, MCP, trust, cancellation, and lifecycle work.
-- `$review-maple-security`: security design, implementation, and review.
-- `$release-maple`: version preparation, preflight, and authorized publication.
+Routine development never authorizes signing, releases, store uploads, deployment,
+or live-service changes. A master push can start signed builds/TestFlight uploads;
+a GitHub Release starts release publication. Use `$release-maple` only for
+authorized release work. EIF/PCR comparison, signed approval, and deployment
+are separate; preserve [manual PCR compatibility](services/opensecret/docs/pcr-compatibility.md)
+and installed-client raw URLs. Never change approvals to clear ordinary PR checks.
 
 ## Maintaining this guidance
 
-This repository is public. Keep guides and skills self-contained for public
-contributors: implementation contracts, development, tests, and public CI
-behavior belong here. Do not name or link private repositories, or add
-company-specific fleet, credential administration, deployment, or rollout
-procedures. Those belong in their owning operational documentation. Existing
-OSS Nitro deployment guidance remains in place. An external workspace manager
-may own local state; describe that ownership without requiring a private tool.
-
-Treat guides and skills as living operational documentation, not infallible
-rules. Re-check prescriptive language against current source, tooling, and
-architecture. If guidance appears stale, materially wrong, unnecessarily
-absolute, or repeatedly creates friction, surface the mismatch and confirm the
-intended correction with the user before changing it. Avoid stylistic churn;
-narrow claims that exceed the actual invariant.
-
-Update relevant guides and skills in the same branch when an authorized change
-alters workflows, ownership, validation, or recurring development procedures.
-Keep unrelated drift scoped to a separately proposed change. Prefer improving
-an existing skill over adding a redundant one. Ground guidance in current
-source or executed workflow experience and validate prescribed commands/paths.
+Keep this public repository self-contained: implementation contracts, setup,
+tests, and CI belong here; private fleet/credential administration and rollout
+procedures belong with their owners. Keep routers short and conditional detail
+in owned references. Update material workflow changes alongside the code;
+re-check stale guidance against source and scope unrelated corrections separately.

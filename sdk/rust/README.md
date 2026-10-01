@@ -19,11 +19,14 @@ Maple Rust SDK for the OpenSecret backend: secure AI APIs, encrypted sessions, a
 ## Installation
 
 `maple-sdk` is the published replacement for the `opensecret` crate. Add the
-selected SDK version to your `Cargo.toml`:
+published version selected for your application and backend to `Cargo.toml`.
+The `4.0.0` pin below is an example, not a current-version declaration. This
+SDK's source version is declared in [`Cargo.toml`](Cargo.toml); a consumer's
+manifest and lockfile determine what it builds.
 
 ```toml
 [dependencies]
-maple-sdk = "4.0.0"
+maple-sdk = "=4.0.0"
 bytes = "1"
 futures = "0.3"
 http = "1"
@@ -37,23 +40,33 @@ the [version 4 upgrade notes](../README.md#version-4-upgrade).
 
 ## Quick Start
 
+The caller supplies the backend URL and the UUID of a project registered in
+that backend. For a disposable local backend, pass its actual HTTP loopback
+URL, including its assigned port, and use local email/password or guest
+fixtures. The SDK does not infer these values from your application's
+environment or choose a hosted authentication website. See the
+[environment configuration table](../README.md#typescriptreact-sdk) for the
+separate local, hosted development, and production settings.
+
 ```rust
-use maple_sdk::{OpenSecretClient, Pcr0Environment, Pcr0TrustPolicy, Result};
+use maple_sdk::{OpenSecretClient, Result};
 use uuid::Uuid;
 
-#[tokio::main]
-async fn main() -> Result<()> {
-    // Initialize client
-    let client = OpenSecretClient::new("https://api.opensecret.com")?;
-    let client_id = Uuid::parse_str("your-client-id")?;
+async fn register_local_user(
+    api_url: &str,
+    client_id: Uuid,
+    email: String,
+    password: String,
+) -> Result<()> {
+    let client = OpenSecretClient::new(api_url)?;
 
     // Establish secure session
     client.perform_attestation_handshake().await?;
 
     // Register and login
     let response = client.register(
-        "user@example.com".to_string(),
-        "password".to_string(),
+        email,
+        password,
         client_id,
         Some("John Doe".to_string())
     ).await?;
@@ -69,6 +82,8 @@ values and OpenSecret's signed production history. Development trust must be
 selected explicitly and checks only the development roots and signed history:
 
 ```rust
+use maple_sdk::Pcr0Environment;
+
 let development_client = OpenSecretClient::new_with_pcr0_environment(
     "https://enclave.secretgpt.ai",
     Pcr0Environment::Development,
@@ -84,6 +99,8 @@ Custom deployments can add a static allowlist without replacing the selected
 official trust policy:
 
 ```rust
+use maple_sdk::Pcr0TrustPolicy;
+
 let policy = Pcr0TrustPolicy::official().with_additional_pcr0s([
     "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
 ])?;
@@ -98,7 +115,8 @@ trust only an explicit custom set. Remote entries are size/time bounded and
 must verify against the SDK's hardcoded OpenSecret P-384 signing key. Exact
 `http://` localhost and loopback development endpoints use mock attestation;
 Android also supports the exact emulator alias `10.0.2.2`. Other endpoints
-must use HTTPS.
+must use HTTPS. An HTTP address on the Mac's LAN is not this local exception;
+do not weaken attestation checks to accommodate physical-device networking.
 
 ## Inference APIs
 
@@ -183,7 +201,7 @@ let root = TransportV2CacheNamespaceRoot::generate()?;
 let persisted = root.to_base64();
 
 let restored = TransportV2CacheNamespaceRoot::from_base64(&persisted)?;
-let client = OpenSecretClient::new("https://api.opensecret.com")?
+let client = OpenSecretClient::new(api_url)?
     .with_cache_namespace_root(restored);
 ```
 
@@ -310,39 +328,57 @@ match client.login(email, password, client_id).await {
 
 ## Testing
 
-The SDK reads configuration from `.env.local` in the parent Maple `sdk/`
-directory, matching the TypeScript SDK setup.
+Run the credential-free library tests from `sdk/` with the pinned Nix shell:
 
-Required environment variables in `.env.local`:
-```bash
-VITE_OPEN_SECRET_API_URL=http://localhost:3000
-VITE_OPEN_SECRET_PCR_ENVIRONMENT=production
-VITE_TEST_CLIENT_ID=your-client-id-uuid
+```sh
+nix develop --no-update-lock-file -c cargo test --locked \
+  --manifest-path rust/Cargo.toml --all-features --lib
 ```
 
-Production is the default when `VITE_OPEN_SECRET_PCR_ENVIRONMENT` is omitted.
-Set it to `development` when the configured URL is a hosted development enclave.
+These tests need no existing backend or account credentials. The full format,
+Clippy, library-test, and rustdoc gates are in the
+[SDK development instructions](../README.md#rust-sdk) and
+[`sdk-rust.yml`](../../.github/workflows/sdk-rust.yml).
 
-Run tests:
-```bash
-# All tests (requires running server on localhost:3000)
-cargo test --locked
+Integration tests are a separate selection. Follow
+[`sdk-integration.yml`](../../.github/workflows/sdk-integration.yml) for its
+disposable database, same-checkout OpenSecret backend, and fixture setup. It
+uses loopback and does not require hosted development accounts. Configure the
+actual test endpoint and port, project UUID, and test identities from that
+setup rather than assuming a backend is running on `localhost:3000`.
 
-# With output
-cargo test --locked -- --nocapture
+The test helpers read variables documented in [`.env.example`](.env.example).
+Several also load `../.env.local` when run from `sdk/rust/`, with `.env`
+fallbacks; the client library itself does not load dotenv configuration. Keep
+test credentials in the ignored test environment, preserve configuration owned
+by an external development environment, and use disposable identities. These
+suites can create, change, and delete backend state. Production PCR trust is
+the default when `VITE_OPEN_SECRET_PCR_ENVIRONMENT` is omitted; set
+`development` explicitly for an intentionally selected hosted development
+enclave.
 
-# Specific test
-cargo test --locked test_login_signup_flow -- --nocapture
+After setting up the disposable fixtures, run from `sdk/rust/` inside the SDK
+Nix shell:
+
+```sh
+cargo test --locked --all-features --tests
+# The full-stack native-handoff case is intentionally ignored by --lib.
+cargo test --locked --all-features --lib \
+  client::tests::native_handoff_full_stack_round_trip -- --ignored --exact
 ```
+
+An unfiltered `cargo test` also collects integration tests; it is not the
+credential-free library gate. Provider-spending cases require explicit opt-in
+with `RUN_LIVE_AI=1` and are separate from deterministic pull-request checks.
 
 ## Examples
 
-See the `examples/` directory for complete examples:
-
-```bash
-# Basic authentication flow
-cargo run --locked --example auth_example
-```
+[`examples/auth_example.rs`](examples/auth_example.rs) is a standalone local
+authentication example. It hardcodes `http://localhost:3000`, requires
+`VITE_TEST_CLIENT_ID`, and currently prints token prefixes. Use the Quick Start
+above for an explicitly configured endpoint and project; keep token material
+out of logs. This example is not an application launch profile or a smoke test
+for an endpoint selected through environment variables.
 
 ## Security Considerations
 

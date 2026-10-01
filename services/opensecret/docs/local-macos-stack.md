@@ -38,10 +38,11 @@ Just handle resolution; no custom runtime helper is needed.
 The pinned shell includes SecretSpec 0.20 and BWS. The manifest commits the
 `opensecret_local` alias with the local-development BWS project ID. The ID is
 an identifier, not a credential; authentication and BWS permissions control
-access. Every Maple repository's manifest uses the project name `maple`, so a
-machine stores its BWS machine-account token once and all of them work. If
-this machine has already logged in from another Maple repository, skip this;
-otherwise run it once:
+access. This manifest uses the SecretSpec project name `maple`; a keyring
+login is shared only with manifests using that same name. Reuse an existing
+matching login when its machine account has the required project grants;
+other project names or signing manifests may have separate credentials.
+Otherwise run:
 
 ```sh
 just local-secrets-login
@@ -130,6 +131,10 @@ monorepo root) to use this backend, preserving other existing configuration:
 ```dotenv
 VITE_OPEN_SECRET_API_URL=http://127.0.0.1:3000
 ```
+
+Use the project/client ID and supported encrypted local password/account
+fixture for this backend. API selection does not localize native OAuth; follow
+the [client environment/login contract](../../../docs/development-environments.md).
 
 Follow the selected Maple revision's own `AGENTS.md` and development or
 validation skill when present. Browser Research and native Agent Mode are
