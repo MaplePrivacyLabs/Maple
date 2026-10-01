@@ -17,7 +17,7 @@ pub enum PlatformEmailVerificationError {
     InvalidExpirationDuration(String),
 }
 
-#[derive(Queryable, Identifiable, AsChangeset, Serialize, Deserialize, Clone, Debug)]
+#[derive(Queryable, Identifiable, AsChangeset, Serialize, Deserialize, Clone)]
 #[diesel(table_name = platform_email_verifications)]
 pub struct PlatformEmailVerification {
     pub id: i32,
@@ -27,6 +27,20 @@ pub struct PlatformEmailVerification {
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub expires_at: DateTime<Utc>,
+}
+
+impl std::fmt::Debug for PlatformEmailVerification {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PlatformEmailVerification")
+            .field("id", &self.id)
+            .field("platform_user_id", &self.platform_user_id)
+            .field("verification_code", &"[redacted]")
+            .field("is_verified", &self.is_verified)
+            .field("created_at", &self.created_at)
+            .field("updated_at", &self.updated_at)
+            .field("expires_at", &self.expires_at)
+            .finish()
+    }
 }
 
 impl PlatformEmailVerification {

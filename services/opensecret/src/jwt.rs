@@ -87,9 +87,17 @@ impl TokenType {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct NewToken {
     pub token: String,
+}
+
+impl std::fmt::Debug for NewToken {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NewToken")
+            .field("token", &"[redacted]")
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -118,10 +126,18 @@ pub(crate) struct IssuedNativeHandoffGrant {
     pub(crate) expires_at: DateTime<Utc>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct JwtKeys {
     signing_key: SecretKey, // For ES256K
     secp: Secp256k1<All>,
+}
+
+impl std::fmt::Debug for JwtKeys {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("JwtKeys")
+            .field("signing_key", &"[redacted]")
+            .finish_non_exhaustive()
+    }
 }
 
 impl JwtKeys {

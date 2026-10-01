@@ -83,10 +83,19 @@ pub struct ProtectedUserData {
     pub user: AppUser,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Clone, Deserialize)]
 pub struct ChangePasswordRequest {
     pub current_password: String,
     pub new_password: String,
+}
+
+impl std::fmt::Debug for ChangePasswordRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ChangePasswordRequest")
+            .field("current_password", &"[redacted]")
+            .field("new_password", &"[redacted]")
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -94,25 +103,50 @@ pub struct InitiateAccountDeletionRequest {
     pub hashed_secret: String,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Clone, Deserialize)]
 pub struct ConfirmAccountDeletionRequest {
     pub confirmation_code: String,
     pub plaintext_secret: String,
 }
 
-#[derive(Debug, Serialize)]
+impl std::fmt::Debug for ConfirmAccountDeletionRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ConfirmAccountDeletionRequest")
+            .field("confirmation_code", &"[redacted]")
+            .field("plaintext_secret", &"[redacted]")
+            .finish()
+    }
+}
+
+#[derive(Serialize)]
 pub struct PrivateKeyResponse {
     /// Root mnemonic or derived mnemonic if BIP-85 path is specified
     mnemonic: String,
 }
 
+impl std::fmt::Debug for PrivateKeyResponse {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PrivateKeyResponse")
+            .field("mnemonic", &"[redacted]")
+            .finish()
+    }
+}
+
 /// Response struct for the private key bytes endpoint.
 /// Contains the private key encoded as a hexadecimal string.
-#[derive(Debug, Serialize)]
+#[derive(Serialize)]
 pub struct PrivateKeyBytesResponse {
     /// The private key as a 64-character hexadecimal string (32 bytes).
     /// This is the standard secp256k1 private key format.
     private_key: String,
+}
+
+impl std::fmt::Debug for PrivateKeyBytesResponse {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PrivateKeyBytesResponse")
+            .field("private_key", &"[redacted]")
+            .finish()
+    }
 }
 
 /// Structure for key derivation options.
@@ -349,9 +383,17 @@ pub struct ThirdPartyTokenRequest {
     pub audience: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Serialize)]
 pub struct ThirdPartyTokenResponse {
     pub token: String,
+}
+
+impl std::fmt::Debug for ThirdPartyTokenResponse {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ThirdPartyTokenResponse")
+            .field("token", &"[redacted]")
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -417,11 +459,21 @@ pub struct CreateApiKeyRequest {
     pub name: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct CreateApiKeyResponse {
     pub key: String, // UUID format with dashes - only returned on creation
     pub name: String,
     pub created_at: DateTime<Utc>,
+}
+
+impl std::fmt::Debug for CreateApiKeyResponse {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CreateApiKeyResponse")
+            .field("key", &"[redacted]")
+            .field("name", &self.name)
+            .field("created_at", &self.created_at)
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1280,6 +1332,27 @@ mod tests {
     use super::*;
     use crate::encrypt::{decrypt_with_key, encrypt_with_key};
     use secp256k1::SecretKey;
+
+    #[test]
+    fn credential_request_debug_output_redacts_secrets() {
+        let change_password = ChangePasswordRequest {
+            current_password: "current-password-value".to_string(),
+            new_password: "new-password-value".to_string(),
+        };
+        let debug = format!("{change_password:?}");
+        assert!(debug.starts_with("ChangePasswordRequest"));
+        assert!(debug.contains("[redacted]"));
+        assert!(!debug.contains("current-password-value"));
+        assert!(!debug.contains("new-password-value"));
+
+        let confirm_deletion = ConfirmAccountDeletionRequest {
+            confirmation_code: "confirmation-code-value".to_string(),
+            plaintext_secret: "plaintext-secret-value".to_string(),
+        };
+        let debug = format!("{confirm_deletion:#?}");
+        assert!(!debug.contains("confirmation-code-value"));
+        assert!(!debug.contains("plaintext-secret-value"));
+    }
 
     #[test]
     fn test_derivation_path_validation() {

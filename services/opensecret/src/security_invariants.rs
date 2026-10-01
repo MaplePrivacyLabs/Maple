@@ -22,6 +22,27 @@ const SENSITIVE_LOG_IDENTIFIERS: &[&str] = &[
     "decrypted_data",
 ];
 
+/// Secret-holding types whose `Debug` must be a manual, redacting impl.
+const REDACTED_DEBUG_TYPES: &[&str] = &[
+    "AppleTokenResponse",
+    "AwsCredentials",
+    "ChangePasswordRequest",
+    "ConfirmAccountDeletionRequest",
+    "CreateApiKeyResponse",
+    "EmailVerification",
+    "EnclaveSecret",
+    "GenKeyResult",
+    "JwtKeys",
+    "NewToken",
+    "OAuthState",
+    "PlatformEmailVerification",
+    "PrivateKeyBytesResponse",
+    "PrivateKeyResponse",
+    "ProxyConfig",
+    "RefreshRequest",
+    "ThirdPartyTokenResponse",
+];
+
 /// Trace output is disabled in every deployment (the attested entrypoint pins
 /// `RUST_LOG`), so trace macros are dead code that invites accidental leaks.
 const FORBIDDEN_LOG_MACROS: &[&str] = &["trace", "trace_span"];
@@ -127,9 +148,10 @@ fn logs_do_not_include_secrets_trace_macros_or_raw_json_errors() {
     let mut findings = Vec::new();
 
     for root in LOG_SCAN_ROOTS {
-        collect_sensitive_log_findings_in_path(
+        collect_source_findings_in_path(
             &manifest_dir.join(root),
             manifest_dir,
+            collect_sensitive_log_findings,
             &mut findings,
         );
     }
@@ -139,6 +161,64 @@ fn logs_do_not_include_secrets_trace_macros_or_raw_json_errors() {
         "log macros must not reference secrets, use trace level, or format raw serde_json errors:\n{}",
         findings.join("\n")
     );
+}
+
+#[test]
+fn secret_holding_types_do_not_derive_debug() {
+    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut findings = Vec::new();
+
+    for root in LOG_SCAN_ROOTS {
+        collect_source_findings_in_path(
+            &manifest_dir.join(root),
+            manifest_dir,
+            collect_derived_debug_findings,
+            &mut findings,
+        );
+    }
+
+    assert!(
+        findings.is_empty(),
+        "secret-holding types must implement a redacting `Debug` by hand:\n{}",
+        findings.join("\n")
+    );
+}
+
+#[test]
+fn derived_debug_scanner_flags_deny_listed_derives_only() {
+    let source = r#"
+#[derive(Clone, Debug, Deserialize)]
+pub struct ChangePasswordRequest {
+    pub current_password: String,
+}
+
+mod nested {
+    #[derive(std::fmt::Debug)]
+    struct JwtKeys;
+}
+
+#[derive(Clone)]
+struct RefreshRequest {
+    refresh_token: String,
+}
+
+impl std::fmt::Debug for RefreshRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RefreshRequest")
+            .field("refresh_token", &"[redacted]")
+            .finish()
+    }
+}
+
+#[derive(Debug)]
+struct UnlistedType;
+"#;
+
+    let findings = collect_derived_debug_findings("example.rs", source);
+
+    assert_eq!(findings.len(), 2, "unexpected findings: {findings:#?}");
+    assert!(findings[0].contains("ChangePasswordRequest"));
+    assert!(findings[1].contains("JwtKeys"));
 }
 
 #[test]
@@ -1007,15 +1087,16 @@ fn collect_sensitive_log_findings(source_path: &str, source: &str) -> Vec<String
     visitor.findings
 }
 
-fn collect_sensitive_log_findings_in_path(
+fn collect_source_findings_in_path(
     path: &Path,
     manifest_dir: &Path,
+    collect: fn(&str, &str) -> Vec<String>,
     findings: &mut Vec<String>,
 ) {
     if path.is_dir() {
         for entry in fs::read_dir(path).expect("source directory should be readable") {
             let entry = entry.expect("source directory entry should be readable");
-            collect_sensitive_log_findings_in_path(&entry.path(), manifest_dir, findings);
+            collect_source_findings_in_path(&entry.path(), manifest_dir, collect, findings);
         }
         return;
     }
@@ -1027,10 +1108,55 @@ fn collect_sensitive_log_findings_in_path(
     let contents = fs::read_to_string(path)
         .unwrap_or_else(|_| panic!("{} should be readable", path.display()));
     let relative_path = path.strip_prefix(manifest_dir).unwrap_or(path);
-    findings.extend(collect_sensitive_log_findings(
-        &relative_path.display().to_string(),
-        &contents,
-    ));
+    findings.extend(collect(&relative_path.display().to_string(), &contents));
+}
+
+fn collect_derived_debug_findings(source_path: &str, source: &str) -> Vec<String> {
+    let syntax = syn::parse_file(source)
+        .unwrap_or_else(|error| panic!("{source_path} should parse as Rust source: {error}"));
+    let mut visitor = DerivedDebugVisitor {
+        source_path,
+        findings: Vec::new(),
+    };
+    visitor.visit_file(&syntax);
+    visitor.findings
+}
+
+struct DerivedDebugVisitor<'a> {
+    source_path: &'a str,
+    findings: Vec<String>,
+}
+
+impl<'ast> Visit<'ast> for DerivedDebugVisitor<'_> {
+    fn visit_item_struct(&mut self, item: &'ast syn::ItemStruct) {
+        let name = item.ident.to_string();
+        if REDACTED_DEBUG_TYPES.contains(&name.as_str()) && derives_debug(&item.attrs) {
+            self.findings.push(format!(
+                "{}: `{name}` derives `Debug`; write a manual impl that redacts its secrets",
+                self.source_path
+            ));
+        }
+        visit::visit_item_struct(self, item);
+    }
+}
+
+fn derives_debug(attrs: &[syn::Attribute]) -> bool {
+    attrs
+        .iter()
+        .filter(|attr| attr.path().is_ident("derive"))
+        .any(|attr| {
+            let derived = attr
+                .parse_args_with(
+                    syn::punctuated::Punctuated::<syn::Path, syn::Token![,]>::parse_terminated,
+                )
+                .expect("derive attribute should list paths");
+            derived.iter().any(|derived_path| {
+                derived_path
+                    .segments
+                    .last()
+                    .is_some_and(|segment| segment.ident == "Debug")
+            })
+        })
 }
 
 struct SensitiveLogVisitor<'a> {
