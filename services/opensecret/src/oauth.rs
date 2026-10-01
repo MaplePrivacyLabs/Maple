@@ -29,13 +29,23 @@ const OAUTH_STATE_CAPACITY: usize = 4_096;
 pub type BasicClient =
     OAuthBasicClient<EndpointSet, EndpointNotSet, EndpointNotSet, EndpointNotSet, EndpointSet>;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OAuthState {
     pub csrf_token: String,
     pub client_id: Uuid,
     // Snapshot the selected callback, including when initiation used the default.
     // Complete-state equality protects this value before callback code uses it.
     pub redirect_url: String,
+}
+
+impl std::fmt::Debug for OAuthState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OAuthState")
+            .field("csrf_token", &"[redacted]")
+            .field("client_id", &self.client_id)
+            .field("redirect_url", &self.redirect_url)
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone)]

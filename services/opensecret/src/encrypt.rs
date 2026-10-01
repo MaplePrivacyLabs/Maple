@@ -359,10 +359,18 @@ pub fn decrypt_with_kms(
     parse_kmstool_plaintext(&output_str, "decrypt", None)
 }
 
-#[derive(Debug)]
 pub struct GenKeyResult {
     pub key: Vec<u8>,
     pub encrypted_key: Vec<u8>,
+}
+
+impl std::fmt::Debug for GenKeyResult {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GenKeyResult")
+            .field("key", &"[redacted]")
+            .field("encrypted_key", &"[redacted]")
+            .finish()
+    }
 }
 
 fn strip_single_trailing_newline<'a>(

@@ -33,7 +33,7 @@ pub(crate) fn read_vsock_response_string_limited(
     Ok(response)
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Clone, Deserialize, Serialize)]
 pub struct AwsCredentials {
     #[serde(rename = "AccessKeyId")]
     pub access_key_id: String,
@@ -43,6 +43,17 @@ pub struct AwsCredentials {
     pub token: String,
     #[serde(rename = "Region")]
     pub region: String,
+}
+
+impl std::fmt::Debug for AwsCredentials {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AwsCredentials")
+            .field("access_key_id", &"[redacted]")
+            .field("secret_access_key", &"[redacted]")
+            .field("token", &"[redacted]")
+            .field("region", &self.region)
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -155,6 +166,33 @@ impl AwsCredentialManager {
                     tokio::time::sleep(Duration::from_secs(5)).await;
                 }
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn aws_credentials_debug_output_redacts_secrets() {
+        let credentials = AwsCredentials {
+            access_key_id: "access-key-id-value".to_string(),
+            secret_access_key: "secret-access-key-value".to_string(),
+            token: "session-token-value".to_string(),
+            region: "us-east-2".to_string(),
+        };
+
+        let debug = format!("{credentials:?}");
+
+        assert!(debug.starts_with("AwsCredentials"));
+        assert!(debug.contains("us-east-2"));
+        for secret in [
+            "access-key-id-value",
+            "secret-access-key-value",
+            "session-token-value",
+        ] {
+            assert!(!debug.contains(secret), "{secret} leaked into {debug}");
         }
     }
 }

@@ -119,9 +119,17 @@ pub struct AuthResponse {
     pub refresh_token: String,
 }
 
-#[derive(Deserialize, Debug, Clone)]
+#[derive(Deserialize, Clone)]
 pub struct RefreshRequest {
     refresh_token: String,
+}
+
+impl std::fmt::Debug for RefreshRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RefreshRequest")
+            .field("refresh_token", &"[redacted]")
+            .finish()
+    }
 }
 
 #[derive(Serialize)]

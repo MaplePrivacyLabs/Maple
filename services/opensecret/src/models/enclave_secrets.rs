@@ -9,12 +9,22 @@ pub enum EnclaveSecretError {
     DatabaseError(#[from] diesel::result::Error),
 }
 
-#[derive(Queryable, Identifiable, AsChangeset, Serialize, Deserialize, Clone, Debug)]
+#[derive(Queryable, Identifiable, AsChangeset, Serialize, Deserialize, Clone)]
 #[diesel(table_name = enclave_secrets)]
 pub struct EnclaveSecret {
     pub id: i32,
     pub key: String,
     pub value: Vec<u8>,
+}
+
+impl std::fmt::Debug for EnclaveSecret {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("EnclaveSecret")
+            .field("id", &self.id)
+            .field("key", &self.key)
+            .field("value", &"[redacted]")
+            .finish()
+    }
 }
 
 impl EnclaveSecret {

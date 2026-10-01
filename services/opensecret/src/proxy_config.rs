@@ -1,8 +1,18 @@
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct ProxyConfig {
     pub base_url: String,
     pub api_key: Option<String>,
     pub provider_name: String,
+}
+
+impl std::fmt::Debug for ProxyConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ProxyConfig")
+            .field("base_url", &self.base_url)
+            .field("api_key", &self.api_key.as_ref().map(|_| "[redacted]"))
+            .field("provider_name", &self.provider_name)
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone)]

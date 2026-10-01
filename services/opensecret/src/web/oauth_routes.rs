@@ -182,7 +182,7 @@ struct AppleUser {
     name: Option<String>,
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize)]
 struct AppleTokenResponse {
     access_token: String,
     #[allow(dead_code)]
@@ -190,6 +190,21 @@ struct AppleTokenResponse {
     expires_in: u64,
     refresh_token: Option<String>,
     id_token: String,
+}
+
+impl std::fmt::Debug for AppleTokenResponse {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AppleTokenResponse")
+            .field("access_token", &"[redacted]")
+            .field("token_type", &self.token_type)
+            .field("expires_in", &self.expires_in)
+            .field(
+                "refresh_token",
+                &self.refresh_token.as_ref().map(|_| "[redacted]"),
+            )
+            .field("id_token", &"[redacted]")
+            .finish()
+    }
 }
 
 impl AppleTokenResponse {
