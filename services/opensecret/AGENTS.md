@@ -39,6 +39,9 @@ for source ownership, API/provider boundaries, persistence, and privacy.
   or remote state with local migrations/tests.
 - Provider keys are service-owned in `secretspec.toml`, resolved only by explicit
   check/run recipes. Follow [local macOS stack](docs/local-macos-stack.md).
+  On Linux x86_64, build and run the proxy with the
+  [x86_64 recipe](docs/local-linux-x86_64-proxy.md). That recipe does not
+  replace the checked-in aarch64 binary or the macOS `.local/bin` flow.
   Do not retrieve secrets in shell hooks or copy them into generated `.env`.
   Tinfoil is in-process; Continuum may use its native proxy. Generated local
   auth/database state is separate from provider credentials.

@@ -34,7 +34,9 @@ client, Nix/build, EIF and PCR evidence are separate.
 ## Prepare and run the local stack
 
 For standalone state, use [local macOS setup](../../../services/opensecret/docs/local-macos-stack.md)
-and `.env.sample`/startup source. When state is externally owned, use its
+and `.env.sample`/startup source. On Linux x86_64, build and run Continuum with
+the [x86_64 proxy recipe](../../../services/opensecret/docs/local-linux-x86_64-proxy.md).
+When state is externally owned, use its
 commands and generated configuration instead of recreating standalone defaults.
 Run `just diesel-migration-run-local` against the identified local DB before
 backend startup. `src/migrations.rs` is application-data logic, not Diesel.

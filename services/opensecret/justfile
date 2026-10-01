@@ -251,6 +251,56 @@ _run-continuum-proxy-macos:
     mkdir -p "$workspace"
     exec "$bin" --port "${CONTINUUM_PROXY_PORT:-8092}" --workspace "$workspace" --apiKey "$CONTINUUM_API_KEY"
 
+### Local Linux x86_64 Proxy Commands ###
+
+# Build an x86_64 Linux Continuum proxy under .local/bin.
+# Does not replace the checked-in aarch64 continuum-proxy or the macOS darwin binary.
+# Run from a Nix dev shell, for example: nix develop --no-update-lock-file -c just build-continuum-proxy-linux
+[script("bash")]
+build-continuum-proxy-linux:
+    set -euo pipefail
+    if [ "$(uname -s)" != "Linux" ] || [ "$(uname -m)" != "x86_64" ]; then
+        echo "build-continuum-proxy-linux is only for Linux x86_64" >&2
+        exit 1
+    fi
+    mkdir -p .local/bin
+    version="$(sed -n 's/.*version = "\([^"]*\)".*/\1/p' privatemode-public/version.nix)"
+    if [ -z "$version" ]; then
+        echo "Could not read Continuum version from privatemode-public/version.nix" >&2
+        exit 1
+    fi
+    cd privatemode-public
+    CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
+        -tags contrast_unstable_api \
+        -ldflags "-X github.com/edgelesssys/continuum/internal/oss/constants.version=$version" \
+        -o ../.local/bin/continuum-proxy-linux-amd64 \
+        ./privatemode-proxy
+    ../.local/bin/continuum-proxy-linux-amd64 --version
+
+# Resolve only the Continuum credential before launching the local x86_64 proxy.
+run-continuum-proxy-linux:
+    @{{local_secrets}} run --profile default --scope continuum -- just --no-dotenv _run-continuum-proxy-linux
+
+[private]
+[script("bash")]
+_run-continuum-proxy-linux:
+    set -euo pipefail
+    # Headless machines pass the BWS bootstrap token in the environment; the service never needs it.
+    unset BWS_ACCESS_TOKEN
+    if [ "$(uname -s)" != "Linux" ] || [ "$(uname -m)" != "x86_64" ]; then
+        echo "run-continuum-proxy-linux is only for Linux x86_64" >&2
+        exit 1
+    fi
+    bin=".local/bin/continuum-proxy-linux-amd64"
+    if [ ! -x "$bin" ]; then
+        echo "Run just build-continuum-proxy-linux first" >&2
+        exit 1
+    fi
+    : "${CONTINUUM_API_KEY:?Run just run-continuum-proxy-linux to resolve local secrets}"
+    workspace="${CONTINUUM_PROXY_WORKSPACE:-.local/continuum}"
+    mkdir -p "$workspace"
+    exec "$bin" --port "${CONTINUUM_PROXY_PORT:-8092}" --workspace "$workspace" --apiKey "$CONTINUUM_API_KEY"
+
 # Resolve Tinfoil and Kagi for the backend; no provider-key dotenv/file fallback.
 run-local-backend-macos:
     @{{local_secrets}} run --profile default --scope backend -- just --no-dotenv _run-local-backend-macos
