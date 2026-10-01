@@ -2783,6 +2783,18 @@ mod tests {
         assert_eq!(output_items[0].status, STATUS_COMPLETED);
         assert_eq!(output_items[1].status, STATUS_COMPLETED);
     }
+
+    #[test]
+    fn client_response_state_reports_each_unknown_item_once() {
+        let mut state = ClientResponseState::default();
+        let first = Uuid::new_v4();
+        let second = Uuid::new_v4();
+
+        assert!(state.first_unknown_item_report(first));
+        assert!(!state.first_unknown_item_report(first));
+        assert!(state.first_unknown_item_report(second));
+        assert!(!state.first_unknown_item_report(second));
+    }
 }
 
 /// Conversation parameter - can be a string UUID or an object with id field
@@ -3539,9 +3551,16 @@ enum StreamOutputItemRecord {
 struct ClientResponseState {
     items: Vec<StreamOutputItemRecord>,
     indices: HashMap<Uuid, usize>,
+    /// Unknown item ids already warned about, so per-delta events warn once per item.
+    warned_unknown_items: HashSet<Uuid>,
 }
 
 impl ClientResponseState {
+    /// Returns true the first time an unknown item id is reported for this stream.
+    fn first_unknown_item_report(&mut self, item_id: Uuid) -> bool {
+        self.warned_unknown_items.insert(item_id)
+    }
+
     fn push_message(&mut self, item_id: Uuid) -> i32 {
         let output_index = self.items.len();
         self.items.push(StreamOutputItemRecord::Message {
@@ -5105,6 +5124,8 @@ async fn consume_assistant_turn(
     let mut reasoning = ReasoningState::NotStarted;
     let mut saw_tool_calls = false;
     let mut ignored_disabled_tool_calls = false;
+    let mut ignored_late_reasoning = false;
+    let mut ignored_text_after_tool_calls = false;
 
     while let Some(chunk) = completion.recv().await {
         match chunk {
@@ -5129,9 +5150,12 @@ async fn consume_assistant_turn(
                     if !reasoning_delta.is_empty() {
                         match &reasoning {
                             ReasoningState::Done => {
-                                warn!(
-                                    "Ignoring reasoning delta after reasoning item was already closed"
-                                );
+                                if !ignored_late_reasoning {
+                                    warn!(
+                                        "Ignoring reasoning deltas after reasoning item was already closed"
+                                    );
+                                    ignored_late_reasoning = true;
+                                }
                             }
                             ReasoningState::NotStarted => {
                                 let reasoning_id = Uuid::new_v4();
@@ -5216,10 +5240,13 @@ async fn consume_assistant_turn(
                 {
                     if !content.is_empty() {
                         if saw_tool_calls {
-                            warn!(
-                                "Ignoring assistant text ({} chars) after tool call deltas had already started",
-                                content.len()
-                            );
+                            if !ignored_text_after_tool_calls {
+                                warn!(
+                                    "Ignoring assistant text ({} chars) after tool call deltas had already started",
+                                    content.len()
+                                );
+                                ignored_text_after_tool_calls = true;
+                            }
                         } else {
                             close_reasoning_if_active(&mut reasoning, tx_storage, tx_client)
                                 .await?;
@@ -6169,7 +6196,9 @@ async fn create_response_stream(
                 }
                 StorageMessage::ContentDelta { item_id, delta } => {
                     let Some(output_index) = client_state.append_message_delta(item_id, &delta) else {
-                        warn!("Received content delta for unknown message item {}", item_id);
+                        if client_state.first_unknown_item_report(item_id) {
+                            warn!("Received content delta for unknown message item {}", item_id);
+                        }
                         continue;
                     };
 
@@ -6247,7 +6276,9 @@ async fn create_response_stream(
                 }
                 StorageMessage::ReasoningDelta { item_id, delta } => {
                     let Some(output_index) = client_state.append_reasoning_delta(item_id, &delta) else {
-                        warn!("Received reasoning delta for unknown item {}", item_id);
+                        if client_state.first_unknown_item_report(item_id) {
+                            warn!("Received reasoning delta for unknown item {}", item_id);
+                        }
                         continue;
                     };
 

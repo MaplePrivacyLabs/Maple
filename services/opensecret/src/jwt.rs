@@ -467,8 +467,6 @@ impl NewToken {
             auth_binding: None,
         };
 
-        tracing::debug!("Creating new token with claims: {:?}", custom_claims);
-
         // Account for clock drift by setting issued_at 1 minute in the past
         let now = Utc::now();
         let iat = now - Duration::minutes(1);
@@ -622,11 +620,6 @@ impl NewToken {
             project_id: None,
             auth_binding: None,
         };
-
-        tracing::debug!(
-            "Creating new platform token with claims: {:?}",
-            custom_claims
-        );
 
         // Account for clock drift by setting issued_at 1 minute in the past
         let now = Utc::now();
