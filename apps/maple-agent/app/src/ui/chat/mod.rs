@@ -1792,7 +1792,6 @@ impl ChatScreen {
         // The draft starts from the settings defaults; the chips edit it
         // on screen only, until the task exists.
         self.web_enabled = self.default_web_enabled;
-        self.restore_default_model(cx);
         self.refresh_draft_mcp(cx);
         self.refresh_selected_title();
         cx.notify();
@@ -2685,6 +2684,8 @@ impl ChatScreen {
         self.draft = false;
         self.draft_mcp_defaults = None;
         self.draft_mcp_changes.clear();
+        // The lock belongs to the task; the empty screen uses the default.
+        self.restore_default_model(cx);
         self.sync_sidebar_selection(cx);
         self.set_queue(Vec::new());
         self.replace_timeline(Vec::new());
@@ -4629,10 +4630,16 @@ impl ChatScreen {
             if session_summary_eq(existing, &session) {
                 return false;
             }
+            let mut selected = None;
             if self.selected_session.as_deref() == Some(session.id.as_str()) {
                 self.web_enabled = session.web_enabled;
+                selected = Some(session.clone());
             }
             *existing = session;
+            // The first message locks the task on screen to its model.
+            if let Some(selected) = selected {
+                self.apply_session_model(&selected, cx);
+            }
         } else {
             self.sessions.insert(0, session);
         }
