@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use tracing::info;
+use tracing::debug;
 
 const MAX_CHUNK_SIZE: usize = 20 * 1024 * 1024; // 20MB max chunk size
 const CHUNK_OVERLAP_SECONDS: f64 = 1.0; // 1 second overlap between chunks
@@ -60,7 +60,7 @@ impl AudioSplitter {
     ) -> Result<Vec<AudioChunk>, String> {
         if !self.should_split(audio_data) {
             // No need to split, return single chunk
-            info!(
+            debug!(
                 "File size {} bytes is under limit, returning as single chunk",
                 audio_data.len()
             );
@@ -72,7 +72,7 @@ impl AudioSplitter {
             }]);
         }
 
-        info!(
+        debug!(
             "File size {} bytes exceeds limit, splitting audio",
             audio_data.len()
         );
@@ -83,7 +83,7 @@ impl AudioSplitter {
             "audio/wav" | "audio/wave" => self.split_wav(audio_data),
             _ => {
                 // For MP3 and other formats return full file as 1 chunk
-                info!(
+                debug!(
                     "Non-WAV format ({}), returning entire file as single chunk",
                     content_type
                 );
@@ -222,7 +222,7 @@ impl AudioSplitter {
             return Err("Invalid WAV file: bytes_per_second is zero".to_string());
         }
 
-        info!(
+        debug!(
             "WAV file: {} channels, {} Hz, {} bytes/sec",
             channels, sample_rate, bytes_per_second
         );
@@ -295,7 +295,7 @@ impl AudioSplitter {
             });
 
             let chunk_size = chunks.last().map(|c| c.data.len()).unwrap_or(0);
-            info!(
+            debug!(
                 "Created WAV chunk {} ({:.1}s - {:.1}s), size: {} bytes",
                 index, start_time, end_time, chunk_size
             );

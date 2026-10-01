@@ -222,8 +222,6 @@ impl SqsEventPublisher {
             let message_body = serde_json::to_string(&event)
                 .map_err(|e| BackoffError::permanent(SqsError::Serialization(e)))?;
 
-            debug!("sending message to SQS: {:?}", event);
-
             match client
                 .send_message()
                 .queue_url(&self.queue_url)
@@ -245,10 +243,10 @@ impl SqsEventPublisher {
                 );
                 Ok(())
             }
-            Err(_) => {
+            Err(e) => {
                 error!(
-                    "Failed to publish event after retries. Event data: {:?}",
-                    event
+                    "Failed to publish event {} for user {} after retries: {}",
+                    event_id, user_id, e
                 );
                 Err(SqsError::AwsSdk(
                     "Failed to publish after retries".to_string(),

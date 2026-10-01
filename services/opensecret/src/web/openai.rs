@@ -3590,7 +3590,7 @@ async fn send_transcription_with_retries(
 
         match send_transcription_request(client, primary_provider, &primary_model, params).await {
             Ok(response) => {
-                info!(
+                debug!(
                     "Successfully got transcription from primary provider {} on cycle {}",
                     primary_provider.provider_name,
                     cycle + 1
@@ -3706,7 +3706,6 @@ async fn proxy_transcription(
         );
         return Err(ApiError::BadRequest);
     }
-    info!("Audio file size: {} bytes", file_size);
 
     // Check if we need to split the audio
     let splitter = AudioSplitter::new();
@@ -3724,7 +3723,11 @@ async fn proxy_transcription(
             ApiError::InternalServerError
         })?;
 
-    info!("Processing {} chunk(s)", chunks.len());
+    info!(
+        "Transcribing audio file of {} bytes in {} chunk(s)",
+        file_size,
+        chunks.len()
+    );
 
     // Process chunks in parallel (even if it's just one)
     let mut futures = Vec::new();
@@ -3743,7 +3746,7 @@ async fn proxy_transcription(
 
         let future = async move {
             let chunk_size = chunk.data.len();
-            info!(
+            debug!(
                 "Processing chunk {} (size: {} bytes)",
                 chunk.index, chunk_size
             );
@@ -3788,7 +3791,7 @@ async fn proxy_transcription(
             .await
             {
                 Ok(response) => {
-                    info!("Chunk {} transcribed successfully", chunk.index);
+                    debug!("Chunk {} transcribed successfully", chunk.index);
                     Ok((chunk.index, response))
                 }
                 Err(err) => {
