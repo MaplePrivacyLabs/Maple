@@ -103,7 +103,13 @@ use web_tools::WebToolState;
 const DEFAULT_AGENT_MODEL: &str = "glm-5-3";
 const LEGACY_AGENT_DEFAULT_MODEL: &str = "auto:powerful";
 const PREVIOUS_RECOMMENDED_AGENT_MODEL: &str = "glm-5-2";
-const DEFAULT_GOOSE_MODE: &str = "smart_approve";
+/// Permission policy name for "confirm each gated tool call".
+pub const PERMISSION_MODE_SMART_APPROVE: &str = "smart_approve";
+/// Permission policy name for "ask before every tool call".
+pub const PERMISSION_MODE_APPROVE: &str = "approve";
+/// Permission policy name for "approve every tool call".
+pub const PERMISSION_MODE_AUTO: &str = "auto";
+const DEFAULT_GOOSE_MODE: &str = PERMISSION_MODE_SMART_APPROVE;
 // Keep Goose on its ActionRequired path so Maple can apply the currently selected
 // policy at every tool boundary, including when the user changes it mid-run.
 const GOOSE_PERMISSION_ROUTING_MODE: GooseMode = GooseMode::SmartApprove;
@@ -956,6 +962,11 @@ impl MapleAgentService {
     /// Desktop commands create a fresh handle at their boundary. Long-lived
     /// adapters such as ACP retain a handle, which makes account clearing an
     /// explicit revocation point instead of silently rebinding the adapter.
+    /// Where this service keeps its configuration and account data.
+    pub fn paths(&self) -> &AgentPathLayout {
+        &self.host.paths
+    }
+
     pub async fn handle_for_user(&self, user_id: &str) -> Result<AgentRuntimeHandle, String> {
         let account_scope = account_scope(user_id)?;
         let generation = account_generation(self, &account_scope).await;
@@ -9264,9 +9275,9 @@ fn is_caller_mediated_mode(mode: GooseMode) -> bool {
 
 fn parse_user_permission_mode(mode: &str) -> Result<GooseMode, String> {
     match mode {
-        "auto" => Ok(GooseMode::Auto),
-        "approve" => Ok(GooseMode::Approve),
-        "smart_approve" => Ok(GooseMode::SmartApprove),
+        PERMISSION_MODE_AUTO => Ok(GooseMode::Auto),
+        PERMISSION_MODE_APPROVE => Ok(GooseMode::Approve),
+        PERMISSION_MODE_SMART_APPROVE => Ok(GooseMode::SmartApprove),
         _ => Err(format!("Unsupported Agent permission mode: {mode}")),
     }
 }
@@ -9309,13 +9320,50 @@ fn is_removed_project_root(path: &str, removed_project_roots: &[String]) -> bool
 }
 
 fn normalize_project_root(path: &Path) -> Result<PathBuf, String> {
-    let canonical = path
+    let expanded = expand_home(path);
+    let canonical = expanded
         .canonicalize()
         .map_err(|e| format!("{}: {e}", path.display()))?;
     if !canonical.is_dir() {
         return Err(format!("{} is not a folder", canonical.display()));
     }
     Ok(canonical)
+}
+
+/// `~` and `~/...` mean this host's home directory: a typed path arrives
+/// as written on the client, which cannot know the host's home.
+fn expand_home(path: &Path) -> PathBuf {
+    let Some(rest) = path.to_str().and_then(|text| text.strip_prefix('~')) else {
+        return path.to_path_buf();
+    };
+    if !(rest.is_empty() || rest.starts_with('/') || rest.starts_with(std::path::MAIN_SEPARATOR)) {
+        return path.to_path_buf();
+    }
+    match dirs::home_dir() {
+        Some(home) => PathBuf::from(format!("{}{rest}", home.display())),
+        None => path.to_path_buf(),
+    }
+}
+
+#[cfg(test)]
+mod home_expansion_tests {
+    use super::*;
+
+    #[test]
+    fn tilde_means_the_home_directory() {
+        let Some(home) = dirs::home_dir() else {
+            return;
+        };
+        assert_eq!(expand_home(Path::new("~")), home);
+        assert_eq!(expand_home(Path::new("~/work")), home.join("work"));
+        // A name that merely starts with a tilde is left alone.
+        assert_eq!(
+            expand_home(Path::new("~ben/work")),
+            PathBuf::from("~ben/work")
+        );
+        assert_eq!(expand_home(Path::new("/tmp/~")), PathBuf::from("/tmp/~"));
+        assert!(normalize_project_root(Path::new("~")).is_ok());
+    }
 }
 
 fn agent_root_dir(paths: &AgentPathLayout) -> Result<PathBuf, anyhow::Error> {
@@ -14458,6 +14506,7 @@ mod tests {
                 trusted: true,
             }],
             removed_project_roots: Vec::new(),
+            ..AgentConfig::default()
         };
 
         apply_project_root_removal(&mut config, &removed, Some(&fallback)).unwrap();
@@ -15598,6 +15647,7 @@ mod tests {
             mcp_servers: Vec::new(),
             project_trust: Vec::new(),
             removed_project_roots: Vec::new(),
+            ..AgentConfig::default()
         };
 
         assert!(migrate_agent_config(&mut config));
@@ -15613,6 +15663,7 @@ mod tests {
             mcp_servers: Vec::new(),
             project_trust: Vec::new(),
             removed_project_roots: Vec::new(),
+            ..AgentConfig::default()
         };
 
         assert!(migrate_agent_config(&mut config));
@@ -15628,6 +15679,7 @@ mod tests {
             mcp_servers: Vec::new(),
             project_trust: Vec::new(),
             removed_project_roots: Vec::new(),
+            ..AgentConfig::default()
         };
 
         assert!(migrate_agent_config(&mut config));
@@ -15644,6 +15696,7 @@ mod tests {
                 mcp_servers: Vec::new(),
                 project_trust: Vec::new(),
                 removed_project_roots: Vec::new(),
+                ..AgentConfig::default()
             };
 
             assert!(!migrate_agent_config(&mut config));
@@ -15665,6 +15718,7 @@ mod tests {
             mcp_servers: Vec::new(),
             project_trust: Vec::new(),
             removed_project_roots: vec![removed.clone()],
+            ..AgentConfig::default()
         };
 
         let resolved = resolve_project_root(None, &config).unwrap();

@@ -138,35 +138,24 @@ impl ChatScreen {
         }
         let tool_name = item.title.clone().unwrap_or_else(|| item.item_type.clone());
         log::debug!("Requesting summary for {item_id} ({tool_name})");
-        let backend = self.backend.clone();
-        let user_id = self.user_id.clone();
+        let host = self.backend_for(&session_id);
         let generation = self.summary_generation;
         self.pending_summaries += 1;
         let store_id = item_id.clone();
         self.call(
             async move {
                 let summary = if thinking {
-                    backend
-                        .summarize_thinking(&user_id, &session_id, output)
-                        .await?
+                    host.summarize_thinking(session_id.clone(), output).await?
                 } else {
-                    backend
-                        .summarize_tool_call(&user_id, &session_id, tool_name, input, output)
+                    host.summarize_tool_call(session_id.clone(), tool_name, input, output)
                         .await?
                 };
-                if let Some(summary) = &summary {
-                    let summary = summary.clone();
-                    let store = backend.clone();
-                    tokio::task::spawn_blocking(move || {
-                        if let Err(error) = store.store_tool_summary_blocking(
-                            &user_id,
-                            &session_id,
-                            &store_id,
-                            &summary,
-                        ) {
-                            log::warn!("Cannot store tool summary: {error}");
-                        }
-                    });
+                if let Some(summary) = &summary
+                    && let Err(error) = host
+                        .store_tool_summary(session_id.clone(), store_id, summary.clone())
+                        .await
+                {
+                    log::warn!("Cannot store tool summary: {error}");
                 }
                 Ok::<_, String>(summary)
             },
@@ -250,14 +239,12 @@ impl ChatScreen {
         };
         for id in wanted {
             self.attachment_requests.insert(id.clone());
-            let backend = self.backend.clone();
-            let user_id = self.user_id.clone();
+            let host = self.session_backend();
             let session = session_id.clone();
             let attachment_id = id.clone();
             self.call(
                 async move {
-                    backend
-                        .read_image_attachment(&user_id, &session, &attachment_id)
+                    host.read_image_attachment(session.clone(), attachment_id.clone())
                         .await
                 },
                 cx,

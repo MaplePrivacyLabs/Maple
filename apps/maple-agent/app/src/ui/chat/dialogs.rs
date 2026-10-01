@@ -3,8 +3,11 @@
 //! confirmations, archiving, deleting, and leaving a task. They touch
 //! the canonical session list and the project context, which live here.
 
+use std::sync::Arc;
+
 use gpui::{Context, Div, div, prelude::*, px};
 use maple_agent::agent::{AgentProjectTrustStatus, AgentTaskState};
+use maple_agent::host::HostBackend;
 
 use super::ChatScreen;
 use crate::ui::theme;
@@ -37,10 +40,9 @@ impl ChatScreen {
         let Some(root) = self.project_root.clone() else {
             return;
         };
-        let backend = self.backend.clone();
-        let user_id = self.user_id.clone();
+        let host = self.host.clone();
         self.call(
-            async move { backend.project_trust(&user_id, root).await },
+            async move { host.project_trust(root).await },
             cx,
             |this, result, cx| {
                 if let Ok(status) = result
@@ -70,10 +72,9 @@ impl ChatScreen {
         }
         self.trust_saving = true;
         cx.notify();
-        let backend = self.backend.clone();
-        let user_id = self.user_id.clone();
+        let host = self.host.clone();
         self.call(
-            async move { backend.set_project_trust(&user_id, path, trusted).await },
+            async move { host.set_project_trust(path, trusted).await },
             cx,
             move |this, result, cx| {
                 this.trust_saving = false;
@@ -409,16 +410,11 @@ impl ChatScreen {
         state: AgentTaskState,
         cx: &mut Context<Self>,
     ) {
-        let backend = self.backend.clone();
-        let user_id = self.user_id.clone();
+        let host = self.backend_for(session_id);
         let session_id = session_id.to_string();
         let changed_id = session_id.clone();
         self.call(
-            async move {
-                backend
-                    .set_session_state(&user_id, &session_id, state)
-                    .await
-            },
+            async move { host.set_session_state(session_id.clone(), state).await },
             cx,
             move |this, result, cx| {
                 match result {
@@ -451,12 +447,11 @@ impl ChatScreen {
     /// Delete one task for good. The runtime refuses while it runs, so
     /// the row leaves the list only after the backend says it is gone.
     pub(super) fn delete_task(&mut self, session_id: &str, cx: &mut Context<Self>) {
-        let backend = self.backend.clone();
-        let user_id = self.user_id.clone();
+        let host = self.backend_for(session_id);
         let session_id = session_id.to_string();
         let deleted_id = session_id.clone();
         self.call(
-            async move { backend.delete_session(&user_id, &session_id).await },
+            async move { host.delete_session(session_id).await },
             cx,
             move |this, result, cx| {
                 match result {
@@ -510,8 +505,10 @@ impl ChatScreen {
             cx.notify();
             return;
         }
-        let backend = self.backend.clone();
-        let user_id = self.user_id.clone();
+        // The project leaves the target host's list; each task under it
+        // archives on the host that owns it, since the same path may hold
+        // tasks of several hosts.
+        let host = self.host.clone();
         let path = root.to_string();
         let fallback = self
             .recent_roots
@@ -530,23 +527,28 @@ impl ChatScreen {
             .filter(|s| s.state != AgentTaskState::Archived && s.project_root == root)
             .map(|s| s.id.clone())
             .collect();
+        let archives: Vec<(Arc<dyn HostBackend>, String)> = task_ids
+            .iter()
+            .map(|id| (self.backend_for(id), id.clone()))
+            .collect();
         let removed = path.clone();
         let next_root = fallback.clone();
-        let removed_task_ids = task_ids.clone();
+        let removed_task_ids = task_ids;
         self.call(
             async move {
-                for id in task_ids {
-                    backend
-                        .set_session_state(&user_id, &id, AgentTaskState::Archived)
+                for (owner, id) in archives {
+                    owner
+                        .set_session_state(id, AgentTaskState::Archived)
                         .await?;
                 }
-                backend.remove_project_root(&user_id, path, fallback).await
+                host.remove_project_root(path, fallback).await
             },
             cx,
             move |this, result, cx| {
                 match result {
                     Ok(()) => {
                         this.recent_roots.retain(|candidate| candidate != &removed);
+                        this.cache_target_context();
                         for session in &mut this.sessions {
                             if session.project_root == removed {
                                 session.state = AgentTaskState::Archived;

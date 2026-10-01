@@ -43,14 +43,12 @@ impl ChatScreen {
             return;
         }
         self.queue_busy = true;
-        let backend = self.backend.clone();
-        let user_id = self.user_id.clone();
+        let host = self.backend_for(&session_id);
         let queue_id = queue_id.to_string();
         let target = session_id.clone();
         self.call(
             async move {
-                backend
-                    .cancel_queued_message(&user_id, &session_id, &queue_id)
+                host.cancel_queued_message(session_id.clone(), queue_id.clone())
                     .await
             },
             cx,
@@ -83,15 +81,13 @@ impl ChatScreen {
         };
         let text = item.text.clone();
         self.queue_busy = true;
-        let backend = self.backend.clone();
-        let user_id = self.user_id.clone();
+        let host = self.backend_for(&session_id);
         let queue_id = queue_id.to_string();
         let target = session_id.clone();
         let held_id = queue_id.clone();
         self.call(
             async move {
-                backend
-                    .begin_queued_message_edit(&user_id, &session_id, &queue_id)
+                host.begin_queued_message_edit(session_id.clone(), queue_id.clone())
                     .await
             },
             cx,
@@ -169,14 +165,12 @@ impl ChatScreen {
     }
 
     fn release_queue_hold(&self, session_id: &str, queue_id: &str, cx: &mut Context<Self>) {
-        let backend = self.backend.clone();
-        let user_id = self.user_id.clone();
+        let host = self.backend_for(session_id);
         let session_id = session_id.to_string();
         let queue_id = queue_id.to_string();
         self.call(
             async move {
-                backend
-                    .end_queued_message_edit(&user_id, &session_id, &queue_id)
+                host.end_queued_message_edit(session_id.clone(), queue_id.clone())
                     .await
             },
             cx,

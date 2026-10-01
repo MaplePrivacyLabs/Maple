@@ -38,6 +38,13 @@ sha2 = "0.10"
 agent-client-protocol = { version = "=2.2.0", optional = true, default-features = false, features = ["unstable_end_turn_token_usage"] }
 base64 = "0.22"
 bytes = "1"
+# Host-side readers of the account stores: the Goose usage ledger (read-only)
+# and the app-owned tool summary store.
+rusqlite = { version = "0.32", features = ["bundled"] }
+# Watches a project root's git dir so the branch shown to clients follows a
+# checkout made by the agent or from a terminal.
+notify = "8"
+dirs = "6"
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.62.2", features = ["Win32_System_Threading"] }

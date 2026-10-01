@@ -34,6 +34,10 @@ struct MapleApp {
     backend: Arc<AgentBackend>,
     screen: Screen,
     user_id: Option<String>,
+    /// Connections to the account's saved hosts; lives with the chat.
+    hosts: Option<Arc<maple_remote::manager::HostManager>>,
+    /// This window's host role for the signed-in account.
+    hosting: Option<Arc<crate::remote::host::HostingController>>,
     /// The chat screen is parked while settings is open so Back returns to
     /// it with its state intact.
     parked_chat: Option<Entity<ChatScreen>>,
@@ -48,13 +52,13 @@ struct MapleApp {
 impl MapleApp {
     /// Forward a batch of backend service events to the chat screen when
     /// one exists. One batch is one render, however many events arrived.
-    fn handle_service_events(
+    fn handle_host_events(
         &mut self,
-        events: Vec<maple_agent::agent::AgentServiceEvent>,
+        events: Vec<maple_agent::host::HostEvent>,
         cx: &mut Context<Self>,
     ) {
         if let Screen::Chat(chat) = &self.screen {
-            chat.update(cx, |chat, cx| chat.handle_service_events(events, cx));
+            chat.update(cx, |chat, cx| chat.handle_host_events(events, cx));
         }
     }
 
@@ -87,6 +91,12 @@ impl MapleApp {
     fn show_login(&mut self, cx: &mut Context<Self>) {
         self.user_id = None;
         self.parked_chat = None;
+        if let Some(hosts) = self.hosts.take() {
+            hosts.shutdown();
+        }
+        if let Some(hosting) = self.hosting.take() {
+            hosting.stop();
+        }
         if matches!(self.screen, Screen::Login(_)) {
             return;
         }
@@ -115,7 +125,65 @@ impl MapleApp {
             crate::startup_elapsed()
         );
         let backend = self.backend.clone();
-        let chat = cx.new(|cx| ChatScreen::new(backend, user_id.clone(), cx));
+        let host = backend.local_host(&user_id);
+        // Session defaults an older version kept in settings.json: the
+        // launch moved them for the saved account, but a user signed out
+        // at the upgrade binds an account here first. Idempotent, and done
+        // once per process: the in-memory copy is cleared below.
+        let legacy = self.settings.legacy_session_defaults();
+        if !legacy.is_empty() {
+            let host = host.clone();
+            backend.spawn(async move {
+                crate::adopt_legacy_session_defaults_into(&host, legacy).await;
+            });
+            self.settings.legacy = Default::default();
+        }
+        let chat = cx.new(|cx| ChatScreen::new(backend.clone(), host, user_id.clone(), cx));
+        // Remote hosts: connect to every saved one and pump what they
+        // report into the chat screen, batched like the local events.
+        if let Some(previous) = self.hosts.take() {
+            previous.shutdown();
+        }
+        match crate::remote::client::start_manager(&backend, &user_id) {
+            Ok((manager, mut events)) => {
+                self.hosts = Some(manager);
+                let chat = chat.downgrade();
+                cx.spawn(async move |_app, cx| {
+                    while let Some(event) = events.recv().await {
+                        let mut batch = vec![event];
+                        while let Ok(next) = events.try_recv() {
+                            batch.push(next);
+                            if batch.len() >= 256 {
+                                break;
+                            }
+                        }
+                        if chat
+                            .update(cx, |chat, cx| chat.handle_manager_events(batch, cx))
+                            .is_err()
+                        {
+                            break;
+                        }
+                    }
+                })
+                .detach();
+            }
+            Err(error) => log::warn!("remote hosts are unavailable: {error}"),
+        }
+        // The host role: listen only when the setting says so.
+        if let Some(previous) = self.hosting.take() {
+            previous.stop();
+        }
+        let hosting = Arc::new(crate::remote::host::HostingController::new(
+            backend.clone(),
+            backend.local_host(&user_id),
+            user_id.clone(),
+        ));
+        if self.settings.allow_remote_connections {
+            // Binds on the backend runtime; the controller reports the
+            // outcome to Settings and the log.
+            backend.spawn(hosting.start(crate::remote::DEFAULT_LISTEN));
+        }
+        self.hosting = Some(hosting);
         // The release check may have finished while the login screen was
         // up; the banner must not be lost with it.
         if let Some(info) = crate::update::available() {
@@ -135,10 +203,25 @@ impl MapleApp {
         };
         let backend = self.backend.clone();
         let user_id = self.user_id.clone().unwrap_or_default();
+        let host = backend.local_host(&user_id);
+        let hosts = chat.read(cx).connected_hosts();
+        let manager = self.hosts.clone();
+        let hosting = self.hosting.clone();
         let settings = self.settings.clone();
         let shortcut_snapshot = self.shortcuts.snapshot();
         let screen = cx.new(|cx| {
-            SettingsScreen::new(backend, user_id, settings, shortcut_snapshot, section, cx)
+            SettingsScreen::new(
+                backend,
+                host,
+                hosts,
+                manager,
+                hosting,
+                user_id,
+                settings,
+                shortcut_snapshot,
+                section,
+                cx,
+            )
         });
         cx.subscribe(
             &screen,
@@ -371,7 +454,7 @@ pub fn run() {
     // Name the resolved file so a launcher with its own XDG_CONFIG_HOME
     // makes itself visible: settings that look unsaved usually live in a
     // different root than the one this launch reads.
-    let startup_settings = crate::settings::load_settings();
+    let mut startup_settings = crate::settings::load_settings();
     log::debug!(
         "startup: settings loaded from {} at {} ms",
         crate::backend::app_config_root()
@@ -380,13 +463,16 @@ pub fn run() {
         crate::startup_elapsed()
     );
     let backend = Arc::new(
-        AgentBackend::new(
-            crate::configured_api_url(),
-            startup_settings.effective_harness_instructions(),
-        )
-        .expect("failed to initialize agent backend"),
+        AgentBackend::new(crate::configured_api_url()).expect("failed to initialize agent backend"),
     );
     log::debug!("startup: backend ready at {} ms", crate::startup_elapsed());
+    // Session defaults an older version kept in settings.json belong to the
+    // account config now. Move them before the chat screen reads them. With
+    // no saved account they wait for the sign-in (see `open_chat`).
+    if let Some(user_id) = backend.saved_user_id() {
+        crate::adopt_legacy_session_defaults(&backend, &user_id);
+        startup_settings.legacy = Default::default();
+    }
 
     gpui_platform::application()
         .with_assets(crate::assets::Assets)
@@ -476,6 +562,8 @@ pub fn run() {
                             backend: root_backend,
                             screen: Screen::Restoring,
                             user_id: None,
+                            hosts: None,
+                            hosting: None,
                             parked_chat: None,
                             settings: root_settings,
                             shortcuts: shortcut_runtime,
@@ -558,12 +646,8 @@ pub fn run() {
 
             // The event pump runs once for the whole process and routes events to
             // whichever screen is active. It exits when the root entity is gone.
-            let (spawn_backend, take_backend) = (backend.clone(), backend.clone());
-            let rx = spawn_backend.spawn(async move { take_backend.take_events().await });
+            let mut rx = backend.subscribe_events();
             cx.spawn(async move |cx| {
-                let Some(mut rx) = rx.await.ok().flatten() else {
-                    return;
-                };
                 while let Some(event) = rx.recv().await {
                     // Drain whatever else is queued so a burst of streaming
                     // chunks costs one update and one render, not one each.
@@ -576,7 +660,7 @@ pub fn run() {
                     }
                     // This gpui's entity update is infallible; the pump ends
                     // with the channel instead.
-                    root.update(cx, |app, cx| app.handle_service_events(batch, cx));
+                    root.update(cx, |app, cx| app.handle_host_events(batch, cx));
                 }
             })
             .detach();

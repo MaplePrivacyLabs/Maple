@@ -5,14 +5,15 @@ mod state_tests {
 
     use crate::ui::chat::cache::{INLINE_PARSE_LIMIT, MAX_DIFF_LINES, ORDINAL_SPACING};
     use crate::ui::chat::composer::SideThreadTurn;
+    use crate::ui::chat::hosts::RemoteBootstrap;
     use crate::ui::chat::images::{MAX_DRAFT_IMAGES, encode_data_url};
     use crate::ui::chat::sidebar::{RenameTarget, SidebarEvent, TaskMove};
     use crate::ui::chat::transcript::{diff_lines_for, maple_display_text, tool_label_title};
     use crate::ui::chat::*;
     use gpui::TestAppContext;
-    use maple_agent::agent::{
-        AgentMcpServer, AgentMcpTransport, AgentSessionIntegrationKind, AgentTaskState,
-    };
+    use maple_agent::agent::AgentTaskState;
+    use maple_agent::host::HostBootstrap;
+    use maple_remote::manager::HostStatus;
 
     fn summary(id: &str, title: &str) -> AgentSessionSummary {
         summary_at(id, title, "/tmp/proj")
@@ -76,14 +77,18 @@ mod state_tests {
     fn screen(cx: &mut TestAppContext) -> Entity<ChatScreen> {
         let _guard = SETTINGS_LOCK.lock();
         let backend = std::sync::Arc::new(
-            crate::backend::AgentBackend::new("http://127.0.0.1:9".to_string(), String::new())
-                .expect("backend"),
+            crate::backend::AgentBackend::new("http://127.0.0.1:9".to_string()).expect("backend"),
         );
         // This gpui's test scheduler flags activity on other threads unless
         // parking is allowed; the backend runtime and image encoder run on tokio.
         cx.executor().allow_parking();
         let screen = cx.new(|cx| {
-            let mut screen = ChatScreen::new_inner(backend, "user".to_string(), cx);
+            let mut screen = ChatScreen::new_inner(
+                backend.clone(),
+                backend.local_host("user"),
+                "user".to_string(),
+                cx,
+            );
             screen.selected_session = Some("s1".to_string());
             screen
         });
@@ -106,7 +111,7 @@ mod state_tests {
         let backend = {
             let _guard = SETTINGS_LOCK.lock();
             std::sync::Arc::new(
-                crate::backend::AgentBackend::new("http://127.0.0.1:9".to_string(), String::new())
+                crate::backend::AgentBackend::new("http://127.0.0.1:9".to_string())
                     .expect("backend"),
             )
         };
@@ -143,7 +148,8 @@ mod state_tests {
         let chat = cx.new(|cx| {
             let _guard = SETTINGS_LOCK.lock();
             crate::desktop::register_key_bindings(cx);
-            let mut chat = ChatScreen::new_without_start(backend, "user".to_string(), cx);
+            let host = backend.local_host("user");
+            let mut chat = ChatScreen::new_without_start(backend, host, "user".to_string(), cx);
             chat.selected_session = Some("s1".to_string());
             chat.booting = false;
             chat.trust_prompts = false;
@@ -424,28 +430,19 @@ mod state_tests {
         let _ = std::fs::remove_dir_all(&dir);
         let config = dir.join("maple-agent");
         std::fs::create_dir_all(&config).unwrap();
-        std::fs::write(
-            config.join("settings.json"),
-            r#"{"tool_details":false,"default_web_enabled":false}"#,
-        )
-        .unwrap();
+        std::fs::write(config.join("settings.json"), r#"{"tool_details":false}"#).unwrap();
         let previous = std::env::var_os("XDG_CONFIG_HOME");
         unsafe { std::env::set_var("XDG_CONFIG_HOME", &dir) };
         // This gpui's test scheduler flags activity on other threads unless
         // parking is allowed; the backend runtime and image encoder run on tokio.
         cx.executor().allow_parking();
         let screen = cx.new(|cx| {
-            ChatScreen::new_inner(
-                std::sync::Arc::new(
-                    crate::backend::AgentBackend::new(
-                        "http://127.0.0.1:9".to_string(),
-                        String::new(),
-                    )
+            let backend = std::sync::Arc::new(
+                crate::backend::AgentBackend::new("http://127.0.0.1:9".to_string())
                     .expect("backend"),
-                ),
-                "user".to_string(),
-                cx,
-            )
+            );
+            let host = backend.local_host("user");
+            ChatScreen::new_inner(backend, host, "user".to_string(), cx)
         });
         match previous {
             Some(value) => unsafe { std::env::set_var("XDG_CONFIG_HOME", value) },
@@ -454,7 +451,6 @@ mod state_tests {
         let _ = std::fs::remove_dir_all(&dir);
         screen.update(cx, |this, _cx| {
             assert!(!this.tool_details);
-            assert!(!this.default_web_enabled);
         });
     }
 
@@ -804,9 +800,7 @@ mod state_tests {
                     theme::Preference::parse(&crate::settings::load_settings().theme),
                     cx,
                 );
-                let backend = Arc::new(
-                    AgentBackend::new("http://127.0.0.1:9".into(), String::new()).unwrap(),
-                );
+                let backend = Arc::new(AgentBackend::new("http://127.0.0.1:9".into()).unwrap());
                 cx.open_window(
                     gpui::WindowOptions {
                         window_bounds: Some(gpui::WindowBounds::Windowed(gpui::Bounds::centered(
@@ -823,8 +817,12 @@ mod state_tests {
                     |window, cx| {
                         theme::resolve(window.appearance());
                         cx.new(|cx| {
-                            let mut chat =
-                                ChatScreen::new_mounted(backend, "fixture-user".into(), cx);
+                            let mut chat = ChatScreen::new_mounted(
+                                backend.clone(),
+                                backend.local_host("fixture-user"),
+                                "fixture-user".to_string(),
+                                cx,
+                            );
                             chat.booting = false;
                             chat.selected_session = Some("s1".into());
                             chat.replace_timeline(vec![user_item(
@@ -1179,11 +1177,16 @@ mod state_tests {
         let chat = cx.new(|cx| {
             let _guard = SETTINGS_LOCK.lock();
             let backend = std::sync::Arc::new(
-                crate::backend::AgentBackend::new("http://127.0.0.1:9".to_string(), String::new())
+                crate::backend::AgentBackend::new("http://127.0.0.1:9".to_string())
                     .expect("backend"),
             );
             crate::desktop::register_key_bindings(cx);
-            let mut chat = ChatScreen::new_without_start(backend, "user".to_string(), cx);
+            let mut chat = ChatScreen::new_without_start(
+                backend.clone(),
+                backend.local_host("user"),
+                "user".to_string(),
+                cx,
+            );
             chat.selected_session = Some("s1".to_string());
             chat.booting = false;
             chat.application_vim_enabled = false;
@@ -1299,23 +1302,26 @@ mod state_tests {
                     event,
                 };
             // A stream for a closed question changes nothing.
-            assert!(
-                !this.apply_service_event(
-                    event("btw-1", SideQuestionEvent::Chunk("old".into())),
-                    cx
-                )
-            );
+            assert!(!this.apply_service_event(
+                &HostId::local(),
+                event("btw-1", SideQuestionEvent::Chunk("old".into())),
+                cx
+            ));
             assert!(this.apply_service_event(
+                &HostId::local(),
                 event("btw-2", SideQuestionEvent::Chunk("Because ".into())),
                 cx
             ));
-            assert!(
-                this.apply_service_event(
-                    event("btw-2", SideQuestionEvent::Chunk("so.".into())),
-                    cx
-                )
-            );
-            assert!(this.apply_service_event(event("btw-2", SideQuestionEvent::Finished), cx));
+            assert!(this.apply_service_event(
+                &HostId::local(),
+                event("btw-2", SideQuestionEvent::Chunk("so.".into())),
+                cx
+            ));
+            assert!(this.apply_service_event(
+                &HostId::local(),
+                event("btw-2", SideQuestionEvent::Finished),
+                cx
+            ));
             let btw = this.btw.as_ref().expect("panel stays open");
             assert_eq!(btw.turns[0].answer, "Because so.");
             assert_eq!(btw.revision, 2);
@@ -1333,7 +1339,11 @@ mod state_tests {
             // While the thread is open, a plain message joins it instead of
             // going to the task; a command still runs as a command.
             let live_id = this.btw.as_ref().unwrap().request_id.clone();
-            assert!(this.apply_service_event(event(&live_id, SideQuestionEvent::Finished), cx));
+            assert!(this.apply_service_event(
+                &HostId::local(),
+                event(&live_id, SideQuestionEvent::Finished),
+                cx
+            ));
             this.btw.as_mut().unwrap().turns[1].answer = "Then that.".into();
             this.send_text("plain follow-up".to_string(), cx);
             let btw = this.btw.as_ref().expect("thread continues");
@@ -1581,8 +1591,11 @@ mod state_tests {
         });
     }
 
+    /// The host owns the filesystem, so it validates the path; the screen
+    /// only refuses an empty entry and a second selection while one is in
+    /// flight.
     #[gpui::test]
-    fn test_project_selection_rejects_reentry_and_relative_paths(cx: &mut TestAppContext) {
+    fn test_project_selection_rejects_reentry_and_blank_paths(cx: &mut TestAppContext) {
         cx.executor().allow_parking();
         let screen = screen(cx);
         screen.update(cx, |this, cx| {
@@ -1590,11 +1603,11 @@ mod state_tests {
             this.select_project_root(absolute_fixture_root("other"), cx);
             assert!(this.root_selecting);
             this.root_selecting = false;
-            this.select_project_root("relative".to_string(), cx);
+            this.select_project_root("   ".to_string(), cx);
             assert!(!this.root_selecting);
             assert_eq!(
                 this.notice.as_ref().map(SharedString::as_ref),
-                Some("Enter an absolute directory path")
+                Some("Enter a directory path")
             );
         });
     }
@@ -1640,52 +1653,366 @@ mod state_tests {
         });
     }
 
-    /// The header names what the pane shows: an empty pane is a new task
-    /// even while the list still marks a row.
+    /// The boot auto-select opens the visible project's latest task on
+    /// the target host; a remote task under the same path is not it.
     #[gpui::test]
-    fn test_header_says_new_task_while_the_pane_is_empty(cx: &mut TestAppContext) {
-        cx.executor().allow_parking();
-        let screen = screen(cx);
-        screen.update(cx, |this, _cx| {
-            this.sessions = vec![summary_at("s1", "Hello", "/work/alpha")];
-            this.selected_session = Some("s1".to_string());
-            this.replace_timeline(Vec::new());
-            assert_eq!(this.selected_title.as_ref(), "New Task");
-
-            this.replace_timeline(vec![user_item("u1", "hi")]);
-            assert_eq!(this.selected_title.as_ref(), "Hello");
-
-            this.replace_timeline(Vec::new());
-            assert_eq!(this.selected_title.as_ref(), "New Task");
-        });
-    }
-
-    /// While a project selection is landing, neither "New Task" nor a
-    /// first send may run ahead of it.
-    #[gpui::test]
-    fn test_new_task_waits_for_a_project_selection(cx: &mut TestAppContext) {
+    fn test_session_list_auto_select_stays_on_the_target_host(cx: &mut TestAppContext) {
         cx.executor().allow_parking();
         let screen = screen(cx);
         screen.update(cx, |this, cx| {
             this.project_root = Some("/work/alpha".to_string());
-            this.root_selecting = true;
-            let generation = this.selection_generation;
-            this.new_session(cx);
-            assert!(!this.session_setup_pending);
-            assert_eq!(this.selection_generation, generation);
-            assert_eq!(this.selected_session.as_deref(), Some("s1"));
-            assert!(this.notice.is_some());
-
-            this.booting = false;
             this.selected_session = None;
-            this.send_text("hello".to_string(), cx);
+            let remote = HostId::new("remote-key".to_string());
+            this.hosts
+                .insert(remote.clone(), ChatHost::saved("Box".to_string()));
+            this.apply_host_session_list(
+                &remote,
+                vec![summary_at("r1", "Remote", "/work/alpha")],
+                cx,
+            );
+            let requested = this.selection_generation;
+
+            this.apply_session_list(vec![summary_at("s1", "Local", "/work/beta")], requested, cx);
+
+            // Nothing local under /work/alpha: the empty screen shows
+            // rather than the remote task opening and dragging the target
+            // along, and no task is created for it.
             assert!(!this.session_setup_pending);
-            assert!(this.pending_first_send.is_none());
+            assert_eq!(this.selected_session, None);
+            assert!(this.target_host.is_local());
+            assert_eq!(this.selected_title.as_ref(), "New Task");
         });
     }
 
-    /// "New Task" clears the selection and shows the empty screen for the
-    /// visible project; no task is created until something is sent.
+    /// The host the last new task ran on is the target again at launch:
+    /// startup holds its auto-select until that host connects, then opens
+    /// the host's latest task under its saved project.
+    #[gpui::test]
+    fn test_launch_restores_the_last_task_host(cx: &mut TestAppContext) {
+        use maple_agent::agent::AgentDesktopQueueSnapshot;
+        use maple_agent::host::HostSessionDefaults;
+        cx.executor().allow_parking();
+        let screen = screen(cx);
+        screen.update(cx, |this, cx| {
+            let remote = HostId::new("remote-key".to_string());
+            let backend = this.backend.local_host("user") as Arc<dyn HostBackend>;
+            let mut entry = ChatHost::local(backend);
+            entry.name = "Box".to_string();
+            this.hosts.insert(remote.clone(), entry);
+            this.restore_host = Some(remote.clone());
+            this.selected_session = None;
+            this.project_root = Some("/work/local".to_string());
+
+            // The local list arrives first: no auto-select, no new task.
+            let requested = this.selection_generation;
+            this.apply_session_list(
+                vec![summary_at("s1", "Local", "/work/local")],
+                requested,
+                cx,
+            );
+            assert_eq!(this.selected_session, None);
+            assert!(!this.session_setup_pending);
+            assert!(this.target_host.is_local());
+
+            // The remembered host connects: it is the target, its project
+            // shows, and its latest task opens.
+            let latest = maple_agent::agent::AgentSessionDetail {
+                session: summary_at("r1", "Remote", "/work/remote"),
+                timeline: vec![user_item("u1", "hi")],
+                mcp_errors: Vec::new(),
+                queue: AgentDesktopQueueSnapshot {
+                    revision: 0,
+                    items: Vec::new(),
+                },
+            };
+            let boot = HostBootstrap {
+                project_root: Some("/work/remote".to_string()),
+                sessions: vec![summary_at("r1", "Remote", "/work/remote")],
+                recent_roots: vec!["/work/remote".to_string()],
+                latest: Some(latest),
+                session_defaults: HostSessionDefaults::default(),
+            };
+            this.apply_remote_bootstrap(remote.clone(), boot, None, HashMap::new(), cx);
+            assert_eq!(this.restore_host, None);
+            assert_eq!(this.target_host, remote);
+            assert_eq!(this.project_root.as_deref(), Some("/work/remote"));
+            assert_eq!(this.selected_session.as_deref(), Some("r1"));
+            assert_eq!(this.selected_title.as_ref(), "Remote");
+        });
+    }
+
+    /// A host's list replaces every row it names, even one filed under
+    /// another host by an earlier event, so a task never shows twice.
+    #[gpui::test]
+    fn test_host_session_list_never_duplicates_a_task(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        let screen = screen(cx);
+        screen.update(cx, |this, cx| {
+            let remote = HostId::new("remote-key".to_string());
+            this.hosts
+                .insert(remote.clone(), ChatHost::saved("Box".to_string()));
+            // The task arrived once with no host mapping (filed local),
+            // once under the remote host: both stale by the time its
+            // host lists it.
+            this.sessions = vec![
+                summary_at("r1", "Remote", "/work/remote"),
+                summary_at("s1", "Local", "/work/local"),
+            ];
+            this.session_hosts.remove("r1");
+            this.apply_host_session_list(
+                &remote,
+                vec![
+                    summary_at("r1", "Remote", "/work/remote"),
+                    summary_at("r2", "Other", "/work/remote"),
+                ],
+                cx,
+            );
+            let mut ids: Vec<&str> = this.sessions.iter().map(|s| s.id.as_str()).collect();
+            ids.sort_unstable();
+            assert_eq!(ids, vec!["r1", "r2", "s1"]);
+            assert_eq!(this.host_of("r1"), remote);
+            assert!(this.host_of("s1").is_local());
+
+            // Listing again, and listing the local host, keeps one row each.
+            this.apply_host_session_list(&remote, vec![summary_at("r1", "Remote", "/w")], cx);
+            this.apply_host_session_list(&HostId::local(), vec![summary_at("s1", "L", "/w")], cx);
+            let mut ids: Vec<&str> = this.sessions.iter().map(|s| s.id.as_str()).collect();
+            ids.sort_unstable();
+            assert_eq!(ids, vec!["r1", "s1"]);
+        });
+    }
+
+    /// Calls about a task go to the host that owns it, whatever host new
+    /// tasks target: enabling an integration on a remote task must not
+    /// ask the local runtime, which does not know the task.
+    #[gpui::test]
+    fn test_task_calls_go_to_the_owning_host(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        let screen = screen(cx);
+        screen.update(cx, |this, cx| {
+            let thin = |backend: &Arc<dyn HostBackend>| Arc::as_ptr(backend) as *const ();
+            let remote = HostId::new("remote-key".to_string());
+            let remote_backend = this.backend.local_host("other") as Arc<dyn HostBackend>;
+            let local_backend = this.host.clone();
+            assert_ne!(thin(&remote_backend), thin(&local_backend));
+            this.hosts
+                .insert(remote.clone(), ChatHost::local(remote_backend.clone()));
+            this.session_hosts.insert("r1".to_string(), remote.clone());
+            this.selected_session = Some("r1".to_string());
+
+            // New tasks still target the local host.
+            assert!(this.target_host.is_local());
+            assert_eq!(thin(&this.session_backend()), thin(&remote_backend));
+            assert_eq!(thin(&this.backend_for("r1")), thin(&remote_backend));
+            assert_eq!(thin(&this.backend_for("s1")), thin(&local_backend));
+
+            // With the sidebar filtered on the local host, opening the
+            // remote task leaves the target where it is: `host` is the
+            // target's backend and the task's calls go to its own host.
+            this.host_filter = Some(HostId::local());
+            this.set_active_session(
+                summary_at("r1", "Remote", "/work/remote"),
+                vec![user_item("u1", "hi")],
+                HashMap::new(),
+                cx,
+            );
+            assert!(this.target_host.is_local());
+            assert_eq!(thin(&this.host), thin(&local_backend));
+            assert_eq!(thin(&this.session_backend()), thin(&remote_backend));
+
+            // Without the filter the selection moves the target along, and
+            // `host` follows the target.
+            this.host_filter = None;
+            this.set_active_session(
+                summary_at("r1", "Remote", "/work/remote"),
+                vec![user_item("u1", "hi")],
+                HashMap::new(),
+                cx,
+            );
+            assert_eq!(this.target_host, remote);
+            assert_eq!(thin(&this.host), thin(&remote_backend));
+            assert_eq!(thin(&this.session_backend()), thin(&remote_backend));
+        });
+    }
+
+    /// The header names the host of the task on screen, not the target:
+    /// a local task stays labelled local after the target moves to a
+    /// remote host, and the new-task screen shows no task host at all.
+    #[gpui::test]
+    fn test_header_names_the_open_tasks_host(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        let screen = screen(cx);
+        screen.update(cx, |this, cx| {
+            let remote = HostId::new("remote-key".to_string());
+            let remote_backend = this.backend.local_host("other") as Arc<dyn HostBackend>;
+            let mut entry = ChatHost::local(remote_backend);
+            entry.name = "Box".to_string();
+            this.hosts.insert(remote.clone(), entry);
+            this.hosts_changed();
+            this.sessions = vec![summary_at("s1", "Local", "/work/local")];
+            this.selected_session = Some("s1".to_string());
+            this.replace_timeline(vec![user_item("u1", "hi")]);
+            assert_eq!(
+                this.selected_host.as_ref().map(|(_, name)| name.as_ref()),
+                Some(LOCAL_HOST_NAME)
+            );
+
+            // Retargeting new tasks does not relabel the open task.
+            this.host_filter = Some(remote.clone());
+            assert!(this.set_target_host(remote.clone(), cx));
+            assert_eq!(this.target_host_label.as_ref(), "Box");
+            assert_eq!(
+                this.selected_host.as_ref().map(|(_, name)| name.as_ref()),
+                Some(LOCAL_HOST_NAME)
+            );
+
+            // The new-task screen has no task host; the target shows.
+            this.clear_selected_session_presentation(cx);
+            assert_eq!(this.selected_host, None);
+        });
+    }
+
+    /// No task exists until the first message: picking another host on
+    /// the empty screen moves the target and its project context, and
+    /// creates nothing anywhere.
+    #[gpui::test]
+    fn test_switching_host_on_the_empty_screen_creates_nothing(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        let screen = screen(cx);
+        screen.update(cx, |this, cx| {
+            let remote = HostId::new("remote-key".to_string());
+            let remote_backend = this.backend.local_host("other") as Arc<dyn HostBackend>;
+            let mut entry = ChatHost::local(remote_backend);
+            entry.name = "Box".to_string();
+            entry.project_root = Some("/work/remote".to_string());
+            this.hosts.insert(remote.clone(), entry);
+            this.hosts_changed();
+            this.project_root = Some("/work/local".to_string());
+            this.selected_session = None;
+            this.replace_timeline(Vec::new());
+            assert_eq!(
+                this.selected_host, None,
+                "the empty screen shows the target chip"
+            );
+
+            this.pick_host(remote.clone(), cx);
+            assert_eq!(this.target_host, remote);
+            assert_eq!(this.selected_session, None);
+            assert!(
+                !this.session_setup_pending,
+                "nothing is created on the new host"
+            );
+            assert_eq!(this.project_root.as_deref(), Some("/work/remote"));
+            assert_eq!(this.selected_host, None);
+            // The first message now goes to the new target.
+            this.booting = false;
+            this.send_text("hello".to_string(), cx);
+            assert!(this.session_setup_pending);
+            assert_eq!(this.target_host, remote);
+        });
+    }
+
+    /// A host switched while a draft shows moves the draft: it stays a
+    /// draft under the new host's project, and neither host's list refresh
+    /// opens a task over the message being typed.
+    #[gpui::test]
+    fn test_switching_host_keeps_the_draft(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        let screen = screen(cx);
+        screen.update(cx, |this, cx| {
+            let remote = HostId::new("remote-key".to_string());
+            let remote_backend = this.backend.local_host("other") as Arc<dyn HostBackend>;
+            let mut entry = ChatHost::local(remote_backend);
+            entry.name = "Box".to_string();
+            entry.project_root = Some("/work/remote".to_string());
+            this.hosts.insert(remote.clone(), entry);
+            this.hosts_changed();
+            this.project_root = Some("/work/local".to_string());
+            this.sessions = vec![summary_at("s1", "Local", "/work/local")];
+            this.selected_session = Some("s1".to_string());
+            this.replace_timeline(vec![user_item("u1", "hi")]);
+
+            this.new_session(cx);
+            assert!(this.draft);
+
+            this.pick_host(remote.clone(), cx);
+            assert_eq!(this.target_host, remote);
+            assert!(this.draft, "the draft follows the target");
+            assert_eq!(this.selected_session, None);
+            assert_eq!(this.project_root.as_deref(), Some("/work/remote"));
+
+            // The remote host's tasks land, and the local list refreshes:
+            // neither opens a task under the draft.
+            this.apply_host_session_list(
+                &remote,
+                vec![summary_at("r1", "Remote", "/work/remote")],
+                cx,
+            );
+            let generation = this.selection_generation;
+            this.apply_session_list(
+                vec![summary_at("s1", "Local", "/work/local")],
+                generation,
+                cx,
+            );
+            assert!(this.draft);
+            assert_eq!(this.selected_session, None);
+            assert_eq!(this.loading_session, None);
+        });
+    }
+
+    /// The remembered host connecting at launch becomes the target, but a
+    /// draft the user started meanwhile is not replaced by that host's
+    /// latest task: its text belongs to the task it creates there.
+    #[gpui::test]
+    fn test_restored_host_does_not_replace_a_draft(cx: &mut TestAppContext) {
+        use maple_agent::agent::AgentDesktopQueueSnapshot;
+        use maple_agent::host::HostSessionDefaults;
+        cx.executor().allow_parking();
+        let screen = screen(cx);
+        screen.update(cx, |this, cx| {
+            let remote = HostId::new("remote-key".to_string());
+            let backend = this.backend.local_host("user") as Arc<dyn HostBackend>;
+            let mut entry = ChatHost::local(backend);
+            entry.name = "Box".to_string();
+            this.hosts.insert(remote.clone(), entry);
+            this.restore_host = Some(remote.clone());
+            this.selected_session = None;
+            this.project_root = Some("/work/local".to_string());
+            this.booting = true;
+
+            this.new_session(cx);
+            assert!(this.draft);
+
+            let latest = maple_agent::agent::AgentSessionDetail {
+                session: summary_at("r1", "Remote", "/work/remote"),
+                timeline: vec![user_item("u1", "hi")],
+                mcp_errors: Vec::new(),
+                queue: AgentDesktopQueueSnapshot {
+                    revision: 0,
+                    items: Vec::new(),
+                },
+            };
+            let boot = HostBootstrap {
+                project_root: Some("/work/remote".to_string()),
+                sessions: vec![summary_at("r1", "Remote", "/work/remote")],
+                recent_roots: vec!["/work/remote".to_string()],
+                latest: Some(latest),
+                session_defaults: HostSessionDefaults::default(),
+            };
+            this.apply_remote_bootstrap(remote.clone(), boot, None, HashMap::new(), cx);
+
+            assert_eq!(this.restore_host, None);
+            assert_eq!(this.target_host, remote, "the host is the target again");
+            assert_eq!(this.project_root.as_deref(), Some("/work/remote"));
+            assert!(this.draft, "the draft stands");
+            assert_eq!(this.selected_session, None);
+            assert!(this.timeline.is_empty());
+            assert_eq!(this.selected_title.as_ref(), "New Task");
+        });
+    }
+
+    /// "New Task" clears the selection and shows the empty screen with the
+    /// target's project; no task is created until something is sent.
     #[gpui::test]
     fn test_new_task_clears_the_selection_and_creates_nothing(cx: &mut TestAppContext) {
         cx.executor().allow_parking();
@@ -1713,15 +2040,16 @@ mod state_tests {
                 this.selection_generation > generation,
                 "a draft is navigation"
             );
-            assert!(!this.web_enabled, "the draft takes the web default");
-            assert_eq!(this.sessions.len(), 1, "no row was added");
+            assert!(!this.web_enabled, "the draft takes the host's web default");
+            assert_eq!(this.sessions.len(), 1, "no row was added anywhere");
         });
     }
 
-    /// The first send on the empty screen creates the task, carrying the
-    /// draft's mode and model, and sends once the task lands.
+    /// The first send on the empty screen creates the task on the target
+    /// host, carrying the draft's mode and model, and sends once the task
+    /// lands.
     #[gpui::test]
-    fn test_first_send_creates_the_task_then_sends(cx: &mut TestAppContext) {
+    fn test_first_send_creates_the_task_on_the_target_then_sends(cx: &mut TestAppContext) {
         cx.executor().allow_parking();
         let screen = screen(cx);
         screen.update(cx, |this, cx| {
@@ -1749,8 +2077,8 @@ mod state_tests {
                 "nothing is selected until the task lands"
             );
 
-            // The create lands: the task is selected and the message goes
-            // out to it.
+            // The create lands: the task is selected, filed under the
+            // target, and the message goes out to it.
             this.finish_new_session(
                 summary_at("created", "New Task", "/work/alpha"),
                 generation,
@@ -1759,6 +2087,7 @@ mod state_tests {
             assert!(!this.session_setup_pending);
             assert!(this.pending_first_send.is_none());
             assert_eq!(this.selected_session.as_deref(), Some("created"));
+            assert_eq!(this.host_of("created"), this.target_host);
             assert!(this.awaiting_first_token, "the send was dispatched");
         });
     }
@@ -2440,8 +2769,7 @@ mod state_tests {
                 std::env::set_var("XDG_CONFIG_HOME", dir.join("config"));
                 std::env::set_var("XDG_DATA_HOME", dir.join("data"));
             }
-            let backend =
-                crate::backend::AgentBackend::new("http://127.0.0.1:9".to_string(), String::new());
+            let backend = crate::backend::AgentBackend::new("http://127.0.0.1:9".to_string());
             unsafe {
                 match previous_config {
                     Some(value) => std::env::set_var("XDG_CONFIG_HOME", value),
@@ -2454,12 +2782,13 @@ mod state_tests {
             }
             Arc::new(backend.expect("backend"))
         };
-        // The save runs on the backend's own runtime; wait for it here.
+        // The servers belong to the local host; the save runs on the
+        // backend's own runtime, so wait for it here.
         let (sender, receiver) = std::sync::mpsc::channel();
         {
-            let backend = backend.clone();
-            backend.clone().spawn(async move {
-                let _ = sender.send(backend.save_mcp_servers("user", servers).await);
+            let host = backend.local_host("user");
+            backend.spawn(async move {
+                let _ = sender.send(host.save_mcp_servers(servers).await);
             });
         }
         receiver
@@ -2704,34 +3033,63 @@ mod state_tests {
         });
     }
 
-    /// An empty task persisted by an older build is not opened by the
-    /// boot auto-select: the new-task screen stands in for it.
+    /// An empty task persisted by an older build is neither opened by the
+    /// boot auto-select nor shown as an open task: with one selected the
+    /// header offers the target chip, and a host switch leaves it behind.
     #[gpui::test]
-    fn test_auto_select_skips_an_empty_task(cx: &mut TestAppContext) {
+    fn test_an_empty_task_counts_as_a_draft(cx: &mut TestAppContext) {
         cx.executor().allow_parking();
         let screen = screen(cx);
         screen.update(cx, |this, cx| {
-            this.project_root = Some("/work/alpha".to_string());
+            let remote = HostId::new("remote-key".to_string());
+            let remote_backend = this.backend.local_host("other") as Arc<dyn HostBackend>;
+            let mut entry = ChatHost::local(remote_backend);
+            entry.name = "Box".to_string();
+            this.hosts.insert(remote.clone(), entry);
+            this.hosts_changed();
+            this.project_root = Some("/work/local".to_string());
             this.selected_session = None;
-            let mut empty = summary_at("blank", "New Task", "/work/alpha");
+
+            // The auto-select skips the empty task and starts a draft.
+            let mut empty = summary_at("blank", "New Task", "/work/local");
             empty.message_count = 0;
             let requested = this.selection_generation;
-
-            this.apply_session_list(vec![empty], requested, cx);
-
+            this.apply_session_list(vec![empty.clone()], requested, cx);
             assert_eq!(this.selected_session, None);
-            assert!(!this.session_setup_pending);
-            assert_eq!(this.selected_title.as_ref(), "New Task");
             assert!(this.draft, "the fallback is a draft like any other");
+
+            // Opened by hand, it still reads as a draft.
+            this.selected_session = Some("blank".to_string());
+            this.replace_timeline(Vec::new());
+            assert!(this.selection_is_draft());
+            assert_eq!(
+                this.selected_host, None,
+                "the header offers the target chip"
+            );
+
+            // A host switch leaves the empty task behind; what shows is a
+            // draft, so the new host's list cannot open a task over it.
+            this.pick_host(remote.clone(), cx);
+            assert_eq!(this.target_host, remote);
+            assert_eq!(this.selected_session, None);
+            assert!(this.draft, "the screen after the switch is a draft");
+            let generation = this.selection_generation;
+            this.apply_session_list(vec![empty], generation, cx);
+            assert_eq!(this.selected_session, None);
+            assert_eq!(this.loading_session, None);
 
             // On a fresh screen (the draft left), a task with a message
             // under the same root still opens.
             this.clear_selected_session_presentation(cx);
-            this.selection_generation = requested;
+            assert!(!this.draft);
+            this.pick_host(HostId::local(), cx);
+            // The switch adopts the host's saved project (none here).
+            this.project_root = Some("/work/local".to_string());
+            let generation = this.selection_generation;
             this.apply_session_list(
                 vec![
-                    summary_at("blank", "New Task", "/work/alpha"),
-                    summary_at("real", "Real", "/work/alpha"),
+                    summary_at("blank", "New Task", "/work/local"),
+                    summary_at("real", "Real", "/work/local"),
                 ]
                 .into_iter()
                 .map(|mut summary| {
@@ -2741,10 +3099,334 @@ mod state_tests {
                     summary
                 })
                 .collect(),
-                requested,
+                generation,
                 cx,
             );
             assert_eq!(this.loading_session.as_deref(), Some("real"));
+        });
+    }
+
+    /// A remembered host that stays offline releases startup to the local
+    /// auto-select instead of holding the window empty.
+    #[gpui::test]
+    fn test_offline_restore_host_releases_startup(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        let screen = screen(cx);
+        screen.update(cx, |this, cx| {
+            let remote = HostId::new("remote-key".to_string());
+            this.restore_host = Some(remote.clone());
+            this.selected_session = None;
+            this.set_remote_host_status(
+                remote,
+                "Box".to_string(),
+                HostStatus::Offline {
+                    reason: "unreachable".to_string(),
+                },
+                None,
+                cx,
+            );
+            assert_eq!(this.restore_host, None);
+            assert!(this.target_host.is_local());
+        });
+    }
+
+    /// A host's bootstrap and task list carry the connection they were
+    /// read on. An answer that lands after the host dropped or came back
+    /// is stale and changes nothing: the new connection reads it afresh.
+    #[gpui::test]
+    fn test_answers_from_an_earlier_connection_are_dropped(cx: &mut TestAppContext) {
+        use maple_agent::host::HostSessionDefaults;
+        cx.executor().allow_parking();
+        let screen = screen(cx);
+        screen.update(cx, |this, cx| {
+            let remote = HostId::new("remote-key".to_string());
+            let backend = this.backend.local_host("other") as Arc<dyn HostBackend>;
+            this.set_remote_host_status(
+                remote.clone(),
+                "Box".to_string(),
+                HostStatus::Online,
+                Some(backend),
+                cx,
+            );
+            let current = this.hosts[&remote].connection;
+            let boot = |title: &str| HostBootstrap {
+                project_root: Some("/work/remote".to_string()),
+                sessions: vec![summary_at("r1", title, "/work/remote")],
+                recent_roots: vec!["/work/remote".to_string()],
+                latest: None,
+                session_defaults: HostSessionDefaults::default(),
+            };
+            let stale = RemoteBootstrap {
+                boot: boot("Stale"),
+                start_error: None,
+                summaries: HashMap::new(),
+            };
+            this.finish_remote_bootstrap(remote.clone(), current - 1, Ok(stale), cx);
+            assert!(this.sessions.iter().all(|session| session.id != "r1"));
+            this.apply_listed_sessions(
+                &remote,
+                current - 1,
+                this.selection_generation,
+                Ok(vec![summary_at("r1", "Stale", "/work/remote")]),
+                cx,
+            );
+            assert!(this.sessions.iter().all(|session| session.id != "r1"));
+
+            let fresh = RemoteBootstrap {
+                boot: boot("Fresh"),
+                start_error: None,
+                summaries: HashMap::new(),
+            };
+            this.finish_remote_bootstrap(remote.clone(), current, Ok(fresh), cx);
+            assert_eq!(
+                this.sessions
+                    .iter()
+                    .find(|session| session.id == "r1")
+                    .map(|session| session.title.as_str()),
+                Some("Fresh")
+            );
+            assert_eq!(this.host_of("r1"), remote);
+        });
+    }
+
+    /// The project chosen while a host is the target is what comes back
+    /// when that host is the target again, not what its bootstrap said.
+    #[gpui::test]
+    fn test_target_switch_keeps_each_hosts_newest_project(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        let screen = screen(cx);
+        screen.update(cx, |this, cx| {
+            this.selected_session = None;
+            this.trust_prompts = false;
+            let remote = HostId::new("remote-key".to_string());
+            let backend = this.backend.local_host("other") as Arc<dyn HostBackend>;
+            let mut entry = ChatHost::local(backend);
+            entry.project_root = Some("/work/remote".to_string());
+            this.hosts.insert(remote.clone(), entry);
+            if let Some(local) = this.hosts.get_mut(&HostId::local()) {
+                local.project_root = Some("/work/first".to_string());
+            }
+            this.set_project_context(Some("/work/first".to_string()), cx);
+            // The user picks another project on the local host.
+            this.set_project_context(Some("/work/second".to_string()), cx);
+            assert_eq!(
+                this.hosts[&HostId::local()].project_root.as_deref(),
+                Some("/work/second")
+            );
+
+            this.pick_host(remote.clone(), cx);
+            assert_eq!(this.project_root.as_deref(), Some("/work/remote"));
+            this.pick_host(HostId::local(), cx);
+            assert_eq!(this.project_root.as_deref(), Some("/work/second"));
+        });
+    }
+
+    /// A remembered host that connects but fails its bootstrap will not
+    /// open its task either; startup goes on with the local auto-select.
+    #[gpui::test]
+    fn test_failed_bootstrap_releases_startup(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        let screen = screen(cx);
+        screen.update(cx, |this, cx| {
+            let remote = HostId::new("remote-key".to_string());
+            let backend = this.backend.local_host("other") as Arc<dyn HostBackend>;
+            this.hosts.insert(remote.clone(), ChatHost::local(backend));
+            this.restore_host = Some(remote.clone());
+            this.selected_session = None;
+            this.finish_remote_bootstrap(remote, 0, Err("no runtime".to_string()), cx);
+            assert_eq!(this.restore_host, None);
+            assert!(this.target_host.is_local());
+            assert!(
+                this.notice
+                    .as_deref()
+                    .is_some_and(|n| n.contains("no runtime"))
+            );
+        });
+    }
+
+    /// An offline host cannot take new tasks, so neither the filter nor
+    /// the header chip may make it the target; the filter that stands
+    /// is what the sidebar shows.
+    #[gpui::test]
+    fn test_offline_host_cannot_become_the_target(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        let screen = screen(cx);
+        screen.update(cx, |this, cx| {
+            let remote = HostId::new("remote-key".to_string());
+            this.hosts
+                .insert(remote.clone(), ChatHost::saved("Box".to_string()));
+            this.hosts_changed();
+            this.sync_sidebar(cx);
+            // The sidebar refuses the row itself.
+            this.sidebar.update(cx, |sidebar, cx| {
+                sidebar.set_host_filter(Some(remote.clone()), cx);
+                assert_eq!(sidebar.host_filter(), None);
+            });
+            // And the screen refuses a filter that reached it anyway.
+            this.set_host_filter(Some(remote.clone()), cx);
+            assert!(this.target_host.is_local());
+            assert_eq!(this.host_filter, None);
+            assert!(
+                this.notice
+                    .as_deref()
+                    .is_some_and(|n| n.contains("offline"))
+            );
+            this.notice = None;
+            this.pick_host(remote, cx);
+            assert!(this.target_host.is_local());
+            assert!(this.notice.is_some());
+        });
+    }
+
+    /// When the target host drops, new tasks go to the local host, the
+    /// sidebar's filter follows, the header shows the local project, and
+    /// only the drop itself raises a notice: the reconnect attempts that
+    /// follow report nothing new.
+    #[gpui::test]
+    fn test_target_host_drop_falls_back_to_local(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        let screen = screen(cx);
+        screen.update(cx, |this, cx| {
+            let remote = HostId::new("remote-key".to_string());
+            let backend = this.backend.local_host("other") as Arc<dyn HostBackend>;
+            let mut entry = ChatHost::local(backend);
+            entry.name = "Box".to_string();
+            entry.project_root = Some("/work/remote".to_string());
+            this.hosts.insert(remote.clone(), entry);
+            if let Some(local) = this.hosts.get_mut(&HostId::local()) {
+                local.project_root = Some("/work/local".to_string());
+            }
+            this.selected_session = None;
+            this.hosts_changed();
+            this.sync_sidebar(cx);
+            // As after a click on the sidebar's host row.
+            this.sidebar.update(cx, |sidebar, cx| {
+                sidebar.show_host_filter(Some(remote.clone()), cx);
+            });
+            this.set_host_filter(Some(remote.clone()), cx);
+            assert_eq!(this.target_host, remote);
+            assert_eq!(this.sidebar.read(cx).host_filter(), Some(&remote));
+            assert_eq!(this.project_root.as_deref(), Some("/work/remote"));
+
+            this.set_remote_host_status(
+                remote.clone(),
+                "Box".to_string(),
+                HostStatus::Offline {
+                    reason: "connection lost".to_string(),
+                },
+                None,
+                cx,
+            );
+            assert!(this.target_host.is_local());
+            assert_eq!(this.host_filter, None);
+            assert_eq!(this.sidebar.read(cx).host_filter(), None);
+            assert_eq!(this.project_root.as_deref(), Some("/work/local"));
+            assert!(
+                this.notice
+                    .as_deref()
+                    .is_some_and(|n| n.contains("connection lost"))
+            );
+
+            // A failed reconnect is not news.
+            this.notice = None;
+            this.set_remote_host_status(
+                remote.clone(),
+                "Box".to_string(),
+                HostStatus::Connecting,
+                None,
+                cx,
+            );
+            this.set_remote_host_status(
+                remote,
+                "Box".to_string(),
+                HostStatus::Offline {
+                    reason: "unreachable".to_string(),
+                },
+                None,
+                cx,
+            );
+            assert_eq!(this.notice, None);
+        });
+    }
+
+    /// The task on screen keeps its title when its host drops, though its
+    /// row leaves the list until the host is back.
+    #[gpui::test]
+    fn test_selected_task_keeps_its_title_when_its_host_drops(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        let screen = screen(cx);
+        screen.update(cx, |this, cx| {
+            let remote = HostId::new("remote-key".to_string());
+            let backend = this.backend.local_host("other") as Arc<dyn HostBackend>;
+            this.hosts.insert(remote.clone(), ChatHost::local(backend));
+            this.apply_host_session_list(
+                &remote,
+                vec![summary_at("r1", "Remote", "/work/remote")],
+                cx,
+            );
+            this.set_active_session(
+                summary_at("r1", "Remote", "/work/remote"),
+                vec![user_item("u1", "hi")],
+                HashMap::new(),
+                cx,
+            );
+            assert_eq!(this.selected_title.as_ref(), "Remote");
+
+            this.set_remote_host_status(
+                remote,
+                "Box".to_string(),
+                HostStatus::Offline {
+                    reason: "connection lost".to_string(),
+                },
+                None,
+                cx,
+            );
+            assert!(this.sessions.iter().all(|session| session.id != "r1"));
+            assert_eq!(this.selected_session.as_deref(), Some("r1"));
+            assert_eq!(this.selected_title.as_ref(), "Remote");
+        });
+    }
+
+    /// The header names what the pane shows: an empty pane is a new task
+    /// even while the list still marks a row.
+    #[gpui::test]
+    fn test_header_says_new_task_while_the_pane_is_empty(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        let screen = screen(cx);
+        screen.update(cx, |this, _cx| {
+            this.sessions = vec![summary_at("s1", "Hello", "/work/alpha")];
+            this.selected_session = Some("s1".to_string());
+            this.replace_timeline(Vec::new());
+            assert_eq!(this.selected_title.as_ref(), "New Task");
+
+            this.replace_timeline(vec![user_item("u1", "hi")]);
+            assert_eq!(this.selected_title.as_ref(), "Hello");
+
+            this.replace_timeline(Vec::new());
+            assert_eq!(this.selected_title.as_ref(), "New Task");
+        });
+    }
+
+    /// While a project selection is landing, neither "New Task" nor a
+    /// first send may run ahead of it.
+    #[gpui::test]
+    fn test_new_task_waits_for_a_project_selection(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        let screen = screen(cx);
+        screen.update(cx, |this, cx| {
+            this.project_root = Some("/work/alpha".to_string());
+            this.root_selecting = true;
+            let generation = this.selection_generation;
+            this.new_session(cx);
+            assert_eq!(this.selection_generation, generation);
+            assert_eq!(this.selected_session.as_deref(), Some("s1"));
+            assert!(this.notice.is_some());
+
+            this.booting = false;
+            this.selected_session = None;
+            this.send_text("hello".to_string(), cx);
+            assert!(!this.session_setup_pending);
+            assert!(this.pending_first_send.is_none());
         });
     }
 
@@ -2774,7 +3456,7 @@ mod state_tests {
             assert_eq!(this.sessions.len(), 1, "the list still updates");
 
             this.apply_bootstrap(
-                crate::backend::LocalBootstrap {
+                HostBootstrap {
                     project_root: Some("/work/alpha".to_string()),
                     sessions: vec![old.clone()],
                     recent_roots: Vec::new(),
@@ -2787,6 +3469,7 @@ mod state_tests {
                             items: Vec::new(),
                         },
                     }),
+                    session_defaults: maple_agent::host::HostSessionDefaults::default(),
                 },
                 HashMap::new(),
                 cx,
@@ -2879,125 +3562,84 @@ mod state_tests {
     }
 
     #[gpui::test]
-    fn test_second_picker_click_is_ignored(cx: &mut TestAppContext) {
+    fn test_project_picker_rows_follow_the_query(cx: &mut TestAppContext) {
+        use crate::ui::chat::picker::{PickerRowKind, ProjectPicker};
         cx.executor().allow_parking();
         let screen = screen(cx);
+        let kinds = |picker: &ProjectPicker| {
+            picker
+                .rows
+                .iter()
+                .map(|row| (row.kind, row.path.clone()))
+                .collect::<Vec<_>>()
+        };
         screen.update(cx, |this, cx| {
-            this.popup.open(ChatPopup::Project, cx);
-            assert!(this.begin_root_picker(cx));
-            assert!(this.root_picker_open);
-            assert!(!this.popup.is_open(&ChatPopup::Project));
-            // A second click while the picker is open must not start another.
-            this.popup.open(ChatPopup::Project, cx);
-            assert!(!this.begin_root_picker(cx));
-            assert!(this.popup.is_open(&ChatPopup::Project));
+            this.recent_roots = vec!["/home/me/alpha".to_string(), "/home/me/beta".to_string()];
+            this.project_root = Some("/home/me/beta".to_string());
+            this.open_project_picker(cx);
+            assert!(
+                this.root_input_focus_pending,
+                "typing must land in the picker"
+            );
+            let picker = this.project_picker.as_ref().expect("picker open");
+            // Recent projects first, the current one highlighted.
+            assert_eq!(
+                kinds(picker),
+                vec![
+                    (PickerRowKind::Recent, "/home/me/alpha".to_string()),
+                    (PickerRowKind::Recent, "/home/me/beta".to_string()),
+                ]
+            );
+            assert_eq!(picker.selected, 1);
+
+            // A typed path is offered as is, above what matched it, and a
+            // new query starts at the top.
+            this.refresh_project_picker("/srv/work/".to_string(), cx);
+            let picker = this.project_picker.as_ref().expect("picker open");
+            assert_eq!(
+                kinds(picker),
+                vec![(PickerRowKind::OpenPath, "/srv/work".to_string())]
+            );
+            assert_eq!(picker.selected, 0);
+
+            // Plain text filters the recents.
+            this.refresh_project_picker("BETA".to_string(), cx);
+            let picker = this.project_picker.as_ref().expect("picker open");
+            assert_eq!(
+                kinds(picker),
+                vec![(PickerRowKind::Recent, "/home/me/beta".to_string())]
+            );
+
+            // Arrows wrap; Escape closes and hands the keyboard back.
+            this.refresh_project_picker("home".to_string(), cx);
+            this.project_picker_move(-1, cx);
+            assert_eq!(this.project_picker.as_ref().map(|p| p.selected), Some(1));
+            this.project_picker_move(1, cx);
+            assert_eq!(this.project_picker.as_ref().map(|p| p.selected), Some(0));
+            this.screen_focus_pending = false;
+            this.escape(cx);
+            assert!(this.project_picker.is_none());
+            assert!(this.screen_focus_pending);
         });
     }
 
-    #[test]
-    fn test_git_branch_reads_head_and_worktree_pointer() {
-        struct TempDir(std::path::PathBuf);
-        impl Drop for TempDir {
-            fn drop(&mut self) {
-                let _ = std::fs::remove_dir_all(&self.0);
-            }
-        }
-        let branch = |root: &std::path::Path| git_dir(root).as_deref().and_then(git_branch);
-        let guard =
-            TempDir(std::env::temp_dir().join(format!("maple-branch-{}", std::process::id())));
-        let dir = &guard.0;
-        let repo = dir.join("repo");
-        std::fs::create_dir_all(repo.join(".git")).unwrap();
-        std::fs::write(repo.join(".git/HEAD"), "ref: refs/heads/feature/x\n").unwrap();
-        assert_eq!(branch(&repo).as_deref(), Some("feature/x"));
-
-        std::fs::write(repo.join(".git/HEAD"), "0123456789abcdef\n").unwrap();
-        assert_eq!(branch(&repo).as_deref(), Some("0123456"));
-
-        std::fs::write(repo.join(".git/HEAD"), "garbage-héad\n").unwrap();
-        assert_eq!(branch(&repo), None);
-        std::fs::write(repo.join(".git/HEAD"), "0123456789abcdef\n").unwrap();
-
-        let worktree = dir.join("wt");
-        std::fs::create_dir_all(&worktree).unwrap();
-        std::fs::write(
-            worktree.join(".git"),
-            format!("gitdir: {}\n", repo.join(".git").display()),
-        )
-        .unwrap();
-        assert_eq!(branch(&worktree).as_deref(), Some("0123456"));
-
-        let plain = dir.join("plain");
-        std::fs::create_dir_all(&plain).unwrap();
-        assert_eq!(branch(&plain), None);
-    }
-
-    /// Issue #945: the branch watcher must ignore access-only HEAD events
-    /// (open, read, close). The branch read they trigger emits those same
-    /// events again under Linux inotify, looping at ~200% CPU while idle.
-    #[test]
-    fn test_head_watch_ignores_read_access_events() {
-        use notify::EventKind;
-        use notify::event::{
-            AccessKind, AccessMode, CreateKind, DataChange, Flag, MetadataKind, ModifyKind,
-            RemoveKind, RenameMode,
-        };
-
-        let head = std::path::PathBuf::from("/repo/.git/HEAD");
-        let event = |kind: EventKind| notify::Event::new(kind).add_path(head.clone());
-
-        // The read side of the loop, as emitted by Linux inotify.
-        for kind in [
-            EventKind::Access(AccessKind::Open(AccessMode::Read)),
-            EventKind::Access(AccessKind::Read),
-            EventKind::Access(AccessKind::Close(AccessMode::Read)),
-            EventKind::Access(AccessKind::Close(AccessMode::Write)),
-            EventKind::Access(AccessKind::Any),
-            EventKind::Access(AccessKind::Other),
-        ] {
-            assert!(!head_change_event(&event(kind)), "access {kind:?}");
-        }
-
-        // Real changes still refresh the label: in-place write, create,
-        // remove, and the rename pair of an atomic replacement, plus the
-        // unclassified kinds imprecise backends emit for real changes.
-        for kind in [
-            EventKind::Modify(ModifyKind::Data(DataChange::Content)),
-            EventKind::Modify(ModifyKind::Any),
-            EventKind::Modify(ModifyKind::Metadata(MetadataKind::Any)),
-            EventKind::Modify(ModifyKind::Name(RenameMode::From)),
-            EventKind::Modify(ModifyKind::Name(RenameMode::To)),
-            EventKind::Modify(ModifyKind::Name(RenameMode::Both)),
-            EventKind::Modify(ModifyKind::Name(RenameMode::Any)),
-            EventKind::Create(CreateKind::File),
-            EventKind::Create(CreateKind::Any),
-            EventKind::Remove(RemoveKind::File),
-            EventKind::Remove(RemoveKind::Any),
-            EventKind::Any,
-            EventKind::Other,
-        ] {
-            assert!(head_change_event(&event(kind)), "change {kind:?}");
-        }
-
-        // Unrelated paths never refresh, even with a change kind.
-        let unrelated =
-            notify::Event::new(EventKind::Modify(ModifyKind::Data(DataChange::Content)))
-                .add_path(std::path::PathBuf::from("/repo/.git/index"));
-        assert!(!head_change_event(&unrelated));
-
-        // A required rescan refreshes even without a HEAD path.
-        let event = notify::Event::new(EventKind::Other).set_flag(Flag::Rescan);
-        assert!(head_change_event(&event));
-    }
-
+    /// The project chip and its shortcut open the picker, and close it
+    /// again while it is open.
     #[gpui::test]
-    fn test_escape_closes_root_menu(cx: &mut TestAppContext) {
+    fn test_choose_project_toggles_the_picker(cx: &mut TestAppContext) {
         cx.executor().allow_parking();
         let screen = screen(cx);
         screen.update(cx, |this, cx| {
-            this.popup.open(ChatPopup::Project, cx);
-            this.escape(cx);
-            assert_eq!(this.popup.open_key(), None);
+            this.popup.open(ChatPopup::Model, cx);
+            this.toggle_project_picker(cx);
+            assert!(this.project_picker.is_some());
+            assert_eq!(
+                this.popup.open_key(),
+                None,
+                "the picker closes the chip menus"
+            );
+            this.toggle_project_picker(cx);
+            assert!(this.project_picker.is_none());
         });
     }
 
@@ -3013,17 +3655,23 @@ mod state_tests {
                 mode: None,
                 active_runs: HashMap::new(),
             };
-            assert!(
-                !this.apply_service_event(AgentServiceEvent::RuntimeStatus(status.clone()), cx)
-            );
-            assert!(
-                this.apply_service_event(AgentServiceEvent::SessionCreated(summary("s1", "A")), cx)
-            );
-            assert!(
-                !this
-                    .apply_service_event(AgentServiceEvent::SessionCreated(summary("s1", "A")), cx)
-            );
+            assert!(!this.apply_service_event(
+                &HostId::local(),
+                AgentServiceEvent::RuntimeStatus(status.clone()),
+                cx
+            ));
             assert!(this.apply_service_event(
+                &HostId::local(),
+                AgentServiceEvent::SessionCreated(summary("s1", "A")),
+                cx
+            ));
+            assert!(!this.apply_service_event(
+                &HostId::local(),
+                AgentServiceEvent::SessionCreated(summary("s1", "A")),
+                cx
+            ));
+            assert!(this.apply_service_event(
+                &HostId::local(),
                 AgentServiceEvent::SessionCreated(summary("s1", "A renamed")),
                 cx
             ));
@@ -3562,6 +4210,7 @@ mod state_tests {
             let mut session = summary("s2", "Old");
             session.updated_ms = 20;
             assert!(this.apply_service_event(
+                &HostId::local(),
                 AgentServiceEvent::SessionUpdated {
                     session_id: "s2".to_string(),
                     run_id: None,
@@ -3861,9 +4510,18 @@ mod state_tests {
     /// down and the button's click opened it again.
     #[gpui::test]
     fn test_a_second_press_on_each_trigger_closes_its_menu(cx: &mut TestAppContext) {
+        // A second host puts the host chip in the header; the new-task
+        // screen shows it as a menu.
         let (chat, cx) = chat_window(cx, |this, cx| {
             this.sessions = vec![summary("s1", "One")];
             this.models = vec!["voxtral-small-24b".to_string()];
+            let remote = HostId::new("remote-key".to_string());
+            let remote_backend = this.backend.local_host("other") as Arc<dyn HostBackend>;
+            let mut entry = ChatHost::local(remote_backend);
+            entry.name = "Box".to_string();
+            this.hosts.insert(remote, entry);
+            this.hosts_changed();
+            this.selected_session = None;
             this.sync_sidebar(cx);
         });
         for (trigger, menu) in [
@@ -3872,7 +4530,7 @@ mod state_tests {
             ("model-picker", "Model"),
             ("permission-mode-toggle", "Mode"),
             ("mcp-menu", "Integrations"),
-            ("root-picker", "Project"),
+            ("host-picker", "Host"),
         ] {
             press(cx, trigger);
             assert_eq!(open_menu(&chat, cx), menu, "{trigger} opens its menu");
@@ -3896,9 +4554,18 @@ mod state_tests {
     /// menu, whichever view owns either of them.
     #[gpui::test]
     fn test_opening_a_menu_closes_the_open_one(cx: &mut TestAppContext) {
+        // A second host puts the host chip in the header; the new-task
+        // screen shows it as a menu.
         let (chat, cx) = chat_window(cx, |this, cx| {
             this.sessions = vec![summary("s1", "One")];
             this.models = vec!["voxtral-small-24b".to_string()];
+            let remote = HostId::new("remote-key".to_string());
+            let remote_backend = this.backend.local_host("other") as Arc<dyn HostBackend>;
+            let mut entry = ChatHost::local(remote_backend);
+            entry.name = "Box".to_string();
+            this.hosts.insert(remote, entry);
+            this.hosts_changed();
+            this.selected_session = None;
             this.sync_sidebar(cx);
         });
         for (first, then, open) in [
@@ -3907,7 +4574,8 @@ mod state_tests {
             ("model-picker", "menu-session-s1", "Task(s1)"),
             ("model-picker", "projects-header", "Switcher"),
             ("menu-session-s1", "projects-header", "Switcher"),
-            ("root-picker", "permission-mode-toggle", "Mode"),
+            ("host-picker", "permission-mode-toggle", "Mode"),
+            ("permission-mode-toggle", "host-picker", "Host"),
         ] {
             press(cx, first);
             press(cx, then);
@@ -3922,8 +4590,15 @@ mod state_tests {
         // A menu opened without the pointer closes the open one too: it
         // takes the focus.
         press(cx, "menu-session-s1");
+        chat.update(cx, |this, cx| this.popup.open(ChatPopup::Host, cx));
+        cx.run_until_parked();
+        assert_eq!(open_menu(&chat, cx), "Host");
+
+        // So does the project picker, a dialog with a search box.
         cx.simulate_keystrokes("secondary-p");
-        assert_eq!(open_menu(&chat, cx), "Project");
+        cx.run_until_parked();
+        assert_eq!(open_menu(&chat, cx), "");
+        assert!(chat.update(cx, |this, _| this.project_picker.is_some()));
     }
 
     /// A task menu reaches over the rows below it. A press on one of its
@@ -3958,51 +4633,34 @@ mod state_tests {
         );
     }
 
-    /// The header's project menu closes on a press outside it, like every
-    /// other menu. It used to stay open.
+    /// Typing into the project picker's search box stays in the box.
+    /// Typing used to jump to the composer.
     #[gpui::test]
-    fn test_the_project_menu_closes_on_an_outside_press(cx: &mut TestAppContext) {
-        let (chat, cx) = chat_window(cx, |this, cx| {
-            this.recent_roots = vec![absolute_fixture_root("one")];
-            this.sync_sidebar(cx);
-        });
-        press(cx, "root-picker");
-        assert_eq!(open_menu(&chat, cx), "Project");
-        cx.simulate_click(gpui::point(px(900.), px(500.)), gpui::Modifiers::default());
-        assert_eq!(open_menu(&chat, cx), "");
-    }
-
-    /// Typing into the project menu's path field stays in the field, and
-    /// Enter applies the path. Typing used to jump to the composer.
-    #[gpui::test]
-    fn test_the_project_path_field_keeps_its_typing(cx: &mut TestAppContext) {
+    fn test_the_project_picker_field_keeps_its_typing(cx: &mut TestAppContext) {
         let (chat, cx) = chat_window(cx, |_, _| {});
-        chat.update(cx, |this, cx| this.show_root_input(cx));
+        chat.update(cx, |this, cx| this.open_project_picker(cx));
         cx.run_until_parked();
-        let input = chat.update(cx, |this, _| this.root_input.clone().expect("path field"));
+        let input = chat.update(cx, |this, _| this.root_input.clone().expect("search box"));
         let handle = cx.update(|_, app| input.read(app).focus_handle(app));
         assert_eq!(
             cx.update(|window, app| window.focused(app)),
             Some(handle),
-            "the path field takes the focus when it is offered"
+            "the search box takes the focus when the picker opens"
         );
         cx.simulate_input("relative");
         assert_eq!(input.update(cx, |input, _| input.text()), "relative");
         let composer = chat.update(cx, |this, _| this.composer.clone().expect("composer"));
         assert_eq!(composer.update(cx, |composer, _| composer.text()), "");
-        assert_eq!(open_menu(&chat, cx), "Project", "the menu stays open");
-        cx.simulate_keystrokes("enter");
-        assert_eq!(
-            chat.update(cx, |this, _| this.notice.clone()),
-            Some("Enter an absolute directory path".into()),
-            "Enter applies what was typed"
+        assert!(
+            chat.update(cx, |this, _| this.project_picker.is_some()),
+            "the picker stays open"
         );
     }
 
-    /// Escape in the path field closes the project menu and hands the
-    /// keyboard back to where it was.
+    /// Escape in the search box closes the picker and hands the keyboard
+    /// back to where it was.
     #[gpui::test]
-    fn test_escape_in_the_path_field_closes_the_project_menu(cx: &mut TestAppContext) {
+    fn test_escape_in_the_search_box_closes_the_picker(cx: &mut TestAppContext) {
         let (chat, cx) = chat_window(cx, |_, _| {});
         let composer = chat.update(cx, |this, cx| {
             this.composer
@@ -4012,53 +4670,24 @@ mod state_tests {
                 .focus_handle(cx)
         });
         cx.update(|window, app| window.focus(&composer, app));
-        chat.update(cx, |this, cx| this.show_root_input(cx));
+        chat.update(cx, |this, cx| this.open_project_picker(cx));
         cx.run_until_parked();
         cx.simulate_keystrokes("escape");
-        assert_eq!(open_menu(&chat, cx), "");
+        cx.run_until_parked();
+        assert!(chat.update(cx, |this, _| this.project_picker.is_none()));
         assert_eq!(cx.update(|window, app| window.focused(app)), Some(composer));
     }
 
-    /// Under Application Vim, `g g` belongs to the menu itself, not to a
-    /// field inside it: "logging" typed into the path field keeps every
-    /// letter.
+    /// Under Application Vim, `g g` belongs to the screen, not to the
+    /// picker's search box: "logging" typed there keeps every letter.
     #[gpui::test]
-    fn test_application_vim_leaves_a_field_in_a_menu_its_letters(cx: &mut TestAppContext) {
+    fn test_application_vim_leaves_the_search_box_its_letters(cx: &mut TestAppContext) {
         let (chat, cx) = chat_window(cx, |this, cx| this.set_application_vim_enabled(true, cx));
-        chat.update(cx, |this, cx| this.show_root_input(cx));
+        chat.update(cx, |this, cx| this.open_project_picker(cx));
         cx.run_until_parked();
         cx.simulate_keystrokes("l o g g i n g");
-        let input = chat.update(cx, |this, _| this.root_input.clone().expect("path field"));
+        let input = chat.update(cx, |this, _| this.root_input.clone().expect("search box"));
         assert_eq!(input.update(cx, |input, _| input.text()), "logging");
-    }
-
-    /// The path field's own right-click menu opens inside the project menu
-    /// and reaches past its edge. Its rows take their presses, and the
-    /// project menu stays open.
-    #[gpui::test]
-    fn test_a_fields_menu_inside_a_menu_takes_its_presses(cx: &mut TestAppContext) {
-        let (chat, cx) = chat_window(cx, |_, _| {});
-        chat.update(cx, |this, cx| this.show_root_input(cx));
-        cx.run_until_parked();
-        cx.simulate_input("/tmp/somewhere");
-        let input = chat.update(cx, |this, _| this.root_input.clone().expect("path field"));
-        let field = cx.debug_bounds("root-path-field").expect("path field");
-        let project_menu = cx.debug_bounds("project-menu").expect("project menu");
-        for item in ["text-input-select-all", "text-input-cut"] {
-            let at = field.center();
-            cx.simulate_mouse_down(at, gpui::MouseButton::Right, gpui::Modifiers::default());
-            cx.simulate_mouse_up(at, gpui::MouseButton::Right, gpui::Modifiers::default());
-            let row = cx.debug_bounds(item).expect("the field's menu row");
-            if item == "text-input-select-all" {
-                assert!(
-                    !project_menu.contains(&row.center()),
-                    "the fixture puts Select all past the project menu's edge"
-                );
-            }
-            cx.simulate_click(row.center(), gpui::Modifiers::default());
-            assert_eq!(open_menu(&chat, cx), "Project", "after {item}");
-        }
-        assert_eq!(input.update(cx, |input, _| input.text()), "");
     }
 
     /// A project's rename field sits in the switcher. Escape ends the
@@ -4517,42 +5146,18 @@ mod state_tests {
     /// None mode here would restart every task at Ask First.
     #[gpui::test]
     fn test_new_task_takes_the_saved_permission_default(cx: &mut TestAppContext) {
-        let _guard = SETTINGS_LOCK.lock();
-        let dir = std::env::temp_dir().join(format!(
-            "maple-agent-test-permission-default-{}",
-            std::process::id()
-        ));
-        let _ = std::fs::remove_dir_all(&dir);
-        let config = dir.join("maple-agent");
-        std::fs::create_dir_all(&config).unwrap();
-        std::fs::write(
-            config.join("settings.json"),
-            r#"{"default_permission_mode":"auto"}"#,
-        )
-        .unwrap();
-        let previous = std::env::var_os("XDG_CONFIG_HOME");
-        unsafe { std::env::set_var("XDG_CONFIG_HOME", &dir) };
         cx.executor().allow_parking();
-        let screen = cx.new(|cx| {
-            ChatScreen::new_inner(
-                std::sync::Arc::new(
-                    crate::backend::AgentBackend::new(
-                        "http://127.0.0.1:9".to_string(),
-                        String::new(),
-                    )
-                    .expect("backend"),
-                ),
-                "user".to_string(),
+        let screen = screen(cx);
+        screen.update(cx, |this, cx| {
+            // The host's bootstrap carries its saved default.
+            this.apply_session_defaults(
+                &maple_agent::host::HostSessionDefaults {
+                    permission_mode: "auto".to_string(),
+                    ..Default::default()
+                },
                 cx,
-            )
-        });
-        match previous {
-            Some(value) => unsafe { std::env::set_var("XDG_CONFIG_HOME", value) },
-            None => unsafe { std::env::remove_var("XDG_CONFIG_HOME") },
-        }
-        let _ = std::fs::remove_dir_all(&dir);
-
-        screen.update(cx, |this, _cx| {
+            );
+            assert_eq!(this.permission_mode, PermissionMode::Auto);
             this.project_root = Some("/work/beta".to_string());
             let request = this.new_session_request().expect("explicit root request");
             assert_eq!(
@@ -4711,6 +5316,7 @@ mod state_tests {
             assert!(!this.active_runs.contains_key("s2"));
 
             this.apply_service_event(
+                &HostId::local(),
                 AgentServiceEvent::RuntimeStatus(AgentRuntimeStatus {
                     running: true,
                     project_root: Some("/work/alpha".to_string()),
@@ -4843,10 +5449,15 @@ mod state_tests {
         let chat = cx.new(|cx| {
             let _guard = SETTINGS_LOCK.lock();
             let backend = std::sync::Arc::new(
-                crate::backend::AgentBackend::new("http://127.0.0.1:9".to_string(), String::new())
+                crate::backend::AgentBackend::new("http://127.0.0.1:9".to_string())
                     .expect("backend"),
             );
-            let mut this = ChatScreen::new_inner(backend, "user".to_string(), cx);
+            let mut this = ChatScreen::new_inner(
+                backend.clone(),
+                backend.local_host("user"),
+                "user".to_string(),
+                cx,
+            );
             this.selected_session = Some("s1".to_string());
             this.sessions = (0..200)
                 .map(|n| summary(&format!("s{n}"), &format!("Task {n}")))
@@ -4952,10 +5563,15 @@ mod state_tests {
         let chat = cx.new(move |cx| {
             let _guard = SETTINGS_LOCK.lock();
             let backend = std::sync::Arc::new(
-                crate::backend::AgentBackend::new("http://127.0.0.1:9".to_string(), String::new())
+                crate::backend::AgentBackend::new("http://127.0.0.1:9".to_string())
                     .expect("backend"),
             );
-            let mut this = ChatScreen::new_inner(backend, "user".to_string(), cx);
+            let mut this = ChatScreen::new_inner(
+                backend.clone(),
+                backend.local_host("user"),
+                "user".to_string(),
+                cx,
+            );
             this.selected_session = Some("s1".to_string());
             this.application_vim_enabled = application_vim_enabled;
             this.application_focus = application_vim_enabled.then(|| cx.focus_handle());
@@ -5073,6 +5689,110 @@ mod state_tests {
         );
     }
 
+    /// With the project picker open, typing goes to its search box and
+    /// never to the composer behind it, whatever held focus before.
+    #[gpui::test]
+    fn test_typing_with_the_project_picker_open_lands_in_its_search(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        struct ChatHost {
+            chat: Entity<ChatScreen>,
+        }
+        impl Render for ChatHost {
+            fn render(
+                &mut self,
+                _window: &mut Window,
+                _cx: &mut Context<Self>,
+            ) -> impl IntoElement {
+                div().w(px(1200.)).h(px(800.)).child(self.chat.clone())
+            }
+        }
+
+        let chat = cx.new(|cx| {
+            let _guard = SETTINGS_LOCK.lock();
+            let backend = std::sync::Arc::new(
+                crate::backend::AgentBackend::new("http://127.0.0.1:9".to_string())
+                    .expect("backend"),
+            );
+            let host = backend.local_host("user");
+            // The arrows reach the input as bound actions, as in the app.
+            crate::desktop::register_key_bindings(cx);
+            // No bootstrap: the recent roots below must stay as set.
+            ChatScreen::new_without_start(backend, host, "user".to_string(), cx)
+        });
+        chat.update(cx, |this, _cx| {
+            this.booting = false;
+            this.trust_prompts = false;
+            this.selected_session = Some("s1".to_string());
+            this.replace_timeline(vec![user_item("u1", "hello")]);
+            this.recent_roots = vec!["/home/me/alpha".to_string(), "/home/me/beta".to_string()];
+        });
+
+        let (_host, cx) = cx.add_window_view(|_window, _cx| ChatHost { chat: chat.clone() });
+        cx.simulate_resize(gpui::size(px(1200.), px(800.)));
+
+        // Start from the transcript, as after a text-selection press.
+        let transcript_focus =
+            cx.update(|_window, app| chat.read(app).transcript_focus.clone().unwrap());
+        cx.update(|window, app| window.focus(&transcript_focus, app));
+        cx.update(|_window, app| chat.update(app, |this, cx| this.open_project_picker(cx)));
+        cx.run_until_parked();
+
+        // Arrows move the highlight and fill the box with its path; the
+        // rows stay put while they do.
+        let picker_state = |cx: &mut gpui::VisualTestContext| {
+            cx.update(|_window, app| {
+                let this = chat.read(app);
+                let picker = this.project_picker.as_ref().expect("picker open");
+                (
+                    picker.selected,
+                    picker.rows.len(),
+                    this.root_input
+                        .as_ref()
+                        .unwrap()
+                        .read(app)
+                        .text()
+                        .to_string(),
+                )
+            })
+        };
+        let last_path = |cx: &mut gpui::VisualTestContext| {
+            cx.update(|_window, app| {
+                let this = chat.read(app);
+                let picker = this.project_picker.as_ref().expect("picker open");
+                picker.rows.last().expect("rows").path.clone()
+            })
+        };
+        // The local host also lists this machine's home folders after
+        // the recents, so only the count's stability is asserted.
+        let rows = picker_state(cx).1;
+        cx.simulate_keystrokes("down");
+        cx.run_until_parked();
+        assert_eq!(picker_state(cx), (1, rows, "/home/me/beta".to_string()));
+        // Up from the top wraps to the last row.
+        cx.simulate_keystrokes("up up");
+        cx.run_until_parked();
+        assert_eq!(picker_state(cx), (rows - 1, rows, last_path(cx)));
+        cx.simulate_keystrokes("down");
+        cx.run_until_parked();
+        assert_eq!(picker_state(cx), (0, rows, "/home/me/alpha".to_string()));
+
+        cx.simulate_input("src");
+        cx.run_until_parked();
+        cx.update(|_window, app| {
+            chat.update(app, |this, cx| {
+                assert_eq!(
+                    this.root_input.as_ref().unwrap().read(cx).text(),
+                    "/home/me/alphasrc"
+                );
+                assert_eq!(this.composer.as_ref().unwrap().read(cx).text(), "");
+                assert!(
+                    this.project_picker.is_some(),
+                    "typing keeps the picker open"
+                );
+            })
+        });
+    }
+
     /// Plain typing while the transcript holds focus must land in the
     /// composer, including the first character, without a click first.
     /// Chords and enter/tab keep their meaning instead of stealing focus.
@@ -5097,10 +5817,11 @@ mod state_tests {
         let chat = cx.new(|cx| {
             let _guard = SETTINGS_LOCK.lock();
             let backend = std::sync::Arc::new(
-                crate::backend::AgentBackend::new("http://127.0.0.1:9".to_string(), String::new())
+                crate::backend::AgentBackend::new("http://127.0.0.1:9".to_string())
                     .expect("backend"),
             );
-            ChatScreen::new(backend, "user".to_string(), cx)
+            let host = backend.local_host("user");
+            ChatScreen::new(backend, host, "user".to_string(), cx)
         });
         chat.update(cx, |this, _cx| {
             // The real constructor bootstraps and may open the project-trust
@@ -5186,11 +5907,16 @@ mod state_tests {
         let chat = cx.new(|cx| {
             let _guard = SETTINGS_LOCK.lock();
             let backend = std::sync::Arc::new(
-                crate::backend::AgentBackend::new("http://127.0.0.1:9".to_string(), String::new())
+                crate::backend::AgentBackend::new("http://127.0.0.1:9".to_string())
                     .expect("backend"),
             );
             crate::desktop::register_key_bindings(cx);
-            let mut chat = ChatScreen::new_inner(backend, "user".to_string(), cx);
+            let mut chat = ChatScreen::new_inner(
+                backend.clone(),
+                backend.local_host("user"),
+                "user".to_string(),
+                cx,
+            );
             chat.selected_session = Some("s1".to_string());
             chat.application_vim_enabled = true;
             chat.application_focus = Some(cx.focus_handle());
@@ -5287,11 +6013,16 @@ mod state_tests {
         let chat = cx.new(|cx| {
             let _guard = SETTINGS_LOCK.lock();
             let backend = std::sync::Arc::new(
-                crate::backend::AgentBackend::new("http://127.0.0.1:9".to_string(), String::new())
+                crate::backend::AgentBackend::new("http://127.0.0.1:9".to_string())
                     .expect("backend"),
             );
             crate::desktop::register_key_bindings(cx);
-            let mut chat = ChatScreen::new_without_start(backend, "user".to_string(), cx);
+            let mut chat = ChatScreen::new_without_start(
+                backend.clone(),
+                backend.local_host("user"),
+                "user".to_string(),
+                cx,
+            );
             chat.selected_session = Some("s1".to_string());
             chat.booting = false;
             chat.application_vim_enabled = false;
@@ -5337,8 +6068,8 @@ mod state_tests {
 
         // Once no focus transition consumes Escape, the same central route
         // still reaches Chat's legacy menu-close behavior.
-        chat.update(cx, |this, cx| this.toggle_root_menu(cx));
-        assert!(cx.update(|_window, app| { chat.read(app).popup.is_open(&ChatPopup::Project) }));
+        chat.update(cx, |this, cx| this.popup.open(ChatPopup::Model, cx));
+        assert!(cx.update(|_window, app| chat.read(app).popup.is_open(&ChatPopup::Model)));
         cx.simulate_keystrokes("escape");
         assert_eq!(
             cx.update(|_window, app| chat.read(app).popup.open_key().copied()),
@@ -5380,11 +6111,16 @@ mod state_tests {
         let chat = cx.new(|cx| {
             let _guard = SETTINGS_LOCK.lock();
             let backend = std::sync::Arc::new(
-                crate::backend::AgentBackend::new("http://127.0.0.1:9".to_string(), String::new())
+                crate::backend::AgentBackend::new("http://127.0.0.1:9".to_string())
                     .expect("backend"),
             );
             crate::desktop::register_key_bindings(cx);
-            let mut chat = ChatScreen::new_without_start(backend, "user".to_string(), cx);
+            let mut chat = ChatScreen::new_without_start(
+                backend.clone(),
+                backend.local_host("user"),
+                "user".to_string(),
+                cx,
+            );
             chat.selected_session = Some("s1".to_string());
             chat.booting = false;
             chat.application_vim_enabled = false;
@@ -5551,11 +6287,11 @@ mod state_tests {
         });
     }
 
-    /// Ctrl-P opens the project menu, takes the focus off the composer,
-    /// and walks its rows with plain arrow keys. Closing the menu gives
-    /// the composer its focus back.
+    /// Ctrl-P opens the project picker with the keyboard in its search
+    /// box, the arrows walk its rows, Enter opens the highlighted project,
+    /// and the composer takes the keyboard back when the picker closes.
     #[gpui::test]
-    fn test_project_menu_walks_with_arrows_and_application_vim_jk(cx: &mut TestAppContext) {
+    fn test_project_shortcut_opens_the_picker(cx: &mut TestAppContext) {
         cx.executor().allow_parking();
         struct ChatHost {
             chat: Entity<ChatScreen>,
@@ -5573,12 +6309,18 @@ mod state_tests {
         let chat = cx.new(|cx| {
             let _guard = SETTINGS_LOCK.lock();
             let backend = std::sync::Arc::new(
-                crate::backend::AgentBackend::new("http://127.0.0.1:9".to_string(), String::new())
+                crate::backend::AgentBackend::new("http://127.0.0.1:9".to_string())
                     .expect("backend"),
             );
             crate::desktop::register_key_bindings(cx);
-            let mut chat = ChatScreen::new_without_start(backend, "user".to_string(), cx);
+            let mut chat = ChatScreen::new_without_start(
+                backend.clone(),
+                backend.local_host("user"),
+                "user".to_string(),
+                cx,
+            );
             chat.selected_session = Some("s1".to_string());
+            chat.trust_prompts = false;
             chat.recent_roots = vec![absolute_fixture_root("one"), absolute_fixture_root("two")];
             chat.booting = false;
             chat
@@ -5591,55 +6333,53 @@ mod state_tests {
         cx.update(|window, app| window.focus(&composer_handle, app));
 
         cx.simulate_keystrokes("secondary-p");
-        assert!(cx.update(|_window, app| { chat.read(app).popup.is_open(&ChatPopup::Project) }));
-        assert_ne!(
+        cx.run_until_parked();
+        let search_handle = cx.update(|_window, app| {
+            let this = chat.read(app);
+            assert!(this.project_picker.is_some());
+            this.root_input.clone().unwrap().focus_handle(app)
+        });
+        assert_eq!(
             cx.update(|window, app| window.focused(app)),
-            Some(composer_handle.clone()),
-            "the open menu must hold the focus, or the arrows type instead"
+            Some(search_handle),
+            "the open picker must hold the focus, or the arrows type instead"
         );
 
-        // Two recent roots and the "New project…" row: down, down, down
-        // wraps back to the first.
-        let highlighted = |cx: &mut gpui::VisualTestContext| {
-            cx.update(|_window, app| chat.read(app).popup.highlighted().cloned())
-        };
-        let root = |name: &str| {
-            Some(gpui::ElementId::from(SharedString::from(format!(
-                "root-{}",
-                absolute_fixture_root(name)
-            ))))
-        };
-        let choose = || Some(gpui::ElementId::from("root-choose"));
+        // Down highlights the second recent project and fills it in.
         cx.simulate_keystrokes("down");
-        assert_eq!(highlighted(cx), root("one"));
-        cx.simulate_keystrokes("down down");
-        assert_eq!(highlighted(cx), choose());
-        cx.simulate_keystrokes("down");
-        assert_eq!(highlighted(cx), root("one"));
-        cx.simulate_keystrokes("up");
-        assert_eq!(highlighted(cx), choose());
+        cx.run_until_parked();
+        assert_eq!(
+            cx.update(|_window, app| chat.read(app).project_picker.as_ref().map(|p| p.selected)),
+            Some(1)
+        );
 
-        // Enter on a recent root asks for the switch and closes the menu;
-        // the composer takes the typing back.
-        cx.simulate_keystrokes("up up");
-        assert_eq!(highlighted(cx), root("one"));
+        // Enter asks for the switch and closes the picker; the composer
+        // takes the typing back. The host may have answered the switch
+        // already (the fixture path need not exist), in which case its
+        // answer is on screen instead of the switch in flight.
         cx.simulate_keystrokes("enter");
-        assert!(!cx.update(|_window, app| { chat.read(app).popup.is_open(&ChatPopup::Project) }));
+        cx.run_until_parked();
+        cx.update(|_window, app| {
+            let this = chat.read(app);
+            assert!(this.project_picker.is_none());
+            assert!(
+                this.root_selecting || this.notice.is_some(),
+                "Enter opens the highlighted project"
+            );
+        });
         assert_eq!(
             cx.update(|window, app| window.focused(app)),
             Some(composer_handle),
-            "closing the menu must hand the focus back"
+            "closing the picker must hand the focus back"
         );
 
-        // Application Vim adds its own context to the focused menu, so its
-        // j/k aliases are live without disturbing the legacy arrow bindings.
-        chat.update(cx, |this, cx| this.set_application_vim_enabled(true, cx));
+        // The shortcut closes an open picker too.
         cx.simulate_keystrokes("secondary-p");
-        assert!(cx.update(|_window, app| { chat.read(app).popup.is_open(&ChatPopup::Project) }));
-        cx.simulate_keystrokes("j j");
-        assert_eq!(highlighted(cx), root("two"));
-        cx.simulate_keystrokes("k");
-        assert_eq!(highlighted(cx), root("one"));
+        cx.run_until_parked();
+        assert!(cx.update(|_window, app| chat.read(app).project_picker.is_some()));
+        cx.simulate_keystrokes("secondary-p");
+        cx.run_until_parked();
+        assert!(cx.update(|_window, app| chat.read(app).project_picker.is_none()));
     }
 
     /// The open composer menu (model picker and friends) floats above the
@@ -5666,11 +6406,16 @@ mod state_tests {
         let chat = cx.new(|cx| {
             let _guard = SETTINGS_LOCK.lock();
             let backend = std::sync::Arc::new(
-                crate::backend::AgentBackend::new("http://127.0.0.1:9".to_string(), String::new())
+                crate::backend::AgentBackend::new("http://127.0.0.1:9".to_string())
                     .expect("backend"),
             );
             crate::desktop::register_key_bindings(cx);
-            let mut chat = ChatScreen::new_without_start(backend, "user".to_string(), cx);
+            let mut chat = ChatScreen::new_without_start(
+                backend.clone(),
+                backend.local_host("user"),
+                "user".to_string(),
+                cx,
+            );
             chat.selected_session = Some("s1".to_string());
             chat.booting = false;
             chat.replace_timeline(vec![user_item("u1", "hello")]);
@@ -5731,11 +6476,16 @@ mod state_tests {
         let chat = cx.new(|cx| {
             let _guard = SETTINGS_LOCK.lock();
             let backend = std::sync::Arc::new(
-                crate::backend::AgentBackend::new("http://127.0.0.1:9".to_string(), String::new())
+                crate::backend::AgentBackend::new("http://127.0.0.1:9".to_string())
                     .expect("backend"),
             );
             crate::desktop::register_key_bindings(cx);
-            let mut chat = ChatScreen::new_without_start(backend, "user".to_string(), cx);
+            let mut chat = ChatScreen::new_without_start(
+                backend.clone(),
+                backend.local_host("user"),
+                "user".to_string(),
+                cx,
+            );
             chat.selected_session = Some("s1".to_string());
             chat.booting = false;
             chat.replace_timeline(vec![

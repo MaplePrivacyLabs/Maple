@@ -1,9 +1,11 @@
-//! Backend boundary for the gpui frontend.
+//! Account-level backend for the gpui frontend.
 //!
-//! This is the only module that imports `maple_agent`. It owns a private
-//! Tokio runtime and exposes an async facade plus an event stream. The UI
-//! never touches the agent runtime directly, so this seam can later be moved
-//! behind a process or socket boundary without touching UI code.
+//! This owns the private Tokio runtime, the OpenSecret sign-in, billing,
+//! audio, and the in-process agent service. Everything a client drives on
+//! a host (tasks, projects, runs, integrations) goes through
+//! [`maple_agent::host::HostBackend`] instead; [`AgentBackend::local_host`]
+//! hands out the in-process implementation. A remote host implements the
+//! same trait over the wire, so the UI never branches on where a host runs.
 
 // This module is the desktop frontend's boundary. A headless build (no
 // `desktop` feature) uses only a few entry points, so the rest is unused
@@ -18,21 +20,17 @@ use std::process::Command;
 use std::sync::Arc;
 
 use maple_agent::agent::{
-    AgentCreateSessionRequest, AgentDesktopQueueSnapshot, AgentEventSink, AgentIntegration,
-    AgentIntegrationPermissionKind, AgentIntegrationPermissions, AgentProjectRootRegistration,
-    AgentProjectTrustStatus, AgentQueueControlRequest, AgentRenameSessionRequest,
-    AgentRuntimeStatus, AgentSendMessageRequest, AgentServiceEvent, AgentSessionDetail,
-    AgentSessionSummary, AgentSetIntegrationEnabledRequest, AgentSetupIntegrationRequest,
-    AgentSlashCommand, AgentStartRequest, AgentSubagent, AgentTaskState, MapleAgentHostResources,
-    MapleAgentService, RecentProjectRoot,
+    AgentIntegrationPermissionKind, AgentIntegrationPermissions, AgentSetupIntegrationRequest,
+    AgentStartRequest, MapleAgentHostResources, MapleAgentService,
 };
+use maple_agent::host::{HostEvent, HostEventHub, LocalHostAuth, LocalHostBackend};
 use maple_agent::maple_api::{
     MapleApiAuthEventSink, MapleApiAuthRequest, MapleApiAuthSnapshot, MapleApiAuthState,
+    MapleApiSession,
 };
 use maple_agent::open_secret_config::configured_pcr0_environment;
 use maple_sdk::OpenSecretClient;
 use tokio::runtime::Runtime;
-use tokio::sync::mpsc;
 use uuid::Uuid;
 
 #[derive(Debug, Clone)]
@@ -80,17 +78,6 @@ pub enum RestoreOutcome {
     Unavailable,
 }
 
-/// Everything the chat screen can show before any network call: the saved
-/// project root, the task list, the recent roots, and the newest task's
-/// transcript. Read in one backend call so it all lands before a runtime
-/// start takes the lifecycle lock for its network round trips.
-pub struct LocalBootstrap {
-    pub project_root: Option<String>,
-    pub sessions: Vec<AgentSessionSummary>,
-    pub recent_roots: Vec<String>,
-    pub latest: Option<AgentSessionDetail>,
-}
-
 pub struct AgentBackend {
     runtime: Runtime,
     service: MapleAgentService,
@@ -99,17 +86,14 @@ pub struct AgentBackend {
     persisted_auth: Arc<PersistedAuthStore>,
     pending_oauth: PendingOAuthStore,
     client_id: Uuid,
-    event_rx: tokio::sync::Mutex<Option<mpsc::UnboundedReceiver<AgentServiceEvent>>>,
+    /// The local host's event stream. The runtime emits into it; every
+    /// subscriber receives every event.
+    events: Arc<HostEventHub>,
+    /// One in-process host per signed-in account, created on first use.
+    local_hosts: std::sync::Mutex<HashMap<String, Arc<LocalHostBackend>>>,
     billing: crate::billing::BillingClient,
     /// Cached billing JWT per user id. Replaced after a 401.
     billing_tokens: tokio::sync::Mutex<HashMap<String, String>>,
-    /// Open handle to the usage ledger DB; the context ring polls it every
-    /// second during a run, so it is not reopened per query. Shared with
-    /// the blocking task that runs each query.
-    usage_db: Arc<std::sync::Mutex<Option<(PathBuf, rusqlite::Connection)>>>,
-    /// Open handle to the app-owned tool summary store; keyed by account
-    /// scope path so a user switch reopens it.
-    summary_db: std::sync::Mutex<Option<(PathBuf, rusqlite::Connection)>>,
     /// True while a background credential restore runs. Calls that need a
     /// validated session wait on it (see `session_for`); local reads do not.
     restore_pending: (
@@ -137,19 +121,6 @@ fn client_id_from(configured: Option<&str>) -> Uuid {
                 "MAPLE_CLIENT_ID {value:?} is not a UUID ({error}); using the default client id"
             );
             default()
-        }
-    }
-}
-
-struct ChannelEventSink(mpsc::UnboundedSender<AgentServiceEvent>);
-
-impl AgentEventSink for ChannelEventSink {
-    fn emit(&self, event: &AgentServiceEvent) {
-        // The channel is unbounded, so sends only fail after the UI dropped
-        // the receiver (window closed). The runtime tolerates missing
-        // notifications for that case; surface it once for diagnosis.
-        if self.0.send(event.clone()).is_err() {
-            log::debug!("agent event receiver is gone; dropping further events");
         }
     }
 }
@@ -331,84 +302,9 @@ impl Drop for OAuthAttemptGuard<'_> {
     }
 }
 
-impl AgentBackend {
-    /// The account scope (sha of the user id) used for on-disk layout.
-    pub fn account_scope(&self, user_id: &str) -> Option<String> {
-        maple_agent::maple_api::account_scope(user_id).ok()
-    }
-}
-
 /// App configuration root (XDG-style), also used by the settings store.
 pub fn app_config_root() -> PathBuf {
     config_root()
-}
-
-/// Path to the goose sessions database for one account scope. The agent
-/// runtime owns and writes this file; the app only reads it.
-pub fn account_session_db(account_scope: &str) -> PathBuf {
-    local_data_root()
-        .join("agent")
-        .join("accounts")
-        .join(account_scope)
-        .join("goose")
-        .join("data")
-        .join("sessions")
-        .join("sessions.db")
-}
-
-/// Open the goose sessions database for reading. Returns `None` when the
-/// file does not exist yet (read-only open never creates it). The busy
-/// timeout covers the short locks goose takes for WAL checkpoints.
-pub fn open_session_db_read_only(path: &std::path::Path) -> Option<rusqlite::Connection> {
-    use rusqlite::OpenFlags;
-    let flags = OpenFlags::SQLITE_OPEN_READ_ONLY
-        | OpenFlags::SQLITE_OPEN_NO_MUTEX
-        | OpenFlags::SQLITE_OPEN_URI;
-    let conn = match rusqlite::Connection::open_with_flags(path, flags) {
-        Ok(conn) => conn,
-        Err(error) => {
-            if path.exists() {
-                log::warn!("Cannot open session db {}: {error}", path.display());
-            }
-            return None;
-        }
-    };
-    if let Err(error) = conn.busy_timeout(std::time::Duration::from_secs(5)) {
-        log::warn!("Cannot set busy timeout on {}: {error}", path.display());
-    }
-    Some(conn)
-}
-
-/// Path to the app-owned store of model-written tool call summaries for
-/// one account scope. Lives next to the agent data so it is removed with
-/// the account.
-fn account_summary_db(account_scope: &str) -> PathBuf {
-    local_data_root()
-        .join("agent")
-        .join("accounts")
-        .join(account_scope)
-        .join("tool_summaries.db")
-}
-
-/// Open (and create) the tool summary store.
-fn open_summary_db(path: &std::path::Path) -> Result<rusqlite::Connection, String> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|error| format!("Cannot create {}: {error}", parent.display()))?;
-    }
-    let conn = rusqlite::Connection::open(path)
-        .map_err(|error| format!("Cannot open {}: {error}", path.display()))?;
-    conn.execute_batch(
-        "PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; \
-         CREATE TABLE IF NOT EXISTS tool_summaries ( \
-             session_id TEXT NOT NULL, \
-             item_id TEXT NOT NULL, \
-             summary TEXT NOT NULL, \
-             PRIMARY KEY (session_id, item_id) \
-         );",
-    )
-    .map_err(|error| format!("Cannot init {}: {error}", path.display()))?;
-    Ok(conn)
 }
 
 /// Root for configuration that may roam between machines. Mirrors Tauri's
@@ -433,34 +329,17 @@ pub fn local_data_root() -> PathBuf {
     base.join(APP_DIR_NAME)
 }
 
+/// The agent runtime's directory layout under this app's roots. Other
+/// modules that keep per-account files beside the runtime's take the
+/// account directory from here instead of rebuilding the layout.
+pub fn agent_paths() -> maple_agent::agent::AgentPathLayout {
+    maple_agent::agent::AgentPathLayout::from_app_roots(config_root(), local_data_root())
+}
+
 fn env_dir(name: &str) -> Option<PathBuf> {
     std::env::var_os(name)
         .map(PathBuf::from)
         .filter(|path| path.is_absolute())
-}
-
-fn home_dir() -> Option<PathBuf> {
-    std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .filter(|path| path.is_absolute())
-}
-
-/// Root the desktop app opens when the account has no saved root. The GUI
-/// must not depend on the directory it was launched from: that is the job of
-/// the `maple acp` command, not a windowed app started from a launcher.
-fn fallback_project_root() -> Option<String> {
-    home_dir().map(|path| path.to_string_lossy().to_string())
-}
-
-/// Root for a GUI start: the saved default when it still is a folder, else
-/// the home directory. Never the process working directory.
-fn gui_project_root(config: &maple_agent::agent::AgentConfig) -> Option<String> {
-    config
-        .default_project_root
-        .as_deref()
-        .filter(|path| !path.trim().is_empty() && std::path::Path::new(path).is_dir())
-        .map(str::to_owned)
-        .or_else(fallback_project_root)
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
@@ -662,6 +541,21 @@ impl PersistedAuthStore {
     }
 }
 
+/// The local host's view of this backend's sign-in. Weak so the backend,
+/// which owns the hosts, does not own itself through them.
+struct BackendHostAuth(std::sync::Weak<AgentBackend>);
+
+#[async_trait::async_trait]
+impl LocalHostAuth for BackendHostAuth {
+    async fn api_session(&self, user_id: &str) -> Result<Arc<MapleApiSession>, String> {
+        let backend = self
+            .0
+            .upgrade()
+            .ok_or_else(|| "The app is shutting down".to_string())?;
+        backend.session_for(user_id).await
+    }
+}
+
 struct PersistAuthSink {
     store: Arc<PersistedAuthStore>,
 }
@@ -681,20 +575,21 @@ impl MapleApiAuthEventSink for PersistAuthSink {
 }
 
 impl AgentBackend {
-    pub fn new(api_url: String, harness_instructions: String) -> Result<Self, String> {
+    pub fn new(api_url: String) -> Result<Self, String> {
         // Enforce the credential-bearing URL policy before any client is
         // built, including the login-time SDK client.
         let api_url = maple_agent::maple_api::validate_api_url(&api_url)?;
-        let (event_tx, event_rx) = mpsc::unbounded_channel();
-        let paths =
-            maple_agent::agent::AgentPathLayout::from_app_roots(config_root(), local_data_root());
+        let events = Arc::new(HostEventHub::default());
+        let paths = agent_paths();
         // Keeps ACP bridge credentials out of desktop tool environments.
         let default_tool_context = maple_agent::agent::default_tool_context_spec()?;
+        // The harness instructions are per account and reach the runtime
+        // through the local host once an account is bound.
         let service = MapleAgentService::new(MapleAgentHostResources::new(
             paths,
-            Arc::new(ChannelEventSink(event_tx)),
+            Arc::clone(&events) as Arc<dyn maple_agent::agent::AgentEventSink>,
             default_tool_context,
-            harness_instructions,
+            maple_agent::host::DEFAULT_HARNESS_INSTRUCTIONS.to_string(),
         ));
         let runtime =
             Runtime::new().map_err(|error| format!("failed to start runtime: {error}"))?;
@@ -713,20 +608,38 @@ impl AgentBackend {
             persisted_auth,
             pending_oauth: PendingOAuthStore::default(),
             client_id: configured_client_id(),
-            event_rx: tokio::sync::Mutex::new(Some(event_rx)),
+            events,
+            local_hosts: std::sync::Mutex::new(HashMap::new()),
             billing,
             billing_tokens: tokio::sync::Mutex::new(HashMap::new()),
-            usage_db: Arc::new(std::sync::Mutex::new(None)),
-            summary_db: std::sync::Mutex::new(None),
             restore_pending: tokio::sync::watch::channel(false),
         })
     }
 
-    /// Replace the opening system prompt text for tasks this app hosts.
-    /// Applies to agents built after the call, so to a task's next fresh
-    /// agent, not to one already loaded.
-    pub fn set_harness_instructions(&self, harness_instructions: String) {
-        self.service.set_harness_instructions(harness_instructions);
+    /// A fresh subscription to the local host's events. The desktop event
+    /// pump takes one for the whole process.
+    pub fn subscribe_events(&self) -> tokio::sync::mpsc::UnboundedReceiver<HostEvent> {
+        self.events.subscribe()
+    }
+
+    /// The in-process host for `user_id`, created once per account. It
+    /// shares this backend's runtime and event stream.
+    pub fn local_host(self: &Arc<Self>, user_id: &str) -> Arc<LocalHostBackend> {
+        let mut hosts = self
+            .local_hosts
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(host) = hosts.get(user_id) {
+            return Arc::clone(host);
+        }
+        let host = LocalHostBackend::new(
+            self.service.clone(),
+            user_id.to_string(),
+            Arc::new(BackendHostAuth(Arc::downgrade(self))),
+            Arc::clone(&self.events),
+        );
+        hosts.insert(user_id.to_string(), Arc::clone(&host));
+        host
     }
 
     pub fn api_url(&self) -> &str {
@@ -746,11 +659,6 @@ impl AgentBackend {
         F::Output: Send + 'static,
     {
         self.runtime.spawn(future)
-    }
-
-    /// Take the backend event stream. Only the first caller receives it.
-    pub async fn take_events(&self) -> Option<mpsc::UnboundedReceiver<AgentServiceEvent>> {
-        self.event_rx.lock().await.take()
     }
 
     fn normalize_email(email: &str) -> Result<String, String> {
@@ -833,10 +741,18 @@ impl AgentBackend {
     /// Restore a persisted session before the UI starts. Validates the
     /// credentials against the backend; returns the account id on success.
     pub fn restore_now(&self) -> Option<String> {
-        match self.runtime.block_on(self.validate_persisted_auth()) {
+        match self.restore_outcome_now() {
             RestoreOutcome::Valid(user_id) => Some(user_id),
             RestoreOutcome::Rejected | RestoreOutcome::Unavailable => None,
         }
+    }
+
+    /// [`Self::restore_now`] with the full outcome, for a command that
+    /// treats an unreachable server differently from a rejected sign-in.
+    /// `Rejected` also covers a missing sign-in; check
+    /// [`Self::saved_user_id`] first to tell them apart.
+    pub fn restore_outcome_now(&self) -> RestoreOutcome {
+        self.runtime.block_on(self.validate_persisted_auth())
     }
 
     /// Validate the persisted credentials on the backend runtime while the
@@ -898,10 +814,7 @@ impl AgentBackend {
     /// The validated session for `user_id`, waiting first for a background
     /// credential restore that is still in flight. Local reads never call
     /// this; only backend requests that spend the credentials do.
-    async fn session_for(
-        &self,
-        user_id: &str,
-    ) -> Result<Arc<maple_agent::maple_api::MapleApiSession>, String> {
+    async fn session_for(&self, user_id: &str) -> Result<Arc<MapleApiSession>, String> {
         self.wait_for_restore().await;
         self.auth.session_for(user_id).await
     }
@@ -1161,7 +1074,7 @@ impl AgentBackend {
             return Err("Enter the confirmation code from the email".to_string());
         }
         let session = self.session_for(user_id).await?;
-        self.stop_runtime(user_id).await?;
+        self.service.handle_for_user(user_id).await?.stop().await?;
         session
             .confirm_account_deletion(code, plaintext_secret)
             .await
@@ -1329,7 +1242,7 @@ impl AgentBackend {
 
     async fn mint_billing_token(
         &self,
-        session: &Arc<maple_agent::maple_api::MapleApiSession>,
+        session: &Arc<MapleApiSession>,
         user_id: &str,
     ) -> Result<String, String> {
         let token = session
@@ -1342,51 +1255,14 @@ impl AgentBackend {
         Ok(token)
     }
 
-    pub async fn start_runtime(
-        &self,
-        user_id: &str,
-        request: Option<AgentStartRequest>,
-    ) -> Result<AgentRuntimeStatus, String> {
-        let handle = self.service.handle_for_user(user_id).await?;
-        let session = self.session_for(user_id).await?;
-        // The agent falls back to the process working directory when no root
-        // is given. That is right for `maple acp`, not for the GUI: pick the
-        // saved root or the home directory instead.
-        let request = match request {
-            Some(AgentStartRequest {
-                project_root: None,
-                model,
-                mode,
-            }) => {
-                let config = handle.load_config().await?;
-                Some(AgentStartRequest {
-                    project_root: gui_project_root(&config),
-                    model,
-                    mode,
-                })
-            }
-            other => other,
-        };
-        // A wedged enclave connection must surface as an error, not an
-        // eternal spinner.
-        tokio::time::timeout(
-            std::time::Duration::from_secs(60),
-            handle.start(session, request),
-        )
-        .await
-        .map_err(|_| "Runtime start timed out. Check your connection and retry.".to_string())?
-    }
-
-    pub async fn stop_runtime(&self, user_id: &str) -> Result<AgentRuntimeStatus, String> {
-        self.service.handle_for_user(user_id).await?.stop().await
-    }
-
     /// Serve ACP on stdin/stdout for `user_id` until the peer closes stdin.
     /// Starts the runtime first, rooted at the process working directory,
     /// and stops it when the connection ends.
     #[cfg(feature = "acp")]
-    pub fn run_acp_stdio(&self, user_id: &str) -> Result<(), String> {
+    pub fn run_acp_stdio(self: &Arc<Self>, user_id: &str) -> Result<(), String> {
+        let host = self.local_host(user_id);
         self.runtime.block_on(async {
+            host.apply_saved_harness().await?;
             let handle = self.service.handle_for_user(user_id).await?;
             let session = self.session_for(user_id).await?;
             // Start the runtime concurrently instead of before the handshake:
@@ -1403,322 +1279,6 @@ impl AgentBackend {
             }
             result
         })
-    }
-
-    /// Roots recently used by this account, most recent first.
-    pub async fn recent_project_roots(
-        &self,
-        user_id: &str,
-    ) -> Result<Vec<RecentProjectRoot>, String> {
-        self.service
-            .handle_for_user(user_id)
-            .await?
-            .list_recent_project_roots()
-            .await
-    }
-
-    /// Register and select the default root for new tasks.
-    ///
-    /// The account runtime is deliberately not restarted: existing tasks own
-    /// their persisted working directories and may keep running under other
-    /// roots while the UI moves between projects.
-    ///
-    /// Choosing a folder does not record a trust decision. Home and the
-    /// process launch directory are already trusted with no saved answer;
-    /// every other root keeps `None` until the one-time prompt. A saved
-    /// "do not trust" answer stays.
-    pub async fn select_project_root(
-        &self,
-        user_id: &str,
-        path: String,
-    ) -> Result<AgentProjectRootRegistration, String> {
-        self.service
-            .handle_for_user(user_id)
-            .await?
-            .save_recent_project_root(path)
-            .await
-    }
-
-    pub async fn list_sessions(
-        &self,
-        user_id: &str,
-        project_root: Option<String>,
-    ) -> Result<Vec<AgentSessionSummary>, String> {
-        let mut sessions = self
-            .service
-            .handle_for_user(user_id)
-            .await?
-            .list_sessions(project_root)
-            .await?;
-        // Tasks that an ACP client created belong to that client's UI, not
-        // to the desktop task list.
-        sessions.retain(|session| !session.acp);
-        Ok(sessions)
-    }
-
-    /// Read everything the chat screen can show without the network: the
-    /// saved project root, the task list, the recent roots, and the newest
-    /// task's transcript. Call it before `start_runtime`: the runtime start
-    /// holds the lifecycle lock across its network round trips, and these
-    /// reads would queue behind it.
-    pub async fn local_bootstrap(&self, user_id: &str) -> Result<LocalBootstrap, String> {
-        let handle = self.service.handle_for_user(user_id).await?;
-        let config = handle.load_config().await?;
-        let project_root = gui_project_root(&config);
-        let mut sessions = handle.list_sessions(None).await?;
-        // Tasks that an ACP client created belong to that client's UI, not
-        // to the desktop task list.
-        sessions.retain(|session| !session.acp);
-        let recent_roots = handle
-            .list_recent_project_roots()
-            .await?
-            .into_iter()
-            .map(|root| root.path)
-            .collect();
-        // Same choice the screen's auto-select makes: the newest unarchived
-        // task under the root that the runtime will start in. An empty task
-        // is a draft an older build persisted; the screen's own new-task
-        // draft stands in for it.
-        let latest_id = sessions
-            .iter()
-            .find(|session| {
-                session.state != AgentTaskState::Archived
-                    && session.message_count > 0
-                    && Some(&session.project_root) == project_root.as_ref()
-            })
-            .map(|session| session.id.clone());
-        let latest = match latest_id {
-            Some(id) => handle.load_session(id).await.ok(),
-            None => None,
-        };
-        Ok(LocalBootstrap {
-            project_root,
-            sessions,
-            recent_roots,
-            latest,
-        })
-    }
-
-    pub async fn create_session(
-        &self,
-        user_id: &str,
-        request: Option<AgentCreateSessionRequest>,
-    ) -> Result<AgentSessionDetail, String> {
-        self.service
-            .handle_for_user(user_id)
-            .await?
-            .create_session(request)
-            .await
-    }
-
-    pub async fn load_session(
-        &self,
-        user_id: &str,
-        session_id: &str,
-    ) -> Result<AgentSessionDetail, String> {
-        self.service
-            .handle_for_user(user_id)
-            .await?
-            .load_session(session_id.to_string())
-            .await
-    }
-
-    /// Move a task between active, settled, and archived. The runtime
-    /// refuses to settle or archive a task while it runs.
-    pub async fn set_session_state(
-        &self,
-        user_id: &str,
-        session_id: &str,
-        state: AgentTaskState,
-    ) -> Result<AgentSessionSummary, String> {
-        self.service
-            .handle_for_user(user_id)
-            .await?
-            .set_session_state(session_id.to_string(), state)
-            .await
-    }
-
-    /// Delete a task and everything stored for it. The runtime refuses
-    /// while the task runs or an external surface holds it.
-    pub async fn delete_session(&self, user_id: &str, session_id: &str) -> Result<(), String> {
-        self.service
-            .handle_for_user(user_id)
-            .await?
-            .delete_session(session_id.to_string())
-            .await
-    }
-
-    /// Drop a root from the recent list. `fallback` becomes the runtime
-    /// root when the removed one was current.
-    pub async fn remove_project_root(
-        &self,
-        user_id: &str,
-        path: String,
-        fallback: Option<String>,
-    ) -> Result<(), String> {
-        self.service
-            .handle_for_user(user_id)
-            .await?
-            .remove_project_root(path, fallback)
-            .await
-            .map(|_| ())
-    }
-
-    pub async fn rename_session(
-        &self,
-        user_id: &str,
-        session_id: &str,
-        title: String,
-    ) -> Result<AgentSessionSummary, String> {
-        let handle = self.service.handle_for_user(user_id).await?;
-        let session = self.session_for(user_id).await?;
-        handle
-            .rename_session(
-                session,
-                AgentRenameSessionRequest {
-                    session_id: session_id.to_string(),
-                    title,
-                },
-            )
-            .await
-    }
-
-    /// Whether the project at `path` has skills or other guidance that
-    /// need a trust decision, and what the saved decision is.
-    pub async fn project_trust(
-        &self,
-        user_id: &str,
-        path: String,
-    ) -> Result<AgentProjectTrustStatus, String> {
-        self.service
-            .handle_for_user(user_id)
-            .await?
-            .get_project_trust(path)
-            .await
-    }
-
-    pub async fn set_project_trust(
-        &self,
-        user_id: &str,
-        path: String,
-        trusted: bool,
-    ) -> Result<AgentProjectTrustStatus, String> {
-        self.service
-            .handle_for_user(user_id)
-            .await?
-            .set_project_trust(path, trusted)
-            .await
-    }
-
-    /// Drop a message that waits behind the active run.
-    pub async fn cancel_queued_message(
-        &self,
-        user_id: &str,
-        session_id: &str,
-        queue_id: &str,
-    ) -> Result<AgentDesktopQueueSnapshot, String> {
-        self.service
-            .handle_for_user(user_id)
-            .await?
-            .cancel_queued_message(AgentQueueControlRequest {
-                session_id: session_id.to_string(),
-                queue_id: queue_id.to_string(),
-            })
-            .await
-    }
-
-    /// Hold a queued message while the user edits it: it is not promoted
-    /// into the run until the edit ends.
-    pub async fn begin_queued_message_edit(
-        &self,
-        user_id: &str,
-        session_id: &str,
-        queue_id: &str,
-    ) -> Result<(), String> {
-        self.service
-            .handle_for_user(user_id)
-            .await?
-            .begin_queued_message_edit(AgentQueueControlRequest {
-                session_id: session_id.to_string(),
-                queue_id: queue_id.to_string(),
-            })
-            .await
-    }
-
-    /// Release a queued message held by [`Self::begin_queued_message_edit`]
-    /// without changing it.
-    pub async fn end_queued_message_edit(
-        &self,
-        user_id: &str,
-        session_id: &str,
-        queue_id: &str,
-    ) -> Result<(), String> {
-        self.service
-            .handle_for_user(user_id)
-            .await?
-            .end_queued_message_edit(AgentQueueControlRequest {
-                session_id: session_id.to_string(),
-                queue_id: queue_id.to_string(),
-            })
-            .await
-    }
-
-    pub async fn send_message(
-        &self,
-        user_id: &str,
-        request: AgentSendMessageRequest,
-    ) -> Result<String, String> {
-        let run_id = self
-            .service
-            .handle_for_user(user_id)
-            .await?
-            .send_message(request)
-            .await?
-            .run_id;
-        Ok(run_id)
-    }
-
-    /// Bytes of an image the user attached to a message in `session_id`.
-    pub async fn read_image_attachment(
-        &self,
-        user_id: &str,
-        session_id: &str,
-        attachment_id: &str,
-    ) -> Result<Vec<u8>, String> {
-        self.service
-            .handle_for_user(user_id)
-            .await?
-            .read_image_attachment(session_id.to_string(), attachment_id.to_string())
-            .await
-    }
-
-    pub async fn cancel_run(&self, user_id: &str, run_id: &str) -> Result<(), String> {
-        self.service
-            .handle_for_user(user_id)
-            .await?
-            .cancel_desktop_run(run_id.to_string())
-            .await
-    }
-
-    pub async fn available_model_ids(&self, user_id: &str) -> Result<Vec<String>, String> {
-        self.service
-            .handle_for_user(user_id)
-            .await?
-            .available_model_ids()
-            .await
-    }
-
-    /// Catalog vision flag for a model; None when unknown.
-    pub async fn model_supports_vision(
-        &self,
-        user_id: &str,
-        model: &str,
-    ) -> Result<Option<bool>, String> {
-        self.service
-            .handle_for_user(user_id)
-            .await?
-            .model_supports_vision(model)
-            .await
     }
 
     /// Which voice endpoints the account offers.
@@ -1757,73 +1317,16 @@ impl AgentBackend {
             .await
     }
 
-    /// MCP servers configured for the account, with the session's enabled
-    /// state for each.
-    pub async fn list_session_mcp_servers(
+    /// Open the settings pane that grants the permission a curated
+    /// integration still needs, after [`Self::begin_integration_setup`]
+    /// ran. A local capability: it opens a pane on this machine's screen,
+    /// so it applies to the local host only. Persist the integration with
+    /// `HostBackend::setup_integration` afterwards.
+    pub async fn open_integration_setup_settings(
         &self,
-        user_id: &str,
-        session_id: &str,
-    ) -> Result<Vec<maple_agent::agent::AgentSessionMcpServer>, String> {
-        self.service
-            .handle_for_user(user_id)
-            .await?
-            .list_session_mcp_servers(session_id.to_string())
-            .await
-    }
-
-    pub async fn set_session_mcp_server_enabled(
-        &self,
-        user_id: &str,
-        session_id: &str,
-        name: &str,
-        kind: maple_agent::agent::AgentSessionIntegrationKind,
-        enabled: bool,
-    ) -> Result<Vec<maple_agent::agent::AgentSessionMcpServer>, String> {
-        self.service
-            .handle_for_user(user_id)
-            .await?
-            .set_session_mcp_server_enabled(maple_agent::agent::AgentSetSessionMcpServerRequest {
-                session_id: session_id.to_string(),
-                name: name.to_string(),
-                kind,
-                enabled,
-            })
-            .await
-    }
-
-    pub async fn list_mcp_servers(
-        &self,
-        user_id: &str,
-    ) -> Result<Vec<maple_agent::agent::AgentMcpServer>, String> {
-        self.service
-            .handle_for_user(user_id)
-            .await?
-            .list_mcp_servers()
-            .await
-    }
-
-    pub async fn list_integrations(&self, user_id: &str) -> Result<Vec<AgentIntegration>, String> {
-        self.service
-            .handle_for_user(user_id)
-            .await?
-            .list_integrations()
-            .await
-    }
-
-    pub async fn set_integration_enabled(
-        &self,
-        user_id: &str,
-        id: &str,
-        enabled: bool,
-    ) -> Result<Vec<AgentIntegration>, String> {
-        self.service
-            .handle_for_user(user_id)
-            .await?
-            .set_integration_enabled(AgentSetIntegrationEnabledRequest {
-                id: id.to_string(),
-                enabled,
-            })
-            .await
+        permissions: &AgentIntegrationPermissions,
+    ) -> Result<(), String> {
+        open_integration_setup_settings(permissions).await
     }
 
     /// Start a curated integration's host-owned permission flow from the UI
@@ -1837,335 +1340,6 @@ impl AgentBackend {
         })
     }
 
-    /// Persist a curated integration after its host-owned permission flow.
-    pub async fn setup_integration(
-        &self,
-        user_id: &str,
-        id: &str,
-        permissions: AgentIntegrationPermissions,
-    ) -> Result<Vec<AgentIntegration>, String> {
-        open_integration_setup_settings(&permissions).await?;
-        self.service
-            .handle_for_user(user_id)
-            .await?
-            .setup_integration(AgentSetupIntegrationRequest { id: id.to_string() })
-            .await
-    }
-
-    pub async fn save_mcp_servers(
-        &self,
-        user_id: &str,
-        servers: Vec<maple_agent::agent::AgentMcpServer>,
-    ) -> Result<Vec<maple_agent::agent::AgentMcpServer>, String> {
-        self.service
-            .handle_for_user(user_id)
-            .await?
-            .save_mcp_servers(servers)
-            .await
-    }
-
-    /// Turn the web tools on or off for a session (next turn onward).
-    pub async fn set_session_web_enabled(
-        &self,
-        user_id: &str,
-        session_id: &str,
-        enabled: bool,
-    ) -> Result<AgentSessionSummary, String> {
-        self.service
-            .handle_for_user(user_id)
-            .await?
-            .set_session_web_enabled(maple_agent::agent::AgentSetSessionWebRequest {
-                session_id: session_id.to_string(),
-                enabled,
-            })
-            .await
-    }
-
-    /// Set the permission policy for a session: "smart_approve" asks for
-    /// each gated tool, "auto" approves everything (bypass).
-    pub async fn set_permission_mode(
-        &self,
-        user_id: &str,
-        session_id: &str,
-        mode: &str,
-    ) -> Result<(), String> {
-        self.service
-            .handle_for_user(user_id)
-            .await?
-            .set_permission_mode(maple_agent::agent::AgentPermissionModeRequest {
-                session_id: session_id.to_string(),
-                mode: mode.to_string(),
-            })
-            .await
-    }
-
-    /// Compact a session's history now; reload the session afterwards.
-    pub async fn compact_session(&self, user_id: &str, session_id: &str) -> Result<(), String> {
-        self.service
-            .handle_for_user(user_id)
-            .await?
-            .compact_session(session_id.to_string())
-            .await
-    }
-
-    /// The subagents still working for a task. A task whose run ended can
-    /// still have a background subagent; this rebuilds the card for it.
-    pub async fn session_subagents(
-        &self,
-        user_id: &str,
-        session_id: &str,
-    ) -> Result<Vec<AgentSubagent>, String> {
-        Ok(self
-            .service
-            .handle_for_user(user_id)
-            .await?
-            .session_subagents(session_id)
-            .await)
-    }
-
-    /// Interrupt an external agent (Codex) from its row. The agent keeps
-    /// its thread so the task can continue it later.
-    pub async fn cancel_external_agent(
-        &self,
-        user_id: &str,
-        session_id: &str,
-        agent_id: &str,
-    ) -> Result<(), String> {
-        self.service
-            .handle_for_user(user_id)
-            .await?
-            .cancel_external_agent(session_id, agent_id)
-            .await
-    }
-
-    /// Slash commands (installed skills) for a working directory. Filesystem
-    /// scan, so it runs on a blocking thread.
-    pub async fn list_slash_commands(
-        &self,
-        user_id: &str,
-        working_dir: Option<String>,
-    ) -> Result<Vec<AgentSlashCommand>, String> {
-        let service = self.service.clone();
-        let user_id = user_id.to_string();
-        tokio::task::spawn_blocking(move || {
-            service.list_slash_commands(Some(&user_id), working_dir.as_deref())
-        })
-        .await
-        .map_err(|error| format!("Slash command scan failed: {error}"))
-    }
-
-    /// Expand `/command args` into the skill prompt; `None` when the command
-    /// matches no skill.
-    pub async fn resolve_slash_command(
-        &self,
-        working_dir: Option<String>,
-        command: String,
-        args: String,
-    ) -> Result<Option<String>, String> {
-        let service = self.service.clone();
-        tokio::task::spawn_blocking(move || {
-            service.resolve_slash_command(working_dir.as_deref(), &command, &args)
-        })
-        .await
-        .map_err(|error| format!("Slash command resolve failed: {error}"))?
-    }
-
-    /// One-line summary of a completed tool call from the cheap title model.
-    pub async fn summarize_tool_call(
-        &self,
-        user_id: &str,
-        session_id: &str,
-        tool_name: String,
-        input: Option<serde_json::Value>,
-        output_text: String,
-    ) -> Result<Option<String>, String> {
-        self.service
-            .handle_for_user(user_id)
-            .await?
-            .summarize_tool_call(session_id, &tool_name, input.as_ref(), &output_text)
-            .await
-    }
-
-    /// One-line summary of a finished thinking block from the cheap title
-    /// model.
-    pub async fn summarize_thinking(
-        &self,
-        user_id: &str,
-        session_id: &str,
-        thinking_text: String,
-    ) -> Result<Option<String>, String> {
-        self.service
-            .handle_for_user(user_id)
-            .await?
-            .summarize_thinking(session_id, &thinking_text)
-            .await
-    }
-    /// Stream the answer to a `/btw` side question; see
-    /// `AgentRuntimeHandle::ask_side_question`.
-    pub async fn ask_side_question(
-        &self,
-        user_id: &str,
-        session_id: &str,
-        request_id: String,
-        prior: Vec<maple_agent::agent::SideQuestionTurn>,
-        question: String,
-    ) -> Result<(), String> {
-        self.service
-            .handle_for_user(user_id)
-            .await?
-            .ask_side_question(session_id, request_id, prior, question)
-            .await
-    }
-    /// Run `f` against the summary store of `user_id`. Blocking: call from
-    /// `spawn_blocking`.
-    fn with_summary_db<T>(
-        &self,
-        user_id: &str,
-        f: impl FnOnce(&rusqlite::Connection) -> Result<T, String>,
-    ) -> Result<T, String> {
-        let scope = self
-            .account_scope(user_id)
-            .ok_or_else(|| "No account scope".to_string())?;
-        let db = account_summary_db(&scope);
-        let mut guard = self.summary_db.lock().unwrap_or_else(|e| e.into_inner());
-        if guard.as_ref().map(|(path, _)| path != &db).unwrap_or(true) {
-            *guard = Some((db.clone(), open_summary_db(&db)?));
-        }
-        f(&guard.as_ref().expect("summary db opened above").1)
-    }
-
-    /// Stored summaries for one session, keyed by timeline item id.
-    /// Blocking.
-    pub fn load_tool_summaries_blocking(
-        &self,
-        user_id: &str,
-        session_id: &str,
-    ) -> Result<HashMap<String, String>, String> {
-        self.with_summary_db(user_id, |conn| {
-            let mut stmt = conn
-                .prepare("SELECT item_id, summary FROM tool_summaries WHERE session_id = ?1")
-                .map_err(|error| error.to_string())?;
-            let rows = stmt
-                .query_map([session_id], |row| Ok((row.get(0)?, row.get(1)?)))
-                .map_err(|error| error.to_string())?;
-            rows.collect::<Result<HashMap<_, _>, _>>()
-                .map_err(|error| error.to_string())
-        })
-    }
-
-    /// Persist one summary. Blocking.
-    pub fn store_tool_summary_blocking(
-        &self,
-        user_id: &str,
-        session_id: &str,
-        item_id: &str,
-        summary: &str,
-    ) -> Result<(), String> {
-        self.with_summary_db(user_id, |conn| {
-            conn.execute(
-                "INSERT OR REPLACE INTO tool_summaries (session_id, item_id, summary) \
-                 VALUES (?1, ?2, ?3)",
-                [session_id, item_id, summary],
-            )
-            .map(|_| ())
-            .map_err(|error| error.to_string())
-        })
-    }
-
-    /// Latest context usage for a session from the goose usage ledger:
-    /// (context tokens, context limit). The limit comes from the model
-    /// catalog for the selected model; MAPLE_CONTEXT_LIMIT is a manual
-    /// override; 200k is the fallback when the catalog lacks the model.
-    pub async fn context_usage(
-        &self,
-        user_id: &str,
-        session_id: &str,
-        model: Option<&str>,
-    ) -> Result<Option<(i64, i64)>, String> {
-        let Some(scope) = self.account_scope(user_id) else {
-            return Ok(None);
-        };
-        let limit: i64 = match std::env::var("MAPLE_CONTEXT_LIMIT")
-            .ok()
-            .and_then(|value| value.parse().ok())
-        {
-            Some(limit) if limit > 0 => limit,
-            _ => match model {
-                Some(model) => self
-                    .service
-                    .handle_for_user(user_id)
-                    .await?
-                    .context_limit_for_model(model)
-                    .await?
-                    .unwrap_or(200_000),
-                None => 200_000,
-            },
-        };
-        // SQLite is synchronous; keep it off the async workers.
-        let db = crate::backend::account_session_db(&scope);
-        let usage_db = self.usage_db.clone();
-        let session_id = session_id.to_string();
-        let tokens = tokio::task::spawn_blocking(move || {
-            let mut guard = usage_db.lock().unwrap_or_else(|e| e.into_inner());
-            if guard.as_ref().map(|(path, _)| path != &db).unwrap_or(true) {
-                let conn = crate::backend::open_session_db_read_only(&db)?;
-                *guard = Some((db, conn));
-            }
-            let conn = &guard.as_ref().expect("usage db opened above").1;
-            conn.query_row(
-                "SELECT COALESCE(input_tokens,0) + COALESCE(cache_read_tokens,0) \
-                 + COALESCE(cache_write_tokens,0) FROM usage_ledger \
-                 WHERE session_id = ?1 AND is_compaction = 0 \
-                 ORDER BY id DESC LIMIT 1",
-                [session_id],
-                |row| row.get::<_, i64>(0),
-            )
-            .ok()
-        })
-        .await
-        .map_err(|error| format!("Context usage query failed: {error}"))?;
-        Ok(tokens.map(|tokens| (tokens, limit)))
-    }
-
-    /// Deliver the user's answer to an ask_user question. Returns false
-    /// when no question was pending.
-    pub async fn answer_question(
-        &self,
-        user_id: &str,
-        request_id: &str,
-        answer: String,
-    ) -> Result<bool, String> {
-        let _service = self.service.clone();
-        let request_id = request_id.to_string();
-        self.service
-            .handle_for_user(user_id)
-            .await?
-            .answer_question_via_handle(&request_id, answer)
-            .await
-    }
-
-    pub async fn permission_respond(
-        &self,
-        user_id: &str,
-        session_id: &str,
-        request_id: &str,
-        allow: bool,
-    ) -> Result<(), String> {
-        self.service
-            .handle_for_user(user_id)
-            .await?
-            .permission_respond(maple_agent::agent::AgentPermissionResponse {
-                session_id: session_id.to_string(),
-                request_id: request_id.to_string(),
-                decision: if allow {
-                    "allow_once".to_string()
-                } else {
-                    "deny_once".to_string()
-                },
-            })
-            .await
-    }
-
     /// Standard start request for this app: the saved project root (see
     /// `start_runtime`) with the configured model and the SmartApprove policy.
     pub fn default_start_request(&self) -> AgentStartRequest {
@@ -2176,24 +1350,9 @@ impl AgentBackend {
         }
     }
 
-    /// Persist the UI's model choice as the account's default model.
-    pub async fn save_default_model(&self, user_id: &str, model: String) -> Result<(), String> {
-        let handle = self.service.handle_for_user(user_id).await?;
-        let mut config = handle.load_config().await?;
-        config.default_model = model;
-        handle.save_config(config).await
-    }
-
     /// Model the UI should select initially: MAPLE_MODEL when set.
     pub fn configured_model(&self) -> Option<String> {
         std::env::var("MAPLE_MODEL").ok()
-    }
-
-    /// The account's saved default model, if any.
-    pub async fn saved_model(&self, user_id: &str) -> Option<String> {
-        let handle = self.service.handle_for_user(user_id).await.ok()?;
-        let config = handle.load_config().await.ok()?;
-        Some(config.default_model).filter(|model| !model.is_empty())
     }
 }
 

@@ -30,15 +30,16 @@ use crate::ui::text_input::TextInput;
 use crate::ui::theme;
 use crate::ui::titlebar;
 use crate::ui::widgets;
+use maple_agent::host::HostId;
+use std::collections::BTreeMap;
 
 /// What the sidebar asks the screen to do.
 #[derive(Clone, Debug)]
 pub(super) enum SidebarEvent {
     /// Show a task.
     Select(String),
-    /// A session changed on the backend (a rename); the screen owns the
-    /// canonical list and pushes it back.
-    SessionChanged(AgentSessionSummary),
+    /// The user renamed a task; the screen sends it to the task's host.
+    RenameTask { session_id: String, name: String },
     /// Move a task between active, settled, and archived. The runtime
     /// owns the state; its updated record moves the row.
     SetState {
@@ -51,10 +52,24 @@ pub(super) enum SidebarEvent {
     RemoveRoot(String),
     /// Trust or untrust a project.
     SetTrust { path: String, trusted: bool },
+    /// A project's menu opened: is the project trusted on the target
+    /// host? The screen answers through [`Sidebar::set_menu_trust`].
+    ProjectTrust(String),
     /// Open the folder picker for a new project.
     ChooseProject,
     /// Something to tell the user.
     Notice(SharedString),
+    /// Show only one host's tasks (`None` for every host); new tasks go to
+    /// that host.
+    HostFilter(Option<HostId>),
+}
+
+/// One host the sidebar can filter by and badge rows with.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct SidebarHost {
+    pub(super) id: HostId,
+    pub(super) name: SharedString,
+    pub(super) online: bool,
 }
 
 /// Activity a task row indicates beside its title.
@@ -95,14 +110,15 @@ pub(super) struct SidebarRow {
     pub(super) menu_delete_id: SharedString,
     pub(super) menu_reopen_id: SharedString,
     pub(super) title: SharedString,
-    /// Display name of the task's project, shown on every row.
+    /// Display name of the task's project, shown on every row, with the
+    /// host's name after it when more than one host is known.
     pub(super) project_name: SharedString,
     /// Lower-cased title, matched against the sidebar filter.
     pub(super) search: String,
 }
 
 impl SidebarRow {
-    fn build(session: &AgentSessionSummary, project_name: &str) -> Self {
+    fn build(session: &AgentSessionSummary, project_label: &str) -> Self {
         let id = &session.id;
         Self {
             id: Arc::from(id.as_str()),
@@ -121,7 +137,7 @@ impl SidebarRow {
             menu_delete_id: SharedString::from(format!("delete-task-{id}")),
             menu_reopen_id: SharedString::from(format!("reopen-task-{id}")),
             title: SharedString::from(session.title.clone()),
-            project_name: SharedString::from(project_name.to_string()),
+            project_name: SharedString::from(project_label.to_string()),
             search: session.title.to_lowercase(),
         }
     }
@@ -289,8 +305,8 @@ pub(super) struct SwitcherRoot {
 }
 
 pub(super) struct Sidebar {
+    /// Runs backend futures; see [`Self::call`].
     backend: Arc<AgentBackend>,
-    user_id: String,
     chat: WeakEntity<ChatScreen>,
     // What the screen pushes in.
     sessions: Vec<AgentSessionSummary>,
@@ -331,7 +347,15 @@ pub(super) struct Sidebar {
     rename: Option<RenameTarget>,
     rename_input: Option<Entity<TextInput>>,
     rename_focus_pending: bool,
-    // Persisted in the app settings.
+    /// Every known host, local first. More than one turns on the row badge
+    /// and the host block of the switcher menu.
+    hosts: Vec<SidebarHost>,
+    /// Which host owns each task; unknown means the local host.
+    session_hosts: HashMap<String, HostId>,
+    /// Show only this host's tasks.
+    host_filter: Option<HostId>,
+    // Persisted in the app settings, per host; merged here because task ids
+    // are unique across hosts.
     pinned_tasks: Vec<String>,
     project_names: HashMap<String, String>,
     // Application Vim's view of the rows.
@@ -347,11 +371,21 @@ impl EventEmitter<SidebarEvent> for Sidebar {}
 impl Sidebar {
     pub(super) fn new(
         backend: Arc<AgentBackend>,
-        user_id: String,
         chat: WeakEntity<ChatScreen>,
         settings: &crate::settings::AppSettings,
         cx: &mut Context<Self>,
     ) -> Self {
+        // Every host's persisted task state, merged: ids are unique.
+        let mut pinned_tasks = Vec::new();
+        let mut project_names: HashMap<String, String> = HashMap::new();
+        for state in settings.hosts.values() {
+            pinned_tasks.extend(state.pinned_tasks.iter().cloned());
+            for (root, name) in &state.project_names {
+                project_names
+                    .entry(root.clone())
+                    .or_insert_with(|| name.clone());
+            }
+        }
         let application_vim_enabled = settings.application_vim_enabled;
         let search_chat = chat.clone();
         let search_input = cx.new(move |cx| {
@@ -370,7 +404,6 @@ impl Sidebar {
         .detach();
         Self {
             backend,
-            user_id,
             chat,
             sessions: Vec::new(),
             selected: None,
@@ -401,8 +434,15 @@ impl Sidebar {
             rename: None,
             rename_input: None,
             rename_focus_pending: false,
-            pinned_tasks: settings.pinned_tasks.clone(),
-            project_names: settings.project_names.clone(),
+            hosts: vec![SidebarHost {
+                id: HostId::local(),
+                name: super::LOCAL_HOST_NAME.into(),
+                online: true,
+            }],
+            session_hosts: HashMap::new(),
+            host_filter: None,
+            pinned_tasks,
+            project_names,
             vim_selected: None,
             vim_by_row: Vec::new(),
             vim_order: Vec::new(),
@@ -465,6 +505,77 @@ impl Sidebar {
         cx.notify();
     }
 
+    /// Replace the host list and the task-to-host map. Rows re-label when
+    /// the host count crosses one.
+    pub(super) fn set_hosts(
+        &mut self,
+        hosts: Vec<SidebarHost>,
+        session_hosts: HashMap<String, HostId>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.hosts == hosts && self.session_hosts == session_hosts {
+            return;
+        }
+        self.hosts = hosts;
+        self.session_hosts = session_hosts;
+        self.rebuild_sections();
+        cx.notify();
+    }
+
+    /// The host a task belongs to; the local host when unknown.
+    fn host_of(&self, session_id: &str) -> HostId {
+        self.session_hosts
+            .get(session_id)
+            .cloned()
+            .unwrap_or_else(HostId::local)
+    }
+
+    fn host_name(&self, id: &HostId) -> Option<&SharedString> {
+        self.hosts
+            .iter()
+            .find(|host| &host.id == id)
+            .map(|host| &host.name)
+    }
+
+    /// The user chose a host to show tasks from, or every host. The screen
+    /// learns of it so new tasks target that host. An offline host cannot
+    /// take new tasks, so it cannot be the filter either.
+    pub(super) fn set_host_filter(&mut self, host: Option<HostId>, cx: &mut Context<Self>) {
+        if self.switcher_menu_open() {
+            self.popup.close(cx);
+        }
+        if let Some(offline) = host
+            .as_ref()
+            .and_then(|host| self.hosts.iter().find(|entry| &entry.id == host))
+            .filter(|entry| !entry.online)
+        {
+            cx.emit(SidebarEvent::Notice(
+                format!("{} is offline", offline.name).into(),
+            ));
+            cx.notify();
+            return;
+        }
+        if self.host_filter == host {
+            cx.notify();
+            return;
+        }
+        self.host_filter = host.clone();
+        self.rebuild_sections();
+        cx.emit(SidebarEvent::HostFilter(host));
+        cx.notify();
+    }
+
+    /// The screen's host filter, pushed here when it reset it (the host
+    /// dropped or was removed); the screen already knows.
+    pub(super) fn show_host_filter(&mut self, host: Option<HostId>, cx: &mut Context<Self>) {
+        if self.host_filter == host {
+            return;
+        }
+        self.host_filter = host;
+        self.rebuild_sections();
+        cx.notify();
+    }
+
     pub(super) fn set_recent_roots(&mut self, roots: Vec<String>, cx: &mut Context<Self>) {
         if self.recent_roots == roots {
             return;
@@ -510,12 +621,25 @@ impl Sidebar {
 
     /// Forget tasks that left the app (their project was removed).
     pub(super) fn forget_tasks(&mut self, ids: &[String], cx: &mut Context<Self>) {
-        let before = self.pinned_tasks.len();
+        // Pins persist per host; rewrite the pins of every host that lost
+        // a pinned task.
+        let hosts: HashSet<HostId> = ids
+            .iter()
+            .filter(|id| self.pinned_tasks.contains(*id))
+            .map(|id| self.host_of(id))
+            .collect();
         self.pinned_tasks
             .retain(|candidate| !ids.contains(candidate));
-        if self.pinned_tasks.len() != before {
-            let pinned = self.pinned_tasks.clone();
-            persist_settings(move |settings| settings.pinned_tasks = pinned);
+        for host_id in hosts {
+            let pinned: Vec<String> = self
+                .pinned_tasks
+                .iter()
+                .filter(|id| self.host_of(id) == host_id)
+                .cloned()
+                .collect();
+            persist_settings(move |settings| {
+                settings.host_state_mut(&host_id).pinned_tasks = pinned;
+            });
         }
         self.rebuild_sections();
         cx.notify();
@@ -622,6 +746,11 @@ impl Sidebar {
 
     pub(super) fn switcher_menu_open(&self) -> bool {
         self.popup.is_open(&SidebarPopup::Switcher)
+    }
+
+    #[cfg(test)]
+    pub(super) fn host_filter(&self) -> Option<&HostId> {
+        self.host_filter.as_ref()
     }
 
     #[cfg(test)]
@@ -753,6 +882,7 @@ impl Sidebar {
         let filter = self.filter.as_str();
         let filtering = !filter.is_empty();
         let scoped = self.project_filter.as_deref();
+        let host_scoped = self.host_filter.clone();
         let pinned_ids: HashSet<&str> = self.pinned_tasks.iter().map(String::as_str).collect();
         let mut pinned = Vec::new();
         let mut active = Vec::new();
@@ -770,6 +900,12 @@ impl Sidebar {
                 continue;
             }
             if scoped.is_some_and(|scoped| scoped != root) {
+                continue;
+            }
+            if host_scoped
+                .as_ref()
+                .is_some_and(|host| self.host_of(&session.id) != *host)
+            {
                 continue;
             }
             let matches = !filtering
@@ -806,12 +942,17 @@ impl Sidebar {
         self.active_rows = active;
         self.settled_rows = settled;
         self.archived_rows = archived;
-        self.scope_label = self
-            .project_filter
-            .as_deref()
-            .map(|root| self.root_name(root))
-            .map(SharedString::from)
-            .unwrap_or_else(|| "All projects".into());
+        self.scope_label = match (
+            self.project_filter.as_deref(),
+            self.host_filter
+                .as_ref()
+                .and_then(|host| self.host_name(host).cloned()),
+        ) {
+            (Some(root), _) => SharedString::from(self.root_name(root)),
+            (None, Some(host)) => host,
+            // Every host's projects: the scope is still projects.
+            (None, None) => "All projects".into(),
+        };
         let recent_roots: HashSet<&str> = self.recent_roots.iter().map(String::as_str).collect();
         let mut fresh_roots: Vec<&str> = session_roots
             .iter()
@@ -968,7 +1109,7 @@ impl Sidebar {
             && self.rows.iter().zip(&self.sessions).all(|(row, session)| {
                 *row.id == *session.id
                     && row.title.as_ref() == session.title
-                    && self.root_name_matches(&session.project_root, &row.project_name)
+                    && row.project_name.as_ref() == self.row_project_label(session)
             });
         if fresh {
             return;
@@ -976,8 +1117,21 @@ impl Sidebar {
         self.rows = self
             .sessions
             .iter()
-            .map(|session| SidebarRow::build(session, &self.root_name(&session.project_root)))
+            .map(|session| SidebarRow::build(session, &self.row_project_label(session)))
             .collect();
+    }
+
+    /// The project name a row shows, with the host after it once more than
+    /// one host is known: the badge that tells two hosts' tasks apart.
+    fn row_project_label(&self, session: &AgentSessionSummary) -> String {
+        let root = self.root_name(&session.project_root);
+        if self.hosts.len() <= 1 {
+            return root;
+        }
+        match self.host_name(&self.host_of(&session.id)) {
+            Some(host) => format!("{root} \u{b7} {host}"),
+            None => root,
+        }
     }
 
     fn search_changed(&mut self, input: &Entity<TextInput>, cx: &mut Context<Self>) {
@@ -1047,8 +1201,16 @@ impl Sidebar {
         }
         self.rebuild_sections();
         cx.notify();
-        let pinned = self.pinned_tasks.clone();
-        persist_settings(move |settings| settings.pinned_tasks = pinned);
+        let host_id = self.host_of(session_id);
+        let pinned: Vec<String> = self
+            .pinned_tasks
+            .iter()
+            .filter(|id| self.host_of(id) == host_id)
+            .cloned()
+            .collect();
+        persist_settings(move |settings| {
+            settings.host_state_mut(&host_id).pinned_tasks = pinned;
+        });
     }
 
     /// Whether a collapsible section shows its rows.
@@ -1108,22 +1270,6 @@ impl Sidebar {
         }
         self.rebuild_sections();
         cx.notify();
-    }
-
-    /// Whether `name` is the display name of `root`, without building the
-    /// name the way `root_name` does.
-    fn root_name_matches(&self, root: &str, name: &str) -> bool {
-        match self
-            .project_names
-            .get(root)
-            .filter(|name| !name.trim().is_empty())
-        {
-            Some(stored) => stored == name,
-            None => match std::path::Path::new(root).file_name() {
-                Some(file) => file.to_string_lossy().as_ref() == name,
-                None => root == name,
-            },
-        }
     }
 
     // ---- Rename ------------------------------------------------------------
@@ -1219,16 +1365,8 @@ impl Sidebar {
         }
         match target {
             RenameTarget::Task(session_id) => {
-                let backend = self.backend.clone();
-                let user_id = self.user_id.clone();
-                self.call(
-                    async move { backend.rename_session(&user_id, &session_id, name).await },
-                    cx,
-                    |_this, result, cx| match result {
-                        Ok(session) => cx.emit(SidebarEvent::SessionChanged(session)),
-                        Err(message) => cx.emit(SidebarEvent::Notice(message.into())),
-                    },
-                );
+                // The screen knows which host owns the task.
+                cx.emit(SidebarEvent::RenameTask { session_id, name });
             }
             RenameTarget::Project(root) => {
                 if name == root_display_name(&root) {
@@ -1237,8 +1375,14 @@ impl Sidebar {
                     self.project_names.insert(root.clone(), name);
                 }
                 self.rebuild_sections();
-                let names = self.project_names.clone();
-                persist_settings(move |settings| settings.project_names = names);
+                // Project names are keyed by path; the filtered host owns
+                // the rename, else the local host.
+                let names: BTreeMap<String, String> =
+                    self.project_names.clone().into_iter().collect();
+                let host_id = self.host_filter.clone().unwrap_or_else(HostId::local);
+                persist_settings(move |settings| {
+                    settings.host_state_mut(&host_id).project_names = names;
+                });
             }
         }
     }
@@ -1270,21 +1414,22 @@ impl Sidebar {
             return;
         }
         self.menu_trust = None;
-        let backend = self.backend.clone();
-        let user_id = self.user_id.clone();
-        let path = root.to_string();
-        self.call(
-            async move { backend.project_trust(&user_id, path).await },
-            cx,
-            |this, result, cx| {
-                if let Ok(status) = result
-                    && this.project_popup.is_open(&status.path)
-                {
-                    this.menu_trust = Some(status);
-                    cx.notify();
-                }
-            },
-        );
+        // The screen knows the target host and asks it.
+        cx.emit(SidebarEvent::ProjectTrust(root.to_string()));
+    }
+
+    /// The screen's answer to [`SidebarEvent::ProjectTrust`]; shown while
+    /// that project's menu is still the open one.
+    pub(super) fn set_menu_trust(
+        &mut self,
+        status: AgentProjectTrustStatus,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.project_popup.is_open(&status.path) {
+            return;
+        }
+        self.menu_trust = Some(status);
+        cx.notify();
     }
 
     /// Open or close the overflow menu of one task row.
@@ -1959,21 +2104,64 @@ impl Sidebar {
 
     /// The menu the project switcher opens: every project, each with an
     /// overflow menu of its own, plus a way back to all projects.
+    /// With more than one host, a host block comes first: every host,
+    /// then all hosts. Offline hosts stay listed, dimmed, so a host that
+    /// dropped is still visible; its tasks return with it.
     fn switcher_menu(&self, window: &mut Window, cx: &mut Context<Self>) -> Menu<Self> {
         let mut menu = Menu::new("switcher-menu", px(260.))
             .label("Projects")
             .max_height(px(360.))
-            .application_vim(self.application_vim_enabled)
-            .item(
+            .application_vim(self.application_vim_enabled);
+        if self.hosts.len() > 1 {
+            menu = menu.header("HOSTS").item(
                 MenuItem::new(
-                    ALL_PROJECTS_ID,
-                    "All projects",
+                    "switcher-all-hosts",
+                    "All hosts",
                     |this: &mut Self, _: &mut Window, cx: &mut Context<Self>| {
-                        this.set_project_filter(None, cx);
+                        this.set_host_filter(None, cx);
                     },
                 )
-                .current(self.project_filter.is_none()),
+                .current(self.host_filter.is_none()),
             );
+            for host in &self.hosts {
+                let filter = host.id.clone();
+                let online = host.online;
+                let item = MenuItem::new(
+                    SharedString::from(format!("switcher-host-{}", host.id)),
+                    host.name.clone(),
+                    move |this: &mut Self, _: &mut Window, cx: &mut Context<Self>| {
+                        this.set_host_filter(Some(filter.clone()), cx);
+                    },
+                )
+                .current(self.host_filter.as_ref() == Some(&host.id))
+                .style(move |row| {
+                    row.when(!online, |row| {
+                        row.text_color(gpui::rgb(theme::text_muted()))
+                    })
+                });
+                menu = menu.item(if online {
+                    item
+                } else {
+                    item.trailing(
+                        div()
+                            .text_xs()
+                            .text_color(gpui::rgb(theme::text_muted()))
+                            .child("offline"),
+                    )
+                });
+            }
+            menu = menu.separator().header("PROJECTS");
+        }
+        menu = menu.item(
+            MenuItem::new(
+                ALL_PROJECTS_ID,
+                "All projects",
+                |this: &mut Self, _: &mut Window, cx: &mut Context<Self>| {
+                    this.set_project_filter(None, cx);
+                },
+            )
+            .current(self.project_filter.is_none()),
+        );
         for root in &self.switcher_roots {
             let pick = root.root.clone();
             let group = root.row_group.clone();

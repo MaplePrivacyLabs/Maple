@@ -17,6 +17,7 @@ use maple_agent::agent::{
     AgentSessionMcpServer, AgentSessionSummary, AgentSlashCommand, AgentSubagent, AgentTaskState,
     AgentTimelineItem, SideQuestionEvent,
 };
+use maple_agent::host::{HostBackend, HostEvent, HostId, HostSessionDefaults};
 
 use crate::backend::{AgentBackend, PendingPermission, PendingQuestion};
 use crate::ui::icons::{icon, spinner, wordmark};
@@ -33,8 +34,10 @@ mod cache;
 mod commands;
 mod composer;
 mod dialogs;
+mod hosts;
 mod images;
 mod navigation;
+mod picker;
 mod queue;
 mod sidebar;
 mod speech;
@@ -46,7 +49,9 @@ mod transcript;
 use self::cache::{DerivedCache, INLINE_PARSE_LIMIT, MarkdownCache, MarkdownKind};
 use self::commands::ChatCommand;
 use self::composer::{SideQuestionPanel, SlashEntry, slash_entries_for};
+use self::hosts::{ChatHost, LOCAL_HOST_NAME};
 use self::navigation::ApplicationVimState;
+use self::picker::ProjectPicker;
 #[cfg(test)]
 use self::sidebar::SessionActivity;
 use self::sidebar::{Sidebar, SidebarEvent, root_display_name, session_summary_eq};
@@ -105,9 +110,6 @@ const SIDEBAR_COLLAPSED_INSET: gpui::Pixels = px(220.);
 const CONTENT_WIDTH: gpui::Pixels = px(900.);
 /// Header title when no task is selected.
 const DEFAULT_TASK_TITLE: &str = "New Task";
-
-/// Recent projects the project menu lists above "New project…".
-pub(super) const ROOT_MENU_RECENTS: usize = 6;
 
 /// How long a notice stays before it clears itself.
 const NOTICE_TTL: std::time::Duration = std::time::Duration::from_secs(8);
@@ -168,27 +170,10 @@ pub(crate) struct SpeechState {
     pub playing: bool,
 }
 
-#[derive(Default)]
-pub(super) struct QuestionSelection {
-    cursor: Option<usize>,
-    picked: BTreeSet<usize>,
-}
-
-/// The chat's popup menus. One is open at a time.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub(super) enum ChatPopup {
-    /// The header chip's project menu.
-    Project,
-    Model,
-    Mode,
-    Integrations,
-    /// The transcript's right-click menu, at a window position.
-    Transcript(gpui::Point<gpui::Pixels>),
-}
-
 /// What the composer asked for while no task existed. The first send
-/// creates the task and then runs this against it. The composer keeps
-/// showing the text meanwhile; it clears when the send goes out.
+/// creates the task on the target host and then runs this against it.
+/// The composer keeps showing the text meanwhile; it clears when the
+/// send goes out.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum FirstSend {
     /// Plain text (with the staged images) for the new task.
@@ -237,7 +222,7 @@ impl NewSessionChanges {
 }
 
 /// The row the draft's integrations chip shows for a configured MCP
-/// server: what a new task would start with.
+/// server: what a task created on the target host would start with.
 fn draft_mcp_row(server: AgentMcpServer) -> AgentSessionMcpServer {
     AgentSessionMcpServer {
         display_name: server.name.clone(),
@@ -252,6 +237,24 @@ fn draft_mcp_row(server: AgentMcpServer) -> AgentSessionMcpServer {
         enabled: server.enabled,
         available: true,
     }
+}
+
+#[derive(Default)]
+pub(super) struct QuestionSelection {
+    cursor: Option<usize>,
+    picked: BTreeSet<usize>,
+}
+
+/// The chat's popup menus. One is open at a time.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) enum ChatPopup {
+    /// The header chip's host menu.
+    Host,
+    Model,
+    Mode,
+    Integrations,
+    /// The transcript's right-click menu, at a window position.
+    Transcript(gpui::Point<gpui::Pixels>),
 }
 
 /// The curated CUA integration's id, which is also the name the runtime
@@ -320,7 +323,33 @@ fn draft_mcp_rows(
 }
 
 pub struct ChatScreen {
+    /// Account-level calls: sign-out, billing, audio.
     backend: Arc<AgentBackend>,
+    /// The target host's backend: where new tasks go and whose project
+    /// context the header shows. Calls about a task go to the host that
+    /// owns it, through [`Self::backend_for`] or [`Self::session_backend`].
+    host: Arc<dyn HostBackend>,
+    /// Every host this screen knows, keyed by host id.
+    hosts: HashMap<HostId, ChatHost>,
+    /// Which host owns each task in `sessions`.
+    session_hosts: HashMap<String, HostId>,
+    /// Host new tasks go to: the sidebar's host filter when set, else the
+    /// selected task's host, else the local host.
+    target_host: HostId,
+    /// The sidebar's host filter, so a task selection does not override it.
+    host_filter: Option<HostId>,
+    /// Every known host, local first, then by name: what the sidebar
+    /// lists, the header chip offers, and Settings points at. Rebuilt
+    /// when `hosts` changes, not per frame.
+    host_list: Vec<sidebar::SidebarHost>,
+    /// `host_list` or `session_hosts` changed since the sidebar last saw
+    /// them; the next sync pushes both.
+    hosts_dirty: bool,
+    /// The target host's name, for the header chip and the picker.
+    target_host_label: SharedString,
+    /// The host of the task on screen and its name, for the header badge;
+    /// `None` on the new-task screen, where the header shows the target.
+    selected_host: Option<(HostId, SharedString)>,
     user_id: String,
     /// The task list; its own entity so it renders only when it changes.
     sidebar: Entity<Sidebar>,
@@ -352,10 +381,10 @@ pub struct ChatScreen {
     /// The send that is creating the task, run once the task lands. A
     /// selection change meanwhile drops it.
     pending_first_send: Option<FirstSend>,
-    /// The integration rows a new task would start with, once the draft's
-    /// chip has loaded them. `None` until then: the create request then
-    /// names no servers and the task takes the defaults, rather than an
-    /// empty list that would start nothing.
+    /// The integration rows a new task would start with on the target
+    /// host, once the draft's chip has loaded them. `None` until then: the
+    /// create request then names no servers and the task takes the host's
+    /// defaults, rather than an empty list that would start nothing.
     draft_mcp_defaults: Option<Vec<AgentSessionMcpServer>>,
     /// Integration toggles made on the draft, applied over the defaults
     /// (they survive a reload of the rows). The MCP servers switched on go
@@ -430,8 +459,8 @@ pub struct ChatScreen {
     /// Existing tasks always execute in their own persisted project root.
     project_root: Option<String>,
     recent_roots: Vec<String>,
-    /// Which of the chat's popup menus is open: the header's project menu,
-    /// a composer chip's menu, or the transcript's right-click menu.
+    /// Which of the chat's popup menus is open: the header's host menu, a
+    /// composer chip's menu, or the transcript's right-click menu.
     popup: Popup<ChatScreen, ChatPopup>,
     /// Focus for whichever modal dialog is open, so Enter and Escape
     /// reach it instead of the composer. Created the first time a dialog
@@ -443,10 +472,16 @@ pub struct ChatScreen {
     /// Whether the project-trust question may open its dialog. Tests that
     /// drive typing turn it off, since the dialog rightly takes focus.
     trust_prompts: bool,
-    /// Manual path entry for the project selector.
+    /// The project picker's search box, created once.
     root_input: Option<Entity<TextInput>>,
-    /// The path field was just offered; the next render gives it focus.
+    /// The picker just opened; the next render moves keyboard focus into
+    /// its search box so typing does not land in the composer.
     root_input_focus_pending: bool,
+    /// The project picker, while open.
+    project_picker: Option<ProjectPicker>,
+    /// The remote host the last new task ran on, until it connects and
+    /// becomes the target again. Startup holds its auto-select for it.
+    restore_host: Option<HostId>,
     root_selecting: bool,
     /// Header label for the project root; set when the root changes so
     /// render does not format it.
@@ -456,13 +491,9 @@ pub struct ChatScreen {
     project_branch: Option<String>,
     /// `project_branch` in parentheses, ready for the header.
     branch_label: Option<SharedString>,
-    /// Watches the git dir of the current root so a checkout by the agent
-    /// or from a terminal updates the branch. Replaced when the git dir
-    /// changes, dropped with the root.
-    branch_watcher: Option<notify::RecommendedWatcher>,
-    watched_git_dir: Option<std::path::PathBuf>,
-    /// A native folder picker is open; more clicks must not open another.
-    root_picker_open: bool,
+    /// Root whose branch the host reports to this screen; the host owns
+    /// the git dir watch. Replaced when the root changes.
+    watched_root: Option<String>,
     /// Sidebar hidden; a toggle in the main pane brings it back.
     sidebar_collapsed: bool,
     /// Images staged for the next message.
@@ -633,8 +664,13 @@ const LOAD_RETRIES: u8 = 2;
 const FINISHED_RUNS_KEPT: usize = 64;
 
 impl ChatScreen {
-    pub fn new(backend: Arc<AgentBackend>, user_id: String, cx: &mut Context<Self>) -> Self {
-        let this = Self::new_mounted(backend, user_id, cx);
+    pub fn new(
+        backend: Arc<AgentBackend>,
+        host: Arc<dyn HostBackend>,
+        user_id: String,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let this = Self::new_mounted(backend, host, user_id, cx);
         this.start(cx);
         this
     }
@@ -643,9 +679,14 @@ impl ChatScreen {
     /// Production immediately calls `start`; focused GPUI tests use the
     /// deterministic seam so unrelated Tokio scheduling cannot replace their
     /// fixture state mid-interaction.
-    fn new_mounted(backend: Arc<AgentBackend>, user_id: String, cx: &mut Context<Self>) -> Self {
+    fn new_mounted(
+        backend: Arc<AgentBackend>,
+        host: Arc<dyn HostBackend>,
+        user_id: String,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let weak = cx.entity().downgrade();
-        let mut this = Self::new_inner(backend, user_id, cx);
+        let mut this = Self::new_inner(backend, host, user_id, cx);
         this.attach_composer(weak.clone(), cx);
         this.markdown_cache.attach(weak.clone(), cx.to_async());
         this.selection = Some(cx.new(|_| rich_text::TextSelection::default()));
@@ -658,10 +699,11 @@ impl ChatScreen {
     #[cfg(test)]
     pub(crate) fn new_without_start(
         backend: Arc<AgentBackend>,
+        host: Arc<dyn HostBackend>,
         user_id: String,
         cx: &mut Context<Self>,
     ) -> Self {
-        Self::new_mounted(backend, user_id, cx)
+        Self::new_mounted(backend, host, user_id, cx)
     }
 
     /// What the sidebar asked for. Events arrive after the sidebar's own
@@ -674,9 +716,8 @@ impl ChatScreen {
     ) {
         match event.clone() {
             SidebarEvent::Select(id) => self.select_session(&id, cx),
-            SidebarEvent::SessionChanged(session) => {
-                self.upsert_session(session, cx);
-                cx.notify();
+            SidebarEvent::RenameTask { session_id, name } => {
+                self.rename_session(session_id, name, cx);
             }
             SidebarEvent::SetState { session_id, state } => {
                 self.set_session_state(&session_id, state, cx)
@@ -684,11 +725,13 @@ impl ChatScreen {
             SidebarEvent::DeleteTask(id) => self.request_delete_task(&id, cx),
             SidebarEvent::RemoveRoot(root) => self.request_remove_root(&root, cx),
             SidebarEvent::SetTrust { path, trusted } => self.set_project_trust(path, trusted, cx),
-            SidebarEvent::ChooseProject => self.choose_root_dialog(cx),
+            SidebarEvent::ProjectTrust(root) => self.answer_project_trust(root, cx),
+            SidebarEvent::ChooseProject => self.open_project_picker(cx),
             SidebarEvent::Notice(message) => {
                 self.notice = Some(message);
                 cx.notify();
             }
+            SidebarEvent::HostFilter(host) => self.set_host_filter(host, cx),
         }
     }
 
@@ -701,11 +744,18 @@ impl ChatScreen {
         let running: HashSet<String> = self.active_runs.keys().cloned().collect();
         let unread = self.completed_unread_sessions.clone();
         let roots = self.recent_roots.clone();
+        // The host list and the task-to-host map change rarely; they are
+        // pushed only when they did.
+        let hosts = std::mem::take(&mut self.hosts_dirty)
+            .then(|| (self.host_list.clone(), self.session_hosts.clone()));
         self.sidebar.update(cx, |sidebar, cx| {
             sidebar.set_sessions(sessions, cx);
             sidebar.set_selected(selected, cx);
             sidebar.set_activity(running, unread, cx);
             sidebar.set_recent_roots(roots, cx);
+            if let Some((hosts, session_hosts)) = hosts {
+                sidebar.set_hosts(hosts, session_hosts, cx);
+            }
         });
         self.refresh_selected_title();
     }
@@ -987,24 +1037,40 @@ impl ChatScreen {
     /// Test seam: pure state without composer wiring or runtime start.
     pub(crate) fn new_inner(
         backend: Arc<AgentBackend>,
+        host: Arc<dyn HostBackend>,
         user_id: String,
         cx: &mut Context<Self>,
     ) -> Self {
-        Self::new_inner_with_placeholder(backend, user_id, cx)
+        Self::new_inner_with_placeholder(backend, host, user_id, cx)
     }
 
     fn new_inner_with_placeholder(
         backend: Arc<AgentBackend>,
+        host: Arc<dyn HostBackend>,
         user_id: String,
         cx: &mut Context<Self>,
     ) -> Self {
         let settings = crate::settings::load_settings();
         let weak = cx.entity().downgrade();
-        let sidebar =
-            cx.new(|cx| Sidebar::new(backend.clone(), user_id.clone(), weak, &settings, cx));
+        let sidebar = cx.new(|cx| Sidebar::new(backend.clone(), weak, &settings, cx));
         cx.subscribe(&sidebar, Self::on_sidebar_event).detach();
-        Self {
+        let hosts = HashMap::from([(HostId::local(), ChatHost::local(host.clone()))]);
+        let restore_host = settings
+            .last_task_host
+            .as_deref()
+            .map(HostId::new)
+            .filter(|host| !host.is_local());
+        let mut this = Self {
             backend,
+            host,
+            hosts,
+            session_hosts: HashMap::new(),
+            target_host: HostId::local(),
+            host_filter: None,
+            host_list: Vec::new(),
+            hosts_dirty: false,
+            target_host_label: LOCAL_HOST_NAME.into(),
+            selected_host: None,
             user_id,
             sidebar,
             sessions: Vec::new(),
@@ -1046,12 +1112,13 @@ impl ChatScreen {
             loading_session: None,
             list_state: transcript_list_state(),
             tool_details: settings.tool_details,
-            // An unset or unknown value in either place means "use the
-            // saved default", so only a known mode counts as an override.
+            // The host's saved default arrives with the bootstrap; until
+            // then the safer mode applies. An unknown value in the
+            // environment means "use the saved default", so only a known
+            // mode counts as an override.
             permission_mode: std::env::var("MAPLE_PERMISSION_MODE")
                 .ok()
                 .and_then(|mode| PermissionMode::from_str(&mode))
-                .or(Some(settings.default_permission_mode))
                 .unwrap_or_default(),
             uses_default_permission_mode: std::env::var("MAPLE_PERMISSION_MODE").is_err(),
             project_root: None,
@@ -1069,7 +1136,8 @@ impl ChatScreen {
             mcp_enabled_count: 0,
             composer_expanded: false,
             web_enabled: true,
-            default_web_enabled: settings.default_web_enabled,
+            // The host's saved default arrives with the bootstrap.
+            default_web_enabled: true,
             markdown_cache: MarkdownCache::default(),
             notice_dismiss_pending: std::cell::Cell::new(false),
             derived: DerivedCache::default(),
@@ -1078,13 +1146,13 @@ impl ChatScreen {
             selected_title: DEFAULT_TASK_TITLE.into(),
             root_input: None,
             root_input_focus_pending: false,
+            project_picker: None,
+            restore_host,
             root_selecting: false,
             project_label: SharedString::from("Choose folder"),
             project_branch: None,
             branch_label: None,
-            branch_watcher: None,
-            watched_git_dir: None,
-            root_picker_open: false,
+            watched_root: None,
             selection_generation: 0,
             reload_generation: 0,
             attachment_images: HashMap::new(),
@@ -1137,7 +1205,9 @@ impl ChatScreen {
             speech_generation: 0,
             tts_voice: settings.tts_voice,
             tts_speed: settings.tts_speed,
-        }
+        };
+        this.hosts_changed();
+        this
     }
 
     fn call<T, F>(
@@ -1171,25 +1241,18 @@ impl ChatScreen {
     /// the lifecycle lock across network round trips; issuing any local
     /// read after it would queue behind that lock.
     fn start(&self, cx: &mut Context<Self>) {
-        let backend = self.backend.clone();
-        let user_id = self.user_id.clone();
+        let host = self.host.clone();
         self.call(
             async move {
-                let boot = backend.local_bootstrap(&user_id).await?;
+                let boot = host.bootstrap().await?;
                 let summaries = match &boot.latest {
-                    Some(detail) => {
-                        let store = backend.clone();
-                        let target = detail.session.id.clone();
-                        tokio::task::spawn_blocking(move || {
-                            store.load_tool_summaries_blocking(&user_id, &target)
-                        })
+                    Some(detail) => host
+                        .tool_summaries(detail.session.id.clone())
                         .await
-                        .map_err(|error| error.to_string())?
                         .unwrap_or_else(|error| {
                             log::warn!("Cannot load tool summaries: {error}");
                             HashMap::new()
-                        })
-                    }
+                        }),
                     None => HashMap::new(),
                 };
                 Ok::<_, String>((boot, summaries))
@@ -1216,24 +1279,29 @@ impl ChatScreen {
 
     /// Take what the local bootstrap read from disk. The newest transcript
     /// opens only while nothing is on screen: a click that landed before
-    /// this callback wins, and so does a draft the user started while the
-    /// app was still loading, whose text belongs to the task it creates.
+    /// this callback wins, so does a draft the user started while the app
+    /// was still loading, whose text belongs to the task it creates, and a
+    /// remote host being restored opens its own task.
     fn apply_bootstrap(
         &mut self,
-        boot: crate::backend::LocalBootstrap,
+        boot: maple_agent::host::HostBootstrap,
         summaries: HashMap<String, String>,
         cx: &mut Context<Self>,
     ) {
+        self.apply_session_defaults(&boot.session_defaults, cx);
         self.project_root = boot.project_root;
         self.project_root_changed(cx);
         self.check_project_trust(cx);
-        self.recent_roots = boot.recent_roots;
-        self.sessions = boot.sessions;
-        self.sync_sidebar(cx);
-        if let Some(detail) = boot
-            .latest
-            .filter(|_| self.selected_session.is_none() && !self.draft)
-        {
+        self.recent_roots = boot.recent_roots.clone();
+        if let Some(local) = self.hosts.get_mut(&HostId::local()) {
+            local.project_root = self.project_root.clone();
+            local.recent_roots = boot.recent_roots;
+            local.session_defaults = Some(boot.session_defaults.clone());
+        }
+        self.apply_host_session_list(&HostId::local(), boot.sessions, cx);
+        if let Some(detail) = boot.latest.filter(|_| {
+            self.selected_session.is_none() && !self.draft && self.restore_host.is_none()
+        }) {
             let summaries = summaries
                 .into_iter()
                 .map(|(id, summary)| (id, SharedString::from(summary)))
@@ -1248,14 +1316,13 @@ impl ChatScreen {
     /// Phase two of `start`: bring the agent runtime up and fill in what
     /// needs the network (models, plan, audio, trust of a changed root).
     fn start_runtime(&self, cx: &mut Context<Self>) {
-        let backend = self.backend.clone();
-        let user_id = self.user_id.clone();
-        let request = backend.default_start_request();
+        let host = self.host.clone();
+        let request = self.backend.default_start_request();
         // A task or project selected while the start is in flight owns the
         // visible project context.
         let generation = self.selection_generation;
         self.call(
-            async move { backend.start_runtime(&user_id, Some(request)).await },
+            async move { host.start_runtime(Some(request)).await },
             cx,
             move |this, result, cx| {
                 match result {
@@ -1310,13 +1377,19 @@ impl ChatScreen {
         );
     }
 
+    /// Re-read the target host's recent projects. An answer that lands
+    /// after the target moved on belongs to the previous host and is
+    /// dropped: the new target's list was requested with it.
     fn refresh_roots(&self, cx: &mut Context<Self>) {
-        let backend = self.backend.clone();
-        let user_id = self.user_id.clone();
+        let host = self.host.clone();
+        let target = self.target_host.clone();
         self.call(
-            async move { backend.recent_project_roots(&user_id).await },
+            async move { host.recent_project_roots().await },
             cx,
-            |this, result, cx| {
+            move |this, result, cx| {
+                if this.target_host != target {
+                    return;
+                }
                 if let Ok(roots) = result {
                     this.apply_recent_roots(roots, cx);
                 }
@@ -1332,7 +1405,18 @@ impl ChatScreen {
         cx: &mut Context<Self>,
     ) {
         self.recent_roots = roots.into_iter().map(|root| root.path).collect();
+        self.cache_target_context();
         self.sync_sidebar(cx);
+    }
+
+    /// Remember the visible project context as the target host's, so it
+    /// is what comes back when that host is the target again.
+    fn cache_target_context(&mut self) {
+        let Some(entry) = self.hosts.get_mut(&self.target_host) else {
+            return;
+        };
+        entry.project_root.clone_from(&self.project_root);
+        entry.recent_roots.clone_from(&self.recent_roots);
     }
 
     /// Select the project context for new tasks without disturbing work that
@@ -1349,9 +1433,10 @@ impl ChatScreen {
             cx.notify();
             return;
         }
+        // The host validates the path: it owns the filesystem.
         let path = path.trim().to_string();
-        if path.is_empty() || !std::path::Path::new(&path).is_absolute() {
-            self.notice = Some("Enter an absolute directory path".into());
+        if path.is_empty() {
+            self.notice = Some("Enter a directory path".into());
             cx.notify();
             return;
         }
@@ -1361,14 +1446,11 @@ impl ChatScreen {
         // that fails leaves loads in flight alive, while a task clicked after
         // this point advances the generation and wins over the callback.
         let selection_generation = self.selection_generation;
-        self.popup.close(cx);
-        self.root_input = None;
         self.notice = None;
         cx.notify();
-        let backend = self.backend.clone();
-        let user_id = self.user_id.clone();
+        let host = self.host.clone();
         self.call(
-            async move { backend.select_project_root(&user_id, path).await },
+            async move { host.select_project_root(path).await },
             cx,
             move |this, result, cx| {
                 this.root_selecting = false;
@@ -1417,10 +1499,9 @@ impl ChatScreen {
     /// without changing what is on screen. Used when a task under another
     /// project is opened and when a project is archived.
     fn persist_project_root(&mut self, root: String, cx: &mut Context<Self>) {
-        let backend = self.backend.clone();
-        let user_id = self.user_id.clone();
+        let host = self.host.clone();
         self.call(
-            async move { backend.select_project_root(&user_id, root).await },
+            async move { host.select_project_root(root).await },
             cx,
             |this, result, cx| match result {
                 Ok(registration) => {
@@ -1450,6 +1531,7 @@ impl ChatScreen {
             return false;
         }
         self.project_root = project_root;
+        self.cache_target_context();
         self.project_root_changed(cx);
         self.check_project_trust(cx);
         self.refresh_slash_commands(cx);
@@ -1457,62 +1539,62 @@ impl ChatScreen {
         true
     }
 
-    fn choose_root_dialog(&mut self, cx: &mut Context<Self>) {
-        // The platform folder picker through gpui: NSOpenPanel on macOS,
-        // the common file dialog on Windows, the XDG portal on Linux.
-        // The panel closes with the app, so quit is never blocked on it.
-        // Manual entry only when the picker cannot open (e.g. a Linux
-        // desktop with no portal); a cancel just closes.
-        if !self.begin_root_picker(cx) {
-            return;
-        }
-        let receiver = cx.prompt_for_paths(gpui::PathPromptOptions {
-            files: false,
-            directories: true,
-            multiple: false,
-            prompt: None,
-        });
-        let bridge = cx.spawn(async move |this, cx| {
-            let picked = receiver.await;
-            this.update(cx, |this, cx| {
-                this.root_picker_open = false;
-                match picked {
-                    Ok(Ok(Some(paths))) => {
-                        if let Some(path) = paths.into_iter().next() {
-                            this.select_project_root(path.to_string_lossy().into_owned(), cx);
-                        }
-                    }
-                    // Cancelled, or the picker dropped its channel.
-                    Ok(Ok(None)) | Err(_) => {}
-                    Ok(Err(_)) => this.show_root_input(cx),
-                }
-                cx.notify();
-            })
-            .ok();
-        });
-        // The portal dialog completes on its own thread; retained so the
-        // bridge dies here (see ChatScreen::call).
-        crate::ui::task::retain(&self.bridged_tasks, bridge);
-    }
-
-    /// The root changed: update the header label, then read its branch
-    /// and watch its git dir.
+    /// The root changed: update the header label, then ask the host for
+    /// its branch.
     fn project_root_changed(&mut self, cx: &mut Context<Self>) {
         self.project_label = SharedString::from(self.project_label());
         self.refresh_branch(cx);
     }
 
-    /// Read the branch for the current root, or clear it when there is
-    /// no root. The read also resolves the git dir, and the watcher is
-    /// replaced when that dir changed.
+    /// Follow the branch of the current root, or clear it when there is
+    /// no root. The host owns the git dir watch and reports the branch
+    /// through [`HostEvent::ProjectBranch`]; this screen only tells it
+    /// which root to follow.
     fn refresh_branch(&mut self, cx: &mut Context<Self>) {
-        if self.project_root.is_some() {
-            self.read_branch(cx);
+        if self.watched_root == self.project_root {
             return;
         }
-        self.branch_watcher = None;
-        self.watched_git_dir = None;
-        self.set_branch(None, cx);
+        let host = self.host.clone();
+        let previous = self.watched_root.take();
+        let next = self.project_root.clone();
+        self.watched_root = next.clone();
+        if next.is_none() {
+            self.set_branch(None, cx);
+        }
+        self.call(
+            async move {
+                if let Some(previous) = previous {
+                    host.unwatch_project_root(previous).await?;
+                }
+                if let Some(next) = next {
+                    host.watch_project_root(next).await?;
+                }
+                Ok(())
+            },
+            cx,
+            |_this, result: Result<(), String>, _cx| {
+                if let Err(message) = result {
+                    log::debug!("branch watch unavailable: {message}");
+                }
+            },
+        );
+    }
+
+    /// Ask the host to report the current root's branch again. Re-watching
+    /// a root the host already watches re-sends its branch.
+    fn reread_branch(&self, cx: &mut Context<Self>) {
+        let Some(root) = self.watched_root.clone() else {
+            return;
+        };
+        let host = self.host.clone();
+        self.call(
+            async move {
+                host.watch_project_root(root.clone()).await?;
+                host.unwatch_project_root(root).await
+            },
+            cx,
+            |_this, _result: Result<(), String>, _cx| {},
+        );
     }
 
     fn set_branch(&mut self, branch: Option<String>, cx: &mut Context<Self>) {
@@ -1526,137 +1608,8 @@ impl ChatScreen {
         cx.notify();
     }
 
-    /// Watch `git_dir` and re-read the branch when `HEAD` changes. The
-    /// watch is on the directory, not the file: git replaces `HEAD` by
-    /// rename, so a watch on the file itself is lost after the first
-    /// checkout. Non-recursive, so a busy `objects/` tree costs nothing.
-    /// Events arrive on the watcher's own thread and cross to the UI
-    /// through a channel, like backend events. Dropping the watcher
-    /// closes the channel, which ends the receiver task.
-    fn watch_branch(&mut self, git_dir: &std::path::Path, cx: &mut Context<Self>) {
-        use notify::Watcher as _;
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-        let mut watcher =
-            match notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
-                let Ok(event) = event else { return };
-                if head_change_event(&event) {
-                    tx.send(()).ok();
-                }
-            }) {
-                Ok(watcher) => watcher,
-                Err(error) => {
-                    log::debug!("branch watcher unavailable: {error}");
-                    return;
-                }
-            };
-        if let Err(error) = watcher.watch(git_dir, notify::RecursiveMode::NonRecursive) {
-            log::debug!("cannot watch {}: {error}", git_dir.display());
-            return;
-        }
-        self.branch_watcher = Some(watcher);
-        cx.spawn(async move |this, cx| {
-            while rx.recv().await.is_some() {
-                // A rebase or a checkout touches HEAD several times in a
-                // row; one read per burst is enough.
-                while rx.try_recv().is_ok() {}
-                if this.update(cx, |this, cx| this.read_branch(cx)).is_err() {
-                    break;
-                }
-            }
-        })
-        .detach();
-    }
-
-    /// Read the branch for the current root off the UI thread. The git
-    /// dir comes back with it so the watcher follows a root change without
-    /// a file stat on the UI thread.
-    fn read_branch(&mut self, cx: &mut Context<Self>) {
-        let Some(root) = self.project_root.clone() else {
-            return;
-        };
-        self.call(
-            async move {
-                tokio::task::spawn_blocking(move || {
-                    let git_dir = git_dir(std::path::Path::new(&root));
-                    let branch = git_dir.as_deref().and_then(git_branch);
-                    Ok((root, git_dir, branch))
-                })
-                .await
-                .map_err(|error| format!("Branch lookup failed: {error}"))?
-            },
-            cx,
-            |this, result, cx| {
-                // Drop a late answer for a root that is no longer current.
-                let Ok((root, git_dir, branch)) = result else {
-                    return;
-                };
-                if this.project_root.as_deref() != Some(root.as_str()) {
-                    return;
-                }
-                if this.watched_git_dir != git_dir {
-                    this.branch_watcher = None;
-                    if let Some(dir) = &git_dir {
-                        this.watch_branch(dir, cx);
-                    }
-                    this.watched_git_dir = git_dir;
-                }
-                this.set_branch(branch, cx);
-            },
-        );
-    }
-
-    /// Claim the folder picker. One at a time: several at once each
-    /// applied their own result and stalled the app. Returns `false` when
-    /// a picker or a project selection is already in progress.
-    fn begin_root_picker(&mut self, cx: &mut Context<Self>) -> bool {
-        if self.root_picker_open || self.root_selecting {
-            return false;
-        }
-        self.root_picker_open = true;
-        self.popup.close(cx);
-        cx.notify();
-        true
-    }
-
-    /// Manual path entry when the native picker is unavailable.
-    fn show_root_input(&mut self, cx: &mut Context<Self>) {
-        // The native picker could not open: offer manual entry.
-        if self.root_input.is_none() {
-            let chat = cx.entity().downgrade();
-            let apply = chat.clone();
-            let application_vim_enabled = self.application_vim_enabled;
-            let input = cx.new(move |cx| {
-                TextInput::new("/absolute/path/to/project", cx)
-                    .with_tab_index(0)
-                    .application_vim(application_vim_enabled)
-                    .on_application_escape(move |window, cx| {
-                        if let Some(chat) = chat.upgrade() {
-                            chat.update(cx, |chat, cx| chat.focus_application_vim(window, cx));
-                        }
-                    })
-                    // Enter applies the typed path, like the Go button.
-                    .on_enter(move |path, window, cx| {
-                        let apply = apply.clone();
-                        window.defer(cx, move |_, cx| {
-                            apply
-                                .update(cx, |chat, cx| chat.select_project_root(path, cx))
-                                .ok();
-                        });
-                    })
-            });
-            self.root_input = Some(input);
-        }
-        self.popup.open(ChatPopup::Project, cx);
-        self.root_input_focus_pending = true;
-    }
-
-    /// Open or close the project menu from the header chip.
-    pub fn toggle_root_menu(&mut self, cx: &mut Context<Self>) {
-        self.popup.toggle(ChatPopup::Project, cx);
-    }
-
-    /// Open or close one of the composer chips' menus. Opening the
-    /// integrations menu refreshes the task's servers.
+    /// Open or close one of the chip menus. Opening the integrations menu
+    /// refreshes the task's servers.
     pub(super) fn toggle_popup(&mut self, popup: ChatPopup, cx: &mut Context<Self>) {
         if self.popup.toggle(popup, cx) && popup == ChatPopup::Integrations {
             self.refresh_session_mcp(cx);
@@ -1672,13 +1625,16 @@ impl ChatScreen {
     }
 
     fn refresh_models(&self, cx: &mut Context<Self>) {
-        let backend = self.backend.clone();
-        let user_id = self.user_id.clone();
-        let env_model = backend.configured_model();
+        let host = self.host.clone();
+        let env_model = self.backend.configured_model();
         self.call(
             async move {
-                let saved = backend.saved_model(&user_id).await;
-                let models = backend.available_model_ids(&user_id).await?;
+                let saved = host
+                    .session_defaults()
+                    .await
+                    .ok()
+                    .and_then(|defaults| defaults.default_model);
+                let models = host.available_model_ids().await?;
                 Ok((models, saved))
             },
             cx,
@@ -1698,18 +1654,33 @@ impl ChatScreen {
         );
     }
 
-    fn refresh_sessions(&self, cx: &mut Context<Self>) {
-        let backend = self.backend.clone();
-        let user_id = self.user_id.clone();
-        // The sidebar groups tasks by project, so list every root. Each task's
-        // stored root remains authoritative when it is opened or run.
-        let generation = self.selection_generation;
+    /// The sidebar opened a project's menu and asks whether the project is
+    /// trusted, on the target host; the answer goes back to the menu.
+    fn answer_project_trust(&mut self, root: String, cx: &mut Context<Self>) {
+        let host = self.host.clone();
         self.call(
-            async move { backend.list_sessions(&user_id, None).await },
+            async move { host.project_trust(root).await },
             cx,
-            move |this, result, cx| {
+            |this, result, cx| {
+                if let Ok(status) = result {
+                    this.sidebar
+                        .update(cx, |sidebar, cx| sidebar.set_menu_trust(status, cx));
+                }
+            },
+        );
+    }
+
+    /// Rename a task on the host that owns it.
+    fn rename_session(&mut self, session_id: String, name: String, cx: &mut Context<Self>) {
+        let host = self.backend_for(&session_id);
+        self.call(
+            async move { host.rename_session(session_id, name).await },
+            cx,
+            |this, result, cx| {
                 match result {
-                    Ok(sessions) => this.apply_session_list(sessions, generation, cx),
+                    Ok(session) => {
+                        this.upsert_session(session, cx);
+                    }
                     Err(message) => this.notice = Some(message.into()),
                 }
                 cx.notify();
@@ -1718,35 +1689,39 @@ impl ChatScreen {
     }
 
     /// Take a fresh session list. With nothing on screen, open the latest
-    /// task of the visible project or show the new-task screen, but only
-    /// when no task or project was selected since the list was requested:
-    /// a click whose load is still in flight leaves the selection empty
-    /// too, and the auto-select would supersede it. A draft is not
-    /// "nothing on screen": the list that lands after "New Task" (the boot
-    /// refresh, a project switch) must not open a task under the text
-    /// being typed.
+    /// task of the visible project or create one, but only when no task or
+    /// project was selected since the list was requested: a click whose
+    /// load is still in flight leaves the selection empty too, and the
+    /// auto-select would supersede it. A draft is not "nothing on screen":
+    /// the list that lands after "New Task" (the boot refresh, a project
+    /// or host switch) must not open a task under the text being typed.
     fn apply_session_list(
         &mut self,
         sessions: Vec<AgentSessionSummary>,
         generation: u64,
         cx: &mut Context<Self>,
     ) {
-        self.sessions = sessions;
-        self.sync_sidebar(cx);
-        if self.selected_session.is_some() || self.draft || self.selection_generation != generation
+        self.apply_host_session_list(&HostId::local(), sessions, cx);
+        if self.selected_session.is_some()
+            || self.draft
+            || self.selection_generation != generation
+            || self.restore_host.is_some()
         {
             return;
         }
         let root = self.project_root.clone();
+        // The visible project belongs to the target host; another host's
+        // task under the same path is not it.
         let latest = self
             .sessions
             .iter()
             .find(|session| {
                 // An empty task (a draft an older build persisted) is not
-                // worth opening; the new-task screen is the same thing.
+                // worth opening; the draft screen is the same thing.
                 session.state != AgentTaskState::Archived
                     && session.message_count > 0
                     && Some(&session.project_root) == root.as_ref()
+                    && self.host_of(&session.id) == self.target_host
             })
             .map(|session| session.id.clone());
         match latest {
@@ -1755,10 +1730,26 @@ impl ChatScreen {
         }
     }
 
-    /// "New Task": show the empty screen for the visible project and
-    /// create nothing. The task is created the moment the first message
-    /// is sent, so a project switched before then moves it, and a click
-    /// that sends nothing leaves no empty row behind.
+    /// "New Task": show the empty screen for the target host's project and
+    /// create nothing. The task is created on the target the moment the
+    /// first message is sent, so a host or project switched before then
+    /// moves it, and a click that sends nothing leaves no empty row on
+    /// any host.
+    /// A selected task nothing has happened to: no messages, no run, no
+    /// load in flight. Older builds persisted one on every New Task
+    /// click, so such tasks still exist and can be opened. The screen
+    /// treats one like the draft it is.
+    pub(super) fn selection_is_draft(&self) -> bool {
+        match self.selected_session.as_deref() {
+            Some(selected) => {
+                self.timeline.is_empty()
+                    && self.loading_session.is_none()
+                    && !self.active_runs.contains_key(selected)
+            }
+            None => false,
+        }
+    }
+
     pub(super) fn new_session(&mut self, cx: &mut Context<Self>) {
         // The first send is creating its task; a click now would
         // supersede it and lose the message.
@@ -1780,18 +1771,18 @@ impl ChatScreen {
         self.loading_session = None;
         self.clear_selected_session_presentation(cx);
         self.draft = true;
-        // The draft starts from the settings defaults; the chips edit it
-        // on screen only, until the task exists.
+        // The draft starts from the target host's defaults; the chips edit
+        // it on screen only, until the task exists.
         self.web_enabled = self.default_web_enabled;
         self.refresh_draft_mcp(cx);
         self.refresh_selected_title();
         cx.notify();
     }
 
-    /// Create the task the draft describes, then run `action` against it.
-    /// The text stays in the composer, which shows the create in
-    /// progress, until the send goes out; a create that does not happen
-    /// leaves it there.
+    /// Create the task the draft describes on the target host, then run
+    /// `action` against it. The text stays in the composer, which shows
+    /// the create in progress, until the send goes out; a create that
+    /// does not happen leaves it there.
     fn create_for_first_send(&mut self, action: FirstSend, cx: &mut Context<Self>) {
         self.slash_selected = None;
         // A command path cleared the composer before it got here; put the
@@ -1879,9 +1870,9 @@ impl ChatScreen {
         self.send_text_with(text, action.steer(), cx);
     }
 
-    /// Create a task from `request`. What the composer shows and the
-    /// request cannot carry is applied once the task exists, before the
-    /// first send (`settle_new_session`).
+    /// Create a task on the target host from `request`. What the composer
+    /// shows and the request cannot carry is applied once the task
+    /// exists, before the first send (`settle_new_session`).
     fn create_session(&mut self, request: AgentCreateSessionRequest, cx: &mut Context<Self>) {
         // Creating a task is a navigation intent, but the generation moves
         // only when the task lands: a failed create leaves loads in flight
@@ -1889,19 +1880,22 @@ impl ChatScreen {
         // eventual callback.
         let selection_generation = self.selection_generation;
         self.session_setup_pending = true;
-        let backend = self.backend.clone();
-        let user_id = self.user_id.clone();
+        let host = self.host.clone();
+        let owner = self.target_host.clone();
         let requested_mcp = request.mcp_server_names.clone();
         self.call(
             async move {
-                backend
-                    .create_session(&user_id, Some(request))
+                host.create_session(Some(request))
                     .await
                     .map(|detail| detail.session)
             },
             cx,
             move |this, result, cx| match result {
                 Ok(session) => {
+                    // The task lives on the host the create ran on, whatever
+                    // host new tasks target by now; calls about it go there.
+                    this.session_hosts.insert(session.id.clone(), owner);
+                    this.hosts_dirty = true;
                     let task_mcp = this.created_task_mcp(requested_mcp.as_deref());
                     this.settle_new_session(session, task_mcp, selection_generation, cx);
                 }
@@ -1993,39 +1987,34 @@ impl ChatScreen {
             self.finish_new_session(session, selection_generation, cx);
             return;
         }
-        let backend = self.backend.clone();
-        let user_id = self.user_id.clone();
+        // The settings go to the host the task was created on.
+        let host = self.backend_for(&session.id);
         let fallback = session.clone();
         let applied = changes.mcp.clone();
         self.call(
             async move {
                 let mut session = session;
                 if let Some(enabled) = changes.web {
-                    session = backend
-                        .set_session_web_enabled(&user_id, &session.id, enabled)
+                    session = host
+                        .set_session_web_enabled(session.id.clone(), enabled)
                         .await
                         .map_err(|message| format!("Could not change web access: {message}"))?;
                 }
                 if let Some(mode) = changes.mode {
-                    backend
-                        .set_permission_mode(&user_id, &session.id, &mode)
+                    host.set_permission_mode(session.id.clone(), mode.clone())
                         .await
                         .map_err(|message| format!("Could not set permission mode: {message}"))?;
                     session.mode = mode;
                 }
                 for change in &changes.mcp {
-                    backend
-                        .set_session_mcp_server_enabled(
-                            &user_id,
-                            &session.id,
-                            &change.name,
-                            change.kind,
-                            change.enabled,
-                        )
-                        .await
-                        .map_err(|message| {
-                            format!("Could not change {}: {message}", change.name)
-                        })?;
+                    host.set_session_mcp_server_enabled(
+                        session.id.clone(),
+                        change.name.clone(),
+                        change.kind,
+                        change.enabled,
+                    )
+                    .await
+                    .map_err(|message| format!("Could not change {}: {message}", change.name))?;
                 }
                 Ok(session)
             },
@@ -2078,6 +2067,7 @@ impl ChatScreen {
             return;
         }
         self.session_setup_pending = false;
+        self.remember_task_host(&session.id);
         self.upsert_session(session.clone(), cx);
         self.begin_navigation();
         self.set_active_session(session, Vec::new(), HashMap::new(), cx);
@@ -2101,6 +2091,7 @@ impl ChatScreen {
             return;
         }
         self.session_setup_pending = false;
+        self.remember_task_host(&session.id);
         // The SessionCreated event may arrive before this callback; upsert
         // so the sidebar never shows the task twice.
         self.upsert_session(session.clone(), cx);
@@ -2109,6 +2100,16 @@ impl ChatScreen {
         if let Some(action) = self.pending_first_send.take() {
             self.run_first_send(action, cx);
         }
+    }
+
+    /// A new task is opening on the host that owns it: the next launch
+    /// starts there too. An abandoned task is deleted, not remembered.
+    fn remember_task_host(&self, session_id: &str) {
+        let owner = self.host_of(session_id);
+        let last_task_host = (!owner.is_local()).then(|| owner.to_string());
+        crate::settings::update_settings_in_background(move |settings| {
+            settings.last_task_host = last_task_host;
+        });
     }
 
     /// The task landed after the user left the draft: a task or project
@@ -2146,12 +2147,13 @@ impl ChatScreen {
         // The SessionCreated event may have listed it already; one row
         // until the delete confirms.
         self.upsert_session(session.clone(), cx);
-        let backend = self.backend.clone();
-        let user_id = self.user_id.clone();
+        // The delete goes to the host that owns the task, whatever host
+        // new tasks target by now.
+        let host = self.backend_for(&session.id);
         let session_id = session.id;
         let deleted = session_id.clone();
         self.call(
-            async move { backend.delete_session(&user_id, &session_id).await },
+            async move { host.delete_session(session_id).await },
             cx,
             move |this, result, cx| {
                 match result {
@@ -2178,8 +2180,8 @@ impl ChatScreen {
             // summary would reset the chip to Ask First.
             mode: Some(self.permission_mode.as_str().to_string()),
             // The draft's switches decide which servers start with the
-            // task; the runtime reads curated MCP integrations (CUA) from
-            // this list too. External agents are not servers and are
+            // task; the host's runtime reads curated MCP integrations (CUA)
+            // from this list too. External agents are not servers and are
             // applied after creation.
             mcp_server_names: self.draft_mcp_names(),
             system_prompt: None,
@@ -2231,28 +2233,25 @@ impl ChatScreen {
             self.loading_session = Some(session_id.to_string());
             cx.notify();
         }
-        let backend = self.backend.clone();
-        let user_id = self.user_id.clone();
+        let host = self.backend_for(session_id);
+        // The host answering the load owns the task; a mapping dropped
+        // while the load is in flight (a connection blip) comes back as
+        // this, not as whatever host new tasks target by then.
+        let owner = self.host_of(session_id);
         let session_id = session_id.to_string();
         let target = session_id.clone();
         self.call(
             async move {
-                // The stored summaries load off-thread while the runtime
-                // builds the session detail.
-                let store = backend.clone();
-                let store_user = user_id.clone();
-                let store_target = target.clone();
-                let summaries = tokio::task::spawn_blocking(move || {
-                    store.load_tool_summaries_blocking(&store_user, &store_target)
+                // The stored summaries load while the runtime builds the
+                // session detail.
+                let (detail, summaries) = tokio::join!(
+                    host.load_session(target.clone()),
+                    host.tool_summaries(target.clone())
+                );
+                let summaries = summaries.unwrap_or_else(|error| {
+                    log::warn!("Cannot load tool summaries: {error}");
+                    HashMap::new()
                 });
-                let (detail, summaries) =
-                    tokio::join!(backend.load_session(&user_id, &target), summaries);
-                let summaries = summaries
-                    .map_err(|error| error.to_string())?
-                    .unwrap_or_else(|error| {
-                        log::warn!("Cannot load tool summaries: {error}");
-                        HashMap::new()
-                    });
                 Ok::<_, String>((detail?, summaries))
             },
             cx,
@@ -2295,6 +2294,7 @@ impl ChatScreen {
                     .collect();
                 match mode {
                     LoadMode::Select => {
+                        this.file_session(&detail.session.id, &owner);
                         this.upsert_session(detail.session.clone(), cx);
                         this.set_active_session(detail.session, detail.timeline, summaries, cx);
                         this.queue = detail.queue.items;
@@ -2383,21 +2383,55 @@ impl ChatScreen {
         self.refresh_selected_title();
     }
 
-    /// Apply settings-default changes when returning from the settings
-    /// screen: tool verbosity updates live; the permission default only
-    /// affects sessions that still follow the default.
+    /// Apply the host's session defaults: web access for new tasks, and
+    /// the permission mode for sessions that still follow the default.
+    fn apply_session_defaults(&mut self, defaults: &HostSessionDefaults, cx: &mut Context<Self>) {
+        if let Some(entry) = self.hosts.get_mut(&self.target_host) {
+            entry.session_defaults = Some(defaults.clone());
+        }
+        self.default_web_enabled = defaults.web_enabled;
+        if self.selected_session.is_none() {
+            // The draft has no record of its own; the chip shows the
+            // default the task will be created with.
+            self.web_enabled = defaults.web_enabled;
+        }
+        if self.uses_default_permission_mode {
+            let mode = PermissionMode::parse(&defaults.permission_mode);
+            if mode != self.permission_mode {
+                self.permission_mode = mode;
+                self.apply_permission_mode(cx);
+            }
+        }
+    }
+
+    /// Re-read the host's session defaults, after the settings screen
+    /// may have changed them.
+    fn refresh_session_defaults(&self, cx: &mut Context<Self>) {
+        let host = self.host.clone();
+        self.call(
+            async move { host.session_defaults().await },
+            cx,
+            |this, result, cx| match result {
+                Ok(defaults) => {
+                    this.apply_session_defaults(&defaults, cx);
+                    cx.notify();
+                }
+                Err(message) => log::debug!("session defaults unavailable: {message}"),
+            },
+        );
+    }
+
+    /// Apply settings changes when returning from the settings screen:
+    /// tool verbosity updates live; the host's session defaults are
+    /// re-read, and the permission default only affects sessions that
+    /// still follow the default.
     pub fn apply_defaults(
         &mut self,
         settings: &crate::settings::AppSettings,
         cx: &mut Context<Self>,
     ) {
         self.tool_details = settings.tool_details;
-        self.default_web_enabled = settings.default_web_enabled;
-        if self.selected_session.is_none() {
-            // The draft has no record of its own; the chip shows the
-            // default the task will be created with.
-            self.web_enabled = settings.default_web_enabled;
-        }
+        self.refresh_session_defaults(cx);
         self.notify_enabled = settings.desktop_notifications;
         self.summaries_enabled = settings.tool_summaries;
         self.composer_vim_enabled = settings.composer_vim_enabled;
@@ -2421,10 +2455,6 @@ impl ChatScreen {
         self.screen_focus_pending = true;
         self.tts_voice.clone_from(&settings.tts_voice);
         self.tts_speed = settings.tts_speed;
-        if self.uses_default_permission_mode {
-            self.permission_mode = settings.default_permission_mode;
-            self.apply_permission_mode(cx);
-        }
         // Servers may have been added or removed in settings.
         self.refresh_session_mcp(cx);
         cx.notify();
@@ -2434,19 +2464,14 @@ impl ChatScreen {
         let Some(session_id) = self.selected_session.clone() else {
             return;
         };
-        let backend = self.backend.clone();
-        let user_id = self.user_id.clone();
+        let host = self.session_backend();
         let model = self.selected_model.clone();
         self.call(
-            async move {
-                backend
-                    .context_usage(&user_id, &session_id, model.as_deref())
-                    .await
-            },
+            async move { host.context_usage(session_id, model).await },
             cx,
             |this, result, cx| {
-                if let Ok(Some((tokens, limit))) = result {
-                    this.apply_context_usage(tokens, limit, cx);
+                if let Ok(Some(usage)) = result {
+                    this.apply_context_usage(usage.tokens, usage.limit, cx);
                 }
             },
         );
@@ -2459,12 +2484,11 @@ impl ChatScreen {
         let Some(session_id) = self.selected_session.clone() else {
             return;
         };
-        let backend = self.backend.clone();
-        let user_id = self.user_id.clone();
+        let host = self.session_backend();
         let requested = session_id.clone();
         let epoch = self.subagent_epoch;
         self.call(
-            async move { backend.session_subagents(&user_id, &requested).await },
+            async move { host.session_subagents(requested.clone()).await },
             cx,
             move |this, result, cx| {
                 let Ok(subagents) = result else {
@@ -2597,13 +2621,12 @@ impl ChatScreen {
         let Some(session_id) = self.selected_session.clone() else {
             return;
         };
-        let backend = self.backend.clone();
-        let user_id = self.user_id.clone();
+        let host = self.session_backend();
         let compacted = session_id.clone();
         self.notice = Some("Compacting…".into());
         cx.notify();
         self.call(
-            async move { backend.compact_session(&user_id, &session_id).await },
+            async move { host.compact_session(session_id.clone()).await },
             cx,
             move |this, result, cx| match result {
                 Ok(()) => {
@@ -2628,13 +2651,11 @@ impl ChatScreen {
         let Some(session_id) = self.selected_session.clone() else {
             return;
         };
-        let backend = self.backend.clone();
-        let user_id = self.user_id.clone();
+        let host = self.session_backend();
         let mode = self.permission_mode.as_str().to_string();
         self.call(
             async move {
-                backend
-                    .set_permission_mode(&user_id, &session_id, &mode)
+                host.set_permission_mode(session_id.clone(), mode.clone())
                     .await
             },
             cx,
@@ -2730,8 +2751,14 @@ impl ChatScreen {
         // marker goes. Only an explicit settle ever moves a task out of
         // the active inbox.
         self.completed_unread_sessions.remove(&session.id);
-        self.selected_session = Some(session.id);
+        self.selected_session = Some(session.id.clone());
         self.draft = false;
+        // The selected task's host becomes the target for new tasks unless
+        // the sidebar filters on a host.
+        let owner = self.host_of(&session.id);
+        if self.host_filter.is_none() && owner != self.target_host {
+            self.set_target_host(owner, cx);
+        }
         self.sync_sidebar(cx);
         let previous_root = self.project_root.clone();
         if self.set_project_context(Some(project_root.clone()), cx) && previous_root.is_some() {
@@ -2800,11 +2827,10 @@ impl ChatScreen {
         if self.model_vision.contains_key(&model) {
             return;
         }
-        let backend = self.backend.clone();
-        let user_id = self.user_id.clone();
+        let host = self.host.clone();
         let lookup = model.clone();
         self.call(
-            async move { backend.model_supports_vision(&user_id, &lookup).await },
+            async move { host.model_supports_vision(lookup.clone()).await },
             cx,
             move |this, result, cx| {
                 if let Ok(Some(vision)) = result {
@@ -2824,12 +2850,11 @@ impl ChatScreen {
     }
     /// Reload the skill slash commands for the current project root.
     pub fn refresh_slash_commands(&mut self, cx: &mut Context<Self>) {
-        let backend = self.backend.clone();
-        let user_id = self.user_id.clone();
+        let host = self.host.clone();
         let working_dir = self.project_root.clone();
         let requested_root = working_dir.clone();
         self.call(
-            async move { backend.list_slash_commands(&user_id, working_dir).await },
+            async move { host.list_slash_commands(working_dir).await },
             cx,
             move |this, result, cx| {
                 if this.project_root == requested_root
@@ -2857,11 +2882,10 @@ impl ChatScreen {
             }
             return;
         };
-        let backend = self.backend.clone();
-        let user_id = self.user_id.clone();
+        let host = self.backend_for(&session_id);
         let target = session_id.clone();
         self.call(
-            async move { backend.list_session_mcp_servers(&user_id, &target).await },
+            async move { host.list_session_mcp_servers(target.clone()).await },
             cx,
             move |this, result, cx| {
                 if this.selected_session.as_deref() != Some(session_id.as_str()) {
@@ -2876,20 +2900,18 @@ impl ChatScreen {
         );
     }
 
-    /// Load the integrations a new task would start with, for the draft's
-    /// chip: the configured MCP servers with their defaults and the
-    /// curated integrations (external agents, CUA), so they can be
-    /// switched on for the first turn. The rows on screen stay until the
-    /// fresh ones land, and the user's toggles carry over.
+    /// Load the integrations a task created on the target host would start
+    /// with, for the draft's chip: the host's configured MCP servers with
+    /// their defaults and its curated integrations (external agents, CUA),
+    /// so they can be switched on for the first turn. The rows on screen
+    /// stay until the fresh ones land, and the user's toggles carry over.
     fn refresh_draft_mcp(&mut self, cx: &mut Context<Self>) {
-        let backend = self.backend.clone();
-        let user_id = self.user_id.clone();
+        let host = self.host.clone();
+        let target = self.target_host.clone();
         self.call(
             async move {
-                let (servers, integrations) = tokio::join!(
-                    backend.list_mcp_servers(&user_id),
-                    backend.list_integrations(&user_id)
-                );
+                let (servers, integrations) =
+                    tokio::join!(host.list_mcp_servers(), host.list_integrations());
                 // The configured servers are the chip's floor; a catalog
                 // that cannot be read costs only the curated rows.
                 let integrations = integrations.unwrap_or_else(|message| {
@@ -2900,7 +2922,7 @@ impl ChatScreen {
             },
             cx,
             move |this, result, cx| {
-                if !this.draft {
+                if !this.draft || this.target_host != target {
                     return;
                 }
                 match result {
@@ -2981,13 +3003,11 @@ impl ChatScreen {
             cx.notify();
             return;
         };
-        let backend = self.backend.clone();
-        let user_id = self.user_id.clone();
+        let host = self.backend_for(&session_id);
         let target = session_id.clone();
         self.call(
             async move {
-                backend
-                    .set_session_mcp_server_enabled(&user_id, &target, &name, kind, enabled)
+                host.set_session_mcp_server_enabled(target.clone(), name.clone(), kind, enabled)
                     .await
             },
             cx,
@@ -3016,15 +3036,10 @@ impl ChatScreen {
         let previous = self.web_enabled;
         self.web_enabled = enabled;
         cx.notify();
-        let backend = self.backend.clone();
-        let user_id = self.user_id.clone();
+        let host = self.backend_for(&session_id);
         let target = session_id.clone();
         self.call(
-            async move {
-                backend
-                    .set_session_web_enabled(&user_id, &target, enabled)
-                    .await
-            },
+            async move { host.set_session_web_enabled(target.clone(), enabled).await },
             cx,
             move |this, result, cx| {
                 match result {
@@ -3206,13 +3221,11 @@ impl ChatScreen {
         let Some(session_id) = self.selected_session.clone() else {
             return;
         };
-        let backend = self.backend.clone();
-        let user_id = self.user_id.clone();
+        let host = self.session_backend();
         let agent_id = agent_id.to_string();
         self.call(
             async move {
-                backend
-                    .cancel_external_agent(&user_id, &session_id, &agent_id)
+                host.cancel_external_agent(session_id.clone(), agent_id.clone())
                     .await
             },
             cx,
@@ -3413,6 +3426,10 @@ impl ChatScreen {
     }
 
     fn escape(&mut self, cx: &mut Context<Self>) {
+        if self.project_picker.is_some() {
+            self.close_project_picker(cx);
+            return;
+        }
         // A rename ends first. A project's rename field sits in the
         // switcher, which passes Escape on and stays open.
         if self
@@ -3521,13 +3538,18 @@ impl ChatScreen {
             cx.stop_propagation();
             return;
         }
-        // A modal dialog owns the keyboard; nothing types past it.
+        // A modal dialog owns the keyboard; nothing types past it. The
+        // project picker's search box takes what its own input misses.
         if self.trust_prompt.is_some() || self.confirm.is_some() {
             return;
         }
+        if self.project_picker.is_some() {
+            self.root_input_focus_pending = true;
+            cx.notify();
+            return;
+        }
         // A focused text field already receives typing: the composer, the
-        // question card, the sidebar's search or rename, or the path field
-        // in the project menu.
+        // question card, or the sidebar's search or rename.
         if window
             .context_stack()
             .iter()
@@ -3678,9 +3700,9 @@ impl ChatScreen {
             cx.notify();
             return;
         }
-        // With no task the first send creates one and runs there. One
-        // create at a time: while it is in flight the composer shows it
-        // and keeps the text; Enter changes nothing.
+        // With no task the first send creates one on the target host and
+        // runs there. One create at a time: while it is in flight the
+        // composer shows it and keeps the text; Enter changes nothing.
         let session_id = self.selected_session.clone();
         if session_id.is_none() && self.session_setup_pending {
             self.notice = Some("The task is still being created".into());
@@ -3947,7 +3969,7 @@ impl ChatScreen {
                 let Some(session_id) = session_id else {
                     return true;
                 };
-                let backend = self.backend.clone();
+                let host = self.host.clone();
                 let working_dir = self.project_root.clone();
                 let command = name.to_string();
                 let arguments = args.to_string();
@@ -3955,8 +3977,7 @@ impl ChatScreen {
                 cx.notify();
                 self.call(
                     async move {
-                        backend
-                            .resolve_slash_command(working_dir, command, arguments)
+                        host.resolve_slash_command(working_dir, command, arguments)
                             .await
                     },
                     cx,
@@ -3992,8 +4013,7 @@ impl ChatScreen {
         cx: &mut Context<Self>,
     ) {
         let session_id = session_id.to_string();
-        let backend = self.backend.clone();
-        let user_id = self.user_id.clone();
+        let host = self.backend_for(&session_id);
         let model = self.selected_model.clone();
         let vision_capable = self.selected_model_supports_vision();
         let run_active = self.active_runs.contains_key(&session_id);
@@ -4049,7 +4069,7 @@ impl ChatScreen {
         }
         cx.notify();
         self.call(
-            async move { backend.send_message(&user_id, request).await },
+            async move { host.send_message(request).await },
             cx,
             move |this, result, cx| match result {
                 Ok(run_id) => {
@@ -4116,10 +4136,9 @@ impl ChatScreen {
         let Some(run_id) = self.active_runs.get(&session_id).cloned() else {
             return;
         };
-        let backend = self.backend.clone();
-        let user_id = self.user_id.clone();
+        let host = self.backend_for(&session_id);
         self.call(
-            async move { backend.cancel_run(&user_id, &run_id).await },
+            async move { host.cancel_run(run_id.clone()).await },
             cx,
             |this, result, cx| {
                 if let Err(message) = result {
@@ -4237,8 +4256,7 @@ impl ChatScreen {
         }
         let request_id = question.request_id.clone();
         let callback_request_id = request_id.clone();
-        let backend = self.backend.clone();
-        let user_id = self.user_id.clone();
+        let host = self.session_backend();
         // Drop the answered question and its input so the next card starts
         // fresh; a queued question's event already fired, so the input is
         // recreated right away when one is showing.
@@ -4247,7 +4265,7 @@ impl ChatScreen {
         self.reset_question_card(cx);
         cx.notify();
         self.call(
-            async move { backend.answer_question(&user_id, &request_id, answer).await },
+            async move { host.answer_question(request_id.clone(), answer).await },
             cx,
             move |this, result, cx| match result {
                 Ok(true) => {}
@@ -4280,25 +4298,19 @@ impl ChatScreen {
             .retain(|queued| queued.request_id != question.request_id);
         self.reset_question_card(cx);
         cx.notify();
-        let backend = self.backend.clone();
-        let user_id = self.user_id.clone();
+        let host = self.session_backend();
         {
             let request_id = question.request_id.clone();
-            let answer_backend = backend.clone();
-            let answer_user = user_id.clone();
+            let answer_host = host.clone();
             self.call(
-                async move {
-                    answer_backend
-                        .answer_question(&answer_user, &request_id, String::new())
-                        .await
-                },
+                async move { answer_host.answer_question(request_id, String::new()).await },
                 cx,
                 |_this, _result, _cx| {},
             );
         }
         if let Some(run_id) = self.active_runs.get(&question.session_id).cloned() {
             self.call(
-                async move { backend.cancel_run(&user_id, &run_id).await },
+                async move { host.cancel_run(run_id).await },
                 cx,
                 |this, result, cx| {
                     if let Err(message) = result {
@@ -4402,19 +4414,16 @@ impl ChatScreen {
         }
         self.permission_responding = true;
         cx.notify();
-        let backend = self.backend.clone();
-        let user_id = self.user_id.clone();
+        let host = self.session_backend();
         let request_id = permission.request_id.clone();
         self.call(
             async move {
-                backend
-                    .permission_respond(
-                        &user_id,
-                        &permission.session_id,
-                        &permission.request_id,
-                        allow,
-                    )
-                    .await
+                host.permission_respond(
+                    permission.session_id.clone(),
+                    permission.request_id.clone(),
+                    allow,
+                )
+                .await
             },
             cx,
             move |this, result, cx| {
@@ -4441,10 +4450,22 @@ impl ChatScreen {
             self.audio.cancel_recording();
         }
         let backend = self.backend.clone();
+        // The account signs out of this machine: its runtime stops, whatever
+        // host new tasks target. Remote runtimes belong to their hosts.
+        let local = self
+            .hosts
+            .get(&HostId::local())
+            .and_then(|entry| entry.backend.clone());
         let user_id = self.user_id.clone();
         self.call(
             async move {
-                backend.stop_runtime(&user_id).await?;
+                if let Some(local) = local
+                    && let Err(error) = local.stop_runtime().await
+                {
+                    // Signing out must not hang on a runtime that will not
+                    // stop; the logout clears the account either way.
+                    log::warn!("Cannot stop the local runtime: {error}");
+                }
                 backend.logout_and_clear(&user_id).await
             },
             cx,
@@ -4460,10 +4481,9 @@ impl ChatScreen {
         cx.notify();
         self.refresh_vision(cx);
         // Remember the choice across launches via the agent config.
-        let backend = self.backend.clone();
-        let user_id = self.user_id.clone();
+        let host = self.host.clone();
         self.call(
-            async move { backend.save_default_model(&user_id, model).await },
+            async move { host.save_default_model(model).await },
             cx,
             |_this, _result, _cx| {},
         );
@@ -4559,6 +4579,10 @@ impl ChatScreen {
         if session.state == AgentTaskState::Archived {
             self.completed_unread_sessions.remove(&session.id);
         }
+        // A task with no host yet was made on the target; one an event
+        // announced was filed under the event's host before this.
+        let target = self.target_host.clone();
+        self.file_session(&session.id, &target);
         if let Some(existing) = self
             .sessions
             .iter_mut()
@@ -4650,56 +4674,108 @@ impl ChatScreen {
             .find(|permission| permission.session_id == selected)
     }
 
-    pub fn handle_service_events(
-        &mut self,
-        events: Vec<AgentServiceEvent>,
-        cx: &mut Context<Self>,
-    ) {
+    /// Apply a batch of the local host's events in one update.
+    pub fn handle_host_events(&mut self, events: Vec<HostEvent>, cx: &mut Context<Self>) {
+        self.apply_host_events(&HostId::local(), events, cx);
+    }
+
+    /// Apply what `host` reported.
+    fn apply_host_events(&mut self, host: &HostId, events: Vec<HostEvent>, cx: &mut Context<Self>) {
         let mut changed = false;
         for event in events {
-            changed |= self.apply_service_event(event, cx);
+            changed |= match event {
+                HostEvent::Service(event) => self.apply_service_event(host, *event, cx),
+                HostEvent::ProjectBranch {
+                    project_root,
+                    branch,
+                } => self.apply_project_branch(&project_root, branch, cx),
+                HostEvent::Resync => {
+                    // Events may have been lost: re-read the list and the
+                    // task on screen instead of trusting what arrived.
+                    self.refresh_sessions(cx);
+                    if let Some(session_id) = self.selected_session.clone() {
+                        self.reload_timeline(&session_id, cx);
+                    }
+                    false
+                }
+            };
         }
         if changed {
             cx.notify();
         }
     }
 
+    /// The host reported a branch. Only the current root's matters; a
+    /// late report for a root that is no longer current is dropped.
+    fn apply_project_branch(
+        &mut self,
+        project_root: &str,
+        branch: Option<String>,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if self.project_root.as_deref() != Some(project_root) {
+            return false;
+        }
+        let changed = self.project_branch != branch;
+        self.set_branch(branch, cx);
+        changed
+    }
+
     /// Route one backend service event into UI state.
     #[cfg(test)]
     pub fn handle_service_event(&mut self, event: AgentServiceEvent, cx: &mut Context<Self>) {
-        if self.apply_service_event(event, cx) {
+        if self.apply_service_event(&HostId::local(), event, cx) {
             cx.notify();
         }
     }
 
-    /// Apply one event; returns false when nothing visible changed.
-    fn apply_service_event(&mut self, event: AgentServiceEvent, cx: &mut Context<Self>) -> bool {
+    /// Apply one event from `host`; returns false when nothing visible
+    /// changed.
+    fn apply_service_event(
+        &mut self,
+        host: &HostId,
+        event: AgentServiceEvent,
+        cx: &mut Context<Self>,
+    ) -> bool {
         match event {
             AgentServiceEvent::RuntimeStatus(mut status) => {
                 // A runtime that just started points Goose at the account's
                 // skills, which the first scan ran before; ask again.
-                if status.running && !self.runtime_running_seen {
+                if host.is_local() && status.running && !self.runtime_running_seen {
                     self.runtime_running_seen = true;
                     self.refresh_slash_commands(cx);
                 }
-                // The status snapshot is authoritative for active runs; one
-                // that repeats the known state changes nothing. A snapshot
-                // raced with a terminal event must not resurrect that run.
+                // The status snapshot is authoritative for its host's active
+                // runs and says nothing about other hosts'. One that repeats
+                // the known state changes nothing. A snapshot raced with a
+                // terminal event must not resurrect that run.
                 status
                     .active_runs
                     .retain(|_, run_id| !self.finished_runs.contains(run_id));
-                if self.active_runs == status.active_runs {
+                let mut merged: HashMap<String, String> = self
+                    .active_runs
+                    .iter()
+                    .filter(|(session_id, _)| self.host_of(session_id) != *host)
+                    .map(|(session_id, run_id)| (session_id.clone(), run_id.clone()))
+                    .collect();
+                for (session_id, run_id) in status.active_runs {
+                    self.file_session(&session_id, host);
+                    merged.insert(session_id, run_id);
+                }
+                if self.active_runs == merged {
                     return false;
                 }
-                self.active_runs = status.active_runs;
+                self.active_runs = merged;
                 // Run membership decides the inbox sections: a task woken
                 // from elsewhere moves the moment the snapshot lands.
                 self.sync_sidebar(cx);
             }
             AgentServiceEvent::SessionCreated(session) => {
+                self.file_session(&session.id, host);
                 return self.upsert_session(session, cx);
             }
             AgentServiceEvent::SessionUpdated { session, .. } => {
+                self.file_session(&session.id, host);
                 return self.upsert_session(session, cx);
             }
             AgentServiceEvent::TimelineItem {
@@ -4750,7 +4826,10 @@ impl ChatScreen {
                 session_id,
                 run_id,
                 event,
-            } => return self.handle_run_event(&session_id, &run_id, event, cx),
+            } => {
+                self.file_session(&session_id, host);
+                return self.handle_run_event(&session_id, &run_id, event, cx);
+            }
             AgentServiceEvent::SideQuestion {
                 request_id, event, ..
             } => {
@@ -4966,9 +5045,9 @@ impl ChatScreen {
                             self.subagent_epoch += 1;
                         }
                     }
-                    // The watcher covers checkouts; this catches a
+                    // The host's watcher covers checkouts; this catches a
                     // change that landed between two events.
-                    self.read_branch(cx);
+                    self.reread_branch(cx);
                     // The run that asked is gone (stopped or failed): its
                     // questions would block the composer forever.
                     self.clear_session_questions(session_id, cx);
@@ -5270,6 +5349,9 @@ impl Render for ChatScreen {
                             .child(main),
                     ),
             )
+            .when(self.project_picker.is_some(), |root| {
+                root.child(self.render_project_picker(cx))
+            })
             .when_some(self.lightbox.clone(), |root, image| {
                 root.child(motion::fade_in(
                     div()
@@ -5441,25 +5523,41 @@ impl ChatScreen {
         self.session_mcp = servers;
     }
 
-    /// Cache the header title for the selected task.
     /// Cache the header title for the selected task. The header names what
     /// the pane shows: with no transcript on screen it is a new task,
-    /// whatever the list has selected.
+    /// whatever the list has selected. A task whose host dropped leaves
+    /// the list but stays on screen, and keeps the title it had.
     fn refresh_selected_title(&mut self) {
+        self.refresh_selected_host();
         if self.timeline.is_empty() && self.loading_session.is_none() {
             self.selected_title = DEFAULT_TASK_TITLE.into();
             return;
         }
-        self.selected_title = self
-            .selected_session
-            .as_deref()
-            .and_then(|selected| {
-                self.sessions
-                    .iter()
-                    .position(|session| session.id == selected)
-            })
-            .map(|index| SharedString::from(self.sessions[index].title.clone()))
-            .unwrap_or_else(|| DEFAULT_TASK_TITLE.into());
+        let Some(selected) = self.selected_session.as_deref() else {
+            self.selected_title = DEFAULT_TASK_TITLE.into();
+            return;
+        };
+        if let Some(session) = self.sessions.iter().find(|session| session.id == selected) {
+            self.selected_title = SharedString::from(session.title.clone());
+        }
+    }
+
+    /// Cache the host the task on screen belongs to. The header names it
+    /// while a task is open, whatever host new tasks target, so the chip
+    /// never implies a local task runs on the remote host it was switched
+    /// to. The new-task screen has no task, so it shows the target chip.
+    fn refresh_selected_host(&mut self) {
+        if self.selection_is_draft() {
+            // Nothing has happened to the task on screen: the header
+            // offers the target chip, as on the new-task screen.
+            self.selected_host = None;
+            return;
+        }
+        self.selected_host = self.selected_session.as_deref().map(|selected| {
+            let owner = self.host_of(selected);
+            let name = SharedString::from(self.host_name(&owner));
+            (owner, name)
+        });
     }
 
     /// Raise a desktop notification when enabled and the window is not
@@ -5495,65 +5593,6 @@ impl ChatScreen {
             },
         );
     }
-}
-
-/// The directory that holds `HEAD` for a checkout, or `None` when `root`
-/// is not one. Supports worktrees, whose `.git` is a file that points at
-/// the real git dir.
-fn git_dir(root: &std::path::Path) -> Option<std::path::PathBuf> {
-    let dot_git = root.join(".git");
-    if dot_git.is_dir() {
-        return Some(dot_git);
-    }
-    let pointer = std::fs::read_to_string(&dot_git).ok()?;
-    let target = pointer.trim().strip_prefix("gitdir:")?.trim();
-    let target = std::path::Path::new(target);
-    Some(if target.is_absolute() {
-        target.to_path_buf()
-    } else {
-        root.join(target)
-    })
-}
-
-/// Current git branch from a git dir, or the short commit id when HEAD
-/// is detached. `None` when there is no readable `HEAD`.
-fn git_branch(git_dir: &std::path::Path) -> Option<String> {
-    let head = std::fs::read_to_string(git_dir.join("HEAD")).ok()?;
-    let head = head.trim();
-    match head.strip_prefix("ref: ") {
-        Some(reference) => Some(
-            reference
-                .strip_prefix("refs/heads/")
-                .unwrap_or(reference)
-                .to_string(),
-        ),
-        // Detached: a hex id. Anything else is a corrupt HEAD.
-        None => head
-            .get(..7)
-            .filter(|id| id.bytes().all(|byte| byte.is_ascii_hexdigit()))
-            .map(str::to_string),
-    }
-}
-
-/// True when a watcher event means the branch may have changed: a semantic
-/// change to a `HEAD` path (write, create, remove, or the rename pair of an
-/// atomic replacement), or a rescan the backend requires. Access-only events
-/// (open, read, close) are dropped: the branch read they would trigger emits
-/// those same events again under Linux inotify, looping the watcher at full
-/// CPU while idle (#945). Real writes still arrive as `Modify` on every
-/// backend, so no true change is lost; `Any`/`Other` stay forwarded for
-/// backends that cannot classify.
-fn head_change_event(event: &notify::Event) -> bool {
-    if event.need_rescan() {
-        return true;
-    }
-    if matches!(event.kind, notify::EventKind::Access(_)) {
-        return false;
-    }
-    event
-        .paths
-        .iter()
-        .any(|path| path.file_name().is_some_and(|name| name == "HEAD"))
 }
 
 /// Last path component of a project root, for chips and the sidebar.

@@ -182,7 +182,7 @@ impl SettingsScreen {
                         .map(|server| SettingsTarget::McpServer(server.name.clone())),
                 )
                 .collect(),
-            Section::Usage | Section::About => Vec::new(),
+            Section::Hosts | Section::Usage | Section::About => Vec::new(),
         }
     }
 
@@ -662,12 +662,15 @@ mod tests {
     fn integration_targets_follow_the_visible_control_order(cx: &mut TestAppContext) {
         cx.executor().allow_parking();
         let backend = std::sync::Arc::new(
-            crate::backend::AgentBackend::new("http://127.0.0.1:9".to_string(), String::new())
-                .expect("backend"),
+            crate::backend::AgentBackend::new("http://127.0.0.1:9".to_string()).expect("backend"),
         );
         let settings = cx.new(|cx| {
             SettingsScreen::new(
-                backend,
+                backend.clone(),
+                backend.local_host("user"),
+                Vec::new(),
+                None,
+                None,
                 "user".to_string(),
                 crate::settings::AppSettings::default(),
                 crate::shortcuts::ShortcutSnapshot {
@@ -748,12 +751,15 @@ mod tests {
     fn application_vim_off_keeps_settings_projection_empty(cx: &mut TestAppContext) {
         cx.executor().allow_parking();
         let backend = std::sync::Arc::new(
-            crate::backend::AgentBackend::new("http://127.0.0.1:9".to_string(), String::new())
-                .expect("backend"),
+            crate::backend::AgentBackend::new("http://127.0.0.1:9".to_string()).expect("backend"),
         );
         let settings = cx.new(|cx| {
             SettingsScreen::new(
-                backend,
+                backend.clone(),
+                backend.local_host("user"),
+                Vec::new(),
+                None,
+                None,
                 "user".to_string(),
                 crate::settings::AppSettings {
                     application_vim_enabled: false,
@@ -822,12 +828,15 @@ mod tests {
         }
 
         let backend = std::sync::Arc::new(
-            crate::backend::AgentBackend::new("http://127.0.0.1:9".to_string(), String::new())
-                .expect("backend"),
+            crate::backend::AgentBackend::new("http://127.0.0.1:9".to_string()).expect("backend"),
         );
         let settings = cx.new(|cx| {
             SettingsScreen::new(
-                backend,
+                backend.clone(),
+                backend.local_host("user"),
+                Vec::new(),
+                None,
+                None,
                 "user".to_string(),
                 crate::settings::AppSettings {
                     application_vim_enabled: true,
@@ -887,12 +896,15 @@ mod tests {
         }
 
         let backend = std::sync::Arc::new(
-            crate::backend::AgentBackend::new("http://127.0.0.1:9".to_string(), String::new())
-                .expect("backend"),
+            crate::backend::AgentBackend::new("http://127.0.0.1:9".to_string()).expect("backend"),
         );
         let settings = cx.new(|cx| {
             SettingsScreen::new(
-                backend,
+                backend.clone(),
+                backend.local_host("user"),
+                Vec::new(),
+                None,
+                None,
                 "user".to_string(),
                 crate::settings::AppSettings {
                     application_vim_enabled: true,
@@ -969,12 +981,15 @@ mod tests {
     fn dropdown_screen(cx: &mut TestAppContext, application_vim: bool) -> Entity<SettingsScreen> {
         cx.executor().allow_parking();
         let backend = std::sync::Arc::new(
-            crate::backend::AgentBackend::new("http://127.0.0.1:9".to_string(), String::new())
-                .expect("backend"),
+            crate::backend::AgentBackend::new("http://127.0.0.1:9".to_string()).expect("backend"),
         );
         cx.new(|cx| {
             SettingsScreen::new(
-                backend,
+                backend.clone(),
+                backend.local_host("user"),
+                Vec::new(),
+                None,
+                None,
                 "user".to_string(),
                 crate::settings::AppSettings {
                     application_vim_enabled: application_vim,
