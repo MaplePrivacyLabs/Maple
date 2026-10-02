@@ -376,6 +376,11 @@ xcode_version_for_developer_dir() {
   DEVELOPER_DIR="${dir}" /usr/bin/xcodebuild -version 2>/dev/null | awk '/^Xcode / { print $2; exit }'
 }
 
+xcode_build_for_developer_dir() {
+  local dir="${1:?developer dir is required}"
+  DEVELOPER_DIR="${dir}" /usr/bin/xcodebuild -version 2>/dev/null | awk '/^Build version / { print $3; exit }'
+}
+
 xcode_version_matches_expected() {
   local version="${1:-}"
   local expected="${2:-}"
@@ -387,7 +392,8 @@ xcode_version_matches_expected() {
 
 resolve_xcode_developer_dir() {
   local expected="${MAPLE_NIX_XCODE_VERSION:-}"
-  local candidate version
+  local expected_build="${MAPLE_NIX_XCODE_BUILD_VERSION:-}"
+  local candidate version build
   local -a candidates=()
 
   if [ -n "${DEVELOPER_DIR:-}" ]; then
@@ -420,15 +426,21 @@ resolve_xcode_developer_dir() {
         continue
       fi
     fi
+    if [ -n "${expected_build}" ]; then
+      build="$(xcode_build_for_developer_dir "${candidate}")"
+      if [ "${build}" != "${expected_build}" ]; then
+        continue
+      fi
+    fi
 
     printf '%s\n' "${candidate}"
     return 0
   done
 
   if [ -n "${expected}" ]; then
-    echo "Could not find Xcode ${expected}. Install it or select it with xcode-select." >&2
+    echo "Could not find Xcode ${expected}${expected_build:+ build ${expected_build}}. Install it or select it with xcode-select." >&2
   else
-    echo "Could not find a full Xcode installation." >&2
+    echo "Could not find a full Xcode installation${expected_build:+ with build ${expected_build}}." >&2
   fi
   return 1
 }
@@ -438,16 +450,22 @@ use_xcode_toolchain() {
     return 0
   fi
 
-  local dev_dir toolchain_bin macos_sdkroot macos_link_flags xcode_info
+  local dev_dir toolchain_bin macos_sdkroot macos_link_flags xcode_info xcode_build
   dev_dir="$(resolve_xcode_developer_dir)"
   toolchain_bin="${dev_dir}/Toolchains/XcodeDefault.xctoolchain/usr/bin"
   macos_sdkroot="$(DEVELOPER_DIR="${dev_dir}" /usr/bin/xcrun --sdk macosx --show-sdk-path)"
   macos_link_flags="-C link-arg=-isysroot -C link-arg=${macos_sdkroot}"
   xcode_info="$(DEVELOPER_DIR="${dev_dir}" /usr/bin/xcodebuild -version)"
+  xcode_build="$(printf '%s\n' "${xcode_info}" | awk '/^Build version / { print $3; exit }')"
+  if [ -n "${MAPLE_NIX_XCODE_BUILD_VERSION:-}" ] \
+    && [ "${xcode_build}" != "${MAPLE_NIX_XCODE_BUILD_VERSION}" ]; then
+    echo "Expected Xcode build ${MAPLE_NIX_XCODE_BUILD_VERSION}, got '${xcode_build}' from ${dev_dir}." >&2
+    return 1
+  fi
 
   export DEVELOPER_DIR="${dev_dir}"
   export MAPLE_XCODE_VERSION="$(printf '%s\n' "${xcode_info}" | awk '/^Xcode / { print $2; exit }')"
-  export MAPLE_XCODE_BUILD_VERSION="$(printf '%s\n' "${xcode_info}" | awk '/^Build version / { print $3; exit }')"
+  export MAPLE_XCODE_BUILD_VERSION="${xcode_build}"
   export CC="/usr/bin/clang"
   export CXX="/usr/bin/clang++"
   export AR="/usr/bin/ar"

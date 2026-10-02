@@ -27,12 +27,13 @@
         };
         lib = pkgs.lib;
         supportsAndroidHost = system == "x86_64-linux";
+        appleToolchain = builtins.fromJSON (builtins.readFile ./scripts/ci/apple-toolchain.json);
 
         versions = {
           bun = "1.3.5";
           rust = "1.94.1";
           jdk = "21";
-          xcode = "26.5";
+          xcode = appleToolchain.version;
           android = rec {
             compileSdk = "36";
             platforms = [
@@ -576,6 +577,7 @@
           export MAPLE_NIX_RUST_TARGETS="${lib.concatStringsSep " " nixRustTargets}"
           export MAPLE_NIX_JDK_VERSION=${versions.jdk}
           export MAPLE_NIX_XCODE_VERSION=${versions.xcode}
+          export MAPLE_NIX_XCODE_BUILD_VERSION=${appleToolchain.build}
           export MAPLE_NIX_GNUTAR=${pkgs.gnutar}/bin/tar
           export MAPLE_NIX_GZIP=${pkgs.gzip}/bin/gzip
           ${lib.optionalString pkgs.stdenv.isDarwin "export MAPLE_NIX_LIBICONV=${pkgs.libiconv}"}
@@ -705,6 +707,15 @@
             python3 "$TMPDIR/repo/scripts/ci/test_codeql_workflow.py"
             cp "$signingTests" "$TMPDIR/repo/scripts/ci/test_signing_workflows.py"
             python3 "$TMPDIR/repo/scripts/ci/test_signing_workflows.py"
+            touch "$out"
+          '';
+
+          apple-toolchain = pkgs.runCommand "maple-apple-toolchain-check" {
+            nativeBuildInputs = with pkgs; [ bash python3 yq-go ];
+            src = ./.;
+          } ''
+            cd "$src"
+            python3 scripts/ci/test_select_xcode.py
             touch "$out"
           '';
 

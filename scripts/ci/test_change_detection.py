@@ -3,7 +3,7 @@
 
 import unittest
 
-from change_detection import OUTPUTS, classify_paths
+from change_detection import IOS_ONNX_INPUTS, OUTPUTS, classify_paths
 
 
 def enabled(*names: str) -> dict[str, bool]:
@@ -148,6 +148,15 @@ class ChangeDetectionTests(unittest.TestCase):
         # The new workflow always builds master; editing it alone does not
         # select an unrelated production app package or ONNX cache warmer.
         self.assert_routes([".github/workflows/ios-dev-testflight.yml"])
+
+    def test_apple_toolchain_inputs_select_apple_builds_and_onnx_cache_warmer(self) -> None:
+        for path in (
+            "scripts/ci/apple-toolchain.json",
+            "scripts/ci/select-xcode.py",
+        ):
+            with self.subTest(path=path):
+                self.assert_routes([path], "macos", "ios", "ios_onnx")
+                self.assertIn(path, IOS_ONNX_INPUTS)
 
     def test_mixed_changes_union_their_routes(self) -> None:
         self.assert_routes(

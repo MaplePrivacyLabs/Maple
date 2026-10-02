@@ -36,7 +36,8 @@ First build the small runner and run the catalog canary, which needs no fixture:
 
 ```sh
 nix develop --no-update-lock-file .#apple -c env \
-  MAPLE_NIX_XCODE_VERSION=26.6 DEVELOPER_DIR=/Applications/Xcode_26.6.app/Contents/Developer \
+  MAPLE_NIX_XCODE_VERSION=26.6 MAPLE_NIX_XCODE_BUILD_VERSION=17F113 \
+  DEVELOPER_DIR=/Applications/Xcode_26.6.app/Contents/Developer \
   bash scripts/testing/storekit/run.sh \
   --app apps/maple-research/frontend/src-tauri/gen/apple/build/arm64-sim/Maple.app \
   --udid "<YOUR_BOOTED_SIMULATOR_UDID>" \
@@ -47,7 +48,8 @@ Then run the certificate canary with a fresh runner-owned bootstrap fixture:
 
 ```sh
 nix develop --no-update-lock-file .#apple -c env \
-  MAPLE_NIX_XCODE_VERSION=26.6 DEVELOPER_DIR=/Applications/Xcode_26.6.app/Contents/Developer \
+  MAPLE_NIX_XCODE_VERSION=26.6 MAPLE_NIX_XCODE_BUILD_VERSION=17F113 \
+  DEVELOPER_DIR=/Applications/Xcode_26.6.app/Contents/Developer \
   bash scripts/testing/storekit/run.sh --skip-build --fixture-bootstrap \
   --app apps/maple-research/frontend/src-tauri/gen/apple/build/arm64-sim/Maple.app \
   --udid "<YOUR_BOOTED_SIMULATOR_UDID>" \
@@ -68,7 +70,8 @@ each gets a separate XCTest invocation, fixture process and journal:
 
 ```sh
 nix develop --no-update-lock-file .#apple -c env \
-  MAPLE_NIX_XCODE_VERSION=26.6 DEVELOPER_DIR=/Applications/Xcode_26.6.app/Contents/Developer \
+  MAPLE_NIX_XCODE_VERSION=26.6 MAPLE_NIX_XCODE_BUILD_VERSION=17F113 \
+  DEVELOPER_DIR=/Applications/Xcode_26.6.app/Contents/Developer \
   bash scripts/testing/storekit/run.sh --skip-build \
   --fixture-certificate /absolute/path/to/MapleStoreKitSigningCertificate.cer \
   --app apps/maple-research/frontend/src-tauri/gen/apple/build/arm64-sim/Maple.app \
@@ -173,7 +176,8 @@ reinstalling or restarting Maple, pass the exact GUI-built DerivedData app:
 
 ```sh
 nix develop --no-update-lock-file .#apple -c env \
-  MAPLE_NIX_XCODE_VERSION=26.6 DEVELOPER_DIR=/Applications/Xcode_26.6.app/Contents/Developer \
+  MAPLE_NIX_XCODE_VERSION=26.6 MAPLE_NIX_XCODE_BUILD_VERSION=17F113 \
+  DEVELOPER_DIR=/Applications/Xcode_26.6.app/Contents/Developer \
   bash scripts/testing/storekit/run.sh --app /absolute/path/to/Maple.app \
   --udid "<YOUR_BOOTED_SIMULATOR_UDID>" \
   --only MapleStoreKitCaptureUITests/testExportPublicSigningCertificate

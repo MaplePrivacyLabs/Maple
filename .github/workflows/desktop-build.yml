@@ -24,24 +24,8 @@ jobs:
         with:
           persist-credentials: false
 
-      # Xcode 26.5 is temporarily exposed as a beta app on macos-26 runners: https://github.com/actions/runner-images/issues/14108
-      - name: Select Xcode 26.5
-        run: |
-          set -euo pipefail
-          for xcode_app in \
-            /Applications/Xcode_26.5.0.app \
-            /Applications/Xcode_26.5_beta_2.app \
-            /Applications/Xcode_26.5_beta.app
-          do
-            if [ -x "${xcode_app}/Contents/Developer/usr/bin/xcodebuild" ]; then
-              sudo xcode-select -s "${xcode_app}/Contents/Developer"
-              xcodebuild -version
-              exit 0
-            fi
-          done
-          echo "Xcode 26.5 is not installed on this runner." >&2
-          ls -1 /Applications/Xcode*.app >&2 || true
-          exit 1
+      - name: Select pinned Xcode
+        run: python3 scripts/ci/select-xcode.py
 
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # was v22
