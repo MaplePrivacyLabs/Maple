@@ -9607,21 +9607,31 @@ fn document_dir() -> Option<PathBuf> {
 }
 
 /// Path of the default workspace, without creating it.
+///
+/// Resolved once per process: the UI labels project roots while it
+/// renders, so recognizing the workspace must not touch the disk. The
+/// documents folder is canonicalized the way every project root is, so a
+/// plain comparison matches the root the runtime stores for it.
 pub fn default_maple_workspace_path() -> Option<PathBuf> {
-    document_dir().map(|documents| maple_workspace_directory(&documents))
+    static WORKSPACE: once_cell::sync::OnceCell<Option<PathBuf>> = once_cell::sync::OnceCell::new();
+    WORKSPACE
+        .get_or_init(|| {
+            let documents = document_dir()?;
+            let documents = canonical_dir(&documents).unwrap_or(documents);
+            Some(maple_workspace_directory(&documents))
+        })
+        .clone()
 }
 
 /// Create the default workspace when it is missing and return its canonical
-/// path. `None` when the documents directory cannot be resolved or created.
-pub fn ensure_default_maple_workspace() -> Option<PathBuf> {
-    let path = default_maple_workspace_path()?;
-    match create_directory(&path) {
-        Ok(path) => Some(path),
-        Err(error) => {
-            log::warn!("{error}");
-            None
-        }
-    }
+/// path. Call this only when the workspace is about to be used (a runtime
+/// start that picks it, or the user choosing or opening it), never at
+/// launch: someone working elsewhere is not asked for Documents access,
+/// and a folder the user deleted stays deleted until it is used again.
+pub fn ensure_default_maple_workspace() -> Result<PathBuf, String> {
+    let path = default_maple_workspace_path()
+        .ok_or_else(|| "No documents folder for the Maple workspace".to_string())?;
+    create_directory(&path)
 }
 
 fn create_directory(path: &Path) -> Result<PathBuf, String> {
@@ -9630,9 +9640,10 @@ fn create_directory(path: &Path) -> Result<PathBuf, String> {
     canonical_dir(path).ok_or_else(|| format!("{} is not a folder", path.display()))
 }
 
-/// Whether `path` is the default Documents/Maple workspace.
+/// Whether `path` is the default Documents/Maple workspace. Project roots
+/// are canonical, so this is a comparison with no disk access.
 pub fn is_default_maple_workspace(path: &Path) -> bool {
-    default_maple_workspace_path().is_some_and(|workspace| paths_are_same_dir(path, &workspace))
+    default_maple_workspace_path().is_some_and(|workspace| workspace == path)
 }
 
 /// Project the desktop opens when it has no usable saved root.
@@ -9644,11 +9655,11 @@ pub fn startup_project_root(config: &AgentConfig, workspace: Option<&Path>) -> O
     if let Some(path) = usable_saved_project_root(config) {
         return Some(path);
     }
-    let workspace = workspace?;
-    if removed_contains_dir(&config.removed_project_roots, workspace) {
+    let workspace = path_string(workspace?);
+    if is_removed_project_root(&workspace, &config.removed_project_roots) {
         return None;
     }
-    Some(path_string(workspace))
+    Some(workspace)
 }
 
 fn removed_contains_dir(removed: &[String], directory: &Path) -> bool {
@@ -9671,7 +9682,9 @@ fn usable_saved_project_root(config: &AgentConfig) -> Option<String> {
 
 /// Offer the Maple workspace in the project list without moving roots the
 /// user already saved. A removed workspace stays hidden even if an older
-/// recent-root file still names it.
+/// recent-root file still names it. Listing never creates the folder, and
+/// the comparisons are on the canonical path strings, so this does not
+/// touch the Documents folder.
 pub fn include_default_maple_workspace(
     mut roots: Vec<RecentProjectRoot>,
     removed: &[String],
@@ -9681,10 +9694,8 @@ pub fn include_default_maple_workspace(
         return roots;
     };
     let path = path_string(workspace);
-    let same_workspace = |root: &RecentProjectRoot| {
-        root.path == path || paths_are_same_dir(Path::new(&root.path), workspace)
-    };
-    if removed_contains_dir(removed, workspace) {
+    let same_workspace = |root: &RecentProjectRoot| root.path == path;
+    if is_removed_project_root(&path, removed) {
         roots.retain(|root| !same_workspace(root));
         return roots;
     }
@@ -9730,12 +9741,9 @@ fn implicitly_trusted_project_root(
     {
         return true;
     }
-    if let Some(workspace) = maple_workspace
-        && paths_are_same_dir(project_root, workspace)
-    {
-        return true;
-    }
-    false
+    // A plain comparison: resolving the workspace on disk to rule out every
+    // other project would read the Documents folder for each trust check.
+    maple_workspace.is_some_and(|workspace| project_root == workspace)
 }
 
 fn project_trust_status(

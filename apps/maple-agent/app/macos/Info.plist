@@ -24,6 +24,8 @@
     <string>13.0</string>
     <key>NSAppleEventsUsageDescription</key>
     <string>Maple uses Automation only when a computer-use action needs to communicate with another app.</string>
+    <key>NSDocumentsFolderUsageDescription</key>
+    <string>Maple keeps its default workspace in Documents/Maple, where the agent works on the files for your tasks.</string>
     <key>NSHighResolutionCapable</key>
     <true/>
     <key>NSScreenCaptureUsageDescription</key>

@@ -2591,6 +2591,45 @@ mod state_tests {
         backend
     }
 
+    /// Choosing another folder keeps the Maple workspace in the roots the
+    /// screen applies: the selection answer offers it like the list does.
+    /// Before, the workspace left both project menus until the next start.
+    #[gpui::test]
+    fn test_project_selection_keeps_offering_the_maple_workspace(cx: &mut TestAppContext) {
+        let Some(workspace) = maple_agent::agent::default_maple_workspace_path() else {
+            return;
+        };
+        let backend = backend_with_mcp_servers(cx, "maple-workspace-offer", Vec::new());
+        let other = std::env::temp_dir().join(format!(
+            "maple-agent-test-other-root-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&other).unwrap();
+        let other = other.canonicalize().unwrap().to_string_lossy().to_string();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        {
+            let backend = backend.clone();
+            let other = other.clone();
+            backend.clone().spawn(async move {
+                let _ = sender.send(backend.select_project_root("user", other).await);
+            });
+        }
+        let registration = receiver
+            .recv_timeout(std::time::Duration::from_secs(30))
+            .expect("select task")
+            .expect("project selected");
+        let roots: Vec<String> = registration
+            .roots
+            .into_iter()
+            .map(|root| root.path)
+            .collect();
+        assert_eq!(
+            roots,
+            vec![other.clone(), workspace.to_string_lossy().to_string()]
+        );
+        let _ = std::fs::remove_dir_all(&other);
+    }
+
     /// A curated integration card as the runtime catalog projects it.
     fn integration_card(
         id: &str,

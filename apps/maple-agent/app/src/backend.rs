@@ -445,12 +445,6 @@ fn home_dir() -> Option<PathBuf> {
         .filter(|path| path.is_absolute())
 }
 
-/// Create Documents/Maple if it is missing. Called when the window opens,
-/// before sign-in, so the first launch has a workspace ready.
-pub fn ensure_default_workspace() -> Option<std::path::PathBuf> {
-    maple_agent::agent::ensure_default_maple_workspace()
-}
-
 /// Root the desktop app opens when the account has no saved root and the
 /// Documents/Maple workspace cannot be created. The GUI must not depend on
 /// the directory it was launched from: that is the job of the `maple acp`
@@ -460,21 +454,40 @@ fn fallback_project_root() -> Option<String> {
 }
 
 /// Root for a GUI start: the saved folder when it still exists and was not
-/// removed, otherwise Documents/Maple (created when missing). Home is only
-/// the last resort. Never the process working directory.
+/// removed, otherwise Documents/Maple unless the user removed it. Home is
+/// only the last resort. Never the process working directory. The
+/// workspace may not exist yet: `gui_start_root` creates it.
 fn gui_project_root(config: &maple_agent::agent::AgentConfig) -> Option<String> {
-    let workspace = maple_agent::agent::ensure_default_maple_workspace();
+    let workspace = maple_agent::agent::default_maple_workspace_path();
     maple_agent::agent::startup_project_root(config, workspace.as_deref())
         .or_else(fallback_project_root)
 }
 
+/// `gui_project_root` for a runtime start, which needs the folder on disk.
+/// Documents/Maple is created here, the first time a start uses it. If
+/// that fails (Documents access denied, for example), the start uses home.
+fn gui_start_root(config: &maple_agent::agent::AgentConfig) -> Option<String> {
+    let root = gui_project_root(config)?;
+    if !maple_agent::agent::is_default_maple_workspace(std::path::Path::new(&root)) {
+        return Some(root);
+    }
+    match maple_agent::agent::ensure_default_maple_workspace() {
+        Ok(path) => Some(path.to_string_lossy().to_string()),
+        Err(error) => {
+            log::warn!("{error}");
+            fallback_project_root()
+        }
+    }
+}
+
 /// Recent projects, with the default Maple workspace offered when the user
-/// has not removed it. Existing saved order is left as it is.
+/// has not removed it. Existing saved order is left as it is. Listing does
+/// not create the folder; choosing or opening it does.
 fn offered_project_roots(
     config: &maple_agent::agent::AgentConfig,
     roots: Vec<RecentProjectRoot>,
 ) -> Vec<RecentProjectRoot> {
-    let workspace = maple_agent::agent::ensure_default_maple_workspace();
+    let workspace = maple_agent::agent::default_maple_workspace_path();
     maple_agent::agent::include_default_maple_workspace(
         roots,
         &config.removed_project_roots,
@@ -1379,7 +1392,7 @@ impl AgentBackend {
             }) => {
                 let config = handle.load_config().await?;
                 Some(AgentStartRequest {
-                    project_root: gui_project_root(&config),
+                    project_root: gui_start_root(&config),
                     model,
                     mode,
                 })
@@ -1450,11 +1463,19 @@ impl AgentBackend {
         user_id: &str,
         path: String,
     ) -> Result<AgentProjectRootRegistration, String> {
-        self.service
-            .handle_for_user(user_id)
-            .await?
-            .save_recent_project_root(path)
-            .await
+        let handle = self.service.handle_for_user(user_id).await?;
+        // The listed Maple workspace is created the first time it is chosen.
+        if maple_agent::agent::is_default_maple_workspace(std::path::Path::new(path.trim())) {
+            maple_agent::agent::ensure_default_maple_workspace()?;
+        }
+        let mut registration = handle.save_recent_project_root(path).await?;
+        // The screen shows these roots as they are: offer the workspace in
+        // them the same way the project list does.
+        registration.roots = offered_project_roots(
+            &registration.config,
+            std::mem::take(&mut registration.roots),
+        );
+        Ok(registration)
     }
 
     pub async fn list_sessions(

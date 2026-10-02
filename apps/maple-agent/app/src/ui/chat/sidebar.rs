@@ -1119,6 +1119,9 @@ impl Sidebar {
             .filter(|name| !name.trim().is_empty())
         {
             Some(stored) => stored == name,
+            None if maple_agent::agent::is_default_maple_workspace(std::path::Path::new(root)) => {
+                name == maple_agent::agent::MAPLE_WORKSPACE_DISPLAY_NAME
+            }
             None => match std::path::Path::new(root).file_name() {
                 Some(file) => file.to_string_lossy().as_ref() == name,
                 None => root == name,
@@ -1250,9 +1253,15 @@ impl Sidebar {
         let path = root.to_string();
         self.call(
             async move {
-                tokio::task::spawn_blocking(move || crate::platform::reveal_folder(&path))
-                    .await
-                    .map_err(|error| format!("Could not open the folder: {error}"))?
+                tokio::task::spawn_blocking(move || {
+                    // The listed Maple workspace exists only once it is used.
+                    if maple_agent::agent::is_default_maple_workspace(std::path::Path::new(&path)) {
+                        maple_agent::agent::ensure_default_maple_workspace()?;
+                    }
+                    crate::platform::reveal_folder(&path)
+                })
+                .await
+                .map_err(|error| format!("Could not open the folder: {error}"))?
             },
             cx,
             |_this, result, cx| {

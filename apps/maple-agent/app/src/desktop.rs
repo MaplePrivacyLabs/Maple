@@ -485,11 +485,6 @@ pub fn run() {
                 )
                 .expect("failed to open main window");
             log::debug!("startup: window open at {} ms", crate::startup_elapsed());
-            if let Some(workspace) = crate::backend::ensure_default_workspace() {
-                log::info!("default Maple workspace is {}", workspace.display());
-            } else {
-                log::warn!("could not create the default Maple workspace");
-            }
             // Saved credentials are trusted at once: the chat screen opens
             // with the account's local task list while the server validates
             // the credentials in the background. Only a definitive rejection
