@@ -27,6 +27,5 @@ OPENSECRET_DEV_POSTGRES=0 OPENSECRET_DEV_ENV=0 OPENSECRET_DEV_CONTAINERS=0 \
 ```
 
 `CONTINUUM_PROXY_PORT` defaults to `8092`. `CONTINUUM_PROXY_WORKSPACE`
-defaults to `.local/continuum`. Maple Dev Env sets both and starts these
-recipes on Linux x86_64. Linux on another architecture still has no local
-proxy recipe. The generated binary is gitignored with the rest of `.local/`.
+defaults to `.local/continuum`; a workspace manager may set both. Linux on
+another architecture still has no local proxy recipe. The generated binary is gitignored with the rest of `.local/`.
