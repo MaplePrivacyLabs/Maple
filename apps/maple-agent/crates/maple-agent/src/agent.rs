@@ -2284,11 +2284,11 @@ async fn start_runtime_for_user(
 
     let project_root = resolve_project_root(request.project_root.as_deref(), &agent_config)
         .map_err(|e| format!("Failed to resolve Agent Mode project root: {e}"))?;
-    // Home and the process launch directory are trusted with no saved
-    // decision, so a first GUI launch (usually from home) and `maple acp`
-    // started in a repo do not prompt. Other roots stay undecided until the
-    // UI or ACP client records a one-time answer. A saved "do not trust"
-    // answer stays as it is.
+    // Home, the process launch directory, and the default Documents/Maple
+    // workspace are trusted with no saved decision. A first GUI launch and
+    // `maple acp` started in a repo do not prompt. Other roots stay
+    // undecided until the UI or ACP client records a one-time answer. A
+    // saved "do not trust" answer stays as it is.
     let model = request
         .model
         .unwrap_or_else(|| agent_config.default_model.clone());
@@ -9582,22 +9582,168 @@ fn paths_are_same_dir(left: &Path, right: &Path) -> bool {
     }
 }
 
-/// Home, and the directory the process was started in, are trusted until
-/// the user records a different answer. The filesystem root is never
-/// implicit: a GUI launched from the Dock often has cwd `/`.
+/// Folder name under the platform documents directory.
+pub const MAPLE_WORKSPACE_DIRECTORY_NAME: &str = "Maple";
+
+/// Name shown for that folder in the project menus.
+pub const MAPLE_WORKSPACE_DISPLAY_NAME: &str = "Maple Workspace";
+
+/// `<documents>/Maple` for a documents directory the caller already resolved.
+pub fn maple_workspace_directory(documents: &Path) -> PathBuf {
+    documents.join(MAPLE_WORKSPACE_DIRECTORY_NAME)
+}
+
+/// Platform documents directory.
+///
+/// Linux uses the XDG documents directory, macOS uses `$HOME/Documents`,
+/// and Windows uses `FOLDERID_Documents`. iOS uses `$HOME/Documents` when
+/// the process home is set; the GPUI app has no iOS target, so this does
+/// not call `NSDocumentDirectory`.
+fn document_dir() -> Option<PathBuf> {
+    dirs::document_dir()
+        .filter(|path| path.is_absolute())
+        .or_else(|| home_dir().map(|home| home.join("Documents")))
+        .filter(|path| path.is_absolute())
+}
+
+/// Path of the default workspace, without creating it.
+///
+/// Resolved once per process: the UI labels project roots while it
+/// renders, so recognizing the workspace must not touch the disk. The
+/// documents folder is canonicalized the way every project root is, so a
+/// plain comparison matches the root the runtime stores for it.
+pub fn default_maple_workspace_path() -> Option<PathBuf> {
+    static WORKSPACE: once_cell::sync::OnceCell<Option<PathBuf>> = once_cell::sync::OnceCell::new();
+    WORKSPACE
+        .get_or_init(|| {
+            let documents = document_dir()?;
+            let documents = canonical_dir(&documents).unwrap_or(documents);
+            Some(maple_workspace_directory(&documents))
+        })
+        .clone()
+}
+
+/// Create the default workspace when it is missing and return its canonical
+/// path. Call this only when the workspace is about to be used (a runtime
+/// start that picks it, or the user choosing or opening it), never at
+/// launch: someone working elsewhere is not asked for Documents access,
+/// and a folder the user deleted stays deleted until it is used again.
+pub fn ensure_default_maple_workspace() -> Result<PathBuf, String> {
+    let path = default_maple_workspace_path()
+        .ok_or_else(|| "No documents folder for the Maple workspace".to_string())?;
+    create_directory(&path)
+}
+
+fn create_directory(path: &Path) -> Result<PathBuf, String> {
+    fs::create_dir_all(path)
+        .map_err(|error| format!("Cannot create {}: {error}", path.display()))?;
+    canonical_dir(path).ok_or_else(|| format!("{} is not a folder", path.display()))
+}
+
+/// Whether `path` is the default Documents/Maple workspace. Project roots
+/// are canonical, so this is a comparison with no disk access.
+pub fn is_default_maple_workspace(path: &Path) -> bool {
+    default_maple_workspace_path().is_some_and(|workspace| workspace == path)
+}
+
+/// Project the desktop opens when it has no usable saved root.
+///
+/// A saved folder that still exists and was not removed wins. Otherwise the
+/// caller-supplied Maple workspace is the default. `None` means the caller
+/// should use its own last resort (the home directory for the GUI).
+pub fn startup_project_root(config: &AgentConfig, workspace: Option<&Path>) -> Option<String> {
+    if let Some(path) = usable_saved_project_root(config) {
+        return Some(path);
+    }
+    let workspace = path_string(workspace?);
+    if is_removed_project_root(&workspace, &config.removed_project_roots) {
+        return None;
+    }
+    Some(workspace)
+}
+
+fn removed_contains_dir(removed: &[String], directory: &Path) -> bool {
+    let path = path_string(directory);
+    removed
+        .iter()
+        .any(|candidate| candidate == &path || paths_are_same_dir(Path::new(candidate), directory))
+}
+
+fn usable_saved_project_root(config: &AgentConfig) -> Option<String> {
+    let path = config.default_project_root.as_deref()?.trim();
+    if path.is_empty() || !Path::new(path).is_dir() {
+        return None;
+    }
+    if removed_contains_dir(&config.removed_project_roots, Path::new(path)) {
+        return None;
+    }
+    Some(path.to_owned())
+}
+
+/// Offer the Maple workspace in the project list without moving roots the
+/// user already saved. A removed workspace stays hidden even if an older
+/// recent-root file still names it. Listing never creates the folder, and
+/// the comparisons are on the canonical path strings, so this does not
+/// touch the Documents folder.
+pub fn include_default_maple_workspace(
+    mut roots: Vec<RecentProjectRoot>,
+    removed: &[String],
+    workspace: Option<&Path>,
+) -> Vec<RecentProjectRoot> {
+    let Some(workspace) = workspace else {
+        return roots;
+    };
+    let path = path_string(workspace);
+    let same_workspace = |root: &RecentProjectRoot| root.path == path;
+    if is_removed_project_root(&path, removed) {
+        roots.retain(|root| !same_workspace(root));
+        return roots;
+    }
+    if roots.iter().any(same_workspace) {
+        return roots;
+    }
+    roots.push(RecentProjectRoot {
+        path,
+        name: MAPLE_WORKSPACE_DISPLAY_NAME.to_string(),
+        last_used_ms: 0,
+    });
+    roots
+}
+
+/// Home, the directory the process was started in, and the default Maple
+/// workspace are trusted until the user records a different answer. The
+/// filesystem root is never implicit: a GUI launched from the Dock often
+/// has cwd `/`.
 fn is_implicitly_trusted_project_root(project_root: &Path) -> bool {
-    if let Some(home) = home_dir().and_then(|path| canonical_dir(&path))
-        && paths_are_same_dir(project_root, &home)
+    implicitly_trusted_project_root(
+        project_root,
+        home_dir().and_then(|path| canonical_dir(&path)).as_deref(),
+        launch_dir()
+            .filter(|path| !is_filesystem_root(path))
+            .as_deref(),
+        default_maple_workspace_path().as_deref(),
+    )
+}
+
+fn implicitly_trusted_project_root(
+    project_root: &Path,
+    home: Option<&Path>,
+    launch: Option<&Path>,
+    maple_workspace: Option<&Path>,
+) -> bool {
+    if let Some(home) = home
+        && paths_are_same_dir(project_root, home)
     {
         return true;
     }
-    if let Some(launch) = launch_dir()
-        && !is_filesystem_root(&launch)
-        && paths_are_same_dir(project_root, &launch)
+    if let Some(launch) = launch
+        && paths_are_same_dir(project_root, launch)
     {
         return true;
     }
-    false
+    // A plain comparison: resolving the workspace on disk to rule out every
+    // other project would read the Documents folder for each trust check.
+    maple_workspace.is_some_and(|workspace| project_root == workspace)
 }
 
 fn project_trust_status(
@@ -13752,6 +13898,146 @@ mod tests {
         let other = normalize_project_root(&other).unwrap();
         assert_eq!(project_trust_status(&config, &other, true).decision, None);
         let _ = fs::remove_dir_all(&other);
+    }
+
+    #[test]
+    fn maple_workspace_directory_is_created_under_documents() {
+        let documents = recent_roots_test_dir("documents-base");
+        let workspace = maple_workspace_directory(&documents);
+        assert_eq!(
+            workspace.file_name().and_then(|name| name.to_str()),
+            Some(MAPLE_WORKSPACE_DIRECTORY_NAME)
+        );
+        assert!(!workspace.exists());
+        let created = create_directory(&workspace).unwrap();
+        assert_eq!(created, workspace.canonicalize().unwrap());
+        assert!(created.is_dir());
+        let _ = fs::remove_dir_all(documents);
+    }
+
+    #[test]
+    fn startup_project_root_keeps_a_saved_folder_and_otherwise_uses_the_maple_workspace() {
+        let root = recent_roots_test_dir("startup-workspace");
+        let saved = root.join("saved");
+        let workspace = maple_workspace_directory(&root.join("documents"));
+        fs::create_dir_all(&saved).unwrap();
+        fs::create_dir_all(&workspace).unwrap();
+        let saved = normalize_project_root(&saved).unwrap();
+        let workspace = normalize_project_root(&workspace).unwrap();
+        let saved_path = path_string(&saved);
+        let workspace_path = path_string(&workspace);
+        let config = |root: Option<String>, removed: Vec<String>| AgentConfig {
+            default_project_root: root,
+            removed_project_roots: removed,
+            ..AgentConfig::default()
+        };
+
+        assert_eq!(
+            startup_project_root(
+                &config(Some(saved_path.clone()), Vec::new()),
+                Some(&workspace)
+            )
+            .as_deref(),
+            Some(saved_path.as_str())
+        );
+        assert_eq!(
+            startup_project_root(&config(None, Vec::new()), Some(&workspace)).as_deref(),
+            Some(workspace_path.as_str())
+        );
+        assert_eq!(
+            startup_project_root(
+                &config(
+                    Some(root.join("missing").to_string_lossy().into_owned()),
+                    Vec::new(),
+                ),
+                Some(&workspace),
+            )
+            .as_deref(),
+            Some(workspace_path.as_str())
+        );
+        assert_eq!(
+            startup_project_root(
+                &config(Some(saved_path.clone()), vec![saved_path]),
+                Some(&workspace),
+            )
+            .as_deref(),
+            Some(workspace_path.as_str())
+        );
+        assert_eq!(
+            startup_project_root(&config(None, vec![workspace_path]), Some(&workspace),),
+            None
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn default_maple_workspace_is_offered_without_reordering_saved_projects() {
+        let root = recent_roots_test_dir("offer-workspace");
+        let workspace = maple_workspace_directory(&root.join("documents"));
+        let first = root.join("first");
+        let second = root.join("second");
+        fs::create_dir_all(&workspace).unwrap();
+        fs::create_dir_all(&first).unwrap();
+        fs::create_dir_all(&second).unwrap();
+        let workspace = normalize_project_root(&workspace).unwrap();
+        let first = path_string(&normalize_project_root(&first).unwrap());
+        let second = path_string(&normalize_project_root(&second).unwrap());
+        let saved = vec![
+            project_root_record(first.clone(), 10),
+            project_root_record(second.clone(), 20),
+        ];
+
+        let offered = include_default_maple_workspace(saved.clone(), &[], Some(&workspace));
+        assert_eq!(
+            recent_root_paths(&offered),
+            vec![first, second, path_string(&workspace)]
+        );
+        assert_eq!(offered[2].name, MAPLE_WORKSPACE_DISPLAY_NAME);
+        assert_eq!(
+            include_default_maple_workspace(offered.clone(), &[], Some(&workspace)),
+            offered
+        );
+
+        let hidden =
+            include_default_maple_workspace(saved, &[path_string(&workspace)], Some(&workspace));
+        assert!(
+            hidden
+                .iter()
+                .all(|root| !paths_are_same_dir(Path::new(&root.path), &workspace))
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn maple_workspace_is_implicitly_trusted_until_the_user_says_otherwise() {
+        let root = recent_roots_test_dir("workspace-trust");
+        let workspace = maple_workspace_directory(&root.join("documents"));
+        let sibling = root.join("documents").join("Other");
+        fs::create_dir_all(&workspace).unwrap();
+        fs::create_dir_all(&sibling).unwrap();
+        let workspace = normalize_project_root(&workspace).unwrap();
+        let sibling = normalize_project_root(&sibling).unwrap();
+
+        assert!(implicitly_trusted_project_root(
+            &workspace,
+            None,
+            None,
+            Some(&workspace),
+        ));
+        assert!(!implicitly_trusted_project_root(
+            &sibling,
+            None,
+            None,
+            Some(&workspace),
+        ));
+
+        let mut config = AgentConfig::default();
+        apply_project_trust(&mut config, &workspace, false);
+        assert_eq!(
+            project_trust_status(&config, &workspace, true).decision,
+            Some(false)
+        );
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
