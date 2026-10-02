@@ -2,6 +2,8 @@
 
 This runbook covers OpenSecret with the native Continuum proxy and the
 in-process Tinfoil Rust SDK. It is separate from Linux/Nitro deployment.
+Linux x86_64 local proxy setup is in the
+[x86_64 Continuum proxy](local-linux-x86_64-proxy.md) recipe.
 Run backend commands from `services/opensecret/` in the Maple monorepo. Preserve
 generated environment files, ports, and process ownership when a workspace
 manager already provides this stack; use that manager's lifecycle commands.
