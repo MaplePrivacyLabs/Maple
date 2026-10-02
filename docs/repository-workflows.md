@@ -60,8 +60,10 @@ release work, and report the tag and commit before publishing.
 macOS jobs use explicit ARM64 `macos-26` or `macos-26-xlarge` runners. Research
 desktop and iOS builds select stable Xcode 26.5, build `17F42`, from
 [`scripts/ci/apple-toolchain.json`](../scripts/ci/apple-toolchain.json) through
-the shared selector; the root Nix shell exports the same version and build
-for its Apple recipes. Do not rely on the runner's default Xcode or beta app
+the shared selector, which aligns the runner's active `xcode-select` directory
+and `DEVELOPER_DIR`; the root Nix shell exports the same version and build
+for its Apple recipes. Tauri mobile tooling discovers the active Xcode directly.
+Do not rely on the runner's default Xcode or beta app
 names. The independent Agent shell selects a full installed Xcode, and the
 SDK/proxy flakes own their Nix compiler and SDK inputs.
 

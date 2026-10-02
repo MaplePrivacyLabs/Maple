@@ -1,6 +1,8 @@
 """Release-only selection, Nix pin enforcement and hosted runner regressions."""
 
+from contextlib import redirect_stderr
 import importlib.util
+import io
 import json
 import os
 from pathlib import Path
@@ -32,7 +34,7 @@ class XcodeSelectionTests(unittest.TestCase):
     def result(self, version="26.5", build="17F42", code=0):
         return subprocess.CompletedProcess([], code, f"Xcode {version}\nBuild version {build}\n", "")
 
-    def test_release_path_and_exact_build_are_published_without_global_selection(self):
+    def test_release_path_and_exact_build_are_published(self):
         developer = self.install("Xcode_26.5.app")
         with patch.object(selector.subprocess, "run", return_value=self.result()) as run:
             self.assertEqual(selector.select_xcode(self.pin, self.directory), developer)
@@ -44,6 +46,35 @@ class XcodeSelectionTests(unittest.TestCase):
         selector.publish_selection(developer, self.pin, {"GITHUB_ENV": str(environment), "GITHUB_OUTPUT": str(output)})
         self.assertEqual(environment.read_text(), f"existing=value\nDEVELOPER_DIR={developer}\n")
         self.assertEqual(output.read_text(), "version=26.5\nbuild=17F42\n")
+
+    def test_active_runner_xcode_is_aligned_and_verified_without_environment_override(self):
+        developer = self.install("Xcode_26.5.app")
+        with patch.dict(os.environ, {"DEVELOPER_DIR": "/fixture/rolling-default"}), \
+                patch.object(selector.subprocess, "run") as switch, \
+                patch.object(selector.subprocess, "check_output", return_value=str(developer) + "\n") as read:
+            selector.activate_xcode(developer)
+        self.assertEqual(switch.call_args.args[0],
+                         ["/usr/bin/sudo", "/usr/bin/xcode-select", "--switch", str(developer)])
+        self.assertIs(switch.call_args.kwargs["check"], True)
+        self.assertNotIn("DEVELOPER_DIR", switch.call_args.kwargs["env"])
+        self.assertEqual(read.call_args.args[0], ["/usr/bin/xcode-select", "--print-path"])
+        self.assertNotIn("DEVELOPER_DIR", read.call_args.kwargs["env"])
+
+    def test_failed_switch_or_active_path_mismatch_never_publishes_outputs(self):
+        developer = self.install("Xcode_26.5.app")
+        for failure in (subprocess.CalledProcessError(1, ["xcode-select"]),
+                        selector.ToolchainError("active path mismatch")):
+            with self.subTest(failure=failure), \
+                    patch.object(selector, "load_pin", return_value=self.pin), \
+                    patch.object(selector, "select_xcode", return_value=developer), \
+                    patch.object(selector, "activate_xcode", side_effect=failure), \
+                    patch.object(selector, "publish_selection") as publish, redirect_stderr(io.StringIO()):
+                self.assertEqual(selector.main(), 1)
+                publish.assert_not_called()
+        with patch.object(selector.subprocess, "run"), \
+                patch.object(selector.subprocess, "check_output", return_value="/fixture/wrong\n"):
+            with self.assertRaises(selector.ToolchainError):
+                selector.activate_xcode(developer)
 
     def test_patch_zero_alias_normalizes_cache_version(self):
         developer = self.install("Xcode_26.5.0.app")

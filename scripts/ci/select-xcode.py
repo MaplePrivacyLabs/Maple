@@ -51,9 +51,20 @@ def select_xcode(pin, applications=Path("/Applications")):
     raise ToolchainError(f"Release Xcode {version} build {pin['build']} is not installed")
 
 
+def activate_xcode(developer):
+    # Tauri's mobile tooling discovers Xcode through xcode-select and may
+    # replace DEVELOPER_DIR. Keep the disposable runner's active Xcode aligned
+    # with the explicit environment used by Nix and the artifact hash checks.
+    environment = {key: value for key, value in os.environ.items() if key != "DEVELOPER_DIR"}
+    subprocess.run(["/usr/bin/sudo", "/usr/bin/xcode-select", "--switch", str(developer)],
+                   env=environment, capture_output=True, text=True, check=True)
+    selected = subprocess.check_output(["/usr/bin/xcode-select", "--print-path"],
+                                       env=environment, text=True).strip()
+    if Path(selected).resolve() != developer:
+        raise ToolchainError("The runner's active Xcode does not match the verified release")
+
+
 def publish_selection(developer, pin, environment):
-    # Use a job-scoped developer directory instead of changing the runner's
-    # global xcode-select state. Nix and the native build helpers inherit it.
     with Path(environment["GITHUB_ENV"]).open("a") as stream:
         stream.write(f"DEVELOPER_DIR={developer}\n")
     with Path(environment["GITHUB_OUTPUT"]).open("a") as stream:
@@ -64,8 +75,9 @@ def main():
     try:
         pin = load_pin()
         developer = select_xcode(pin)
+        activate_xcode(developer)
         publish_selection(developer, pin, os.environ)
-    except (ToolchainError, OSError, KeyError, json.JSONDecodeError) as error:
+    except (ToolchainError, OSError, KeyError, json.JSONDecodeError, subprocess.SubprocessError) as error:
         print(f"Xcode selection failed: {error}", file=sys.stderr)
         return 1
     print(f"Using Xcode {pin['version']} build {pin['build']} from {developer}")
