@@ -1,6 +1,67 @@
+# Publishing controls and code that runs inside credential-bearing jobs require
+# the release owner's review. The default-branch ruleset must require code-owner
+# approval; this file alone does not enforce review or deployment approval.
 /.github/CODEOWNERS @AnthonyRonning
 /.github/workflows/ @AnthonyRonning
-/scripts/ci/sdk_*.py @AnthonyRonning
-/scripts/ci/build-sdk-publish.sh @AnthonyRonning
+/.github/actions/ @AnthonyRonning
+/.github/actionlint.yaml @AnthonyRonning
+/scripts/ci/ @AnthonyRonning
+/scripts/prepare-frontend-deps.sh @AnthonyRonning
+/scripts/prepare-typescript-sdk.sh @AnthonyRonning
+/scripts/update-version.py @AnthonyRonning
+/repo.meta.json @AnthonyRonning
+/.gitmodules @AnthonyRonning
+
+# Shared and component build shells execute before release scripts. Keep their
+# dependency pins and recipes in the same review boundary.
+**/flake.nix @AnthonyRonning
+**/flake.lock @AnthonyRonning
+**/justfile @AnthonyRonning
+
+# Native packaging, signing identities, build hooks, and publisher inputs.
+/apps/maple-research/frontend/package.json @AnthonyRonning
+/apps/maple-research/frontend/bun.lock @AnthonyRonning
+/apps/maple-research/frontend/bunfig.toml @AnthonyRonning
+/apps/maple-research/frontend/vite.config.ts @AnthonyRonning
+/apps/maple-research/frontend/vite-der-plugin.ts @AnthonyRonning
+/apps/maple-research/frontend/src-tauri/Cargo.toml @AnthonyRonning
+/apps/maple-research/frontend/src-tauri/Cargo.lock @AnthonyRonning
+/apps/maple-research/frontend/src-tauri/build.rs @AnthonyRonning
+/apps/maple-research/frontend/src-tauri/.cargo/ @AnthonyRonning
+/apps/maple-research/frontend/src-tauri/scripts/ @AnthonyRonning
+/apps/maple-research/frontend/src-tauri/tauri*.json @AnthonyRonning
+/apps/maple-research/frontend/src-tauri/*.plist @AnthonyRonning
+/apps/maple-research/frontend/src-tauri/gen/apple/project.yml @AnthonyRonning
+/apps/maple-research/frontend/src-tauri/gen/apple/ExportOptions.plist @AnthonyRonning
+/apps/maple-research/frontend/src-tauri/gen/apple/maple_iOS/Info.plist @AnthonyRonning
+/apps/maple-research/frontend/src-tauri/gen/apple/*.xcodeproj/ @AnthonyRonning
+/apps/maple-research/frontend/src-tauri/gen/android/*.gradle* @AnthonyRonning
+/apps/maple-research/frontend/src-tauri/gen/android/gradle.properties @AnthonyRonning
+/apps/maple-research/frontend/src-tauri/gen/android/gradlew* @AnthonyRonning
+/apps/maple-research/frontend/src-tauri/gen/android/gradle/ @AnthonyRonning
+/apps/maple-research/frontend/src-tauri/gen/android/app/*.gradle* @AnthonyRonning
+/apps/maple-research/frontend/src-tauri/gen/android/buildSrc/ @AnthonyRonning
+/apps/maple-auth/package.json @AnthonyRonning
+/apps/maple-auth/bun.lock @AnthonyRonning
+/apps/maple-auth/bunfig.toml @AnthonyRonning
+/apps/maple-auth/vite.config.ts @AnthonyRonning
+/apps/maple-auth/vite-der-plugin.ts @AnthonyRonning
+/apps/maple-auth/auth-build-boundary.ts @AnthonyRonning
+/sdk/package.json @AnthonyRonning
+/sdk/bun.lock @AnthonyRonning
+/sdk/bunfig.toml @AnthonyRonning
+/sdk/vite.config.ts @AnthonyRonning
+/sdk/rust/Cargo.toml @AnthonyRonning
+/sdk/rust/Cargo.lock @AnthonyRonning
+
+# PCR approval/signing inputs and the build-shell imports they execute.
+/services/opensecret/nix/ @AnthonyRonning
+/services/opensecret/scripts/ci_sign_pcr.sh @AnthonyRonning
+/services/opensecret/scripts/pcr_compatibility.py @AnthonyRonning
+/services/opensecret/pcr*.js @AnthonyRonning
+/services/opensecret/pcr*.json @AnthonyRonning
+/services/opensecret/secretspec/pcr-signing.toml @AnthonyRonning
+
+# Retain the existing owner boundary for these distribution components.
 /services/updates/ @AnthonyRonning
 /proxy/ @AnthonyRonning
