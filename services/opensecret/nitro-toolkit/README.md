@@ -64,6 +64,35 @@ docker run -d --restart always \
   enclave-logging:latest
 ```
 
+### Maintaining the host-side images
+
+The credential requester and logger are separate containers on the parent,
+not part of the application EIF. Their Dockerfiles pin the Python 3.13
+Bookworm multi-architecture image by digest. They install only the complete,
+hash-locked Python dependency closures in their respective `requirements.txt`
+files; `requirements.in` lists the direct imports and the urllib3 security
+floor. The previously installed `iproute2` package is not used by either
+helper and is omitted from the refreshed images. The build removes pip and its
+`ensurepip` bootstrap wheel after checking dependencies, since the running
+helpers do not use them.
+
+To refresh a lock, run this from the relevant helper directory, then review
+the version and hash diff before building an image:
+
+```sh
+uv pip compile --python-version 3.13 \
+  --python-platform aarch64-manylinux_2_36 \
+  --only-binary :all: --generate-hashes \
+  -o requirements.txt requirements.in
+```
+
+CI builds each image for Linux ARM64, runs synthetic, network-disabled
+contract tests inside it, and scans the finished image for fixable high and
+critical vulnerability matches. The tests check the credential JSON contract
+and CloudWatch forwarding without contacting IMDS, AWS, or a VSOCK device. An
+image build and offline test do not prove runtime behavior on a Nitro parent;
+any later environment rollout needs its own review and validation.
+
 ### Traffic Forwarder
 
 A Python utility for forwarding network traffic between Nitro Enclaves and external services.
@@ -132,6 +161,6 @@ cd Maple/services/opensecret/nitro-toolkit
 
 - AWS Nitro Enclaves enabled instance
 - Docker (for the credential requester and logging containers)
-- Python 3.9+
+- Python 3.13 in the helper images; standalone utilities use the backend's pinned Python
 - AWS CLI configured with appropriate permissions
 - Proper IAM roles and policies configured for AWS services

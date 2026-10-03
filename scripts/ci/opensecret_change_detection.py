@@ -8,7 +8,7 @@ from collections.abc import Iterable
 import sys
 
 
-CHECK_OUTPUTS = ("rust", "nix", "integration", "audit", "eif")
+CHECK_OUTPUTS = ("rust", "nix", "integration", "audit", "eif", "helpers")
 OUTPUTS = (*CHECK_OUTPUTS, "pcr_approvals")
 ALL_CHECKS = frozenset(CHECK_OUTPUTS)
 BACKEND_PREFIX = "services/opensecret/"
@@ -60,7 +60,7 @@ def classify_path(path: str) -> frozenset[str]:
     if path in EIF_CI_INPUTS:
         return frozenset({"eif"})
     if path == ".github/workflows/opensecret-ci.yml":
-        return frozenset({"rust", "nix", "audit", "eif"})
+        return frozenset({"rust", "nix", "audit", "eif", "helpers"})
     if path in SDK_INTEGRATION_FILES or path.startswith(("sdk/src/", "sdk/rust/", "sdk/test/")):
         return frozenset({"integration"})
     if path.startswith(BACKEND_PREFIX):
@@ -88,6 +88,11 @@ def classify_path(path: str) -> frozenset[str]:
             return frozenset({"rust", "integration"})
         if relative == ".env.sample":
             return frozenset({"integration"})
+        if relative == "nitro-toolkit/README.md":
+            return frozenset()
+        if relative.startswith(("nitro-toolkit/credential_requester/", "nitro-toolkit/logging/")):
+            # These Docker images run on the parent, not inside the measured EIF.
+            return frozenset({"helpers"})
         if relative.startswith(("nix/", "nitro-toolkit/", "privatemode-public/")) or relative in {
             "entrypoint.sh", "continuum-proxy", "nitro-toolkit", "privatemode-public",
         }:

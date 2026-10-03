@@ -45,6 +45,27 @@ class OpenSecretChangeDetectionTests(unittest.TestCase):
         self.assert_routes(["services/opensecret/deny.toml"], "audit")
         self.assert_routes(["services/opensecret/.env.sample"], "integration")
 
+    def test_parent_helper_images_do_not_select_measured_eif_checks(self):
+        self.assert_routes(["services/opensecret/nitro-toolkit/README.md"])
+        for relative in (
+            "nitro-toolkit/credential_requester/Dockerfile",
+            "nitro-toolkit/credential_requester/requirements.in",
+            "nitro-toolkit/credential_requester/requirements.txt",
+            "nitro-toolkit/credential_requester/credential_requester.py",
+            "nitro-toolkit/credential_requester/test_credential_requester.py",
+            "nitro-toolkit/logging/Dockerfile",
+            "nitro-toolkit/logging/requirements.in",
+            "nitro-toolkit/logging/requirements.txt",
+            "nitro-toolkit/logging/cloudwatch_logger.py",
+            "nitro-toolkit/logging/test_cloudwatch_logger.py",
+        ):
+            with self.subTest(path=relative):
+                self.assert_routes(["services/opensecret/" + relative], "helpers")
+        # These files are copied into the enclave rootfs and must retain EIF routing.
+        for relative in ("nitro-toolkit/traffic_forwarder.py", "nitro-toolkit/vsock_helper.py"):
+            with self.subTest(path=relative):
+                self.assert_routes(["services/opensecret/" + relative], "nix", "eif")
+
     def test_only_the_four_approved_json_files_select_pr_eif_comparison(self):
         for relative in ("pcrDev.json", "pcrDevHistory.json", "pcrProd.json", "pcrProdHistory.json"):
             path = "services/opensecret/" + relative
@@ -94,7 +115,7 @@ class OpenSecretChangeDetectionTests(unittest.TestCase):
             self.assert_routes([path], *CHECK_OUTPUTS)
         self.assertFalse(affects_agent(".gitmodules"))
         self.assertEqual(research_routes(".gitmodules"), frozenset())
-        self.assert_routes([".github/workflows/opensecret-ci.yml"], "rust", "nix", "audit", "eif")
+        self.assert_routes([".github/workflows/opensecret-ci.yml"], "rust", "nix", "audit", "eif", "helpers")
         self.assert_routes([".github/workflows/sdk-integration.yml"], "integration")
 
     def test_eif_workflow_and_comparison_helper_select_only_master_eif_checks(self):
