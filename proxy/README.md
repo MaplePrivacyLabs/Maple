@@ -135,6 +135,7 @@ You should see:
    GET  /v1/models           - List available models
    POST /v1/chat/completions - Create chat completions (streaming & non-streaming)
    POST /v1/embeddings       - Create embeddings
+   POST /v1/systemone        - Typed decisions (System One)
 ```
 
 ### API Endpoints
