@@ -4,9 +4,9 @@
   inputs = {
     flake-utils.url = "github:numtide/flake-utils";
     rust-overlay = {
-      # Pin the first upstream revision compatible with Nixpkgs' current
-      # fetchurl naming semantics while preserving the Rust 1.90.0 toolchain.
-      url = "github:oxalica/rust-overlay/37f8f092415b444c3bed6eda6bcbee51cee22e5d";
+      # Reuse the reviewed Nitro overlay revision, which includes the Rust
+      # 1.91.1 toolchain required by the patched AWS JSON runtime.
+      url = "github:oxalica/rust-overlay/b6916ba032e02122d6ed3064f40cabe937363d43";
       inputs.nixpkgs.follows = "nixpkgs";
     };
     # Keep the Nitro helper compiler independent from the application's pinned

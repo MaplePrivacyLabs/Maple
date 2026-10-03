@@ -47,8 +47,97 @@ pub struct UsageEvent {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use aws_sdk_sqs::{
+        config::{retry::RetryConfig, Region},
+        error::SdkError,
+        operation::send_message::{SendMessageError, SendMessageOutput},
+    };
+    use axum::{http::header, routing::post, Router};
     use serde_json::json;
     use std::str::FromStr;
+
+    async fn send_message_with_nested_response(
+        depth: usize,
+    ) -> Result<SendMessageOutput, SdkError<SendMessageError>> {
+        // Build raw JSON so serde_json's depth limit does not preempt the AWS parser.
+        let response_body = format!(
+            r#"{{"UnknownField":{}0{},"MessageId":"test-message","MD5OfMessageBody":"5d41402abc4b2a76b9719d911017c592"}}"#,
+            "[".repeat(depth),
+            "]".repeat(depth),
+        );
+        let app = Router::new().route(
+            "/",
+            post(move || {
+                let response_body = response_body.clone();
+                async move {
+                    (
+                        [(header::CONTENT_TYPE, "application/x-amz-json-1.0")],
+                        response_body,
+                    )
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind fake SQS server");
+        let endpoint = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+        // Construct the service config directly: no environment, credentials chain, or IMDS.
+        let config = aws_sdk_sqs::Config::builder()
+            .behavior_version_latest()
+            .region(Region::new(DEFAULT_REGION))
+            .credentials_provider(Credentials::new(
+                "test-key",
+                "test-secret",
+                None,
+                None,
+                "test",
+            ))
+            .endpoint_url(&endpoint)
+            .retry_config(RetryConfig::disabled())
+            .build();
+        let result = tokio::time::timeout(
+            Duration::from_secs(5),
+            SqsClient::from_conf(config)
+                .send_message()
+                .queue_url(format!("{endpoint}/test-queue"))
+                .message_body("hello")
+                .send(),
+        )
+        .await;
+        server.abort();
+        let _ = server.await;
+        result.expect("SQS response parsing must finish within five seconds")
+    }
+
+    #[tokio::test]
+    async fn sqs_send_message_accepts_normal_nested_response_fields() {
+        let response = send_message_with_nested_response(8)
+            .await
+            .expect("ordinary unknown response fields must remain compatible");
+
+        assert_eq!(response.message_id(), Some("test-message"));
+        assert_eq!(
+            response.md5_of_message_body(),
+            Some("5d41402abc4b2a76b9719d911017c592")
+        );
+    }
+
+    #[tokio::test]
+    async fn sqs_send_message_rejects_excessively_nested_response_fields() {
+        // Exceed the patched parser's 512-level limit without a stack-overflow payload.
+        let error = send_message_with_nested_response(600)
+            .await
+            .expect_err("the SDK must reject response fields beyond its nesting limit");
+
+        assert!(
+            error
+                .raw_response()
+                .is_some_and(|response| response.status().is_success()),
+            "the error must come from parsing a successful fake SQS response: {error:?}"
+        );
+    }
 
     #[test]
     fn usage_event_omits_missing_cached_input_tokens() {
