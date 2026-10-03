@@ -498,6 +498,15 @@ impl IntoResponse for ApiError {
             ApiError::PayloadTooLarge => StatusCode::PAYLOAD_TOO_LARGE,
             ApiError::TooManyRequests => StatusCode::TOO_MANY_REQUESTS,
         };
+        // Preserve the legacy flat fields while making these application
+        // rejections readable by independently versioned OpenAI clients.
+        let openai_error_code = match &self {
+            ApiError::UsageLimitReached => Some("usage_limit_reached"),
+            ApiError::FreeTokenLimitExceeded => Some("free_tier_token_limit_exceeded"),
+            ApiError::ModelNotAvailableOnPlan => Some("model_not_available_on_plan"),
+            ApiError::MessageExceedsContextLimit => Some("message_exceeds_context_limit"),
+            _ => None,
+        };
         let error_code = match &self {
             ApiError::SessionNotFound => Some(SESSION_NOT_FOUND_ERROR_CODE),
             ApiError::BillingCleanupUnavailable => Some("billing_account_deletion_failed"),
@@ -505,13 +514,19 @@ impl IntoResponse for ApiError {
             ApiError::ImageDescriptionUnavailable => Some(IMAGE_DESCRIPTION_UNAVAILABLE_ERROR_CODE),
             ApiError::InferenceCapacity { .. } => Some(INFERENCE_CAPACITY_ERROR_CODE),
             ApiError::InferenceProvider(error) => Some(error.code()),
-            _ => None,
+            _ => openai_error_code,
         };
+        let message = self.to_string();
+        let error = openai_error_code.map(|code| OpenAIErrorResponse {
+            message: message.clone(),
+            code,
+        });
         let mut response = (
             status,
             Json(ErrorResponse {
                 status: status.as_u16(),
-                message: self.to_string(),
+                message,
+                error,
             }),
         )
             .into_response();
@@ -585,6 +600,14 @@ impl From<DBError> for ApiError {
 pub struct ErrorResponse {
     status: u16,
     message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<OpenAIErrorResponse>,
+}
+
+#[derive(Debug, Serialize)]
+struct OpenAIErrorResponse {
+    message: String,
+    code: &'static str,
 }
 
 #[cfg(test)]
@@ -611,11 +634,46 @@ mod api_error_contract_tests {
                 .map(|value| value.to_str().unwrap()),
             expected_code
         );
+        assert!(response.headers().get(CLIENT_REPLAY_HEADER).is_none());
+        assert!(response.headers().get(header::RETRY_AFTER).is_none());
 
         let body = axum::body::to_bytes(response.into_body(), 1024)
             .await
             .unwrap();
         assert_eq!(body.as_ref(), expected_body);
+    }
+
+    #[tokio::test]
+    async fn actionable_inference_errors_add_openai_details_and_preserve_legacy_fields() {
+        let cases: [(ApiError, StatusCode, &[u8], &str); 4] = [
+            (
+                ApiError::UsageLimitReached,
+                StatusCode::FORBIDDEN,
+                br#"{"status":403,"message":"Usage limit reached","error":{"message":"Usage limit reached","code":"usage_limit_reached"}}"#,
+                "usage_limit_reached",
+            ),
+            (
+                ApiError::FreeTokenLimitExceeded,
+                StatusCode::FORBIDDEN,
+                br#"{"status":403,"message":"Free tier token limit exceeded","error":{"message":"Free tier token limit exceeded","code":"free_tier_token_limit_exceeded"}}"#,
+                "free_tier_token_limit_exceeded",
+            ),
+            (
+                ApiError::ModelNotAvailableOnPlan,
+                StatusCode::FORBIDDEN,
+                br#"{"status":403,"message":"Model not available on current plan","error":{"message":"Model not available on current plan","code":"model_not_available_on_plan"}}"#,
+                "model_not_available_on_plan",
+            ),
+            (
+                ApiError::MessageExceedsContextLimit,
+                StatusCode::PAYLOAD_TOO_LARGE,
+                br#"{"status":413,"message":"Message exceeds context limit","error":{"message":"Message exceeds context limit","code":"message_exceeds_context_limit"}}"#,
+                "message_exceeds_context_limit",
+            ),
+        ];
+        for (error, status, body, code) in cases {
+            assert_error_response(error, status, body, Some(code)).await;
+        }
     }
 
     #[tokio::test]

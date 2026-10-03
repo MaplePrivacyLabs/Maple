@@ -1442,6 +1442,82 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn quota_error_details_stay_authenticated_without_replay_permission() {
+        let test = test_session(21);
+        let sessions = Arc::new(SessionStore::new(NonZeroUsize::new(2).unwrap()));
+        sessions.insert(Arc::clone(&test.server)).unwrap();
+        let dispatches = Arc::new(AtomicUsize::new(0));
+        let calls = dispatches.clone();
+        let application = Router::new().route(
+            "/quota-error",
+            any(move || {
+                calls.fetch_add(1, Ordering::SeqCst);
+                async { ApiError::UsageLimitReached.into_response() }
+            }),
+        );
+        let router = request_router(application, sessions);
+        let request_id = RequestId::from_bytes([0xc1; 16]);
+        let record = seal_request(&test.client, request_id, "/quota-error", None);
+        let response = router
+            .clone()
+            .oneshot(outer_request(
+                test.server.id(),
+                &test.routing_key,
+                record.clone(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        for name in [
+            crate::ERROR_CODE_HEADER,
+            crate::CLIENT_REPLAY_HEADER,
+            "retry-after",
+        ] {
+            assert!(!response.headers().contains_key(name));
+        }
+        let records = decrypt_records(&test.client, request_id, response).await;
+        let ResponseRecord::Start(start) = &records[0] else {
+            panic!("missing response start")
+        };
+        assert_eq!(start.status(), 403);
+        let logical_header = |name: &str| {
+            start
+                .headers()
+                .iter()
+                .find(|header| header.name() == name)
+                .map(|header| header.value())
+        };
+        assert_eq!(logical_header(crate::ERROR_CONTRACT_HEADER), Some("1"));
+        assert_eq!(
+            logical_header(crate::ERROR_CODE_HEADER),
+            Some("usage_limit_reached")
+        );
+        assert_eq!(logical_header(crate::CLIENT_REPLAY_HEADER), None);
+        assert_eq!(logical_header("retry-after"), None);
+        let mut body = Vec::new();
+        for record in &records {
+            if let ResponseRecord::Chunk(bytes) = record {
+                body.extend_from_slice(bytes);
+            }
+        }
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&body).unwrap(),
+            serde_json::json!({
+                "status": 403,
+                "message": "Usage limit reached",
+                "error": { "message": "Usage limit reached", "code": "usage_limit_reached" }
+            })
+        );
+        assert!(matches!(records.last(), Some(ResponseRecord::End)));
+        let response = router
+            .oneshot(outer_request(test.server.id(), &test.routing_key, record))
+            .await
+            .unwrap();
+        assert_outer_rejection(response, StatusCode::BAD_REQUEST, None);
+        assert_eq!(dispatches.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
     async fn provider_error_status_and_details_are_authenticated_without_replay_permission() {
         use crate::inference::{AttemptFailure, AttemptFailureKind, AttemptStage, ReplaySafety};
         use crate::web::provider_error::PublicProviderError;
