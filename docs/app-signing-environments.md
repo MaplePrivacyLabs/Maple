@@ -17,14 +17,20 @@ and tags `v*`. The existing branch and release-tag rulesets must continue to
 protect those refs. Do not add a branch wildcard or allow PR merge refs.
 Zapstore runs its trusted workflow from `master` after the release completes.
 
-Require release-owner approval for `desktop-signing`, `android-signing`,
-`windows-signing`, and `zapstore-publishing`, with self-review allowed and
-administrator bypass disabled. Workflows still start from their existing
-triggers, but credential-bearing jobs wait for approval before running. The
-same approval policy applies to the separate `pages-production`,
-`updates-production`, and `auth-pages-production` publishers, preserving their
-`master`-only branch policy. Keep the existing SDK and PCR signing reviewer
-gates. Unsigned PR builds and Pages previews keep their automatic behavior.
+`desktop-signing`, `android-signing`, and `windows-signing` use the selected-ref
+restrictions above without required reviewers. Reviewed code admitted to
+protected `master` is trusted to use their production signing credentials, so
+ordinary signed CI builds run automatically. These master jobs produce signed
+Actions artifacts; they do not publish GitHub Releases or update production
+Pages/updater deployments. The same environments also serve owner-controlled
+`v*` release tags, so their signing jobs likewise have no separate approval prompt.
+Creating a release and controlling its distribution remain separate boundaries.
+
+Require release-owner approval for `zapstore-publishing`, `pages-production`,
+`updates-production`, and `auth-pages-production`, with self-review allowed and
+administrator bypass disabled. Preserve the three Pages/updater publishers'
+`master`-only branch policy and the existing SDK and PCR signing reviewer gates.
+Unsigned PR builds and Pages previews keep their automatic behavior.
 
 `apple-signing` remains automatic for now because Maple Dev and production iOS
 share its credentials. Gating this environment would also interrupt the
@@ -37,7 +43,7 @@ Do not switch a workflow to a new environment before its credentials and
 policies are ready.
 
 Keep the `windows-signing` name unchanged because Azure's OIDC trust uses that
-environment identity. Before approving any protected job, inspect its exact
+environment identity. Before approving any reviewer-gated job, inspect its exact
 source revision and intended signing or publishing action; a prior source
 approval does not authorize every later run.
 
@@ -50,9 +56,10 @@ will no longer have signing access; use a current reviewed revision instead.
 
 `nix flake check --no-update-lock-file` checks workflow syntax and the signing
 job boundaries. The manual `Check app signing credentials` workflow checks
-credential availability without signing, building, or publishing anything. Its
-protected jobs still require their environment approvals. Run it on `master`;
-a run from a feature branch should be rejected by the environment policies.
+credential availability without signing, building, or publishing anything. Only
+jobs using an environment with required reviewers, such as `zapstore-publishing`,
+pause for approval. Run it on `master`; a run from a feature branch should be
+rejected by the environment policies.
 
 Server-side environment policies and secret placement must also
 be verified through GitHub; a source test cannot enforce repository settings.
