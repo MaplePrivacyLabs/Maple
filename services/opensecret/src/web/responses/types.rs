@@ -64,17 +64,12 @@ pub enum MessageContent {
 
 /// Field wrapper for PATCH-like request bodies that need to distinguish
 /// between omitted fields, explicit nulls, and concrete values.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub enum NullableField<T> {
+    #[default]
     Missing,
     Null,
     Value(T),
-}
-
-impl<T> Default for NullableField<T> {
-    fn default() -> Self {
-        Self::Missing
-    }
 }
 
 impl<T> NullableField<T> {
