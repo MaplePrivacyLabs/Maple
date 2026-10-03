@@ -86,6 +86,8 @@ class OpenSecretWorkflowBoundaryTests(unittest.TestCase):
                             "eif": "ubuntu-24.04-arm",
                             "eif-trusted": "ubuntu-24.04-arm64-8core",
                         }[job_name]
+                    elif (name, job_name) == ("opensecret-ci.yml", "helpers"):
+                        expected_runner = "ubuntu-24.04-arm"
                     self.assertEqual(job["runs-on"], expected_runner)
                     for step in job["steps"]:
                         self.assertNotIn("${{", step.get("run", ""))
@@ -270,12 +272,40 @@ class OpenSecretWorkflowBoundaryTests(unittest.TestCase):
 
     def test_backend_ci_has_no_standalone_signed_pcr_job(self):
         jobs = workflow("opensecret-ci.yml")["jobs"]
-        self.assertEqual(set(jobs), {"changes", "rust", "nix", "audit"})
+        self.assertEqual(set(jobs), {"changes", "rust", "nix", "audit", "helpers"})
         for value in strings(jobs):
             self.assertNotIn("pcr_compatibility.py", value)
 
+    def test_parent_helper_job_builds_both_arm64_images_without_publishing(self):
+        job = workflow("opensecret-ci.yml")["jobs"]["helpers"]
+        self.assertEqual(job["runs-on"], "ubuntu-24.04-arm")
+        self.assertEqual(job["strategy"]["matrix"]["include"], [
+            {"name": "credential-requester", "context": "nitro-toolkit/credential_requester"},
+            {"name": "enclave-logging", "context": "nitro-toolkit/logging"},
+        ])
+        commands = "\n".join(step.get("run", "") for step in job["steps"])
+        self.assertIn("docker build --platform linux/arm64", commands)
+        self.assertIn("docker image inspect", commands)
+        self.assertIn('importlib.util.find_spec("pip") is None', commands)
+        self.assertIn('importlib.util.find_spec("ensurepip") is None', commands)
+        self.assertIn("--network none", commands)
+        self.assertIn("-m unittest discover -s /tests -p 'test_*.py' -v", commands)
+        self.assertNotRegex(commands, r"docker (?:push|save|load)|(?:scp|aws |gh release)")
+        scan = job["steps"][-1]
+        self.assertTrue(scan["uses"].startswith("aquasecurity/trivy-action@"))
+        self.assertEqual(scan["with"]["version"], "v0.75.0")
+        self.assertEqual(scan["with"]["severity"], "HIGH,CRITICAL")
+        self.assertEqual(scan["with"]["scanners"], "vuln")
+        self.assertEqual(scan["with"]["exit-code"], "1")
+        for component in ("credential_requester", "logging"):
+            dockerfile = (ROOT / "services/opensecret/nitro-toolkit" / component / "Dockerfile").read_text()
+            self.assertIn("--only-binary=:all: --require-hashes", dockerfile)
+            self.assertIn("python -m pip check", dockerfile)
+            self.assertIn("python -m pip uninstall -y pip", dockerfile)
+            self.assertIn("rm -r /usr/local/lib/python3.13/ensurepip", dockerfile)
+
     def test_selector_exports_only_active_checks_and_the_approval_signal(self):
-        expected = {"rust", "nix", "integration", "audit", "eif", "pcr_approvals"}
+        expected = {"rust", "nix", "integration", "audit", "eif", "helpers", "pcr_approvals"}
         config = workflow("opensecret-change-detection.yml")
         self.assertEqual(set(OUTPUTS), expected)
         self.assertEqual(set(config["on"]["workflow_call"]["outputs"]), expected)
@@ -304,7 +334,7 @@ class OpenSecretWorkflowBoundaryTests(unittest.TestCase):
         self.assertEqual(job["services"]["postgres"]["env"]["POSTGRES_DB"], "opensecret")
 
     def test_selector_failures_or_missing_outputs_cannot_skip_validation(self):
-        for workflow_name, lanes in (("opensecret-ci.yml", {name: name for name in ("rust", "nix", "audit")}),
+        for workflow_name, lanes in (("opensecret-ci.yml", {name: name for name in ("rust", "nix", "audit", "helpers")}),
                                      ("sdk-integration.yml", {"sdk-integration": "integration"})):
             config = workflow(workflow_name)
             self.assertNotIn("paths", config["on"]["pull_request"])
@@ -950,6 +980,16 @@ class OpenSecretDiffSelectionTests(unittest.TestCase):
         self.assertEqual(self.select("push", docs, runtime), self.expected("rust", "nix", "integration", "eif"))
         pcr = self.commit_file("services/opensecret/pcrDevHistory.json", "[]\n")
         self.assertEqual(self.select("push", runtime, pcr), self.expected("eif", "pcr_approvals"))
+
+    def test_parent_helper_only_diff_skips_eif_while_enclave_input_retains_it(self):
+        helper = self.commit_file("services/opensecret/nitro-toolkit/logging/Dockerfile", "FROM scratch\n")
+        for event in ("push", "pull_request"):
+            with self.subTest(event=event):
+                self.assertEqual(self.select(event, self.base, helper), self.expected("helpers"))
+        docs = self.commit_file("services/opensecret/nitro-toolkit/README.md", "helper docs\n")
+        self.assertEqual(self.select("push", helper, docs), self.expected())
+        enclave = self.commit_file("services/opensecret/nitro-toolkit/vsock_helper.py", "# enclave input\n")
+        self.assertEqual(self.select("push", docs, enclave), self.expected("nix", "eif"))
 
     def test_pull_request_uses_merge_base_instead_of_unrelated_base_changes(self):
         master = self.commit_file("services/opensecret/src/main.rs", "fn main() {}\n")
