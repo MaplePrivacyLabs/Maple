@@ -151,25 +151,9 @@ jobs:
           ref: ${{ needs.classify-app-release.outputs.release_sha }}
           persist-credentials: false
 
-      # Xcode 26.5 is temporarily exposed as a beta app on macos-26 runners: https://github.com/actions/runner-images/issues/14108
-      - name: Select Xcode 26.5
+      - name: Select pinned Xcode
         if: startsWith(matrix.platform, 'macos-26')
-        run: |
-          set -euo pipefail
-          for xcode_app in \
-            /Applications/Xcode_26.5.0.app \
-            /Applications/Xcode_26.5_beta_2.app \
-            /Applications/Xcode_26.5_beta.app
-          do
-            if [ -x "${xcode_app}/Contents/Developer/usr/bin/xcodebuild" ]; then
-              sudo xcode-select -s "${xcode_app}/Contents/Developer"
-              xcodebuild -version
-              exit 0
-            fi
-          done
-          echo "Xcode 26.5 is not installed on this runner." >&2
-          ls -1 /Applications/Xcode*.app >&2 || true
-          exit 1
+        run: python3 scripts/ci/select-xcode.py
 
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # was v22
@@ -504,28 +488,9 @@ jobs:
           ref: ${{ needs.classify-app-release.outputs.release_sha }}
           persist-credentials: false
 
-      # Xcode 26.5 is temporarily exposed as a beta app on macos-26 runners: https://github.com/actions/runner-images/issues/14108
-      - name: Select Xcode 26.5
+      - name: Select pinned Xcode
         id: select_xcode
-        run: |
-          set -euo pipefail
-          for xcode_app in \
-            /Applications/Xcode_26.5.0.app \
-            /Applications/Xcode_26.5_beta_2.app \
-            /Applications/Xcode_26.5_beta.app
-          do
-            if [ -x "${xcode_app}/Contents/Developer/usr/bin/xcodebuild" ]; then
-              sudo xcode-select -s "${xcode_app}/Contents/Developer"
-              xcode_info="$(xcodebuild -version)"
-              printf '%s\n' "${xcode_info}"
-              printf 'version=%s\n' "$(printf '%s\n' "${xcode_info}" | awk '/^Xcode / { print $2; exit }')" >> "${GITHUB_OUTPUT}"
-              printf 'build=%s\n' "$(printf '%s\n' "${xcode_info}" | awk '/^Build version / { print $3; exit }')" >> "${GITHUB_OUTPUT}"
-              exit 0
-            fi
-          done
-          echo "Xcode 26.5 is not installed on this runner." >&2
-          ls -1 /Applications/Xcode*.app >&2 || true
-          exit 1
+        run: python3 scripts/ci/select-xcode.py
 
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # was v22
@@ -535,19 +500,19 @@ jobs:
       - name: Cache Xcode DerivedData and SourcePackages
         uses: irgaly/xcode-cache@4141f139f00e335c6e1031fb93e667181f86146f # was v1
         with:
-          key: xcode-cache-ios-xcode26.5-${{ steps.select_xcode.outputs.build }}-${{ github.workflow }}-${{ hashFiles('apps/maple-research/frontend/src-tauri/Cargo.lock') }}
+          key: xcode-cache-ios-xcode${{ steps.select_xcode.outputs.version }}-${{ steps.select_xcode.outputs.build }}-${{ github.workflow }}-${{ hashFiles('apps/maple-research/frontend/src-tauri/Cargo.lock') }}
           restore-keys: |
-            xcode-cache-ios-xcode26.5-${{ steps.select_xcode.outputs.build }}-${{ github.workflow }}-
-            xcode-cache-ios-xcode26.5-${{ steps.select_xcode.outputs.build }}-
+            xcode-cache-ios-xcode${{ steps.select_xcode.outputs.version }}-${{ steps.select_xcode.outputs.build }}-${{ github.workflow }}-
+            xcode-cache-ios-xcode${{ steps.select_xcode.outputs.version }}-${{ steps.select_xcode.outputs.build }}-
 
       - name: Cache ONNX Runtime iOS artifact
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # was v4
         with:
           path: |
             apps/maple-research/frontend/src-tauri/onnxruntime-ios
-          key: release-onnxruntime-ios-artifact-1.23.2-xcode26.5-${{ steps.select_xcode.outputs.build }}-${{ hashFiles('flake.lock', 'flake.nix', 'scripts/ci/_common.sh', 'scripts/ci/ios-onnxruntime.sh', 'apps/maple-research/frontend/src-tauri/scripts/build-ios-onnxruntime-all.sh', 'apps/maple-research/frontend/src-tauri/scripts/canonicalize-static-archive.py', 'apps/maple-research/frontend/src-tauri/scripts/onnxruntime-pins.sh') }}
+          key: release-onnxruntime-ios-artifact-1.23.2-xcode${{ steps.select_xcode.outputs.version }}-${{ steps.select_xcode.outputs.build }}-${{ hashFiles('flake.lock', 'flake.nix', 'scripts/ci/apple-toolchain.json', 'scripts/ci/select-xcode.py', 'scripts/ci/_common.sh', 'scripts/ci/ios-onnxruntime.sh', 'apps/maple-research/frontend/src-tauri/scripts/build-ios-onnxruntime-all.sh', 'apps/maple-research/frontend/src-tauri/scripts/canonicalize-static-archive.py', 'apps/maple-research/frontend/src-tauri/scripts/onnxruntime-pins.sh') }}
           restore-keys: |
-            release-onnxruntime-ios-artifact-1.23.2-xcode26.5-${{ steps.select_xcode.outputs.build }}-
+            release-onnxruntime-ios-artifact-1.23.2-xcode${{ steps.select_xcode.outputs.version }}-${{ steps.select_xcode.outputs.build }}-
 
       - name: Prepare ONNX Runtime iOS artifact
         run: nix develop --no-update-lock-file .#apple -c ./scripts/ci/ios-onnxruntime.sh
@@ -868,24 +833,8 @@ jobs:
           ref: ${{ needs.classify-app-release.outputs.release_sha }}
           persist-credentials: false
 
-      # Xcode 26.5 is temporarily exposed as a beta app on macos-26 runners: https://github.com/actions/runner-images/issues/14108
-      - name: Select Xcode 26.5
-        run: |
-          set -euo pipefail
-          for xcode_app in \
-            /Applications/Xcode_26.5.0.app \
-            /Applications/Xcode_26.5_beta_2.app \
-            /Applications/Xcode_26.5_beta.app
-          do
-            if [ -x "${xcode_app}/Contents/Developer/usr/bin/xcodebuild" ]; then
-              sudo xcode-select -s "${xcode_app}/Contents/Developer"
-              xcodebuild -version
-              exit 0
-            fi
-          done
-          echo "Xcode 26.5 is not installed on this runner." >&2
-          ls -1 /Applications/Xcode*.app >&2 || true
-          exit 1
+      - name: Select pinned Xcode
+        run: python3 scripts/ci/select-xcode.py
 
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # was v22
@@ -1020,24 +969,8 @@ jobs:
           ref: ${{ needs.classify-app-release.outputs.release_sha }}
           persist-credentials: false
 
-      # Xcode 26.5 is temporarily exposed as a beta app on macos-26 runners: https://github.com/actions/runner-images/issues/14108
-      - name: Select Xcode 26.5
-        run: |
-          set -euo pipefail
-          for xcode_app in \
-            /Applications/Xcode_26.5.0.app \
-            /Applications/Xcode_26.5_beta_2.app \
-            /Applications/Xcode_26.5_beta.app
-          do
-            if [ -x "${xcode_app}/Contents/Developer/usr/bin/xcodebuild" ]; then
-              sudo xcode-select -s "${xcode_app}/Contents/Developer"
-              xcodebuild -version
-              exit 0
-            fi
-          done
-          echo "Xcode 26.5 is not installed on this runner." >&2
-          ls -1 /Applications/Xcode*.app >&2 || true
-          exit 1
+      - name: Select pinned Xcode
+        run: python3 scripts/ci/select-xcode.py
 
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # was v22

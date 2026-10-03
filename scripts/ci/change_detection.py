@@ -59,8 +59,10 @@ IOS_ONNX_INPUTS = frozenset(
     {
         "flake.lock",
         "flake.nix",
+        "scripts/ci/apple-toolchain.json",
         "scripts/ci/_common.sh",
         "scripts/ci/ios-onnxruntime.sh",
+        "scripts/ci/select-xcode.py",
         "apps/maple-research/frontend/src-tauri/scripts/build-ios-onnxruntime-all.sh",
         "apps/maple-research/frontend/src-tauri/scripts/canonicalize-static-archive.py",
         "apps/maple-research/frontend/src-tauri/scripts/onnxruntime-pins.sh",
@@ -79,6 +81,7 @@ WORKFLOW_ROUTES = {
 
 CI_SCRIPT_ROUTES = {
     "scripts/ci/_common.sh": frozenset({"frontend", *NATIVE_PLATFORMS, "ios_onnx"}),
+    "scripts/ci/apple-toolchain.json": frozenset({"macos", "ios", "ios_onnx"}),
     "scripts/ci/android-pr.sh": frozenset({"android"}),
     "scripts/ci/android-release.sh": frozenset({"android"}),
     "scripts/ci/attestation-manifest.sh": NATIVE_PLATFORMS,
@@ -96,6 +99,7 @@ CI_SCRIPT_ROUTES = {
     "scripts/ci/ios-pr.sh": frozenset({"ios"}),
     "scripts/ci/ios-release.sh": frozenset({"ios"}),
     "scripts/ci/ios-variant.sh": frozenset({"ios"}),
+    "scripts/ci/select-xcode.py": frozenset({"macos", "ios", "ios_onnx"}),
     "scripts/ci/verify-release-artifacts.sh": NATIVE_PLATFORMS,
     "scripts/ci/web.sh": frozenset({"frontend"}),
     "scripts/ci/windows-artifact-sign.ps1": frozenset({"windows"}),
