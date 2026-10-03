@@ -6,6 +6,7 @@
   "platforms": ["macOS", "windows", "linux"],
   "permissions": [
     "core:default",
+    "deep-link:default",
     "dialog:default",
     "fs:default",
     {
