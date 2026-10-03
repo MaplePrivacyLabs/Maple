@@ -60,7 +60,9 @@ be verified through GitHub; a source test cannot enforce repository settings.
 This boundary prevents a new, unreviewed branch workflow from reading signing
 credentials. It does not make code already admitted to a signing job harmless,
 prevent an authorized person from publishing a release, or replace the separate
-PCR-signing approval policy.
+PCR-signing approval policy. Environment approvals guard the jobs that declare
+them; they do not remove native GitHub Release or package permissions from
+repository/package writers. Those permission paths require separate controls.
 
 The shared iOS release script removes App Store Connect signing inputs from
 child-process environments before dependency installation, the frontend build,
