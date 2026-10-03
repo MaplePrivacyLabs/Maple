@@ -293,6 +293,7 @@ class OpenSecretWorkflowBoundaryTests(unittest.TestCase):
         self.assertNotRegex(commands, r"docker (?:push|save|load)|(?:scp|aws |gh release)")
         scan = job["steps"][-1]
         self.assertTrue(scan["uses"].startswith("aquasecurity/trivy-action@"))
+        self.assertEqual(scan["with"]["version"], "v0.75.0")
         self.assertEqual(scan["with"]["severity"], "HIGH,CRITICAL")
         self.assertEqual(scan["with"]["scanners"], "vuln")
         self.assertEqual(scan["with"]["exit-code"], "1")
