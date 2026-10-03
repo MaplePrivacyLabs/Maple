@@ -4,15 +4,95 @@ const ERROR_CONTRACT_VERSION = "1";
 const IMAGE_DESCRIPTION_UNAVAILABLE_ERROR_CODE = "image_description_unavailable";
 const IMAGE_DESCRIPTION_UNAVAILABLE_STATUS = 503;
 const MAX_ERROR_CAUSE_DEPTH = 4;
+const MAX_LEGACY_ERROR_LENGTH = 4_096;
 const REQUEST_NOT_DISPATCHED_CODE = "opensecret_request_not_dispatched";
 
 type ErrorResponseMetadata = {
   status?: unknown;
   headers?: unknown;
   cause?: unknown;
+  code?: unknown;
+  error?: unknown;
+  message?: unknown;
   requestDispatchCode?: unknown;
   definitelyNotDispatched?: unknown;
 };
+
+export type ChatLimitFailure =
+  | { kind: "usage"; status: 403; code: "usage_limit_reached" }
+  | { kind: "freeToken"; status: 403; code: "free_tier_token_limit_exceeded" }
+  | { kind: "context"; status: 413; code: "message_exceeds_context_limit" };
+
+function limitFailureForCode(status: unknown, code: unknown): ChatLimitFailure | null {
+  if (status === 403 && code === "usage_limit_reached") {
+    return { kind: "usage", status, code };
+  }
+  if (status === 403 && code === "free_tier_token_limit_exceeded") {
+    return { kind: "freeToken", status, code };
+  }
+  if (status === 413 && code === "message_exceeds_context_limit") {
+    return { kind: "context", status, code };
+  }
+  return null;
+}
+
+type LegacyStatusFailure = {
+  status: 403 | 413;
+  message: string;
+  code?: unknown;
+  error?: unknown;
+};
+
+function legacyStatusFailure(metadata: ErrorResponseMetadata): LegacyStatusFailure | null {
+  if (typeof metadata.message !== "string" || metadata.message.length > MAX_LEGACY_ERROR_LENGTH) {
+    return null;
+  }
+  for (const status of [403, 413] as const) {
+    const prefix = `Request failed with status ${status}:`;
+    if (!metadata.message.startsWith(prefix)) continue;
+    if (metadata.status !== undefined && metadata.status !== status) return null;
+    try {
+      const body: unknown = JSON.parse(metadata.message.slice(prefix.length));
+      if (typeof body !== "object" || body === null) return null;
+      const legacy = body as {
+        status?: unknown;
+        message?: unknown;
+        code?: unknown;
+        error?: unknown;
+      };
+      if (legacy.status !== status || typeof legacy.message !== "string") return null;
+      return { ...legacy, status, message: legacy.message };
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
+function legacyLimitFailure(metadata: ErrorResponseMetadata): ChatLimitFailure | null {
+  const legacy = legacyStatusFailure(metadata);
+  if (!legacy) return null;
+  const code =
+    legacy.message === "Usage limit reached"
+      ? "usage_limit_reached"
+      : legacy.message === "Free tier token limit exceeded"
+        ? "free_tier_token_limit_exceeded"
+        : legacy.message === "Message exceeds context limit"
+          ? "message_exceeds_context_limit"
+          : null;
+  const nestedCode =
+    typeof legacy.error === "object" && legacy.error !== null
+      ? (legacy.error as { code?: unknown }).code
+      : undefined;
+  if (
+    [legacy.code, nestedCode].some(
+      (legacyCode) => legacyCode !== undefined && legacyCode !== null && legacyCode !== code
+    )
+  ) {
+    return null;
+  }
+  return limitFailureForCode(legacy.status, code);
+}
 
 function errorCauseChain(error: unknown): readonly ErrorResponseMetadata[] {
   const chain: ErrorResponseMetadata[] = [];
@@ -28,6 +108,43 @@ function errorCauseChain(error: unknown): readonly ErrorResponseMetadata[] {
   }
 
   return chain;
+}
+
+/** Classify a specific server limit, never a generic HTTP denial or display message. */
+export function classifyChatLimitFailure(error: unknown): ChatLimitFailure | null {
+  for (const metadata of errorCauseChain(error)) {
+    const headers = metadata.headers instanceof Headers ? metadata.headers : null;
+    const contract = headers?.get(ERROR_CONTRACT_HEADER);
+    const headerCode = headers?.get(ERROR_CODE_HEADER);
+    const body =
+      typeof metadata.error === "object" && metadata.error !== null
+        ? (metadata.error as { code?: unknown })
+        : null;
+    const codes = [headerCode, metadata.code, body?.code].filter(
+      (code) => code !== undefined && code !== null
+    );
+
+    // The OpenAI client retains both APIError.code and APIError.error.code.
+    // Require every supplied source to agree; an unknown or conflicting code
+    // must not fall back to an old human-readable message.
+    if (contract !== undefined && contract !== null && contract !== ERROR_CONTRACT_VERSION) {
+      return null;
+    }
+    if (codes.length > 0) {
+      if (headerCode !== undefined && headerCode !== null && contract !== ERROR_CONTRACT_VERSION) {
+        return null;
+      }
+      if (codes.some((code) => typeof code !== "string" || code !== codes[0])) return null;
+      return limitFailureForCode(metadata.status, codes[0]);
+    }
+
+    const legacy = legacyLimitFailure(metadata);
+    if (legacy) return legacy;
+    // Do not combine a wrapper's status with a cause's code. A concrete HTTP
+    // rejection without a known limit remains an ordinary application error.
+    if (metadata.status !== undefined) return null;
+  }
+  return null;
 }
 
 export function isChatRequestDefinitelyNotDispatchedError(error: unknown): boolean {
@@ -56,8 +173,9 @@ export function isChatResponseCancellationAlreadyTerminalError(error: unknown): 
  */
 export function isChatResponseDefinitelyRejectedError(error: unknown): boolean {
   return errorCauseChain(error).some((metadata) => {
-    if (typeof metadata.status !== "number" || metadata.status === 408) return false;
-    if (metadata.status >= 400 && metadata.status < 500) return true;
+    const status = metadata.status ?? legacyStatusFailure(metadata)?.status;
+    if (typeof status !== "number" || status === 408) return false;
+    if (status >= 400 && status < 500) return true;
     return (
       metadata.status === IMAGE_DESCRIPTION_UNAVAILABLE_STATUS &&
       metadata.headers instanceof Headers &&
