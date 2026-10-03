@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import OpenAI, { APIConnectionError } from "openai";
 import {
   classifyChatLimitFailure,
+  isChatPlanAccessDeniedError,
   isChatRequestDefinitelyNotDispatchedError,
   isChatResponseCancellationAlreadyTerminalError,
   isChatResponseDefinitelyRejectedError,
@@ -289,12 +290,33 @@ describe("chat limit classification", () => {
     );
     for (const error of [legacy, new APIConnectionError({ cause: legacy })]) {
       expect(classifyChatLimitFailure(error)).toBeNull();
+      expect(isChatPlanAccessDeniedError(error)).toBe(false);
       expect(isChatResponseDefinitelyRejectedError(error)).toBe(true);
     }
     const context = new Error(
       'Request failed with status 413: {"status":413,"message":"Message exceeds context limit"}'
     );
     expect(isChatResponseDefinitelyRejectedError(context)).toBe(true);
+  });
+
+  test("a concrete legacy denial takes precedence over a differently coded cause", () => {
+    for (const body of [
+      { status: 403, message: "Unrelated denial" },
+      { status: 403, message: "Model not available on current plan" },
+      { status: 403, message: "Usage limit reached", code: "unknown" },
+      {
+        status: 403,
+        message: "Usage limit reached",
+        error: { code: "model_not_available_on_plan" }
+      }
+    ]) {
+      const error = new Error(`Request failed with status 403: ${JSON.stringify(body)}`, {
+        cause: { status: 403, code: "usage_limit_reached" }
+      });
+      expect(classifyChatLimitFailure(error)).toBeNull();
+      expect(isChatPlanAccessDeniedError(error)).toBe(false);
+      expect(isChatResponseDefinitelyRejectedError(error)).toBe(true);
+    }
   });
 
   test("malformed legacy strings do not establish definite response rejection", () => {
@@ -322,6 +344,43 @@ describe("chat limit classification", () => {
     expect(classifyChatLimitFailure({ cause: wrapped })).toBeNull();
     for (const value of [null, undefined, "403", 403, false]) {
       expect(classifyChatLimitFailure(value)).toBeNull();
+    }
+  });
+});
+
+describe("structured chat plan access denial", () => {
+  const code = "model_not_available_on_plan";
+
+  test("requires a matching 403 and code in one validated metadata object", () => {
+    for (const error of [
+      { status: 403, code },
+      { status: 403, error: { code } },
+      { status: 403, headers: limitHeaders(code) },
+      new APIConnectionError({ cause: Object.assign(new Error("denied"), { status: 403, code }) })
+    ]) {
+      expect(isChatPlanAccessDeniedError(error)).toBe(true);
+      expect(classifyChatLimitFailure(error)).toBeNull();
+    }
+  });
+
+  test("unknown, conflicting, versioned, and split metadata cannot imply plan access", () => {
+    const cycle: { cause?: unknown } = {};
+    cycle.cause = cycle;
+    for (const error of [
+      { status: 403 },
+      { status: 403, code: "unknown" },
+      { status: "403", code },
+      { status: 413, code },
+      { status: 403, code, error: { code: "usage_limit_reached" } },
+      { status: 403, code, headers: limitHeaders("usage_limit_reached") },
+      { status: 403, code, headers: limitHeaders(code, "2") },
+      { status: 403, headers: new Headers({ "x-opensecret-error-code": code }) },
+      { status: 403, cause: { code } },
+      { code, cause: { status: 403 } },
+      { status: 500, cause: { status: 403, code } },
+      cycle
+    ]) {
+      expect(isChatPlanAccessDeniedError(error)).toBe(false);
     }
   });
 });

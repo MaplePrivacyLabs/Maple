@@ -462,9 +462,9 @@ the same static `message` and a stable `code`. The code is also carried by
 
 | Condition | HTTP status | Error code |
 | --- | --- | --- |
-| Usage gate denies chat or paid TTS access | 403 | `usage_limit_reached` |
+| Chat usage denied, or paid-feature access denied (web search/extract or TTS; free plan or exhausted usage) | 403 | `usage_limit_reached` |
 | Free-tier prompt exceeds its token limit | 403 | `free_tier_token_limit_exceeded` |
-| Model is unavailable on the current plan | 403 | `model_not_available_on_plan` |
+| Model or feature is unavailable on the current plan | 403 | `model_not_available_on_plan` |
 | Message exceeds the model context limit | 413 | `message_exceeds_context_limit` |
 
 For example, usage exhaustion returns
@@ -474,13 +474,12 @@ codes grant no automatic replay permission and request neither a new session
 nor token refresh. V2 authenticates the logical status, headers and body inside
 its outer HTTP 200 response; V1 retains its existing HTTP error representation.
 
-Ship this additive backend contract before switching Research to structured
-status/code classification. Retained flat fields preserve legacy V1 message
-parsers, while the nested error is readable by the existing OpenAI client over
-V2. A new Research client against an older backend can still encounter the
-existing flat-body V2 parsing problem; restoring that mixed-version case would
-require separate client adaptation. This contract does not change the native
-Agent clients' existing status-based credit classification.
+Retained flat fields preserve legacy V1 message parsers, while the nested error
+is readable by existing OpenAI clients over V2. Research clients using
+structured status/code classification against backends without these additions
+can still encounter the flat-body V2 parsing problem; supporting that
+combination requires separate client adaptation. This contract does not change
+the native Agent clients' existing status-based credit classification.
 
 ### Completion provider errors
 

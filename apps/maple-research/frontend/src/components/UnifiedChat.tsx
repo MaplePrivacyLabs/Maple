@@ -184,12 +184,12 @@ import {
   type ChatStreamTerminalState
 } from "@/services/chatStreamDeltaCoalescer";
 import {
-  classifyChatLimitFailure,
   isChatRequestDefinitelyNotDispatchedError,
   isChatResponseCancellationAlreadyTerminalError,
   isChatResponseDefinitelyRejectedError,
   isImageDescriptionUnavailableError
 } from "@/services/chatResponseErrors";
+import { handleChatAccessError } from "@/services/chatAccessError";
 import { isChatAccountCredentialMismatchError } from "@/services/chatAccountCredential";
 import { chatCursorAfterSendFailure } from "@/services/chatSendFailureRecovery";
 import { normalizeChatPollingPage } from "@/services/chatPollingPage";
@@ -5463,47 +5463,20 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
             return false;
           }
 
-          const limitFailure = classifyChatLimitFailure(error);
-          if (limitFailure?.kind === "context") {
-            if (
-              restoreTurn("Your message exceeds the context limit for this model.") &&
-              runtimeStore.isRunCurrent(runtimeKey, run.token) &&
-              isRuntimeSelected(runtimeKey)
-            ) {
-              setContextLimitDialogOpen(true);
-            }
-            return false;
-          }
-
-          if (limitFailure) {
-            let displayError: string;
-            const limitFeature = limitFailure.kind === "freeToken" ? "tokens" : "usage";
-            if (limitFailure.kind === "freeToken") {
-              displayError =
-                "This conversation is too long for the free tier. Upgrade to Pro for longer conversations.";
-            } else {
-              const isFreeTier =
-                !billingStatus?.product_name || billingStatus.product_name.toLowerCase() === "free";
-              if (isFreeTier) {
-                displayError =
-                  "You've reached your daily usage limit. Upgrade to Pro for more chats.";
-              } else {
-                const isPro =
-                  billingStatus.product_name?.toLowerCase().includes("pro") &&
-                  !billingStatus.product_name?.toLowerCase().includes("max");
-                displayError = isPro
-                  ? "You've reached your monthly Pro limit. Upgrade to Max for 10x more usage."
-                  : "You've reached your monthly usage limit. Please wait for the next billing cycle.";
-              }
-            }
-            if (
-              restoreTurn(displayError) &&
-              runtimeStore.isRunCurrent(runtimeKey, run.token) &&
-              isRuntimeSelected(runtimeKey)
-            ) {
-              setUpgradeFeature(limitFeature);
-              setUpgradeDialogOpen(true);
-            }
+          if (
+            handleChatAccessError({
+              error,
+              productName: billingStatus?.product_name,
+              restoreTurn,
+              isRunCurrent: () => runtimeStore.isRunCurrent(runtimeKey, run.token),
+              isRuntimeSelected: () => isRuntimeSelected(runtimeKey),
+              showUpgradeDialog: (feature) => {
+                setUpgradeFeature(feature);
+                setUpgradeDialogOpen(true);
+              },
+              showContextLimitDialog: () => setContextLimitDialogOpen(true)
+            })
+          ) {
             return false;
           }
 

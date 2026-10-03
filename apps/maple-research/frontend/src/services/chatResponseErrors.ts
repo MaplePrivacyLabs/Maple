@@ -69,9 +69,7 @@ function legacyStatusFailure(metadata: ErrorResponseMetadata): LegacyStatusFailu
   return null;
 }
 
-function legacyLimitFailure(metadata: ErrorResponseMetadata): ChatLimitFailure | null {
-  const legacy = legacyStatusFailure(metadata);
-  if (!legacy) return null;
+function legacyLimitFailure(legacy: LegacyStatusFailure): ChatLimitFailure | null {
   const code =
     legacy.message === "Usage limit reached"
       ? "usage_limit_reached"
@@ -110,8 +108,11 @@ function errorCauseChain(error: unknown): readonly ErrorResponseMetadata[] {
   return chain;
 }
 
-/** Classify a specific server limit, never a generic HTTP denial or display message. */
-export function classifyChatLimitFailure(error: unknown): ChatLimitFailure | null {
+type ResolvedChatResponseError =
+  | { status: unknown; code: unknown; legacy?: never }
+  | { status: 403 | 413; legacy: LegacyStatusFailure; code?: never };
+
+function resolveChatResponseError(error: unknown): ResolvedChatResponseError | null {
   for (const metadata of errorCauseChain(error)) {
     const headers = metadata.headers instanceof Headers ? metadata.headers : null;
     const contract = headers?.get(ERROR_CONTRACT_HEADER);
@@ -135,16 +136,31 @@ export function classifyChatLimitFailure(error: unknown): ChatLimitFailure | nul
         return null;
       }
       if (codes.some((code) => typeof code !== "string" || code !== codes[0])) return null;
-      return limitFailureForCode(metadata.status, codes[0]);
+      return { status: metadata.status, code: codes[0] };
     }
 
-    const legacy = legacyLimitFailure(metadata);
-    if (legacy) return legacy;
+    const legacy = legacyStatusFailure(metadata);
+    if (legacy) return { status: legacy.status, legacy };
     // Do not combine a wrapper's status with a cause's code. A concrete HTTP
     // rejection without a known limit remains an ordinary application error.
     if (metadata.status !== undefined) return null;
   }
   return null;
+}
+
+/** Classify a specific server limit, never a generic HTTP denial or display message. */
+export function classifyChatLimitFailure(error: unknown): ChatLimitFailure | null {
+  const resolved = resolveChatResponseError(error);
+  if (!resolved) return null;
+  return resolved.legacy
+    ? legacyLimitFailure(resolved.legacy)
+    : limitFailureForCode(resolved.status, resolved.code);
+}
+
+/** This code also denies unpaid features, so it must not imply a model upsell. */
+export function isChatPlanAccessDeniedError(error: unknown): boolean {
+  const resolved = resolveChatResponseError(error);
+  return resolved?.status === 403 && resolved.code === "model_not_available_on_plan";
 }
 
 export function isChatRequestDefinitelyNotDispatchedError(error: unknown): boolean {
