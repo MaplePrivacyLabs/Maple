@@ -325,6 +325,16 @@ Linux builds use Nix-provided ALSA, font, keyboard, Wayland and Vulkan libraries
 The Intel macOS development shell uses a separate pinned Nixpkgs 26.05 input
 for the focused CPython worker CI lane, since Nixpkgs 26.11 removed Intel macOS
 support. Other platforms retain the primary Nixpkgs pin and the shared Rust pin.
+On Intel macOS, enter the shell from this component directory with:
+
+```sh
+nix shell --no-update-lock-file --inputs-from . 'nixpkgs-intel-darwin#bashInteractive^out' \
+  -c nix develop --no-update-lock-file .
+```
+
+The outer command supplies pinned Bash for `nix develop`'s startup fallback;
+macOS's system Bash is too old for this environment. Nix may still print an
+`error (ignored)` about the primary input's removed Intel support.
 
 ### Shared Rust build cache
 

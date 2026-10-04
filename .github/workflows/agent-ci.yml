@@ -103,6 +103,14 @@ jobs:
         with:
           github-token: ""
 
+      - name: Provide pinned Bash for Intel Nix startup
+        if: runner.os == 'macOS' && runner.arch == 'X64'
+        run: |
+          # nix develop's primary nixpkgs Bash lookup cannot evaluate Intel
+          # on 26.11, so its PATH fallback must use the locked 26.05 Bash.
+          bash_path="$(nix build --no-update-lock-file --inputs-from . --no-link --print-out-paths 'nixpkgs-intel-darwin#bashInteractive^out')"
+          echo "$bash_path/bin" >> "$GITHUB_PATH"
+
       - name: Install pinned Windows Rust
         if: runner.os == 'Windows'
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable action, exact toolchain below
