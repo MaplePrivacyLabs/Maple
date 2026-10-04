@@ -3,7 +3,7 @@
 # fields together after reviewing the upstream 6.12 LTS changelog.
 {
   branch = "6.12";
-  version = "6.12.101";
-  url = "https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.12.101.tar.xz";
-  hash = "sha256-DSHNEZM/SfcVG3ydu4zD/dyMir5QZDS4UP7s9B/CinY=";
+  version = "6.12.112";
+  url = "https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.12.112.tar.xz";
+  hash = "sha256-Fk3J0fbJPGGhXh8HHEg3m0Z/KxfEacznIjRxloII7QM=";
 }

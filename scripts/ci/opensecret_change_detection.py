@@ -24,6 +24,7 @@ PCR_INPUTS = frozenset({
 })
 EIF_CI_INPUTS = frozenset({
     ".github/workflows/opensecret-eif.yml",
+    "scripts/ci/build_opensecret_eif.sh",
     "scripts/ci/check_opensecret_eif.sh",
 })
 # Shell test inputs consumed directly by the component flake, not Cargo.

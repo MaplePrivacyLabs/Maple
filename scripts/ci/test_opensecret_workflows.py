@@ -19,6 +19,12 @@ from opensecret_change_detection import CHECK_OUTPUTS, OUTPUTS
 
 
 ROOT = Path(__file__).resolve().parents[2]
+PR_CANDIDATE_BUILD = (
+    "echo 'PR diagnostic only: source_sha is the PR merge ref, not a release source commit. "
+    "No approved artifact is uploaded.' >> \"$GITHUB_STEP_SUMMARY\"\n"
+    'bash scripts/ci/build_opensecret_eif.sh "$EIF_MODE" '
+    '"$RUNNER_TEMP/eif-candidate-$EIF_MODE"\n'
+)
 
 
 @functools.cache
@@ -46,7 +52,7 @@ class OpenSecretWorkflowBoundaryTests(unittest.TestCase):
         # fetcher cannot calculate revCount for a shallow recursive input.
         for workflow_name, job_names in (
             ("opensecret-ci.yml", ("rust", "nix")),
-            ("opensecret-eif.yml", ("eif", "eif-trusted")),
+            ("opensecret-eif.yml", ("eif-candidate", "eif", "eif-trusted")),
             ("sdk-integration.yml", ("sdk-integration",)),
         ):
             for job_name in job_names:
@@ -70,7 +76,7 @@ class OpenSecretWorkflowBoundaryTests(unittest.TestCase):
                     self.assertNotRegex(value, r"\bsecrets\b|github\.token|\bGH_TOKEN\b")
                 for job_name, job in config["jobs"].items():
                     self.assertNotIn("environment", job)
-                    if (name, job_name) == ("opensecret-eif.yml", "eif-trusted"):
+                    if name == "opensecret-eif.yml" and job_name in ("eif-candidate", "eif-trusted"):
                         self.assertEqual(job["permissions"], {"contents": "read", "id-token": "write"})
                     else:
                         self.assertIn(job.get("permissions"), (None, {"contents": "read"}))
@@ -83,6 +89,7 @@ class OpenSecretWorkflowBoundaryTests(unittest.TestCase):
                     expected_runner = "ubuntu-latest"
                     if name == "opensecret-eif.yml":
                         expected_runner = {
+                            "eif-candidate": "ubuntu-24.04-arm64-8core",
                             "eif": "ubuntu-24.04-arm",
                             "eif-trusted": "ubuntu-24.04-arm64-8core",
                         }[job_name]
@@ -133,21 +140,27 @@ class OpenSecretWorkflowBoundaryTests(unittest.TestCase):
             self.assertNotIn("paths", config["on"][event])
         self.assertEqual(config["concurrency"]["group"],
                          "opensecret-eif-${{ github.event_name }}-${{ github.ref }}")
-        self.assertEqual(set(config["jobs"]), {"changes", "eif", "eif-trusted"})
-        for job_name in ("eif", "eif-trusted"):
+        self.assertEqual(set(config["jobs"]), {"changes", "eif-candidate", "eif", "eif-trusted"})
+        for job_name in ("eif-candidate", "eif", "eif-trusted"):
             job = config["jobs"][job_name]
             self.assertEqual(job["needs"], "changes")
             self.assertEqual(job["strategy"]["matrix"], {"mode": ["dev", "prod"]})
             self.assertIs(job["strategy"]["fail-fast"], False)
             self.assertEqual(job["env"]["EIF_MODE"], "${{ matrix.mode }}")
-            self.assertEqual(job["timeout-minutes"], 180 if job_name == "eif-trusted" else 90)
+            self.assertEqual(job["timeout-minutes"], 90 if job_name == "eif" else 180)
             for key in ("OPENSECRET_DEV_POSTGRES", "OPENSECRET_DEV_ENV", "OPENSECRET_DEV_CONTAINERS"):
                 self.assertEqual(job["env"][key], "0")
             commands = [step["run"] for step in job["steps"] if "run" in step]
-            self.assertEqual(commands, ['bash scripts/ci/check_opensecret_eif.sh "$EIF_MODE"'])
+            expected_command = PR_CANDIDATE_BUILD if job_name == "eif-candidate" else (
+                                'bash scripts/ci/check_opensecret_eif.sh "$EIF_MODE"')
+            self.assertEqual(commands, [expected_command])
         for value in strings(config["jobs"]):
             self.assertNotRegex(value, r"deploy-|stage-|scp-|update-pcr|append-pcr|generate-keys")
             self.assertNotRegex(value, r"upload-artifact|download-artifact|gh release")
+        candidate = config["jobs"]["eif-candidate"]
+        self.assertNotIn("environment", candidate)
+        self.assertNotIn("outputs", candidate)
+        self.assertNotIn("continue-on-error", candidate["steps"][-1])
 
     def test_eif_cache_setup_precedes_build_and_warms_fork_compatible_cache(self):
         jobs = workflow("opensecret-eif.yml")["jobs"]
@@ -162,6 +175,10 @@ class OpenSecretWorkflowBoundaryTests(unittest.TestCase):
                 "use-gha-cache": "enabled",
                 "diff-store": True,
             }, True),
+            ("eif-candidate", "DeterminateSystems/flakehub-cache-action@1f9a51a2959d3e26c7838c6f3bf9f48acae525ea", {
+                "use-gha-cache": "enabled",
+                "diff-store": True,
+            }, True),
         ):
             with self.subTest(job=job_name):
                 steps = jobs[job_name]["steps"]
@@ -173,13 +190,15 @@ class OpenSecretWorkflowBoundaryTests(unittest.TestCase):
                 self.assertEqual(steps[2]["with"], cache_inputs)
                 self.assertNotIn("if", steps[2])
                 self.assertNotIn("continue-on-error", steps[2])
-                self.assertEqual(steps[3]["run"], 'bash scripts/ci/check_opensecret_eif.sh "$EIF_MODE"')
+                expected_command = PR_CANDIDATE_BUILD if job_name == "eif-candidate" else (
+                                    'bash scripts/ci/check_opensecret_eif.sh "$EIF_MODE"')
+                self.assertEqual(steps[3]["run"], expected_command)
 
     def test_eif_event_gate_matches_the_approval_policy(self):
         # Exercise the actual GitHub boolean expression with a restricted,
         # equivalent local representation, not a separately implemented policy.
         expressions = {}
-        for job_name in ("eif", "eif-trusted"):
+        for job_name in ("eif-candidate", "eif", "eif-trusted"):
             expression = workflow("opensecret-eif.yml")["jobs"][job_name]["if"]
             expression = expression.strip().removeprefix("${{").removesuffix("}}").strip()
             expression = expression.replace("&&", " and ").replace("||", " or ")
@@ -243,7 +262,11 @@ class OpenSecretWorkflowBoundaryTests(unittest.TestCase):
                         condition = condition.replace(key, repr(value))
                     if eval(condition, {"__builtins__": {}}, {}):
                         selected.append(job_name)
-                expected_jobs = ["eif-trusted" if trusted else "eif"] if expected and not cancelled else []
+                expected_jobs = []
+                if not cancelled and event == "pull_request" and same_repo and result == "success" and eif == "true" and approvals == "false":
+                    expected_jobs.append("eif-candidate")
+                if expected and not cancelled:
+                    expected_jobs.append("eif-trusted" if trusted else "eif")
                 self.assertEqual(selected, expected_jobs)
 
     def test_backend_retains_exact_rust_gates_and_disabled_stateful_shell_hooks(self):

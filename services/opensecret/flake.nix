@@ -276,6 +276,11 @@
           inherit (kernelUpstream) url hash;
         };
         kernelStructuredExtraConfig = with pkgs.lib.kernel; {
+          # Linux 6.12.112 backports the memory-hotplug online-policy choice,
+          # while this Nixpkgs pin still selects the removed pre-6.14 option.
+          # Preserve automatic onlining without relaxing config validation.
+          MEMORY_HOTPLUG_DEFAULT_ONLINE = pkgs.lib.mkForce unset;
+          MHP_DEFAULT_ONLINE_TYPE_ONLINE_AUTO = yes;
           VIRTIO = yes;
           VIRTIO_MMIO = yes;
           VIRTIO_MENU = yes;
@@ -347,9 +352,9 @@
             tar -xOf ${kernelSource} \
               linux-${kernelUpstream.version}/drivers/misc/nsm.c > nsm.c
 
-            # 6.12.101 must carry both reviewed NSM fixes: malformed userspace
-            # pointers return before the mutex is touched, and file operations
-            # retain module ownership.
+            # Require both reviewed NSM fixes: malformed userspace pointers
+            # return before the mutex is touched, and file operations retain
+            # module ownership.
             ioctl_source="$(sed -n \
               '/static long nsm_dev_ioctl/,/static int nsm_device_init_vq/p' \
               nsm.c)"
@@ -373,6 +378,10 @@
               nsm.c)"
             printf '%s\n' "$fops_source" | grep -Fq '.owner = THIS_MODULE,'
             printf '%s\n' "$fops_source" | grep -Fq '.unlocked_ioctl = nsm_dev_ioctl,'
+
+            # Bound the NSM device-reported response length before it can be
+            # copied back to userspace (CVE-2026-89743, fixed in 6.12.109).
+            grep -Fq 'msg->resp.len = min_t(unsigned int, len, sizeof(msg->resp.data));' nsm.c
 
             {
               echo 'branch=${kernelUpstream.branch}'
@@ -399,6 +408,7 @@
             grep -Fqx 'CONFIG_VIRTIO_VSOCKETS=y' "$config"
             grep -Fqx 'CONFIG_HW_RANDOM=y' "$config"
             grep -Fqx 'CONFIG_NSM=y' "$config"
+            grep -Fqx 'CONFIG_MHP_DEFAULT_ONLINE_TYPE_ONLINE_AUTO=y' "$config"
             grep -Fqx '# CONFIG_CRYPTO_USER_API_AEAD is not set' "$config"
 
             {
