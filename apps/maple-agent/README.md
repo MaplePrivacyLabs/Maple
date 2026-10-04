@@ -19,10 +19,10 @@ crates/maple-agent/   Maple's transport-neutral agent runtime, extracted from
                       tools, permission policy, account-scoped session
                       storage, and the ACP server.
 crates/maple-billing/ HTTP client for the Maple billing API.
-docs/                 Theme spec measured from the Tauri app.
-scripts/              One maintainer helper: screenshot.py takes a desktop
-                      screenshot through the xdg portal on GNOME Wayland.
-                      Nothing in the build or the app uses it.
+crates/maple-code-mode/ Bundled CPython worker, protocol, and process lifecycle.
+docs/                 Product and implementation notes, including the theme.
+scripts/              Python preparation, packaging and validation helpers;
+                      macOS debug-app staging; optional Wayland screenshots.
 ```
 
 ### Backend / frontend boundary
@@ -47,7 +47,8 @@ remove Tauri:
 
 Goose is pinned to a fork revision based on upstream v1.53.0 in this
 component’s Cargo manifests and lockfile. The fork forwards subagent approvals
-to the parent and supports ephemeral native clients for embedded CUA. Research
+to the parent and supports ephemeral native clients for embedded CUA and opt-in ordered tool
+scheduling. Research
 has an independent dependency graph.
 
 ## Features
@@ -60,6 +61,9 @@ has an independent dependency graph.
 - Agent chat with streaming Markdown, tool calls, permission prompts,
   agent questions, image attachments (picker, paste, or drag and drop),
   a per-message Copy button, and a context-window indicator.
+- [Python scratchpad](docs/python-code-mode.md): the normal `python_code`
+  tool uses bundled CPython with persistent task state and top-level await.
+  Existing permissions apply; the task menu can reset retained Python state.
 - Slash commands in the composer: `/btw` asks a side question the task
   never sees, plus `/compact`, `/new`, `/pin`, `/web`, `/model`, and
   `/help`. The account's skills appear in the same list.
@@ -67,7 +71,8 @@ has an independent dependency graph.
 - Subagents: the task can give a piece of work to a subagent with the
   `delegate` tool, which runs it in its own context. The Goose fork makes
   the subagent inherit the task's permission mode and forwards its approval
-  requests to the parent session. Maple also asks before each handoff in
+  requests to the parent session. Its independently constructed clients do not
+  receive Maple's Python capability. Maple also asks before each handoff in
   Read only mode. Subagents show above the composer with the tool each one
   runs and how long it has worked. A subagent that runs in the background
   keeps its row after the turn ends, and Maple tells the task when it
@@ -316,6 +321,20 @@ A pure Darwin package is not exposed: the pinned Nix Swift/SDK combination
 cannot build the CUA bridges with the SDK required for recording. The supported
 macOS path uses Xcode's Swift and Metal toolchains and is also used by CI.
 Linux builds use Nix-provided ALSA, font, keyboard, Wayland and Vulkan libraries.
+
+The Intel macOS development shell uses a separate pinned Nixpkgs 26.05 input
+for the focused CPython worker CI lane, since Nixpkgs 26.11 removed Intel macOS
+support. Other platforms retain the primary Nixpkgs pin and the shared Rust pin.
+On Intel macOS, enter the shell from this component directory with:
+
+```sh
+nix shell --no-update-lock-file --inputs-from . 'nixpkgs-intel-darwin#bashInteractive^out' \
+  -c nix develop --no-update-lock-file .
+```
+
+The outer command supplies pinned Bash for `nix develop`'s startup fallback;
+macOS's system Bash is too old for this environment. Nix may still print an
+`error (ignored)` about the primary input's removed Intel support.
 
 ### Shared Rust build cache
 

@@ -3,6 +3,8 @@
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
+    # Nixpkgs 26.11 removed Intel macOS; retain 26.05 only for its dev shell.
+    nixpkgs-intel-darwin.url = "github:NixOS/nixpkgs/e49322d1ec25b45f7c587c5fd69ac826d1a57dbc";
 
     rust-overlay = {
       url = "github:oxalica/rust-overlay";
@@ -13,12 +15,14 @@
   outputs =
     {
       nixpkgs,
+      nixpkgs-intel-darwin,
       rust-overlay,
       ...
     }:
     let
       supportedSystems = [
         "aarch64-darwin"
+        "x86_64-darwin"
         "aarch64-linux"
         "x86_64-linux"
       ];
@@ -30,6 +34,33 @@
       ];
       forAllSystems = nixpkgs.lib.genAttrs supportedSystems;
       forPackageSystems = nixpkgs.lib.genAttrs packageSystems;
+      # The store reference in runtime.json retains exactly the declared CPython
+      # and its stdlib/native dependency closure in the installed Maple output.
+      mkPythonRuntime =
+        pkgs:
+        let
+          python = pkgs.python313;
+          version = python.version;
+          manifest = {
+            protocol_version = 1;
+            implementation = "cpython";
+            inherit version;
+            distribution = "nix-${python.name}-${builtins.baseNameOf (toString python)}";
+            executable = "${python}/bin/python3.13";
+            worker = "worker.py";
+          };
+        in
+        assert version == "3.13.15";
+        pkgs.runCommand "maple-python-${version}" { nativeBuildInputs = [ python ]; } ''
+          runtime="$out/share/maple-agent/python"
+          mkdir -p "$runtime/licenses"
+          cp ${./crates/maple-code-mode/python/worker.py} "$runtime/worker.py"
+          cat > "$runtime/runtime.json" <<'JSON'
+          ${builtins.toJSON manifest}
+          JSON
+          tar -xOf ${python.src} Python-${version}/LICENSE > "$runtime/licenses/Python-LICENSE.txt"
+          ${python}/bin/python3.13 -I -B -c 'import sys, sysconfig, ssl, sqlite3, ctypes, zlib, bz2, lzma; assert sys.version_info[:3] == (3, 13, 15); assert not sysconfig.get_config_var("Py_GIL_DISABLED")'
+        '';
     in
     {
       packages = forPackageSystems (
@@ -49,6 +80,7 @@
             cargo = rustToolchain;
             rustc = rustToolchain;
           };
+          pythonRuntime = mkPythonRuntime pkgs;
           linuxRuntimeInputs = with pkgs; [
             libxcb
             libxkbcommon
@@ -62,13 +94,17 @@
             xorg.libXi
             xorg.libXtst
           ];
-          linuxBuildInputs = with pkgs; [
-            alsa-lib
-            fontconfig
-            freetype
-          ] ++ linuxRuntimeInputs;
+          linuxBuildInputs =
+            with pkgs;
+            [
+              alsa-lib
+              fontconfig
+              freetype
+            ]
+            ++ linuxRuntimeInputs;
         in
         {
+          python-runtime = pythonRuntime;
           default = rustPlatform.buildRustPackage {
             pname = "maple-agent";
             version = "0.1.0";
@@ -103,19 +139,23 @@
                 "zed-font-kit-0.14.1-zed" = "sha256-KXygi0olNQi5yM8eaJVykNDtbPMDjT+cWPBF8UrtXR4=";
                 "zed-scap-0.0.8-zed" = "sha256-BihiQHlal/eRsktyf0GI3aSWsUCW7WcICMsC2Xvb7kw=";
                 "cua-driver-sdk-0.28.0" = "sha256-jiAlbvolcowWSmenp7TtnJu7rn6W6qe8bj3fgWdemN8=";
-                "goose-1.53.0" = "sha256-RJ1b8Rwo3WgHt2zYn979z2XWxWS5SDcorICkOjhrvkw=";
+                "goose-1.53.0" = "sha256-iVW0YN9C7ruFVCCU2ExRVpsUZMCQrUOsNiGRcdEqen0=";
               };
             };
 
-            nativeBuildInputs = with pkgs; [
-              clang
-              cmake
-              pkg-config
-            ] ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [ pkgs.makeWrapper ];
+            nativeBuildInputs =
+              with pkgs;
+              [
+                clang
+                cmake
+                pkg-config
+              ]
+              ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [ pkgs.makeWrapper ];
 
-            buildInputs =
-              [ pkgs.libiconv ]
-              ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux linuxBuildInputs;
+            buildInputs = [
+              pkgs.libiconv
+            ]
+            ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux linuxBuildInputs;
 
             cargoBuildFlags = [
               "-p"
@@ -125,6 +165,11 @@
             # The upstream CI runs the complete workspace and feature matrix.
             # Keep the package derivation focused on producing the release binary.
             doCheck = false;
+
+            postInstall = ''
+              mkdir -p "$out/share/maple-agent"
+              cp -R ${pythonRuntime}/share/maple-agent/python "$out/share/maple-agent/python"
+            '';
 
             # GPUI loads the Wayland and Vulkan libraries at runtime, so they are
             # not discovered by ELF dependency scanning. Prefer the NixOS GPU
@@ -149,7 +194,8 @@
       devShells = forAllSystems (
         system:
         let
-          pkgs = import nixpkgs {
+          shellNixpkgs = if system == "x86_64-darwin" then nixpkgs-intel-darwin else nixpkgs;
+          pkgs = import shellNixpkgs {
             inherit system;
             overlays = [ (import rust-overlay) ];
           };
@@ -172,11 +218,14 @@
             xorg.libXi
             xorg.libXtst
           ];
-          linuxBuildInputs = with pkgs; [
-            alsa-lib
-            fontconfig
-            freetype
-          ] ++ linuxRuntimeInputs;
+          linuxBuildInputs =
+            with pkgs;
+            [
+              alsa-lib
+              fontconfig
+              freetype
+            ]
+            ++ linuxRuntimeInputs;
           isDarwin = pkgs.stdenv.hostPlatform.isDarwin;
           mkDevShell = if isDarwin then pkgs.mkShellNoCC else pkgs.mkShell;
           xcrun = pkgs.writeShellScriptBin "xcrun" ''
@@ -185,20 +234,34 @@
         in
         {
           default = mkDevShell {
-            packages = with pkgs; [
-              clang
-              cmake
-              pkg-config
-              rustToolchain
-              just
-              python3
-            ] ++ pkgs.lib.optionals isDarwin [ xcrun ];
+            packages =
+              with pkgs;
+              [
+                clang
+                cmake
+                pkg-config
+                rustToolchain
+                python313
+                just
+              ]
+              ++ pkgs.lib.optionals isDarwin [ xcrun ];
 
-            buildInputs =
-              [ pkgs.libiconv ]
-              ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux linuxBuildInputs;
+            buildInputs = [
+              pkgs.libiconv
+            ]
+            ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux linuxBuildInputs;
+
+            # ARM64 Linux is a Nix-only delivery target. Other development
+            # platforms still prepare PBS unless Nix is selected explicitly.
+            MAPLE_CODE_MODE_NIX_RUNTIME_MANIFEST = "${mkPythonRuntime pkgs}/share/maple-agent/python/runtime.json";
 
             shellHook = ''
+              if [ "${system}" = "aarch64-linux" ]; then
+                export MAPLE_CODE_MODE_DISTRIBUTION="''${MAPLE_CODE_MODE_DISTRIBUTION:-nix}"
+              fi
+              if [ "''${MAPLE_CODE_MODE_DISTRIBUTION:-pbs}" = "nix" ]; then
+                export MAPLE_CODE_MODE_RUNTIME_MANIFEST="''${MAPLE_CODE_MODE_RUNTIME_MANIFEST:-$MAPLE_CODE_MODE_NIX_RUNTIME_MANIFEST}"
+              fi
               if [ -z "''${CI:-}" ] \
                 && [ "''${MAPLE_DISABLE_SHARED_CARGO_BUILD_DIR:-0}" != "1" ] \
                 && [ -z "''${CARGO_BUILD_BUILD_DIR:-}" ] \
@@ -211,10 +274,12 @@
               if [ -n "''${CARGO_BUILD_BUILD_DIR:-}" ]; then
                 echo "Maple Agent Cargo build cache: $CARGO_BUILD_BUILD_DIR"
               fi
-            '' + pkgs.lib.optionalString pkgs.stdenv.hostPlatform.isLinux ''
+            ''
+            + pkgs.lib.optionalString pkgs.stdenv.hostPlatform.isLinux ''
               export LD_LIBRARY_PATH="${pkgs.addDriverRunpath.driverLink}/lib:${pkgs.lib.makeLibraryPath linuxRuntimeInputs}''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
               export VK_ADD_DRIVER_FILES="${pkgs.addDriverRunpath.driverLink}/share/vulkan/icd.d:${pkgs.mesa}/share/vulkan/icd.d''${VK_ADD_DRIVER_FILES:+:$VK_ADD_DRIVER_FILES}"
-            '' + pkgs.lib.optionalString isDarwin ''
+            ''
+            + pkgs.lib.optionalString isDarwin ''
               maple_nix_valid_developer_dir() {
                 [ -d "$1" ] \
                   && [ -x "$1/usr/bin/xcodebuild" ] \

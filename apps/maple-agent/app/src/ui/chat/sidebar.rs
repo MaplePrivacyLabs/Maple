@@ -92,6 +92,7 @@ pub(super) struct SidebarRow {
     pub(super) menu_pin_id: SharedString,
     pub(super) menu_settle_id: SharedString,
     pub(super) menu_archive_id: SharedString,
+    pub(super) menu_python_reset_id: SharedString,
     pub(super) menu_delete_id: SharedString,
     pub(super) menu_reopen_id: SharedString,
     pub(super) title: SharedString,
@@ -118,6 +119,7 @@ impl SidebarRow {
             menu_pin_id: SharedString::from(format!("pin-task-{id}")),
             menu_settle_id: SharedString::from(format!("settle-task-{id}")),
             menu_archive_id: SharedString::from(format!("archive-task-{id}")),
+            menu_python_reset_id: SharedString::from(format!("reset-python-{id}")),
             menu_delete_id: SharedString::from(format!("delete-task-{id}")),
             menu_reopen_id: SharedString::from(format!("reopen-task-{id}")),
             title: SharedString::from(session.title.clone()),
@@ -137,6 +139,23 @@ enum SidebarPopup {
     Switcher,
     /// A task row's overflow menu, by the row's shared id.
     Task(Arc<str>),
+}
+
+/// A menu can close and reopen for the same task before its status read
+/// finishes. The request sequence distinguishes those otherwise equal reads.
+#[derive(Clone)]
+struct PythonMenuRequest {
+    user_id: String,
+    session_id: String,
+    sequence: u64,
+}
+
+impl PythonMenuRequest {
+    fn is_current(&self, user_id: &str, task_menu: Option<&str>, sequence: u64) -> bool {
+        self.user_id == user_id
+            && task_menu == Some(self.session_id.as_str())
+            && self.sequence == sequence
+    }
 }
 
 /// One row of the virtualized sidebar list, in display order. Rebuilt
@@ -325,6 +344,8 @@ pub(super) struct Sidebar {
     project_popup: Popup<Sidebar, String>,
     /// Trust status of the project whose menu is open, once it loads.
     menu_trust: Option<AgentProjectTrustStatus>,
+    python_menu_sequence: u64,
+    menu_python_resettable: bool,
     // Search and rename.
     filter: String,
     search_input: Entity<TextInput>,
@@ -396,6 +417,8 @@ impl Sidebar {
             popup: Popup::new(|this| &mut this.popup, cx),
             project_popup: Popup::new(|this| &mut this.project_popup, cx),
             menu_trust: None,
+            python_menu_sequence: 0,
+            menu_python_resettable: false,
             filter: String::new(),
             search_input,
             rename: None,
@@ -624,7 +647,6 @@ impl Sidebar {
         self.popup.is_open(&SidebarPopup::Switcher)
     }
 
-    #[cfg(test)]
     pub(super) fn task_menu(&self) -> Option<&str> {
         match self.popup.open_key() {
             Some(SidebarPopup::Task(session)) => Some(&**session),
@@ -1298,7 +1320,74 @@ impl Sidebar {
 
     /// Open or close the overflow menu of one task row.
     fn toggle_task_menu(&mut self, session_id: Arc<str>, cx: &mut Context<Self>) {
-        self.popup.toggle(SidebarPopup::Task(session_id), cx);
+        self.menu_python_resettable = false;
+        self.python_menu_sequence = self.python_menu_sequence.wrapping_add(1);
+        if !self
+            .popup
+            .toggle(SidebarPopup::Task(session_id.clone()), cx)
+        {
+            return;
+        }
+        let request = PythonMenuRequest {
+            user_id: self.user_id.clone(),
+            session_id: session_id.to_string(),
+            sequence: self.python_menu_sequence,
+        };
+        let requested = request.clone();
+        let backend = self.backend.clone();
+        self.call(
+            async move {
+                backend
+                    .python_status(&requested.user_id, &requested.session_id)
+                    .await
+            },
+            cx,
+            move |this, result, cx| {
+                if !request.is_current(&this.user_id, this.task_menu(), this.python_menu_sequence)
+                    || !this
+                        .sessions
+                        .iter()
+                        .any(|task| task.id == request.session_id)
+                {
+                    return;
+                }
+                if let Ok(status) = result
+                    && this.menu_python_resettable != status.resettable
+                {
+                    this.menu_python_resettable = status.resettable;
+                    cx.notify();
+                }
+            },
+        );
+    }
+
+    fn reset_python(&mut self, session_id: &str, cx: &mut Context<Self>) {
+        let Some(session) = self.sessions.iter().find(|task| task.id == session_id) else {
+            return;
+        };
+        let title = session.title.clone();
+        let user_id = self.user_id.clone();
+        let task_id = session_id.to_string();
+        let requested_user = user_id.clone();
+        let requested_task = task_id.clone();
+        let backend = self.backend.clone();
+        self.popup.close(cx);
+        self.menu_python_resettable = false;
+        cx.notify();
+        self.call(
+            async move { backend.reset_python(&requested_user, &requested_task).await },
+            cx,
+            move |this, result, cx| {
+                if this.user_id != user_id || !this.sessions.iter().any(|task| task.id == task_id) {
+                    return;
+                }
+                let message = match result {
+                    Ok(()) => format!("Python reset for “{title}”. The next call starts fresh."),
+                    Err(error) => format!("Could not reset Python: {error}"),
+                };
+                cx.emit(SidebarEvent::Notice(message.into()));
+            },
+        );
     }
 
     /// The overflow menu of a task row: rename, then where the task can
@@ -1393,6 +1482,15 @@ impl Sidebar {
                 on_click: Box::new(move |this, cx| this.move_task(&session_id, to, cx)),
             });
         }
+        if self.menu_python_resettable && self.task_menu() == Some(row.id.as_ref()) {
+            let python_id = row.id.to_string();
+            items.push(SidebarMenuItem {
+                id: row.menu_python_reset_id.clone(),
+                icon: "undo-2",
+                label: "Reset Python",
+                on_click: Box::new(move |this, cx| this.reset_python(&python_id, cx)),
+            });
+        }
         items
     }
 
@@ -1428,6 +1526,11 @@ impl Sidebar {
             });
             cx.notify();
         }
+    }
+
+    #[cfg(test)]
+    pub(super) fn set_python_resettable_for_test(&mut self, resettable: bool) {
+        self.menu_python_resettable = resettable;
     }
 
     #[cfg(test)]
@@ -2587,5 +2690,25 @@ mod tests {
         );
         let elsewhere = workspace.with_file_name("Notes");
         assert_eq!(root_display_name(&elsewhere.to_string_lossy()), "Notes");
+    }
+}
+
+#[cfg(test)]
+mod python_menu_tests {
+    use super::*;
+
+    #[test]
+    fn status_reply_requires_the_same_account_task_and_menu_opening() {
+        let request = PythonMenuRequest {
+            user_id: "account-a".into(),
+            session_id: "task-a".into(),
+            sequence: 7,
+        };
+        assert!(request.is_current("account-a", Some("task-a"), 7));
+        assert!(!request.is_current("account-b", Some("task-a"), 7));
+        assert!(!request.is_current("account-a", Some("task-b"), 7));
+        assert!(!request.is_current("account-a", None, 7));
+        // Closing and reopening the same task must reject the earlier read.
+        assert!(!request.is_current("account-a", Some("task-a"), 9));
     }
 }
