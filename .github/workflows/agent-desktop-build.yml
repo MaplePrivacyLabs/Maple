@@ -104,7 +104,8 @@ jobs:
       - name: Upload Agent packages
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: maple-agent-${{ matrix.variant }}-macos-aarch64-${{ github.run_id }}-${{ github.run_attempt }}
+          name: maple-agent-${{ matrix.variant }}-macos-aarch64-${{ github.run_id }}
+          overwrite: true
           path: apps/maple-agent/dist/${{ matrix.variant }}/
           if-no-files-found: error
           retention-days: 30
@@ -149,7 +150,8 @@ jobs:
       - name: Upload Agent packages
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: maple-agent-${{ matrix.variant }}-macos-aarch64-unsigned-${{ github.run_id }}-${{ github.run_attempt }}
+          name: maple-agent-${{ matrix.variant }}-macos-aarch64-unsigned-${{ github.run_id }}
+          overwrite: true
           path: apps/maple-agent/dist/${{ matrix.variant }}/
           if-no-files-found: error
           retention-days: 30
@@ -197,7 +199,8 @@ jobs:
       - name: Upload Agent packages
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: maple-agent-${{ matrix.variant }}-linux-x86_64-${{ github.run_id }}-${{ github.run_attempt }}
+          name: maple-agent-${{ matrix.variant }}-linux-x86_64-${{ github.run_id }}
+          overwrite: true
           path: apps/maple-agent/dist/${{ matrix.variant }}/
           if-no-files-found: error
           retention-days: 30
@@ -228,7 +231,7 @@ jobs:
       - name: Download exact Agent packages
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
-          name: maple-agent-${{ matrix.variant }}-macos-aarch64-${{ github.run_id }}-${{ github.run_attempt }}
+          name: maple-agent-${{ matrix.variant }}-macos-aarch64-${{ github.run_id }}
           path: artifacts
       - name: Verify downloaded signatures, notarization, hashes and profile
         run: nix develop --no-update-lock-file . -c ./scripts/verify-release.sh "$MAPLE_RELEASE_PROFILE" "../../artifacts"
@@ -256,7 +259,7 @@ jobs:
       - name: Download exact Agent packages
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
-          name: maple-agent-${{ matrix.variant }}-linux-x86_64-${{ github.run_id }}-${{ github.run_attempt }}
+          name: maple-agent-${{ matrix.variant }}-linux-x86_64-${{ github.run_id }}
           path: artifacts
       - name: Verify downloaded hashes and profile
         run: |

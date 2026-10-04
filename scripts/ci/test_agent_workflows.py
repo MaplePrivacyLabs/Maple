@@ -224,7 +224,7 @@ class AgentDesktopPackagingBoundaryTests(unittest.TestCase):
                                         "GITHUB_OUTPUT": str(output), "BASE_SHA": "", "HEAD_SHA": ""})
                     self.assertEqual(output.read_text(), "agent=true\n")
 
-    def test_profiles_and_artifacts_keep_platform_variant_and_attempt_identity(self):
+    def test_profiles_and_artifacts_keep_platform_variant_and_run_identity(self):
         jobs = workflow(self.WORKFLOW)["jobs"]
         for name, platform in (
             ("macos", "macos-aarch64"),
@@ -246,9 +246,54 @@ class AgentDesktopPackagingBoundaryTests(unittest.TestCase):
                 self.assertNotIn("if", upload)
                 self.assertEqual(upload["with"]["name"],
                                  "maple-agent-${{ matrix.variant }}-" + platform +
-                                 "-${{ github.run_id }}-${{ github.run_attempt }}")
+                                 "-${{ github.run_id }}")
+                self.assertIs(upload["with"]["overwrite"], True)
                 self.assertEqual(upload["with"]["path"], "apps/maple-agent/dist/${{ matrix.variant }}/")
                 self.assertEqual(upload["with"]["if-no-files-found"], "error")
+
+    def test_partial_producer_and_verifier_only_retries_reuse_successful_artifacts(self):
+        jobs = workflow(self.WORKFLOW)["jobs"]
+
+        def artifact_name(template, variant, attempt):
+            for expression, value in (
+                ("matrix.variant", variant),
+                ("github.run_id", "12345"),
+                ("github.run_attempt", str(attempt)),
+            ):
+                template = template.replace("${{ " + expression + " }}", value)
+            self.assertNotIn("${{", template)
+            return template
+
+        for producer, verifier in (("macos", "verify-macos"), ("linux", "verify-linux")):
+            with self.subTest(producer=producer):
+                upload = next(step["with"] for step in jobs[producer]["steps"]
+                              if step.get("uses", "").startswith("actions/upload-artifact@"))
+                download = next(step["with"] for step in jobs[verifier]["steps"]
+                                if step.get("uses", "").startswith("actions/download-artifact@"))
+                artifacts = {}
+
+                def publish(variant, attempt):
+                    name = artifact_name(upload["name"], variant, attempt)
+                    if name in artifacts:
+                        self.assertIs(upload.get("overwrite"), True)
+                    artifacts[name] = (variant, attempt)
+
+                # Attempt 1 retained Dev; Prod failed before publishing. Retry
+                # runs only Prod and both dependent verification variants.
+                publish("dev", 1)
+                publish("prod", 2)
+                for attempt in (2, 3):
+                    # Attempt 3 retries verification alone, without rebuilding.
+                    for variant, producer_attempt in (("dev", 1), ("prod", 2)):
+                        name = artifact_name(download["name"], variant, attempt)
+                        self.assertIn(name, artifacts)
+                        self.assertEqual(artifacts[name], (variant, producer_attempt))
+
+                # A subsequent producer retry replaces only its own artifact.
+                publish("prod", 4)
+                self.assertEqual(len(artifacts), 2)
+                self.assertEqual(artifacts[artifact_name(download["name"], "prod", 4)], ("prod", 4))
+                self.assertEqual(artifacts[artifact_name(download["name"], "dev", 4)], ("dev", 1))
 
     def test_downloaded_packages_are_verified_without_signing_credentials(self):
         jobs = workflow(self.WORKFLOW)["jobs"]

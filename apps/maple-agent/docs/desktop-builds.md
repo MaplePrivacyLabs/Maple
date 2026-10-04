@@ -22,12 +22,18 @@ configuration and uses a separate debug app identity.
 ## Download and install
 
 Open the latest successful `Maple Agent Desktop Builds` run on GitHub Actions.
-Its artifacts include the profile, platform, run ID, and attempt in their names:
+Its artifacts include the profile, platform, and run ID in their names:
 
-- `maple-agent-dev-macos-aarch64-RUN-ATTEMPT`
-- `maple-agent-prod-macos-aarch64-RUN-ATTEMPT`
-- `maple-agent-dev-linux-x86_64-RUN-ATTEMPT`
-- `maple-agent-prod-linux-x86_64-RUN-ATTEMPT`
+- `maple-agent-dev-macos-aarch64-RUN`
+- `maple-agent-prod-macos-aarch64-RUN`
+- `maple-agent-dev-linux-x86_64-RUN`
+- `maple-agent-prod-linux-x86_64-RUN`
+
+Artifact names stay stable when failed jobs are retried, so verification can
+reuse a successful profile's package from an earlier attempt. A rerun producer
+replaces only its own profile/platform artifact after packaging verification;
+the replacement has a new artifact ID and download link. Every package must
+still match the run's source commit and pass the same native verification.
 
 Artifacts are retained for 30 days. macOS packages contain a DMG and application
 archive; drag the chosen Agent app into Applications. Both Agent profiles can
