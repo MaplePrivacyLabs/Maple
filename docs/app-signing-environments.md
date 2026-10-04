@@ -30,6 +30,10 @@ Creating a release and controlling its distribution remain separate boundaries.
 for its trusted `master` macOS Dev/Prod jobs. The same Developer ID publisher
 signs distinct Agent bundle identities; it does not replace Research's identity.
 Agent contributor packaging and Linux builds have no signing credentials.
+Agent macOS compilation also runs without signing credentials. A fresh
+packaging job downloads the binary from the same workflow run and validates
+its profile and embedded source revision against the exact checkout before
+the Apple credential step. It does not restore compilation caches or run Cargo.
 Agent builds upload separately named Actions artifacts and verify downloaded
 packages without signing credentials. See [Agent desktop builds](../apps/maple-agent/docs/desktop-builds.md).
 

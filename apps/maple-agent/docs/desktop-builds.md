@@ -19,6 +19,14 @@ Dev and Prod use their own state directories and do not adopt legacy Agent or
 Research state. The development launcher retains its existing workspace
 configuration and uses a separate debug app identity.
 
+macOS compiles each profile in a job without signing credentials and uploads
+its prebuilt binary. Packaging runs on a fresh runner that downloads that
+binary and checks its embedded profile and source commit against the run's
+checkout before the signing step receives Apple credentials. Packaging does
+not restore a Cargo cache or compile Rust; this keeps compilation's disk use
+separate from bundling and notarization. PR previews use the same prebuilt
+verification on runners without signing credentials.
+
 ## Download and install
 
 Open the latest successful `Maple Agent Desktop Builds` run on GitHub Actions.
@@ -34,6 +42,9 @@ reuse a successful profile's package from an earlier attempt. A rerun producer
 replaces only its own profile/platform artifact after packaging verification;
 the replacement has a new artifact ID and download link. Every package must
 still match the run's source commit and pass the same native verification.
+Internal macOS binary artifacts use `macos-aarch64-prebuilt` in their names.
+They retain the same run/profile identity across retries, so a packaging-only
+retry can reuse a successful compilation.
 
 Artifacts are retained for 30 days. macOS packages contain a DMG and application
 archive; drag the chosen Agent app into Applications. Both Agent profiles can
@@ -58,7 +69,8 @@ nix develop --no-update-lock-file . -c ./scripts/verify-release.sh dev dist/dev 
 Use `prod` for the production service profile. Official macOS signing is run
 only by the trusted CI job using the existing `desktop-signing` GitHub
 environment. Cargo and native compilation run before that job step receives
-Apple credentials. Linux packaging needs no Apple credentials.
+Apple credentials, on a separate runner. Linux packaging needs no Apple
+credentials.
 
 ## Distribution and update boundaries
 

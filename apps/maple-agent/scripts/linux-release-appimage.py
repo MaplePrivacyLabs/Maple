@@ -519,7 +519,12 @@ def main():
             shutil.move(appdir, output)
         else:
             squashfs = temporary / "payload.squashfs"
-            run("mksquashfs", appdir, squashfs, "-noappend", "-no-progress", "-all-root", "-all-time", epoch, "-mkfs-time", epoch, "-comp", "gzip", "-processors", "1")
+            # SquashFS rejects inherited SOURCE_DATE_EPOCH with explicit time
+            # options. Keep both deterministic flags and scope removal to this
+            # child process so the package environment remains unchanged.
+            squashfs_environment = os.environ.copy()
+            squashfs_environment.pop("SOURCE_DATE_EPOCH", None)
+            run("mksquashfs", appdir, squashfs, "-noappend", "-no-progress", "-all-root", "-all-time", epoch, "-mkfs-time", epoch, "-comp", "gzip", "-processors", "1", env=squashfs_environment)
             packaged = temporary / "maple-agent.AppImage"
             with packaged.open("wb") as stream:
                 for source in (tools / "runtime-x86_64", squashfs):

@@ -5,6 +5,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -240,6 +241,52 @@ class AppImageTests(unittest.TestCase):
                 packaging.main()
         self.assertFalse(output.exists())
         self.assertFalse(output.with_name(output.name + ".runtime-audit.json").exists())
+
+    def test_squashfs_uses_explicit_epoch_without_conflicting_environment(self):
+        output = self.root / "release.AppImage"
+        tools = self.root / "appimage-tools"
+        tools.mkdir()
+        (tools / "runtime-x86_64").write_bytes(b"pinned-runtime")
+        variables = {f"MAPLE_PACKAGE_{key.upper()}": value for key, value in METADATA.items()}
+        variables.update({
+            "MAPLE_AGENT_LINUX_CLOSURE_INFO": str(self.root),
+            "MAPLE_AGENT_LINUX_GLIBC": str(self.glibc),
+            "MAPLE_AGENT_APPIMAGE_TOOLS": str(tools),
+            "SOURCE_DATE_EPOCH": "12345",
+        })
+        squashfs_calls = []
+
+        def tool_run(*args, check=True, env=None):
+            if args[0] == "mksquashfs":
+                environment = os.environ if env is None else env
+                if "SOURCE_DATE_EPOCH" in environment:
+                    raise packaging.PackagingError("SOURCE_DATE_EPOCH and command line options can't be used at the same time to set timestamp(s)")
+                squashfs_calls.append(args)
+                Path(args[2]).write_bytes(b"squashfs-payload")
+                return subprocess.CompletedProcess(args, 0, "", "")
+            if Path(args[0]).name == "AppRun":
+                appdir, desktop, icon = map(Path, (args[2], args[4], args[6]))
+                for source, target in ((desktop, appdir / "usr/share/applications" / desktop.name), (icon, appdir / "usr/share/icons" / icon.name)):
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(source, target)
+                return subprocess.CompletedProcess(args, 0, "", "")
+            return ElfTools()(*args, check=check, env=env)
+
+        def extract(source, destination):
+            if source.name == "linuxdeploy-x86_64.AppImage":
+                destination.mkdir()
+            else:
+                shutil.copytree(source.parent / "MapleAgent.AppDir", destination)
+
+        with mock.patch.dict(os.environ, variables), mock.patch.object(packaging, "run", tool_run), mock.patch.object(packaging, "extract_appimage", extract), mock.patch.object(packaging.sys, "argv", ["helper", str(self.binary), str(output)]), mock.patch("builtins.print"):
+            packaging.main()
+            self.assertEqual(os.environ["SOURCE_DATE_EPOCH"], "12345")
+        self.assertEqual(len(squashfs_calls), 1)
+        args = squashfs_calls[0]
+        self.assertEqual(args[args.index("-all-time") + 1], 12345)
+        self.assertEqual(args[args.index("-mkfs-time") + 1], 12345)
+        self.assertEqual(output.read_bytes(), b"pinned-runtimesquashfs-payload")
+        self.assertTrue(output.with_name(output.name + ".runtime-audit.json").is_file())
 
     def test_launcher_library_path_does_not_escape_to_child_environment(self):
         appdir = self.root / "launch with spaces"

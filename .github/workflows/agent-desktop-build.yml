@@ -59,10 +59,52 @@ jobs:
             echo 'agent=true' >> "$GITHUB_OUTPUT"
           fi
 
+  macos-build:
+    name: Build macOS binary (${{ matrix.variant }})
+    needs: changes
+    if: ${{ always() && !cancelled() && ((github.event_name == 'pull_request' && (needs.changes.result != 'success' || needs.changes.outputs.agent != 'false')) || (github.repository == 'MaplePrivacyLabs/Maple' && github.ref == 'refs/heads/master' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch'))) }}
+    runs-on: macos-26-xlarge
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [dev, prod]
+    env:
+      MAPLE_RELEASE_PROFILE: ${{ matrix.variant }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Install pinned Nix
+        uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25
+        with:
+          github-token: ""
+      - name: Select pinned Xcode
+        working-directory: .
+        run: python3 scripts/ci/select-xcode.py
+      - name: Cache Agent release dependencies
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
+        with:
+          workspaces: apps/maple-agent -> target
+          add-rust-environment-hash-key: "false"
+          key: maple-agent-release-${{ matrix.variant }}-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('apps/maple-agent/Cargo.lock', 'apps/maple-agent/flake.lock', 'apps/maple-agent/flake.nix') }}
+          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/master' }}
+      - name: Build optimized Agent with embedded profile
+        run: nix develop --no-update-lock-file . -c ./scripts/build-release.sh "$MAPLE_RELEASE_PROFILE"
+      - name: Upload prebuilt Agent binary
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: maple-agent-${{ matrix.variant }}-macos-aarch64-prebuilt-${{ github.run_id }}
+          overwrite: true
+          path: apps/maple-agent/target/release/maple-agent
+          if-no-files-found: error
+          retention-days: 30
+
   macos:
     name: Signed macOS (${{ matrix.variant }})
-    needs: changes
-    if: ${{ always() && !cancelled() && github.repository == 'MaplePrivacyLabs/Maple' && github.ref == 'refs/heads/master' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') }}
+    needs: [changes, macos-build]
+    if: ${{ always() && !cancelled() && needs.macos-build.result == 'success' && github.repository == 'MaplePrivacyLabs/Maple' && github.ref == 'refs/heads/master' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') }}
     environment: desktop-signing
     runs-on: macos-26-xlarge
     timeout-minutes: 120
@@ -84,15 +126,13 @@ jobs:
       - name: Select pinned Xcode
         working-directory: .
         run: python3 scripts/ci/select-xcode.py
-      - name: Cache Agent release dependencies
-        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
+      - name: Download exact prebuilt Agent binary
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
-          workspaces: apps/maple-agent -> target
-          add-rust-environment-hash-key: "false"
-          key: maple-agent-release-${{ matrix.variant }}-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('apps/maple-agent/Cargo.lock', 'apps/maple-agent/flake.lock', 'apps/maple-agent/flake.nix') }}
-          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/master' }}
-      - name: Build optimized Agent with embedded profile
-        run: nix develop --no-update-lock-file . -c ./scripts/build-release.sh "$MAPLE_RELEASE_PROFILE"
+          name: maple-agent-${{ matrix.variant }}-macos-aarch64-prebuilt-${{ github.run_id }}
+          path: apps/maple-agent/target/release
+      - name: Verify prebuilt profile and source before signing
+        run: nix develop --no-update-lock-file . -c ./scripts/verify-prebuilt-release.sh "$MAPLE_RELEASE_PROFILE"
       - name: Sign and notarize Agent packages
         run: nix develop --no-update-lock-file . -c ./scripts/package-release.sh "$MAPLE_RELEASE_PROFILE"
         env:
@@ -112,8 +152,8 @@ jobs:
 
   macos-unsigned:
     name: Unsigned macOS packaging (${{ matrix.variant }})
-    needs: changes
-    if: ${{ always() && !cancelled() && github.event_name == 'pull_request' && (needs.changes.result != 'success' || needs.changes.outputs.agent != 'false') }}
+    needs: [changes, macos-build]
+    if: ${{ always() && !cancelled() && needs.macos-build.result == 'success' && github.event_name == 'pull_request' && (needs.changes.result != 'success' || needs.changes.outputs.agent != 'false') }}
     runs-on: macos-26-xlarge
     timeout-minutes: 120
     strategy:
@@ -134,15 +174,13 @@ jobs:
       - name: Select pinned Xcode
         working-directory: .
         run: python3 scripts/ci/select-xcode.py
-      - name: Cache Agent release dependencies
-        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
+      - name: Download exact prebuilt Agent binary
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
-          workspaces: apps/maple-agent -> target
-          add-rust-environment-hash-key: "false"
-          key: maple-agent-release-${{ matrix.variant }}-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('apps/maple-agent/Cargo.lock', 'apps/maple-agent/flake.lock', 'apps/maple-agent/flake.nix') }}
-          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/master' }}
-      - name: Build optimized Agent with embedded profile
-        run: nix develop --no-update-lock-file . -c ./scripts/build-release.sh "$MAPLE_RELEASE_PROFILE"
+          name: maple-agent-${{ matrix.variant }}-macos-aarch64-prebuilt-${{ github.run_id }}
+          path: apps/maple-agent/target/release
+      - name: Verify prebuilt profile and source
+        run: nix develop --no-update-lock-file . -c ./scripts/verify-prebuilt-release.sh "$MAPLE_RELEASE_PROFILE"
       - name: Package unsigned Agent preview
         run: nix develop --no-update-lock-file . -c ./scripts/package-release.sh "$MAPLE_RELEASE_PROFILE" --unsigned
       - name: Verify unsigned package profile and hashes

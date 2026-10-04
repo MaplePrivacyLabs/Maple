@@ -154,6 +154,7 @@ resolve_xcode_developer_dir
                     self.assertEqual(len(checkout), 1, (path.name, job_id))
                     self.assertIs(checkout[0]["with"]["persist-credentials"], False)
         self.assertCountEqual(selectors, [
+            ("agent-desktop-build.yml", "macos-build"),
             ("agent-desktop-build.yml", "macos"),
             ("agent-desktop-build.yml", "macos-unsigned"),
             ("agent-desktop-build.yml", "verify-macos"),

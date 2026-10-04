@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import plistlib
 import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -19,6 +20,85 @@ SCRIPTS = Path(__file__).resolve().parent
 spec = importlib.util.spec_from_file_location("release_info", SCRIPTS / "release-info.py")
 release_info = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(release_info)
+
+
+class PrebuiltReleaseTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.component = Path(self.temp.name)
+        scripts = self.component / "scripts"
+        scripts.mkdir()
+        for name in ("verify-prebuilt-release.sh", "release-info.py"):
+            shutil.copy2(SCRIPTS / name, scripts / name)
+        shutil.copy2(SCRIPTS.parent / "release-profiles.json", self.component)
+        self.env = dict(os.environ, GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM="1")
+        self.git("init", "--quiet")
+        self.git("add", ".")
+        self.git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
+                 "-c", "commit.gpgsign=false", "commit", "--quiet", "-m", "fixture source")
+        self.source = self.git("rev-parse", "HEAD").stdout.strip()
+        profile = json.loads((self.component / "release-profiles.json").read_text())["dev"]
+        self.info = {**profile, "profile": "dev", "version": "0.1.0",
+                     "source_sha": self.source, "git_revision": self.source[:8]}
+        self.metadata = self.component / "fixture-build-info.json"
+        self.binary = self.component / "target/release/maple-agent"
+        self.binary.parent.mkdir(parents=True)
+        self.binary.write_text(f"""#!{sys.executable}
+import os
+from pathlib import Path
+import sys
+assert sys.argv[1:] == ["--build-info"]
+for key in ("APPLE_CERTIFICATE", "APPLE_CERTIFICATE_PASSWORD", "APPLE_ID", "APPLE_ID_PASSWORD",
+            "APPLE_PASSWORD", "APPLE_TEAM_ID", "TAURI_SIGNING_PRIVATE_KEY", "TAURI_SIGNING_PRIVATE_KEY_PASSWORD"):
+    assert key not in os.environ, "prebuilt probe received a signing credential"
+print(Path(os.environ["FIXTURE_BUILD_INFO"]).read_text(), end="")
+""")
+        # Match permissions produced by actions/download-artifact.
+        self.binary.chmod(0o644)
+        self.scratch = self.component / "temporary-metadata"
+        self.scratch.mkdir()
+        self.env.update(FIXTURE_BUILD_INFO=str(self.metadata), TMPDIR=str(self.scratch),
+                        APPLE_CERTIFICATE="fixture-certificate", APPLE_CERTIFICATE_PASSWORD="fixture-password",
+                        APPLE_ID="fixture-id", APPLE_ID_PASSWORD="fixture-notary-password", APPLE_PASSWORD="fixture-password",
+                        APPLE_TEAM_ID="fixture-team", TAURI_SIGNING_PRIVATE_KEY="fixture-key",
+                        TAURI_SIGNING_PRIVATE_KEY_PASSWORD="fixture-key-password")
+
+    def git(self, *arguments):
+        return subprocess.run(["git", "-C", str(self.component), *arguments], env=self.env,
+                              check=True, capture_output=True, text=True)
+
+    def verify(self):
+        self.metadata.write_text(json.dumps(self.info))
+        result = subprocess.run(["bash", str(self.component / "scripts/verify-prebuilt-release.sh"), "dev"],
+                                env=self.env, capture_output=True, text=True)
+        self.assertFalse(list(self.scratch.iterdir()), "prebuilt metadata must be cleaned on success or failure")
+        for value in ("fixture-certificate", "fixture-password", "fixture-notary-password", "fixture-key"):
+            self.assertNotIn(value, result.stdout + result.stderr)
+        return result
+
+    def test_downloaded_binary_permissions_source_and_secret_boundary(self):
+        result = self.verify()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.binary.stat().st_mode & 0o777, 0o755)
+        self.assertIn(self.source, result.stdout)
+
+    def test_wrong_profile_or_self_consistent_wrong_source_is_rejected(self):
+        original = self.info.copy()
+        for change in ({"profile": "prod"}, {"source_sha": "b" * 40, "git_revision": "b" * 8}):
+            with self.subTest(change=change):
+                self.info = {**original, **change}
+                result = self.verify()
+                self.assertNotEqual(result.returncode, 0)
+                self.assertNotIn("Verified prebuilt", result.stdout)
+
+    def test_downloaded_binary_must_be_a_regular_file(self):
+        target = self.binary.with_name("different-binary")
+        self.binary.rename(target)
+        self.binary.symlink_to(target.name)
+        result = self.verify()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(target.stat().st_mode & 0o777, 0o644)
 
 
 class ReleaseMetadataTests(unittest.TestCase):

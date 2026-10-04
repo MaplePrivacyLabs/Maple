@@ -227,6 +227,7 @@ class AgentDesktopPackagingBoundaryTests(unittest.TestCase):
     def test_profiles_and_artifacts_keep_platform_variant_and_run_identity(self):
         jobs = workflow(self.WORKFLOW)["jobs"]
         for name, platform in (
+            ("macos-build", "macos-aarch64-prebuilt"),
             ("macos", "macos-aarch64"),
             ("macos-unsigned", "macos-aarch64-unsigned"),
             ("linux", "linux-x86_64"),
@@ -236,9 +237,10 @@ class AgentDesktopPackagingBoundaryTests(unittest.TestCase):
                 self.assertEqual(job["strategy"]["matrix"], {"variant": ["dev", "prod"]})
                 self.assertIs(job["strategy"]["fail-fast"], False)
                 self.assertEqual(job["env"]["MAPLE_RELEASE_PROFILE"], "${{ matrix.variant }}")
-                build = next(step for step in job["steps"]
-                             if "./scripts/build-release.sh" in step.get("run", ""))
-                self.assertIn('"$MAPLE_RELEASE_PROFILE"', build["run"])
+                script = "build-release.sh" if name in ("macos-build", "linux") else "verify-prebuilt-release.sh"
+                profile_step = next(step for step in job["steps"]
+                                    if "./scripts/" + script in step.get("run", ""))
+                self.assertIn('"$MAPLE_RELEASE_PROFILE"', profile_step["run"])
                 uploads = [step for step in job["steps"]
                            if step.get("uses", "").startswith("actions/upload-artifact@")]
                 self.assertEqual(len(uploads), 1)
@@ -248,8 +250,46 @@ class AgentDesktopPackagingBoundaryTests(unittest.TestCase):
                                  "maple-agent-${{ matrix.variant }}-" + platform +
                                  "-${{ github.run_id }}")
                 self.assertIs(upload["with"]["overwrite"], True)
-                self.assertEqual(upload["with"]["path"], "apps/maple-agent/dist/${{ matrix.variant }}/")
+                expected_path = ("apps/maple-agent/target/release/maple-agent" if name == "macos-build"
+                                 else "apps/maple-agent/dist/${{ matrix.variant }}/")
+                self.assertEqual(upload["with"]["path"], expected_path)
                 self.assertEqual(upload["with"]["if-no-files-found"], "error")
+
+    def test_macos_packaging_uses_verified_prebuilt_binaries_on_fresh_runners(self):
+        jobs = workflow(self.WORKFLOW)["jobs"]
+        build = jobs["macos-build"]
+        self.assertNotIn("environment", build)
+        build_condition = " ".join(build["if"].split())
+        self.assertIn(self.MASTER_GUARD, build_condition)
+        self.assertIn("needs.changes.result != 'success'", build_condition)
+        self.assertIn("needs.changes.outputs.agent != 'false'", build_condition)
+        self.assertTrue(any(step.get("uses", "").startswith("Swatinem/rust-cache@")
+                            for step in build["steps"]))
+        upload = next(step["with"] for step in build["steps"]
+                      if step.get("uses", "").startswith("actions/upload-artifact@"))
+        for name in ("macos", "macos-unsigned"):
+            with self.subTest(job=name):
+                job = jobs[name]
+                self.assertIn("macos-build", job["needs"])
+                self.assertIn("needs.macos-build.result == 'success'", job["if"])
+                steps = job["steps"]
+                self.assertFalse(any("rust-cache@" in step.get("uses", "") for step in steps))
+                self.assertFalse(any("build-release.sh" in step.get("run", "") for step in steps))
+                for step in steps:
+                    self.assertNotRegex(step.get("run", ""), r"\bcargo\b")
+                download = next(i for i, step in enumerate(steps)
+                                if step.get("uses", "").startswith("actions/download-artifact@"))
+                self.assertEqual(steps[download]["with"], {
+                    "name": upload["name"], "path": "apps/maple-agent/target/release",
+                })
+                verify = next(i for i, step in enumerate(steps)
+                              if "./scripts/verify-prebuilt-release.sh" in step.get("run", ""))
+                package = next(i for i, step in enumerate(steps)
+                               if "./scripts/package-release.sh" in step.get("run", ""))
+                self.assertGreater(verify, download)
+                self.assertGreater(package, verify)
+                self.assertNotIn("env", steps[verify])
+                self.assertIn('"$MAPLE_RELEASE_PROFILE"', steps[verify]["run"])
 
     def test_partial_producer_and_verifier_only_retries_reuse_successful_artifacts(self):
         jobs = workflow(self.WORKFLOW)["jobs"]
@@ -264,7 +304,10 @@ class AgentDesktopPackagingBoundaryTests(unittest.TestCase):
             self.assertNotIn("${{", template)
             return template
 
-        for producer, verifier in (("macos", "verify-macos"), ("linux", "verify-linux")):
+        for producer, verifier in (
+            ("macos-build", "macos"), ("macos-build", "macos-unsigned"),
+            ("macos", "verify-macos"), ("linux", "verify-linux"),
+        ):
             with self.subTest(producer=producer):
                 upload = next(step["with"] for step in jobs[producer]["steps"]
                               if step.get("uses", "").startswith("actions/upload-artifact@"))

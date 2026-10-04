@@ -57,6 +57,10 @@ release:
 build-release PROFILE:
     ./scripts/build-release.sh {{PROFILE}}
 
+# Restore downloaded execution permissions and check the exact profile/source.
+verify-prebuilt-release PROFILE:
+    ./scripts/verify-prebuilt-release.sh {{PROFILE}}
+
 # Package the already built profile; --unsigned is for unprivileged PR checks.
 package-release PROFILE *ARGS:
     ./scripts/package-release.sh {{PROFILE}} {{ARGS}}
