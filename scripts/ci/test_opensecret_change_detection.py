@@ -118,8 +118,9 @@ class OpenSecretChangeDetectionTests(unittest.TestCase):
         self.assert_routes([".github/workflows/opensecret-ci.yml"], "rust", "nix", "audit", "eif", "helpers")
         self.assert_routes([".github/workflows/sdk-integration.yml"], "integration")
 
-    def test_eif_workflow_and_comparison_helper_select_only_master_eif_checks(self):
-        for path in (".github/workflows/opensecret-eif.yml", "scripts/ci/check_opensecret_eif.sh"):
+    def test_eif_workflow_and_build_helpers_select_only_eif_checks(self):
+        for path in (".github/workflows/opensecret-eif.yml", "scripts/ci/build_opensecret_eif.sh",
+                     "scripts/ci/check_opensecret_eif.sh"):
             self.assert_routes([path], "eif")
             self.assertEqual(research_routes(path), frozenset())
             self.assertFalse(affects_agent(path))

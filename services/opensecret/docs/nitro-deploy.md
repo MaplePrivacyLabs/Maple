@@ -74,8 +74,10 @@ artifact's `pcr.json`; the deployment verifier rejects anything else.
 
 ## CI approval checks
 
-`opensecret-eif.yml` compares generated measurements with the approved JSON
-files on Linux ARM64. A PR runs these comparisons only if its own diff edits
+`opensecret-eif.yml` builds dev/prod EIF candidates on Linux ARM64 for
+same-repository PRs that change measured inputs without editing PCR approvals.
+This diagnostic path does not publish an artifact or require an approval match. A PR
+runs approval comparisons only if its own diff edits
 `pcrDev.json`, `pcrProd.json`, `pcrDevHistory.json`, or `pcrProdHistory.json`
 under `services/opensecret/`. Backend code changes alone do not require new
 approvals to pass PR CI. The PR's checkout supplies both source and references.
@@ -99,11 +101,12 @@ rather than writing to `master`.
 
 ### Binary caches and cold-run validation
 
-Master push/manual runs and same-repository PR comparisons use the trusted EIF
-job, which installs Determinate Nix and uses FlakeHub Cache with job-scoped
-`id-token: write`. A PR qualifies only when its head repository's full name
-equals `github.repository` and the successful selector reports an approval
-JSON edit. This intentionally trusts same-repository PR code to write the
+Master push/manual runs and same-repository PR candidate or approval jobs use
+the trusted EIF cache setup, which installs Determinate Nix and uses FlakeHub
+Cache with job-scoped `id-token: write`. A PR qualifies only when its head
+repository's full name equals `github.repository` and the successful selector
+reports an EIF input or approval JSON edit, as routed to the respective job.
+This intentionally trusts same-repository PR code to write the
 FlakeHub cache; it does not grant signing or deployment authority.
 Trusted jobs use the organization-configured GitHub-hosted runner
 `ubuntu-24.04-arm64-8core` (Ubuntu 24.04 ARM64, 8 CPU, 32 GB RAM) and allow

@@ -33,11 +33,13 @@ its table-driven tests when the dependency graph or component layout changes.
 The backend has its own root `opensecret-ci.yml` workflow and change selector;
 `sdk-integration.yml` tests both SDKs against `services/opensecret/` from the
 same checkout. Backend changes do not imply Research or Agent packaging.
-The separate `opensecret-eif.yml` compares dev/prod EIF measurements only on PRs
-editing approved PCR JSON, relevant master changes, and manual runs. Preserve
-ordinary backend PRs without fresh approvals and meaningful master mismatches;
-these checks never change approvals, sign, release, or authorize deployment.
-Master and same-repository PR EIF checks receive OIDC for FlakeHub caching.
+The separate `opensecret-eif.yml` builds dev/prod EIF candidates on
+same-repository PRs changing measured inputs without editing PCR approvals;
+these diagnostic builds do not publish an artifact. It compares measurements
+on PRs editing approved PCR JSON, relevant master changes, and manual runs.
+Preserve ordinary backend PRs without fresh approvals and meaningful master
+mismatches; these checks never change approvals, sign, release, or authorize
+deployment. Master and same-repository PR EIF builds receive OIDC for FlakeHub caching.
 Fork PRs and non-master manual runs use GitHub's branch-scoped cache without
 OIDC. Preserve that head-repository boundary and verify cache changes on fresh
 hosted runners, not just a warm local Nix store. See the [cache policy](../services/opensecret/docs/nitro-deploy.md#binary-caches-and-cold-run-validation).

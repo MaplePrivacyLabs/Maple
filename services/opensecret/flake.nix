@@ -347,9 +347,9 @@
             tar -xOf ${kernelSource} \
               linux-${kernelUpstream.version}/drivers/misc/nsm.c > nsm.c
 
-            # 6.12.101 must carry both reviewed NSM fixes: malformed userspace
-            # pointers return before the mutex is touched, and file operations
-            # retain module ownership.
+            # Require both reviewed NSM fixes: malformed userspace pointers
+            # return before the mutex is touched, and file operations retain
+            # module ownership.
             ioctl_source="$(sed -n \
               '/static long nsm_dev_ioctl/,/static int nsm_device_init_vq/p' \
               nsm.c)"
@@ -373,6 +373,10 @@
               nsm.c)"
             printf '%s\n' "$fops_source" | grep -Fq '.owner = THIS_MODULE,'
             printf '%s\n' "$fops_source" | grep -Fq '.unlocked_ioctl = nsm_dev_ioctl,'
+
+            # Bound the NSM device-reported response length before it can be
+            # copied back to userspace (CVE-2026-89743, fixed in 6.12.109).
+            grep -Fq 'msg->resp.len = min_t(unsigned int, len, sizeof(msg->resp.data));' nsm.c
 
             {
               echo 'branch=${kernelUpstream.branch}'
