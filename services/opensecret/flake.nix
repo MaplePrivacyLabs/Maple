@@ -276,6 +276,11 @@
           inherit (kernelUpstream) url hash;
         };
         kernelStructuredExtraConfig = with pkgs.lib.kernel; {
+          # Linux 6.12.112 backports the memory-hotplug online-policy choice,
+          # while this Nixpkgs pin still selects the removed pre-6.14 option.
+          # Preserve automatic onlining without relaxing config validation.
+          MEMORY_HOTPLUG_DEFAULT_ONLINE = pkgs.lib.mkForce unset;
+          MHP_DEFAULT_ONLINE_TYPE_ONLINE_AUTO = yes;
           VIRTIO = yes;
           VIRTIO_MMIO = yes;
           VIRTIO_MENU = yes;
@@ -403,6 +408,7 @@
             grep -Fqx 'CONFIG_VIRTIO_VSOCKETS=y' "$config"
             grep -Fqx 'CONFIG_HW_RANDOM=y' "$config"
             grep -Fqx 'CONFIG_NSM=y' "$config"
+            grep -Fqx 'CONFIG_MHP_DEFAULT_ONLINE_TYPE_ONLINE_AUTO=y' "$config"
             grep -Fqx '# CONFIG_CRYPTO_USER_API_AEAD is not set' "$config"
 
             {
