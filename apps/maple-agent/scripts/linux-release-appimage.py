@@ -169,7 +169,7 @@ def stage_closure(appdir, binary, closure, glibc):
         raise PackagingError("Matching glibc loader is missing from pinned runtime closure")
     copy_library(loader.resolve(), LOADER)
     for soname in DLOPEN_LIBRARIES:
-        copy_library(closure.library(soname), soname)
+        copy_library(closure.library(soname, binary), soname)
     # glibc can open these modules at runtime according to host nsswitch.conf.
     # Modern glibc folds files/dns into libc; older pins may provide separate DSOs.
     for source in sorted((glibc / "lib").glob("libnss_*.so*")):
@@ -307,11 +307,46 @@ def normalize_public_permissions(appdir):
             path.chmod(0o755 if path.name == "AppRun" or elf(path) else 0o644)
 
 
+def glibc_version_needs(output):
+    providers = {}
+    in_needs = False
+    provider = None
+    for line in output.splitlines():
+        if line.startswith("Version "):
+            in_needs = line.startswith("Version needs section")
+            provider = None
+        if not in_needs:
+            continue
+        file_match = re.search(r"\bFile:\s+(\S+)", line)
+        if file_match:
+            provider = Path(file_match[1]).name
+        name_match = re.search(r"\bName:\s+(GLIBC_[A-Za-z0-9_.]+)", line)
+        if name_match:
+            if provider is None:
+                raise PackagingError("GLIBC version need has no provider File: SONAME")
+            providers.setdefault(provider, set()).add(name_match[1])
+    return providers
+
+
+def glibc_version_definitions(output):
+    supplied = set()
+    in_definitions = False
+    for line in output.splitlines():
+        if line.startswith("Version "):
+            in_definitions = line.startswith("Version definition section")
+        if in_definitions:
+            match = re.search(r"\bName:\s+(GLIBC_[A-Za-z0-9_.]+)", line)
+            if match:
+                supplied.add(match[1])
+    return supplied
+
+
 def audit(appdir, metadata=None):
     if metadata is None:
         metadata = validate_metadata(json.loads((appdir / "usr/share/maple-agent/package-metadata.json").read_text()))
     libdir = appdir / "usr/lib"
     required = set()
+    provider_requirements = []
     elf_count = 0
     for path in (appdir, *sorted(appdir.rglob("*"))):
         if path.is_symlink() and (not path.exists() or not inside(path, appdir)):
@@ -340,13 +375,21 @@ def audit(appdir, metadata=None):
             if interpreter(path) not in ("", INTERPRETER):
                 raise PackagingError(f"Non-system interpreter in {path}")
         versions = run("readelf", "--version-info", path).stdout
-        if "Version needs section" in versions:
-            needs = versions.split("Version needs section", 1)[1]
-            required.update(re.findall(r"Name: (GLIBC_[A-Za-z0-9_.]+)", needs))
-    definitions = run("readelf", "--version-info", libdir / "libc.so.6").stdout
-    supplied = set(re.findall(r"Name: (GLIBC_[A-Za-z0-9_.]+)", definitions))
-    if not required <= supplied:
-        raise PackagingError(f"Bundled libc does not supply required versions: {sorted(required - supplied)}")
+        for provider, versions_needed in glibc_version_needs(versions).items():
+            required.update(versions_needed)
+            provider_requirements.append((provider, versions_needed))
+    definitions_by_provider = {}
+    for provider, versions_needed in provider_requirements:
+        if provider not in definitions_by_provider:
+            library = libdir / provider
+            if not library.is_file():
+                raise PackagingError(f"Missing bundled GLIBC version provider: {provider}")
+            definitions_by_provider[provider] = glibc_version_definitions(
+                run("readelf", "--version-info", library).stdout
+            )
+        missing = versions_needed - definitions_by_provider[provider]
+        if missing:
+            raise PackagingError(f"Bundled {provider} does not supply required versions: {sorted(missing)}")
     for soname in (LOADER, *DLOPEN_LIBRARIES):
         if not (libdir / soname).is_file():
             raise PackagingError(f"Missing dynamic runtime payload: {soname}")

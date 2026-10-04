@@ -27,12 +27,13 @@ METADATA = {
 }
 
 
-def write_elf(path, needed=(), rpath="", interpreter="", requires=(), supplies=()):
+def write_elf(path, needed=(), rpath="", interpreter="", requires=(), supplies=(), version_providers=None):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(
         HEADER + json.dumps({
             "needed": list(needed), "rpath": rpath, "interpreter": interpreter,
             "requires": list(requires), "supplies": list(supplies),
+            "version_providers": version_providers if version_providers is not None else ({"libc.so.6": list(requires)} if requires else {}),
         }, sort_keys=True).encode()
     )
     path.chmod(0o755)
@@ -50,9 +51,12 @@ class ElfTools:
             if state["supplies"]:
                 stdout += "Version definition section\n"
                 stdout += "\n".join(f"Name: {version}" for version in state["supplies"])
-            if state["requires"]:
+            if state["version_providers"]:
                 stdout += "\nVersion needs section\n"
-                stdout += "\n".join(f"Name: {version}" for version in state["requires"])
+                for provider, versions in state["version_providers"].items():
+                    stdout += f"  000000: Version: 1 File: {provider} Cnt: {len(versions)}\n"
+                    stdout += "\n".join(f"  0x0010: Name: {version} Flags: none Version: 2" for version in versions)
+                    stdout += "\n"
         elif option == "--print-needed":
             stdout = "\n".join(state["needed"])
         elif option == "--print-rpath":
@@ -62,6 +66,8 @@ class ElfTools:
             returncode = 0 if stdout else 1
         elif option == "--replace-needed":
             state["needed"] = [args[3] if item == args[2] else item for item in state["needed"]]
+            if args[2] in state["version_providers"]:
+                state["version_providers"][args[3]] = state["version_providers"].pop(args[2])
         elif option == "--set-rpath":
             state["rpath"] = args[2]
         elif option == "--set-interpreter":
@@ -129,6 +135,27 @@ class AppImageTests(unittest.TestCase):
         with self.assertRaisesRegex(packaging.PackagingError, "Missing pinned runtime library: libvulkan"):
             self.stage()
 
+    def test_unwinder_seed_preserves_original_main_binary_rpath(self):
+        # The pinned glibc closure also contains bootstrap xgcc's libgcc. The
+        # main executable's original RPATH identifies the full-GCC runtime
+        # selected by its linker rather than an arbitrary closure candidate.
+        alternative = self.root / "bootstrap-libgcc"
+        self.store_paths.write_text(self.store_paths.read_text() + f"{alternative}\n")
+        write_elf(alternative / "lib/libgcc_s.so.1", requires=("GLIBC_2.2.5",))
+        write_elf(self.binary, needed=("libgcc_s.so.1", "libc.so.6"), rpath=f"{self.runtime}/lib:{self.glibc}/lib")
+        appdir = self.stage()
+        packaging.audit(appdir)
+        selected = json.loads((appdir / "usr/lib/libgcc_s.so.1").read_bytes()[20:])
+        self.assertEqual(selected["requires"], [])
+        self.assertEqual(selected["needed"], ["libc.so.6"])
+
+    def test_unwinder_seed_without_linker_selection_rejects_ambiguity(self):
+        alternative = self.root / "bootstrap-libgcc"
+        self.store_paths.write_text(self.store_paths.read_text() + f"{alternative}\n")
+        write_elf(alternative / "lib/libgcc_s.so.1", requires=("GLIBC_2.2.5",))
+        with self.assertRaisesRegex(packaging.PackagingError, "Ambiguous pinned runtime library: libgcc_s.so.1"):
+            self.stage()
+
     def test_missing_transitive_library_fails_closed(self):
         (self.runtime / "lib/libbeta.so.1").unlink()
         with self.assertRaisesRegex(packaging.PackagingError, "Missing pinned runtime library: libbeta"):
@@ -165,6 +192,28 @@ class AppImageTests(unittest.TestCase):
         appdir = self.stage()
         write_elf(appdir / "usr/bin/maple-agent", needed=("libc.so.6",), rpath="$ORIGIN/../lib", requires=("GLIBC_999.0",))
         with self.assertRaisesRegex(packaging.PackagingError, "does not supply required versions"):
+            packaging.audit(appdir)
+
+    def test_glibc_version_is_checked_against_its_declared_libm_provider(self):
+        # Exact pinned glibc 2.42 ABI tables expose GLIBC_2.40 in libm, while
+        # libc does not define that version label. The provider still satisfies
+        # this valid dependency regardless of libc's distinct definition set.
+        appdir = self.stage()
+        write_elf(appdir / "usr/lib/libm.so.6", rpath="$ORIGIN", supplies=("GLIBC_2.40",))
+        write_elf(appdir / "usr/lib/libbeta.so.1", needed=("libm.so.6",), rpath="$ORIGIN", version_providers={"libm.so.6": ["GLIBC_2.40"]})
+        self.assertIn("GLIBC_2.40", packaging.audit(appdir)["required_glibc_versions"])
+        # The presence of this version in libm cannot satisfy a need declared
+        # against libc. A global union would incorrectly accept this payload.
+        write_elf(appdir / "usr/lib/libbeta.so.1", needed=("libc.so.6",), rpath="$ORIGIN", version_providers={"libc.so.6": ["GLIBC_2.40"]})
+        with self.assertRaisesRegex(packaging.PackagingError, "Bundled libc.so.6 does not supply.*GLIBC_2.40"):
+            packaging.audit(appdir)
+
+    def test_provider_version_needs_are_not_version_definitions(self):
+        appdir = self.stage()
+        write_elf(appdir / "usr/lib/libc.so.6", rpath="$ORIGIN", supplies=("GLIBC_2.42", "GLIBC_2.40"))
+        write_elf(appdir / "usr/lib/libm.so.6", needed=("libc.so.6",), rpath="$ORIGIN", supplies=("GLIBC_2.39",), version_providers={"libc.so.6": ["GLIBC_2.40"]})
+        write_elf(appdir / "usr/lib/libbeta.so.1", needed=("libm.so.6",), rpath="$ORIGIN", version_providers={"libm.so.6": ["GLIBC_2.40"]})
+        with self.assertRaisesRegex(packaging.PackagingError, "Bundled libm.so.6 does not supply.*GLIBC_2.40"):
             packaging.audit(appdir)
 
     def test_matching_gconv_modules_use_relative_rpath(self):
