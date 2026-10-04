@@ -7,6 +7,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import tempfile
+import tomllib
 import unittest
 
 
@@ -108,6 +109,58 @@ class AgentWorkflowBoundaryTests(unittest.TestCase):
                 self.assertIn("startsWith(github.event.workflow_run.head_branch, 'v') &&", condition)
                 self.assertIn("github.event.workflow_run.conclusion == 'success'", condition)
                 self.assertIn("github.event.workflow_run.event == 'release'", condition)
+
+
+class AgentSupplyChainTests(unittest.TestCase):
+    def test_scan_has_no_credentials_publication_or_privileged_events(self):
+        config = workflow("agent-supply-chain.yml")
+        self.assertEqual(set(config["on"]),
+                         {"push", "pull_request", "schedule", "workflow_dispatch"})
+        self.assertEqual(config["permissions"], {"contents": "read"})
+        for value in strings(config):
+            self.assertNotRegex(value, r"\bsecrets\b|github\.token|\bGH_TOKEN\b")
+        self.assertEqual(set(config["jobs"]), {"agent-cargo-deny"})
+        job = config["jobs"]["agent-cargo-deny"]
+        self.assertEqual(job["runs-on"], "ubuntu-latest")
+        self.assertLessEqual(job["timeout-minutes"], 10)
+        self.assertNotIn("environment", job)
+        self.assertNotIn("permissions", job)
+        self.assertNotIn("continue-on-error", job)
+        self.assertEqual(len(job["steps"]), 2)
+        for step in job["steps"]:
+            self.assertNotIn("run", step)
+            self.assertNotIn("continue-on-error", step)
+            self.assertRegex(step["uses"],
+                             r"^(actions/checkout|EmbarkStudios/cargo-deny-action)@[0-9a-f]{40}$")
+        self.assertIs(job["steps"][0]["with"]["persist-credentials"], False)
+        scan = job["steps"][1]["with"]
+        self.assertEqual(scan, {
+            "rust-version": "1.98.0",
+            "manifest-path": "apps/maple-agent/Cargo.toml",
+            "command": "check advisories bans",
+            "arguments": "--config apps/maple-agent/deny.toml --all-features --locked",
+        })
+
+    def test_scan_covers_each_dependency_manifest_and_the_agent_lock(self):
+        config = workflow("agent-supply-chain.yml")
+        self.assertEqual(config["on"]["push"]["branches"], ["master"])
+        paths = config["on"]["pull_request"]["paths"]
+        self.assertEqual(paths, config["on"]["push"]["paths"])
+        self.assertEqual(set(paths), {
+            ".github/workflows/agent-supply-chain.yml",
+            "apps/maple-agent/deny.toml", "apps/maple-agent/**/Cargo.toml",
+            "apps/maple-agent/Cargo.lock", "proxy/Cargo.toml", "sdk/rust/Cargo.toml",
+        })
+        self.assertEqual(len(config["on"]["schedule"]), 1)
+        self.assertRegex(config["on"]["schedule"][0]["cron"], r"^\d+ \d+ \* \* \*$")
+
+    def test_agent_policy_does_not_inherit_advisory_exceptions(self):
+        config = tomllib.loads((ROOT / "apps/maple-agent/deny.toml").read_text())
+        self.assertEqual(config["advisories"], {"unsound": "all", "unmaintained": "all"})
+        # Incident containment applies to the new component too. An intentional
+        # policy update must reconcile both lists rather than accidentally omit it.
+        sdk = tomllib.loads((ROOT / "sdk/deny.toml").read_text())
+        self.assertEqual(config["bans"]["deny"], sdk["bans"]["deny"])
 
 
 class AgentDiffSelectionTests(unittest.TestCase):
