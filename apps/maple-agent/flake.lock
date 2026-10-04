@@ -16,9 +16,26 @@
         "type": "github"
       }
     },
+    "nixpkgs-intel-darwin": {
+      "locked": {
+        "lastModified": 1790772421,
+        "narHash": "sha256-754eQtr0m8xKtNnKYhX7ukI7XaA7oeiQpui1LiEuhyU=",
+        "owner": "NixOS",
+        "repo": "nixpkgs",
+        "rev": "e49322d1ec25b45f7c587c5fd69ac826d1a57dbc",
+        "type": "github"
+      },
+      "original": {
+        "owner": "NixOS",
+        "repo": "nixpkgs",
+        "rev": "e49322d1ec25b45f7c587c5fd69ac826d1a57dbc",
+        "type": "github"
+      }
+    },
     "root": {
       "inputs": {
         "nixpkgs": "nixpkgs",
+        "nixpkgs-intel-darwin": "nixpkgs-intel-darwin",
         "rust-overlay": "rust-overlay"
       }
     },

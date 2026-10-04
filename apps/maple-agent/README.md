@@ -322,6 +322,10 @@ cannot build the CUA bridges with the SDK required for recording. The supported
 macOS path uses Xcode's Swift and Metal toolchains and is also used by CI.
 Linux builds use Nix-provided ALSA, font, keyboard, Wayland and Vulkan libraries.
 
+The Intel macOS development shell uses a separate pinned Nixpkgs 26.05 input
+for the focused CPython worker CI lane, since Nixpkgs 26.11 removed Intel macOS
+support. Other platforms retain the primary Nixpkgs pin and the shared Rust pin.
+
 ### Shared Rust build cache
 
 Local Nix shells and `just` recipes use Cargo's separate build directory

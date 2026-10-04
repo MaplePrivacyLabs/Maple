@@ -3,6 +3,8 @@
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
+    # Nixpkgs 26.11 removed Intel macOS; retain 26.05 only for its dev shell.
+    nixpkgs-intel-darwin.url = "github:NixOS/nixpkgs/e49322d1ec25b45f7c587c5fd69ac826d1a57dbc";
 
     rust-overlay = {
       url = "github:oxalica/rust-overlay";
@@ -13,6 +15,7 @@
   outputs =
     {
       nixpkgs,
+      nixpkgs-intel-darwin,
       rust-overlay,
       ...
     }:
@@ -191,7 +194,8 @@
       devShells = forAllSystems (
         system:
         let
-          pkgs = import nixpkgs {
+          shellNixpkgs = if system == "x86_64-darwin" then nixpkgs-intel-darwin else nixpkgs;
+          pkgs = import shellNixpkgs {
             inherit system;
             overlays = [ (import rust-overlay) ];
           };

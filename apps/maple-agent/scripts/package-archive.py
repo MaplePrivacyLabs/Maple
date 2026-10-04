@@ -30,8 +30,12 @@ def package(binary, runtime, name, output):
         archive.replace(destination)
         with destination.open("rb") as source:
             checksum = hashlib.file_digest(source, "sha256").hexdigest()
-        destination.with_name(destination.name + ".sha256").write_text(f"{checksum}  {destination.name}\n")
-    print(destination)
+        destination.with_name(destination.name + ".sha256").write_text(f"{checksum}  {destination.name}\n", encoding="utf-8", newline="\n")
+    try:
+        print(destination)
+    except UnicodeEncodeError:
+        # A limited console encoding must not fail a completed archive.
+        print(ascii(str(destination)))
     return destination
 
 
