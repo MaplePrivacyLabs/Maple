@@ -9,6 +9,7 @@ from pathlib import Path
 import plistlib
 import shlex
 import subprocess
+import sys
 import tempfile
 import tarfile
 import unittest
@@ -184,7 +185,7 @@ class NativeSigningBoundaryTests(unittest.TestCase):
     write_info = ReleaseMetadataTests.write_info
     def run_packager(self, unsigned=False, failure="", signal=False):
         binary = self.directory / "maple-agent"
-        binary.write_text("""#!/usr/bin/env python3
+        binary.write_text(f"""#!{sys.executable}
 import json,os,sys
 assert not any(name in os.environ for name in (
     'APPLE_CERTIFICATE','APPLE_CERTIFICATE_PASSWORD','APPLE_ID','APPLE_ID_PASSWORD','APPLE_TEAM_ID'
