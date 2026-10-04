@@ -362,6 +362,23 @@ pub(crate) fn register_key_bindings(cx: &mut App) {
     crate::keymap::bootstrap(cx);
 }
 
+fn main_window_options(window_bounds: WindowBounds) -> WindowOptions {
+    WindowOptions {
+        window_bounds: Some(window_bounds),
+        // X11 WM_CLASS and Wayland app_id must match the packaged desktop
+        // entry, so Dev, Prod, Research, and local debug windows group apart.
+        app_id: Some(crate::profile::BUNDLE_ID.to_string()),
+        titlebar: Some(gpui::TitlebarOptions {
+            title: Some(ui::titlebar::WINDOW_TITLE.into()),
+            appears_transparent: ui::titlebar::TRANSPARENT_TITLEBAR,
+            traffic_light_position: ui::titlebar::TRANSPARENT_TITLEBAR
+                .then_some(ui::titlebar::TRAFFIC_LIGHT_POSITION),
+        }),
+        app_owns_titlebar_drag: ui::titlebar::TRANSPARENT_TITLEBAR,
+        ..Default::default()
+    }
+}
+
 pub fn run() {
     crate::init_logging(crate::LogOutput::FileAndStderr);
     log::debug!("startup: logging ready at {} ms", crate::startup_elapsed());
@@ -391,6 +408,7 @@ pub fn run() {
     gpui_platform::application()
         .with_assets(crate::assets::Assets)
         .run(move |cx: &mut App| {
+            cx.set_app_identity(crate::profile::BUNDLE_ID, crate::profile::DISPLAY_NAME);
             log::debug!("startup: gpui app ready at {} ms", crate::startup_elapsed());
             if let Err(error) = cx.text_system().add_fonts(
                 crate::assets::FONTS
@@ -457,32 +475,17 @@ pub fn run() {
             let root_backend = backend.clone();
             let root_settings = startup_settings.clone();
             let window = cx
-                .open_window(
-                    WindowOptions {
-                        window_bounds: Some(window_bounds),
-                        titlebar: Some(gpui::TitlebarOptions {
-                            title: Some(ui::titlebar::WINDOW_TITLE.into()),
-                            // macOS: the bar is transparent and the app's
-                            // top row stands in for it; see ui::titlebar.
-                            appears_transparent: ui::titlebar::TRANSPARENT_TITLEBAR,
-                            traffic_light_position: ui::titlebar::TRANSPARENT_TITLEBAR
-                                .then_some(ui::titlebar::TRAFFIC_LIGHT_POSITION),
-                        }),
-                        app_owns_titlebar_drag: ui::titlebar::TRANSPARENT_TITLEBAR,
-                        ..Default::default()
-                    },
-                    move |_, cx| {
-                        cx.new(move |cx| MapleApp {
-                            backend: root_backend,
-                            screen: Screen::Restoring,
-                            user_id: None,
-                            parked_chat: None,
-                            settings: root_settings,
-                            shortcuts: shortcut_runtime,
-                            titlebar: cx.new(|_| TitleBar::new(ui::titlebar::WINDOW_TITLE)),
-                        })
-                    },
-                )
+                .open_window(main_window_options(window_bounds), move |_, cx| {
+                    cx.new(move |cx| MapleApp {
+                        backend: root_backend,
+                        screen: Screen::Restoring,
+                        user_id: None,
+                        parked_chat: None,
+                        settings: root_settings,
+                        shortcuts: shortcut_runtime,
+                        titlebar: cx.new(|_| TitleBar::new(ui::titlebar::WINDOW_TITLE)),
+                    })
+                })
                 .expect("failed to open main window");
             log::debug!("startup: window open at {} ms", crate::startup_elapsed());
             // Saved credentials are trusted at once: the chat screen opens
@@ -603,5 +606,16 @@ mod tests {
         assert!(maximized.maximized);
 
         assert!(window_state_for(WindowBounds::Fullscreen(bounds(3840., 2160.))).is_none());
+    }
+
+    #[test]
+    fn window_identity_and_title_match_the_packaging_metadata() {
+        let options = main_window_options(WindowBounds::Windowed(bounds(1280., 860.)));
+        let info = serde_json::to_value(crate::profile::build_info()).unwrap();
+        assert_eq!(options.app_id.as_deref(), info["bundle_id"].as_str());
+        assert_eq!(
+            options.titlebar.unwrap().title.unwrap().as_ref(),
+            info["display_name"].as_str().unwrap()
+        );
     }
 }

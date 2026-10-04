@@ -259,6 +259,11 @@ just run                        # desktop app
 just release                    # local release build only
 ```
 
+For hosted Dev and Prod packages, see [desktop builds](docs/desktop-builds.md)
+and [build profiles](docs/release-profiles.md). The desktop build workflow
+produces both profiles on protected `master`; macOS packages use Developer ID
+signing and notarization, and Linux packages are portable AppImages.
+
 The root also offers `just agent-check`, `just agent-build`, and
 `just agent-dev`. Native development on macOS requires full Xcode at
 `/Applications/Xcode.app`; Linux libraries come from Nix. Windows CI uses the
@@ -279,6 +284,8 @@ identity, discovers and embeds any Swift compatibility libraries required by
 native dependencies, signs nested code before sealing the bundle, and prints
 the exact bundle path to launch. This requires a full Xcode toolchain but does
 not require a Developer ID or produce a release artifact. The default ad hoc
+bundle is named Maple Agent Debug with identifier
+`cloud.opensecret.maple.agent.debug`, separate from both packaged profiles. Its
 identity changes when Maple is rebuilt, so macOS may require the development
 app's privacy grants again. Set `MAPLE_DEBUG_CODESIGN_IDENTITY` to the name or
 SHA-1 hash of an Apple Development identity in the local keychain when more
@@ -421,7 +428,10 @@ the missing feature.
 
 ## Configuration
 
-All settings are environment variables. None are required.
+Local unpackaged builds accept the environment settings below. Packaged Dev
+and Prod bake their service endpoints, client ID, PCR trust, state namespace,
+and update repository at compile time; service and repository overrides are
+ignored. See [build profiles](docs/release-profiles.md).
 
 | Variable | Purpose | Default |
 | --- | --- | --- |
@@ -440,7 +450,9 @@ All settings are environment variables. None are required.
 
 The roots follow the platform, the same way the Tauri app's
 `app_config_dir` and `app_local_data_dir` do. `XDG_CONFIG_HOME` and
-`XDG_DATA_HOME` override them on every platform.
+`XDG_DATA_HOME` override the base directories on every platform. The table
+shows unpackaged builds; packaged Dev and Prod append `maple-agent-dev` and
+`maple-agent-prod` respectively instead of `maple-agent`.
 
 | Root | Linux | macOS | Windows |
 | --- | --- | --- | --- |
@@ -463,9 +475,9 @@ The roots follow the platform, the same way the Tauri app's
 | `<local data>/logs/maple-agent.log` | Log file. Panics are logged here too. |
 
 Releases before the package rename used `maple-gpui` for both roots. On its
-first start the app renames an existing `maple-gpui` directory to `maple-agent`
+first start an unpackaged build renames an existing `maple-gpui` directory to `maple-agent`
 when the new one does not exist yet, so sign-in, settings, and history carry
-over in place.
+over in place. Packaged profiles never adopt legacy or Research state.
 
 `<scope>` is the SHA-256 of the account's user id. Small JSON files are
 written atomically (temp file, sync, rename) with owner-only permissions.
@@ -490,17 +502,18 @@ signing or publishing credentials. See the root agent guide for shared checks.
 
 ## Update and release boundary
 
-The launch check accepts only stable `maple-agent-vX.Y.Z` releases and selects
-the highest semantic version across a bounded, complete scan of release pages.
-Research `vX.Y.Z` releases, drafts and prereleases are ignored. A failed or
+Prod and unpackaged builds accept stable `maple-agent-vX.Y.Z` releases. Dev
+accepts only prereleases in `maple-agent-dev-vX.Y.Z`. Each selects the highest
+semantic version across a bounded, complete scan of release pages. Research
+`vX.Y.Z` releases, drafts, and the other channel are ignored. A failed or
 incomplete scan produces no update banner. The app only links to a canonical
 GitHub release page; it does not download or install binaries.
 
-The namespace is reserved for a future Agent distribution workflow. This
-import does not activate a publisher or create releases. Future Agent releases
+The [desktop build workflow](docs/desktop-builds.md) provides Actions artifacts
+without creating releases or advancing update feeds. Future Agent releases
 must set `make_latest: false` so Research’s global GitHub latest pointer remains
-unchanged. Review packaging, signing and distribution separately before using
-the namespace. Local `just release` and `just dist` only build local files.
+unchanged. Release publication requires its own authorization. Local
+`just release` and `just dist` only build local files.
 
 ## Shared dependencies and provenance
 

@@ -1,0 +1,24 @@
+{
+  "dev": {
+    "display_name": "Maple Agent Dev",
+    "bundle_id": "cloud.opensecret.maple.agent.dev",
+    "data_namespace": "maple-agent-dev",
+    "api_url": "https://enclave.secretgpt.ai",
+    "billing_api_url": "https://billing-dev.opensecret.cloud",
+    "client_id": "ba5a14b5-d915-47b1-b7b1-afda52bc5fc6",
+    "pcr_environment": "development",
+    "update_tag_prefix": "maple-agent-dev-v",
+    "prerelease": true
+  },
+  "prod": {
+    "display_name": "Maple Agent",
+    "bundle_id": "cloud.opensecret.maple.agent",
+    "data_namespace": "maple-agent-prod",
+    "api_url": "https://enclave.trymaple.ai",
+    "billing_api_url": "https://billing.opensecret.cloud",
+    "client_id": "ba5a14b5-d915-47b1-b7b1-afda52bc5fc6",
+    "pcr_environment": "production",
+    "update_tag_prefix": "maple-agent-v",
+    "prerelease": false
+  }
+}

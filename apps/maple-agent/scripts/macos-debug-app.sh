@@ -7,10 +7,10 @@ if [[ "$(uname -s)" != "Darwin" ]]; then
 fi
 
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
-requested_bundle_dir="${MAPLE_DEBUG_APP_PATH:-$repo_root/target/debug/Maple Agent Dev.app}"
+requested_bundle_dir="${MAPLE_DEBUG_APP_PATH:-$repo_root/target/debug/Maple Agent Debug.app}"
 binary_source="$repo_root/target/debug/maple-agent"
 codesign_identity="${MAPLE_DEBUG_CODESIGN_IDENTITY:--}"
-bundle_id="${MAPLE_DEBUG_BUNDLE_ID:-cloud.opensecret.maple.agent.dev}"
+bundle_id="${MAPLE_DEBUG_BUNDLE_ID:-cloud.opensecret.maple.agent.debug}"
 
 if [[ ! "$bundle_id" =~ ^[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+$ ]]; then
     echo "MAPLE_DEBUG_BUNDLE_ID must be a dotted bundle identifier" >&2

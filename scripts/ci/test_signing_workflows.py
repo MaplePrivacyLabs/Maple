@@ -39,6 +39,7 @@ ENVIRONMENTS = {
 }
 SIGNING_SECRETS = set.union(*ENVIRONMENTS.values())
 CONSUMERS = {
+    "agent-desktop-build.yml": {"macos": "desktop-signing"},
     "desktop-build.yml": {
         "build-macos": "desktop-signing", "build-linux": "desktop-signing",
         "build-windows": "windows-signing",

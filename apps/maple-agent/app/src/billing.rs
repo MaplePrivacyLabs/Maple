@@ -129,12 +129,17 @@ pub fn price_label(product: &Product) -> Option<String> {
     )
 }
 
-/// Billing API base URL. `MAPLE_BILLING_API_URL` overrides the default.
+/// Billing API base URL. Local builds allow `MAPLE_BILLING_API_URL`;
+/// packaged builds use the compiled channel's public service.
 pub fn configured_billing_api_url() -> String {
-    crate::env::env_string("MAPLE_BILLING_API_URL")
-        .map(|url| url.trim_end_matches('/').to_string())
-        .filter(|url| !url.is_empty())
-        .unwrap_or_else(|| maple_billing::DEFAULT_BILLING_API_URL.to_string())
+    let configured =
+        crate::profile::runtime_value("MAPLE_BILLING_API_URL", crate::profile::BILLING_API_URL);
+    let configured = configured.trim_end_matches('/');
+    if configured.is_empty() {
+        crate::profile::BILLING_API_URL.to_string()
+    } else {
+        configured.to_string()
+    }
 }
 
 /// Plan quota shown in the sidebar footer: plan name, percent of the

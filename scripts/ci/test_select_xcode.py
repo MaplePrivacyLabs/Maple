@@ -153,7 +153,23 @@ resolve_xcode_developer_dir
                     checkout = [s for s in steps[:index] if s.get("uses", "").startswith("actions/checkout@")]
                     self.assertEqual(len(checkout), 1, (path.name, job_id))
                     self.assertIs(checkout[0]["with"]["persist-credentials"], False)
-        self.assertEqual(len(selectors), 12)
+        self.assertCountEqual(selectors, [
+            ("agent-desktop-build.yml", "macos"),
+            ("agent-desktop-build.yml", "macos-unsigned"),
+            ("agent-desktop-build.yml", "verify-macos"),
+            ("desktop-build.yml", "build-macos"),
+            ("desktop-pr-build.yml", "build-macos"),
+            ("ios-dev-testflight.yml", "build-ios-dev"),
+            ("ios-dev-testflight.yml", "submit-ios-dev-testflight"),
+            ("mobile-build.yml", "build-ios"),
+            ("mobile-build.yml", "submit-ios-testflight"),
+            ("mobile-build.yml", "warm-ios-pr-onnx-cache"),
+            ("mobile-pr-build.yml", "build-ios"),
+            ("release.yml", "build-tauri"),
+            ("release.yml", "build-ios"),
+            ("release.yml", "verify-macos-desktop-release-artifacts"),
+            ("release.yml", "verify-release-artifacts"),
+        ])
 
 
 if __name__ == "__main__":

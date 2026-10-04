@@ -95,7 +95,12 @@ account isolation, tool approval, MCP/ACP inputs, persistence, and process
 ownership at the layer implementing the effect. Never treat a passing source
 import or a native login screen as authenticated chat or containment proof.
 
-Agent's update checker only links to stable `maple-agent-vX.Y.Z` releases.
+Packaged Agent Prod only links to stable `maple-agent-vX.Y.Z` releases; Dev only
+links to prereleases named `maple-agent-dev-vX.Y.Z`. Their embedded profiles,
+bundle IDs, and configuration/data namespaces must remain separate. Packaged
+profiles never adopt legacy Agent or Research state. See
+[`desktop builds`](../../../apps/maple-agent/docs/desktop-builds.md) for packaging
+commands and the protected-master signing/artifact contract.
 Never use repository-wide `/releases/latest` for Agent, accept Research's bare
 `vX.Y.Z` tags, or turn a failed/incomplete release scan into an update offer.
 No Agent publisher is activated by the import. Future Agent release work
