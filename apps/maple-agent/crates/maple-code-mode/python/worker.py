@@ -157,11 +157,20 @@ def _bounded_traceback(error):
     for chain_index, item in enumerate(reversed(chain)):
         if chain_index:
             out.add("\nDuring handling of the above exception:\n\n")
-        out.add("Traceback (most recent call last):\n")
         tb = item.__traceback__
         frames = 0
+        shown_frames = 0
         while tb is not None and frames < 32 and out.remaining:
             code = tb.tb_frame.f_code
+            frames += 1
+            # Omit the worker's leading execution wrappers, but retain frames
+            # from the cell and its dependencies. Count skipped frames too.
+            if not shown_frames and code.co_filename == __file__:
+                tb = tb.tb_next
+                continue
+            if not shown_frames:
+                out.add("Traceback (most recent call last):\n")
+            shown_frames += 1
             out.add('  File "')
             out.add(code.co_filename[:512])
             out.add('", line ' + str(tb.tb_lineno) + ", in ")
@@ -176,17 +185,45 @@ def _bounded_traceback(error):
                     if type(source) is str:
                         out.add("    " + source[:512].strip() + "\n")
             tb = tb.tb_next
-            frames += 1
         if tb is not None:
             out.add("  ... additional frames omitted ...\n")
         if isinstance(item, SyntaxError):
-            out.add("  File " + str(item.filename)[:512] + ", line ")
-            out.add(str(item.lineno) + "\n")
+            filename = item.filename if type(item.filename) is str else "<unknown>"
+            lineno = item.lineno
+            out.add('  File "' + filename[:512] + '", line ')
+            out.add(str(lineno) if type(lineno) is int and 0 < lineno <= MAX_U64 else "?")
+            out.add("\n")
             if type(item.text) is str:
-                out.add("    " + item.text[:512].strip() + "\n")
+                source = item.text[:512].rstrip("\r\n")
+                displayed = source.lstrip(" \t")
+                out.add("    " + displayed.expandtabs(4) + "\n")
+                offset = item.offset
+                if type(offset) is int and 0 < offset <= len(source) + 1:
+                    column = offset - 1 - (len(source) - len(displayed))
+                    if 0 <= column <= len(displayed):
+                        out.add("    " + " " * len(displayed[:column].expandtabs(4)) + "^\n")
         out.add(type(item).__name__[:256] + ": ")
         arguments = item.args
-        if len(arguments) == 1 and type(arguments[0]) is str:
+        # Builtin exception __str__ implementations may eagerly format huge
+        # arguments. Read their useful fields within our cumulative budget
+        # instead; custom exception __str__ methods are never invoked here.
+        if (
+            isinstance(item, OSError)
+            and type(item.errno) is int
+            and -MAX_U64 <= item.errno <= MAX_U64
+            and type(item.strerror) is str
+        ):
+            out.add("[Errno " + str(item.errno) + "] ")
+            out.add(item.strerror)
+            for prefix, filename in ((": ", item.filename), (" -> ", item.filename2)):
+                if not out.remaining:
+                    break
+                if filename is not None:
+                    out.add(prefix)
+                    out.add(_bounded_repr(filename, max(1, out.remaining)))
+        elif isinstance(item, SyntaxError) and type(item.msg) is str:
+            out.add(item.msg)
+        elif len(arguments) == 1 and type(arguments[0]) is str:
             out.add(arguments[0])
         else:
             out.add(_bounded_repr(arguments, max(1, out.remaining)))
@@ -223,6 +260,22 @@ class _Transport:
         # The fixed charge bounds Python-object overhead and tiny-write count.
         cost = size + 256
         with self.condition:
+            # Combine only adjacent queued writes with identical attribution.
+            # This keeps print loops from exhausting metadata before the byte
+            # budget, without crossing controls or growing a wire frame.
+            if not self.failed and self.queue:
+                previous, previous_cost, delivered = self.queue[-1]
+                if (
+                    previous["type"] == "output"
+                    and previous["stream"] == stream
+                    and previous["execution_id"] == execution_id
+                    and previous_cost - 256 + size <= MAX_OUTPUT_BYTES
+                    and self.output_bytes + size <= MAX_OUTPUT_QUEUE_BYTES
+                ):
+                    previous["text"] += text
+                    self.queue[-1] = (previous, previous_cost + size, delivered)
+                    self.output_bytes += size
+                    return
             if self.failed or self.output_bytes + cost > MAX_OUTPUT_QUEUE_BYTES:
                 self.dropped[stream] = min(
                     MAX_U64, self.dropped[stream] + original_bytes

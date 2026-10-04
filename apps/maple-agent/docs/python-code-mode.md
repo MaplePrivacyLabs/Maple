@@ -28,8 +28,58 @@ concurrent and provide no ordering guarantee relative to Python.
 The bundle provides the standard library. Project modules can be explicitly
 imported from the task root; compatible dependency directories can be explicitly
 added to `sys.path`. A shell-created virtual environment does not change the
-retained interpreter, and the shared bundle is not a package-install destination.
-The existing raw execution tools remain available for separate environments.
+retained interpreter. The existing raw execution tools remain available for
+separate environments.
+
+## Dependencies and process pools
+
+The portable Python Build Standalone bundle includes pip; the Nix runtime does
+not guarantee pip. Check availability with `importlib.util.find_spec("pip")`.
+Never install into the interpreter's shared directory or an app bundle: this
+changes the packaged runtime and can invalidate its signature. When pip is
+available, install compatible wheels into an explicit directory outside the
+runtime, then add that directory to this interpreter's `sys.path`:
+
+```python
+import importlib
+import importlib.util
+from pathlib import Path
+import subprocess
+import sys
+
+# Choose a fresh directory in the task project, outside the application/runtime.
+deps = (Path.cwd() / ".maple-python-deps" / "excel-v1").resolve()
+if importlib.util.find_spec("pip") is None:
+    raise RuntimeError("pip is unavailable; use a separate Python environment")
+subprocess.run([
+    sys.executable, "-I", "-B", "-m", "pip", "--isolated",
+    "--disable-pip-version-check", "install", "--no-cache-dir",
+    "--only-binary=:all:", "--target", str(deps), "openpyxl",
+], check=True)
+sys.path.insert(0, str(deps))
+importlib.invalidate_caches()
+import openpyxl
+```
+
+Keep `-I -B` on the child interpreter: the worker's flags are not automatically
+inherited by `subprocess`, and import bytecode caches can otherwise modify the
+runtime even with `--target`. pip's `--isolated` ignores user configuration and
+environment options. `--only-binary=:all:` fails if a compatible wheel is missing;
+use a separate environment for packages that require a build. Use reviewed pinned
+versions for repeatable work. Dependencies and saved files persist on disk after
+Reset; imported Python objects do not. Reuse a dependency directory only for the
+same interpreter version and platform. To change an already imported dependency,
+install into a fresh directory and reset before importing it. Do not bootstrap
+pip into the runtime if it is unavailable.
+
+Spawned process pools need picklable functions from importable `.py` modules.
+Functions defined only in a scratchpad cell are not importable by spawned children
+and can fail or hang a pool. Put the function in a module under the task root or
+an explicitly added dependency directory, import it, and pass that imported
+function to the pool. Alternatively run a separate script with its own environment
+through the existing execution tools. Pool operations that block also pause this
+worker's asyncio loop; use an async API or `await asyncio.to_thread(...)` when
+background asyncio work must keep progressing.
 
 ## Permissions and results
 
@@ -67,6 +117,10 @@ Stop retires an unfinished admitted Python cell and its state. Cancelling a late
 model step preserves an already completed cell's namespace and background work.
 Reset ends retained background work explicitly. Ordinary Python exceptions keep
 partial assignments and external effects; there is no rollback or replay.
+Stop does not immediately interrupt synchronous Python or native calls: code can
+continue producing filesystem or other effects during the retirement grace
+period, before forced termination. Cleanup handlers may be skipped and buffered
+output lost. Do not treat Stop as undoing writes or as an immediate effect fence.
 
 Archive, project removal, deletion, owner replacement, and app/runtime shutdown
 retire affected Python state. Archive and project removal update visibility without
@@ -108,6 +162,14 @@ executable with `-I -B -u`, without PATH fallback or runtime downloads. Developm
 preparation happens through `just python-prepare`; `just build`, `just test`, and
 `just debug-app` prepare their required resources. Complete archives include the
 interpreter, worker, manifest and upstream license notices.
+
+After preparation, the optional offline dependency check runs from the component's
+Nix shell with `python3 -I -B scripts/check-python-dependencies.py --runtime
+target/debug/runtime/python`. It copies the runtime, installs a synthetic wheel
+outside it, exercises retained imports and importable-module process pools, and
+checks that the packaged tree is unchanged. On macOS, use `--app` with an existing
+signed app path instead of `--runtime` to verify its signature before and after
+the same check. This does not download packages or build an app.
 
 CPython-only execution deliberately simplifies PR #2's optional-IPython PoC. That
 historical full-system experiment remains preserved. This feature adds no Maple

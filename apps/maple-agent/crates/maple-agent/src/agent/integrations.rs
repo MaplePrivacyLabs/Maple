@@ -1600,6 +1600,7 @@ mod tests {
                     mode: DEFAULT_GOOSE_MODE,
                     primary_model_supports_vision: false,
                     tool_context: &context,
+                    python_binding: None,
                     allow_embedded_cua: desktop,
                     external_agents: Some(&registry),
                     host_search_path: None,

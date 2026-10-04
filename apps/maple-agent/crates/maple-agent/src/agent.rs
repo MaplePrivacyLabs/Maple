@@ -12585,7 +12585,10 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(settled.state, AgentTaskState::Settled);
-        assert!(!original.is_closed(), "settling preserves the Python binding");
+        assert!(
+            !original.is_closed(),
+            "settling preserves the Python binding"
+        );
         let summary = handle
             .set_session_state(session.id.clone(), AgentTaskState::Archived)
             .await

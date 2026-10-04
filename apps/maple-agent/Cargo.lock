@@ -3793,7 +3793,7 @@ dependencies = [
 [[package]]
 name = "goose"
 version = "1.53.0"
-source = "git+https://github.com/AnthonyRonning/goose.git?rev=0a26a33078034b30c2297f89223e1d237cfc98d8#0a26a33078034b30c2297f89223e1d237cfc98d8"
+source = "git+https://github.com/AnthonyRonning/goose.git?rev=19605eb50df1b27ab8f7ddd9c4e5dcbba19ec333#19605eb50df1b27ab8f7ddd9c4e5dcbba19ec333"
 dependencies = [
  "agent-client-protocol",
  "agent-client-protocol-schema",
@@ -3878,7 +3878,7 @@ dependencies = [
 [[package]]
 name = "goose-acp-macros"
 version = "1.53.0"
-source = "git+https://github.com/AnthonyRonning/goose.git?rev=0a26a33078034b30c2297f89223e1d237cfc98d8#0a26a33078034b30c2297f89223e1d237cfc98d8"
+source = "git+https://github.com/AnthonyRonning/goose.git?rev=19605eb50df1b27ab8f7ddd9c4e5dcbba19ec333#19605eb50df1b27ab8f7ddd9c4e5dcbba19ec333"
 dependencies = [
  "quote",
  "syn 3.0.4",
@@ -3887,7 +3887,7 @@ dependencies = [
 [[package]]
 name = "goose-agent"
 version = "0.1.0-alpha.11"
-source = "git+https://github.com/AnthonyRonning/goose.git?rev=0a26a33078034b30c2297f89223e1d237cfc98d8#0a26a33078034b30c2297f89223e1d237cfc98d8"
+source = "git+https://github.com/AnthonyRonning/goose.git?rev=19605eb50df1b27ab8f7ddd9c4e5dcbba19ec333#19605eb50df1b27ab8f7ddd9c4e5dcbba19ec333"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3905,7 +3905,7 @@ dependencies = [
 [[package]]
 name = "goose-context-management"
 version = "0.1.0-alpha.11"
-source = "git+https://github.com/AnthonyRonning/goose.git?rev=0a26a33078034b30c2297f89223e1d237cfc98d8#0a26a33078034b30c2297f89223e1d237cfc98d8"
+source = "git+https://github.com/AnthonyRonning/goose.git?rev=19605eb50df1b27ab8f7ddd9c4e5dcbba19ec333#19605eb50df1b27ab8f7ddd9c4e5dcbba19ec333"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3921,7 +3921,7 @@ dependencies = [
 [[package]]
 name = "goose-download-manager"
 version = "0.1.0-alpha.11"
-source = "git+https://github.com/AnthonyRonning/goose.git?rev=0a26a33078034b30c2297f89223e1d237cfc98d8#0a26a33078034b30c2297f89223e1d237cfc98d8"
+source = "git+https://github.com/AnthonyRonning/goose.git?rev=19605eb50df1b27ab8f7ddd9c4e5dcbba19ec333#19605eb50df1b27ab8f7ddd9c4e5dcbba19ec333"
 dependencies = [
  "anyhow",
  "once_cell",
@@ -3934,7 +3934,7 @@ dependencies = [
 [[package]]
 name = "goose-provider-types"
 version = "0.1.0-alpha.11"
-source = "git+https://github.com/AnthonyRonning/goose.git?rev=0a26a33078034b30c2297f89223e1d237cfc98d8#0a26a33078034b30c2297f89223e1d237cfc98d8"
+source = "git+https://github.com/AnthonyRonning/goose.git?rev=19605eb50df1b27ab8f7ddd9c4e5dcbba19ec333#19605eb50df1b27ab8f7ddd9c4e5dcbba19ec333"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -3963,7 +3963,7 @@ dependencies = [
 [[package]]
 name = "goose-providers"
 version = "0.1.0-alpha.11"
-source = "git+https://github.com/AnthonyRonning/goose.git?rev=0a26a33078034b30c2297f89223e1d237cfc98d8#0a26a33078034b30c2297f89223e1d237cfc98d8"
+source = "git+https://github.com/AnthonyRonning/goose.git?rev=19605eb50df1b27ab8f7ddd9c4e5dcbba19ec333#19605eb50df1b27ab8f7ddd9c4e5dcbba19ec333"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -3989,7 +3989,7 @@ dependencies = [
 [[package]]
 name = "goose-sdk-types"
 version = "0.1.0-alpha.11"
-source = "git+https://github.com/AnthonyRonning/goose.git?rev=0a26a33078034b30c2297f89223e1d237cfc98d8#0a26a33078034b30c2297f89223e1d237cfc98d8"
+source = "git+https://github.com/AnthonyRonning/goose.git?rev=19605eb50df1b27ab8f7ddd9c4e5dcbba19ec333#19605eb50df1b27ab8f7ddd9c4e5dcbba19ec333"
 dependencies = [
  "agent-client-protocol",
  "agent-client-protocol-schema",

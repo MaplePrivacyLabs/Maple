@@ -165,7 +165,6 @@ impl NativeBatch {
                 },
                 Arc::new(client),
                 None,
-                None,
             )
             .await;
         Self {

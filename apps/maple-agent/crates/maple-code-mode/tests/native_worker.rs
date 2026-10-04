@@ -208,6 +208,25 @@ async fn flood_is_bounded_and_final_results_survive() {
 }
 
 #[tokio::test]
+async fn tiny_output_burst_is_retained_below_the_byte_limit() {
+    let root = tempfile::tempdir().unwrap();
+    let runtime = runtime();
+    let task = bind(&runtime, "tiny-output", root.path());
+    let expected: String = (0..5_000).map(|i| format!("{i}\n")).collect();
+    let output = cell(&task, "for i in range(5000):\n    print(i)\n42").await;
+    runtime.shutdown("test complete").await.unwrap();
+    assert_eq!(output.status, OutcomeStatus::Ok);
+    assert_eq!(output.value.as_deref(), Some("42"));
+    assert_eq!(
+        output.stdout.len() as u64 + output.dropped_stdout_bytes,
+        expected.len() as u64
+    );
+    assert_eq!(output.dropped_stderr_bytes, 0);
+    assert_eq!(output.dropped_stdout_bytes, 0);
+    assert_eq!(output.stdout, expected);
+}
+
+#[tokio::test]
 async fn validation_and_reset_only_do_not_spawn_and_capacity_is_retained() {
     let root = tempfile::tempdir().unwrap();
     let runtime = runtime();

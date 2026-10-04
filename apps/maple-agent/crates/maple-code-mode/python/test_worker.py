@@ -23,6 +23,7 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest import mock
 
 
 PYTHON = None
@@ -246,14 +247,42 @@ None
         self.assertTrue(all(item["execution_id"] == 1 for item in messages if item["type"] == "output"))
 
     def test_errors_preserve_partial_state_and_traceback_source(self):
-        messages = self.worker.execute("retained = 17\nraise ValueError('example')")
+        messages = self.worker.execute("def fail():\n    raise ValueError('example')\nretained = 17\nfail()")
         self.assertEqual(messages[-1]["status"], "error")
         error = next(item["traceback"] for item in messages if item["type"] == "error")
         self.assertIn("<maple-python-7-cell-1>", error)
         self.assertIn("raise ValueError('example')", error)
+        self.assertIn('line 4, in <module>', error)
+        self.assertIn('line 2, in fail', error)
+        self.assertNotIn(str(WORKER), error)
         self.assertEqual(result(self.worker.execute("retained")), "17")
         syntax = self.worker.execute("def broken(")
-        self.assertIn("SyntaxError", next(item["traceback"] for item in syntax if item["type"] == "error"))
+        error = next(item["traceback"] for item in syntax if item["type"] == "error")
+        self.assertIn('File "<maple-python-7-cell-3>", line 1', error)
+        self.assertIn("    def broken(\n              ^\n", error)
+        self.assertIn("SyntaxError: '(' was never closed\n", error)
+        self.assertNotIn(str(WORKER), error)
+
+    def test_file_errors_report_both_paths_in_the_message(self):
+        missing = str(Path(self.worker.root, "missing-ø.xlsx"))
+        destination = str(Path(self.worker.root, "result.xlsx"))
+        self.worker.execute(f"missing = {missing!r}\ndestination = {destination!r}")
+        for code in ("open(missing)", "import os\nos.rename(missing, destination)"):
+            messages = self.worker.execute(code)
+            error = next(item["traceback"] for item in messages if item["type"] == "error")
+            message = error.splitlines()[-1]
+            self.assertIn("FileNotFoundError: [Errno 2]", message)
+            self.assertIn(repr(missing), message)
+            if "rename" in code:
+                self.assertIn(" -> " + repr(destination), message)
+
+    def test_tracebacks_retain_dependency_frames(self):
+        messages = self.worker.execute("import json\njson.loads('not-json')")
+        error = next(item["traceback"] for item in messages if item["type"] == "error")
+        self.assertIn("<maple-python-7-cell-1>", error)
+        self.assertIn("decoder.py", error)
+        self.assertIn("JSONDecodeError", error)
+        self.assertNotIn(str(WORKER), error)
 
     def test_output_flood_is_bounded_and_terminal_survives_backpressure(self):
         self.worker.begin("import sys\nsys.stdout.write('x' * (16 * 1024 * 1024))\nNone")
@@ -368,6 +397,78 @@ class BootstrapUnitTests(unittest.TestCase):
         spec = importlib.util.spec_from_file_location("maple_worker_test", WORKER)
         cls.module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(cls.module)
+
+    def test_output_coalescing_preserves_attribution_controls_and_frame_limit(self):
+        with mock.patch.object(threading.Thread, "start"):
+            transport = self.module._Transport(-1, 7, lambda: self.fail("broken transport"))
+        transport.output("stdout", "first", 1)
+        transport.output("stdout", " second", 1)
+        transport.output("stderr", "error", 1)
+        transport.output("stdout", "next cell", 2)
+        transport.control({"type": "done", "execution_id": 2})
+        transport.output("stdout", "late", 2)
+        transport.output("stdout", "ø" * (self.module.MAX_OUTPUT_BYTES // 2), 2)
+        messages = [entry[0] for entry in transport.queue]
+        self.assertEqual([message["type"] for message in messages],
+                         ["output", "output", "output", "done", "output", "output"])
+        self.assertEqual([message.get("text") for message in messages[:5]],
+                         ["first second", "error", "next cell", None, "late"])
+        self.assertEqual([message.get("execution_id") for message in messages],
+                         [1, 1, 2, 2, 2, 2])
+        self.assertTrue(all(len(message.get("text", "").encode("utf-8")) <=
+                            self.module.MAX_OUTPUT_BYTES for message in messages))
+
+    def test_coalesced_output_still_bounds_queue_and_reserves_controls(self):
+        with mock.patch.object(threading.Thread, "start"):
+            transport = self.module._Transport(-1, 7, lambda: self.fail("broken transport"))
+        for _ in range(40000):
+            transport.output("stdout", "12345678", 1)
+        self.assertLessEqual(transport.output_bytes, self.module.MAX_OUTPUT_QUEUE_BYTES)
+        retained = sum(len(entry[0]["text"]) for entry in transport.queue)
+        self.assertEqual(retained + transport.counts()["stdout"], 320000)
+        self.assertGreater(transport.counts()["stdout"], 0)
+        self.assertTrue(transport.control({"type": "done", "execution_id": 1}))
+        self.assertEqual(transport.queue[-1][0]["type"], "done")
+
+    def test_exception_fields_are_bounded_without_custom_str(self):
+        class FileError(OSError):
+            def __str__(self):
+                raise AssertionError("exception __str__ must not run")
+
+        error = FileError(2, "missing", "source.xlsx", None, "result.xlsx")
+        formatted = self.module._bounded_traceback(error)
+        self.assertIn("FileError: [Errno 2] missing: 'source.xlsx' -> 'result.xlsx'", formatted)
+        for error in (
+            FileError(2, "missing", "ø" * 100000),
+            FileError(2, "ø" * 100000, "source.xlsx"),
+            SyntaxError("ø" * 100000, ("source.py", 1, 100000, "ø" * 100000)),
+        ):
+            formatted = self.module._bounded_traceback(error)
+            self.assertLessEqual(len(formatted.encode("utf-8")), self.module.MAX_VALUE_BYTES)
+            self.assertIn("...", formatted)
+
+    def test_traceback_frame_and_chain_limits_remain_bounded(self):
+        previous = None
+        for index in range(6):
+            error = ValueError(f"cause-{index}")
+            error.__cause__ = previous
+            previous = error
+        formatted = self.module._bounded_traceback(error)
+        self.assertNotIn("cause-0", formatted)
+        self.assertNotIn("cause-1", formatted)
+        self.assertEqual(formatted.count("ValueError: cause-"), 4)
+
+        def recurse(depth):
+            if depth:
+                return recurse(depth - 1)
+            raise ValueError("deep")
+
+        try:
+            recurse(40)
+        except ValueError as error:
+            formatted = self.module._bounded_traceback(error)
+        self.assertEqual(formatted.count('  File "'), 32)
+        self.assertIn("additional frames omitted", formatted)
 
     def test_source_cache_enforces_both_bounds(self):
         cache = self.module._SourceCache()

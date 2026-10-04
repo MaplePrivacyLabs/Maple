@@ -1322,7 +1322,10 @@ impl Sidebar {
     fn toggle_task_menu(&mut self, session_id: Arc<str>, cx: &mut Context<Self>) {
         self.menu_python_resettable = false;
         self.python_menu_sequence = self.python_menu_sequence.wrapping_add(1);
-        if !self.popup.toggle(SidebarPopup::Task(session_id.clone()), cx) {
+        if !self
+            .popup
+            .toggle(SidebarPopup::Task(session_id.clone()), cx)
+        {
             return;
         }
         let request = PythonMenuRequest {
@@ -1340,14 +1343,11 @@ impl Sidebar {
             },
             cx,
             move |this, result, cx| {
-                if !request.is_current(
-                    &this.user_id,
-                    this.task_menu(),
-                    this.python_menu_sequence,
-                ) || !this
-                    .sessions
-                    .iter()
-                    .any(|task| task.id == request.session_id)
+                if !request.is_current(&this.user_id, this.task_menu(), this.python_menu_sequence)
+                    || !this
+                        .sessions
+                        .iter()
+                        .any(|task| task.id == request.session_id)
                 {
                     return;
                 }

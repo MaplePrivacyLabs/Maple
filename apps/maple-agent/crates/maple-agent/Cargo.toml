@@ -25,8 +25,8 @@ http = { workspace = true }
 reqwest = { workspace = true }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 dirs = "6"
-goose = { git = "https://github.com/AnthonyRonning/goose.git", rev = "0a26a33078034b30c2297f89223e1d237cfc98d8", package = "goose", default-features = false }
-goose-providers = { git = "https://github.com/AnthonyRonning/goose.git", rev = "0a26a33078034b30c2297f89223e1d237cfc98d8", package = "goose-providers", default-features = false }
+goose = { git = "https://github.com/AnthonyRonning/goose.git", rev = "19605eb50df1b27ab8f7ddd9c4e5dcbba19ec333", package = "goose", default-features = false }
+goose-providers = { git = "https://github.com/AnthonyRonning/goose.git", rev = "19605eb50df1b27ab8f7ddd9c4e5dcbba19ec333", package = "goose-providers", default-features = false }
 maple-sdk = { workspace = true }
 maple-proxy = { workspace = true }
 rand = "0.8.6"

@@ -20,11 +20,11 @@ use std::sync::Arc;
 use maple_agent::agent::{
     AgentCreateSessionRequest, AgentDesktopQueueSnapshot, AgentEventSink, AgentIntegration,
     AgentIntegrationPermissionKind, AgentIntegrationPermissions, AgentProjectRootRegistration,
-    AgentProjectTrustStatus, AgentPythonStatus, AgentQueueControlRequest, AgentRenameSessionRequest,
-    AgentRuntimeStatus, AgentSendMessageRequest, AgentServiceEvent, AgentSessionDetail,
-    AgentSessionSummary, AgentSetIntegrationEnabledRequest, AgentSetupIntegrationRequest,
-    AgentSlashCommand, AgentStartRequest, AgentSubagent, AgentTaskState, MapleAgentHostResources,
-    MapleAgentService, RecentProjectRoot,
+    AgentProjectTrustStatus, AgentPythonStatus, AgentQueueControlRequest,
+    AgentRenameSessionRequest, AgentRuntimeStatus, AgentSendMessageRequest, AgentServiceEvent,
+    AgentSessionDetail, AgentSessionSummary, AgentSetIntegrationEnabledRequest,
+    AgentSetupIntegrationRequest, AgentSlashCommand, AgentStartRequest, AgentSubagent,
+    AgentTaskState, MapleAgentHostResources, MapleAgentService, RecentProjectRoot,
 };
 use maple_agent::maple_api::{
     MapleApiAuthEventSink, MapleApiAuthRequest, MapleApiAuthSnapshot, MapleApiAuthState,
