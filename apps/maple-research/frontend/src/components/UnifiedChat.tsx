@@ -189,6 +189,7 @@ import {
   isChatResponseDefinitelyRejectedError,
   isImageDescriptionUnavailableError
 } from "@/services/chatResponseErrors";
+import { handleChatAccessError } from "@/services/chatAccessError";
 import { isChatAccountCredentialMismatchError } from "@/services/chatAccountCredential";
 import { chatCursorAfterSendFailure } from "@/services/chatSendFailureRecovery";
 import { normalizeChatPollingPage } from "@/services/chatPollingPage";
@@ -5462,61 +5463,20 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
             return false;
           }
 
-          const parseStatusError = (status: number) => {
-            if (!errorMessage.includes(`Request failed with status ${status}:`)) return null;
-            try {
-              const jsonMatch = errorMessage.match(
-                new RegExp(`Request failed with status ${status}:\\s*({.*})`)
-              );
-              return jsonMatch?.[1]
-                ? (JSON.parse(jsonMatch[1]) as { status: number; message: string })
-                : null;
-            } catch (parseError) {
-              console.error(`Failed to parse ${status} error:`, parseError);
-              return null;
-            }
-          };
-
-          const status413Error = parseStatusError(413);
-          if (status413Error?.message === "Message exceeds context limit") {
-            restoreTurn("Your message exceeds the context limit for this model.");
-            if (isRuntimeSelected(runtimeKey)) setContextLimitDialogOpen(true);
-            return false;
-          }
-
-          const status403Error = parseStatusError(403);
-          if (status403Error) {
-            let displayError: string;
-            if (status403Error.message === "Free tier token limit exceeded") {
-              displayError =
-                "This conversation is too long for the free tier. Upgrade to Pro for longer conversations.";
-              if (isRuntimeSelected(runtimeKey)) {
-                setUpgradeFeature("tokens");
+          if (
+            handleChatAccessError({
+              error,
+              productName: billingStatus?.product_name,
+              restoreTurn,
+              isRunCurrent: () => runtimeStore.isRunCurrent(runtimeKey, run.token),
+              isRuntimeSelected: () => isRuntimeSelected(runtimeKey),
+              showUpgradeDialog: (feature) => {
+                setUpgradeFeature(feature);
                 setUpgradeDialogOpen(true);
-              }
-            } else if (status403Error.message === "Usage limit reached") {
-              const isFreeTier =
-                !billingStatus?.product_name || billingStatus.product_name.toLowerCase() === "free";
-              if (isFreeTier) {
-                displayError =
-                  "You've reached your daily usage limit. Upgrade to Pro for more chats.";
-              } else {
-                const isPro =
-                  billingStatus.product_name?.toLowerCase().includes("pro") &&
-                  !billingStatus.product_name?.toLowerCase().includes("max");
-                displayError = isPro
-                  ? "You've reached your monthly Pro limit. Upgrade to Max for 10x more usage."
-                  : "You've reached your monthly usage limit. Please wait for the next billing cycle.";
-              }
-              if (isRuntimeSelected(runtimeKey)) {
-                setUpgradeFeature("usage");
-                setUpgradeDialogOpen(true);
-              }
-            } else {
-              displayError =
-                status403Error.message || "Access denied. Please check your subscription.";
-            }
-            restoreTurn(displayError);
+              },
+              showContextLimitDialog: () => setContextLimitDialogOpen(true)
+            })
+          ) {
             return false;
           }
 
