@@ -12,7 +12,8 @@
     "format:check": "prettier --check \"src/**/*.ts\" README.md package.json tsconfig.json wrangler.jsonc",
     "test": "bun --no-env-file test",
     "typecheck": "tsc --noEmit",
-    "validate:latest": "bun src/validate-latest.ts"
+    "validate:latest": "bun src/validate-latest.ts",
+    "prepare:installers": "bun src/prepare-installers.ts"
   },
   "devDependencies": {
     "@types/bun": "1.3.13",

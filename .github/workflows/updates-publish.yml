@@ -10,6 +10,7 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 concurrency:
   group: updates-production
@@ -35,6 +36,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
+          ref: master
           persist-credentials: false
 
       - name: Install Nix
@@ -42,98 +44,96 @@ jobs:
         with:
           github-token: ""
 
-      - name: Download and validate the current release metadata
+      - name: Prepare the current release bundle
         id: release
         env:
           EXPECTED_RELEASE_TAG: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_branch || '' }}
+          EXPECTED_RELEASE_SHA: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || '' }}
+          EXPECTED_RUN_ID: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.id || '' }}
           GH_TOKEN: ${{ github.token }}
           REPOSITORY: ${{ github.repository }}
         run: |
           set -euo pipefail
-
-          release_json="$(gh api "repos/${REPOSITORY}/releases/latest")"
-          release_id="$(jq -er 'select(.draft == false and .prerelease == false) | .id' <<<"${release_json}")"
-          release_tag="$(jq -er '.tag_name' <<<"${release_json}")"
+          mkdir -p release-metadata
+          gh api "repos/${REPOSITORY}/releases/latest" > release-metadata/release.json
+          release_tag="$(jq -er 'select(.draft == false and .prerelease == false) | .tag_name' release-metadata/release.json)"
           [[ "${release_tag}" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || {
-            echo "Latest GitHub Release tag is not a stable version: ${release_tag}" >&2
+            echo "Latest GitHub Release is not a stable Research version." >&2
             exit 1
           }
-          if [ -n "${EXPECTED_RELEASE_TAG}" ]; then
-            [[ "${EXPECTED_RELEASE_TAG}" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || {
-              echo "Completed Release workflow has an invalid tag: ${EXPECTED_RELEASE_TAG}" >&2
-              exit 1
-            }
-            if [ "${release_tag}" != "${EXPECTED_RELEASE_TAG}" ]; then
-              echo "${EXPECTED_RELEASE_TAG} is not the latest stable release; skipping updater publication."
-              echo "publish=false" >>"${GITHUB_OUTPUT}"
-              exit 0
-            fi
+          if [ -n "${EXPECTED_RELEASE_TAG}" ] && [ "${release_tag}" != "${EXPECTED_RELEASE_TAG}" ]; then
+            echo "Completed release is no longer latest; skipping publication."
+            echo "publish=false" >>"${GITHUB_OUTPUT}"
+            exit 0
           fi
 
-          asset_count="$(jq '[.assets[] | select(.name == "latest.json")] | length' <<<"${release_json}")"
-          [ "${asset_count}" -eq 1 ] || {
-            echo "Expected exactly one latest.json asset, found ${asset_count}." >&2
+          release_sha="$(gh api "repos/${REPOSITORY}/commits/${release_tag}" --jq .sha)"
+          if [ -n "${EXPECTED_RELEASE_SHA}" ] && [ "${release_sha}" != "${EXPECTED_RELEASE_SHA}" ]; then
+            echo "Release tag no longer identifies the completed workflow commit." >&2
             exit 1
-          }
+          fi
+          if [ -n "${EXPECTED_RUN_ID}" ]; then
+            gh api "repos/${REPOSITORY}/actions/runs/${EXPECTED_RUN_ID}" | jq '{workflow_runs: [.]}' > release-metadata/runs.json
+          else
+            gh api --paginate --method GET "repos/${REPOSITORY}/actions/workflows/release.yml/runs" \
+              -f event=release -f head_sha="${release_sha}" -f per_page=100 \
+              --jq '.workflow_runs[]' | jq -s '{workflow_runs: .}' > release-metadata/runs.json
+          fi
 
-          asset_id="$(jq -er '.assets[] | select(.name == "latest.json") | .id' <<<"${release_json}")"
-          asset_size="$(jq -er '.assets[] | select(.name == "latest.json") | .size' <<<"${release_json}")"
-          asset_digest="$(jq -er '.assets[] | select(.name == "latest.json") | .digest' <<<"${release_json}")"
-          [[ "${asset_size}" =~ ^[0-9]+$ ]] && [ "${asset_size}" -gt 0 ] && [ "${asset_size}" -le 65536 ] || {
-            echo "latest.json has an invalid size: ${asset_size}" >&2
-            exit 1
-          }
-          [[ "${asset_digest}" =~ ^sha256:[0-9a-f]{64}$ ]] || {
-            echo "latest.json does not have a GitHub SHA-256 digest." >&2
-            exit 1
-          }
+          asset_id="$(jq -er '[.assets[] | select(.name == "latest.json")] | select(length == 1) | .[0] | select(.state == "uploaded" and (.size | type == "number") and .size > 0 and .size <= 65536) | .id' release-metadata/release.json)"
+          gh api -H "Accept: application/octet-stream" \
+            "repos/${REPOSITORY}/releases/assets/${asset_id}" > release-metadata/latest.json
 
-          mkdir -p release-metadata
-          gh api \
-            -H "Accept: application/octet-stream" \
-            "repos/${REPOSITORY}/releases/assets/${asset_id}" \
-            > release-metadata/latest.json
-
-          actual_digest="sha256:$(sha256sum release-metadata/latest.json | cut -d' ' -f1)"
-          [ "${actual_digest}" = "${asset_digest}" ] || {
-            echo "Downloaded latest.json does not match GitHub's digest." >&2
-            exit 1
-          }
-          [ "$(wc -c < release-metadata/latest.json)" -eq "${asset_size}" ] || {
-            echo "Downloaded latest.json does not match GitHub's size." >&2
-            exit 1
-          }
-
-          version="${release_tag#v}"
-          url_prefix="https://github.com/${REPOSITORY}/releases/download/${release_tag}/"
-          jq -e --arg version "${version}" --arg url_prefix "${url_prefix}" '
-            .version == $version
-            and (.platforms | type == "object")
-            and ([.platforms[] |
-              (.signature | type == "string" and length > 0)
-              and (.url | type == "string" and startswith($url_prefix))
-            ] | all)
-          ' release-metadata/latest.json >/dev/null
-
+          nix develop --no-update-lock-file .#ci -c ./scripts/ci/updates.sh
+          # The child shell expands its positional argument.
+          # shellcheck disable=SC2016
+          nix develop --no-update-lock-file .#ci -c bash -c '
+            cd services/updates
+            bun run prepare:installers prepare ../../release-metadata/release.json \
+              ../../release-metadata/latest.json ../../release-metadata/runs.json "$1" public/installers.json
+          ' -- "${release_sha}"
           cp release-metadata/latest.json services/updates/public/latest.json
           echo "publish=true" >>"${GITHUB_OUTPUT}"
           {
-            echo "RELEASE_ID=${release_id}"
+            echo "RELEASE_ID=$(jq -er .id release-metadata/release.json)"
             echo "RELEASE_TAG=${release_tag}"
-            echo "LATEST_ASSET_ID=${asset_id}"
+            echo "RELEASE_SHA=${release_sha}"
+            echo "RELEASE_RUN_ID=${EXPECTED_RUN_ID}"
           } >>"${GITHUB_ENV}"
 
-          nix develop --no-update-lock-file .#ci -c ./scripts/ci/updates.sh
-          nix develop --no-update-lock-file .#ci -c bash -lc \
-            'cd services/updates && bun run validate:latest public/latest.json'
+      - name: Recheck release and asset identities before deployment
+        if: steps.release.outputs.publish == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          gh api "repos/${REPOSITORY}/releases/latest" > release-metadata/current.json
+          [ "$(gh api "repos/${REPOSITORY}/commits/${RELEASE_TAG}" --jq .sha)" = "${RELEASE_SHA}" ] || {
+            echo "Release tag changed during publication." >&2
+            exit 1
+          }
+          if [ -n "${RELEASE_RUN_ID}" ]; then
+            gh api "repos/${REPOSITORY}/actions/runs/${RELEASE_RUN_ID}" | jq '{workflow_runs: [.]}' > release-metadata/current-runs.json
+          else
+            gh api --paginate --method GET "repos/${REPOSITORY}/actions/workflows/release.yml/runs" \
+              -f event=release -f head_sha="${RELEASE_SHA}" -f per_page=100 \
+              --jq '.workflow_runs[]' | jq -s '{workflow_runs: .}' > release-metadata/current-runs.json
+          fi
+          # The child shell expands its positional argument.
+          # shellcheck disable=SC2016
+          nix develop --no-update-lock-file .#ci -c bash -c '
+            cd services/updates
+            bun run prepare:installers recheck ../../release-metadata/release.json \
+              ../../release-metadata/current.json public/latest.json public/installers.json \
+              ../../release-metadata/current-runs.json "$1"
+          ' -- "${RELEASE_SHA}"
 
-      - name: Deploy and verify the public endpoint
+      - name: Deploy the updater and installer bundle
         if: steps.release.outputs.publish == 'true'
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          GH_TOKEN: ${{ github.token }}
-          REPOSITORY: ${{ github.repository }}
           WRANGLER_SEND_METRICS: "false"
         run: |
           set -euo pipefail
@@ -146,15 +146,6 @@ jobs:
             echo "CLOUDFLARE_API_TOKEN is not configured in updates-production." >&2
             exit 1
           }
-
-          current_json="$(gh api "repos/${REPOSITORY}/releases/latest")"
-          current_release_id="$(jq -er '.id' <<<"${current_json}")"
-          current_asset_id="$(jq -er '.assets[] | select(.name == "latest.json") | .id' <<<"${current_json}")"
-          [ "${current_release_id}:${current_asset_id}" = "${RELEASE_ID}:${LATEST_ASSET_ID}" ] || {
-            echo "The latest GitHub Release changed during this run; dispatch it again." >&2
-            exit 1
-          }
-          unset GH_TOKEN
 
           nix develop --no-update-lock-file .#ci -c bash -lc \
             "cd services/updates && bun run deploy -- --strict \
@@ -173,22 +164,20 @@ jobs:
             and .result.service == "maple-updates"
           ' <<<"${domain_response}" >/dev/null
 
-          served_metadata="$(mktemp "${RUNNER_TEMP}/maple-updates-live.XXXXXX")"
-          endpoint="https://updates.trymaple.ai/latest.json"
-          for attempt in $(seq 1 60); do
-            if curl --fail --silent --show-error \
-              --connect-timeout 5 \
-              --max-time 20 \
-              --header 'cache-control: no-cache' \
-              --output "${served_metadata}" \
-              "${endpoint}?deploy=${GITHUB_SHA}" && \
-              cmp --silent services/updates/public/latest.json "${served_metadata}"; then
-              echo "Published ${RELEASE_TAG} at ${endpoint}."
+      - name: Verify the public updater and download routes
+        if: steps.release.outputs.publish == 'true'
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 12); do
+            if nix develop --no-update-lock-file .#ci -c bash -c '
+              cd services/updates
+              bun run prepare:installers verify-live https://updates.trymaple.ai public/installers.json public/latest.json
+            '; then
+              echo "Published ${RELEASE_TAG}: original Tauri metadata and all six installer redirects verified."
               exit 0
             fi
-            echo "Waiting for the custom domain to serve the deployed metadata (${attempt}/60)."
+            echo "Waiting for the custom domain to serve the complete bundle (${attempt}/12)."
             sleep 10
           done
-
-          echo "The public updater endpoint did not serve the deployed latest.json." >&2
+          echo "The public updater/download bundle did not match the deployed release." >&2
           exit 1

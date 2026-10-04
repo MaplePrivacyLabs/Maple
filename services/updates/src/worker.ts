@@ -1,7 +1,15 @@
 import repositoryMetadata from "../../../repo.meta.json";
+import {
+  INSTALLER_KEYS,
+  isInstallerCatalog,
+  type InstallerCatalog,
+  type InstallerKey,
+} from "./installers";
 
 const LATEST_JSON_PATH = "/latest.json";
-const MAX_LATEST_JSON_BYTES = 64 * 1024;
+const INSTALLERS_JSON_PATH = "/installers.json";
+const DOWNLOAD_PREFIX = "/download/research/stable/";
+const MAX_METADATA_BYTES = 64 * 1024;
 export const GITHUB_REPOSITORY = `${repositoryMetadata.github.owner}/${repositoryMetadata.github.repository}`;
 const STABLE_VERSION = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
 const GENERATED_PUB_DATE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/;
@@ -150,20 +158,21 @@ export function isLatestRelease(value: unknown): value is LatestRelease {
 
 async function readValidatedAsset(
   response: Response,
+  validate: (value: unknown) => boolean = isLatestRelease,
 ): Promise<ArrayBuffer | null> {
   const declaredLength = response.headers.get("content-length");
   if (declaredLength !== null) {
     const parsedLength = Number(declaredLength);
     if (
       !Number.isSafeInteger(parsedLength) ||
-      parsedLength > MAX_LATEST_JSON_BYTES
+      parsedLength > MAX_METADATA_BYTES
     ) {
       return null;
     }
   }
 
   const body = await response.arrayBuffer();
-  if (body.byteLength === 0 || body.byteLength > MAX_LATEST_JSON_BYTES) {
+  if (body.byteLength === 0 || body.byteLength > MAX_METADATA_BYTES) {
     return null;
   }
 
@@ -174,7 +183,46 @@ async function readValidatedAsset(
     return null;
   }
 
-  return isLatestRelease(parsed) ? body : null;
+  return validate(parsed) ? body : null;
+}
+
+async function downloadResponse(
+  origin: string,
+  installer: InstallerKey,
+  env: Env,
+): Promise<Response> {
+  // Only deployment-owned metadata selects the target; visitor input never
+  // becomes a URL, asset path, or upstream request. Do not forward headers.
+  try {
+    const asset = await env.ASSETS.fetch(
+      new Request(new URL(INSTALLERS_JSON_PATH, origin), {
+        headers: { accept: "application/json" },
+      }),
+    );
+    if (asset.ok) {
+      const body = await readValidatedAsset(asset, isInstallerCatalog);
+      if (body !== null) {
+        const catalog = JSON.parse(
+          new TextDecoder().decode(body),
+        ) as InstallerCatalog;
+        return new Response(null, {
+          status: 302,
+          headers: {
+            location: catalog.installers[installer].url,
+            "cache-control": "no-store",
+            "cdn-cache-control": "no-store",
+            "x-content-type-options": "nosniff",
+          },
+        });
+      }
+    }
+  } catch {
+    // A missing or corrupt installer catalog must never affect latest.json.
+  }
+  return textResponse(
+    "Download temporarily unavailable. Please try again.\n",
+    503,
+  );
 }
 
 export async function handleRequest(
@@ -182,6 +230,15 @@ export async function handleRequest(
   env: Env,
 ): Promise<Response> {
   const url = new URL(request.url);
+  const installer = INSTALLER_KEYS.find(
+    (key) => url.pathname === `${DOWNLOAD_PREFIX}${key}`,
+  );
+  if (installer !== undefined) {
+    if (request.method !== "GET" && request.method !== "HEAD") {
+      return textResponse("Method not allowed\n", 405, { allow: "GET, HEAD" });
+    }
+    return downloadResponse(url.origin, installer, env);
+  }
   if (url.pathname !== LATEST_JSON_PATH) {
     return textResponse("Not found\n", 404);
   }

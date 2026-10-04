@@ -15,7 +15,7 @@ application identity.
 | [`apps/maple-agent/`](apps/maple-agent/README.md) | GPUI desktop-v2 prototype, ACP agent, and CLI proxy; independent from the shipped Research app |
 | [`sdk/`](sdk/README.md) | Independently published Maple TypeScript/React and Rust SDKs |
 | [`proxy/`](proxy/README.md) | Standalone OpenAI-compatible proxy, also consumed by desktop Maple |
-| [`services/updates/`](services/updates/README.md) | Desktop updater Worker and verified release-metadata publishing |
+| [`services/updates/`](services/updates/README.md) | Desktop updater, Research installer redirects, and verified release publishing |
 | [`services/opensecret/`](services/opensecret/README.md) | Confidential authentication, inference, conversations, and related backend APIs; local Nitro tooling and signed PCR files |
 | [`docs/`](docs/) | Shared deployment documentation |
 | [`scripts/`](scripts/) and [`.github/workflows/`](.github/workflows/) | Shared validation and release entry points |
