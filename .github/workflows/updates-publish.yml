@@ -168,7 +168,7 @@ jobs:
         if: steps.release.outputs.publish == 'true'
         run: |
           set -euo pipefail
-          for attempt in $(seq 1 12); do
+          for attempt in $(seq 1 60); do
             if nix develop --no-update-lock-file .#ci -c bash -c '
               cd services/updates
               bun run prepare:installers verify-live https://updates.trymaple.ai public/installers.json public/latest.json
@@ -176,7 +176,7 @@ jobs:
               echo "Published ${RELEASE_TAG}: original Tauri metadata and all six installer redirects verified."
               exit 0
             fi
-            echo "Waiting for the custom domain to serve the complete bundle (${attempt}/12)."
+            echo "Waiting for the custom domain to serve the complete bundle (${attempt}/60)."
             sleep 10
           done
           echo "The public updater/download bundle did not match the deployed release." >&2

@@ -28,7 +28,15 @@ GitHub fallback behavior. A missing file returns `404`; invalid or unavailable
 metadata returns `503`. Valid metadata must contain the stable version,
 timestamp, required platform entries, signatures, and canonical GitHub release
 URLs. The Worker returns its original validated bytes, without reconstructing
-or rewriting the JSON. Download catalog failures cannot break this endpoint.
+or rewriting the JSON. Installer catalog failures do not affect requests to the
+currently deployed `/latest.json`.
+
+Publication intentionally advances updater metadata and installer links
+together. If installer validation or availability checks fail before deployment,
+neither advances: the previous verified bundle remains available. A healthy
+new Tauri updater asset can therefore wait for an installer-only publication
+failure to be resolved. This keeps one release state and recovery path; it does
+not provide independent updater and installer promotion.
 
 The installer catalog is separate because a macOS DMG and Android APK are not
 Tauri updater artifacts. It explicitly identifies Research stable and all six
@@ -61,7 +69,8 @@ No marketing rebuild or additional release button is needed. The workflow:
    serialized.
 5. Verifies the public `/latest.json` is byte-for-byte identical and all six
    public routes return the expected uncached redirects for both GET and HEAD.
-   Verification has a bounded propagation retry. A failure after deployment
+   Verification retains up to 60 attempts with 10-second pauses, subject to the
+   job's overall timeout. A failure after deployment
    does not mean deployment was rolled back; inspect the live bundle before
    retrying or rolling back.
 
