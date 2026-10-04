@@ -209,23 +209,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "agent-client-protocol-http"
-version = "2.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "18e3d7117a48e9db3c4b5e29f7539bc14e390f1f782d10a99b1d9f5c3a8cc28f"
-dependencies = [
- "agent-client-protocol",
- "async-stream",
- "axum",
- "futures",
- "serde_json",
- "tokio",
- "tower-http 0.7.0",
- "tracing",
- "uuid",
-]
-
-[[package]]
 name = "agent-client-protocol-schema"
 version = "1.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -449,7 +432,7 @@ dependencies = [
  "objc2-foundation 0.3.2",
  "parking_lot",
  "percent-encoding",
- "windows-sys 0.60.2",
+ "windows-sys 0.59.0",
  "x11rb",
 ]
 
@@ -2219,7 +2202,7 @@ dependencies = [
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
- "windows 0.62.2",
+ "windows 0.59.0",
 ]
 
 [[package]]
@@ -2275,17 +2258,6 @@ name = "critical-section"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "790eea4361631c5e7d22598ecd5723ff611904e3344ce8720784c93e3d83d40b"
-
-[[package]]
-name = "croner"
-version = "3.0.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4aa42bcd3d846ebf66e15bd528d1087f75d1c6c1c66ebff626178a106353c576"
-dependencies = [
- "chrono",
- "derive_builder",
- "strum 0.27.2",
-]
 
 [[package]]
 name = "crossbeam-channel"
@@ -2515,16 +2487,6 @@ dependencies = [
 
 [[package]]
 name = "darling"
-version = "0.20.11"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fc7f46116c46ff9ab3eb1597a45688b6715c6e628b5c133e288e709a29bcb4ee"
-dependencies = [
- "darling_core 0.20.11",
- "darling_macro 0.20.11",
-]
-
-[[package]]
-name = "darling"
 version = "0.23.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "25ae13da2f202d56bd7f91c25fba009e7717a1e4a1cc98a76d844b65ae912e9d"
@@ -2541,20 +2503,6 @@ checksum = "ed17f5901b6630b993ca003def43f2f8ef4014fc13b047b57aad617ff32bc2ec"
 dependencies = [
  "darling_core 0.24.1",
  "darling_macro 0.24.1",
-]
-
-[[package]]
-name = "darling_core"
-version = "0.20.11"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0d00b9596d185e565c2207a0b01f8bd1a135483d02d9b7b0a54b11da8d53412e"
-dependencies = [
- "fnv",
- "ident_case",
- "proc-macro2",
- "quote",
- "strsim",
- "syn 2.0.119",
 ]
 
 [[package]]
@@ -2581,17 +2529,6 @@ dependencies = [
  "quote",
  "strsim",
  "syn 3.0.4",
-]
-
-[[package]]
-name = "darling_macro"
-version = "0.20.11"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fc34b93ccb385b40dc71c6fceac4b2ad23662c7eeb248cf10d529b7e055b6ead"
-dependencies = [
- "darling_core 0.20.11",
- "quote",
- "syn 2.0.119",
 ]
 
 [[package]]
@@ -2700,37 +2637,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "derive_builder"
-version = "0.20.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "507dfb09ea8b7fa618fcf76e953f4f5e192547945816d5358edffe39f6f94947"
-dependencies = [
- "derive_builder_macro",
-]
-
-[[package]]
-name = "derive_builder_core"
-version = "0.20.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2d5bcf7b024d6835cfb3d473887cd966994907effbe9227e8c8219824d06c4e8"
-dependencies = [
- "darling 0.20.11",
- "proc-macro2",
- "quote",
- "syn 2.0.119",
-]
-
-[[package]]
-name = "derive_builder_macro"
-version = "0.20.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ab63b0e2bf4d5928aff72e83a7dace85d7bba5fe12dcc3c5a572d78caffd3f3c"
-dependencies = [
- "derive_builder_core",
- "syn 2.0.119",
-]
-
-[[package]]
 name = "derive_more"
 version = "2.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2835,7 +2741,7 @@ dependencies = [
  "libc",
  "option-ext",
  "redox_users 0.5.2",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -3124,7 +3030,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -3841,6 +3747,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "gloo-timers"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bbb143cf96099802033e0d4f4963b19fd2e0b728bcf076cd9cf7f6634f092994"
+dependencies = [
+ "futures-channel",
+ "futures-core",
+ "js-sys",
+ "wasm-bindgen",
+]
+
+[[package]]
 name = "glow"
 version = "0.17.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3874,11 +3792,10 @@ dependencies = [
 
 [[package]]
 name = "goose"
-version = "1.52.0"
-source = "git+https://github.com/AnthonyRonning/goose.git?rev=b26ae15dbbed79b22f9758abbcde19b34a8372a9#b26ae15dbbed79b22f9758abbcde19b34a8372a9"
+version = "1.53.0"
+source = "git+https://github.com/AnthonyRonning/goose.git?rev=0a26a33078034b30c2297f89223e1d237cfc98d8#0a26a33078034b30c2297f89223e1d237cfc98d8"
 dependencies = [
  "agent-client-protocol",
- "agent-client-protocol-http",
  "agent-client-protocol-schema",
  "anyhow",
  "arboard",
@@ -3918,7 +3835,7 @@ dependencies = [
  "oauth2",
  "once_cell",
  "pastey 0.2.3",
- "process-wrap",
+ "process-wrap 9.1.0",
  "rand 0.10.2",
  "rayon",
  "regex",
@@ -3941,7 +3858,6 @@ dependencies = [
  "thiserror 2.0.20",
  "tiktoken-rs",
  "tokio",
- "tokio-cron-scheduler",
  "tokio-stream",
  "tokio-util",
  "tower-http 0.7.0",
@@ -3949,16 +3865,6 @@ dependencies = [
  "tracing-appender",
  "tracing-futures",
  "tracing-subscriber",
- "tree-sitter",
- "tree-sitter-go",
- "tree-sitter-java",
- "tree-sitter-javascript",
- "tree-sitter-kotlin-ng",
- "tree-sitter-python",
- "tree-sitter-ruby",
- "tree-sitter-rust",
- "tree-sitter-swift",
- "tree-sitter-typescript",
  "unicode-normalization",
  "url",
  "urlencoding",
@@ -3971,8 +3877,8 @@ dependencies = [
 
 [[package]]
 name = "goose-acp-macros"
-version = "1.52.0"
-source = "git+https://github.com/AnthonyRonning/goose.git?rev=b26ae15dbbed79b22f9758abbcde19b34a8372a9#b26ae15dbbed79b22f9758abbcde19b34a8372a9"
+version = "1.53.0"
+source = "git+https://github.com/AnthonyRonning/goose.git?rev=0a26a33078034b30c2297f89223e1d237cfc98d8#0a26a33078034b30c2297f89223e1d237cfc98d8"
 dependencies = [
  "quote",
  "syn 3.0.4",
@@ -3980,8 +3886,8 @@ dependencies = [
 
 [[package]]
 name = "goose-agent"
-version = "0.1.0-alpha.9"
-source = "git+https://github.com/AnthonyRonning/goose.git?rev=b26ae15dbbed79b22f9758abbcde19b34a8372a9#b26ae15dbbed79b22f9758abbcde19b34a8372a9"
+version = "0.1.0-alpha.11"
+source = "git+https://github.com/AnthonyRonning/goose.git?rev=0a26a33078034b30c2297f89223e1d237cfc98d8#0a26a33078034b30c2297f89223e1d237cfc98d8"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3998,8 +3904,8 @@ dependencies = [
 
 [[package]]
 name = "goose-context-management"
-version = "0.1.0-alpha.9"
-source = "git+https://github.com/AnthonyRonning/goose.git?rev=b26ae15dbbed79b22f9758abbcde19b34a8372a9#b26ae15dbbed79b22f9758abbcde19b34a8372a9"
+version = "0.1.0-alpha.11"
+source = "git+https://github.com/AnthonyRonning/goose.git?rev=0a26a33078034b30c2297f89223e1d237cfc98d8#0a26a33078034b30c2297f89223e1d237cfc98d8"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4014,8 +3920,8 @@ dependencies = [
 
 [[package]]
 name = "goose-download-manager"
-version = "0.1.0-alpha.9"
-source = "git+https://github.com/AnthonyRonning/goose.git?rev=b26ae15dbbed79b22f9758abbcde19b34a8372a9#b26ae15dbbed79b22f9758abbcde19b34a8372a9"
+version = "0.1.0-alpha.11"
+source = "git+https://github.com/AnthonyRonning/goose.git?rev=0a26a33078034b30c2297f89223e1d237cfc98d8#0a26a33078034b30c2297f89223e1d237cfc98d8"
 dependencies = [
  "anyhow",
  "once_cell",
@@ -4027,8 +3933,8 @@ dependencies = [
 
 [[package]]
 name = "goose-provider-types"
-version = "0.1.0-alpha.9"
-source = "git+https://github.com/AnthonyRonning/goose.git?rev=b26ae15dbbed79b22f9758abbcde19b34a8372a9#b26ae15dbbed79b22f9758abbcde19b34a8372a9"
+version = "0.1.0-alpha.11"
+source = "git+https://github.com/AnthonyRonning/goose.git?rev=0a26a33078034b30c2297f89223e1d237cfc98d8#0a26a33078034b30c2297f89223e1d237cfc98d8"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -4036,6 +3942,8 @@ dependencies = [
  "base64 0.23.1",
  "chrono",
  "futures",
+ "getrandom 0.4.3",
+ "gloo-timers",
  "once_cell",
  "rand 0.10.2",
  "regex",
@@ -4054,8 +3962,8 @@ dependencies = [
 
 [[package]]
 name = "goose-providers"
-version = "0.1.0-alpha.9"
-source = "git+https://github.com/AnthonyRonning/goose.git?rev=b26ae15dbbed79b22f9758abbcde19b34a8372a9#b26ae15dbbed79b22f9758abbcde19b34a8372a9"
+version = "0.1.0-alpha.11"
+source = "git+https://github.com/AnthonyRonning/goose.git?rev=0a26a33078034b30c2297f89223e1d237cfc98d8#0a26a33078034b30c2297f89223e1d237cfc98d8"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -4080,8 +3988,8 @@ dependencies = [
 
 [[package]]
 name = "goose-sdk-types"
-version = "0.1.0-alpha.9"
-source = "git+https://github.com/AnthonyRonning/goose.git?rev=b26ae15dbbed79b22f9758abbcde19b34a8372a9#b26ae15dbbed79b22f9758abbcde19b34a8372a9"
+version = "0.1.0-alpha.11"
+source = "git+https://github.com/AnthonyRonning/goose.git?rev=0a26a33078034b30c2297f89223e1d237cfc98d8#0a26a33078034b30c2297f89223e1d237cfc98d8"
 dependencies = [
  "agent-client-protocol",
  "agent-client-protocol-schema",
@@ -4101,7 +4009,7 @@ dependencies = [
  "log",
  "presser",
  "thiserror 2.0.20",
- "windows 0.62.2",
+ "windows 0.57.0",
 ]
 
 [[package]]
@@ -4827,7 +4735,7 @@ dependencies = [
  "js-sys",
  "log",
  "wasm-bindgen",
- "windows-core 0.62.2",
+ "windows-core 0.57.0",
 ]
 
 [[package]]
@@ -5840,7 +5748,7 @@ dependencies = [
  "maple-proxy",
  "maple-sdk",
  "once_cell",
- "process-wrap",
+ "process-wrap 9.1.0",
  "pulldown-cmark",
  "rand 0.8.7",
  "reqwest 0.13.4",
@@ -6375,7 +6283,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -7100,7 +7008,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7d8fae84b431384b68627d0f9b3b1245fcf9f46f6c0e3dc902e9dce64edd1967"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.45.0",
 ]
 
 [[package]]
@@ -7736,6 +7644,19 @@ dependencies = [
  "indexmap 2.14.0",
  "nix 0.31.3",
  "tokio",
+ "windows 0.62.2",
+]
+
+[[package]]
+name = "process-wrap"
+version = "10.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1f21b97672d2dc848e7b25701ab4535618b92f4861c13cc3f7f7bed52ad3c8da"
+dependencies = [
+ "futures",
+ "indexmap 2.14.0",
+ "nix 0.31.3",
+ "tokio",
  "tracing",
  "windows 0.62.2",
 ]
@@ -7939,7 +7860,7 @@ dependencies = [
  "once_cell",
  "socket2",
  "tracing",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -8518,9 +8439,9 @@ dependencies = [
 
 [[package]]
 name = "rmcp"
-version = "3.2.0"
+version = "3.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "42b6914fac0be956fe704a38239c3f44a9f841d1b06a5713d2f638065593f5b5"
+checksum = "5b6317cd8c13e3ec9033cf2aa5aa92cd743f0f4f8a93cddc42ea0ae6ce3b8898"
 dependencies = [
  "async-trait",
  "base64 0.23.1",
@@ -8535,7 +8456,7 @@ dependencies = [
  "oauth2",
  "pastey 0.2.3",
  "pin-project-lite",
- "process-wrap",
+ "process-wrap 10.0.1",
  "reqwest 0.13.4",
  "rmcp-macros",
  "schemars 1.2.2",
@@ -8553,9 +8474,9 @@ dependencies = [
 
 [[package]]
 name = "rmcp-macros"
-version = "3.4.0"
+version = "3.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cd740c45d66ceb87e5579082abc27bd771665e464e9660a17a048c721b2a6025"
+checksum = "c7e66877136e969d5a2d561ee5841b17717a0619aebd64abb47a2a2f46e34683"
 dependencies = [
  "darling 0.24.1",
  "proc-macro2",
@@ -8686,7 +8607,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.12.1",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -8744,7 +8665,7 @@ dependencies = [
  "security-framework",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -9278,7 +9199,7 @@ version = "3.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32824fab5e16e6c4d86dc1ba84489390419a39f97699852b66480bb87d297ed8"
 dependencies = [
- "dirs 6.0.0",
+ "dirs 5.0.1",
 ]
 
 [[package]]
@@ -9464,8 +9385,8 @@ version = "0.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0d204abcbdf8e88729306a8d0ca01a79d8a49969fe1f84696909d6dbc4321c1a"
 dependencies = [
- "foldhash 0.2.0",
- "hashbrown 0.17.1",
+ "foldhash 0.1.5",
+ "hashbrown 0.15.5",
 ]
 
 [[package]]
@@ -9738,12 +9659,6 @@ name = "static_assertions"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
-
-[[package]]
-name = "streaming-iterator"
-version = "0.1.9"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2b2231b7c3057d5e4ad0156fb3dc807d900806020c5ffa3ee6ff2c8c76fb8520"
 
 [[package]]
 name = "strict-num"
@@ -10150,7 +10065,7 @@ dependencies = [
  "getrandom 0.4.3",
  "once_cell",
  "rustix 1.1.4",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -10356,22 +10271,6 @@ dependencies = [
  "tokio-macros",
  "tracing",
  "windows-sys 0.61.2",
-]
-
-[[package]]
-name = "tokio-cron-scheduler"
-version = "0.15.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1f50e41f200fd8ed426489bd356910ede4f053e30cebfbd59ef0f856f0d7432a"
-dependencies = [
- "chrono",
- "chrono-tz",
- "croner",
- "num-derive",
- "num-traits",
- "tokio",
- "tracing",
- "uuid",
 ]
 
 [[package]]
@@ -10715,116 +10614,6 @@ dependencies = [
  "tracing-core",
  "tracing-log",
  "tracing-serde",
-]
-
-[[package]]
-name = "tree-sitter"
-version = "0.26.13"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "17ebdd3a5a7e28a1890b876fdbd0c3c0fe0a6336cffaa104f11b9f720c9daa29"
-dependencies = [
- "cc",
- "regex",
- "regex-syntax",
- "serde_json",
- "streaming-iterator",
- "tree-sitter-language",
-]
-
-[[package]]
-name = "tree-sitter-go"
-version = "0.25.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c8560a4d2f835cc0d4d2c2e03cbd0dde2f6114b43bc491164238d333e28b16ea"
-dependencies = [
- "cc",
- "tree-sitter-language",
-]
-
-[[package]]
-name = "tree-sitter-java"
-version = "0.23.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0aa6cbcdc8c679b214e616fd3300da67da0e492e066df01bcf5a5921a71e90d6"
-dependencies = [
- "cc",
- "tree-sitter-language",
-]
-
-[[package]]
-name = "tree-sitter-javascript"
-version = "0.25.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "68204f2abc0627a90bdf06e605f5c470aa26fdcb2081ea553a04bdad756693f5"
-dependencies = [
- "cc",
- "tree-sitter-language",
-]
-
-[[package]]
-name = "tree-sitter-kotlin-ng"
-version = "1.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e800ebbda938acfbf224f4d2c34947a31994b1295ee6e819b65226c7b51b4450"
-dependencies = [
- "cc",
- "tree-sitter-language",
-]
-
-[[package]]
-name = "tree-sitter-language"
-version = "0.1.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "009994f150cc0cd50ff54917d5bc8bffe8cad10ca10d81c34da2ec421ae61782"
-
-[[package]]
-name = "tree-sitter-python"
-version = "0.25.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6bf85fd39652e740bf60f46f4cda9492c3a9ad75880575bf14960f775cb74a1c"
-dependencies = [
- "cc",
- "tree-sitter-language",
-]
-
-[[package]]
-name = "tree-sitter-ruby"
-version = "0.23.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "be0484ea4ef6bb9c575b4fdabde7e31340a8d2dbc7d52b321ac83da703249f95"
-dependencies = [
- "cc",
- "tree-sitter-language",
-]
-
-[[package]]
-name = "tree-sitter-rust"
-version = "0.24.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "439e577dbe07423ec2582ac62c7531120dbfccfa6e5f92406f93dd271a120e45"
-dependencies = [
- "cc",
- "tree-sitter-language",
-]
-
-[[package]]
-name = "tree-sitter-swift"
-version = "0.7.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fe36052155b9dd69ca82b3b8f1b4ccfb2d867125ac1a4db1dd7331829242668c"
-dependencies = [
- "cc",
- "tree-sitter-language",
-]
-
-[[package]]
-name = "tree-sitter-typescript"
-version = "0.23.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6c5f76ed8d947a75cc446d5fccd8b602ebf0cde64ccf2ffa434d873d7a575eff"
-dependencies = [
- "cc",
- "tree-sitter-language",
 ]
 
 [[package]]
@@ -11895,7 +11684,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.48.0",
 ]
 
 [[package]]
