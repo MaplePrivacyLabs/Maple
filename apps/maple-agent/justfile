@@ -74,6 +74,8 @@ packaging-test:
     python3 ./scripts/test_release_packaging.py
     python3 ./scripts/test_linux_release_appimage.py
     python3 ./scripts/test_macos_release_dylibs.py
+    python3 ./scripts/test_macos_build_info.py
+    python3 ./scripts/test_smoke_macos_release.py
 
 # Build a release binary that keeps symbols for backtraces.
 release-debug:

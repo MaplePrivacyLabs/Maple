@@ -43,7 +43,9 @@ Agent has its own Cargo and Nix lockfiles. CI selects Agent for proxy runtime
 changes (a path dependency) but not for SDK-only changes; the Agent builds the
 SDK source its own manifest selects. Component-only
 changes should not unnecessarily select Research packaging. Maintain the root
-selectors, their tests, and `.github/workflows/agent-ci.yml` together.
+selectors, their tests, `.github/workflows/agent-ci.yml`, and unsigned PR
+selection in `.github/workflows/agent-desktop-build.yml` together. The desktop
+workflow intentionally builds both profiles on every `master` push.
 
 Linux Nix packages use a pure source fileset rooted at the monorepo, including
 the sibling SDK/proxy source and SDK assets. Validate it when adding a new local dependency

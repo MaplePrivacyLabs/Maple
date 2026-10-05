@@ -3,14 +3,22 @@
 set +x
 set -euo pipefail
 umask 077
-if [[ $# -lt 2 || $# -gt 3 || ( "$1" != dev && "$1" != prod ) || ( $# == 3 && "$3" != --unsigned ) ]]; then
-    echo "usage: verify-release.sh dev|prod ARTIFACT_DIRECTORY [--unsigned]" >&2
+if [[ $# -lt 2 || $# -gt 4 || ( "$1" != dev && "$1" != prod ) ]]; then
+    echo "usage: verify-release.sh dev|prod ARTIFACT_DIRECTORY [--unsigned] [--static]" >&2
     exit 2
 fi
 profile="$1"
 directory="$(cd "$2" && pwd)"
 unsigned=()
-[[ $# == 2 ]] || unsigned=(--unsigned)
+static=false
+shift 2
+for option in "$@"; do
+    case "$option" in
+        --unsigned) [[ ${#unsigned[@]} == 0 ]] || exit 2; unsigned=(--unsigned) ;;
+        --static) [[ "$static" == false ]] || exit 2; static=true ;;
+        *) echo "unknown verification option: $option" >&2; exit 2 ;;
+    esac
+done
 component="$(cd "$(dirname "$0")/.." && pwd)"
 unset APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_ID APPLE_ID_PASSWORD APPLE_PASSWORD APPLE_TEAM_ID
 unset TAURI_SIGNING_PRIVATE_KEY TAURI_SIGNING_PRIVATE_KEY_PASSWORD
@@ -81,9 +89,17 @@ assert "LSEnvironment" not in plist
 PY
         executable="$app/Contents/MacOS/maple-agent"
         [[ "$(/usr/bin/lipo -archs "$executable")" == arm64 ]]
-        "$executable" --build-info > "$temporary/build-info.json"
+        python3 "$component/scripts/macos-build-info.py" "$executable" --profile "$profile" \
+            --source-sha "$expected_source" > "$temporary/build-info.json"
         cmp "$directory/build-info.json" "$temporary/build-info.json"
-        "$executable" --version
+        if [[ "$static" == false ]]; then
+            "$executable" --build-info > "$temporary/runtime-build-info.json" 2> "$temporary/runtime.stderr"
+            cmp "$directory/build-info.json" "$temporary/runtime-build-info.json"
+            "$executable" --version 2>> "$temporary/runtime.stderr"
+            if grep -Fq 'is implemented in both' "$temporary/runtime.stderr"; then
+                echo "release app loaded duplicate Swift runtimes" >&2; return 1
+            fi
+        fi
     }
     dmg_app="$mount/$app_name.app"
     verify_macos_app "$dmg_app"
@@ -93,7 +109,11 @@ PY
     archive_app="$temporary/archive/$app_name.app"
     verify_macos_app "$archive_app"
     python3 "$component/scripts/release-info.py" compare-apps "$profile" "$dmg_app" --output "$archive_app"
+    if [[ "$static" == false ]]; then
+        python3 "$component/scripts/smoke-macos-release.py" "$dmg_app"
+    fi
 else
+    [[ "$static" == false ]] || { echo "static verification is only supported for macOS packages" >&2; exit 2; }
     [[ "$(uname -s)-$(uname -m)" == Linux-x86_64 ]] || { echo "Linux artifacts require x86_64 verification" >&2; exit 1; }
     # GitHub artifact download preserves bytes but resets executable file modes.
     # Restore public execution before the subsequent non-root/no-Nix smoke.

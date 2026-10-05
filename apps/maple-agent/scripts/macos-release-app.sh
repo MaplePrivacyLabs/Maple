@@ -63,7 +63,9 @@ macos_release_main() {
     mkdir -p "$frameworks" "$app/Contents/MacOS" "$app/Contents/Resources"
     cp "$binary" "$executable"
     chmod 0755 "$executable"
-    cp "$component/app/packaging/maple-agent.icns" "$app/Contents/Resources/MapleAgent.icns"
+    local icon=maple-agent.icns
+    [[ "$profile" != dev ]] || icon=maple-agent-dev.icns
+    cp "$component/app/packaging/$icon" "$app/Contents/Resources/MapleAgent.icns"
     python3 "$component/scripts/release-info.py" plist "$profile" "$output_dir/build-info.json" \
         --build-number "$build_number" --output "$app/Contents/Info.plist"
     macos_embed_dylibs "$component" "$binary" "$app"
@@ -100,7 +102,9 @@ macos_release_main() {
         printf '%s' "$APPLE_CERTIFICATE" | macos_native base64 -D > "$certificate"
         macos_native security create-keychain -p "$keychain_password" "$macos_release_keychain" >/dev/null
         macos_native security unlock-keychain -p "$keychain_password" "$macos_release_keychain" >/dev/null
-        macos_native security set-keychain-settings -lut 3600 "$macos_release_keychain" >/dev/null
+        # The job owns this temporary keychain and deletes it on every exit.
+        # Do not lock it during a long notarization wait; the password is discarded.
+        macos_native security set-keychain-settings "$macos_release_keychain" >/dev/null
         macos_native security import "$certificate" -k "$macos_release_keychain" \
             -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign >/dev/null
         macos_native security set-key-partition-list -S apple-tool:,apple:,codesign: -s \
@@ -130,11 +134,12 @@ print(matches[0])' "$APPLE_TEAM_ID")"
         --identifier "$bundle_id" --entitlements "$component/app/packaging/macos-entitlements.plist" \
         "${keychain_args[@]}" "$app"
     macos_native codesign --verify --deep --strict --verbose=2 "$app"
-    "$executable" --build-info > "$macos_release_staging/smoke.json" 2> "$macos_release_staging/smoke.stderr"
-    cmp "$output_dir/build-info.json" "$macos_release_staging/smoke.json"
-    if grep -Fq 'is implemented in both' "$macos_release_staging/smoke.stderr"; then
-        echo "release app loaded duplicate Swift runtimes" >&2; return 1
-    fi
+    # Verify immutable embedded identity as data. Runtime/Swift probes belong
+    # exclusively to the later credential-free downloaded-artifact job.
+    python3 "$component/scripts/macos-build-info.py" "$executable" --profile "$profile" \
+        --source-sha "$(python3 "$component/scripts/release-info.py" field "$profile" "$output_dir/build-info.json" --field source_sha)" \
+        > "$macos_release_staging/static-build-info.json"
+    cmp "$output_dir/build-info.json" "$macos_release_staging/static-build-info.json"
 
     if [[ "$unsigned" == false ]]; then
         # Notary credentials live only in this temporary keychain. Never modify

@@ -46,7 +46,40 @@ fn main() {
     let source_sha = git(&["rev-parse", "HEAD"]).unwrap_or_else(|| "unknown".into());
     println!("cargo:rustc-env=MAPLE_GIT_SOURCE_SHA={source_sha}");
 
+    // The CLI and macOS signing preflight read the same immutable public
+    // metadata. Signing must inspect the Mach-O section without running a
+    // downloaded executable while its keychain or Apple credentials exist.
+    let channel = std::env::var("MAPLE_RELEASE_PROFILE").ok();
+    let pcr = std::env::var("VITE_OPEN_SECRET_PCR_ENVIRONMENT").ok();
+    let (channel, profile) = release_profile::select_profile(channel.as_deref(), pcr.as_deref())
+        .expect("validated Maple Agent build profile");
+    let metadata = serde_json::json!({
+        "profile": channel,
+        "display_name": profile.display_name,
+        "bundle_id": profile.bundle_id,
+        "data_namespace": profile.data_namespace,
+        "api_url": profile.api_url,
+        "billing_api_url": profile.billing_api_url,
+        "web_url": profile.web_url,
+        "client_id": profile.client_id,
+        "pcr_environment": profile.pcr_environment,
+        "version": std::env::var("CARGO_PKG_VERSION").expect("Cargo package version"),
+        "git_revision": revision,
+        "source_sha": source_sha,
+        "update_tag_prefix": profile.update_tag_prefix,
+        "prerelease": profile.prerelease,
+    });
+    let out = std::path::PathBuf::from(std::env::var_os("OUT_DIR").expect("Cargo OUT_DIR"));
+    std::fs::write(
+        out.join("build-info.json"),
+        serde_json::to_vec(&metadata).expect("public build metadata"),
+    )
+    .expect("write public build metadata");
+
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos") {
+        // Retain the dedicated metadata symbol even with release LTO and
+        // linker dead stripping. __TEXT keeps it read-only in the final app.
+        println!("cargo:rustc-link-arg-bin=maple-agent=-Wl,-u,_MAPLE_AGENT_BUILD_INFO");
         // The embedded ScreenCaptureKit bridge can link Swift compatibility
         // libraries with @rpath install names. A transitive library cannot
         // choose the final host executable's bundle layout, so keep the

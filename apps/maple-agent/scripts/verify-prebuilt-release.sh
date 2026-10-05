@@ -20,7 +20,14 @@ metadata="$(mktemp)"
 trap 'rm -f -- "$metadata"' EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
-"$binary" --build-info > "$metadata"
 source_sha="$(git -C "$component" rev-parse HEAD)"
+if [[ "$(uname -s)" == Darwin ]]; then
+    # Treat the artifact as data. It must never run on a signing runner, even
+    # before the credentials step: it could leave a background process behind.
+    python3 "$component/scripts/macos-build-info.py" "$binary" --profile "$1" \
+        --source-sha "$source_sha" > "$metadata"
+else
+    "$binary" --build-info > "$metadata"
+fi
 python3 "$component/scripts/release-info.py" validate "$1" "$metadata" --source-sha "$source_sha"
 echo "Verified prebuilt $1 Agent binary for $source_sha"

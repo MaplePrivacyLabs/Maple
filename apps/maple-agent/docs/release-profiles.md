@@ -37,7 +37,7 @@ Debug. Release packaging accepts only Dev or Prod metadata.
 `maple-agent --build-info` prints one JSON object and exits before changing the
 environment, initializing a GUI/backend, logging, or accessing state. Fields
 are `profile`, `display_name`, `bundle_id`, `data_namespace`, `api_url`,
-`billing_api_url`, `client_id`, `pcr_environment`, `version`, `git_revision`,
+`billing_api_url`, `web_url`, `client_id`, `pcr_environment`, `version`, `git_revision`,
 `source_sha`, `update_tag_prefix`, and `prerelease`. `git_revision` is the short
 revision with a possible `-dirty` suffix; `source_sha` is the full source commit.
 Tarball/pure Nix builds without Git report `unknown` for unavailable revisions.

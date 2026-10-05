@@ -15,39 +15,24 @@ fn value_for(profile: &str, baked: &str, configured: Option<String>) -> String {
     }
 }
 
-#[derive(serde::Serialize)]
-pub struct BuildInfo {
-    profile: &'static str,
-    display_name: &'static str,
-    bundle_id: &'static str,
-    data_namespace: &'static str,
-    api_url: &'static str,
-    billing_api_url: &'static str,
-    client_id: &'static str,
-    pcr_environment: &'static str,
-    version: &'static str,
-    git_revision: &'static str,
-    source_sha: &'static str,
-    update_tag_prefix: &'static str,
-    prerelease: bool,
-}
+// No code runs when the signing helper reads this section. Keep the exact
+// JSON bytes used by --build-info, rather than a separate signing sidecar
+// that could describe a different binary.
+#[used]
+#[unsafe(no_mangle)]
+#[cfg_attr(target_os = "macos", unsafe(link_section = "__TEXT,__maple_info"))]
+static MAPLE_AGENT_BUILD_INFO: [u8; include_bytes!(concat!(env!("OUT_DIR"), "/build-info.json"))
+    .len()] = *include_bytes!(concat!(env!("OUT_DIR"), "/build-info.json"));
 
-pub fn build_info() -> BuildInfo {
-    BuildInfo {
-        profile: PROFILE,
-        display_name: DISPLAY_NAME,
-        bundle_id: BUNDLE_ID,
-        data_namespace: DATA_NAMESPACE,
-        api_url: API_URL,
-        billing_api_url: BILLING_API_URL,
-        client_id: CLIENT_ID,
-        pcr_environment: PCR_ENVIRONMENT,
-        version: env!("CARGO_PKG_VERSION"),
-        git_revision: env!("MAPLE_GIT_HASH"),
-        source_sha: env!("MAPLE_GIT_SOURCE_SHA"),
-        update_tag_prefix: UPDATE_TAG_PREFIX,
-        prerelease: PRERELEASE,
-    }
+pub fn build_info() -> serde_json::Value {
+    let info: serde_json::Value =
+        serde_json::from_slice(&MAPLE_AGENT_BUILD_INFO).expect("generated public build metadata");
+    debug_assert_eq!(info["display_name"], DISPLAY_NAME);
+    debug_assert_eq!(info["bundle_id"], BUNDLE_ID);
+    debug_assert_eq!(info["pcr_environment"], PCR_ENVIRONMENT);
+    debug_assert_eq!(info["update_tag_prefix"], UPDATE_TAG_PREFIX);
+    debug_assert_eq!(info["prerelease"], PRERELEASE);
+    info
 }
 
 #[cfg(test)]
@@ -89,6 +74,14 @@ mod tests {
         assert_eq!(info["api_url"], API_URL);
         assert_eq!(info["pcr_environment"], PCR_ENVIRONMENT);
         assert_eq!(info["source_sha"], env!("MAPLE_GIT_SOURCE_SHA"));
+        assert_eq!(info["version"], env!("CARGO_PKG_VERSION"));
+        assert_eq!(info["git_revision"], env!("MAPLE_GIT_HASH"));
+        assert_eq!(info["display_name"], DISPLAY_NAME);
+        assert_eq!(info["billing_api_url"], BILLING_API_URL);
+        assert_eq!(info["web_url"], WEB_URL);
+        assert_eq!(info["client_id"], CLIENT_ID);
+        assert_eq!(info["update_tag_prefix"], UPDATE_TAG_PREFIX);
+        assert_eq!(info["prerelease"], PRERELEASE);
     }
 
     #[test]

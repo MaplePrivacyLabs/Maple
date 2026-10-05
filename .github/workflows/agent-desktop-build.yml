@@ -13,8 +13,10 @@ permissions:
   contents: read
 
 concurrency:
-  group: maple-agent-desktop-builds-${{ github.ref }}
-  cancel-in-progress: true
+  # PR updates replace their previews. Each master run keeps its own group,
+  # so neither running nor pending packages are discarded by a later push.
+  group: maple-agent-desktop-builds-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   CARGO_TERM_COLOR: always
@@ -99,13 +101,17 @@ jobs:
           overwrite: true
           path: apps/maple-agent/target/release/maple-agent
           if-no-files-found: error
-          retention-days: 30
+          retention-days: 7
 
   macos:
     name: Signed macOS (${{ matrix.variant }})
     needs: [changes, macos-build]
     if: ${{ always() && !cancelled() && needs.macos-build.result == 'success' && github.repository == 'MaplePrivacyLabs/Maple' && github.ref == 'refs/heads/master' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') }}
     environment: desktop-signing
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
     runs-on: macos-26-xlarge
     timeout-minutes: 120
     strategy:
@@ -141,6 +147,10 @@ jobs:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_ID_PASSWORD: ${{ secrets.APPLE_ID_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      - name: Attest final macOS packages
+        uses: actions/attest@281a49d4cbb0a72c9575a50d18f6deb515a11deb
+        with:
+          subject-path: apps/maple-agent/dist/${{ matrix.variant }}/*
       - name: Upload Agent packages
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
@@ -243,9 +253,36 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
+  attest-linux:
+    name: Attest Linux packages (${{ matrix.variant }})
+    needs: linux
+    if: ${{ needs.linux.result == 'success' && github.repository == 'MaplePrivacyLabs/Maple' && github.ref == 'refs/heads/master' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') }}
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [dev, prod]
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: maple-agent-${{ matrix.variant }}-linux-x86_64-${{ github.run_id }}
+          path: artifacts
+      - name: Attest exact downloadable Linux packages
+        uses: actions/attest@281a49d4cbb0a72c9575a50d18f6deb515a11deb
+        with:
+          subject-path: artifacts/*
+
   verify-macos:
     name: Verify downloaded macOS (${{ matrix.variant }})
     needs: macos
+    permissions:
+      contents: read
+      attestations: read
     runs-on: macos-26
     timeout-minutes: 30
     strategy:
@@ -271,12 +308,32 @@ jobs:
         with:
           name: maple-agent-${{ matrix.variant }}-macos-aarch64-${{ github.run_id }}
           path: artifacts
+      - name: Verify downloaded package provenance
+        working-directory: .
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          files=(artifacts/*)
+          test "${#files[@]}" -gt 0
+          for file in "${files[@]}"; do
+            test -f "$file" && test ! -L "$file"
+            gh attestation verify "$file" --repo "$GITHUB_REPOSITORY" \
+              --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/agent-desktop-build.yml" \
+              --source-ref refs/heads/master --source-digest "$GITHUB_SHA" \
+              --deny-self-hosted-runners
+          done
+        env:
+          GH_TOKEN: ${{ github.token }}
       - name: Verify downloaded signatures, notarization, hashes and profile
         run: nix develop --no-update-lock-file . -c ./scripts/verify-release.sh "$MAPLE_RELEASE_PROFILE" "../../artifacts"
 
   verify-linux:
     name: Verify downloaded Linux (${{ matrix.variant }})
-    needs: linux
+    needs: [linux, attest-linux]
+    if: ${{ always() && !cancelled() && needs.linux.result == 'success' && (github.event_name == 'pull_request' || (needs.attest-linux.result == 'success' && github.repository == 'MaplePrivacyLabs/Maple' && github.ref == 'refs/heads/master' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch'))) }}
+    permissions:
+      contents: read
+      attestations: read
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
@@ -299,6 +356,23 @@ jobs:
         with:
           name: maple-agent-${{ matrix.variant }}-linux-x86_64-${{ github.run_id }}
           path: artifacts
+      - name: Verify downloaded package provenance
+        if: ${{ github.repository == 'MaplePrivacyLabs/Maple' && github.ref == 'refs/heads/master' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') }}
+        working-directory: .
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          files=(artifacts/*)
+          test "${#files[@]}" -gt 0
+          for file in "${files[@]}"; do
+            test -f "$file" && test ! -L "$file"
+            gh attestation verify "$file" --repo "$GITHUB_REPOSITORY" \
+              --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/agent-desktop-build.yml" \
+              --source-ref refs/heads/master --source-digest "$GITHUB_SHA" \
+              --deny-self-hosted-runners
+          done
+        env:
+          GH_TOKEN: ${{ github.token }}
       - name: Verify downloaded hashes and profile
         run: |
           args=()

@@ -10,12 +10,10 @@ pub use maple_billing::{BillingClient, BillingError, BillingStatus, CheckoutRequ
 
 /// Where checkout and the customer portal send the browser afterwards.
 /// The desktop app has no URL scheme yet, so these are the web app's
-/// pages, the same targets the Tauri build uses.
-pub const PORTAL_RETURN_URL: &str = "https://trymaple.ai";
-pub const CHECKOUT_SUCCESS_URL: &str = "https://trymaple.ai/pricing?success=true";
-pub const CHECKOUT_CANCEL_URL: &str = "https://trymaple.ai/pricing?canceled=true";
-/// The web pricing page, for plans this app cannot start itself.
-pub const PRICING_URL: &str = "https://trymaple.ai/pricing";
+/// pages on the compiled channel's web host.
+pub use crate::profile::{CHECKOUT_CANCEL_URL, CHECKOUT_SUCCESS_URL, WEB_URL as PORTAL_RETURN_URL};
+/// The channel's web pricing page, for plans this app cannot start itself.
+pub const PRICING_URL: &str = crate::profile::PRICING_URL;
 
 /// Plan tier derived from the product name, the way the web app gates
 /// features (`hasProAccess`, `hasApiAccess`, tier ordering).
@@ -212,6 +210,19 @@ fn reset_label(iso: Option<&str>, now: chrono::DateTime<chrono::Local>) -> Strin
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn browser_billing_destinations_use_the_compiled_web_profile() {
+        assert_eq!(PORTAL_RETURN_URL, crate::profile::WEB_URL);
+        assert_eq!(PRICING_URL, format!("{PORTAL_RETURN_URL}/pricing"));
+        assert_eq!(CHECKOUT_SUCCESS_URL, format!("{PRICING_URL}?success=true"));
+        assert_eq!(CHECKOUT_CANCEL_URL, format!("{PRICING_URL}?canceled=true"));
+        if crate::profile::PROFILE == "dev" {
+            assert_eq!(PORTAL_RETURN_URL, "https://app-dev.trymaple.ai");
+        } else {
+            assert_eq!(PORTAL_RETURN_URL, "https://trymaple.ai");
+        }
+    }
 
     #[test]
     fn tiers_come_from_the_product_name() {

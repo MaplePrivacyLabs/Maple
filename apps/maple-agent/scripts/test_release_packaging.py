@@ -14,6 +14,7 @@ import sys
 import tempfile
 import tarfile
 import unittest
+from test_macos_build_info import macho
 
 
 SCRIPTS = Path(__file__).resolve().parent
@@ -29,7 +30,7 @@ class PrebuiltReleaseTests(unittest.TestCase):
         self.component = Path(self.temp.name)
         scripts = self.component / "scripts"
         scripts.mkdir()
-        for name in ("verify-prebuilt-release.sh", "release-info.py"):
+        for name in ("verify-prebuilt-release.sh", "release-info.py", "macos-build-info.py"):
             shutil.copy2(SCRIPTS / name, scripts / name)
         shutil.copy2(SCRIPTS.parent / "release-profiles.json", self.component)
         self.env = dict(os.environ, GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM="1")
@@ -44,20 +45,18 @@ class PrebuiltReleaseTests(unittest.TestCase):
         self.metadata = self.component / "fixture-build-info.json"
         self.binary = self.component / "target/release/maple-agent"
         self.binary.parent.mkdir(parents=True)
-        self.binary.write_text(f"""#!{sys.executable}
-import os
-from pathlib import Path
-import sys
-assert sys.argv[1:] == ["--build-info"]
-for key in ("APPLE_CERTIFICATE", "APPLE_CERTIFICATE_PASSWORD", "APPLE_ID", "APPLE_ID_PASSWORD",
-            "APPLE_PASSWORD", "APPLE_TEAM_ID", "TAURI_SIGNING_PRIVATE_KEY", "TAURI_SIGNING_PRIVATE_KEY_PASSWORD"):
-    assert key not in os.environ, "prebuilt probe received a signing credential"
-print(Path(os.environ["FIXTURE_BUILD_INFO"]).read_text(), end="")
-""")
+        self.binary.write_bytes(macho(self.info))
         # Match permissions produced by actions/download-artifact.
         self.binary.chmod(0o644)
         self.scratch = self.component / "temporary-metadata"
         self.scratch.mkdir()
+        tools = self.component / "tools"
+        tools.mkdir()
+        # Exercise the signing-runner branch on any fixture host. The artifact
+        # is a valid metadata-only Mach-O; attempting to execute it must fail.
+        (tools / "uname").write_text("#!/usr/bin/env bash\necho Darwin\n")
+        (tools / "uname").chmod(0o755)
+        self.env["PATH"] = str(tools) + os.pathsep + self.env["PATH"]
         self.env.update(FIXTURE_BUILD_INFO=str(self.metadata), TMPDIR=str(self.scratch),
                         APPLE_CERTIFICATE="fixture-certificate", APPLE_CERTIFICATE_PASSWORD="fixture-password",
                         APPLE_ID="fixture-id", APPLE_ID_PASSWORD="fixture-notary-password", APPLE_PASSWORD="fixture-password",
@@ -70,6 +69,8 @@ print(Path(os.environ["FIXTURE_BUILD_INFO"]).read_text(), end="")
 
     def verify(self):
         self.metadata.write_text(json.dumps(self.info))
+        target = self.binary.resolve()
+        target.write_bytes(macho(self.info))
         result = subprocess.run(["bash", str(self.component / "scripts/verify-prebuilt-release.sh"), "dev"],
                                 env=self.env, capture_output=True, text=True)
         self.assertFalse(list(self.scratch.iterdir()), "prebuilt metadata must be cleaned on success or failure")
@@ -204,7 +205,7 @@ class ReleaseMetadataTests(unittest.TestCase):
         self.write_info()
 
     def write_info(self):
-        self.path.write_text(json.dumps(self.info) + "\n")
+        self.path.write_text(json.dumps(self.info, sort_keys=True, separators=(",", ":")) + "\n")
 
     def test_profile_and_source_must_match_the_binary(self):
         release_info.read_info("dev", self.path, "a" * 40)
@@ -354,13 +355,9 @@ class NativeSigningBoundaryTests(unittest.TestCase):
     write_info = ReleaseMetadataTests.write_info
     def run_packager(self, unsigned=False, failure="", signal=False):
         binary = self.directory / "maple-agent"
-        binary.write_text(f"""#!{sys.executable}
-import json,os,sys
-assert not any(name in os.environ for name in (
-    'APPLE_CERTIFICATE','APPLE_CERTIFICATE_PASSWORD','APPLE_ID','APPLE_ID_PASSWORD','APPLE_TEAM_ID'
-)), 'signing credentials reached a binary execution'
-print(open(os.environ['FIXTURE_BUILD_INFO']).read(), end='')
-""")
+        # Static-only fixture cannot be launched. Successful signing packaging
+        # proves the keychain-bearing path never executes artifact code.
+        binary.write_bytes(macho(self.path.read_bytes()))
         binary.chmod(0o755)
         log = self.directory / "native-calls.jsonl"
         log.unlink(missing_ok=True)
@@ -442,9 +439,15 @@ macos_release_main {shlex.quote(str(binary))} {shlex.quote(str(self.directory))}
         self.assertIn("--timestamp", signs[1])
         self.assertEqual(len([call for call in calls if call[:3] == ["xcrun", "notarytool", "submit"]]), 2)
         self.assertTrue(any(call[:2] == ["security", "delete-keychain"] for call in calls))
+        settings = [call for call in calls if call[:2] == ["security", "set-keychain-settings"]]
+        self.assertEqual(len(settings), 1)
+        self.assertEqual(len(settings[0]), 3, "owned keychain must not lock during notarization")
         self.assertFalse(any("default-keychain" in call or "list-keychains" in call for call in calls))
         self.assertFalse(list(self.directory.glob(".macos-release.*")))
         with tarfile.open(self.directory / "fixture.app.tar.gz") as archive:
+            icon = archive.extractfile(f"{self.info['display_name']}.app/Contents/Resources/MapleAgent.icns").read()
+            self.assertEqual(icon, (SCRIPTS.parent / "app/packaging/maple-agent-dev.icns").read_bytes())
+            self.assertNotEqual(icon, (SCRIPTS.parent / "app/packaging/maple-agent.icns").read_bytes())
             for member in archive:
                 self.assertTrue(member.mode & 0o004, f"package content is not publicly readable: {member.name}")
                 if member.isdir():

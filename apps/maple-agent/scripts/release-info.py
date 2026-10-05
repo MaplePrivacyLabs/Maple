@@ -14,17 +14,20 @@ import tarfile
 
 COMPONENT = Path(__file__).resolve().parent.parent
 PUBLIC_FIELDS = (
-    "display_name", "bundle_id", "data_namespace", "api_url", "billing_api_url",
+    "display_name", "bundle_id", "data_namespace", "api_url", "billing_api_url", "web_url",
     "client_id", "pcr_environment", "update_tag_prefix", "prerelease",
 )
 BUILD_FIELDS = set(PUBLIC_FIELDS) | {"profile", "version", "git_revision", "source_sha"}
 
 
 def read_info(profile, path, source_sha=None):
+    return validate_info(profile, json.loads(Path(path).read_text()), source_sha)
+
+
+def validate_info(profile, info, source_sha=None):
     profiles = json.loads((COMPONENT / "release-profiles.json").read_text())
     if profile not in ("dev", "prod"):
         raise ValueError("release profile must be dev or prod")
-    info = json.loads(Path(path).read_text())
     if not isinstance(info, dict) or set(info) != BUILD_FIELDS:
         raise ValueError("build-info must contain only the documented public release fields")
     if info["profile"] != profile:
@@ -34,6 +37,8 @@ def read_info(profile, path, source_sha=None):
             raise ValueError(f"binary {field} does not match the checked-in release profile")
     if not isinstance(info["prerelease"], bool):
         raise ValueError("binary prerelease marker must be a boolean")
+    if any(not isinstance(info[field], str) for field in BUILD_FIELDS - {"prerelease"}):
+        raise ValueError("public build identity fields must be strings")
     if not re.fullmatch(r"[0-9a-f]{40}", info["source_sha"]):
         raise ValueError("release binary must record a full source commit")
     if source_sha and info["source_sha"] != source_sha:

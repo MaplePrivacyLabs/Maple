@@ -15,8 +15,9 @@ component="$(cd "$(dirname "$0")/.." && pwd)"
 binary="$component/target/release/maple-agent"
 metadata_tool="$component/scripts/release-info.py"
 
-# Keep inherited credentials private to this shell until the macOS signing
-# helper starts. Public metadata probes and package tools receive none of them.
+# Keep inherited credentials out of subprocess environments except the native
+# signing helper. This is not containment: macOS artifacts are never executed
+# anywhere on the signing runner, including before credentials are supplied.
 for name in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_ID APPLE_ID_PASSWORD APPLE_PASSWORD APPLE_TEAM_ID; do
     export -n "$name" 2>/dev/null || true
 done
@@ -33,8 +34,13 @@ staging="$(mktemp -d "$component/dist/.release-${profile}.XXXXXX")"
 trap 'rm -rf -- "$staging"' EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
-"$binary" --build-info > "$staging/build-info.json"
 source_sha="$(git -C "$component" rev-parse HEAD)"
+if [[ "$platform" == macos-aarch64 ]]; then
+    python3 "$component/scripts/macos-build-info.py" "$binary" --profile "$profile" \
+        --source-sha "$source_sha" > "$staging/build-info.json"
+else
+    "$binary" --build-info > "$staging/build-info.json"
+fi
 python3 "$metadata_tool" validate "$profile" "$staging/build-info.json" --source-sha "$source_sha"
 field() { python3 "$metadata_tool" field "$profile" "$staging/build-info.json" --field "$1"; }
 export MAPLE_PACKAGE_CHANNEL="$profile"
@@ -46,8 +52,7 @@ export SOURCE_DATE_EPOCH="$(git -C "$component" show -s --format=%ct "$source_sh
 name="maple-agent-${profile}-${MAPLE_PACKAGE_VERSION}-$(field git_revision)-${platform}"
 
 if [[ "$platform" == macos-aarch64 ]]; then
-    # Export secrets only to the native signing helper, after all binary/config
-    # validation has completed. It unexports them before staging/native probes.
+    # Only the native signing helper receives the Apple credentials.
     APPLE_CERTIFICATE="${APPLE_CERTIFICATE:-}" \
     APPLE_CERTIFICATE_PASSWORD="${APPLE_CERTIFICATE_PASSWORD:-}" \
     APPLE_ID="${APPLE_ID:-}" APPLE_ID_PASSWORD="${APPLE_ID_PASSWORD:-}" \
@@ -58,7 +63,9 @@ else
 fi
 python3 "$metadata_tool" manifest "$profile" "$staging/build-info.json" \
     --output "$staging" --platform "$platform" "${unsigned[@]}"
-"$component/scripts/verify-release.sh" "$profile" "$staging" "${unsigned[@]}"
+verification=()
+[[ "$platform" != macos-aarch64 ]] || verification=(--static)
+"$component/scripts/verify-release.sh" "$profile" "$staging" "${unsigned[@]}" "${verification[@]}"
 
 # Keep the previous package until the complete new package passes verification.
 destination="$component/dist/$profile"

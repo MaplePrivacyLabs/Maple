@@ -121,6 +121,14 @@ class AgentDesktopPackagingBoundaryTests(unittest.TestCase):
         "APPLE_CERTIFICATE", "APPLE_CERTIFICATE_PASSWORD", "APPLE_ID",
         "APPLE_ID_PASSWORD", "APPLE_TEAM_ID",
     }
+    ATTEST_ACTION = "actions/attest@281a49d4cbb0a72c9575a50d18f6deb515a11deb"
+
+    def test_only_pr_updates_can_replace_an_in_progress_or_pending_build(self):
+        concurrency = workflow(self.WORKFLOW)["concurrency"]
+        self.assertEqual(concurrency, {
+            "group": "maple-agent-desktop-builds-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}",
+            "cancel-in-progress": "${{ github.event_name == 'pull_request' }}",
+        })
 
     def test_signing_recipes_and_embedded_profile_inputs_require_release_owner_review(self):
         owners = set((ROOT / ".github/CODEOWNERS").read_text().splitlines())
@@ -163,11 +171,28 @@ class AgentDesktopPackagingBoundaryTests(unittest.TestCase):
         for name, job in jobs.items():
             with self.subTest(job=name):
                 self.assertNotIn("uses", job)
-                self.assertIn(job.get("permissions"), (None, {"contents": "read"}))
+                if name in ("macos", "attest-linux"):
+                    self.assertEqual(job["permissions"], {
+                        "contents": "read", "id-token": "write", "attestations": "write",
+                    })
+                    self.assertIn(self.MASTER_GUARD, " ".join(job["if"].split()))
+                elif name in ("verify-macos", "verify-linux"):
+                    self.assertEqual(job["permissions"], {
+                        "contents": "read", "attestations": "read",
+                    })
+                else:
+                    self.assertIn(job.get("permissions"), (None, {"contents": "read"}))
                 if name != "macos":
                     self.assertNotIn("environment", job)
-                    for value in strings(job):
-                        self.assertNotRegex(value, r"\bsecrets\b|github\.token|\bGH_TOKEN\b")
+                    for step in job["steps"]:
+                        if "gh attestation verify" in step.get("run", ""):
+                            self.assertIn(name, ("verify-macos", "verify-linux"))
+                            self.assertEqual(step["env"], {"GH_TOKEN": "${{ github.token }}"})
+                            if name == "verify-linux":
+                                self.assertIn(self.MASTER_GUARD, " ".join(step["if"].split()))
+                        else:
+                            for value in strings(step):
+                                self.assertNotRegex(value, r"\bsecrets\b|github\.token|\bGH_TOKEN\b")
                 self.assertFalse(any(step.get("continue-on-error") for step in job["steps"]))
 
     def test_actions_and_checkouts_do_not_grant_publication_or_persist_credentials(self):
@@ -178,7 +203,8 @@ class AgentDesktopPackagingBoundaryTests(unittest.TestCase):
                 if action:
                     self.assertRegex(action, r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+@[0-9a-f]{40}$")
                     self.assertNotIn("release", action.lower())
-                    self.assertNotIn("attest", action.lower())
+                    if "attest" in action.lower():
+                        self.assertEqual(action, self.ATTEST_ACTION)
                 if action.startswith("actions/checkout@"):
                     self.assertEqual(step["with"]["ref"], "${{ github.sha }}")
                     self.assertIs(step["with"]["persist-credentials"], False)
@@ -254,6 +280,50 @@ class AgentDesktopPackagingBoundaryTests(unittest.TestCase):
                                  else "apps/maple-agent/dist/${{ matrix.variant }}/")
                 self.assertEqual(upload["with"]["path"], expected_path)
                 self.assertEqual(upload["with"]["if-no-files-found"], "error")
+                self.assertEqual(upload["with"]["retention-days"], 7 if name == "macos-build" else 30)
+
+    def test_provenance_is_mandatory_and_only_minted_by_trusted_master_jobs(self):
+        jobs = workflow(self.WORKFLOW)["jobs"]
+        for name, job in jobs.items():
+            attests = [i for i, step in enumerate(job["steps"])
+                       if step.get("uses") == self.ATTEST_ACTION]
+            with self.subTest(job=name):
+                if name not in ("macos", "attest-linux"):
+                    self.assertEqual(attests, [])
+                    self.assertNotIn("id-token", job.get("permissions", {}))
+                    self.assertIn(job.get("permissions", {}).get("attestations"), (None, "read"))
+                    continue
+                self.assertEqual(len(attests), 1)
+                self.assertIn(self.MASTER_GUARD, " ".join(job["if"].split()))
+                attest = job["steps"][attests[0]]
+                self.assertNotIn("if", attest)
+                self.assertNotIn("continue-on-error", attest)
+                if name == "macos":
+                    package = next(i for i, step in enumerate(job["steps"])
+                                   if "./scripts/package-release.sh" in step.get("run", ""))
+                    upload = next(i for i, step in enumerate(job["steps"])
+                                  if step.get("uses", "").startswith("actions/upload-artifact@"))
+                    self.assertGreater(attests[0], package)
+                    self.assertLess(attests[0], upload)
+                    self.assertEqual(attest["with"], {
+                        "subject-path": "apps/maple-agent/dist/${{ matrix.variant }}/*",
+                    })
+                else:
+                    # PR compilation and packaging have no OIDC permission.
+                    # A separate job attests downloaded trusted-master outputs.
+                    self.assertEqual(job["needs"], "linux")
+                    self.assertIn("needs.linux.result == 'success'", job["if"])
+                    self.assertEqual(attest["with"], {"subject-path": "artifacts/*"})
+                    linux_upload = next(step["with"] for step in jobs["linux"]["steps"]
+                                        if step.get("uses", "").startswith("actions/upload-artifact@"))
+                    download = next(i for i, step in enumerate(job["steps"])
+                                    if step.get("uses", "").startswith("actions/download-artifact@"))
+                    self.assertLess(download, attests[0])
+                    self.assertEqual(job["steps"][download]["with"], {
+                        "name": linux_upload["name"], "path": "artifacts",
+                    })
+                    for step in job["steps"]:
+                        self.assertNotIn("run", step)
 
     def test_macos_packaging_uses_verified_prebuilt_binaries_on_fresh_runners(self):
         jobs = workflow(self.WORKFLOW)["jobs"]
@@ -343,8 +413,17 @@ class AgentDesktopPackagingBoundaryTests(unittest.TestCase):
         for name, build in (("verify-macos", "macos"), ("verify-linux", "linux")):
             with self.subTest(job=name):
                 job = jobs[name]
-                self.assertEqual(job["needs"], build)
-                self.assertNotIn("if", job)  # Failed/skipped builds cannot enter verification.
+                if name == "verify-macos":
+                    self.assertEqual(job["needs"], build)
+                    self.assertNotIn("if", job)  # Failed/skipped builds cannot enter verification.
+                else:
+                    self.assertEqual(job["needs"], ["linux", "attest-linux"])
+                    condition = " ".join(job["if"].split())
+                    self.assertIn("always() && !cancelled()", condition)
+                    self.assertIn("needs.linux.result == 'success'", condition)
+                    self.assertIn("github.event_name == 'pull_request' ||", condition)
+                    self.assertIn("needs.attest-linux.result == 'success'", condition)
+                    self.assertIn(self.MASTER_GUARD, condition)
                 self.assertNotIn("environment", job)
                 self.assertEqual(job["strategy"]["matrix"], {"variant": ["dev", "prod"]})
                 upload = next(step for step in jobs[build]["steps"]
@@ -357,6 +436,10 @@ class AgentDesktopPackagingBoundaryTests(unittest.TestCase):
                 verify = next(i for i, step in enumerate(job["steps"])
                               if "./scripts/verify-release.sh" in step.get("run", ""))
                 self.assertGreater(verify, download)
+                provenance = next(i for i, step in enumerate(job["steps"])
+                                  if "gh attestation verify" in step.get("run", ""))
+                self.assertGreater(provenance, download)
+                self.assertLess(provenance, verify)
                 if name == "verify-macos":
                     self.assertNotIn("--unsigned", job["steps"][verify]["run"])
         smoke = next(step for step in jobs["verify-linux"]["steps"]
@@ -369,6 +452,43 @@ class AgentDesktopPackagingBoundaryTests(unittest.TestCase):
         self.assertRegex(smoke, r"--tmpfs /tmp:[^\s]*mode=1777")
         self.assertIn("--build-info", smoke)
         self.assertIn("actual != expected", smoke)
+
+    def test_downloaded_provenance_enforces_workflow_ref_commit_and_every_file(self):
+        for name in ("verify-macos", "verify-linux"):
+            step = next(step for step in workflow(self.WORKFLOW)["jobs"][name]["steps"]
+                        if "gh attestation verify" in step.get("run", ""))
+            with self.subTest(job=name), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                artifacts = root / "artifacts"
+                artifacts.mkdir()
+                files = ("package with spaces.AppImage", "release-manifest.json", "SHA256SUMS")
+                for file in files:
+                    (artifacts / file).write_text("fixture\n")
+                calls = root / "calls"
+                command = r'''gh() { printf '%s\0' "$@" >> "$CALLS"; return "${GH_RESULT:-0}"; }
+''' + step["run"]
+                env = {**os.environ, "CALLS": str(calls), "GITHUB_REPOSITORY": "MaplePrivacyLabs/Maple",
+                       "GITHUB_SHA": "a" * 40}
+                subprocess.run(["bash", "-c", command], check=True, capture_output=True,
+                               cwd=root, env=env)
+                arguments = [value.decode() for value in calls.read_bytes().split(b"\0")[:-1]]
+                expected = []
+                for file in sorted(files):
+                    expected.extend([
+                        "attestation", "verify", "artifacts/" + file,
+                        "--repo", "MaplePrivacyLabs/Maple",
+                        "--signer-workflow", "MaplePrivacyLabs/Maple/.github/workflows/agent-desktop-build.yml",
+                        "--source-ref", "refs/heads/master", "--source-digest", "a" * 40,
+                        "--deny-self-hosted-runners",
+                    ])
+                self.assertEqual(arguments, expected)
+                result = subprocess.run(["bash", "-c", command], capture_output=True,
+                                        cwd=root, env={**env, "GH_RESULT": "42"})
+                self.assertEqual(result.returncode, 42)
+                for file in artifacts.iterdir():
+                    file.unlink()
+                result = subprocess.run(["bash", "-c", command], capture_output=True, cwd=root, env=env)
+                self.assertNotEqual(result.returncode, 0)  # Empty downloads cannot pass.
 
     def test_linux_pr_packages_and_both_verifiers_use_unsigned_mode_only_for_pr_events(self):
         jobs = workflow(self.WORKFLOW)["jobs"]

@@ -12,6 +12,7 @@ pub struct ReleaseProfile {
     pub data_namespace: String,
     pub api_url: String,
     pub billing_api_url: String,
+    pub web_url: String,
     pub client_id: String,
     pub pcr_environment: String,
     pub update_tag_prefix: String,
@@ -54,6 +55,12 @@ pub fn profiles() -> Result<BTreeMap<String, ReleaseProfile>, String> {
         if profile.display_name.is_empty()
             || !profile.api_url.starts_with("https://")
             || !profile.billing_api_url.starts_with("https://")
+            || profile.web_url
+                != if channel == "dev" {
+                    "https://app-dev.trymaple.ai"
+                } else {
+                    "https://trymaple.ai"
+                }
             || profile.client_id != "ba5a14b5-d915-47b1-b7b1-afda52bc5fc6"
         {
             return Err(format!(
@@ -64,6 +71,7 @@ pub fn profiles() -> Result<BTreeMap<String, ReleaseProfile>, String> {
     if profiles["dev"].display_name == profiles["prod"].display_name
         || profiles["dev"].api_url == profiles["prod"].api_url
         || profiles["dev"].billing_api_url == profiles["prod"].billing_api_url
+        || profiles["dev"].web_url == profiles["prod"].web_url
     {
         return Err("Dev and Prod must have distinct names and service endpoints".into());
     }
@@ -126,6 +134,9 @@ pub fn emit(manifest_path: &str, helper_path: &str, app: bool) {
         return;
     }
     let mut constants = String::new();
+    let pricing_url = format!("{}/pricing", profile.web_url);
+    let checkout_success_url = format!("{pricing_url}?success=true");
+    let checkout_cancel_url = format!("{pricing_url}?canceled=true");
     for (name, value) in [
         ("PROFILE", channel),
         ("DISPLAY_NAME", profile.display_name.as_str()),
@@ -133,6 +144,10 @@ pub fn emit(manifest_path: &str, helper_path: &str, app: bool) {
         ("DATA_NAMESPACE", profile.data_namespace.as_str()),
         ("API_URL", profile.api_url.as_str()),
         ("BILLING_API_URL", profile.billing_api_url.as_str()),
+        ("WEB_URL", profile.web_url.as_str()),
+        ("PRICING_URL", pricing_url.as_str()),
+        ("CHECKOUT_SUCCESS_URL", checkout_success_url.as_str()),
+        ("CHECKOUT_CANCEL_URL", checkout_cancel_url.as_str()),
         ("CLIENT_ID", profile.client_id.as_str()),
         ("PCR_ENVIRONMENT", profile.pcr_environment.as_str()),
         ("UPDATE_TAG_PREFIX", profile.update_tag_prefix.as_str()),
@@ -166,6 +181,8 @@ mod tests {
         assert_ne!(dev.data_namespace, prod.data_namespace);
         assert_ne!(dev.api_url, prod.api_url);
         assert_ne!(dev.billing_api_url, prod.billing_api_url);
+        assert_eq!(dev.web_url, "https://app-dev.trymaple.ai");
+        assert_eq!(prod.web_url, "https://trymaple.ai");
         assert_ne!(dev.pcr_environment, prod.pcr_environment);
         assert_ne!(dev.update_tag_prefix, prod.update_tag_prefix);
         assert!(dev.prerelease);
