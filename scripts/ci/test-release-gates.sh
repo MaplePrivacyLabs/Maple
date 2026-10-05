@@ -7,6 +7,8 @@ classifier="${script_dir}/classify-app-release.sh"
 temp_root="$(mktemp -d)"
 trap 'rm -rf "${temp_root}"' EXIT HUP INT TERM
 
+python3 "${repo_root}/.agents/skills/release-maple/scripts/test_ci_evidence.py"
+
 passed=0
 
 pass() {

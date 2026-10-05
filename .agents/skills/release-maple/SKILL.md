@@ -111,8 +111,8 @@ repair package visibility. Existing old-namespace images receive no updates.
    flow.
 6. After the bump merges, use or create a clean worktree on `master`. If another
    worktree already owns that branch, use its checkout instead of forcing or
-   stealing it. Pull with `--ff-only` and wait for every required workflow on
-   the merged commit. Release only that commit; preflight verifies it again.
+   stealing it. Pull with `--ff-only` and wait for the required CI evidence.
+   Release only current master; preflight verifies it again.
 
 ## Run preflight
 
@@ -127,8 +127,16 @@ head_sha="$(printf '%s' "$preflight" | jq -r .head_sha)"
 ```
 
 The script requires a clean current `master`, exact manifest version parity, a
-newer version and unused tag, and successful required workflows for the exact
-commit. Stop on any failure; correct it through the normal reviewed process.
+newer version and unused tag, and successful executed master-push CI jobs.
+CodeQL must run on the exact release commit. Research test/build evidence may
+come from an ancestor only when the complete Git tree diff contains exclusively
+independent Agent, documentation, agent guidance, or release-gate test-harness
+changes. Unknown paths and changes to Research, SDK, proxy, shared scripts,
+workflows, or Nix require fresh evidence. Skipped builds never count as build
+proof; the helper searches a bounded workflow history and rejects newer failures,
+pending runs, missing jobs, changed inputs, and non-ancestors. The returned
+`ci_evidence` records each actual run, tested SHA, and whether it was reused.
+Preflight also rechecks master after collecting evidence. Stop on any failure; correct it through the normal reviewed process.
 Never overwrite or move a release tag.
 
 Review the [SDK consumer version policy](../../../docs/sdk-publishing.md#consumer-version-policy)
