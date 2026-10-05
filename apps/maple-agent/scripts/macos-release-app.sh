@@ -9,7 +9,11 @@ umask 077
 macos_native() {
     local tool="$1"
     shift
-    if [[ "$tool" == /* ]]; then "$tool" "$@"; else "/usr/bin/$tool" "$@"; fi
+    case "$tool" in
+        spctl) /usr/sbin/spctl "$@" ;;
+        /*) "$tool" "$@" ;;
+        *) "/usr/bin/$tool" "$@" ;;
+    esac
 }
 
 macos_embed_dylibs() {
@@ -51,6 +55,9 @@ macos_release_main() {
     for name in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_ID APPLE_ID_PASSWORD APPLE_PASSWORD APPLE_TEAM_ID; do
         export -n "$name" 2>/dev/null || true
     done
+    # Exercise Gatekeeper's native tool in unsigned previews too, before any
+    # credential setup. Reading its status does not change assessment policy.
+    macos_native spctl --status >/dev/null
     [[ -x "$binary" && -f "$output_dir/build-info.json" ]] || { echo "missing release binary/build-info" >&2; return 1; }
     local app_name="${MAPLE_PACKAGE_APP_NAME:?}" bundle_id="${MAPLE_PACKAGE_BUNDLE_ID:?}"
     local profile="${MAPLE_PACKAGE_CHANNEL:?}" build_number="${MAPLE_PACKAGE_BUILD_NUMBER:-1}"
