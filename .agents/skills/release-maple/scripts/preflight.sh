@@ -128,28 +128,12 @@ if git ls-remote --exit-code --tags "${remote_url}" "refs/tags/${tag}" "refs/tag
   fail "remote tag ${tag} already exists"
 fi
 
-runs="$(gh run list --repo "${repo}" --commit "${head_sha}" --limit 50 \
-  --json workflowName,status,conclusion,createdAt,url)"
+ci_evidence="$(python3 .agents/skills/release-maple/scripts/ci_evidence.py \
+  --repo "${repo}" --head "${head_sha}")"
 
-required_workflows=(
-  "Frontend Tests"
-  "Rust Unit Tests"
-  "Web App Build"
-  "Desktop App CI"
-  "Android App CI"
-  "Mobile App CI"
-  "CodeQL"
-)
-
-for workflow in "${required_workflows[@]}"; do
-  latest="$(printf '%s' "${runs}" | jq -c --arg workflow "${workflow}" \
-    '[.[] | select(.workflowName == $workflow)] | sort_by(.createdAt) | reverse | .[0] // empty')"
-  [[ -n "${latest}" ]] || fail "no ${workflow} run found for ${head_sha}"
-  run_status="$(printf '%s' "${latest}" | jq -r .status)"
-  run_conclusion="$(printf '%s' "${latest}" | jq -r .conclusion)"
-  [[ "${run_status}" == "completed" && "${run_conclusion}" == "success" ]] || \
-    fail "${workflow} is ${run_status}/${run_conclusion} for ${head_sha}"
-done
+# Keep the result tied to current master throughout the read-only preflight.
+final_remote_sha="$(git ls-remote "${remote_url}" refs/heads/master | awk '{print $1}')"
+[[ "${head_sha}" == "${final_remote_sha}" ]] || fail "master advanced during preflight; run it again"
 
 jq -n \
   --arg repo "${repo}" \
@@ -159,6 +143,7 @@ jq -n \
   --arg previous_version "${previous_version}" \
   --arg version "${package_version}" \
   --arg tag "${tag}" \
+  --argjson ci_evidence "${ci_evidence}" \
   '{
     repo: $repo,
     branch: $branch,
@@ -167,5 +152,6 @@ jq -n \
     previous_version: $previous_version,
     version: $version,
     tag: $tag,
-    ci: "passed"
+    ci: "passed",
+    ci_evidence: $ci_evidence
   }'
