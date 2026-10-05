@@ -69,10 +69,18 @@ fn main() {
         "update_tag_prefix": profile.update_tag_prefix,
         "prerelease": profile.prerelease,
     });
+    // GPUI unifies serde_json's preserve_order feature in desktop builds.
+    // Serialize a BTreeMap so metadata remains canonical in every feature set,
+    // matching the non-executing reader and CLI byte-for-byte.
+    let sorted_metadata: std::collections::BTreeMap<_, _> = metadata
+        .as_object()
+        .expect("public build metadata object")
+        .iter()
+        .collect();
     let out = std::path::PathBuf::from(std::env::var_os("OUT_DIR").expect("Cargo OUT_DIR"));
     std::fs::write(
         out.join("build-info.json"),
-        serde_json::to_vec(&metadata).expect("public build metadata"),
+        serde_json::to_vec(&sorted_metadata).expect("public build metadata"),
     )
     .expect("write public build metadata");
 

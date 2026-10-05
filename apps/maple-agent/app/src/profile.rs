@@ -66,6 +66,14 @@ mod tests {
     }
 
     #[test]
+    fn build_info_json_is_canonical_across_feature_sets() {
+        let info = build_info();
+        let keys: Vec<_> = info.as_object().unwrap().keys().collect();
+        assert!(keys.windows(2).all(|pair| pair[0] < pair[1]));
+        assert_eq!(serde_json::to_vec(&info).unwrap(), MAPLE_AGENT_BUILD_INFO);
+    }
+
+    #[test]
     fn build_info_reports_the_baked_profile() {
         let info = serde_json::to_value(build_info()).unwrap();
         assert_eq!(info["profile"], PROFILE);
