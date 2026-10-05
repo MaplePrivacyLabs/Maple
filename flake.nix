@@ -758,6 +758,11 @@
             python3 scripts/ci/test_agent_workflows.py
             python3 scripts/ci/test_agent_rust_deps.py
             python3 scripts/ci/test_agent_debug_plist.py
+            python3 apps/maple-agent/scripts/test_release_packaging.py
+            python3 apps/maple-agent/scripts/test_linux_release_appimage.py
+            python3 apps/maple-agent/scripts/test_macos_release_dylibs.py
+            python3 apps/maple-agent/scripts/test_macos_build_info.py
+            python3 apps/maple-agent/scripts/test_smoke_macos_release.py
             touch "$out"
           '';
 

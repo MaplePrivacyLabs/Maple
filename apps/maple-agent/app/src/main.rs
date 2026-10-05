@@ -17,6 +17,7 @@ mod keymap;
 mod notify;
 #[cfg(feature = "desktop")]
 mod platform;
+mod profile;
 mod settings;
 #[cfg(feature = "desktop")]
 mod shortcuts;
@@ -47,8 +48,11 @@ fn version_string() -> &'static str {
 }
 
 #[derive(Debug, Parser)]
-#[command(name = "maple-agent", version = version_string(), about, disable_help_subcommand = true)]
+#[command(name = "maple-agent", version = version_string(), about, disable_help_subcommand = true, args_conflicts_with_subcommands = true)]
 struct Cli {
+    /// Print the immutable build profile as JSON and exit without opening state.
+    #[arg(long, conflicts_with = "desktop_args")]
+    build_info: bool,
     #[command(subcommand)]
     mode: Option<Mode>,
     /// Arguments a desktop launcher may append (file paths, `%u` expansions).
@@ -141,14 +145,21 @@ pub(crate) fn startup_elapsed() -> u128 {
 }
 
 fn main() {
-    // SAFETY: this is the first statement of `main`. No other thread exists
+    let cli = Cli::parse();
+    if cli.build_info {
+        println!(
+            "{}",
+            serde_json::to_string(&profile::build_info()).expect("build metadata")
+        );
+        return;
+    }
+    // SAFETY: argument parsing starts no threads. No other thread exists
     // yet, so mutating the process environment here cannot race a reader.
     unsafe { maple_agent::prepare_process_environment() };
     // Before any mode opens settings, credentials, or the log file.
     let _ = ADOPTED_APP_DIRS.set(backend::adopt_legacy_app_dirs());
     #[cfg(feature = "desktop")]
     let _ = PROCESS_START.set(std::time::Instant::now());
-    let cli = Cli::parse();
     match cli.mode {
         Some(Mode::Acp { .. }) => {
             // stdout is the ACP channel. Logs go to the log file only, so
@@ -278,7 +289,7 @@ fn run_proxy(args: ProxyArgs) -> Result<(), String> {
 }
 
 fn configured_api_url() -> String {
-    env::env_string("MAPLE_API_URL").unwrap_or_else(|| "https://enclave.trymaple.ai".to_string())
+    profile::runtime_value("MAPLE_API_URL", profile::API_URL)
 }
 
 /// `maple-agent acp`: a standalone ACP agent over stdio. It reuses the
@@ -434,6 +445,16 @@ mod tests {
     fn parse(args: &[&str]) -> Result<Option<Mode>, clap::Error> {
         Cli::try_parse_from(std::iter::once("maple-agent").chain(args.iter().copied()))
             .map(|cli| cli.mode)
+    }
+
+    #[test]
+    fn build_info_is_a_standalone_exit_mode() {
+        let cli = Cli::try_parse_from(["maple-agent", "--build-info"]).unwrap();
+        assert!(cli.build_info);
+        assert!(cli.mode.is_none());
+        assert!(cli.desktop_args.is_empty());
+        assert!(parse(&["--build-info", "login"]).is_err());
+        assert!(parse(&["--build-info", "some/file.txt"]).is_err());
     }
 
     #[test]

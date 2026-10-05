@@ -22,6 +22,13 @@ class AgentChangeDetectionTests(unittest.TestCase):
             "apps/maple-agent/rust-toolchain.toml",
             "apps/maple-agent/justfile",
             "apps/maple-agent/scripts/macos-debug-app.sh",
+            "apps/maple-agent/scripts/build-release.sh",
+            "apps/maple-agent/scripts/package-release.sh",
+            "apps/maple-agent/scripts/verify-release.sh",
+            "apps/maple-agent/release_profile.rs",
+            "apps/maple-agent/release-profiles.json",
+            "apps/maple-agent/app/packaging/macos-entitlements.plist",
+            "apps/maple-agent/app/macos/Info.plist",
             "apps/maple-agent/new-build-input",
         ):
             with self.subTest(path=path):
@@ -67,11 +74,21 @@ class AgentChangeDetectionTests(unittest.TestCase):
     def test_selector_and_shared_tooling_changes_select_agent(self):
         for path in (
             "flake.nix", "flake.lock", ".github/workflows/agent-ci.yml",
+            ".github/workflows/agent-desktop-build.yml",
             "scripts/ci/agent_change_detection.py", "scripts/ci/change_detection.py",
             "scripts/ci/verify-agent-rust-deps.py",
+            "scripts/ci/apple-toolchain.json", "scripts/ci/select-xcode.py",
         ):
             with self.subTest(path=path):
                 self.assertTrue(affects_agent(path))
+
+    def test_agent_packaging_workflow_stays_independent_of_research(self):
+        self.assertTrue(affects_agent(".github/workflows/agent-desktop-build.yml"))
+        self.assertEqual(research_routes(".github/workflows/agent-desktop-build.yml"), frozenset())
+        for path in ("scripts/ci/apple-toolchain.json", "scripts/ci/select-xcode.py"):
+            with self.subTest(path=path):
+                self.assertTrue(affects_agent(path))
+                self.assertEqual(research_routes(path), frozenset({"macos", "ios", "ios_onnx"}))
 
     def test_unknown_roots_and_invalid_paths_fail_safe(self):
         for path in ("new-build-config.toml", "", "/tmp/file", "../file",

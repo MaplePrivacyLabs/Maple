@@ -81,3 +81,7 @@ parking_lot = "0.12"
 # The gpui test harness. Keep this out of [dependencies]: with test-support on,
 # App::shutdown skips the on_app_quit futures and logs a timeout on every quit.
 gpui = { version = "0.2.2", git = "https://github.com/zed-industries/zed", rev = "cc053a4a6fa2fd0e8793201ed9099466af1be0b1", features = ["test-support"] }
+
+[build-dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }

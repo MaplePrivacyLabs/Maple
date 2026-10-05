@@ -26,6 +26,19 @@ Pages/updater deployments. The same environments also serve owner-controlled
 `v*` release tags, so their signing jobs likewise have no separate approval prompt.
 Creating a release and controlling its distribution remain separate boundaries.
 
+`Maple Agent Desktop Builds` also uses the existing `desktop-signing` environment
+for its trusted `master` macOS Dev/Prod jobs. The same Developer ID publisher
+signs distinct Agent bundle identities; it does not replace Research's identity.
+Agent contributor packaging and Linux builds have no signing credentials.
+Agent macOS compilation also runs without signing credentials. A fresh
+packaging job downloads the binary from the same workflow run and validates
+its profile and embedded source revision against the exact checkout by reading
+a dedicated Mach-O metadata section. It never executes artifact code, including
+before the Apple credential step, and does not restore compilation caches or run
+Cargo. App launches and Swift runtime checks run only on credential-free verifiers.
+Agent builds upload separately named Actions artifacts and verify downloaded
+packages without signing credentials. See [Agent desktop builds](../apps/maple-agent/docs/desktop-builds.md).
+
 Require release-owner approval for `zapstore-publishing`, `pages-production`,
 and `auth-pages-production`, with self-review allowed and administrator bypass
 disabled. Preserve the three Pages/updater publishers' `master`-only branch

@@ -5,15 +5,15 @@
     <key>CFBundleDevelopmentRegion</key>
     <string>en</string>
     <key>CFBundleDisplayName</key>
-    <string>Maple Agent Dev</string>
+    <string>Maple Agent Debug</string>
     <key>CFBundleExecutable</key>
     <string>maple-agent</string>
     <key>CFBundleIdentifier</key>
-    <string>cloud.opensecret.maple.agent.dev</string>
+    <string>cloud.opensecret.maple.agent.debug</string>
     <key>CFBundleInfoDictionaryVersion</key>
     <string>6.0</string>
     <key>CFBundleName</key>
-    <string>Maple Agent Dev</string>
+    <string>Maple Agent Debug</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
@@ -24,6 +24,8 @@
     <string>13.0</string>
     <key>NSAppleEventsUsageDescription</key>
     <string>Maple uses Automation only when a computer-use action needs to communicate with another app.</string>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>Maple records your microphone when you choose to dictate a message.</string>
     <key>NSDocumentsFolderUsageDescription</key>
     <string>Maple keeps its default workspace in Documents/Maple, where the agent works on the files for your tasks.</string>
     <key>NSHighResolutionCapable</key>

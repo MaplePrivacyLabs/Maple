@@ -1,9 +1,10 @@
-//! Discover stable Agent releases independently of other monorepo components.
+//! Discover Agent releases for the compiled channel independently of Research.
 //!
 //! The desktop app checks once per launch and shows a release-page banner.
-//! Nothing is downloaded or installed. Only `maple-agent-vMAJOR.MINOR.PATCH`
-//! tags are eligible. `MAPLE_UPDATE_REPO` overrides the GitHub `owner/repo`,
-//! and `MAPLE_DISABLE_UPDATE_CHECK=1` turns the check off.
+//! Nothing is downloaded or installed. Prod uses `maple-agent-v` stable
+//! releases; Dev uses `maple-agent-dev-v` GitHub prereleases. Packaged builds
+//! pin the repository. Local builds retain `MAPLE_UPDATE_REPO` overrides.
+//! `MAPLE_DISABLE_UPDATE_CHECK=1` turns the check off.
 
 use std::future::Future;
 use std::sync::OnceLock;
@@ -12,7 +13,27 @@ use std::time::Duration;
 use semver::Version;
 
 const DEFAULT_REPO: &str = "MaplePrivacyLabs/Maple";
-const AGENT_TAG_PREFIX: &str = "maple-agent-v";
+#[derive(Clone, Copy)]
+struct ReleaseChannel {
+    tag_prefix: &'static str,
+    prerelease: bool,
+}
+
+const CHANNEL: ReleaseChannel = ReleaseChannel {
+    tag_prefix: crate::profile::UPDATE_TAG_PREFIX,
+    prerelease: crate::profile::PRERELEASE,
+};
+
+#[cfg(test)]
+const PROD_CHANNEL: ReleaseChannel = ReleaseChannel {
+    tag_prefix: "maple-agent-v",
+    prerelease: false,
+};
+#[cfg(test)]
+const DEV_CHANNEL: ReleaseChannel = ReleaseChannel {
+    tag_prefix: "maple-agent-dev-v",
+    prerelease: true,
+};
 const RELEASES_PER_PAGE: usize = 100;
 const MAX_RELEASE_PAGES: usize = 10;
 const MAX_PAGE_BYTES: usize = 16 * 1024 * 1024;
@@ -58,8 +79,18 @@ fn valid_repo(repo: &str) -> bool {
 }
 
 fn repo() -> Option<String> {
-    let repo =
-        crate::env::env_string("MAPLE_UPDATE_REPO").unwrap_or_else(|| DEFAULT_REPO.to_string());
+    configured_repo(
+        crate::profile::PACKAGED,
+        crate::env::env_string("MAPLE_UPDATE_REPO"),
+    )
+}
+
+fn configured_repo(packaged: bool, configured: Option<String>) -> Option<String> {
+    let repo = if packaged {
+        DEFAULT_REPO.to_string()
+    } else {
+        configured.unwrap_or_else(|| DEFAULT_REPO.to_string())
+    };
     if valid_repo(&repo) {
         Some(repo)
     } else {
@@ -86,11 +117,11 @@ pub async fn check() -> Option<UpdateInfo> {
         .ok()?;
     let version = tokio::time::timeout(
         Duration::from_secs(30),
-        find_newer_release(&current, |page| fetch_page(&client, &repo, page)),
+        find_newer_release(CHANNEL, &current, |page| fetch_page(&client, &repo, page)),
     )
     .await
     .ok()??;
-    let info = release_info(&repo, version)?;
+    let info = release_info(CHANNEL, &repo, version)?;
     let _ = AVAILABLE.set(info.clone());
     Some(info)
 }
@@ -131,7 +162,11 @@ async fn fetch_page(
 
 /// GitHub's list order is not version order. Finish the bounded scan before
 /// selecting a version; partial results must never produce an update banner.
-async fn find_newer_release<F, Fut>(current: &Version, mut fetch: F) -> Option<Version>
+async fn find_newer_release<F, Fut>(
+    channel: ReleaseChannel,
+    current: &Version,
+    mut fetch: F,
+) -> Option<Version>
 where
     F: FnMut(usize) -> Fut,
     Fut: Future<Output = Option<Vec<serde_json::Value>>>,
@@ -143,7 +178,7 @@ where
             return None;
         }
         for release in &releases {
-            let Some(version) = stable_agent_version(release) else {
+            let Some(version) = agent_version(channel, release) else {
                 continue;
             };
             if version.cmp_precedence(current).is_gt()
@@ -160,25 +195,28 @@ where
     None
 }
 
-fn stable_agent_version(release: &serde_json::Value) -> Option<Version> {
+fn agent_version(channel: ReleaseChannel, release: &serde_json::Value) -> Option<Version> {
     // Missing or malformed flags also fail closed.
-    if release["draft"].as_bool()? || release["prerelease"].as_bool()? {
+    if release["draft"].as_bool()? || release["prerelease"].as_bool()? != channel.prerelease {
         return None;
     }
     let tag = release["tag_name"].as_str()?;
-    let version = Version::parse(tag.strip_prefix(AGENT_TAG_PREFIX)?).ok()?;
+    let version = Version::parse(tag.strip_prefix(channel.tag_prefix)?).ok()?;
     if !version.pre.is_empty() || !version.build.is_empty() {
         return None;
     }
     Some(version)
 }
 
-fn release_info(repo: &str, version: Version) -> Option<UpdateInfo> {
+fn release_info(channel: ReleaseChannel, repo: &str, version: Version) -> Option<UpdateInfo> {
     if !valid_repo(repo) || !version.pre.is_empty() || !version.build.is_empty() {
         return None;
     }
     Some(UpdateInfo {
-        url: format!("https://github.com/{repo}/releases/tag/{AGENT_TAG_PREFIX}{version}"),
+        url: format!(
+            "https://github.com/{repo}/releases/tag/{}{version}",
+            channel.tag_prefix
+        ),
         version: version.to_string(),
     })
 }
@@ -198,7 +236,7 @@ mod tests {
     }
 
     async fn find(pages: Vec<Vec<serde_json::Value>>, current: &str) -> Option<Version> {
-        find_newer_release(&Version::parse(current).unwrap(), |page| {
+        find_newer_release(PROD_CHANNEL, &Version::parse(current).unwrap(), |page| {
             std::future::ready(pages.get(page - 1).cloned())
         })
         .await
@@ -218,7 +256,7 @@ mod tests {
         )
         .await
         .expect("newer Agent release");
-        let info = release_info(DEFAULT_REPO, newest).unwrap();
+        let info = release_info(PROD_CHANNEL, DEFAULT_REPO, newest).unwrap();
         assert_eq!(info.version, "2.0.0");
         assert_eq!(
             info.url,
@@ -246,7 +284,7 @@ mod tests {
         let full = vec![release("maple-agent-v2.0.0"); RELEASES_PER_PAGE];
         assert!(find(vec![full.clone()], "1.0.0").await.is_none());
         let mut calls = 0;
-        let newest = find_newer_release(&Version::parse("1.0.0").unwrap(), |_| {
+        let newest = find_newer_release(PROD_CHANNEL, &Version::parse("1.0.0").unwrap(), |_| {
             calls += 1;
             std::future::ready(Some(full.clone()))
         })
@@ -288,7 +326,7 @@ mod tests {
         ] {
             let mut body = release("maple-agent-v9.0.0");
             body[field] = value;
-            assert!(stable_agent_version(&body).is_none());
+            assert!(agent_version(PROD_CHANNEL, &body).is_none());
         }
     }
 
@@ -312,18 +350,18 @@ mod tests {
             "maple-agent-v18446744073709551616.0.0",
         ] {
             assert!(
-                stable_agent_version(&release(tag)).is_none(),
+                agent_version(PROD_CHANNEL, &release(tag)).is_none(),
                 "accepted {tag}"
             );
         }
-        assert!(stable_agent_version(&serde_json::json!({})).is_none());
+        assert!(agent_version(PROD_CHANNEL, &serde_json::json!({})).is_none());
     }
 
     #[test]
     fn repository_override_cannot_escape_github_owner_repo() {
         for repo in [DEFAULT_REPO, "some-owner/agent.test_repo"] {
             assert!(valid_repo(repo));
-            let info = release_info(repo, Version::parse("1.2.3").unwrap()).unwrap();
+            let info = release_info(PROD_CHANNEL, repo, Version::parse("1.2.3").unwrap()).unwrap();
             assert_eq!(
                 info.url,
                 format!("https://github.com/{repo}/releases/tag/maple-agent-v1.2.3")
@@ -348,7 +386,65 @@ mod tests {
             "owner-/repo",
         ] {
             assert!(!valid_repo(repo), "accepted {repo}");
-            assert!(release_info(repo, Version::parse("1.2.3").unwrap()).is_none());
+            assert!(release_info(PROD_CHANNEL, repo, Version::parse("1.2.3").unwrap()).is_none());
         }
+    }
+
+    #[tokio::test]
+    async fn dev_feed_cannot_advertise_prod_or_research_and_requires_prerelease_flag() {
+        let mut dev = release("maple-agent-dev-v1.3.0");
+        dev["prerelease"] = serde_json::json!(true);
+        let mut older_dev = release("maple-agent-dev-v1.2.0");
+        older_dev["prerelease"] = serde_json::json!(true);
+        let mut prod_marked_dev = release("maple-agent-v9.0.0");
+        prod_marked_dev["prerelease"] = serde_json::json!(true);
+        let releases = vec![
+            release("v99.0.0"),
+            release("maple-agent-v99.0.0"),
+            release("maple-agent-dev-v99.0.0"),
+            prod_marked_dev,
+            older_dev,
+            dev.clone(),
+        ];
+        let newest = find_newer_release(DEV_CHANNEL, &Version::parse("1.0.0").unwrap(), |_| {
+            std::future::ready(Some(releases.clone()))
+        })
+        .await
+        .unwrap();
+        assert_eq!(newest.to_string(), "1.3.0");
+        let info = release_info(DEV_CHANNEL, DEFAULT_REPO, newest).unwrap();
+        assert_eq!(
+            info.url,
+            "https://github.com/MaplePrivacyLabs/Maple/releases/tag/maple-agent-dev-v1.3.0"
+        );
+        assert!(agent_version(PROD_CHANNEL, &dev).is_none());
+        for field in ["draft", "prerelease"] {
+            let mut malformed = dev.clone();
+            malformed[field] = serde_json::Value::Null;
+            assert!(agent_version(DEV_CHANNEL, &malformed).is_none());
+        }
+        for tag in [
+            "maple-agent-dev-v1.3.0-beta.1",
+            "maple-agent-dev-v1.3.0+build.1",
+        ] {
+            let mut malformed = dev.clone();
+            malformed["tag_name"] = serde_json::json!(tag);
+            assert!(agent_version(DEV_CHANNEL, &malformed).is_none());
+        }
+    }
+
+    #[test]
+    fn packaged_feed_ignores_inherited_repository_override() {
+        for configured in ["attacker/different-feed", "https://evil.example/releases"] {
+            assert_eq!(
+                configured_repo(true, Some(configured.into())).as_deref(),
+                Some(DEFAULT_REPO)
+            );
+        }
+        assert_eq!(
+            configured_repo(false, Some("local-owner/agent".into())).as_deref(),
+            Some("local-owner/agent")
+        );
+        assert!(configured_repo(false, Some("https://evil.example/releases".into())).is_none());
     }
 }

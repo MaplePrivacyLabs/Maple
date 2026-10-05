@@ -1,0 +1,405 @@
+name: Maple Agent Desktop Builds
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+  workflow_dispatch:
+
+# Signing is confined to protected master jobs. PR packaging runs with a
+# read-only token and no environment credentials, including fork PRs.
+permissions:
+  contents: read
+
+concurrency:
+  # PR updates replace their previews. Each master run keeps its own group,
+  # so neither running nor pending packages are discarded by a later push.
+  group: maple-agent-desktop-builds-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  RUSTFLAGS: -D warnings
+
+defaults:
+  run:
+    shell: bash
+    working-directory: apps/maple-agent
+
+jobs:
+  changes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      agent: ${{ steps.classify.outputs.agent }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Select unsigned PR packaging
+        id: classify
+        working-directory: .
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          if [ "$GITHUB_EVENT_NAME" != pull_request ]; then
+            echo 'agent=true' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          git fetch --no-tags origin "$BASE_SHA" "$HEAD_SHA"
+          paths="$(mktemp)"
+          trap 'rm -f "$paths"' EXIT
+          if ! git diff --no-renames --name-only -z "${BASE_SHA}...${HEAD_SHA}" > "$paths"; then
+            echo 'agent=true' >> "$GITHUB_OUTPUT"
+          elif ! python3 scripts/ci/agent_change_detection.py < "$paths" >> "$GITHUB_OUTPUT"; then
+            echo 'agent=true' >> "$GITHUB_OUTPUT"
+          fi
+
+  macos-build:
+    name: Build macOS binary (${{ matrix.variant }})
+    needs: changes
+    if: ${{ always() && !cancelled() && ((github.event_name == 'pull_request' && (needs.changes.result != 'success' || needs.changes.outputs.agent != 'false')) || (github.repository == 'MaplePrivacyLabs/Maple' && github.ref == 'refs/heads/master' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch'))) }}
+    runs-on: macos-26-xlarge
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [dev, prod]
+    env:
+      MAPLE_RELEASE_PROFILE: ${{ matrix.variant }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Install pinned Nix
+        uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25
+        with:
+          github-token: ""
+      - name: Select pinned Xcode
+        working-directory: .
+        run: python3 scripts/ci/select-xcode.py
+      - name: Cache Agent release dependencies
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
+        with:
+          workspaces: apps/maple-agent -> target
+          add-rust-environment-hash-key: "false"
+          key: maple-agent-release-${{ matrix.variant }}-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('apps/maple-agent/Cargo.lock', 'apps/maple-agent/flake.lock', 'apps/maple-agent/flake.nix') }}
+          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/master' }}
+      - name: Build optimized Agent with embedded profile
+        run: nix develop --no-update-lock-file . -c ./scripts/build-release.sh "$MAPLE_RELEASE_PROFILE"
+      - name: Upload prebuilt Agent binary
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: maple-agent-${{ matrix.variant }}-macos-aarch64-prebuilt-${{ github.run_id }}
+          overwrite: true
+          path: apps/maple-agent/target/release/maple-agent
+          if-no-files-found: error
+          retention-days: 7
+
+  macos:
+    name: Signed macOS (${{ matrix.variant }})
+    needs: [changes, macos-build]
+    if: ${{ always() && !cancelled() && needs.macos-build.result == 'success' && github.repository == 'MaplePrivacyLabs/Maple' && github.ref == 'refs/heads/master' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') }}
+    environment: desktop-signing
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    runs-on: macos-26-xlarge
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [dev, prod]
+    env:
+      MAPLE_RELEASE_PROFILE: ${{ matrix.variant }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Install pinned Nix
+        uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25
+        with:
+          github-token: ""
+      - name: Select pinned Xcode
+        working-directory: .
+        run: python3 scripts/ci/select-xcode.py
+      - name: Download exact prebuilt Agent binary
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: maple-agent-${{ matrix.variant }}-macos-aarch64-prebuilt-${{ github.run_id }}
+          path: apps/maple-agent/target/release
+      - name: Verify prebuilt profile and source before signing
+        run: nix develop --no-update-lock-file . -c ./scripts/verify-prebuilt-release.sh "$MAPLE_RELEASE_PROFILE"
+      - name: Sign and notarize Agent packages
+        run: nix develop --no-update-lock-file . -c ./scripts/package-release.sh "$MAPLE_RELEASE_PROFILE"
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_ID_PASSWORD: ${{ secrets.APPLE_ID_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      - name: Attest final macOS packages
+        uses: actions/attest@281a49d4cbb0a72c9575a50d18f6deb515a11deb
+        with:
+          subject-path: apps/maple-agent/dist/${{ matrix.variant }}/*
+      - name: Upload Agent packages
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: maple-agent-${{ matrix.variant }}-macos-aarch64-${{ github.run_id }}
+          overwrite: true
+          path: apps/maple-agent/dist/${{ matrix.variant }}/
+          if-no-files-found: error
+          retention-days: 30
+
+  macos-unsigned:
+    name: Unsigned macOS packaging (${{ matrix.variant }})
+    needs: [changes, macos-build]
+    if: ${{ always() && !cancelled() && needs.macos-build.result == 'success' && github.event_name == 'pull_request' && (needs.changes.result != 'success' || needs.changes.outputs.agent != 'false') }}
+    runs-on: macos-26-xlarge
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [dev, prod]
+    env:
+      MAPLE_RELEASE_PROFILE: ${{ matrix.variant }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Install pinned Nix
+        uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25
+        with:
+          github-token: ""
+      - name: Select pinned Xcode
+        working-directory: .
+        run: python3 scripts/ci/select-xcode.py
+      - name: Download exact prebuilt Agent binary
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: maple-agent-${{ matrix.variant }}-macos-aarch64-prebuilt-${{ github.run_id }}
+          path: apps/maple-agent/target/release
+      - name: Verify prebuilt profile and source
+        run: nix develop --no-update-lock-file . -c ./scripts/verify-prebuilt-release.sh "$MAPLE_RELEASE_PROFILE"
+      - name: Package unsigned Agent preview
+        run: nix develop --no-update-lock-file . -c ./scripts/package-release.sh "$MAPLE_RELEASE_PROFILE" --unsigned
+      - name: Verify unsigned package profile and hashes
+        run: nix develop --no-update-lock-file . -c ./scripts/verify-release.sh "$MAPLE_RELEASE_PROFILE" "dist/$MAPLE_RELEASE_PROFILE" --unsigned
+      - name: Upload Agent packages
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: maple-agent-${{ matrix.variant }}-macos-aarch64-unsigned-${{ github.run_id }}
+          overwrite: true
+          path: apps/maple-agent/dist/${{ matrix.variant }}/
+          if-no-files-found: error
+          retention-days: 30
+
+  linux:
+    name: Linux AppImage (${{ matrix.variant }})
+    needs: changes
+    if: ${{ always() && !cancelled() && ((github.event_name == 'pull_request' && (needs.changes.result != 'success' || needs.changes.outputs.agent != 'false')) || (github.repository == 'MaplePrivacyLabs/Maple' && github.ref == 'refs/heads/master' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch'))) }}
+    runs-on: ubuntu-latest-8-cores
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [dev, prod]
+    env:
+      MAPLE_RELEASE_PROFILE: ${{ matrix.variant }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Install pinned Nix
+        uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25
+        with:
+          github-token: ""
+      - name: Cache Agent release dependencies
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
+        with:
+          workspaces: apps/maple-agent -> target
+          add-rust-environment-hash-key: "false"
+          key: maple-agent-release-${{ matrix.variant }}-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('apps/maple-agent/Cargo.lock', 'apps/maple-agent/flake.lock', 'apps/maple-agent/flake.nix') }}
+          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/master' }}
+      - name: Build optimized Agent with embedded profile
+        run: nix develop --no-update-lock-file . -c ./scripts/build-release.sh "$MAPLE_RELEASE_PROFILE"
+      - name: Package Linux AppImage
+        run: |
+          args=()
+          if [ "$GITHUB_EVENT_NAME" = pull_request ]; then args=(--unsigned); fi
+          nix develop --no-update-lock-file . -c ./scripts/package-release.sh "$MAPLE_RELEASE_PROFILE" "${args[@]}"
+      - name: Verify Linux package profile and hashes
+        run: |
+          args=()
+          if [ "$GITHUB_EVENT_NAME" = pull_request ]; then args=(--unsigned); fi
+          nix develop --no-update-lock-file . -c ./scripts/verify-release.sh "$MAPLE_RELEASE_PROFILE" "dist/$MAPLE_RELEASE_PROFILE" "${args[@]}"
+      - name: Upload Agent packages
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: maple-agent-${{ matrix.variant }}-linux-x86_64-${{ github.run_id }}
+          overwrite: true
+          path: apps/maple-agent/dist/${{ matrix.variant }}/
+          if-no-files-found: error
+          retention-days: 30
+
+  attest-linux:
+    name: Attest Linux packages (${{ matrix.variant }})
+    needs: linux
+    if: ${{ needs.linux.result == 'success' && github.repository == 'MaplePrivacyLabs/Maple' && github.ref == 'refs/heads/master' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') }}
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [dev, prod]
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: maple-agent-${{ matrix.variant }}-linux-x86_64-${{ github.run_id }}
+          path: artifacts
+      - name: Attest exact downloadable Linux packages
+        uses: actions/attest@281a49d4cbb0a72c9575a50d18f6deb515a11deb
+        with:
+          subject-path: artifacts/*
+
+  verify-macos:
+    name: Verify downloaded macOS (${{ matrix.variant }})
+    needs: macos
+    permissions:
+      contents: read
+      attestations: read
+    runs-on: macos-26
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [dev, prod]
+    env:
+      MAPLE_RELEASE_PROFILE: ${{ matrix.variant }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Install pinned Nix
+        uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25
+        with:
+          github-token: ""
+      - name: Select pinned Xcode
+        working-directory: .
+        run: python3 scripts/ci/select-xcode.py
+      - name: Download exact Agent packages
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: maple-agent-${{ matrix.variant }}-macos-aarch64-${{ github.run_id }}
+          path: artifacts
+      - name: Verify downloaded package provenance
+        working-directory: .
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          files=(artifacts/*)
+          test "${#files[@]}" -gt 0
+          for file in "${files[@]}"; do
+            test -f "$file" && test ! -L "$file"
+            gh attestation verify "$file" --repo "$GITHUB_REPOSITORY" \
+              --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/agent-desktop-build.yml" \
+              --source-ref refs/heads/master --source-digest "$GITHUB_SHA" \
+              --deny-self-hosted-runners
+          done
+        env:
+          GH_TOKEN: ${{ github.token }}
+      - name: Verify downloaded signatures, notarization, hashes and profile
+        run: nix develop --no-update-lock-file . -c ./scripts/verify-release.sh "$MAPLE_RELEASE_PROFILE" "../../artifacts"
+
+  verify-linux:
+    name: Verify downloaded Linux (${{ matrix.variant }})
+    needs: [linux, attest-linux]
+    if: ${{ always() && !cancelled() && needs.linux.result == 'success' && (github.event_name == 'pull_request' || (needs.attest-linux.result == 'success' && github.repository == 'MaplePrivacyLabs/Maple' && github.ref == 'refs/heads/master' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch'))) }}
+    permissions:
+      contents: read
+      attestations: read
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [dev, prod]
+    env:
+      MAPLE_RELEASE_PROFILE: ${{ matrix.variant }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Install pinned Nix
+        uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25
+        with:
+          github-token: ""
+      - name: Download exact Agent packages
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: maple-agent-${{ matrix.variant }}-linux-x86_64-${{ github.run_id }}
+          path: artifacts
+      - name: Verify downloaded package provenance
+        if: ${{ github.repository == 'MaplePrivacyLabs/Maple' && github.ref == 'refs/heads/master' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') }}
+        working-directory: .
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          files=(artifacts/*)
+          test "${#files[@]}" -gt 0
+          for file in "${files[@]}"; do
+            test -f "$file" && test ! -L "$file"
+            gh attestation verify "$file" --repo "$GITHUB_REPOSITORY" \
+              --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/agent-desktop-build.yml" \
+              --source-ref refs/heads/master --source-digest "$GITHUB_SHA" \
+              --deny-self-hosted-runners
+          done
+        env:
+          GH_TOKEN: ${{ github.token }}
+      - name: Verify downloaded hashes and profile
+        run: |
+          args=()
+          if [ "$GITHUB_EVENT_NAME" = pull_request ]; then args=(--unsigned); fi
+          nix develop --no-update-lock-file . -c ./scripts/verify-release.sh "$MAPLE_RELEASE_PROFILE" "../../artifacts" "${args[@]}"
+      - name: Smoke downloaded AppImage without Nix
+        working-directory: .
+        run: |
+          set -euo pipefail
+          image="$(find artifacts -maxdepth 1 -type f -name '*.AppImage')"
+          test -n "$image"
+          test "$(printf '%s\n' "$image" | wc -l)" -eq 1
+          docker run --rm --platform linux/amd64 --user 65534:65534 \
+            --network none --read-only --tmpfs /tmp:exec,mode=1777 \
+            --volume "$PWD/artifacts:/artifacts:ro" \
+            ubuntu@sha256:f610ab94648195aa356059f5b41d6085c9d4d903c072430cdd1af7bdb646106b /bin/sh -ec '
+              cd /tmp
+              /artifacts/*.AppImage --appimage-extract >/dev/null
+              ./squashfs-root/AppRun --version >&2
+              ./squashfs-root/AppRun --build-info
+            ' > "$RUNNER_TEMP/portable-build-info.json"
+          python3 - "$MAPLE_RELEASE_PROFILE" "$RUNNER_TEMP/portable-build-info.json" artifacts/build-info.json <<'PY'
+          import json
+          import sys
+          actual = json.load(open(sys.argv[2]))
+          expected = json.load(open(sys.argv[3]))
+          if actual != expected or actual.get("profile") != sys.argv[1]:
+              raise SystemExit("portable AppImage build profile differs from verified package")
+          print("Verified Agent launch and embedded profile without a Nix installation")
+          PY

@@ -19,7 +19,7 @@ pub fn install(cx: &mut App) {
 fn app_menus(macos: bool) -> Vec<Menu> {
     vec![
         Menu {
-            name: "Maple".into(),
+            name: crate::profile::DISPLAY_NAME.into(),
             items: maple_menu_items(macos),
             disabled: false,
         },
@@ -69,13 +69,19 @@ fn maple_menu_items(macos: bool) -> Vec<MenuItem> {
     ];
     if macos {
         items.extend([
-            MenuItem::action("Hide Maple", crate::desktop::Hide),
+            MenuItem::action(
+                format!("Hide {}", crate::profile::DISPLAY_NAME),
+                crate::desktop::Hide,
+            ),
             MenuItem::action("Hide Others", crate::desktop::HideOthers),
             MenuItem::action("Show All", crate::desktop::ShowAll),
             MenuItem::separator(),
         ]);
     }
-    items.push(MenuItem::action("Quit Maple", crate::desktop::QuitApp));
+    items.push(MenuItem::action(
+        format!("Quit {}", crate::profile::DISPLAY_NAME),
+        crate::desktop::QuitApp,
+    ));
     items
 }
 
@@ -97,18 +103,24 @@ mod tests {
     fn macos_application_menu_has_standard_hide_commands() {
         assert_eq!(
             maple_action_names(true),
-            [
-                "Settings…",
-                "Hide Maple",
-                "Hide Others",
-                "Show All",
-                "Quit Maple",
+            vec![
+                "Settings…".to_string(),
+                format!("Hide {}", crate::profile::DISPLAY_NAME),
+                "Hide Others".to_string(),
+                "Show All".to_string(),
+                format!("Quit {}", crate::profile::DISPLAY_NAME),
             ]
         );
     }
 
     #[test]
     fn other_platforms_omit_hide_commands() {
-        assert_eq!(maple_action_names(false), ["Settings…", "Quit Maple"]);
+        assert_eq!(
+            maple_action_names(false),
+            vec![
+                "Settings…".to_string(),
+                format!("Quit {}", crate::profile::DISPLAY_NAME)
+            ]
+        );
     }
 }

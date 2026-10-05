@@ -53,6 +53,30 @@ debug-app: build
 release:
     cargo build --release -p maple-agent-app --locked
 
+# Build an immutable Dev or Prod profile without any signing credentials.
+build-release PROFILE:
+    ./scripts/build-release.sh {{PROFILE}}
+
+# Restore downloaded execution permissions and check the exact profile/source.
+verify-prebuilt-release PROFILE:
+    ./scripts/verify-prebuilt-release.sh {{PROFILE}}
+
+# Package the already built profile; --unsigned is for unprivileged PR checks.
+package-release PROFILE *ARGS:
+    ./scripts/package-release.sh {{PROFILE}} {{ARGS}}
+
+# Verify exact downloaded artifacts and their recorded public identity.
+verify-release PROFILE DIRECTORY *ARGS:
+    ./scripts/verify-release.sh {{PROFILE}} {{DIRECTORY}} {{ARGS}}
+
+# Hermetic public metadata and mocked native signing boundary regressions.
+packaging-test:
+    python3 ./scripts/test_release_packaging.py
+    python3 ./scripts/test_linux_release_appimage.py
+    python3 ./scripts/test_macos_release_dylibs.py
+    python3 ./scripts/test_macos_build_info.py
+    python3 ./scripts/test_smoke_macos_release.py
+
 # Build a release binary that keeps symbols for backtraces.
 release-debug:
     CARGO_PROFILE_RELEASE_STRIP=false CARGO_PROFILE_RELEASE_DEBUG=line-tables-only \

@@ -43,7 +43,9 @@ Agent has its own Cargo and Nix lockfiles. CI selects Agent for proxy runtime
 changes (a path dependency) but not for SDK-only changes; the Agent builds the
 SDK source its own manifest selects. Component-only
 changes should not unnecessarily select Research packaging. Maintain the root
-selectors, their tests, and `.github/workflows/agent-ci.yml` together.
+selectors, their tests, `.github/workflows/agent-ci.yml`, and unsigned PR
+selection in `.github/workflows/agent-desktop-build.yml` together. The desktop
+workflow intentionally builds both profiles on every `master` push.
 
 Linux Nix packages use a pure source fileset rooted at the monorepo, including
 the sibling SDK/proxy source and SDK assets. Validate it when adding a new local dependency
@@ -95,7 +97,12 @@ account isolation, tool approval, MCP/ACP inputs, persistence, and process
 ownership at the layer implementing the effect. Never treat a passing source
 import or a native login screen as authenticated chat or containment proof.
 
-Agent's update checker only links to stable `maple-agent-vX.Y.Z` releases.
+Packaged Agent Prod only links to stable `maple-agent-vX.Y.Z` releases; Dev only
+links to prereleases named `maple-agent-dev-vX.Y.Z`. Their embedded profiles,
+bundle IDs, and configuration/data namespaces must remain separate. Packaged
+profiles never adopt legacy Agent or Research state. See
+[`desktop builds`](../../../apps/maple-agent/docs/desktop-builds.md) for packaging
+commands and the protected-master signing/artifact contract.
 Never use repository-wide `/releases/latest` for Agent, accept Research's bare
 `vX.Y.Z` tags, or turn a failed/incomplete release scan into an update offer.
 No Agent publisher is activated by the import. Future Agent release work

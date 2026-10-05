@@ -5,7 +5,15 @@
 //! named `cfg` keeps the platform predicate out of every call site, so adding
 //! a platform is a one-line change here rather than an edit in each module.
 
+#[path = "../../release_profile.rs"]
+mod release_profile;
+
 fn main() {
+    release_profile::emit(
+        "../../release-profiles.json",
+        "../../release_profile.rs",
+        false,
+    );
     println!("cargo::rerun-if-changed=build.rs");
     println!("cargo::rustc-check-cfg=cfg(embedded_cua)");
 

@@ -52,6 +52,7 @@
           linuxRuntimeInputs = with pkgs; [
             libxcb
             libxkbcommon
+            libglvnd
             mesa
             vulkan-loader
             wayland
@@ -78,6 +79,8 @@
               fileset = pkgs.lib.fileset.unions [
                 ./Cargo.lock
                 ./Cargo.toml
+                ./release-profiles.json
+                ./release_profile.rs
                 ./app
                 ./crates
                 ../../sdk/rust/Cargo.toml
@@ -162,6 +165,7 @@
           linuxRuntimeInputs = with pkgs; [
             libxcb
             libxkbcommon
+            libglvnd
             mesa
             vulkan-loader
             wayland
@@ -182,6 +186,35 @@
           xcrun = pkgs.writeShellScriptBin "xcrun" ''
             exec /usr/bin/xcrun "$@"
           '';
+          # Agent owns its distribution tools and runtime closure. These fixed
+          # hashes also pin the tools used by Research, without importing its
+          # Tauri packaging scripts or requiring its flake.
+          appimageTools =
+            if pkgs.stdenv.hostPlatform.isLinux && pkgs.stdenv.hostPlatform.isx86_64 then
+              let
+                linuxdeploy = pkgs.fetchurl {
+                  url = "https://github.com/tauri-apps/binary-releases/releases/download/linuxdeploy/linuxdeploy-x86_64.AppImage";
+                  hash = "sha256-52K+qFyOsNSzUI1G5cHwN/cX0PkwOuO0qvyLBJkfoe8=";
+                };
+                runtime = pkgs.fetchurl {
+                  url = "https://github.com/AppImage/type2-runtime/releases/download/20251108/runtime-x86_64";
+                  hash = "sha256-L8qLRDySUQ8Ug6iD9gBhrQm0a5eLJjHIB82HOkfsJg0=";
+                };
+              in
+              pkgs.runCommand "maple-agent-appimage-tools-x86_64" { } ''
+                mkdir -p "$out"
+                install -m 0755 ${linuxdeploy} "$out/linuxdeploy-x86_64.AppImage"
+                install -m 0755 ${runtime} "$out/runtime-x86_64"
+              ''
+            else
+              null;
+          linuxRuntimeClosure =
+            if pkgs.stdenv.hostPlatform.isLinux then
+              pkgs.closureInfo {
+                rootPaths = linuxBuildInputs ++ [ pkgs.stdenv.cc.cc.lib pkgs.glibc ];
+              }
+            else
+              null;
         in
         {
           default = mkDevShell {
@@ -192,7 +225,13 @@
               rustToolchain
               just
               python3
-            ] ++ pkgs.lib.optionals isDarwin [ xcrun ];
+            ]
+            ++ pkgs.lib.optionals isDarwin [ xcrun ]
+            ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [
+              pkgs.binutils
+              pkgs.patchelf
+              pkgs.squashfsTools
+            ];
 
             buildInputs =
               [ pkgs.libiconv ]
@@ -214,6 +253,10 @@
             '' + pkgs.lib.optionalString pkgs.stdenv.hostPlatform.isLinux ''
               export LD_LIBRARY_PATH="${pkgs.addDriverRunpath.driverLink}/lib:${pkgs.lib.makeLibraryPath linuxRuntimeInputs}''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
               export VK_ADD_DRIVER_FILES="${pkgs.addDriverRunpath.driverLink}/share/vulkan/icd.d:${pkgs.mesa}/share/vulkan/icd.d''${VK_ADD_DRIVER_FILES:+:$VK_ADD_DRIVER_FILES}"
+              export MAPLE_AGENT_LINUX_CLOSURE_INFO="${linuxRuntimeClosure}"
+              export MAPLE_AGENT_LINUX_GLIBC="${pkgs.glibc}"
+            '' + pkgs.lib.optionalString (appimageTools != null) ''
+              export MAPLE_AGENT_APPIMAGE_TOOLS="${appimageTools}"
             '' + pkgs.lib.optionalString isDarwin ''
               maple_nix_valid_developer_dir() {
                 [ -d "$1" ] \

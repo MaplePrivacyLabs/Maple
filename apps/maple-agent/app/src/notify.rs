@@ -90,7 +90,14 @@ fn run(mut command: Command) -> Result<(), String> {
 fn send(title: &str, body: &str) -> Result<(), String> {
     let mut command = Command::new("notify-send");
     command
-        .args(["-a", "Maple", "-t", "8000", "-u", "normal"])
+        .args([
+            "-a",
+            crate::profile::DISPLAY_NAME,
+            "-t",
+            "8000",
+            "-u",
+            "normal",
+        ])
         .args(linux_positional_args(title, body));
     run(command)
 }

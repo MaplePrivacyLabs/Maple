@@ -19,6 +19,17 @@
 **/justfile @AnthonyRonning
 
 # Native packaging, signing identities, build hooks, and publisher inputs.
+/apps/maple-agent/Cargo.toml @AnthonyRonning
+/apps/maple-agent/Cargo.lock @AnthonyRonning
+/apps/maple-agent/**/Cargo.toml @AnthonyRonning
+/apps/maple-agent/**/build.rs @AnthonyRonning
+/apps/maple-agent/.cargo/ @AnthonyRonning
+/apps/maple-agent/rust-toolchain.toml @AnthonyRonning
+/apps/maple-agent/release_profile.rs @AnthonyRonning
+/apps/maple-agent/release-profiles.json @AnthonyRonning
+/apps/maple-agent/scripts/ @AnthonyRonning
+/apps/maple-agent/app/packaging/ @AnthonyRonning
+/apps/maple-agent/app/macos/ @AnthonyRonning
 /apps/maple-research/frontend/package.json @AnthonyRonning
 /apps/maple-research/frontend/bun.lock @AnthonyRonning
 /apps/maple-research/frontend/bunfig.toml @AnthonyRonning

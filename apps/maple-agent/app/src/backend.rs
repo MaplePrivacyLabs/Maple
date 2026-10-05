@@ -119,11 +119,14 @@ pub struct AgentBackend {
 }
 
 fn configured_client_id() -> Uuid {
-    client_id_from(crate::env::env_string("MAPLE_CLIENT_ID").as_deref())
+    client_id_from(Some(&crate::profile::runtime_value(
+        "MAPLE_CLIENT_ID",
+        crate::profile::CLIENT_ID,
+    )))
 }
 
-/// The client id to send: `MAPLE_CLIENT_ID` when it is a UUID, else the
-/// production id. A malformed override is logged instead of silently
+/// The client id to send: local `MAPLE_CLIENT_ID` when it is a UUID, else the
+/// compiled public project id. A malformed local override is logged instead of silently
 /// pointing a test build at production.
 fn client_id_from(configured: Option<&str>) -> Uuid {
     let default = || DEFAULT_CLIENT_ID.parse().expect("valid uuid");
@@ -154,7 +157,7 @@ impl AgentEventSink for ChannelEventSink {
     }
 }
 
-pub(crate) const APP_DIR_NAME: &str = "maple-agent";
+pub(crate) const APP_DIR_NAME: &str = crate::profile::DATA_NAMESPACE;
 /// Directory name used before the package rename. An existing directory is
 /// adopted in place on first start; see [`adopt_legacy_app_dirs`].
 const LEGACY_APP_DIR_NAME: &str = "maple-gpui";
@@ -165,13 +168,16 @@ const LEGACY_APP_DIR_NAME: &str = "maple-gpui";
 /// layout is never touched. Returns one line per root for the caller to log
 /// once logging is up.
 pub fn adopt_legacy_app_dirs() -> Vec<String> {
+    if crate::profile::PACKAGED {
+        return Vec::new();
+    }
     let mut notes = Vec::new();
     let mut seen: Vec<PathBuf> = Vec::new();
     for root in [config_root(), local_data_root()] {
         if seen.contains(&root) {
             continue;
         }
-        if let Some(note) = adopt_legacy_app_dir(&root) {
+        if let Some(note) = adopt_legacy_app_dir(&root, !crate::profile::PACKAGED) {
             notes.push(note);
         }
         seen.push(root);
@@ -179,7 +185,10 @@ pub fn adopt_legacy_app_dirs() -> Vec<String> {
     notes
 }
 
-fn adopt_legacy_app_dir(root: &Path) -> Option<String> {
+fn adopt_legacy_app_dir(root: &Path, allow_legacy: bool) -> Option<String> {
+    if !allow_legacy {
+        return None;
+    }
     let legacy = root.parent()?.join(LEGACY_APP_DIR_NAME);
     if root.exists() || !legacy.is_dir() {
         return None;
@@ -196,7 +205,7 @@ fn adopt_legacy_app_dir(root: &Path) -> Option<String> {
 
 /// Maple's public OpenSecret project id. The backend rejects unknown
 /// client ids, so this must match the registered project.
-const DEFAULT_CLIENT_ID: &str = "ba5a14b5-d915-47b1-b7b1-afda52bc5fc6";
+const DEFAULT_CLIENT_ID: &str = crate::profile::CLIENT_ID;
 
 /// OAuth providers supported by the OpenSecret backend.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2672,7 +2681,7 @@ mod app_dir_tests {
         std::fs::create_dir_all(legacy.join("logs")).unwrap();
         std::fs::write(legacy.join("auth.json"), "saved").unwrap();
 
-        let note = adopt_legacy_app_dir(&root).expect("first start adopts the legacy dir");
+        let note = adopt_legacy_app_dir(&root, true).expect("first start adopts the legacy dir");
         assert!(note.starts_with("adopted "), "{note}");
         assert_eq!(
             std::fs::read_to_string(root.join("auth.json")).unwrap(),
@@ -2682,12 +2691,12 @@ mod app_dir_tests {
         assert!(!legacy.exists());
 
         // Nothing to do once the current directory exists.
-        assert_eq!(adopt_legacy_app_dir(&root), None);
+        assert_eq!(adopt_legacy_app_dir(&root, true), None);
 
         // A legacy directory that reappears next to a current one is left alone.
         std::fs::create_dir_all(&legacy).unwrap();
         std::fs::write(legacy.join("auth.json"), "stale").unwrap();
-        assert_eq!(adopt_legacy_app_dir(&root), None);
+        assert_eq!(adopt_legacy_app_dir(&root, true), None);
         assert_eq!(
             std::fs::read_to_string(root.join("auth.json")).unwrap(),
             "saved"
@@ -2697,9 +2706,53 @@ mod app_dir_tests {
         // No legacy directory: nothing happens and nothing is created.
         let fresh = base.join("fresh").join(APP_DIR_NAME);
         std::fs::create_dir_all(fresh.parent().unwrap()).unwrap();
-        assert_eq!(adopt_legacy_app_dir(&fresh), None);
+        assert_eq!(adopt_legacy_app_dir(&fresh, true), None);
         assert!(!fresh.exists());
 
         std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn packaged_profiles_never_adopt_legacy_local_or_research_state() {
+        let base = std::env::temp_dir().join(format!(
+            "maple-agent-profile-isolation-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::UNIX_EPOCH
+                .elapsed()
+                .unwrap()
+                .as_nanos()
+        ));
+        for namespace in [
+            "maple-gpui",
+            "maple-agent",
+            "cloud.opensecret.maple",
+            "cloud.opensecret.maple.dev",
+        ] {
+            let path = base.join(namespace);
+            std::fs::create_dir_all(&path).unwrap();
+            std::fs::write(path.join("auth.json"), namespace).unwrap();
+        }
+        for namespace in ["maple-agent-dev", "maple-agent-prod"] {
+            let root = base.join(namespace);
+            assert!(adopt_legacy_app_dir(&root, false).is_none());
+            assert!(!root.exists());
+            std::fs::create_dir_all(&root).unwrap();
+            std::fs::write(root.join("auth.json"), namespace).unwrap();
+        }
+        for namespace in [
+            "maple-gpui",
+            "maple-agent",
+            "cloud.opensecret.maple",
+            "cloud.opensecret.maple.dev",
+            "maple-agent-dev",
+            "maple-agent-prod",
+        ] {
+            assert_eq!(
+                std::fs::read_to_string(base.join(namespace).join("auth.json")).unwrap(),
+                namespace
+            );
+        }
+        assert_eq!(APP_DIR_NAME, crate::profile::DATA_NAMESPACE);
+        std::fs::remove_dir_all(base).unwrap();
     }
 }

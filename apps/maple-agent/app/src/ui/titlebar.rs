@@ -10,7 +10,7 @@ use super::theme;
 
 /// Window title. The system bar and the app's own bar show the same text,
 /// and only one of them is ever on screen (see `super::decorations`).
-pub const WINDOW_TITLE: &str = "Maple - Private AI Chat";
+pub const WINDOW_TITLE: &str = crate::profile::DISPLAY_NAME;
 
 /// On macOS the system title bar is transparent and the app's own top
 /// row sits under it, so the window controls float over the content.
