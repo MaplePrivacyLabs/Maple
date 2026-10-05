@@ -51,5 +51,6 @@ jobs:
           file: proxy/Dockerfile
           platforms: ${{ matrix.platform }}
           cache-from: type=gha,scope=proxy-${{ matrix.platform }}
-          cache-to: type=gha,mode=max,scope=proxy-${{ matrix.platform }}
+          # Cache availability must not turn a successful image build/push into a failure.
+          cache-to: type=gha,mode=max,scope=proxy-${{ matrix.platform }},ignore-error=true
           push: false
