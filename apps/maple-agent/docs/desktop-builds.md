@@ -60,9 +60,12 @@ executable and launch it. Each artifact also contains public build information,
 a package manifest, and checksums.
 
 Every final master package file, including its public metadata and checksums,
-receives GitHub build provenance. Fresh verifiers check the downloaded files
-against this workflow, `master`, and the exact source commit. For a downloaded
-file, verify the provenance with the GitHub CLI:
+receives GitHub build provenance. The trusted macOS signing job mints provenance
+after packaging. Linux compilation uses a read-only token; a separate trusted
+job downloads and attests the final Linux artifacts without checking out or
+executing repository code or launching artifacts. Fresh verifiers check the
+downloaded files against this workflow, `master`, and the exact source commit.
+For a downloaded file, verify the provenance with the GitHub CLI:
 
 ```sh
 gh attestation verify FILE -R MaplePrivacyLabs/Maple \
@@ -83,7 +86,8 @@ and process survival; it does not capture a presented frame or verify login, cha
 microphone or capture permissions. Linux command-line checks do not exercise
 X11/Wayland or host GPU drivers; those remain beta runtime checks. Dev checkout
 and portal requests use the Dev billing API, and pricing/payment return links
-use the existing `app-dev.trymaple.ai` web host. Prod uses `trymaple.ai`.
+use the existing `app-dev.trymaple.ai` website, which is protected by Cloudflare
+Access. Prod uses `trymaple.ai`.
 
 ## Packaging commands
 

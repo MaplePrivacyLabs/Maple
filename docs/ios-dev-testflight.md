@@ -23,16 +23,16 @@ Development and production accounts remain in their respective existing
 services; this app does not require another authentication or billing deployment.
 All `VITE_*` values are public configuration and must never contain secrets.
 
-Set the public repository variable `MAPLE_IOS_DEV_AUTH_ORIGIN` to the canonical
-HTTPS origin of the existing development website, with no path, query, fragment,
-or credentials. The intended stable origin is `https://app-dev.trymaple.ai`,
-serving Research's master development build. Provision and verify that site
-before enabling this channel; naming it here does not establish a deployment.
-The native build requires the variable and has no fallback to the
-production website. The development Pages build receives the same value as
-`VITE_MAPLE_DEV_AUTH_ORIGIN`; production builds remove that development setting.
-An unset variable preserves ordinary web previews, but blocks a Maple Dev native
-build. Setting the variable does not deploy the callback site.
+The stable Research development website is `https://app-dev.trymaple.ai`. Its
+Pages custom domain targets the `master` development preview and is protected by
+Cloudflare Access; browser validation requires an authorized Access session.
+The public repository variable `MAPLE_IOS_DEV_AUTH_ORIGIN` selects this canonical
+HTTPS origin, with no path, query, fragment, or credentials. The native build
+requires the variable and has no fallback to the production website. The
+development Pages build receives the same value as `VITE_MAPLE_DEV_AUTH_ORIGIN`;
+production builds remove that development setting. An unset variable preserves
+ordinary web previews but blocks a Maple Dev native build. Setting the variable
+does not deploy the site or validate its OAuth and native callback flows.
 
 Existing services still need to recognize the separate client identity before
 all authentication paths work. Native Sign in with Apple requires deployment of
