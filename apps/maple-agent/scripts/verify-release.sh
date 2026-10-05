@@ -45,7 +45,7 @@ if [[ "$platform" == macos-aarch64 ]]; then
     if [[ ${#unsigned[@]} == 0 ]]; then
         /usr/bin/codesign --verify --strict --verbose=2 "$directory/$package"
         /usr/bin/xcrun stapler validate "$directory/$package"
-        /usr/bin/spctl --assess --type open --context context:primary-signature --verbose=2 "$directory/$package"
+        /usr/sbin/spctl --assess --type open --context context:primary-signature --verbose=2 "$directory/$package"
     fi
     mount="$temporary/mount"
     mkdir "$mount"
@@ -61,7 +61,7 @@ if [[ "$platform" == macos-aarch64 ]]; then
             grep -Fq 'Authority=Developer ID Application:' <<< "$signature"
             grep -Eq 'flags=.*\(runtime\)' <<< "$signature"
             /usr/bin/xcrun stapler validate "$app"
-            /usr/bin/spctl --assess --type execute --verbose=2 "$app"
+            /usr/sbin/spctl --assess --type execute --verbose=2 "$app"
         else
             grep -Fq 'Signature=adhoc' <<< "$signature"
         fi

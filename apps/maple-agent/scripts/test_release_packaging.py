@@ -23,6 +23,19 @@ release_info = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(release_info)
 
 
+class NativeGatekeeperTests(unittest.TestCase):
+    @unittest.skipUnless(sys.platform == "darwin", "requires native macOS Gatekeeper")
+    def test_native_gatekeeper_resolves_without_path_lookup(self):
+        with tempfile.TemporaryDirectory() as empty_path:
+            result = subprocess.run(
+                ["/bin/bash", "-c", 'source "$1"; macos_native spctl --status',
+                 "native-gatekeeper-test", str(SCRIPTS / "macos-release-app.sh")],
+                env={"PATH": empty_path}, capture_output=True, text=True,
+            )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("assessments", result.stdout + result.stderr)
+
+
 class PrebuiltReleaseTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
