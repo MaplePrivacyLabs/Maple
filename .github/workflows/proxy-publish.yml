@@ -301,7 +301,8 @@ jobs:
             org.opencontainers.image.revision=${{ needs.prepare.outputs.release_sha }}
             org.opencontainers.image.version=${{ needs.prepare.outputs.proxy_version }}
           cache-from: type=gha,scope=proxy-publish-${{ matrix.platform }}
-          cache-to: type=gha,mode=max,scope=proxy-publish-${{ matrix.platform }}
+          # Cache availability must not turn a successful image build/push into a failure.
+          cache-to: type=gha,mode=max,scope=proxy-publish-${{ matrix.platform }},ignore-error=true
           provenance: mode=max
           sbom: false
           outputs: type=image,name=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
