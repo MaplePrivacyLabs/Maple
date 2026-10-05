@@ -20,6 +20,13 @@ macos_embed_dylibs() {
 macos_release_cleanup() {
     local status=$?
     trap - EXIT INT TERM HUP
+    if [[ "${macos_release_restore_search_list:-false}" == true ]]; then
+        if ! macos_native security list-keychains -d user -s \
+            ${macos_release_search_list[@]+"${macos_release_search_list[@]}"} >/dev/null; then
+            echo "failed to restore the original macOS keychain search list" >&2
+            [[ "$status" != 0 ]] || status=1
+        fi
+    fi
     if [[ -n "${macos_release_keychain:-}" ]]; then
         macos_native security delete-keychain "$macos_release_keychain" >/dev/null 2>&1 || true
     fi
@@ -53,6 +60,8 @@ macos_release_main() {
 
     macos_release_staging="$(mktemp -d "$output_dir/.macos-release.XXXXXX")"
     macos_release_keychain=""
+    macos_release_search_list=()
+    macos_release_restore_search_list=false
     macos_release_mount=""
     trap macos_release_cleanup EXIT
     trap 'exit 130' INT
@@ -98,9 +107,32 @@ macos_release_main() {
         }
         local certificate="$macos_release_staging/signing.p12" keychain_password cert_info
         macos_release_keychain="$macos_release_staging/signing.keychain-db"
+        # codesign still consults the user's search list for identity/chain
+        # resolution, even with --keychain. Private keychain creation does not
+        # add it there. Preserve every existing quoted path and the default.
+        local search_list search_path
+        search_list="$(macos_native security list-keychains -d user)"
+        printf '%s\n' "$search_list" | python3 -c '
+import sys
+for line in sys.stdin:
+    value=line.strip()
+    if not value: continue
+    if len(value) < 3 or value[0] != "\"" or value[-1] != "\"" or not value[1:-1].startswith("/") or "\0" in value:
+        raise SystemExit("invalid quoted macOS keychain search-list path")
+    path=value[1:-1]
+    sys.stdout.buffer.write(path.encode()+b"\0")' > "$macos_release_staging/search-list.paths"
+        while IFS= read -r -d '' search_path; do
+            macos_release_search_list+=("$search_path")
+        done < "$macos_release_staging/search-list.paths"
+        # Set this before any keychain operation: a failed mutation must also
+        # restore the snapshot, including failures and signals during setup.
+        macos_release_restore_search_list=true
         keychain_password="$(python3 -c 'import secrets; print(secrets.token_hex(24))')"
         printf '%s' "$APPLE_CERTIFICATE" | macos_native base64 -D > "$certificate"
         macos_native security create-keychain -p "$keychain_password" "$macos_release_keychain" >/dev/null
+        macos_native security list-keychains -d user -s \
+            ${macos_release_search_list[@]+"${macos_release_search_list[@]}"} \
+            "$macos_release_keychain" >/dev/null
         macos_native security unlock-keychain -p "$keychain_password" "$macos_release_keychain" >/dev/null
         # The job owns this temporary keychain and deletes it on every exit.
         # Do not lock it during a long notarization wait; the password is discarded.
@@ -142,8 +174,8 @@ print(matches[0])' "$APPLE_TEAM_ID")"
     cmp "$output_dir/build-info.json" "$macos_release_staging/static-build-info.json"
 
     if [[ "$unsigned" == false ]]; then
-        # Notary credentials live only in this temporary keychain. Never modify
-        # the developer's default keychain or its search list.
+        # Notary credentials live only in this temporary keychain. The default
+        # keychain is unchanged and cleanup restores its original search list.
         macos_native xcrun notarytool store-credentials maple-agent-release \
             --keychain "$macos_release_keychain" --apple-id "$APPLE_ID" \
             --team-id "$APPLE_TEAM_ID" --password "$APPLE_ID_PASSWORD" >/dev/null

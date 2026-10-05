@@ -353,7 +353,14 @@ class AppArchiveTests(unittest.TestCase):
 class NativeSigningBoundaryTests(unittest.TestCase):
     setUp = ReleaseMetadataTests.setUp
     write_info = ReleaseMetadataTests.write_info
-    def run_packager(self, unsigned=False, failure="", signal=False):
+    search_list = [
+        "/Users/Fixture User/Library/Keychains/login.keychain-db",
+        '/Users/Fixture User/Library/Keychains/Quoted "Name".keychain-db',
+        r"/Users/Fixture User/Library/Keychains/Back\slash.keychain-db",
+        "/Library/Keychains/System.keychain",
+    ]
+
+    def run_packager(self, unsigned=False, failure="", signal=False, search_list=None):
         binary = self.directory / "maple-agent"
         # Static-only fixture cannot be launched. Successful signing packaging
         # proves the keychain-bearing path never executes artifact code.
@@ -361,6 +368,8 @@ class NativeSigningBoundaryTests(unittest.TestCase):
         binary.chmod(0o755)
         log = self.directory / "native-calls.jsonl"
         log.unlink(missing_ok=True)
+        search_state = self.directory / "keychain-search.json"
+        search_state.write_text(json.dumps(self.search_list if search_list is None else search_list))
         wrapper = self.directory / "mock-packager.sh"
         wrapper.write_text(f"""#!/usr/bin/env bash
 set -euo pipefail
@@ -395,8 +404,44 @@ PY
         base64) cat >/dev/null; printf fixture-certificate ;;
         security)
             if [[ "$1" == find-identity ]]; then echo '1) 1111111111111111111111111111111111111111 "Developer ID Application: Fixture (TEAM123456)"';
-            elif [[ "$1" == create-keychain ]]; then touch "${{@:$#}}"; fi ;;
+            elif [[ "$1" == create-keychain ]]; then touch "${{@:$#}}";
+            elif [[ "$1" == list-keychains ]]; then
+                python3 - "$@" <<'PY'
+import json,os,sys
+from pathlib import Path
+state=Path(os.environ['FIXTURE_KEYCHAIN_SEARCH'])
+args=sys.argv[1:]
+if args == ['list-keychains','-d','user']:
+    if os.environ.get('FIXTURE_FAILURE') == 'malformed-search':
+        print('not a quoted path')
+    else:
+        for path in json.loads(state.read_text()):
+            print('    "'+path+'"')
+else:
+    assert args[:4] == ['list-keychains','-d','user','-s'], args
+    paths=args[4:]
+    adding=any('/.macos-release.' in path and path.endswith('/signing.keychain-db') for path in paths)
+    failure=os.environ.get('FIXTURE_FAILURE')
+    if failure == 'restore-search' and not adding:
+        raise SystemExit(1)
+    state.write_text(json.dumps(paths))
+    # Simulate a setter that changed state before reporting failure.
+    if failure == 'set-search' and adding:
+        raise SystemExit(1)
+PY
+            fi ;;
         codesign)
+            if [[ "$1" == --force && "$3" != - ]]; then
+                python3 - "$@" <<'PY'
+import json,os,sys
+from pathlib import Path
+args=sys.argv[1:]
+assert args[args.index('--sign')+1] == '1111111111111111111111111111111111111111'
+assert '--keychain' in args, 'signing lookup must remain scoped to its keychain'
+keychain=args[args.index('--keychain')+1]
+assert keychain in json.loads(Path(os.environ['FIXTURE_KEYCHAIN_SEARCH']).read_text()), 'no identity found: owned keychain missing from search list'
+PY
+            fi
             if [[ "${{FIXTURE_FAILURE:-}}" == codesign && "$1" == --force ]]; then return 1; fi ;;
         spctl) ;;
         ditto)
@@ -414,6 +459,7 @@ macos_release_main {shlex.quote(str(binary))} {shlex.quote(str(self.directory))}
             "MAPLE_PACKAGE_CHANNEL": "dev", "MAPLE_PACKAGE_APP_NAME": self.info["display_name"],
             "MAPLE_PACKAGE_BUNDLE_ID": self.info["bundle_id"], "MAPLE_PACKAGE_BUILD_NUMBER": "42",
             "FIXTURE_BUILD_INFO": str(self.path), "FIXTURE_CALLS": str(log),
+            "FIXTURE_KEYCHAIN_SEARCH": str(search_state),
             "FIXTURE_FAILURE": failure, "FIXTURE_SIGNAL": "yes" if signal else "",
             "APPLE_CERTIFICATE": "fixture-cert", "APPLE_CERTIFICATE_PASSWORD": "fixture-cert-password",
             "APPLE_ID": "fixture-apple-id", "APPLE_ID_PASSWORD": "fixture-notary-password",
@@ -426,6 +472,13 @@ macos_release_main {shlex.quote(str(binary))} {shlex.quote(str(self.directory))}
     def assert_secrets_not_returned(self, result):
         for value in ("fixture-cert-password", "fixture-notary-password", "fixture-cert"):
             self.assertNotIn(value, result.stdout + result.stderr)
+
+    def assert_search_list_restored(self, calls, expected=None):
+        expected = self.search_list if expected is None else expected
+        self.assertEqual(json.loads((self.directory / "keychain-search.json").read_text()), expected)
+        setters = [call for call in calls if call[:4] == ["security", "list-keychains", "-d", "user"] and "-s" in call]
+        self.assertEqual(setters[-1][5:], expected)
+        self.assertLess(calls.index(setters[-1]), next(i for i, call in enumerate(calls) if call[:2] == ["security", "delete-keychain"]))
 
     def test_inside_out_signing_notarization_and_ephemeral_keychain_cleanup(self):
         result, calls = self.run_packager()
@@ -442,7 +495,15 @@ macos_release_main {shlex.quote(str(binary))} {shlex.quote(str(self.directory))}
         settings = [call for call in calls if call[:2] == ["security", "set-keychain-settings"]]
         self.assertEqual(len(settings), 1)
         self.assertEqual(len(settings[0]), 3, "owned keychain must not lock during notarization")
-        self.assertFalse(any("default-keychain" in call or "list-keychains" in call for call in calls))
+        self.assertFalse(any("default-keychain" in call for call in calls))
+        query = ["security", "list-keychains", "-d", "user"]
+        create = next(i for i, call in enumerate(calls) if call[:2] == ["security", "create-keychain"])
+        self.assertLess(calls.index(query), create, "snapshot must precede keychain creation")
+        setters = [call for call in calls if call[:5] == query + ["-s"]]
+        self.assertEqual(len(setters), 2)
+        self.assertEqual(setters[0][5:-1], self.search_list, "existing paths and order must be preserved")
+        self.assertTrue(setters[0][-1].endswith("/signing.keychain-db"))
+        self.assert_search_list_restored(calls)
         self.assertFalse(list(self.directory.glob(".macos-release.*")))
         with tarfile.open(self.directory / "fixture.app.tar.gz") as archive:
             icon = archive.extractfile(f"{self.info['display_name']}.app/Contents/Resources/MapleAgent.icns").read()
@@ -473,11 +534,42 @@ macos_release_main {shlex.quote(str(binary))} {shlex.quote(str(self.directory))}
                 self.assertNotEqual(result.returncode, 0)
                 self.assert_secrets_not_returned(result)
                 self.assertTrue(any(call[:2] == ["security", "delete-keychain"] for call in calls))
+                self.assert_search_list_restored(calls)
                 self.assertFalse(list(self.directory.glob(".macos-release.*")))
 
     def test_signal_cleans_owned_keychain_and_private_files(self):
         result, calls = self.run_packager(signal=True)
         self.assertEqual(result.returncode, 143)
+        self.assert_secrets_not_returned(result)
+        self.assertTrue(any(call[:2] == ["security", "delete-keychain"] for call in calls))
+        self.assert_search_list_restored(calls)
+        self.assertFalse(list(self.directory.glob(".macos-release.*")))
+
+    def test_failed_search_list_mutation_still_restores_before_deleting_keychain(self):
+        result, calls = self.run_packager(failure="set-search")
+        self.assertNotEqual(result.returncode, 0)
+        self.assert_secrets_not_returned(result)
+        self.assert_search_list_restored(calls)
+        self.assertFalse(any(call[0] == "codesign" for call in calls))
+        self.assertFalse(list(self.directory.glob(".macos-release.*")))
+
+    def test_empty_original_search_list_is_restored(self):
+        result, calls = self.run_packager(search_list=[])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assert_search_list_restored(calls, expected=[])
+
+    def test_malformed_search_list_fails_before_keychain_setup(self):
+        result, calls = self.run_packager(failure="malformed-search")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("invalid quoted macOS keychain search-list path", result.stderr)
+        self.assertFalse(any(call[:2] == ["security", "create-keychain"] for call in calls))
+        self.assertFalse(any(call[0] == "codesign" or "-s" in call for call in calls))
+        self.assertEqual(json.loads((self.directory / "keychain-search.json").read_text()), self.search_list)
+
+    def test_restore_failure_is_visible_and_fails_otherwise_successful_packaging(self):
+        result, calls = self.run_packager(failure="restore-search")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("failed to restore the original macOS keychain search list", result.stderr)
         self.assert_secrets_not_returned(result)
         self.assertTrue(any(call[:2] == ["security", "delete-keychain"] for call in calls))
         self.assertFalse(list(self.directory.glob(".macos-release.*")))
