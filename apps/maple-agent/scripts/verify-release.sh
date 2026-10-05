@@ -98,7 +98,9 @@ else
     # GitHub artifact download preserves bytes but resets executable file modes.
     # Restore public execution before the subsequent non-root/no-Nix smoke.
     chmod 0755 "$directory/$package"
-    (cd "$temporary" && "$directory/$package" --appimage-extract >/dev/null)
+    # Preserve stored public modes for audit. Keep private verifier files under
+    # the outer 077 umask, and do not mask unsafe archive modes into safe ones.
+    (umask 000; cd "$temporary" && "$directory/$package" --appimage-extract >/dev/null)
     python3 "$component/scripts/linux-release-appimage.py" audit "$temporary/squashfs-root"
     "$temporary/squashfs-root/AppRun" --build-info > "$temporary/build-info.json"
     cmp "$directory/build-info.json" "$temporary/build-info.json"

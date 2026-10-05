@@ -46,9 +46,9 @@ class PackagingError(RuntimeError):
     pass
 
 
-def run(*args, check=True, env=None):
+def run(*args, check=True, env=None, umask=-1):
     result = subprocess.run(
-        [str(arg) for arg in args], capture_output=True, text=True, env=env
+        [str(arg) for arg in args], capture_output=True, text=True, env=env, umask=umask
     )
     if check and result.returncode:
         raise PackagingError(
@@ -418,7 +418,10 @@ def extract_appimage(image, destination):
     offset = data.find(b"hsqs")
     while offset >= 0:
         if run("unsquashfs", "-s", "-o", offset, image, check=False).returncode == 0:
-            run("unsquashfs", "-no-progress", "-d", destination, "-o", offset, image)
+            # Nonroot unsquashfs masks ordinary archived file modes with its
+            # inherited umask. Preserve the actual modes for strict auditing;
+            # only this child changes umask, leaving the parent's private 077.
+            run("unsquashfs", "-no-progress", "-d", destination, "-o", offset, image, umask=0)
             return
         offset = data.find(b"hsqs", offset + 1)
     raise PackagingError(f"AppImage has no valid SquashFS payload: {image}")

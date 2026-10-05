@@ -101,6 +101,95 @@ print(Path(os.environ["FIXTURE_BUILD_INFO"]).read_text(), end="")
         self.assertEqual(target.stat().st_mode & 0o777, 0o644)
 
 
+class LinuxVerifierExtractionTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.component = self.root / "component"
+        scripts = self.component / "scripts"
+        scripts.mkdir(parents=True)
+        for name in ("verify-release.sh", "release-info.py"):
+            shutil.copy2(SCRIPTS / name, scripts / name)
+        shutil.copy2(SCRIPTS.parent / "release-profiles.json", self.component)
+        profiles = json.loads((self.component / "release-profiles.json").read_text())
+        self.info = {**profiles["dev"], "profile": "dev", "version": "0.1.0",
+                     "source_sha": "a" * 40, "git_revision": "a" * 8}
+        self.artifacts = self.root / "artifacts"
+        self.artifacts.mkdir()
+        (self.artifacts / "build-info.json").write_text(json.dumps(self.info) + "\n")
+        launcher = f"""#!{sys.executable}
+import sys
+if sys.argv[1:] == ["--build-info"]:
+    print({json.dumps(self.info)!r})
+elif sys.argv[1:] == ["--version"]:
+    print("Maple Agent fixture")
+else:
+    raise SystemExit("unexpected fixture launcher arguments")
+"""
+        self.image = self.artifacts / "fixture.AppImage"
+        self.image.write_text(f"""#!{sys.executable}
+import os
+from pathlib import Path
+import sys
+assert sys.argv[1:] == ["--appimage-extract"]
+appdir = Path("squashfs-root")
+appdir.mkdir(mode=0o755)
+for name, content, mode in (("AppRun", {launcher!r}, int(os.environ["FIXTURE_EXEC_MODE"], 8)),
+                             ("resource.txt", "fixture data", int(os.environ["FIXTURE_DATA_MODE"], 8))):
+    descriptor = os.open(appdir / name, os.O_WRONLY | os.O_CREAT | os.O_EXCL, mode)
+    with os.fdopen(descriptor, "w") as output:
+        output.write(content)
+""")
+        release_info.write_manifest(self.info, self.artifacts, "linux-x86_64", True)
+        # Substitute only the audit/runtime closure and host identity; the real
+        # verifier still checks the manifest, checksums, profile and source.
+        (scripts / "linux-release-appimage.py").write_text("""import os
+from pathlib import Path
+import sys
+assert sys.argv[1] == "audit"
+appdir = Path(sys.argv[2])
+assert appdir.stat().st_mode & 0o777 == 0o755
+assert (appdir / "AppRun").stat().st_mode & 0o7777 == 0o755
+assert (appdir / "resource.txt").stat().st_mode & 0o7777 == 0o644
+private = appdir.parent / "private-after-extraction"
+private.write_text("fixture private metadata")
+assert private.stat().st_mode & 0o777 == 0o600, "extraction changed the parent's private umask"
+assert appdir.parent.stat().st_mode & 0o777 == 0o700
+""")
+        commands = self.root / "commands"
+        commands.mkdir()
+        for name, body in {
+            "uname": 'import sys; print("Linux" if sys.argv[1] == "-s" else "x86_64")',
+            "git": 'print("a" * 40)',
+        }.items():
+            path = commands / name
+            path.write_text(f"#!{sys.executable}\n{body}\n")
+            path.chmod(0o755)
+        self.env = dict(os.environ, PATH=str(commands) + os.pathsep + os.environ["PATH"],
+                        TMPDIR=str(self.root), FIXTURE_EXEC_MODE="755", FIXTURE_DATA_MODE="644")
+
+    def verify(self):
+        result = subprocess.run(["bash", str(self.component / "scripts/verify-release.sh"), "dev",
+                                 str(self.artifacts), "--unsigned"], env=self.env, capture_output=True, text=True)
+        self.assertFalse(list(self.root.glob("maple-agent-verify.*")), "verifier private files must be cleaned")
+        return result
+
+    def test_public_archive_modes_and_parent_private_umask_are_preserved(self):
+        result = self.verify()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("verified dev linux-x86_64", result.stdout)
+
+    def test_unsafe_archive_modes_are_not_masked_into_passing_modes(self):
+        for variable, mode in (("FIXTURE_EXEC_MODE", "777"), ("FIXTURE_DATA_MODE", "666")):
+            with self.subTest(variable=variable):
+                self.env[variable] = mode
+                result = self.verify()
+                self.assertNotEqual(result.returncode, 0)
+                self.assertNotIn("verified dev linux-x86_64", result.stdout)
+                self.env[variable] = "755" if variable == "FIXTURE_EXEC_MODE" else "644"
+
+
 class ReleaseMetadataTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()

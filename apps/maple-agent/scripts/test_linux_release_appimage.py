@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 from unittest import mock
@@ -17,6 +18,7 @@ spec = importlib.util.spec_from_file_location(
 )
 packaging = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(packaging)
+NATIVE_RUN = packaging.run
 
 HEADER = b"\x7fELF\x02\x01" + b"\x00" * 12 + b"\x3e\x00"
 METADATA = {
@@ -319,6 +321,47 @@ class AppImageTests(unittest.TestCase):
         (appdir / "usr/share/maple-agent/package-metadata.json").chmod(0o600)
         with self.assertRaisesRegex(packaging.PackagingError, "public package file permissions"):
             packaging.audit(appdir)
+
+    def test_extraction_preserves_archive_modes_and_private_parent_umask(self):
+        tools = self.root / "extraction-tools"
+        tools.mkdir()
+        extractor = tools / "unsquashfs"
+        # Match pinned nonroot unsquashfs's regular-file open behavior without
+        # chmod after creation. Use this test's interpreter in the subprocess.
+        extractor.write_text(f"#!{sys.executable}\n" + '''
+import os
+from pathlib import Path
+import sys
+if "-s" in sys.argv:
+    sys.exit(0)
+destination = Path(sys.argv[sys.argv.index("-d") + 1])
+destination.mkdir(mode=0o755)
+for name, mode in (("AppRun", 0o755), ("unsafe-executable", 0o777), ("unsafe-data", 0o666)):
+    descriptor = os.open(destination / name, os.O_WRONLY | os.O_CREAT, mode)
+    os.write(descriptor, b"fixture-data")
+    os.close(descriptor)
+''')
+        extractor.chmod(0o755)
+        image = self.root / "fixture.AppImage"
+        image.write_bytes(b"type2-runtime-prefixhsqs")
+        destination = self.root / "extracted"
+        previous = os.umask(0o077)
+        try:
+            with mock.patch.dict(os.environ, {"PATH": f"{tools}{os.pathsep}{os.environ.get('PATH', '')}"}), mock.patch.object(packaging, "run", NATIVE_RUN):
+                packaging.extract_appimage(image, destination)
+            self.assertEqual(os.umask(0o077), 0o077)
+            self.assertEqual((destination / "AppRun").stat().st_mode & 0o777, 0o755)
+            self.assertEqual((destination / "unsafe-executable").stat().st_mode & 0o777, 0o777)
+            self.assertEqual((destination / "unsafe-data").stat().st_mode & 0o777, 0o666)
+            appdir = self.stage()
+            for name in ("unsafe-executable", "unsafe-data"):
+                target = appdir / name
+                shutil.copy2(destination / name, target)
+                with self.assertRaisesRegex(packaging.PackagingError, "public package file permissions"):
+                    packaging.audit(appdir)
+                target.unlink()
+        finally:
+            os.umask(previous)
 
 
 if __name__ == "__main__":
