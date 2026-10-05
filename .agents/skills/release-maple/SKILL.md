@@ -262,8 +262,14 @@ gh run list --repo MaplePrivacyLabs/Maple --workflow 'Publish proxy container' \
   --json databaseId,status,conclusion,headSha,createdAt,url
 ```
 
-The updater workflow must publish the verified `latest.json` before reporting
-the desktop updater control plane current. In legacy Pages mode, a successful
+The updater workflow must publish the original verified `latest.json` and its
+matching Research installer catalog before reporting distribution current.
+Its public check proves byte-identical Tauri metadata and all six GET/HEAD
+installer redirects; marketing follows the stable URLs without a redeploy.
+Treat incomplete assets, provenance failures and blocked download routes as
+publication failures, not reasons to alter updater metadata or weaken checks.
+Use the [updates service guide](../../../services/updates/README.md) for its
+one-time rollout and recovery boundaries. In legacy Pages mode, a successful
 promoter proves only the `pages-production` ref mutation; verify Cloudflare's
 separate build result. In owned-publisher mode, require the `production` job in
 `Publish Pages` to succeed: it validates the release asset, uploads without a

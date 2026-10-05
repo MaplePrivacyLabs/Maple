@@ -1,3 +1,4 @@
 node_modules/
 .wrangler/
 public/latest.json
+public/installers.json

@@ -8,6 +8,7 @@ on:
     branches: [master]
     paths:
       - ".github/workflows/updates-tests.yml"
+      - ".github/workflows/updates-publish.yml"
       - "services/updates/**"
       - "scripts/ci/_common.sh"
       - "scripts/ci/updates.sh"
@@ -17,6 +18,7 @@ on:
     branches: [master]
     paths:
       - ".github/workflows/updates-tests.yml"
+      - ".github/workflows/updates-publish.yml"
       - "services/updates/**"
       - "scripts/ci/_common.sh"
       - "scripts/ci/updates.sh"

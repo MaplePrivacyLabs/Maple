@@ -27,10 +27,19 @@ Pages/updater deployments. The same environments also serve owner-controlled
 Creating a release and controlling its distribution remain separate boundaries.
 
 Require release-owner approval for `zapstore-publishing`, `pages-production`,
-`updates-production`, and `auth-pages-production`, with self-review allowed and
-administrator bypass disabled. Preserve the three Pages/updater publishers'
-`master`-only branch policy and the existing SDK and PCR signing reviewer gates.
+and `auth-pages-production`, with self-review allowed and administrator bypass
+disabled. Preserve the three Pages/updater publishers' `master`-only branch
+policy and the existing SDK and PCR signing reviewer gates.
 Unsigned PR builds and Pages previews keep their automatic behavior.
+
+`updates-production` publishes the original updater metadata and Research
+installer redirects automatically after a successful stable `Release` run.
+Its manual recovery path requires the same successful repository, tag and commit
+proof; it cannot promote an incomplete release. Once that hardened publisher is
+merged, remove this environment's required reviewer while retaining its exact
+`master` branch restriction and environment secrets. This is a one-time rollout
+setting, not a new approval for each release. See the
+[updater rollout checks](../services/updates/README.md).
 
 `apple-signing` remains automatic for now because Maple Dev and production iOS
 share its credentials. Gating this environment would also interrupt the

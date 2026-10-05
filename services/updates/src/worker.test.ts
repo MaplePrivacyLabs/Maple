@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { INSTALLER_KEYS } from "./installers";
 
 import {
   GITHUB_REPOSITORY,
@@ -115,7 +116,7 @@ describe("latest.json validation", () => {
 });
 
 describe("updates Worker", () => {
-  test("returns 404 for every path except latest.json without reading assets", async () => {
+  test("returns 404 for unknown paths without reading assets", async () => {
     let assetFetches = 0;
     const response = await handleRequest(
       new Request("https://updates.trymaple.ai/"),
@@ -207,6 +208,41 @@ describe("updates Worker", () => {
     expect(await response.text()).toBe("");
   });
 
+  test("preserves updater bytes and headers without loading the installer catalog", async () => {
+    const metadata = `${JSON.stringify(validRelease(), null, 2)}\n`;
+    for (const method of ["GET", "HEAD"]) {
+      const response = await handleRequest(
+        new Request("https://updates.trymaple.ai/latest.json?deploy=abc", {
+          method,
+        }),
+        {
+          ASSETS: {
+            async fetch(request) {
+              expect(new URL(request.url).pathname).toBe("/latest.json");
+              expect(request.method).toBe("GET");
+              return new Response(metadata, {
+                headers: {
+                  etag: '"unchanged"',
+                  "last-modified": "Mon, 24 Aug 2026 20:00:00 GMT",
+                },
+              });
+            },
+          },
+        },
+      );
+      expect(response.status).toBe(200);
+      expect(await response.text()).toBe(method === "HEAD" ? "" : metadata);
+      expect(response.headers.get("etag")).toBe('"unchanged"');
+      expect(response.headers.get("last-modified")).toBe(
+        "Mon, 24 Aug 2026 20:00:00 GMT",
+      );
+      expect(response.headers.get("cache-control")).toBe(
+        "public, max-age=0, must-revalidate, no-transform",
+      );
+      expect(response.headers.get("cdn-cache-control")).toBe("no-store");
+    }
+  });
+
   test("returns 503 for invalid, oversized, or unavailable metadata", async () => {
     const invalid = await handleRequest(
       new Request("https://updates.trymaple.ai/latest.json"),
@@ -229,5 +265,146 @@ describe("updates Worker", () => {
       envReturning(new Response(null, { status: 503 })),
     );
     expect(unavailable.status).toBe(503);
+  });
+});
+
+function validCatalog() {
+  const version = "3.4.1";
+  const names = {
+    macos: `Maple_${version}_universal.dmg`,
+    windows: `Maple_${version}_x64-setup.exe`,
+    "linux-appimage": `Maple_${version}_amd64.AppImage`,
+    "linux-deb": `Maple_${version}_amd64.deb`,
+    "linux-rpm": `Maple-${version}-1.x86_64.rpm`,
+    android: "app-universal-release.apk",
+  };
+  return {
+    schema_version: 1,
+    product: "research",
+    channel: "stable",
+    version,
+    release_id: 100,
+    installers: Object.fromEntries(
+      INSTALLER_KEYS.map((key, index) => [
+        key,
+        {
+          asset_id: index + 1,
+          name: names[key],
+          size: 1000,
+          sha256: "a".repeat(64),
+          url: releaseUrl(version, names[key]),
+        },
+      ]),
+    ),
+  };
+}
+
+describe("Research installer redirects", () => {
+  test("every installer supports GET and HEAD with an uncached versioned redirect", async () => {
+    const catalog = validCatalog();
+    for (const key of INSTALLER_KEYS) {
+      for (const method of ["GET", "HEAD"]) {
+        const requests: Request[] = [];
+        const response = await handleRequest(
+          new Request(
+            `https://updates.trymaple.ai/download/research/stable/${key}?url=https://evil.example/`,
+            { method, headers: { authorization: "Bearer do-not-forward" } },
+          ),
+          envReturning(new Response(JSON.stringify(catalog)), requests),
+        );
+        expect(response.status).toBe(302);
+        expect(response.headers.get("location")).toBe(
+          catalog.installers[key].url,
+        );
+        expect(response.headers.get("cache-control")).toBe("no-store");
+        expect(response.headers.get("cdn-cache-control")).toBe("no-store");
+        expect(await response.text()).toBe("");
+        expect(requests).toHaveLength(1);
+        expect(requests[0].url).toBe(
+          "https://updates.trymaple.ai/installers.json",
+        );
+        expect(requests[0].method).toBe("GET");
+        expect(requests[0].headers.has("authorization")).toBe(false);
+      }
+    }
+  });
+
+  test("does not expose metadata, other products, channels or unknown installers", async () => {
+    for (const path of [
+      "/installers.json",
+      "/download/research/stable/unknown",
+      "/download/research/stable/macos/",
+      "/download/agent/stable/macos",
+      "/download/research/dev/macos",
+      "/download/research/stable/%6dacos",
+    ]) {
+      const requests: Request[] = [];
+      const response = await handleRequest(
+        new Request(`https://updates.trymaple.ai${path}`),
+        envReturning(new Response(JSON.stringify(validCatalog())), requests),
+      );
+      expect(response.status).toBe(404);
+      expect(requests).toHaveLength(0);
+    }
+  });
+
+  test("rejects writes without reading assets", async () => {
+    const requests: Request[] = [];
+    const response = await handleRequest(
+      new Request(
+        "https://updates.trymaple.ai/download/research/stable/macos",
+        {
+          method: "POST",
+        },
+      ),
+      envReturning(new Response(JSON.stringify(validCatalog())), requests),
+    );
+    expect(response.status).toBe(405);
+    expect(response.headers.get("allow")).toBe("GET, HEAD");
+    expect(requests).toHaveLength(0);
+  });
+
+  test("fails closed for missing, invalid, oversized and unavailable catalog", async () => {
+    const wrongTarget = validCatalog();
+    wrongTarget.installers.macos.url = "https://evil.example/installer.dmg";
+    const incomplete = validCatalog();
+    delete incomplete.installers.android;
+    const wrongProduct = { ...validCatalog(), product: "agent" };
+    const wrongVersion = { ...validCatalog(), version: "3.4.2" };
+    for (const asset of [
+      new Response(null, { status: 404 }),
+      new Response(null, { status: 503 }),
+      new Response("<html>challenge</html>"),
+      new Response(new Uint8Array([0xff])),
+      new Response(JSON.stringify(wrongTarget)),
+      new Response(JSON.stringify(incomplete)),
+      new Response(JSON.stringify(wrongProduct)),
+      new Response(JSON.stringify(wrongVersion)),
+      new Response(JSON.stringify(validCatalog()), {
+        headers: { "content-length": String(64 * 1024 + 1) },
+      }),
+      new Response(" ".repeat(64 * 1024 + 1)),
+    ]) {
+      const response = await handleRequest(
+        new Request(
+          "https://updates.trymaple.ai/download/research/stable/macos",
+        ),
+        envReturning(asset),
+      );
+      expect(response.status).toBe(503);
+      expect(response.headers.get("location")).toBeNull();
+      expect(response.headers.get("cache-control")).toBe("no-store");
+    }
+    const response = await handleRequest(
+      new Request("https://updates.trymaple.ai/download/research/stable/macos"),
+      {
+        ASSETS: {
+          fetch: async () => {
+            throw new Error("unavailable");
+          },
+        },
+      },
+    );
+    expect(response.status).toBe(503);
   });
 });
