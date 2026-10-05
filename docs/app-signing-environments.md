@@ -29,15 +29,23 @@ Creating a release and controlling its distribution remain separate boundaries.
 `Maple Agent Desktop Builds` also uses the existing `desktop-signing` environment
 for its trusted `master` macOS Dev/Prod jobs. The same Developer ID publisher
 signs distinct Agent bundle identities; it does not replace Research's identity.
-Agent contributor packaging and Linux builds have no signing credentials.
-Agent macOS compilation also runs without signing credentials. A fresh
-packaging job downloads the binary from the same workflow run and validates
+Agent contributor packaging, Linux compilation, and macOS compilation receive
+no Apple or updater signing secrets. A fresh macOS packaging job downloads the
+binary from the same workflow run and validates
 its profile and embedded source revision against the exact checkout by reading
 a dedicated Mach-O metadata section. It never executes artifact code, including
 before the Apple credential step, and does not restore compilation caches or run
-Cargo. App launches and Swift runtime checks run only on credential-free verifiers.
-Agent builds upload separately named Actions artifacts and verify downloaded
-packages without signing credentials. See [Agent desktop builds](../apps/maple-agent/docs/desktop-builds.md).
+Cargo. App launches and Swift runtime checks run only on verifiers without Apple
+or updater signing secrets. Agent builds upload separately named Actions artifacts.
+
+The macOS signing job has `contents: read`, `id-token: write`, and
+`attestations: write` to mint GitHub build provenance after packaging. Linux
+compilation keeps a read-only token; a separate trusted-master job has those
+same provenance permissions and downloads the final Linux artifacts to attest
+them. That job does not check out or execute repository code or launch artifacts.
+Fresh verifiers have `contents: read` and `attestations: read`, receive no Apple
+or updater signing secrets, and require provenance from this workflow, `master`,
+and the exact source commit. See [Agent desktop builds](../apps/maple-agent/docs/desktop-builds.md).
 
 Require release-owner approval for `zapstore-publishing`, `pages-production`,
 `updates-production`, and `auth-pages-production`, with self-review allowed and
