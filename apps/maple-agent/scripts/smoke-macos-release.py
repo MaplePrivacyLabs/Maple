@@ -148,7 +148,7 @@ def main(argv=None):
         diagnostic = str(error) if isinstance(error, SmokeError) else "Could not launch or clean up the Agent GUI probe"
         print(diagnostic, file=sys.stderr)
         return 1
-    print("Verified downloaded Agent macOS GUI opened, rendered, and remained running")
+    print("Verified downloaded Agent macOS window opened, entered rendering, and remained running")
     return 0
 
 

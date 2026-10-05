@@ -54,7 +54,7 @@ class PrebuiltReleaseTests(unittest.TestCase):
         tools.mkdir()
         # Exercise the signing-runner branch on any fixture host. The artifact
         # is a valid metadata-only Mach-O; attempting to execute it must fail.
-        (tools / "uname").write_text("#!/usr/bin/env bash\necho Darwin\n")
+        (tools / "uname").write_text(f"#!{shutil.which('bash')}\necho Darwin\n")
         (tools / "uname").chmod(0o755)
         self.env["PATH"] = str(tools) + os.pathsep + self.env["PATH"]
         self.env.update(FIXTURE_BUILD_INFO=str(self.metadata), TMPDIR=str(self.scratch),

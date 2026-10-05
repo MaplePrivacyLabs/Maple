@@ -78,7 +78,8 @@ Pull requests produce unsigned macOS previews and Linux packaging evidence on
 fresh hosted runners. Their macOS artifacts include `unsigned` in the name and
 cannot satisfy the signed-artifact verifier. PR previews are not attested.
 
-The macOS GUI smoke establishes window and renderer startup, not login, chat,
+The macOS GUI smoke establishes window creation, entry into the first render,
+and process survival; it does not capture a presented frame or verify login, chat,
 microphone or capture permissions. Linux command-line checks do not exercise
 X11/Wayland or host GPU drivers; those remain beta runtime checks. Dev checkout
 and portal requests use the Dev billing API, and pricing/payment return links
