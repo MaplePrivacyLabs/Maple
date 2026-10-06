@@ -1,10 +1,14 @@
 FROM docker.io/library/python:3.13.16-slim-bookworm@sha256:5024f48ba9441d4b13a95d3945abc6365538e3a31109833367a1923523c6efed
 
-# The pinned base predates Bookworm's CVE-2026-103111 fix. Keep the digest
-# stable while requiring the fixed libpcre2 package from bookworm-security.
+# The pinned base predates Bookworm's CVE-2026-103111 (libpcre2) and
+# CVE-2026-13221 et al. (perl-base) fixes. Keep the digest stable while
+# requiring the fixed packages from bookworm-security.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends --only-upgrade libpcre2-8-0=10.42-1+deb12u2 \
+    && apt-get install -y --no-install-recommends --only-upgrade \
+        libpcre2-8-0=10.42-1+deb12u2 \
+        perl-base=5.36.0-7+deb12u4 \
     && test "$(dpkg-query -W -f='${Version}' libpcre2-8-0)" = '10.42-1+deb12u2' \
+    && test "$(dpkg-query -W -f='${Version}' perl-base)" = '5.36.0-7+deb12u4' \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
