@@ -210,8 +210,24 @@ print(matches[0])' "$APPLE_TEAM_ID")"
     chmod 0755 "$image_root"
     macos_native ditto "$app" "$image_root/$app_name.app"
     ln -s /Applications "$image_root/Applications"
-    macos_native hdiutil create -volname "$app_name" -srcfolder "$image_root" \
-        -format UDZO -ov "$output_dir/$basename.dmg" >/dev/null
+    # hdiutil's own -srcfolder size estimate can come up short and fail with
+    # "No space left on device". Size the image from the payload with headroom,
+    # as create-dmg and Tauri do, and report free space if creation still fails.
+    local payload_mb image_mb
+    payload_mb="$(python3 -c '
+import os,sys
+total=0
+for root,dirs,files in os.walk(sys.argv[1]):
+    for name in dirs+files:
+        total+=os.lstat(os.path.join(root,name)).st_size
+print(-(-total//(1024*1024)))' "$image_root")"
+    image_mb=$((payload_mb + payload_mb / 5 + 64))
+    if ! macos_native hdiutil create -volname "$app_name" -srcfolder "$image_root" \
+        -fs HFS+ -size "${image_mb}m" -format UDZO -ov "$output_dir/$basename.dmg" >/dev/null; then
+        echo "hdiutil could not create a ${image_mb} MB disk image for ${payload_mb} MB of content" >&2
+        macos_native /bin/df -h "$output_dir" "${TMPDIR:-/tmp}" >&2 || true
+        return 1
+    fi
     macos_native codesign --force --sign "$identity" "$timestamp" "${keychain_args[@]}" "$output_dir/$basename.dmg"
     if [[ "$unsigned" == false ]]; then
         macos_native xcrun notarytool submit "$output_dir/$basename.dmg" \
