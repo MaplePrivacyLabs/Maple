@@ -460,7 +460,12 @@ PY
         ditto)
             if [[ "$1" == -c ]]; then touch "${{@:$#}}";
             else cp -R "$1" "$2"; fi ;;
-        hdiutil) touch "${{@:$#}}" ;;
+        hdiutil)
+            if [[ "$1" == create && "${{FIXTURE_FAILURE:-}}" == hdiutil ]]; then
+                echo 'hdiutil: create failed - No space left on device' >&2; return 1
+            fi
+            touch "${{@:$#}}" ;;
+        /bin/df) echo 'Filesystem Size Used Avail Capacity Mounted on' ;;
         tar) command tar "$@" ;;
         *) echo 'unexpected native tool' >&2; return 1 ;;
     esac
@@ -578,6 +583,28 @@ macos_release_main {shlex.quote(str(binary))} {shlex.quote(str(self.directory))}
         self.assertFalse(any(call[:2] == ["security", "create-keychain"] for call in calls))
         self.assertFalse(any(call[0] == "codesign" or "-s" in call for call in calls))
         self.assertEqual(json.loads((self.directory / "keychain-search.json").read_text()), self.search_list)
+
+    def test_disk_image_is_sized_explicitly_instead_of_estimated(self):
+        for unsigned in (False, True):
+            with self.subTest(unsigned=unsigned):
+                result, calls = self.run_packager(unsigned=unsigned)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                create = next(call for call in calls if call[:2] == ["hdiutil", "create"])
+                self.assertEqual(create[create.index("-fs") + 1], "HFS+")
+                size = create[create.index("-size") + 1]
+                self.assertRegex(size, r"^[0-9]+m$")
+                self.assertGreaterEqual(int(size[:-1]), 65, "image needs the payload plus fixed headroom")
+
+    def test_disk_image_failure_reports_free_space_and_still_cleans_up(self):
+        result, calls = self.run_packager(failure="hdiutil")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("hdiutil could not create a", result.stderr)
+        self.assertTrue(any(call[:2] == ["/bin/df", "-h"] for call in calls))
+        self.assert_secrets_not_returned(result)
+        self.assertTrue(any(call[:2] == ["security", "delete-keychain"] for call in calls))
+        self.assert_search_list_restored(calls)
+        self.assertFalse(list(self.directory.glob(".macos-release.*")))
+        self.assertFalse((self.directory / "fixture.app.tar.gz").exists())
 
     def test_restore_failure_is_visible_and_fails_otherwise_successful_packaging(self):
         result, calls = self.run_packager(failure="restore-search")
