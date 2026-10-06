@@ -322,9 +322,13 @@ class OpenSecretWorkflowBoundaryTests(unittest.TestCase):
         self.assertEqual(scan["with"]["exit-code"], "1")
         for component in ("credential_requester", "logging"):
             dockerfile = (ROOT / "services/opensecret/nitro-toolkit" / component / "Dockerfile").read_text()
-            self.assertIn("--only-upgrade libpcre2-8-0=10.42-1+deb12u2", dockerfile)
-            self.assertIn("dpkg-query -W", dockerfile)
-            self.assertIn("= '10.42-1+deb12u2'", dockerfile)
+            self.assertIn("--only-upgrade", dockerfile)
+            for package, version in (
+                ("libpcre2-8-0", "10.42-1+deb12u2"),
+                ("perl-base", "5.36.0-7+deb12u4"),
+            ):
+                self.assertIn(f"{package}={version}", dockerfile)
+                self.assertIn(f"dpkg-query -W -f='${{Version}}' {package})\" = '{version}'", dockerfile)
             self.assertIn("--only-binary=:all: --require-hashes", dockerfile)
             self.assertIn("python -m pip check", dockerfile)
             self.assertIn("python -m pip uninstall -y pip", dockerfile)
