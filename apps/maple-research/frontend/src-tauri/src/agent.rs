@@ -16844,7 +16844,10 @@ mod tests {
             steered_unacked: Arc::new(Mutex::new(Vec::new())),
         }));
 
-        let outcome = tokio::time::timeout(std::time::Duration::from_secs(1), prompt_task)
+        // This is a lock-isolation check, not a one-second latency budget.
+        // Keep the unrelated lock held through completion, but allow Goose's
+        // session/database I/O time to finish on a loaded CI runner.
+        let outcome = tokio::time::timeout(std::time::Duration::from_secs(10), prompt_task)
             .await
             .expect("an unrelated lifecycle holder must not block the first provider poll")
             .unwrap()
