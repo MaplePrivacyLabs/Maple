@@ -55,7 +55,7 @@ Both themes use one neutral scale.
 | Inline tool row (`bg-muted/30`) | `#121212` | `#F7F7F7` | web search / small status rows |
 | Attachment chip (`bg-muted/50`) | `#181818` | `#F7F7F7` | |
 | Tool card, error state (`bg-destructive/5`) | `#140E0D` | `#F8ECE9` | |
-| Permission card, pending (`maple-primary/0.06`) | `#191210` | `#FAF4F1` | |
+| Input requested row (`maple-primary/0.06`) | `#191210` | `#FAF4F1` | the MCP elicitation row |
 | Maple surface (`--maple-surface`) | `#171717` | `#FAFAFA` | |
 | Maple surface dim | `#262626` | `#BABCCB` | |
 
@@ -103,7 +103,7 @@ Send button: 32 x 32 px circle. Vertical gradient from `#FF9771` (top) to
 | Composer focused | `#FF9771` | `#FF9771` | `focus-within:border-[hsl(var(--maple-primary))]` |
 | Tool card (`border-muted/40`) | `#151515` (composited) | `#F8F8F8` | almost invisible; the card reads as a soft fill |
 | Tool card error (`border-destructive/35`) | `#4F271D` | `#EFC9BF` | |
-| Permission card pending (`maple-primary/0.45`) | `#784A38` | `#FDC8B8` | |
+| Input requested row (`maple-primary/0.45`) | `#784A38` | `#FDC8B8` | |
 | Sidebar right edge (`border-border/20`) | `#262626` | `#EEEEEE` | 1 px |
 | Markdown blockquote left bar | `#262626` (4 px, 0.25 em) | `#E5E5E5` | |
 
@@ -120,7 +120,7 @@ Border width is 1 px everywhere unless stated.
 | lg | 8 | |
 | xl | 12 | small icon buttons, image thumbnails, code blocks |
 | 2xl | 16 | user bubble, inline tool row, attachment chip |
-| 3xl | 24 | composer, tool card, permission card |
+| 3xl | 24 | composer, tool card |
 | full | 9999 | send button, typing dots |
 
 ## 7. Spacing scale used in the chat
@@ -145,8 +145,7 @@ Tailwind unit = 4 px.
 | Tool card: gap icon to title | 8 px |
 | Tool card body indent | 24 px left, 8 px top |
 | Inline tool row padding | 12 px horizontal, 8 px vertical |
-| Permission card padding | 16 px horizontal, 12 px vertical |
-| Permission card: buttons row | 12 px top margin, 8 px gap, 32 px tall buttons |
+| Input requested row padding | 16 px horizontal, 12 px vertical |
 | Composer outer padding | 16 px horizontal, inside the 896 px column |
 | Composer text area | 16 px left, 32 px right padding |
 | Composer bottom toolbar | icon buttons 32 x 32 px (36 px on desktop), 8 px gap |
@@ -178,8 +177,8 @@ SF Mono, Menlo, Consolas.
 | Bold | | | 600 |
 | Code block | 85 % (~12.75 px) | 1.45 | 400 |
 | Inline code | 85 % | | 400 |
-| Permission card title | 14 px | 20 px | 500 |
-| Permission card detail | 12 px | 16 px | 400, muted |
+| Input requested row title | 14 px | 20 px | 500 |
+| Input requested row detail | 12 px | 16 px | 400, muted |
 
 ## 9. Status colors
 
@@ -191,8 +190,7 @@ SF Mono, Menlo, Consolas.
 | Error (`--maple-error`) | `#CC5233` | `#D05E41` | inline search rows, inline error text |
 | Warning / incomplete | `#CE994B` | `#D4A35A` | X icon and label for interrupted tools; 6 px dot in "waiting" pill |
 | Info | `#6C7E93` | `#7E8DA1` | |
-| Permission prompt (pending) | icon `#FF9771`; border `#784A38`; fill `#191210` | icon `#FF9771`; border `#FDC8B8`; fill `#FAF4F1` | `ShieldCheck` 16 px. Resolved state returns to the plain tool card. |
-| Permission buttons | Allow: primary fill `#FAFAFA` on text `#0A0A0A`. Deny: outline. Third: ghost. | Allow: `#171717` on `#FAFAFA` | all 32 px tall |
+| Input requested row (pending) | icon `#FF9771`; border `#784A38`; fill `#191210` | icon `#FF9771`; border `#FDC8B8`; fill `#FAF4F1` | `ShieldCheck` 16 px. Resolved state returns to the plain tool card |
 | Typing indicator | three 8 px dots `#9A9A9A`, pulse with 0 / 75 / 150 ms delay | `#7A7A7A` | |
 
 ## 10. Syntax highlighting (dark)
