@@ -12,6 +12,21 @@ export type ModelCapabilities = {
   tool_use?: boolean;
 };
 
+/** OpenAI's `reasoning_effort` vocabulary; each model accepts a subset. */
+export type ReasoningEffort = "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
+
+/**
+ * The reasoning controls a model accepts, as the catalog publishes them.
+ * `supported_efforts` is highest first; a model without it has no tiers and
+ * only switches thinking off with `none`. `none` is rejected when `mandatory`.
+ */
+export type ModelReasoning = {
+  mandatory: boolean;
+  default_enabled?: boolean;
+  supported_efforts?: ReasoningEffort[];
+  default_effort?: ReasoningEffort;
+};
+
 export interface OpenSecretModel extends Model {
   tasks?: string[];
   provider?: string;
@@ -21,8 +36,10 @@ export interface OpenSecretModel extends Model {
   description?: string;
   context_window?: number;
   max_context_tokens?: number;
+  max_completion_tokens?: number;
   access?: ModelAccessTier;
   capabilities?: ModelCapabilities;
+  reasoning?: ModelReasoning | null;
   badges?: string[];
   enabled?: boolean;
   deprecated?: boolean;
@@ -37,6 +54,9 @@ export type OpenSecretModelAlias = {
   target_model: string;
   access?: ModelAccessTier;
   capabilities?: ModelCapabilities;
+  context_window?: number;
+  max_completion_tokens?: number;
+  reasoning?: ModelReasoning | null;
 };
 
 export type OpenSecretModelCatalog = {

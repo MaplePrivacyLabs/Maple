@@ -1261,7 +1261,7 @@ export async function confirmAccountDeletion(
 
 type ModelsListResponse = {
   object: "list";
-  data: Model[];
+  data: ModelListItem[];
 };
 
 export type ModelAliasId = "auto:quick" | "auto:powerful";
@@ -1279,24 +1279,67 @@ export type ModelCapabilities = {
   tool_use: boolean;
 };
 
-export type ModelCatalogItem = Model & {
-  provider?: string;
-  provider_id?: string;
-  display_name: string;
-  short_name: string;
-  description?: string;
-  context_window: number;
-  max_context_tokens: number;
-  access: ModelAccessTier;
-  capabilities: ModelCapabilities;
-  tasks?: string[];
-  badges?: string[];
-  enabled: boolean;
-  deprecated: boolean;
-  sort_order?: number;
+/**
+ * OpenAI's `reasoning_effort` vocabulary. Each model accepts a subset,
+ * published as `ModelReasoning.supported_efforts`.
+ */
+export type ReasoningEffort = "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
+
+/**
+ * The reasoning controls a model accepts, published as the catalog `reasoning`
+ * object (the same shape OpenRouter publishes).
+ *
+ * Send one of `supported_efforts` as `reasoning_effort` (Chat Completions) or
+ * `reasoning.effort` (Responses). `none` turns reasoning off and is only
+ * accepted when `mandatory` is false. A model without `supported_efforts` has
+ * no tiers: any effort other than `none` turns reasoning on. An unsupported
+ * value on an explicit model is rejected with OpenAI's `unsupported_value`
+ * error; on an `auto:` alias it is moved to the nearest accepted effort.
+ */
+export type ModelReasoning = {
+  /** Reasoning cannot be turned off; `none` is rejected. */
+  mandatory: boolean;
+  /** The model reasons when a request names no effort. */
+  default_enabled?: boolean;
+  /** Accepted efforts, highest first. */
+  supported_efforts?: ReasoningEffort[];
+  /** The effort used when a request names none. */
+  default_effort?: ReasoningEffort;
 };
 
-export type ModelAlias = {
+/** Catalog fields shared by `/v1/models` entries and the richer catalog. */
+export type ModelReasoningMetadata = {
+  /**
+   * Most output tokens a request can receive. Input and output share the
+   * context window, so the effective limit is this less the prompt.
+   */
+  max_completion_tokens?: number;
+  /** How the model exposes reasoning effort; absent for models that never reason. */
+  reasoning?: ModelReasoning;
+};
+
+/** An entry of `/v1/models`: OpenAI's model object plus Maple's metadata. */
+export type ModelListItem = Model & ModelReasoningMetadata;
+
+export type ModelCatalogItem = Model &
+  ModelReasoningMetadata & {
+    provider?: string;
+    provider_id?: string;
+    display_name: string;
+    short_name: string;
+    description?: string;
+    context_window: number;
+    max_context_tokens: number;
+    access: ModelAccessTier;
+    capabilities: ModelCapabilities;
+    tasks?: string[];
+    badges?: string[];
+    enabled: boolean;
+    deprecated: boolean;
+    sort_order?: number;
+  };
+
+export type ModelAlias = ModelReasoningMetadata & {
   id: ModelAliasId;
   label: string;
   short_name: string;
@@ -1304,6 +1347,7 @@ export type ModelAlias = {
   target_model: string;
   access: ModelAccessTier;
   capabilities: ModelCapabilities;
+  context_window?: number;
 };
 
 export type ModelCatalogResponse = {
@@ -1341,7 +1385,7 @@ export type ModelCatalogResponse = {
  * stay on the authenticated path and are never retried anonymously if
  * validation fails.
  */
-export async function fetchModels(apiKey?: string): Promise<Model[]> {
+export async function fetchModels(apiKey?: string): Promise<ModelListItem[]> {
   try {
     const hasIdentityCredential =
       apiKey !== undefined || readTransportV2Credentials(apiUrl, "user") !== null;
@@ -2176,6 +2220,11 @@ export type ResponsesCreateRequest = {
   previous_response_id?: string; // Deprecated but still supported
   stream?: boolean;
   metadata?: Record<string, unknown>;
+  /**
+   * Reasoning controls, as on OpenAI's Responses API. `effort` must be one the
+   * model's catalog `reasoning` accepts; `summary` is accepted and ignored.
+   */
+  reasoning?: { effort?: ReasoningEffort | null; summary?: string | null };
 };
 
 /**

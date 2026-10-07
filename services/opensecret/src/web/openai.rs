@@ -11,7 +11,7 @@ use crate::inference::{
 };
 use crate::inference_planning::{RoutePlan, RoutePlanningError};
 use crate::model_config::{
-    model_catalog_response, openai_models_response, ModelAliasTargets, ModelPlan,
+    model_catalog_response, openai_models_response, ModelAliasTargets, ModelPlan, ReasoningEffort,
 };
 use crate::models::token_usage::NewTokenUsage;
 use crate::models::users::User;
@@ -34,6 +34,10 @@ use crate::tokens::count_tokens;
 use crate::web::audio_utils::{merge_transcriptions, AudioSplitter, TINFOIL_MAX_SIZE};
 use crate::web::encryption_middleware::{
     decrypt_request, encrypt_response, Decrypted, TransportSession,
+};
+use crate::web::model_request_policy::{
+    apply_model_request_policy, resolve_reasoning_effort, ModelSelection,
+    CHAT_REASONING_EFFORT_PARAM,
 };
 use crate::web::openai_auth::AuthMethod;
 use crate::web::responses::context_builder::tool_call_ids_are_kimi_compatible;
@@ -181,6 +185,9 @@ struct CompletionRequestLogMetadata {
     tools_json_bytes: usize,
     include_reasoning: Option<bool>,
     chat_template_enable_thinking: Option<bool>,
+    /// The caller's `reasoning_effort`, reduced to the known enum (or
+    /// `invalid`) so the log never carries free text.
+    reasoning_effort: Option<&'static str>,
     messages_json_bytes: usize,
     messages: MessageLogMetadata,
 }
@@ -205,6 +212,7 @@ impl std::fmt::Debug for CompletionRequestLogMetadata {
             .field("tools_count", &self.tools_count)
             .field("tools_json_bytes", &self.tools_json_bytes)
             .field("include_reasoning", &self.include_reasoning)
+            .field("reasoning_effort", &self.reasoning_effort)
             .field(
                 "chat_template_enable_thinking",
                 &self.chat_template_enable_thinking,
@@ -284,6 +292,15 @@ impl CompletionRequestLogMetadata {
                 .get("chat_template_kwargs")
                 .and_then(|kwargs| kwargs.get("enable_thinking"))
                 .and_then(Value::as_bool),
+            reasoning_effort: body
+                .get(CHAT_REASONING_EFFORT_PARAM)
+                .filter(|value| !value.is_null())
+                .map(|value| {
+                    value
+                        .as_str()
+                        .and_then(ReasoningEffort::parse)
+                        .map_or("invalid", ReasoningEffort::as_str)
+                }),
             messages_json_bytes: messages.map(json_value_len).unwrap_or_default(),
             messages: MessageLogMetadata::from_messages(messages.and_then(Value::as_array)),
         }
@@ -1344,7 +1361,7 @@ async fn read_non_streaming_completion_response(
         return Err(failure);
     }
 
-    canonicalize_response_model(&mut response_json, response_model_id);
+    canonicalize_completion_response(&mut response_json, response_model_id);
     Ok(response_json)
 }
 
@@ -1452,7 +1469,7 @@ async fn process_completion_stream(
                     }
 
                     usage_accumulator.observe(&json);
-                    canonicalize_response_model(&mut json, response_model_id);
+                    canonicalize_completion_response(&mut json, response_model_id);
 
                     let sent = tokio::select! {
                         biased;
@@ -1979,6 +1996,7 @@ async fn proxy_openai(
     let routing = InferenceRoutingContext::new(model_plan);
     let alias_targets = ModelAliasTargets::for_plan(model_plan);
     let alias_target = alias_targets.resolve(&requested_model_name).to_string();
+    let model_selection = ModelSelection::for_request(&requested_model_name, &alias_target);
     let billing_context = BillingContext::new(auth_method, requested_model_name.clone());
 
     // Router v2 Auto may choose another approved model of the tier before the
@@ -2006,6 +2024,15 @@ async fn proxy_openai(
         )?;
         let can_reselect = !reselected && resolved_model.auto_decision().is_some();
         let model_name = resolved_model.public_model_id().to_string();
+        // Validate the caller's effort against the model that will run, before
+        // any route is claimed. An explicit model rejects an unsupported level;
+        // an alias is moved to the nearest level its resolved model accepts.
+        let reasoning_effort = resolve_reasoning_effort(
+            &model_name,
+            body.get(CHAT_REASONING_EFFORT_PARAM),
+            model_selection,
+            CHAT_REASONING_EFFORT_PARAM,
+        )?;
         let intent = resolved_model.intent(
             user.uuid,
             &requested_model_name,
@@ -2041,10 +2068,13 @@ async fn proxy_openai(
         } else {
             std::mem::take(&mut body)
         };
-        request_body
-            .as_object_mut()
-            .expect("model was read from a JSON object")
-            .insert("model".to_string(), json!(model_name));
+        {
+            let request = request_body
+                .as_object_mut()
+                .expect("model was read from a JSON object");
+            request.insert("model".to_string(), json!(model_name));
+            apply_model_request_policy(request, &model_name, reasoning_effort);
+        }
 
         match get_chat_completion_response(
             &state,
@@ -3305,10 +3335,41 @@ fn has_terminal_stream_signal(json: &Value) -> bool {
         .is_some_and(|choices| choices.is_empty())
 }
 
+/// Make a provider's completion payload (a full response or one stream chunk)
+/// look the same on every route: the public model id and one reasoning field.
+fn canonicalize_completion_response(json: &mut Value, response_model_id: &str) {
+    canonicalize_response_model(json, response_model_id);
+    canonicalize_reasoning_field(json);
+}
+
 fn canonicalize_response_model(json: &mut Value, response_model_id: &str) {
     if let Some(model_value) = json.get_mut("model") {
         if model_value.as_str().is_some() {
             *model_value = json!(response_model_id);
+        }
+    }
+}
+
+/// Reasoning text is published in `reasoning`, the field vLLM emits. The
+/// Continuum proxy also copies it into the deprecated `reasoning_content`,
+/// which Tinfoil routes never send; drop the copy so clients see one field on
+/// every route and can never concatenate the two. Should a route ever send
+/// only the old name, its text is moved to `reasoning` instead.
+fn canonicalize_reasoning_field(json: &mut Value) {
+    let Some(choices) = json.get_mut("choices").and_then(Value::as_array_mut) else {
+        return;
+    };
+    for choice in choices {
+        for part in ["message", "delta"] {
+            let Some(object) = choice.get_mut(part).and_then(Value::as_object_mut) else {
+                continue;
+            };
+            let Some(legacy) = object.remove("reasoning_content") else {
+                continue;
+            };
+            if !legacy.is_null() && object.get("reasoning").is_none_or(Value::is_null) {
+                object.insert("reasoning".to_string(), legacy);
+            }
         }
     }
 }
@@ -3593,8 +3654,7 @@ async fn proxy_model_catalog(
     let model_plan = ModelPlan::from_is_paid(
         billing_access.is_some_and(crate::billing::ChatBillingAccess::is_paid),
     );
-    let alias_targets = ModelAliasTargets::for_plan(model_plan);
-    let catalog_response = model_catalog_response(alias_targets);
+    let catalog_response = model_catalog_response(model_plan);
     encrypt_response(&state, &session_id, &catalog_response).await
 }
 
@@ -7542,6 +7602,81 @@ mod tests {
         let mut response_without_model = json!({"choices": []});
         canonicalize_response_model(&mut response_without_model, "glm-5-3-flash");
         assert!(response_without_model.get("model").is_none());
+    }
+
+    #[test]
+    fn continuum_reasoning_content_copies_are_folded_into_reasoning() {
+        // Non-streaming: Continuum sends both fields with identical text.
+        let mut response = json!({
+            "model": "glm-5.3",
+            "choices": [{
+                "index": 0,
+                "message": {
+                    "role": "assistant",
+                    "content": "391",
+                    "reasoning": "17 * 23 = 391",
+                    "reasoning_content": "17 * 23 = 391"
+                },
+                "finish_reason": "stop"
+            }],
+            "usage": {"completion_tokens": 12}
+        });
+        canonicalize_completion_response(&mut response, "glm-5-3");
+        assert_eq!(response["model"], "glm-5-3");
+        let message = &response["choices"][0]["message"];
+        assert_eq!(message["reasoning"], "17 * 23 = 391");
+        assert!(message.get("reasoning_content").is_none());
+        assert_eq!(message["content"], "391");
+        assert_eq!(response["usage"]["completion_tokens"], 12);
+
+        // Streaming: every delta carries the copy too.
+        let mut chunk = json!({
+            "model": "glm-5.3",
+            "choices": [{
+                "index": 0,
+                "delta": {"reasoning": "17 * ", "reasoning_content": "17 * "},
+                "finish_reason": null
+            }]
+        });
+        canonicalize_completion_response(&mut chunk, "glm-5-3");
+        assert_eq!(chunk["choices"][0]["delta"], json!({"reasoning": "17 * "}));
+
+        // Thinking off: both fields are null on Continuum; neither survives.
+        let mut off = json!({
+            "choices": [{"delta": {"content": "391", "reasoning": null, "reasoning_content": null}}]
+        });
+        canonicalize_completion_response(&mut off, "glm-5-3");
+        assert_eq!(
+            off["choices"][0]["delta"],
+            json!({"content": "391", "reasoning": null})
+        );
+    }
+
+    #[test]
+    fn a_route_that_only_sends_the_old_reasoning_name_is_normalized() {
+        let mut response = json!({
+            "choices": [{"message": {"role": "assistant", "content": "391", "reasoning_content": "think"}}]
+        });
+        canonicalize_completion_response(&mut response, "glm-5-3");
+        assert_eq!(
+            response["choices"][0]["message"],
+            json!({"role": "assistant", "content": "391", "reasoning": "think"})
+        );
+    }
+
+    #[test]
+    fn payloads_without_reasoning_fields_are_untouched_by_canonicalization() {
+        for payload in [
+            json!({"choices": [{"delta": {"content": "hi"}}]}),
+            json!({"choices": [{"message": {"role": "assistant", "content": "hi", "reasoning": "r"}}]}),
+            json!({"choices": [], "usage": {"completion_tokens": 1}}),
+            json!({"usage": {"completion_tokens": 1}}),
+            json!({"choices": "not-an-array"}),
+        ] {
+            let mut canonical = payload.clone();
+            canonicalize_completion_response(&mut canonical, "glm-5-3");
+            assert_eq!(canonical, payload);
+        }
     }
 
     fn stream_usage_chunk(

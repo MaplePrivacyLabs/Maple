@@ -452,7 +452,7 @@ export type OpenSecretContextType = {
    * - Before sign-in, uses an attested encrypted session without identity authorization
    * - When a JWT or API key is present, preserves authenticated model filtering
    */
-  fetchModels: () => Promise<Model[]>;
+  fetchModels: () => Promise<api.ModelListItem[]>;
 
   /**
    * Fetches OpenSecret's model catalog with display metadata and stable aliases.

@@ -15,8 +15,8 @@ use crate::{
     jwt::AuthContext,
     model_config::{
         model_config, model_reasoning_history_strategy, model_reasoning_replay,
-        resolve_public_model_id, ModelAliasTargets, ModelPlan, ResponsesModelConfig,
-        SamplingConfig,
+        resolve_public_model_id, ModelAliasTargets, ModelPlan, ReasoningEffort,
+        ResponsesModelConfig, SamplingConfig,
     },
     models::responses::{
         NewToolCall, NewToolOutput, NewUserMessage, ResponseStatus, ResponsesError,
@@ -26,6 +26,10 @@ use crate::{
     tokens::count_tokens,
     web::{
         encryption_middleware::{decrypt_request, encrypt_response, Decrypted, TransportSession},
+        model_request_policy::{
+            apply_model_request_policy, clamp_reasoning_effort, resolve_reasoning_effort,
+            EffectiveReasoningEffort, ModelSelection, RESPONSES_REASONING_EFFORT_PARAM,
+        },
         openai::{
             ensure_completion_model_access, finish_started_completion,
             get_bounded_chat_completion_response, get_chat_completion_response,
@@ -189,15 +193,19 @@ fn apply_responses_model_defaults(
     chat_request: &mut Value,
     config: ResponsesModelConfig,
     model: &str,
+    effort: EffectiveReasoningEffort,
 ) {
-    if config.include_reasoning {
+    // Maple turns thinking on for toggle models (Gemma 4) unless the caller
+    // asked for `none`; tiered models receive the effort itself.
+    let thinking_off = matches!(effort, EffectiveReasoningEffort::Set(ReasoningEffort::None));
+    if config.include_reasoning && !thinking_off {
         if let Some(obj) = chat_request.as_object_mut() {
             obj.insert("include_reasoning".to_string(), json!(true));
         }
     }
 
     if config.enable_thinking {
-        set_chat_template_kwarg(chat_request, "enable_thinking", json!(true));
+        set_chat_template_kwarg(chat_request, "enable_thinking", json!(!thinking_off));
     }
 
     if let Some((key, value)) = model_reasoning_history_strategy(model).chat_template_kwarg() {
@@ -512,7 +520,25 @@ fn build_model_turn_request(
         }
     }
 
-    apply_responses_model_defaults(&mut chat_request, responses_config, config_model);
+    // The alias target was validated when the request arrived; the model that
+    // runs may be an Auto alternate, so the effort is clamped to it here.
+    let effort = clamp_reasoning_effort(
+        config_model,
+        body.requested_reasoning_effort(),
+        RESPONSES_REASONING_EFFORT_PARAM,
+    );
+    apply_responses_model_defaults(&mut chat_request, responses_config, config_model, effort);
+    if let Some(request) = chat_request.as_object_mut() {
+        apply_model_request_policy(request, config_model, effort);
+    }
+    debug!(
+        "Built responses model turn: model={}, reasoning_effort={}",
+        config_model,
+        match effort {
+            EffectiveReasoningEffort::Set(effort) => effort.as_str(),
+            EffectiveReasoningEffort::Unchanged => "default",
+        }
+    );
     chat_request
 }
 
@@ -624,8 +650,13 @@ mod tests {
         ConversationParam, ImageAttachment, ImageDescriptionFailureClass, ImageDescriptionInput,
         ImageDescriptionToolPair, InputMessage, MessageContent, MessageContentPart, MessageInput,
         PublicResponseFailure, ResponseCancellationAckDecision, ResponseExecutionPolicy,
-        ResponseTerminal, ResponsesCreateRequest, StorageMessage, StreamedToolCall,
-        MAX_WEB_SEARCH_TOOL_TURNS_FREE, MAX_WEB_SEARCH_TOOL_TURNS_PAID, READ_IMAGE_TOOL_NAME,
+        ResponseTerminal, ResponsesCreateRequest, ResponsesReasoningRequest, StorageMessage,
+        StreamedToolCall, MAX_WEB_SEARCH_TOOL_TURNS_FREE, MAX_WEB_SEARCH_TOOL_TURNS_PAID,
+        READ_IMAGE_TOOL_NAME,
+    };
+    use crate::web::model_request_policy::{
+        resolve_reasoning_effort, EffectiveReasoningEffort, ModelSelection,
+        RESPONSES_REASONING_EFFORT_PARAM,
     };
     use crate::web::responses::{constants::*, tools};
     use crate::{
@@ -1170,6 +1201,7 @@ mod tests {
             &mut chat_request,
             crate::model_config::model_config("gemma4-31b").responses,
             "gemma4-31b",
+            EffectiveReasoningEffort::Unchanged,
         );
 
         assert_eq!(chat_request["include_reasoning"], true);
@@ -1190,6 +1222,7 @@ mod tests {
             &mut chat_request,
             crate::model_config::model_config("gpt-oss-120b").responses,
             "gpt-oss-120b",
+            EffectiveReasoningEffort::Unchanged,
         );
 
         assert!(chat_request.get("include_reasoning").is_none());
@@ -1209,6 +1242,7 @@ mod tests {
             &mut chat_request,
             crate::model_config::model_config("kimi-k3").responses,
             "kimi-k3",
+            EffectiveReasoningEffort::Unchanged,
         );
 
         assert_eq!(
@@ -1229,6 +1263,7 @@ mod tests {
             &mut chat_request,
             crate::model_config::model_config("glm-5-3").responses,
             "glm-5-3",
+            EffectiveReasoningEffort::Unchanged,
         );
 
         assert_eq!(chat_request["chat_template_kwargs"]["clear_thinking"], true);
@@ -1250,7 +1285,134 @@ mod tests {
             store: true,
             metadata: None,
             stream: true,
+            reasoning: None,
         }
+    }
+
+    fn responses_request_with_effort(model: &str, effort: &str) -> ResponsesCreateRequest {
+        let mut request = responses_request_for_model(model);
+        request.reasoning = Some(ResponsesReasoningRequest {
+            effort: Some(json!(effort)),
+            summary: None,
+        });
+        request
+    }
+
+    #[test]
+    fn test_build_model_turn_request_forwards_the_effort_for_tiered_models() {
+        let prompt = [json!({"role": "user", "content": "hello"})];
+        for (model, effort) in [
+            ("glm-5-3", "low"),
+            ("glm-5-3-flash", "max"),
+            ("kimi-k3", "high"),
+            ("kimi-k3", "none"),
+            ("deepseek-v4-1-flash", "xhigh"),
+            ("gpt-oss-120b", "medium"),
+        ] {
+            let request = build_model_turn_request(
+                &responses_request_with_effort(model, effort),
+                &prompt,
+                false,
+            );
+            assert_eq!(request["reasoning_effort"], effort, "{model}");
+        }
+
+        let request =
+            build_model_turn_request(&responses_request_for_model("glm-5-3"), &prompt, false);
+        assert!(request.get("reasoning_effort").is_none());
+        assert_eq!(request["chat_template_kwargs"]["clear_thinking"], true);
+    }
+
+    #[test]
+    fn test_build_model_turn_request_switches_gemma_off_only_for_none() {
+        let prompt = [json!({"role": "user", "content": "hello"})];
+        let off = build_model_turn_request(
+            &responses_request_with_effort("gemma4-31b", "none"),
+            &prompt,
+            false,
+        );
+        assert_eq!(off["reasoning_effort"], "none");
+        assert_eq!(off["chat_template_kwargs"]["enable_thinking"], false);
+        assert!(off.get("include_reasoning").is_none());
+
+        let on = build_model_turn_request(
+            &responses_request_with_effort("gemma4-31b", "high"),
+            &prompt,
+            false,
+        );
+        assert_eq!(on["reasoning_effort"], "high");
+        assert_eq!(on["chat_template_kwargs"]["enable_thinking"], true);
+        assert_eq!(on["include_reasoning"], true);
+
+        let default =
+            build_model_turn_request(&responses_request_for_model("gemma4-31b"), &prompt, false);
+        assert!(default.get("reasoning_effort").is_none());
+        assert_eq!(default["chat_template_kwargs"]["enable_thinking"], true);
+    }
+
+    #[test]
+    fn test_build_model_turn_request_clamps_the_effort_to_the_model_that_runs() {
+        let prompt = [json!({"role": "user", "content": "hello"})];
+        // An alias validated against GLM-5.3-Flash may run on DeepSeek, and a
+        // level neither rejects here is moved to the nearest accepted one.
+        for (model, requested, expected) in [
+            ("glm-5-3", "medium", "high"),
+            ("glm-5-3", "none", "low"),
+            ("deepseek-v4-1-flash", "medium", "high"),
+            ("gpt-oss-120b", "max", "high"),
+        ] {
+            let request = build_model_turn_request(
+                &responses_request_with_effort(model, requested),
+                &prompt,
+                false,
+            );
+            assert_eq!(request["reasoning_effort"], expected, "{model} {requested}");
+        }
+    }
+
+    #[test]
+    fn test_responses_reasoning_effort_is_validated_against_the_tier_model() {
+        for (model, effort, selection, ok) in [
+            ("glm-5-3", "low", ModelSelection::Explicit, true),
+            ("glm-5-3", "medium", ModelSelection::Explicit, false),
+            ("glm-5-3", "none", ModelSelection::Explicit, false),
+            ("glm-5-3", "medium", ModelSelection::Alias, true),
+            ("kimi-k3", "none", ModelSelection::Explicit, true),
+            ("gpt-oss-120b", "max", ModelSelection::Explicit, false),
+            ("gpt-oss-120b", "max", ModelSelection::Alias, true),
+        ] {
+            let request = responses_request_with_effort(model, effort);
+            let outcome = resolve_reasoning_effort(
+                &request.model,
+                request.requested_reasoning_effort(),
+                selection,
+                RESPONSES_REASONING_EFFORT_PARAM,
+            );
+            assert_eq!(outcome.is_ok(), ok, "{model} {effort} {selection:?}");
+            if let Err(ApiError::UnsupportedReasoningEffort(error)) = outcome {
+                assert_eq!(error.param(), "reasoning.effort");
+            }
+        }
+    }
+
+    #[test]
+    fn test_responses_request_deserializes_openai_reasoning_object() {
+        let request: ResponsesCreateRequest = serde_json::from_value(json!({
+            "model": "glm-5-3",
+            "input": "hello",
+            "conversation": Uuid::new_v4(),
+            "reasoning": {"effort": "low", "summary": "auto"}
+        }))
+        .expect("request with reasoning");
+        assert_eq!(request.requested_reasoning_effort(), Some(&json!("low")));
+
+        let without: ResponsesCreateRequest = serde_json::from_value(json!({
+            "model": "glm-5-3",
+            "input": "hello",
+            "conversation": Uuid::new_v4(),
+        }))
+        .expect("request without reasoning");
+        assert!(without.requested_reasoning_effort().is_none());
     }
 
     #[test]
@@ -2901,6 +3063,33 @@ pub struct ResponsesCreateRequest {
     /// Always stream (defaults to true)
     #[serde(default = "default_stream")]
     pub stream: bool,
+
+    /// Reasoning controls, as on OpenAI's Responses API. Only `effort` is
+    /// honored: it is validated against the resolved model before any write and
+    /// forwarded as the model turn's `reasoning_effort`.
+    #[serde(default)]
+    pub reasoning: Option<ResponsesReasoningRequest>,
+}
+
+/// The `reasoning` object of a Responses request. `summary` is accepted for
+/// OpenAI compatibility and ignored. `effort` stays a JSON value so a value
+/// that is not an effort is rejected with OpenAI's `unsupported_value` message
+/// rather than a generic deserialization failure.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct ResponsesReasoningRequest {
+    #[serde(default)]
+    pub effort: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<Value>,
+}
+
+impl ResponsesCreateRequest {
+    /// The effort the caller named, if any.
+    pub(crate) fn requested_reasoning_effort(&self) -> Option<&Value> {
+        self.reasoning
+            .as_ref()
+            .and_then(|reasoning| reasoning.effort.as_ref())
+    }
 }
 
 /// Retain only model-turn options after request persistence. The original input
@@ -2923,6 +3112,7 @@ fn model_turn_request_without_user_payload(
         store: body.store,
         metadata: None,
         stream: body.stream,
+        reasoning: body.reasoning.clone(),
     }
 }
 
@@ -5699,6 +5889,15 @@ async fn create_response_stream(
         );
     }
     body.model = resolved_model;
+    // Validate the caller's effort against the tier's own model before any
+    // write. An explicit model rejects an unsupported level; an alias is moved
+    // to the nearest level its resolved model accepts when the turn is built.
+    resolve_reasoning_effort(
+        &body.model,
+        body.requested_reasoning_effort(),
+        ModelSelection::for_request(&requested_model, &body.model),
+        RESPONSES_REASONING_EFFORT_PARAM,
+    )?;
 
     // Phase 1: Validate and normalize input, then bind the checks that do not
     // depend on the executing model: the user key, conversation ownership, the

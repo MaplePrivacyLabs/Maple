@@ -73,6 +73,14 @@ import {
   continueChatComposerListBeforeInput
 } from "@/components/chatComposerListContinuation";
 import { ComposerHoverTooltip } from "@/components/chat/ComposerHoverTooltip";
+import { ThinkingLevelSelector } from "@/components/chat/ThinkingLevelSelector";
+import {
+  getStoredThinkingLevel,
+  resolveModelReasoning,
+  resolveThinkingLevel,
+  storeThinkingLevel,
+  type ThinkingLevelChoice
+} from "@/services/chatThinkingLevel";
 import { ModelSelector } from "@/components/ModelSelector";
 import { useBillingState, useModelState, useSelectedProjectState } from "@/state/useLocalState";
 import { isKnownFreePlan } from "@/billing/billingAccess";
@@ -1535,7 +1543,7 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
   const isLandscapeMobile = useIsLandscapeMobile();
   const isCompactLayout = isMobile || isLandscapeMobile;
   const openai = useOpenAI();
-  const { model, hasWhisperModel } = useModelState();
+  const { model, hasWhisperModel, availableModels, modelAliases } = useModelState();
   const { billingStatus } = useBillingState();
   const { selectedProjectId, setSelectedProjectId } = useSelectedProjectState();
   const os = useOpenSecret();
@@ -1828,6 +1836,23 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
 
   // Web search toggle state - persisted in localStorage, billing-aware initial default
   const [isWebSearchEnabled, setIsWebSearchEnabled] = useState(getInitialWebSearchEnabled);
+
+  // Thinking level - persisted in localStorage; only levels the selected
+  // model's catalog entry publishes are ever sent.
+  const [thinkingLevel, setThinkingLevel] = useState<ThinkingLevelChoice>(getStoredThinkingLevel);
+  const selectedModelReasoning = resolveModelReasoning(
+    model || DEFAULT_MODEL_ID,
+    availableModels,
+    modelAliases
+  );
+  const effectiveReasoningEffort = resolveThinkingLevel(
+    thinkingLevel,
+    selectedModelReasoning
+  ).effort;
+  const handleThinkingLevelChange = useCallback((choice: ThinkingLevelChoice) => {
+    setThinkingLevel(choice);
+    storeThinkingLevel(choice);
+  }, []);
 
   // Fullscreen mode for power users - persisted in localStorage
   const [isFullscreen, setIsFullscreen] = useState(() => {
@@ -4983,6 +5008,7 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
         messageId: uuidv4(),
         model: model || DEFAULT_MODEL_ID,
         webSearchEnabled: isWebSearchEnabled,
+        reasoningEffort: effectiveReasoningEffort,
         createdMs: Date.now()
       };
       const composerAtSubmit = chatComposerWithInputOverride(startSnapshot.composer, overrideInput);
@@ -5212,7 +5238,14 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
             metadata: { internal_message_id: localMessageId },
             stream: true,
             store: true,
-            ...(item.webSearchEnabled && { tools: [{ type: "web_search" }] })
+            ...(item.webSearchEnabled && { tools: [{ type: "web_search" }] }),
+            // The catalog decides which efforts a model accepts; openai 5.x's
+            // ReasoningEffort type predates `none`, `xhigh` and `max`.
+            ...(item.reasoningEffort && {
+              reasoning: { effort: item.reasoningEffort } as NonNullable<
+                ResponseCreateParamsStreaming["reasoning"]
+              >
+            })
           };
           const stream = await withInferenceCapacityRetry(
             (maxInferenceSends) => {
@@ -5602,6 +5635,7 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
       isRuntimeSelected,
       isCompactLayout,
       isWebSearchEnabled,
+      effectiveReasoningEffort,
       model,
       openai,
       processStreamingResponse,
@@ -5916,6 +5950,13 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
                         <div className="flex min-w-0 flex-wrap items-center gap-1.5 sm:gap-2">
                           <ModelSelector />
 
+                          <ThinkingLevelSelector
+                            reasoning={selectedModelReasoning}
+                            value={thinkingLevel}
+                            onChange={handleThinkingLevelChange}
+                            disabled={isRecordingForActive}
+                          />
+
                           <ConversationProjectPicker
                             selectedProjectId={draftProjectId}
                             onSelect={setDraftProjectId}
@@ -6171,6 +6212,13 @@ export function UnifiedChat({ isVisible = true }: { isVisible?: boolean }) {
                     <div className="grid grid-cols-[minmax(0,1fr)_auto] items-end gap-x-2 gap-y-2 px-2 pb-2 landscape-short:pb-1.5 pt-1">
                       <div className="flex min-w-0 flex-wrap items-center gap-1.5 sm:gap-2">
                         <ModelSelector />
+
+                        <ThinkingLevelSelector
+                          reasoning={selectedModelReasoning}
+                          value={thinkingLevel}
+                          onChange={handleThinkingLevelChange}
+                          disabled={isRecordingForActive}
+                        />
 
                         <ComposerHoverTooltip
                           label={`Web search ${isWebSearchEnabled ? "enabled" : "disabled"}`}

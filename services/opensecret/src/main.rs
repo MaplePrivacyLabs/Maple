@@ -394,6 +394,11 @@ pub enum ApiError {
     #[error("{0}")]
     SystemOneRequest(web::system_one::SystemOneRequestError),
 
+    /// A `reasoning_effort` the resolved model does not accept; OpenAI's
+    /// `unsupported_value` rejection.
+    #[error("{0}")]
+    UnsupportedReasoningEffort(web::model_request_policy::UnsupportedReasoningEffort),
+
     #[error("Bad Request")]
     BadRequest,
 
@@ -481,6 +486,7 @@ impl IntoResponse for ApiError {
             ApiError::InferenceCapacity { status, .. } => *status,
             ApiError::InferenceProvider(error) => error.status(),
             ApiError::SystemOneRequest(error) => error.status(),
+            ApiError::UnsupportedReasoningEffort(_) => StatusCode::BAD_REQUEST,
             ApiError::BadRequest => StatusCode::BAD_REQUEST,
             ApiError::SessionNotFound => StatusCode::BAD_REQUEST,
             ApiError::Conflict => StatusCode::CONFLICT,
@@ -509,7 +515,16 @@ impl IntoResponse for ApiError {
             ApiError::ModelNotAvailableOnPlan => Some("model_not_available_on_plan"),
             ApiError::MessageExceedsContextLimit => Some("message_exceeds_context_limit"),
             ApiError::SystemOneRequest(error) => Some(error.code()),
+            ApiError::UnsupportedReasoningEffort(_) => Some("unsupported_value"),
             _ => None,
+        };
+        // OpenAI's `type` and `param` are published only where the rejection
+        // is one OpenAI itself defines; existing bodies stay byte-identical.
+        let (error_type, error_param) = match &self {
+            ApiError::UnsupportedReasoningEffort(error) => {
+                (Some("invalid_request_error"), Some(error.param()))
+            }
+            _ => (None, None),
         };
         let error_code = match &self {
             ApiError::SessionNotFound => Some(SESSION_NOT_FOUND_ERROR_CODE),
@@ -525,6 +540,8 @@ impl IntoResponse for ApiError {
         let error = openai_error_code.map(|code| OpenAIErrorResponse {
             message: message.clone(),
             code,
+            error_type,
+            param: error_param,
         });
         let mut response = (
             status,
@@ -613,6 +630,10 @@ pub struct ErrorResponse {
 struct OpenAIErrorResponse {
     message: String,
     code: &'static str,
+    #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
+    error_type: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    param: Option<&'static str>,
 }
 
 #[cfg(test)]
@@ -646,6 +667,25 @@ mod api_error_contract_tests {
             .await
             .unwrap();
         assert_eq!(body.as_ref(), expected_body);
+    }
+
+    #[tokio::test]
+    async fn unsupported_reasoning_effort_is_an_openai_invalid_request_error() {
+        let error = ApiError::UnsupportedReasoningEffort(
+            web::model_request_policy::UnsupportedReasoningEffort::for_test(
+                "reasoning_effort",
+                "glm-5-3",
+                "medium",
+                vec!["low", "high", "max"],
+            ),
+        );
+        assert_error_response(
+            error,
+            StatusCode::BAD_REQUEST,
+            br#"{"status":400,"message":"Unsupported value: 'medium' is not supported with the 'glm-5-3' model. Supported values are: 'low', 'high', 'max'.","error":{"message":"Unsupported value: 'medium' is not supported with the 'glm-5-3' model. Supported values are: 'low', 'high', 'max'.","code":"unsupported_value","type":"invalid_request_error","param":"reasoning_effort"}}"#,
+            Some("unsupported_value"),
+        )
+        .await;
     }
 
     #[tokio::test]
