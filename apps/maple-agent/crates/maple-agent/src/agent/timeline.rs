@@ -2,9 +2,8 @@
 //!
 //! A conversation, a single message, or a live tool exchange becomes a list
 //! of [`AgentTimelineItem`]s here: titles for tool calls, coalescing of a
-//! request with its response, the compaction notice, permission status
-//! updates, and the live overlay a running turn keeps ahead of the
-//! persisted history. Session summaries live here for the same reason:
+//! request with its response, the compaction notice, elicitation rows, and
+//! the live overlay a running turn keeps ahead of the persisted history. Session summaries live here for the same reason:
 //! they are the host's view of a session, not the runtime's.
 
 use super::*;
@@ -154,30 +153,6 @@ pub(super) fn settle_turn_permission_items(
     }
 }
 
-pub(super) fn reconcile_desktop_permission_items(
-    items: &mut [AgentTimelineItem],
-    pending_routes: &HashMap<String, AgentPermissionRouting>,
-    calling_surface_active: bool,
-) {
-    for item in items {
-        if item.item_type != "permission" || item.status.as_deref() != Some("pending") {
-            continue;
-        }
-        let request_id = item
-            .id
-            .strip_prefix("permission-")
-            .or_else(|| item.id.strip_prefix("elicitation-"));
-        let route = request_id.and_then(|id| pending_routes.get(id));
-        item.status = match (calling_surface_active, route) {
-            (false, Some(AgentPermissionRouting::Desktop)) => continue,
-            (true, _) | (_, Some(AgentPermissionRouting::CallingSurface)) => {
-                Some("controlled_externally".to_string())
-            }
-            (false, None) => Some("cancelled".to_string()),
-        };
-    }
-}
-
 pub(super) fn is_real_user_message(message: &Message, role: &str) -> bool {
     if role != "user" || !message.is_user_visible() {
         return false;
@@ -321,21 +296,9 @@ pub(super) fn message_to_timeline_items_with_thinking(
             MessageContent::ToolResponse(response) => {
                 Some(tool_response_item(response, created_ms))
             }
-            MessageContent::ToolConfirmationRequest(request) => Some(AgentTimelineItem {
-                id: format!("permission-{}", request.id),
-                item_type: "permission".to_string(),
-                role: Some("system".to_string()),
-                title: Some(
-                    descriptive_tool_title(&request.tool_name, &request.arguments)
-                        .unwrap_or_else(|| format_tool_title(&request.tool_name)),
-                ),
-                text: request.prompt.clone(),
-                status: Some("pending".to_string()),
-                input: Some(Value::Object(request.arguments.clone())),
-                output: None,
-                created_ms,
-                merge: "replace".to_string(),
-            }),
+            // Tool confirmations were answered by Maple's approval cards, which
+            // no longer exist; old history keeps them, the timeline does not.
+            MessageContent::ToolConfirmationRequest(_) => None,
             MessageContent::ActionRequired(action) => action_required_item(action, created_ms),
             MessageContent::SystemNotification(notification) => Some(system_notification_item(
                 &base_id,
@@ -761,26 +724,9 @@ pub(super) fn action_required_item(
     created_ms: u128,
 ) -> Option<AgentTimelineItem> {
     match &action.data {
-        ActionRequiredData::ToolConfirmation {
-            id,
-            tool_name,
-            arguments,
-            prompt,
-        } => Some(AgentTimelineItem {
-            id: format!("permission-{id}"),
-            item_type: "permission".to_string(),
-            role: Some("system".to_string()),
-            title: Some(
-                descriptive_tool_title(tool_name, arguments)
-                    .unwrap_or_else(|| format_tool_title(tool_name)),
-            ),
-            text: prompt.clone(),
-            status: Some("pending".to_string()),
-            input: Some(Value::Object(arguments.clone())),
-            output: None,
-            created_ms,
-            merge: "replace".to_string(),
-        }),
+        // Every tool confirmation is answered by the runtime itself, so no
+        // row is drawn for one, live or persisted.
+        ActionRequiredData::ToolConfirmation { .. } => None,
         ActionRequiredData::Elicitation {
             id,
             message,
@@ -902,25 +848,6 @@ pub(super) fn tool_response_title(id: &str) -> Option<String> {
     })
 }
 
-pub(super) fn permission_decision_from_str(
-    decision: &str,
-) -> Result<AgentPermissionDecision, String> {
-    match decision {
-        "allow_once" | "allow" => Ok(AgentPermissionDecision::AllowOnce),
-        "deny_once" | "deny" => Ok(AgentPermissionDecision::DenyOnce),
-        "cancel" | "cancelled" => Ok(AgentPermissionDecision::Cancel),
-        "always_allow" | "always_deny" => {
-            Err("Persistent tool permissions are not supported by Maple Agent Mode".to_string())
-        }
-        other => Err(format!("Unknown permission decision: {other}")),
-    }
-}
-
-#[cfg(test)]
-pub(super) fn permission_from_decision(decision: &str) -> Result<Permission, String> {
-    permission_decision_from_str(decision).map(AgentPermissionDecision::goose_permission)
-}
-
 pub(super) fn session_summary(session: &Session) -> AgentSessionSummary {
     AgentSessionSummary {
         id: session.id.clone(),
@@ -933,7 +860,9 @@ pub(super) fn session_summary(session: &Session) -> AgentSessionSummary {
             .model_config
             .as_ref()
             .map(|model| model.model_name.clone()),
-        mode: session.goose_mode.to_string(),
+        // Every task runs with every tool call allowed; the stored column is
+        // Goose's own and no longer read.
+        mode: GooseMode::Auto.to_string(),
         web_enabled: session_web_enabled(session),
         state: stored_task_state(session),
         acp: session.session_type == SessionType::Acp,
@@ -1157,24 +1086,4 @@ pub(super) fn is_user_message_item(item: &AgentTimelineItem) -> bool {
 pub(super) fn live_overlay_item(mut item: AgentTimelineItem) -> AgentTimelineItem {
     item.merge = "replace".to_string();
     item
-}
-
-pub(super) async fn update_live_permission_status(
-    live_timelines: &LiveTimelines,
-    session_id: &str,
-    routing: AgentPermissionRouting,
-    request_id: &str,
-    decision: &str,
-) -> Option<AgentTimelineItem> {
-    let permission_id = format!("permission-{request_id}");
-    let mut timelines = live_timelines.lock().await;
-    let entry = timelines.get_mut(session_id)?;
-    if entry.routing != routing {
-        return None;
-    }
-    let items = entry.timeline.items_mut();
-    let item = items.iter_mut().find(|item| item.id == permission_id)?;
-    item.status = Some(decision.to_string());
-    item.merge = "replace".to_string();
-    Some(item.clone())
 }

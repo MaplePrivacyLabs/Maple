@@ -22,8 +22,6 @@ use cua_driver_sdk::{
 use goose::agents::ToolCallContext;
 use goose::agents::mcp_client::{Error as McpError, McpClientTrait};
 use goose::agents::platform_extensions::PlatformExtensionContext;
-use goose::config::permission::PermissionLevel;
-use goose::config::permission::PermissionManager;
 use rmcp::ServiceError;
 use rmcp::model::{
     CallToolResult, ContentBlock, ErrorData, InitializeResult, JsonObject, ListToolsResult,
@@ -32,7 +30,6 @@ use rmcp::model::{
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::HashSet;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex as StdMutex, OnceLock};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
@@ -44,7 +41,7 @@ use super::image_mediation::{
     IMAGE_DESCRIPTION_CONTEXT_MAX_CHARS, ImageMediationProfile, mediate_tool_result_images,
     prioritized_text,
 };
-use super::web_tools::{Keep, bounded_chars};
+use super::web_tools::bounded_chars;
 
 pub(super) const EMBEDDED_CUA_VERSION: &str = "0.28.0";
 
@@ -82,9 +79,6 @@ const RUNTIME_STARTUP_TIMEOUT: std::time::Duration = std::time::Duration::from_s
 /// parsed, and indexed once instead of on every desktop run.
 static TOOL_CATALOG: tokio::sync::OnceCell<Arc<CuaToolCatalog>> =
     tokio::sync::OnceCell::const_new();
-/// Whether this process has already pinned the CUA tools into the running
-/// agent's permission manager.
-static TOOL_PERMISSIONS_PINNED: AtomicBool = AtomicBool::new(false);
 
 static DRIVER: OnceLock<Arc<CuaDriver>> = OnceLock::new();
 // `OnceLock::get_or_try_init` is not available on Maple's stable toolchain.
@@ -275,60 +269,6 @@ fn macos_permissions(status: cua_driver_sdk::MacOsPermissionStatus) -> AgentInte
         )
 }
 
-/// Forget that this process pinned the CUA tools into the previous runtime.
-///
-/// The runtime rewrites that file whole when it starts, which drops any tool
-/// entry Maple added. Calling this from the same place keeps the pinned set
-/// and the live manager that enforces it from drifting apart.
-pub(super) fn reset_pinned_tool_permissions() {
-    TOOL_PERMISSIONS_PINNED.store(false, Ordering::Release);
-}
-
-/// Declare every CUA tool permission-bearing in Maple's own permission file.
-///
-/// CUA's annotations correctly describe whether an operation mutates the
-/// desktop, but Maple's boundary must also treat observation as sensitive:
-/// screenshots and accessibility trees can contain private data from any
-/// application. Goose consults this file before annotations and before any
-/// SmartApprove heuristic, so the rule holds even if that heuristic changes,
-/// and the SDK's canonical annotations reach the model unaltered.
-async fn pin_tool_permissions(
-    permission_manager: Arc<PermissionManager>,
-    known_tools: &HashSet<String>,
-) -> Result<(), String> {
-    if TOOL_PERMISSIONS_PINNED.load(Ordering::Acquire) {
-        return Ok(());
-    }
-    let names = known_tools.iter().map(|tool| prefixed_tool_name(tool));
-    let names = names.collect::<Vec<_>>();
-
-    // Updating the live manager also rewrites the permission file. Goose's
-    // writer is synchronous and panics rather than returning an error, so run
-    // it on a blocking thread where a failure is reported instead of taking
-    // the process down. Constructing a second manager here would update only
-    // disk; the already-running PermissionInspector would retain its stale
-    // in-memory map and could still auto-approve read-only observations.
-    tokio::task::spawn_blocking(move || {
-        pin_tool_permissions_in_manager(permission_manager.as_ref(), &names);
-    })
-    .await
-    .map_err(|error| format!("Could not mark built-in CUA tools as sensitive: {error}"))?;
-
-    TOOL_PERMISSIONS_PINNED.store(true, Ordering::Release);
-    Ok(())
-}
-
-fn pin_tool_permissions_in_manager(manager: &PermissionManager, names: &[String]) {
-    for name in names {
-        manager.update_user_permission(name, PermissionLevel::AskBefore);
-    }
-}
-
-/// Goose addresses an extension's tools by their namespaced name.
-fn prefixed_tool_name(tool: &str) -> String {
-    format!("{}__{tool}", super::CUA_DRIVER_MCP_NAME)
-}
-
 /// Create Maple's native CUA extension for one desktop task.
 ///
 /// Tool discovery is frozen at construction. Apart from keeping model-visible
@@ -338,7 +278,6 @@ pub(super) async fn create_embedded_cua_client(
     account_scope: &str,
     session_id: &str,
     text_model_image_context: Option<PlatformExtensionContext>,
-    permission_manager: Arc<PermissionManager>,
 ) -> Result<Arc<dyn McpClientTrait>, String> {
     let identity = embedded_cua_session_identity(account_scope, session_id)?;
 
@@ -354,10 +293,6 @@ pub(super) async fn create_embedded_cua_client(
             .await
             .map_err(|error| format!("Embedded CUA runtime start-up failed: {error}"))??;
         let catalog = tool_catalog(&driver).await?;
-        // Without this the tools would fall back to CUA's own annotations,
-        // which mark observation read-only and would auto-approve it. Fail
-        // the attach rather than run with a weaker approval boundary.
-        pin_tool_permissions(permission_manager, &catalog.known_tools).await?;
         let session = tokio::task::spawn_blocking(move || {
             driver.create_trusted_session_for_transport(
                 TrustedSessionOptions {
@@ -541,8 +476,6 @@ fn parse_tools(catalog: &str) -> Result<CuaToolCatalog, String> {
     let tools = bind_tools_to_maple_task(tools)?;
 
     // Schemas and annotations reach the model exactly as CUA published them.
-    // Approval is decided by Maple's own permission file instead; see
-    // `pin_tool_permissions`.
     let mut known_tools = HashSet::with_capacity(tools.tools.len());
     for tool in &tools.tools {
         let name = tool.name.trim().to_string();
@@ -918,7 +851,6 @@ fn computer_use_mediation_context(
         &context,
         IMAGE_DESCRIPTION_CONTEXT_MAX_CHARS,
         "\n[CUA helper context truncated; rely on the retained primary-model tool result for omitted details]",
-        Keep::Head,
     )
 }
 
@@ -1168,25 +1100,6 @@ mod tests {
             Some(true)
         );
         assert!(parsed.known_tools.contains("click"));
-    }
-
-    #[test]
-    fn every_catalog_tool_is_pinned_as_permission_bearing() {
-        // Goose addresses an extension's tools by their namespaced name, and
-        // consults the live manager's user permissions before any annotation.
-        let temporary = tempfile::tempdir().unwrap();
-        let manager = PermissionManager::new(temporary.path().to_path_buf());
-        let names = [prefixed_tool_name("click"), prefixed_tool_name("snapshot")];
-
-        pin_tool_permissions_in_manager(&manager, &names);
-
-        assert_eq!(names[0], "cua-driver__click");
-        for name in names {
-            assert_eq!(
-                manager.get_user_permission(&name),
-                Some(PermissionLevel::AskBefore)
-            );
-        }
     }
 
     #[test]

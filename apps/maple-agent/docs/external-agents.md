@@ -40,8 +40,9 @@ A result has Paseo's shape: a status line, the agent ID and thread ID, the
 files changed and commands run, the agent's last message inside an
 `<agent-response>` block cut at 4,000 characters, and one line of guidance.
 
-Starting an agent is always allowed. The agent's own actions are what get
-gated, so the hand-off does not prompt twice.
+Starting an agent is always allowed. The agent's own sandbox and approval
+settings decide what it may do; Maple accepts the approval requests it
+sends back.
 
 ## Skills
 
@@ -67,15 +68,11 @@ sign-in and `~/.codex` configuration, including its `sandbox_mode` and
 one feature flag, `features.default_mode_request_user_input`, so Codex can
 ask the user questions outside plan mode.
 
-Maple's own permission mode does not change what Codex may do; Codex's
-sandbox does that. The mode decides who answers when Codex asks:
-
-| Maple mode | Codex asks to run a command or change a file |
-| --- | --- |
-| Read only | A Maple permission card. Allow sends `accept`; deny sends `decline`. |
-| Allow all | Maple sends `accept` without asking. |
-
-Stopping the agent sends `cancel`. Maple never grants `acceptForSession`.
+Maple does not change what Codex may do; Codex's sandbox does that. When
+Codex asks to run a command or change a file, Maple sends `accept` without
+asking. A request that arrives after the agent or its turn has ended gets
+`cancel`, and so does stopping the agent. Maple never grants
+`acceptForSession`.
 A question from Codex, blocking in plan mode or asynchronous in the
 default mode, opens Maple's question card and the answer goes back in
 Codex's own shape; an asynchronous answer that arrives after the turn
@@ -121,9 +118,9 @@ The CLI is the only additional runtime dependency.
 Claude keeps its normal system prompt and configuration. Maple passes
 `--permission-mode default` and `--permission-prompt-tool stdio`, never a
 bypass-permissions flag. Claude's rules decide which actions need approval;
-`can_use_tool` requests go to Maple's current permission mode. Allow all answers
-those requests automatically, and Read only shows a one-shot permission card.
-`AskUserQuestion` uses Maple's question card, including multiple choices when
+Maple answers every `can_use_tool` request with allow, except after Stop,
+when it declines. `AskUserQuestion` uses Maple's question card, including
+multiple choices when
 Claude sets `multiSelect`. Click options or use numbered shortcuts to toggle
 them, then choose Answer (or Next in a batch). Vim navigation moves the cursor;
 Enter toggles the current choice. Answers change only that call's input; Maple
@@ -195,8 +192,6 @@ so the kill is what guarantees nothing keeps running.
 ## Limits
 
 - One task may run at most four external agents at once.
-- Switching Maple's mode mid-turn changes who answers Codex's next
-  request, not the sandbox Codex already runs under.
 - Flatpak builds report external agents as unsupported.
 - Codex 0.143 or newer is required.
 - Maple cannot sign Codex in. The Integrations card says when a sign-in is
@@ -224,7 +219,7 @@ server named `codex` or `claude` cannot toggle either provider. Older MCP reques
 without `kind` continue to mean MCP.
 
 Provider transport adapters still own their protocol, discovery, progress,
-approvals, and cancellation. Extend `ExternalAgentRegistry` dispatch and
+approval replies, and cancellation. Extend `ExternalAgentRegistry` dispatch and
 provider listing when adding an adapter. The developer client passes only
 the task's selected provider IDs and rejects calls for any other provider.
 Keep listing filtered by that same selection when more adapters are added.
@@ -237,6 +232,6 @@ ACP. Extend that regression with each adapter's admission behavior.
 The `claude_native_*` tests exercise the Rust transport against a deterministic
 fake CLI, without network requests. Both providers' fixtures re-execute the
 Rust test binary through CLI shims on a private search PATH. They cover
-streamed activity, permissions, questions, resumption,
+streamed activity, accepted approvals, questions, resumption,
 provider/session isolation, errors, and process-group cancellation. Live
 inference and platform packaging remain separate checks.

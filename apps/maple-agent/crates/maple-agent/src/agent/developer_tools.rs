@@ -5,7 +5,7 @@ use super::external_agents::{
     ExternalAgentRegistry, LIST_AGENT_PROVIDERS_TOOL,
 };
 use super::web_tools::{
-    OPEN_URL_TOOL_NAME, OpenUrlParams, WEB_SEARCH_TOOL_NAME, WebSearchParams, WebToolState,
+    OPEN_URL_TOOL_NAME, OpenUrlParams, WEB_SEARCH_TOOL_NAME, WebSearchParams,
     bound_open_url_tool_error, bound_web_search_tool_error, execute_open_url, execute_web_search,
     open_url_tool, web_search_tool,
 };
@@ -66,8 +66,7 @@ use super::image_mediation::{
     prioritized_text,
 };
 #[cfg(test)]
-use super::shell_permission::classifier::{side_model_config, thinking_disabled_request_params};
-use super::shell_permission::is_remote_file_source;
+use super::side_model::{side_model_config, thinking_disabled_request_params};
 use super::tool_context::{AgentToolContextSnapshot, SharedAgentToolContext};
 
 const MAX_READ_LINES: usize = 2_000;
@@ -144,11 +143,47 @@ where
     }
 }
 
+/// Whether a `read_image` source names a remote location: an http(s) URL,
+/// a UNC path, or a `file://` URL with a host. Remote sources go through the
+/// public-host download path; everything else is read from the local disk.
+pub(crate) fn is_remote_file_source(source: &str) -> bool {
+    let source = source.trim();
+    if source.starts_with("maple-attachment://") {
+        return false;
+    }
+    // UNC paths. Windows accepts either separator in either position, so
+    // `/\server\share` and `\/server/share` reach a network share too.
+    let mut leading = source.chars();
+    if let (Some(first), Some(second)) = (leading.next(), leading.next())
+        && matches!(first, '/' | '\\')
+        && matches!(second, '/' | '\\')
+    {
+        return true;
+    }
+
+    // URL parsers treat a Windows drive letter as a scheme. Keep drive paths
+    // local while routing actual URLs through the download path.
+    let bytes = source.as_bytes();
+    if bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' {
+        return false;
+    }
+
+    let Ok(url) = reqwest::Url::parse(source) else {
+        return false;
+    };
+    match url.scheme() {
+        "http" | "https" => true,
+        "file" => url
+            .host_str()
+            .is_some_and(|host| !host.is_empty() && !host.eq_ignore_ascii_case("localhost")),
+        _ => true,
+    }
+}
+
 pub(crate) struct MapleDeveloperClient {
     info: InitializeResult,
     goose: DeveloperClient,
     web_transport: Arc<dyn MapleWebTransport>,
-    web_state: Arc<WebToolState>,
     tool_context: SharedAgentToolContext,
     contextual_image_context: Option<PlatformExtensionContext>,
     attachment_store: Option<Arc<AgentAttachmentStore>>,
@@ -178,7 +213,6 @@ impl MapleDeveloperClient {
         context: PlatformExtensionContext,
         primary_model_supports_vision: bool,
         web_transport: Arc<dyn MapleWebTransport>,
-        web_state: Arc<WebToolState>,
         tool_context: SharedAgentToolContext,
     ) -> anyhow::Result<Self> {
         let info = InitializeResult::new(ServerCapabilities::builder().enable_tools().build())
@@ -194,7 +228,6 @@ impl MapleDeveloperClient {
             info,
             goose: DeveloperClient::new(context)?,
             web_transport,
-            web_state,
             tool_context,
             contextual_image_context,
             attachment_store: None,
@@ -252,7 +285,7 @@ impl MapleDeveloperClient {
                 format!(
                     "Hand a self-contained piece of work to an external coding agent (an installed harness such as Codex or Claude Code) that runs in the project with its own context and its own account. \
 The new agent knows nothing about this conversation: write a complete briefing with the task, relevant files, current state, what was tried, decisions made, acceptance criteria, and constraints. \
-It runs under its own sandbox and approval settings; whatever it asks approval for comes to the user through Maple, and in Allow all Maple grants it. \
+It runs under its own sandbox and approval settings; Maple accepts its approval requests, and its questions still come to the user through Maple. \
 Blocking by default: the call returns the agent's result. With background=true the call returns at once and Maple tells you when the agent finishes; do not poll. \
 Call {LIST_AGENT_PROVIDERS_TOOL} first when unsure what is installed."
                 ),
@@ -489,7 +522,7 @@ Call {LIST_AGENT_PROVIDERS_TOOL} first when unsure what is installed."
         Tool::new(
             "read".to_string(),
             format!(
-                "Read a local text file. Output is limited to {MAX_READ_LINES} lines or {}KB, whichever is reached first. Use offset and limit to continue through large files. Remote filesystem paths require approval in Read only mode. Use read_image for images.",
+                "Read a local text file. Output is limited to {MAX_READ_LINES} lines or {}KB, whichever is reached first. Use offset and limit to continue through large files. Use read_image for images.",
                 MAX_READ_BYTES / 1024
             ),
             object!({
@@ -572,10 +605,10 @@ Call {LIST_AGENT_PROVIDERS_TOOL} first when unsure what is installed."
 
     fn read_image_tool(mut tool: Tool, requires_context: bool) -> Tool {
         tool.description = Some(if requires_context {
-            "Read an image from a Maple attachment reference, local file path, or http(s) URL and return a detailed visual description. Include focused task context describing what you need to learn from the image. Remote URLs require approval in Read only mode. Supports png, jpeg, gif, and webp."
+            "Read an image from a Maple attachment reference, local file path, or http(s) URL and return a detailed visual description. Include focused task context describing what you need to learn from the image. Supports png, jpeg, gif, and webp."
                 .into()
         } else {
-            "Read an image from a Maple attachment reference, local file path, or http(s) URL and return it as image content for the model to inspect. Remote URLs require approval in Read only mode. Supports png, jpeg, gif, and webp."
+            "Read an image from a Maple attachment reference, local file path, or http(s) URL and return it as image content for the model to inspect. Supports png, jpeg, gif, and webp."
                 .into()
         });
         let mut schema = tool.input_schema.as_ref().clone();
@@ -586,10 +619,12 @@ Call {LIST_AGENT_PROVIDERS_TOOL} first when unsure what is installed."
                 .get_mut("source")
                 .and_then(serde_json::Value::as_object_mut)
         {
-            source.insert("description".to_string(), serde_json::Value::String(
-                    "Maple attachment reference, local file path, or http(s) URL. Remote URLs require approval in Read only mode."
-                        .to_string(),
-                ));
+            source.insert(
+                "description".to_string(),
+                serde_json::Value::String(
+                    "Maple attachment reference, local file path, or http(s) URL.".to_string(),
+                ),
+            );
         }
         if requires_context {
             let properties = schema
@@ -604,7 +639,7 @@ Call {LIST_AGENT_PROVIDERS_TOOL} first when unsure what is installed."
             properties.entry("source".to_string()).or_insert_with(|| {
                 serde_json::json!({
                     "type": "string",
-                    "description": "Local file path or http(s) URL. Remote URLs require approval in Read only mode."
+                    "description": "Local file path or http(s) URL."
                 })
             });
             properties.insert(
@@ -691,7 +726,7 @@ Call {LIST_AGENT_PROVIDERS_TOOL} first when unsure what is installed."
         Tool::new(
             EXTERNAL_MCP_TOOL_NAME.to_string(),
             format!(
-                "Call one tool supplied by the current external ACP host. Select an exact tool ID and provide an arguments object matching its catalog contract. Calls are lease-scoped and require the host's permission policy.\n\nFrozen tool catalog:\n{catalog}"
+                "Call one tool supplied by the current external ACP host. Select an exact tool ID and provide an arguments object matching its catalog contract. Calls are lease-scoped to the current host session.\n\nFrozen tool catalog:\n{catalog}"
             ),
             object!({
                 "type": "object",
@@ -979,18 +1014,12 @@ impl McpClientTrait for MapleDeveloperClient {
                 error_result("Web access is turned off for this task")
             }
             WEB_SEARCH_TOOL_NAME => match Self::parse_args::<WebSearchParams>(arguments) {
-                Ok(params) => match execute_web_search(
-                    &self.web_transport,
-                    &self.web_state,
-                    &ctx.session_id,
-                    params,
-                    cancel_token,
-                )
-                .await
-                {
-                    Ok(output) => success_result(output),
-                    Err(error) => error_result(bound_web_search_tool_error(error)),
-                },
+                Ok(params) => {
+                    match execute_web_search(&self.web_transport, params, cancel_token).await {
+                        Ok(output) => success_result(output),
+                        Err(error) => error_result(bound_web_search_tool_error(error)),
+                    }
+                }
                 Err(error) => error_result(bound_web_search_tool_error(error)),
             },
             OPEN_URL_TOOL_NAME => match Self::parse_args::<OpenUrlParams>(arguments) {
@@ -2017,10 +2046,9 @@ async fn read_bounded_local_image(
     .map_err(|error| format!("Image read task failed: {error}"))?
 }
 
-/// The approval prompt showed the caller this exact URL. Only a public
-/// host may be contacted, and the response must come from that host: a
-/// redirect could otherwise route an approved fetch to a loopback or
-/// cloud-metadata address.
+/// The model named this exact URL. Only a public host may be contacted, and
+/// the response must come from that host: a redirect could otherwise route
+/// the fetch to a loopback or cloud-metadata address.
 fn validate_image_url(url: &reqwest::Url) -> Result<(), String> {
     if !url.username().is_empty() || url.password().is_some() {
         return Err("image URL must not contain credentials".to_string());
@@ -2927,7 +2955,6 @@ mod tests {
             test_context(data_dir),
             primary_model_supports_vision,
             Arc::new(TestWebTransport),
-            Arc::new(WebToolState::default()),
             test_tool_context(tool_environment, BTreeSet::new(), false),
         )
         .unwrap()
@@ -3214,7 +3241,7 @@ mod tests {
             read_image["description"]
                 .as_str()
                 .unwrap()
-                .contains("Remote URLs require approval")
+                .contains("http(s) URL")
         );
         assert_eq!(
             result.tools[2].input_schema["properties"]["edits"]["minItems"],
@@ -3249,7 +3276,6 @@ mod tests {
             test_context(temp.path().join("sessions")),
             true,
             Arc::new(TestWebTransport),
-            Arc::new(WebToolState::default()),
             tool_context.clone(),
         )
         .unwrap();
@@ -3362,7 +3388,6 @@ mod tests {
             manager.get_context().clone(),
             true,
             Arc::new(TestWebTransport),
-            Arc::new(WebToolState::default()),
             test_tool_context(BTreeMap::new(), BTreeSet::new(), false),
         )
         .unwrap();
@@ -3525,7 +3550,7 @@ mod tests {
                 temp.path().to_path_buf(),
                 "Image helper usage".to_string(),
                 SessionType::User,
-                GooseMode::SmartApprove,
+                GooseMode::Auto,
             )
             .await
             .unwrap();
@@ -4332,7 +4357,6 @@ mod tests {
             test_context(temp.path().join("sessions")),
             true,
             Arc::new(TestWebTransport),
-            Arc::new(WebToolState::default()),
             tool_context.clone(),
         )
         .unwrap();
@@ -5132,5 +5156,52 @@ printf '%s %s\n' "$$" "$!" > shell-pids"#.to_string(),
     #[test]
     fn overlapping_match_detection_counts_overlaps() {
         assert_eq!(overlapping_match_positions("aaa", "aa"), [0, 1]);
+    }
+
+    #[test]
+    fn remote_image_sources_are_recognized() {
+        for source in [
+            "https://example.com/pixel.png",
+            "HTTP://127.0.0.1/pixel.png",
+            r"\\server\share\pixel.png",
+            r"\\?\UNC\server\share\pixel.png",
+            r"/\server\share\pixel.png",
+            r"\/server/share/pixel.png",
+            "//server/share/pixel.png",
+            "file://server/share/pixel.png",
+            "smb://server/share/pixel.png",
+        ] {
+            assert!(is_remote_file_source(source), "{source}");
+        }
+        for source in [
+            "file:///tmp/pixel.png",
+            "file://localhost/tmp/pixel.png",
+            "maple-attachment://0123456789abcdef0123456789abcdef",
+            r"C:\pixel.png",
+            "~/Desktop/pixel.png",
+            "README.md",
+        ] {
+            assert!(!is_remote_file_source(source), "{source}");
+        }
+    }
+
+    #[tokio::test]
+    async fn tool_descriptions_name_no_permission_mode() {
+        let temp = TestDir::new();
+        let client = test_client(temp.path().join("sessions"), true);
+        let result = client
+            .list_tools("session", None, CancellationToken::new())
+            .await
+            .unwrap();
+        for tool in &result.tools {
+            let text = serde_json::to_string(tool).unwrap();
+            for phrase in ["Read only", "Allow all", "permission mode", "Ask first"] {
+                assert!(
+                    !text.contains(phrase),
+                    "{} names a permission mode: {phrase}",
+                    tool.name
+                );
+            }
+        }
     }
 }

@@ -29,14 +29,9 @@ model cannot name, end, or enumerate sessions. The client uses the SDK's
 canonical `list_tools_json` and `call_tool` surfaces, so Maple does not maintain
 a second copy of CUA's tool definitions or run an in-process network protocol.
 
-Goose still owns tool discovery, namespacing, dispatch, and Maple's normal
-approval routing. Maple marks every CUA operation as sensitive for approval
-purposes, including screenshots and accessibility reads, because an
-observation can carry private data from any application. That rule lives in
-Maple's own Goose permission file, which Goose consults before any annotation
-or heuristic, so CUA's published schemas and annotations reach the model
-unaltered. The user's existing Maple permission mode therefore remains the
-place to choose between per-call approval and allow-all behavior.
+Goose still owns tool discovery, namespacing, and dispatch. Every CUA call
+runs without asking for approval, like every other tool call in a Maple
+task; CUA's published schemas and annotations reach the model unaltered.
 
 CUA's action schemas and screenshot defaults remain canonical. Maple adapts the
 general-purpose catalog only at the bound-session boundary: it hides CUA's six
@@ -207,7 +202,7 @@ remain separate distribution concerns.
   main-thread fixes that should move back to an upstream release once
   available.
 - Direct embedding is not process isolation. A CUA crash or native defect can
-  affect Maple, and Maple approval does not provide OS-level containment.
+  affect Maple, and nothing in Maple provides OS-level containment.
 - The CUA cursor overlay needs a main-thread AppKit host adapter and is not
   wired in this preview.
 - Cancellation is best effort after an operating-system input event has been

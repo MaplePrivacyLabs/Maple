@@ -28,7 +28,6 @@ use codex::{CodexEvent, CodexItem, CodexServerRequest};
 use goose::conversation::message::SystemNotificationContent;
 use std::fmt::Write as _;
 use std::process::Stdio;
-use std::sync::Mutex as StdMutex;
 use std::sync::atomic::AtomicU64;
 use std::time::Duration;
 use std::time::Instant;
@@ -296,16 +295,6 @@ pub(super) fn tool_title(name: &str) -> Option<&'static str> {
     })
 }
 
-/// The row status the desktop draws for a decision; its permission rows
-/// know `completed`, `denied`, and `cancelled`.
-fn decision_row_status(decision: AgentPermissionDecision) -> &'static str {
-    match decision {
-        AgentPermissionDecision::AllowOnce => "completed",
-        AgentPermissionDecision::DenyOnce => "denied",
-        AgentPermissionDecision::Cancel => "cancelled",
-    }
-}
-
 /// Title of a row for a turn Maple started itself.
 const SYNTHETIC_TURN_TITLE: &str = "External agent: answer delivered";
 
@@ -323,7 +312,6 @@ pub(super) struct ExternalAgentHost {
     pub(super) runtime: AgentRuntimeHandle,
     pub(super) service: MapleAgentService,
     pub(super) session_manager: Arc<SessionManager>,
-    pub(super) permission_modes: SessionPermissionModes,
     pub(super) project_root: PathBuf,
     /// The runtime's lifetime; every agent's token derives from it.
     pub(super) lifetime: CancellationToken,
@@ -380,9 +368,6 @@ struct SessionAgents {
 pub(crate) struct ExternalAgentRegistry {
     host: ExternalAgentHost,
     sessions: Mutex<HashMap<String, SessionAgents>>,
-    /// One-shot permission IDs, separate from Goose's so the two can
-    /// never collide.
-    issued_permission_ids: IssuedPermissionIds,
     next_agent: AtomicU64,
 }
 
@@ -391,7 +376,6 @@ impl ExternalAgentRegistry {
         Self {
             host,
             sessions: Mutex::new(HashMap::new()),
-            issued_permission_ids: Arc::new(Mutex::new(HashSet::new())),
             next_agent: AtomicU64::new(1),
         }
     }
@@ -548,7 +532,6 @@ impl ExternalAgentRegistry {
                 first_line_label(&prompt),
                 cwd,
                 self.host.clone(),
-                Arc::clone(&self.issued_permission_ids),
             ));
             session.agents.insert(agent_id, Arc::clone(&agent));
             agent
@@ -804,7 +787,6 @@ struct ExternalAgent {
     /// Stop end it too.
     cancel: CancellationToken,
     host: ExternalAgentHost,
-    issued_permission_ids: IssuedPermissionIds,
     state: Mutex<AgentState>,
 }
 
@@ -823,7 +805,6 @@ impl ExternalAgent {
         task: String,
         cwd: PathBuf,
         host: ExternalAgentHost,
-        issued_permission_ids: IssuedPermissionIds,
     ) -> Self {
         let cancel = host.lifetime.child_token();
         Self {
@@ -852,7 +833,6 @@ impl ExternalAgent {
             started: Instant::now(),
             cancel,
             host,
-            issued_permission_ids,
         }
     }
 
@@ -1363,9 +1343,7 @@ impl ExternalAgent {
                 arguments,
                 prompt: Some(format!("Claude Code wants to use {tool}")),
             };
-            let decision = self
-                .request_permission(request, format!("use {tool}"))
-                .await;
+            let decision = self.request_permission(request).await;
             let _ = client.respond(id, codex::approval_response(decision)).await;
             return;
         }
@@ -1390,9 +1368,7 @@ impl ExternalAgent {
                     arguments,
                     prompt: Some(format!("Codex wants to run: {command}")),
                 };
-                let decision = self
-                    .request_permission(request, format!("run `{command}`"))
-                    .await;
+                let decision = self.request_permission(request).await;
                 codex::approval_response(decision)
             }
             CodexServerRequest::FileChangeApproval { item_id, reason } => {
@@ -1406,9 +1382,7 @@ impl ExternalAgent {
                     arguments,
                     prompt: Some("Codex wants to change files in the project".to_string()),
                 };
-                let decision = self
-                    .request_permission(request, "change project files".to_string())
-                    .await;
+                let decision = self.request_permission(request).await;
                 codex::approval_response(decision)
             }
             CodexServerRequest::UserInput { questions } => {
@@ -1572,88 +1546,19 @@ impl ExternalAgent {
         self.emit_row(true).await;
     }
 
-    /// Put one approval in front of the user through Maple's permission
-    /// card and wait for the decision.
-    async fn request_permission(
-        &self,
-        request: AgentPermissionRequest,
-        summary: String,
-    ) -> AgentPermissionDecision {
+    /// Answer one approval request from the agent. Maple accepts every
+    /// request at once, as its "Allow all" policy always did; a request that
+    /// arrives after the agent or its turn has ended is cancelled instead.
+    async fn request_permission(&self, request: AgentPermissionRequest) -> AgentPermissionDecision {
         if self.cancel.is_cancelled() || self.turn_ended().await.is_cancelled() {
             return AgentPermissionDecision::Cancel;
         }
-        {
-            let modes = self.host.permission_modes.lock().await;
-            if modes
-                .get(&self.session_id)
-                .copied()
-                .unwrap_or(GOOSE_PERMISSION_ROUTING_MODE)
-                == GooseMode::Auto
-            {
-                return AgentPermissionDecision::AllowOnce;
-            }
-        }
-        if self.cancel.is_cancelled() {
-            return AgentPermissionDecision::Cancel;
-        }
-        let (tx, rx) = oneshot::channel();
-        let responder = ExternalPermissionResponder::new(tx);
-        let run_id = external_run_id(&self.agent_id);
-        let request_id = request.request_id.clone();
-        let registration = register_pending_permission(
-            &self.host.service.pending_permissions,
-            &self.issued_permission_ids,
-            &self.session_id,
-            &run_id,
-            AgentPermissionRouting::Desktop,
-            request.clone(),
-            &self.cancel,
-            PendingPermissionOrigin::ExternalAgent(responder),
-        )
-        .await;
-        if registration != PendingPermissionRegistration::Registered {
-            return AgentPermissionDecision::Cancel;
-        }
-        self.set_pending_permission(Some(summary)).await;
-        let item = external_permission_item(&request, unix_ms());
-        self.record_live_if_desktop_run(item.clone()).await;
-        emit_agent_event(
-            &self.host.service.host.events,
-            AgentServiceEvent::Run {
-                session_id: self.session_id.clone(),
-                run_id,
-                event: AgentRunEvent::PermissionRequested { request, item },
-            },
+        log::info!(
+            "External agent {} approval accepted for {}",
+            self.agent_id,
+            request.tool_name
         );
-        let ended = self.turn_ended().await;
-        let withdraw = async {
-            let key = (self.session_id.clone(), request_id.clone());
-            let removed = self
-                .host
-                .service
-                .pending_permissions
-                .lock()
-                .await
-                .remove(&key);
-            if let Some(removed) = removed {
-                publish_external_permission_decision(
-                    &self.host.service,
-                    &self.session_id,
-                    &removed.request,
-                    decision_row_status(AgentPermissionDecision::Cancel),
-                )
-                .await;
-            }
-            AgentPermissionDecision::Cancel
-        };
-        let decision = tokio::select! {
-            biased;
-            _ = self.cancel.cancelled() => withdraw.await,
-            _ = ended.cancelled() => withdraw.await,
-            decision = rx => decision.unwrap_or(AgentPermissionDecision::Cancel),
-        };
-        self.set_pending_permission(None).await;
-        decision
+        AgentPermissionDecision::AllowOnce
     }
 
     /// Ask the agent to stop its current turn. The thread stays open.
@@ -2071,66 +1976,6 @@ fn activity_row_item(
     }
 }
 
-/// Tell the desktop how an external agent's permission was decided. The
-/// live overlay is updated when a run holds one; the row is emitted either
-/// way, because a background agent's request has no run behind it and the
-/// card would otherwise stay "pending" forever.
-pub(super) async fn publish_external_permission_decision(
-    service: &MapleAgentService,
-    session_id: &str,
-    request: &AgentPermissionRequest,
-    status: &str,
-) {
-    let item = match update_live_permission_status(
-        &service.live_timelines,
-        session_id,
-        AgentPermissionRouting::Desktop,
-        &request.request_id,
-        status,
-    )
-    .await
-    {
-        Some(item) => item,
-        None => {
-            let mut item = external_permission_item(request, unix_ms());
-            item.status = Some(status.to_string());
-            item
-        }
-    };
-    emit_agent_event(
-        &service.host.events,
-        AgentServiceEvent::TimelineItem {
-            session_id: session_id.to_string(),
-            run_id: None,
-            item,
-        },
-    );
-}
-
-/// The permission row for an external agent's approval request, shaped
-/// like Goose's so the transcript treats them alike.
-pub(super) fn external_permission_item(
-    request: &AgentPermissionRequest,
-    created_ms: u128,
-) -> AgentTimelineItem {
-    AgentTimelineItem {
-        id: format!("permission-{}", request.request_id),
-        item_type: "permission".to_string(),
-        role: Some("system".to_string()),
-        title: Some(match request.tool_name.as_str() {
-            "codex_command" => "Codex: run command".to_string(),
-            "codex_file_change" => "Codex: change files".to_string(),
-            other => other.to_string(),
-        }),
-        text: request.prompt.clone(),
-        status: Some("pending".to_string()),
-        input: Some(Value::Object(request.arguments.clone())),
-        output: None,
-        created_ms,
-        merge: "replace".to_string(),
-    }
-}
-
 /// Project a persisted end-of-turn notice back onto the tool row it
 /// belongs to, so a reopened task shows what the agent did.
 pub(super) fn notice_timeline_item(
@@ -2152,41 +1997,6 @@ pub(super) fn notice_timeline_item(
         "content": [],
     }));
     Some(item)
-}
-
-/// Answers one external-agent permission request. Shared between the
-/// pending-permission table and the waiting agent; whoever resolves first
-/// takes the sender.
-#[derive(Clone)]
-pub(super) struct ExternalPermissionResponder {
-    sender: Arc<StdMutex<Option<oneshot::Sender<AgentPermissionDecision>>>>,
-}
-
-impl ExternalPermissionResponder {
-    fn new(sender: oneshot::Sender<AgentPermissionDecision>) -> Self {
-        Self {
-            sender: Arc::new(StdMutex::new(Some(sender))),
-        }
-    }
-
-    pub(super) fn resolve(&self, decision: AgentPermissionDecision) -> bool {
-        let sender = self
-            .sender
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .take();
-        sender.is_some_and(|sender| sender.send(decision).is_ok())
-    }
-
-    pub(super) fn same_as(&self, other: &Self) -> bool {
-        Arc::ptr_eq(&self.sender, &other.sender)
-    }
-}
-
-impl std::fmt::Debug for ExternalPermissionResponder {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("ExternalPermissionResponder")
-    }
 }
 
 #[cfg(test)]
@@ -2314,32 +2124,5 @@ mod unit_tests {
             data: None,
         };
         assert!(notice_timeline_item(&plain, 7).is_none());
-    }
-
-    #[test]
-    fn permission_row_mirrors_goose_shape() {
-        let request = AgentPermissionRequest {
-            request_id: "codex-1-i1".into(),
-            tool_name: "codex_command".into(),
-            arguments: serde_json::Map::from_iter([("command".to_string(), json!("ls"))]),
-            prompt: Some("Codex wants to run: ls".into()),
-        };
-        let item = external_permission_item(&request, 1);
-        assert_eq!(item.id, "permission-codex-1-i1");
-        assert_eq!(item.item_type, "permission");
-        assert_eq!(item.status.as_deref(), Some("pending"));
-        assert_eq!(item.title.as_deref(), Some("Codex: run command"));
-    }
-
-    #[test]
-    fn responder_resolves_once() {
-        let (tx, rx) = oneshot::channel();
-        let responder = ExternalPermissionResponder::new(tx);
-        assert!(responder.resolve(AgentPermissionDecision::AllowOnce));
-        assert!(!responder.resolve(AgentPermissionDecision::DenyOnce));
-        assert_eq!(
-            rx.blocking_recv().unwrap(),
-            AgentPermissionDecision::AllowOnce
-        );
     }
 }

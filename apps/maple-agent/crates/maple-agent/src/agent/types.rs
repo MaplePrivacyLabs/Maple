@@ -578,24 +578,6 @@ pub enum AgentPermissionDecision {
     Cancel,
 }
 
-impl AgentPermissionDecision {
-    pub(super) fn status(self) -> &'static str {
-        match self {
-            Self::AllowOnce => "allow_once",
-            Self::DenyOnce => "deny_once",
-            Self::Cancel => "cancelled",
-        }
-    }
-
-    pub(super) fn goose_permission(self) -> Permission {
-        match self {
-            Self::AllowOnce => Permission::AllowOnce,
-            Self::DenyOnce => Permission::DenyOnce,
-            Self::Cancel => Permission::Cancel,
-        }
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AgentPermissionRouting {
     Desktop,
@@ -715,27 +697,18 @@ pub(super) fn nonnegative_tokens(tokens: Option<i32>) -> u64 {
         .unwrap_or(0)
 }
 
+/// Kept for surfaces that still hold one. Maple no longer asks for tool
+/// permissions, so there is never a request to answer.
 #[derive(Clone)]
-pub(crate) struct AgentRunPermissionResponder {
-    pub(super) agent: AgentRuntimeHandle,
-    pub(super) session_id: Arc<str>,
-    pub(super) run_id: Arc<str>,
-}
+pub(crate) struct AgentRunPermissionResponder;
 
 impl AgentRunPermissionResponder {
     pub async fn respond(
         &self,
-        request_id: String,
-        decision: AgentPermissionDecision,
+        _request_id: String,
+        _decision: AgentPermissionDecision,
     ) -> Result<(), String> {
-        self.agent
-            .permission_respond_for_run(
-                self.session_id.as_ref(),
-                self.run_id.as_ref(),
-                request_id,
-                decision,
-            )
-            .await
+        Err("Maple no longer asks for tool permissions".to_string())
     }
 }
 
@@ -911,7 +884,7 @@ pub(super) async fn cleanup_provisional_created_session(
     // untouched provisional row are gone. If the exact reservation no longer
     // belongs to us, fail closed and leave the durable task alone.
     let _session_lifecycle = service.session_lifecycle.lock().await;
-    let permission_modes = {
+    {
         let mut runtime = service.inner.lock().await;
         match runtime.as_mut() {
             Some(current) if current.account_scope == access.account_scope.as_ref() => {
@@ -938,14 +911,13 @@ pub(super) async fn cleanup_provisional_created_session(
                 ) {
                     installed.context.revoke();
                 }
-                Some(Arc::clone(&current.permission_modes))
             }
             // Runtime stop/replacement drains the old registry. The captured
             // account-scoped managers still let us remove only the untouched
             // row that this setup created.
-            _ => None,
+            _ => {}
         }
-    };
+    }
     access.context.revoke();
     if let Err(error) = agent_manager
         .remove_session_if_loaded(access.session_id.as_ref())
@@ -956,13 +928,6 @@ pub(super) async fn cleanup_provisional_created_session(
             access.session_id
         );
     }
-    if let Some(permission_modes) = permission_modes {
-        permission_modes
-            .lock()
-            .await
-            .remove(access.session_id.as_ref());
-    }
-
     let current = match session_manager
         .get_session(access.session_id.as_ref(), true)
         .await
