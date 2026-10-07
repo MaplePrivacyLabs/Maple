@@ -491,6 +491,12 @@ a release build. `just ci` is the full local format, lint, build and test gate;
 `just release` separately validates the optimized binary. PR jobs have no
 signing or publishing credentials. See the root agent guide for shared checks.
 
+Two by-hand checks complement the automated ones: the
+[scenario checklist](docs/phase0-scenario-checklist.md), one scenario per
+feature with the results of each run, and the
+[performance check](docs/performance-check.md), a short release-build smoke
+test of cold start, memory and streaming smoothness.
+
 ## Update and release boundary
 
 Prod and unpackaged builds accept stable `maple-agent-vX.Y.Z` releases. Dev
