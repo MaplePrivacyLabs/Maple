@@ -2402,15 +2402,7 @@ impl SettingsScreen {
                     || SettingsTarget::IntegrationSetup(integration.id.clone()),
                     pill_button(
                         format!("integration-setup-{}", integration.id),
-                        if matches!(
-                            &integration.backend,
-                            Some(AgentIntegrationBackend::External)
-                        ) || integration.standalone_version.is_some()
-                        {
-                            "Set up built-in"
-                        } else {
-                            "Set up"
-                        },
+                        "Set up",
                         false,
                         cx.listener(move |this, _event, _window, cx| {
                             this.setup_integration(&id, cx);
@@ -2723,16 +2715,7 @@ fn integration_can_enable(integration: &AgentIntegration) -> bool {
         );
     }
 
-    match integration.backend {
-        Some(AgentIntegrationBackend::Embedded) => {
-            cua_permissions_ready(integration.permissions.as_ref())
-        }
-        Some(AgentIntegrationBackend::External) => integration.standalone_version.is_some(),
-        None => {
-            cua_permissions_ready(integration.permissions.as_ref())
-                || integration.standalone_version.is_some()
-        }
-    }
+    cua_permissions_ready(integration.permissions.as_ref())
 }
 
 fn integration_can_toggle(integration: &AgentIntegration) -> bool {
@@ -2746,11 +2729,7 @@ fn integration_can_setup(integration: &AgentIntegration) -> bool {
             integration.availability,
             AgentIntegrationAvailability::NotDetected
         )
-        && (!cua_permissions_ready(integration.permissions.as_ref())
-            || matches!(
-                &integration.backend,
-                Some(AgentIntegrationBackend::External)
-            ))
+        && !cua_permissions_ready(integration.permissions.as_ref())
 }
 
 fn integration_availability(integration: &AgentIntegration) -> (&'static str, u32) {
@@ -2768,9 +2747,7 @@ fn integration_availability(integration: &AgentIntegration) -> (&'static str, u3
     match &integration.availability {
         AgentIntegrationAvailability::NotDetected => ("Not detected", theme::text_muted()),
         AgentIntegrationAvailability::Available if is_cua_driver(&integration.id) => {
-            if cua_permissions_ready(integration.permissions.as_ref())
-                || integration.standalone_version.is_some()
-            {
+            if cua_permissions_ready(integration.permissions.as_ref()) {
                 ("Ready", theme::status_success())
             } else {
                 ("Available", theme::status_success())
@@ -2791,16 +2768,8 @@ fn integration_setup_notice(permissions: &AgentIntegrationPermissions) -> Option
     Some(format!("{}: {guidance}", missing.label()))
 }
 
-fn cua_backend_label(integration: &AgentIntegration) -> &'static str {
-    match integration.backend {
-        Some(AgentIntegrationBackend::External) => "Standalone driver",
-        None if integration.standalone_version.is_some()
-            && !cua_permissions_ready(integration.permissions.as_ref()) =>
-        {
-            "Standalone detected"
-        }
-        Some(AgentIntegrationBackend::Embedded) | None => "Built into Maple",
-    }
+fn cua_backend_label(_integration: &AgentIntegration) -> &'static str {
+    "Built into Maple"
 }
 
 fn integration_status_badge(label: &'static str, color: u32) -> Div {
@@ -3161,7 +3130,6 @@ mod tests {
             detail: None,
             permissions: Some(macos_permissions(ready, ready)),
             setup_available: true,
-            standalone_version: None,
             backend: Some(AgentIntegrationBackend::Embedded),
         }
     }
@@ -3263,18 +3231,11 @@ mod tests {
         assert!(integration_is_visible(&claude_needs_setup));
         assert!(!integration_can_enable(&claude_needs_setup));
 
-        let mut external = integration(AgentIntegrationAvailability::Available, true);
-        external.backend = Some(AgentIntegrationBackend::External);
-        external.permissions = Some(macos_permissions(false, false));
-        external.standalone_version = Some("0.23.2".to_string());
-        assert!(integration_can_toggle(&external));
-        assert!(integration_can_setup(&external));
-
-        // A separately installed driver must not make an embedded selection
-        // enableable after Maple's own grants have been revoked. The setup
-        // action is the only route back to a ready embedded backend.
-        let mut revoked_embedded = external.clone();
-        revoked_embedded.backend = Some(AgentIntegrationBackend::Embedded);
+        // An embedded selection is not enableable after Maple's own grants
+        // have been revoked. The setup action is the only route back to a
+        // ready embedded backend.
+        let mut revoked_embedded = integration(AgentIntegrationAvailability::Available, true);
+        revoked_embedded.permissions = Some(macos_permissions(false, false));
         revoked_embedded.enabled_for_new_tasks = false;
         assert!(!integration_can_enable(&revoked_embedded));
         assert!(!integration_can_toggle(&revoked_embedded));

@@ -4053,18 +4053,6 @@ impl AgentRuntimeHandle {
         attach_prepared_skills_client(&agent, skills_client).await;
         mutation_result?;
 
-        if requested_key == CUA_DRIVER_MCP_NAME {
-            persist_session_cua_state(
-                session_manager.as_ref(),
-                &session_id,
-                CuaSessionState {
-                    backend: AgentIntegrationBackend::External,
-                    enabled: request.enabled,
-                },
-            )
-            .await?;
-        }
-
         let refreshed = session_manager
             .get_session(&session_id, false)
             .await
@@ -6563,10 +6551,25 @@ async fn get_or_create_session_agent<T>(
 where
     T: provider::MapleInferenceTransport + 'static,
 {
+    // Tasks saved by builds that offered the standalone CuaDriver carry its
+    // stdio entry in their extension list, and Goose starts every persisted
+    // stdio extension while it builds a cold agent. Strip the entry first,
+    // under every spelling the integration reserves, so that executable is
+    // never run; a cached agent that still holds it is detached too.
+    let retired_extensions = strip_retired_cua_driver_extension(agent_manager, session).await?;
     let manager_result = agent_manager
         .get_or_create_agent_with_runtime_context(session.id.clone(), runtime_context)
         .await
         .map_err(|e| format!("Failed to load Agent for task {}: {e}", session.id))?;
+    if !manager_result.agent_created {
+        for name in &retired_extensions {
+            let _ = manager_result
+                .agent
+                .extension_manager
+                .remove_extension(name)
+                .await;
+        }
+    }
 
     // Freshly created agents inherit goose's stock identity prompt, which
     // names goose and AAIF even though users only ever meet Maple's Agent
@@ -6602,6 +6605,57 @@ where
     }
 
     Ok(manager_result)
+}
+
+/// Remove the retired standalone CuaDriver's stdio entry from a task's saved
+/// extension list before Goose builds (or reuses) the task's agent. Returns
+/// the names it removed, so a cached agent can be detached from them too.
+async fn strip_retired_cua_driver_extension(
+    agent_manager: &Arc<AgentManager>,
+    session: &Session,
+) -> Result<Vec<String>, String> {
+    let Some(state) =
+        goose::session::EnabledExtensionsState::from_extension_data(&session.extension_data)
+    else {
+        return Ok(Vec::new());
+    };
+    let retired = state
+        .extensions
+        .iter()
+        .filter(|config| mcp_transport_label(config).is_some() && is_cua_identity(&config.name()))
+        .map(ExtensionConfig::name)
+        .collect::<Vec<_>>();
+    if retired.is_empty() {
+        return Ok(Vec::new());
+    }
+    let session_manager = agent_manager.session_manager();
+    let current = session_manager
+        .get_session(&session.id, false)
+        .await
+        .map_err(|error| format!("Failed to load Agent task: {error}"))?;
+    let mut extension_data = current.extension_data.clone();
+    // Filter the freshly read list, not the caller's snapshot, so a change
+    // made since the snapshot is kept.
+    let kept = goose::session::EnabledExtensionsState::from_extension_data(&extension_data)
+        .map(|state| state.extensions)
+        .unwrap_or(state.extensions)
+        .into_iter()
+        .filter(|config| !retired.contains(&config.name()))
+        .collect::<Vec<_>>();
+    goose::session::EnabledExtensionsState::new(kept)
+        .to_extension_data(&mut extension_data)
+        .map_err(|error| format!("Failed to update the task's extension list: {error}"))?;
+    session_manager
+        .update(&session.id)
+        .extension_data(extension_data)
+        .apply()
+        .await
+        .map_err(|error| format!("Failed to save the task's extension list: {error}"))?;
+    log::info!(
+        "Removed the retired standalone CuaDriver entry from task {}",
+        session.id
+    );
+    Ok(retired)
 }
 
 /// Await an MCP startup that runs with Maple's lifecycle fences released.
@@ -9973,6 +10027,147 @@ mod tests {
         assert_eq!(error, MCP_STARTUP_CANCELLED_ERROR);
         assert!(!agent_manager.is_session_busy(&session.id).await);
         assert!(state.inner.lock().await.is_none());
+    }
+
+    /// A task saved by the first integrations preview carries the standalone
+    /// CuaDriver's stdio entry, and Goose starts every persisted stdio
+    /// extension while it builds a cold agent. The entry is stripped before
+    /// that build, so the executable never runs; a later compaction, which
+    /// builds an agent with no run setup at all, does not run it either.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn persisted_cua_driver_stdio_entry_is_stripped_before_any_agent_starts() {
+        let sink = Arc::new(RecordingAgentEventSink::default());
+        let (test_root, paths, state) = agent_service_test_context("retired-cua-stdio", sink);
+        let user_id = "retired-cua-stdio-user";
+        let account_scope = account_scope(user_id).unwrap();
+        let project_root = test_root.join("project");
+        fs::create_dir_all(&project_root).unwrap();
+        let marker = test_root.join("cua-driver-ran");
+        let sentinel = test_root.join("cua-driver");
+        fs::write(
+            &sentinel,
+            format!("#!/bin/sh\ntouch '{}'\nsleep 30\n", marker.display()),
+        )
+        .unwrap();
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&sentinel, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let session_manager = Arc::new(account_session_manager(&paths, user_id).unwrap());
+        let permission_manager = Arc::new(PermissionManager::new(test_root.join("permissions")));
+        let session = session_manager
+            .create_session(
+                project_root.clone(),
+                "Old CuaDriver task".to_string(),
+                SessionType::User,
+                GooseMode::Auto,
+            )
+            .await
+            .unwrap();
+        let mut extension_data = session.extension_data.clone();
+        goose::session::EnabledExtensionsState::new(vec![ExtensionConfig::Stdio {
+            name: CUA_DRIVER_MCP_NAME.to_string(),
+            description: "Control desktop applications through the locally installed Cua Driver."
+                .to_string(),
+            cmd: sentinel.to_string_lossy().into_owned(),
+            args: vec!["mcp".to_string()],
+            envs: Default::default(),
+            env_keys: Vec::new(),
+            timeout: Some(DEFAULT_MCP_TIMEOUT_SECONDS),
+            cwd: None,
+            bundled: None,
+            available_tools: Vec::new(),
+        }])
+        .to_extension_data(&mut extension_data)
+        .unwrap();
+        session_manager
+            .update(&session.id)
+            .extension_data(extension_data)
+            .apply()
+            .await
+            .unwrap();
+        let agent_manager = Arc::new(
+            AgentManager::new(
+                GooseAgentConfig::new(
+                    Arc::clone(&session_manager),
+                    permission_manager,
+                    None,
+                    GooseMode::Auto,
+                    true,
+                    GoosePlatform::GooseDesktop,
+                ),
+                Some(2),
+            )
+            .await
+            .unwrap(),
+        );
+        *state.inner.lock().await = Some(AgentRuntime {
+            agent_manager: Arc::clone(&agent_manager),
+            session_manager: Arc::clone(&session_manager),
+            maple_api_session: crate::maple_api::test_maple_api_session(user_id),
+            active_runs: HashMap::new(),
+            session_title_tasks: HashMap::new(),
+            session_tool_contexts: HashMap::new(),
+            external_agents: None,
+            project_root: project_root.clone(),
+            model: DEFAULT_AGENT_MODEL.to_string(),
+            account_scope: account_scope.clone(),
+            lifetime: CancellationToken::new(),
+        });
+        let handle = state.handle_for_user(user_id).await.unwrap();
+        let saved_list_is_clean = || async {
+            let saved = session_manager
+                .get_session(&session.id, false)
+                .await
+                .unwrap();
+            !session_mcp_extension_keys(&saved)
+                .iter()
+                .any(|key| is_cua_key(key))
+        };
+
+        // Compaction builds the cold agent with no run setup at all. The
+        // model is unreachable in this runtime, so the compaction itself
+        // fails; what matters is what Goose started while building the agent.
+        let _ = handle.compact_session(session.id.clone()).await;
+        assert!(
+            !marker.exists(),
+            "the retired driver must not have been started by the cold build"
+        );
+        assert!(
+            saved_list_is_clean().await,
+            "the saved extension list no longer names the driver"
+        );
+
+        // A send reuses the cached agent. Wait only for the run to start:
+        // the provider retries against the unreachable endpoint, so the run
+        // would not end on its own in test time.
+        let mut run = handle
+            .send_message(AgentSendMessageRequest {
+                session_id: session.id.clone(),
+                text: "hello".to_string(),
+                model: None,
+                context_limit: None,
+                vision_capable: false,
+                steer: false,
+                queue_id: None,
+                attachments: Vec::new(),
+            })
+            .await
+            .unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(60), async {
+            while let Some(event) = run.events.recv().await {
+                if matches!(event, AgentRunEvent::Started) {
+                    break;
+                }
+            }
+        })
+        .await
+        .expect("the run should start");
+        assert!(!marker.exists());
+        assert!(saved_list_is_clean().await);
+        handle.stop().await.unwrap();
+        let _ = fs::remove_dir_all(test_root);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

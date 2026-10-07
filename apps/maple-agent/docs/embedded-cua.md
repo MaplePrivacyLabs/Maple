@@ -61,8 +61,8 @@ Helper usage is recorded outside the primary context ledger.
 
 The native client is ephemeral. Goose must not serialize a Rust object as an
 ordinary MCP transport, so its extension snapshot excludes the client. Maple
-stores only versioned logical task metadata: whether CUA is enabled and whether
-that task uses the embedded or legacy external backend. On cold load or a new
+stores only versioned logical task metadata: whether CUA is enabled for the
+task, and the embedded backend it uses. On cold load or a new
 turn Maple recreates its trusted connection and rejoins the stable account/task
 CUA lifecycle.
 
@@ -148,14 +148,12 @@ action in a session raises a consent prompt. Background delivery is unavailable
 on GNOME, so actions use `delivery_mode: "foreground"`, which activates the
 target window and restores the previous one afterwards.
 
-Maple detects a compatible standalone `CuaDriver.app` on macOS only, for
-migration from the first integrations preview. It refuses to run that
-executable when other accounts can write to it. No other platform looks for a
-separately installed driver, so no foreign binary is ever executed. Existing tasks and version-1 device
-settings retain that external backend. A successful explicit setup switches
-the default for future tasks to embedded CUA without rewriting historical task
-snapshots. Maple never installs, updates, launches, or reconfigures the
-standalone driver.
+Maple no longer detects or runs a separately installed `CuaDriver.app`, so no
+foreign binary is ever executed. A task saved by the first integrations preview
+with that driver's stdio entry loses the entry before any agent is built for
+it, and a device setting that selected the external backend is ignored on
+load; both read as "not set up" until the user enables built-in CUA. Nothing
+is migrated or rewritten beyond that.
 
 Enabling the card changes the default for newly-created tasks. Existing tasks
 retain an independent switch in the composer. Changing tools while a task is

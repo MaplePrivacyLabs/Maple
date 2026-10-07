@@ -303,7 +303,6 @@ fn draft_mcp_rows(
             description: card.description.clone(),
             transport: match card.backend {
                 Some(AgentIntegrationBackend::Embedded) => "embedded",
-                Some(AgentIntegrationBackend::External) => "stdio",
                 None => "unconfigured",
             }
             .to_string(),

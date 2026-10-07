@@ -2525,7 +2525,6 @@ mod state_tests {
             availability,
             backend,
             version: None,
-            standalone_version: None,
             permissions: None,
             setup_available: false,
             enabled_for_new_tasks,
@@ -2610,7 +2609,7 @@ mod state_tests {
         assert_eq!(rows[1].display_name, "CODEX");
 
         // Without a stored CUA choice the row is unconfigured and off; an
-        // external backend that is not installed is on but unavailable.
+        // embedded choice whose grants are missing is on but unavailable.
         let rows = draft_mcp_rows(
             Vec::new(),
             &[integration_card(
@@ -2628,12 +2627,12 @@ mod state_tests {
             &[integration_card(
                 "cua-driver",
                 AgentIntegrationAvailability::SetupRequired,
-                Some(AgentIntegrationBackend::External),
+                Some(AgentIntegrationBackend::Embedded),
                 true,
             )],
         );
         assert!(rows[0].enabled && !rows[0].available);
-        assert_eq!(rows[0].transport, "stdio");
+        assert_eq!(rows[0].transport, "embedded");
         // No catalog at all: the servers alone, as before.
         let rows = draft_mcp_rows(vec![mcp_server("docs", false)], &[]);
         assert_eq!(rows.len(), 1);
