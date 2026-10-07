@@ -1,4 +1,4 @@
-import { isMobile, isTauri } from "@/utils/platform";
+import { isAndroid, isMobile, isTauri } from "@/utils/platform";
 import {
   isAllowedZapriteCheckoutUrl,
   parseBillingApiError,
@@ -11,6 +11,13 @@ import {
 export const MIN_PURCHASE_CREDITS = 10000;
 export const MIN_PURCHASE_AMOUNT = 10;
 export const MIN_PURCHASE_ERROR = `Minimum purchase is ${MIN_PURCHASE_CREDITS.toLocaleString()} credits ($${MIN_PURCHASE_AMOUNT})`;
+
+/** Android consumes existing access; checkout and portals can offer new purchases. */
+function assertPurchasingAvailable(): void {
+  if (isAndroid()) {
+    throw new Error("Purchases are not available in the Android app.");
+  }
+}
 
 export type BillingPaymentProvider = "stripe" | "zaprite" | "subscription_pass" | "apple";
 
@@ -167,6 +174,7 @@ export async function fetchProducts(version?: string): Promise<BillingProduct[]>
 }
 
 export async function fetchPortalUrl(thirdPartyToken: string): Promise<string> {
+  assertPurchasingAvailable();
   let returnUrl = window.location.origin;
 
   // For all Tauri platforms, use the actual website origin instead of tauri://localhost
@@ -213,6 +221,7 @@ export async function createCheckoutSession(
   quantity?: number,
   assertCurrent?: () => void
 ): Promise<void> {
+  assertPurchasingAvailable();
   const requestBody = {
     email,
     product_id: productId,
@@ -290,6 +299,7 @@ export async function createZapriteCheckoutSession(
   quantity?: number,
   assertCurrent?: () => void
 ): Promise<void> {
+  assertPurchasingAvailable();
   const requestBody = {
     email,
     product_id: productId,
@@ -373,6 +383,7 @@ export async function createZapriteUpgradeQuote(
   thirdPartyToken: string,
   targetProductId: string
 ): Promise<ZapriteUpgradeQuote> {
+  assertPurchasingAvailable();
   const response = await fetch(
     `${import.meta.env.VITE_MAPLE_BILLING_API_URL}/v1/maple/subscription/zaprite/upgrade-quotes`,
     {
@@ -396,6 +407,7 @@ export async function createZapriteUpgrade(
   idempotencyKey: string,
   successUrl?: string
 ): Promise<ZapriteUpgradeCreateResponse> {
+  assertPurchasingAvailable();
   const response = await fetch(
     `${import.meta.env.VITE_MAPLE_BILLING_API_URL}/v1/maple/subscription/zaprite/upgrades`,
     {
@@ -441,6 +453,7 @@ export async function fetchZapriteUpgradeStatus(
 }
 
 export async function openValidatedCheckoutUrl(checkoutUrl: string): Promise<void> {
+  assertPurchasingAvailable();
   if (!isAllowedZapriteCheckoutUrl(checkoutUrl)) {
     throw new Error("Checkout URL is not from the expected payment provider");
   }
@@ -860,6 +873,7 @@ export async function purchaseApiCredits(
   thirdPartyToken: string,
   data: PurchaseCreditsRequest
 ): Promise<CheckoutResponse> {
+  assertPurchasingAvailable();
   const response = await fetch(
     `${import.meta.env.VITE_MAPLE_BILLING_API_URL}/v1/maple/api-credits/purchase`,
     {
@@ -891,6 +905,7 @@ export async function purchaseApiCreditsZaprite(
   thirdPartyToken: string,
   data: PurchaseCreditsZapriteRequest
 ): Promise<CheckoutResponse> {
+  assertPurchasingAvailable();
   const response = await fetch(
     `${import.meta.env.VITE_MAPLE_BILLING_API_URL}/v1/maple/api-credits/purchase-zaprite`,
     {

@@ -16,9 +16,13 @@ const discount = {
 
 let renderer: ReactTestRenderer | null = null;
 const platformCleanups: Array<() => void> = [];
-function setNativeIOS(value: boolean) {
-  const spy = spyOn(platform, "isIOS").mockReturnValue(value);
-  platformCleanups.push(() => spy.mockRestore());
+function setNativePlatform(ios: boolean, android = false) {
+  const iosSpy = spyOn(platform, "isIOS").mockReturnValue(ios);
+  const androidSpy = spyOn(platform, "isAndroid").mockReturnValue(android);
+  platformCleanups.push(
+    () => iosSpy.mockRestore(),
+    () => androidSpy.mockRestore()
+  );
 }
 afterEach(() => {
   if (renderer) act(() => renderer?.unmount());
@@ -26,9 +30,9 @@ afterEach(() => {
   for (const cleanup of platformCleanups.splice(0).reverse()) cleanup();
 });
 
-describe("native iOS pass and promotion entry points", () => {
+describe("native pass and promotion entry points", () => {
   test("redirects direct pass links before redemption content can load", () => {
-    setNativeIOS(true);
+    setNativePlatform(true);
     const beforeLoad = RedeemRoute.options.beforeLoad!;
     let result: unknown;
     try {
@@ -43,12 +47,17 @@ describe("native iOS pass and promotion entry points", () => {
   });
 
   test("preserves the pass route for web, Android, and desktop", () => {
-    setNativeIOS(false);
+    setNativePlatform(false);
+    expect(RedeemRoute.options.beforeLoad!({} as never)).toBeUndefined();
+  });
+
+  test("Android can redeem an existing pass without purchasing in the app", () => {
+    setNativePlatform(false, true);
     expect(RedeemRoute.options.beforeLoad!({} as never)).toBeUndefined();
   });
 
   test("does not mount a percentage promotion on native iOS", () => {
-    setNativeIOS(true);
+    setNativePlatform(true);
     const onOpenChange = mock(() => {});
     act(() => {
       renderer = create(<PromoDialog open onOpenChange={onOpenChange} discount={discount} />);
@@ -57,8 +66,18 @@ describe("native iOS pass and promotion entry points", () => {
     expect(onOpenChange).not.toHaveBeenCalled();
   });
 
-  test("keeps the existing promotion and its callback available outside native iOS", () => {
-    setNativeIOS(false);
+  test("does not mount a percentage promotion on native Android", () => {
+    setNativePlatform(false, true);
+    const onOpenChange = mock(() => {});
+    act(() => {
+      renderer = create(<PromoDialog open onOpenChange={onOpenChange} discount={discount} />);
+    });
+    expect(renderer!.toJSON()).toBeNull();
+    expect(onOpenChange).not.toHaveBeenCalled();
+  });
+
+  test("keeps the existing promotion and its callback available on web and desktop", () => {
+    setNativePlatform(false);
     const onOpenChange = mock(() => {});
     const view = PromoDialog({ open: true, onOpenChange, discount });
     expect(view).not.toBeNull();

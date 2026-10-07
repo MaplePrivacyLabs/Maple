@@ -3,7 +3,7 @@ import { ExternalLink, FileText, Info, Mail, Shield } from "lucide-react";
 import packageJson from "../../../package.json";
 import { Button } from "@/components/ui/button";
 import { openExternalUrl } from "@/utils/openUrl";
-import { isTauriDesktop, isWeb } from "@/utils/platform";
+import { isAndroid, isTauriDesktop, isWeb } from "@/utils/platform";
 import { SettingsPage, SettingsSection } from "./SettingsPage";
 import { DownloadSettings } from "./DownloadSettings";
 import { UpdateSettings } from "./UpdateSettings";
@@ -74,8 +74,31 @@ export function AboutSettings({
 
       <SettingsSection title="Policies and support">
         <div className="space-y-2">
-          <ExternalRow label="Privacy policy" url="https://trymaple.ai/privacy" icon={Shield} />
-          <ExternalRow label="Terms of service" url="https://trymaple.ai/terms" icon={FileText} />
+          {isAndroid() ? (
+            <>
+              <Button asChild variant="outline" className="w-full justify-start">
+                <Link to="/privacy">
+                  <Shield className="mr-3 h-4 w-4" />
+                  Privacy policy
+                </Link>
+              </Button>
+              <Button asChild variant="outline" className="w-full justify-start">
+                <Link to="/terms">
+                  <FileText className="mr-3 h-4 w-4" />
+                  Terms of service
+                </Link>
+              </Button>
+            </>
+          ) : (
+            <>
+              <ExternalRow label="Privacy policy" url="https://trymaple.ai/privacy" icon={Shield} />
+              <ExternalRow
+                label="Terms of service"
+                url="https://trymaple.ai/terms"
+                icon={FileText}
+              />
+            </>
+          )}
           <ExternalRow label="Contact us" url="mailto:support@trymaple.ai" icon={Mail} />
         </div>
       </SettingsSection>

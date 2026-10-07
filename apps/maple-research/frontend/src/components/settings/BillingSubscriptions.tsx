@@ -14,6 +14,7 @@ import {
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { openExternalUrl } from "@/utils/openUrl";
+import { isAndroid } from "@/utils/platform";
 import { SettingsSection } from "./SettingsPage";
 
 type Props = {
@@ -41,11 +42,13 @@ export function BillingSubscriptions({
     setOpening(index);
     setError(null);
     try {
-      await (action === "apple"
-        ? manageApple()
-        : action === "stripe"
-          ? manageStripe()
-          : manageSupport());
+      await (isAndroid()
+        ? manageSupport()
+        : action === "apple"
+          ? manageApple()
+          : action === "stripe"
+            ? manageStripe()
+            : manageSupport());
     } catch {
       setError("Unable to open subscription management. Please try again.");
     } finally {
@@ -112,11 +115,13 @@ export function BillingSubscriptions({
                   {opening === index && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
                   {opening === index
                     ? "Opening..."
-                    : action === "apple"
-                      ? "Manage with Apple"
-                      : action === "stripe"
-                        ? "Manage card subscription"
-                        : "Contact support"}
+                    : isAndroid()
+                      ? "Contact support"
+                      : action === "apple"
+                        ? "Manage with Apple"
+                        : action === "stripe"
+                          ? "Manage card subscription"
+                          : "Contact support"}
                 </Button>
               )}
             </li>

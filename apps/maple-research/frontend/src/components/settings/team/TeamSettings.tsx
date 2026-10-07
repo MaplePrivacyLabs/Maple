@@ -27,7 +27,7 @@ import { Label } from "@/components/ui/label";
 import { useSettingsNavigationLock } from "@/contexts/SettingsNavigationLockContext";
 import { useBillingState } from "@/state/useLocalState";
 import type { TeamStatus } from "@/types/team";
-import { isIOS } from "@/utils/platform";
+import { isAndroid, isMobile } from "@/utils/platform";
 import {
   formatTeamSeatMismatchMessage,
   getTeamSeatCounts,
@@ -168,7 +168,7 @@ function TeamMemberDashboard({ teamStatus }: { teamStatus: TeamStatus }) {
           <AlertDescription>
             <p className="font-medium">Team usage is paused</p>
             <p className="mt-1 text-sm">
-              {formatTeamSeatMismatchMessage(seatMismatch, "member", !isIOS())}
+              {formatTeamSeatMismatchMessage(seatMismatch, "member", !isMobile())}
             </p>
           </AlertDescription>
         </Alert>
@@ -274,9 +274,9 @@ function TeamAdminDashboard({ teamStatus }: { teamStatus: TeamStatus }) {
   const seatsUsed = seatCounts.memberCount ?? 0;
   const seatsPurchased = seatCounts.billedSeatCount ?? 0;
   const seatUsagePercentage = seatsPurchased > 0 ? (seatsUsed / seatsPurchased) * 100 : 0;
-  const canOpenBillingPortal = billingStatus
-    ? !!billingStatus.stripe_customer_id
-    : !!teamStatus.has_team_subscription;
+  const canOpenBillingPortal =
+    !isAndroid() &&
+    (billingStatus ? !!billingStatus.stripe_customer_id : !!teamStatus.has_team_subscription);
 
   const startEditingName = () => {
     setEditedName(teamStatus.team_name ?? "");
@@ -355,7 +355,7 @@ function TeamAdminDashboard({ teamStatus }: { teamStatus: TeamStatus }) {
           <AlertDescription>
             <p className="font-medium">Team usage is paused</p>
             <p className="mt-1 text-sm">
-              {formatTeamSeatMismatchMessage(seatMismatch, "admin", !isIOS())}
+              {formatTeamSeatMismatchMessage(seatMismatch, "admin", !isMobile())}
             </p>
             <div className="mt-4 flex flex-col gap-2 lg:flex-row">
               <Button
@@ -368,7 +368,7 @@ function TeamAdminDashboard({ teamStatus }: { teamStatus: TeamStatus }) {
                 <Users className="mr-1.5 h-3.5 w-3.5" />
                 Manage members
               </Button>
-              {canOpenBillingPortal && !isIOS() && (
+              {canOpenBillingPortal && !isMobile() && (
                 <Button
                   type="button"
                   variant="outline"
@@ -515,6 +515,11 @@ function TeamAdminDashboard({ teamStatus }: { teamStatus: TeamStatus }) {
               </Button>
             )}
           </div>
+          {isAndroid() && (
+            <p className="text-sm text-muted-foreground">
+              For help with your team subscription, contact support@trymaple.ai.
+            </p>
+          )}
           {!seatMismatch && portalError && (
             <Alert variant="destructive">
               <AlertCircle className="h-4 w-4" />
@@ -581,7 +586,11 @@ export function TeamSettings() {
       <SettingsPage title="Team" description="Team management is available with a Team plan.">
         <SettingsSection
           title="No team plan"
-          description="Review available plans to create and manage a team in Maple."
+          description={
+            isAndroid()
+              ? "Sign in with an account that has a Team plan, or ask your team admin for an invitation."
+              : "Review available plans to create and manage a team in Maple."
+          }
         >
           <Button asChild>
             <Link to="/settings/billing">View billing settings</Link>

@@ -203,6 +203,21 @@ not exposed on macOS:
 nix develop --no-update-lock-file .#android -c just android-build
 ```
 
+### Android subscription access
+
+Android is consumption-only: accounts can use existing subscriptions, team
+access, API credits and subscription passes acquired elsewhere. The app does
+not offer subscription checkout, credit purchases, paid upgrades, or billing
+portal links that can start purchases. `/pricing` shows plan information without
+mounting legacy checkout effects, including after an old `selected_plan` callback.
+Payment API helpers also reject Android calls before requesting a checkout or
+portal. This is an Android platform rule for all users, independent of app review
+or server version flags; web, desktop and iOS keep their existing purchase flows.
+
+Android may explain that plans are managed on the website without linking to
+checkout. Subscription support remains available by email. Google explicitly
+allows [consumption-only apps and purchase communication outside the app](https://support.google.com/googleplay/android-developer/answer/10281818).
+
 The CI scripts under `scripts/ci/` are the authority for PR and release-shaped
 platform builds. Some are platform-specific, remove build outputs or
 `node_modules`, and deliberately ignore local `.env*` files in favor of fixed

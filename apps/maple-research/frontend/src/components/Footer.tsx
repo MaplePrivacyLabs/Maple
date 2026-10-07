@@ -3,11 +3,21 @@ import { Link } from "@tanstack/react-router";
 import { DiscordIcon } from "./icons/DiscordIcon";
 import { MARKETING_DOWNLOADS_URL } from "@/config/domains";
 import { openExternalUrl } from "@/utils/openUrl";
-import { isTauri } from "@/utils/platform";
+import { isAndroid, isTauri } from "@/utils/platform";
 import { GITHUB_REPOSITORY_URL } from "@/utils/githubRelease";
 
 export function Footer() {
   const isTauriPlatform = isTauri();
+
+  if (isAndroid()) {
+    return (
+      <footer className="flex flex-wrap justify-center gap-4 border-t py-8 text-sm text-muted-foreground">
+        <Link to="/privacy">Privacy Policy</Link>
+        <Link to="/terms">Terms of Service</Link>
+        <a href="mailto:support@trymaple.ai">Contact support</a>
+      </footer>
+    );
+  }
 
   return (
     <div className="w-full dark:bg-[hsl(var(--background))] bg-[hsl(var(--footer-bg))] py-16 border-t border-[hsl(var(--marketing-card-border))]">

@@ -23,7 +23,7 @@ import {
 } from "@/contexts/SettingsNavigationLockContext";
 import { useBillingState } from "@/state/useLocalState";
 import type { TeamStatus } from "@/types/team";
-import { isIOS } from "@/utils/platform";
+import { isAndroid, isMobile } from "@/utils/platform";
 import { getTeamSeatMismatch } from "@/utils/teamSeats";
 import { SettingsPage, SettingsSection } from "../SettingsPage";
 
@@ -111,9 +111,9 @@ export function TeamInviteSettings() {
   const isAdmin = teamStatus.role === "admin" || teamStatus.is_team_admin === true;
   const seatMismatch = getTeamSeatMismatch(teamStatus);
   const seatsAvailable = Math.max(0, teamStatus.seats_available ?? 0);
-  const canOpenBillingPortal = billingStatus
-    ? !!billingStatus.stripe_customer_id
-    : !!teamStatus.has_team_subscription;
+  const canOpenBillingPortal =
+    !isAndroid() &&
+    (billingStatus ? !!billingStatus.stripe_customer_id : !!teamStatus.has_team_subscription);
 
   const handleManageSubscription = async () => {
     if (!canOpenBillingPortal) return;
@@ -216,11 +216,16 @@ export function TeamInviteSettings() {
         <Alert variant="destructive">
           <AlertCircle className="h-4 w-4" />
           <AlertDescription>
-            {isIOS()
+            {isMobile()
               ? "Team usage is paused while the team has more members than paid seats. Remove members before inviting anyone else."
               : "Team usage is paused while the team has more members than paid seats. Add seats or remove members before inviting anyone else."}
           </AlertDescription>
         </Alert>
+        {isAndroid() && (
+          <p className="text-sm text-muted-foreground">
+            For help with your team subscription, contact support@trymaple.ai.
+          </p>
+        )}
         {canOpenBillingPortal && (
           <Button
             type="button"
@@ -284,11 +289,16 @@ export function TeamInviteSettings() {
               <Alert variant="destructive">
                 <AlertCircle className="h-4 w-4" />
                 <AlertDescription>
-                  {isIOS()
+                  {isMobile()
                     ? "No seats are available. Remove existing members before inviting new ones."
                     : "No seats are available. Purchase additional seats or remove existing members before inviting new ones."}
                 </AlertDescription>
               </Alert>
+              {isAndroid() && (
+                <p className="text-sm text-muted-foreground">
+                  For help with your team subscription, contact support@trymaple.ai.
+                </p>
+              )}
               {canOpenBillingPortal && (
                 <Button
                   type="button"
