@@ -489,7 +489,7 @@ mod tests {
 
     #[tokio::test]
     async fn all_explicit_inference_routes_forward_method_uri_headers_and_exact_body() {
-        let responses = (0..3)
+        let responses = (0..4)
             .map(|_| {
                 Ok(raw_response(
                     StatusCode::OK,
@@ -504,6 +504,9 @@ mod tests {
             br#"{"model":"gemma4-31b","messages":[],"include_reasoning":false,"chat_template_kwargs":{"enable_thinking":false,"future":{"keep":true}}}"#,
         );
         let embedding_body = Bytes::from_static(b"\0\xffraw-provider-body");
+        let decisions_body = Bytes::from_static(
+            br#"{"state":{"ticket":"Charged twice"},"questions":{"refund":{"type":"noul","instructions":"Does the customer want a refund?"}}}"#,
+        );
 
         for request in [
             AxumRequest::builder()
@@ -527,6 +530,13 @@ mod tests {
                 .header(header::CONTENT_TYPE, "application/json")
                 .body(Body::from(embedding_body.clone()))
                 .unwrap(),
+            AxumRequest::builder()
+                .method(Method::POST)
+                .uri("/v1/systemone")
+                .header(header::AUTHORIZATION, "Bearer decisions-key")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(decisions_body.clone()))
+                .unwrap(),
         ] {
             let response = app.clone().oneshot(request).await.unwrap();
             assert_eq!(response.status(), StatusCode::OK);
@@ -534,10 +544,18 @@ mod tests {
         }
 
         let requests = transport.take_requests();
-        assert_eq!(requests.len(), 3);
+        assert_eq!(requests.len(), 4);
         assert_eq!(requests[0].0, "models-key");
         assert_eq!(requests[1].0, "chat-key");
         assert_eq!(requests[2].0, "default-key");
+        assert_eq!(requests[3].0, "decisions-key");
+        assert_eq!(requests[3].1.method(), Method::POST);
+        assert_eq!(requests[3].1.uri(), "/v1/systemone");
+        assert_eq!(requests[3].1.body(), &decisions_body);
+        assert_eq!(
+            requests[3].1.headers()[header::CONTENT_TYPE],
+            "application/json"
+        );
         assert_eq!(requests[0].1.method(), Method::GET);
         assert_eq!(requests[0].1.uri(), "/v1/models?provider=tinfoil");
         assert!(requests[0].1.body().is_empty());
@@ -554,6 +572,49 @@ mod tests {
         assert!(requests
             .iter()
             .all(|(_, request)| request.headers().get(header::AUTHORIZATION).is_none()));
+    }
+
+    #[tokio::test]
+    async fn system_one_rejections_keep_status_body_and_error_code_headers() {
+        let body: &[u8] = br#"{"status":422,"message":"A choice needs between 2 and 255 options","error":{"message":"A choice needs between 2 and 255 options","code":"system_one_bad_option_count"}}"#;
+        let transport = Arc::new(MockTransport::new(vec![Ok(raw_response(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            &[
+                ("content-type", "application/json"),
+                ("x-opensecret-error-contract", "1"),
+                ("x-opensecret-error-code", "system_one_bad_option_count"),
+            ],
+            vec![Bytes::from_static(body)],
+        ))]));
+        let app = mock_app(Arc::clone(&transport));
+
+        let response = app
+            .oneshot(
+                AxumRequest::builder()
+                    .method(Method::POST)
+                    .uri("/v1/systemone")
+                    .header(header::AUTHORIZATION, "Bearer decisions-key")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        r#"{"state":"s","questions":{"q":{"type":"choice","instructions":"x","criteria":{"only":null}}}}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(response.headers()["content-type"], "application/json");
+        assert_eq!(response.headers()["x-opensecret-error-contract"], "1");
+        assert_eq!(
+            response.headers()["x-opensecret-error-code"],
+            "system_one_bad_option_count"
+        );
+        assert_eq!(to_bytes(response.into_body(), 1024).await.unwrap(), body);
+        let requests = transport.take_requests();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].0, "decisions-key");
+        assert_eq!(requests[0].1.uri(), "/v1/systemone");
     }
 
     #[tokio::test]

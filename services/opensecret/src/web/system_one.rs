@@ -63,7 +63,7 @@ use axum::{extract::State, response::Response, routing::post, Router};
 use futures::{stream, TryStreamExt};
 use reqwest::Method;
 use serde::de::{MapAccess, Visitor};
-use serde::{Deserialize, Deserializer, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::value::RawValue;
 use serde_json::{json, Map, Value};
 use std::fmt;
@@ -310,6 +310,13 @@ impl From<SystemOneRequestError> for ApiError {
 /// them with a typed error instead of letting a map silently collapse them).
 #[derive(Debug, Clone)]
 struct Entries<T>(Vec<(String, T)>);
+
+/// Serializes in entry order; `serde_json::Map` would sort the keys.
+impl<T: Serialize> Serialize for Entries<T> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.collect_map(self.0.iter().map(|(key, value)| (key, value)))
+    }
+}
 
 impl<'de, T: Deserialize<'de>> Deserialize<'de> for Entries<T> {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
@@ -765,7 +772,7 @@ fn plan_reads(option_count: usize) -> Vec<Range<usize>> {
 // Response decoding and calibration
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Default, Clone, Copy)]
+#[derive(Debug, Default, Clone, Copy, Serialize)]
 struct UsageTotals {
     input_tokens: i64,
     output_tokens: i64,
@@ -885,28 +892,70 @@ fn round4(value: f64) -> f64 {
 }
 
 /// A TypeSafe-shaped answer (`type`, then the primitive's fields), plus `temperature` and
-/// `option_mass`.
-fn answer_json(lowered: &Lowered, probabilities: &[f64], temperature: f64, mass: f64) -> Value {
-    let mut answer = match lowered.kind {
-        Kind::Noul => json!({ "type": "noul", "noul": round4(probabilities[0]) }),
+/// `option_mass`. Its distributions serialize in option order.
+#[derive(Debug, Serialize)]
+#[serde(tag = "type", rename_all = "lowercase")]
+enum Answer {
+    Noul {
+        noul: f64,
+        temperature: f64,
+        option_mass: f64,
+    },
+    Choice {
+        choice: String,
+        probabilities: Entries<f64>,
+        confidence: f64,
+        temperature: f64,
+        option_mass: f64,
+    },
+    Score {
+        score: f64,
+        legend: Entries<Value>,
+        probabilities: Entries<f64>,
+        confidence: f64,
+        temperature: f64,
+        option_mass: f64,
+    },
+}
+
+/// The response body, with the answers in question order.
+#[derive(Debug, Serialize)]
+struct ResponseBody {
+    id: String,
+    model: &'static str,
+    answers: Entries<Answer>,
+    usage: UsageTotals,
+}
+
+fn answer_body(lowered: &Lowered, probabilities: &[f64], temperature: f64, mass: f64) -> Answer {
+    let temperature = round4(temperature);
+    let option_mass = round4(mass);
+    match lowered.kind {
+        Kind::Noul => Answer::Noul {
+            noul: round4(probabilities[0]),
+            temperature,
+            option_mass,
+        },
         Kind::Choice => {
             let (best, _) = probabilities
                 .iter()
                 .enumerate()
                 .max_by(|a, b| a.1.total_cmp(b.1))
                 .expect("a choice has at least two options");
-            let distribution: Map<String, Value> = lowered
-                .options
-                .iter()
-                .zip(probabilities)
-                .map(|((label, _), p)| (label.clone(), json!(round4(*p))))
-                .collect();
-            json!({
-                "type": "choice",
-                "choice": lowered.options[best].0,
-                "probabilities": distribution,
-                "confidence": round4(confidence(probabilities)),
-            })
+            Answer::Choice {
+                choice: lowered.options[best].0.clone(),
+                probabilities: Entries(
+                    lowered
+                        .options
+                        .iter()
+                        .zip(probabilities)
+                        .map(|((label, _), p)| (label.clone(), round4(*p)))
+                        .collect(),
+                ),
+                confidence: round4(confidence(probabilities)),
+                temperature,
+                option_mass,
+            }
         }
         Kind::Score => {
             // Keyed by level number, as TypeSafe does: level text may repeat, and an object
@@ -916,29 +965,28 @@ fn answer_json(lowered: &Lowered, probabilities: &[f64], temperature: f64, mass:
                 .enumerate()
                 .map(|(level, p)| level as f64 * p)
                 .sum();
-            let legend: Map<String, Value> = lowered
-                .legend()
-                .enumerate()
-                .map(|(level, text)| (level.to_string(), json!(text)))
-                .collect();
-            let distribution: Map<String, Value> = probabilities
-                .iter()
-                .enumerate()
-                .map(|(level, p)| (level.to_string(), json!(round4(*p))))
-                .collect();
-            json!({
-                "type": "score",
-                "score": round4(score),
-                "legend": legend,
-                "probabilities": distribution,
-                "confidence": round4(confidence(probabilities)),
-            })
+            Answer::Score {
+                score: round4(score),
+                legend: Entries(
+                    lowered
+                        .legend()
+                        .enumerate()
+                        .map(|(level, text)| (level.to_string(), json!(text)))
+                        .collect(),
+                ),
+                probabilities: Entries(
+                    probabilities
+                        .iter()
+                        .enumerate()
+                        .map(|(level, p)| (level.to_string(), round4(*p)))
+                        .collect(),
+                ),
+                confidence: round4(confidence(probabilities)),
+                temperature,
+                option_mass,
+            }
         }
-    };
-    let fields = answer.as_object_mut().expect("answer is an object");
-    fields.insert("temperature".into(), json!(round4(temperature)));
-    fields.insert("option_mass".into(), json!(round4(mass)));
-    answer
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -988,8 +1036,8 @@ impl SystemOneCall<'_> {
     async fn answer_all(
         &self,
         questions: Vec<Lowered>,
-    ) -> Result<(Map<String, Value>, UsageTotals), ApiError> {
-        let mut answers = Map::with_capacity(questions.len());
+    ) -> Result<(Entries<Answer>, UsageTotals), ApiError> {
+        let mut answers: Vec<(usize, String, Answer)> = Vec::with_capacity(questions.len());
         let mut totals = UsageTotals::default();
         let mut questions = questions.into_iter();
         if !self.images.is_empty() {
@@ -997,8 +1045,8 @@ impl SystemOneCall<'_> {
             // already holds it, and concurrent identical prefixes are not deduplicated:
             // seat it with one request before fanning out (the reference's staged mode).
             if let Some(first) = questions.next() {
-                let (name, answer, usage) = self.answer(first).await?;
-                answers.insert(name, answer);
+                let (index, name, answer, usage) = self.answer(first).await?;
+                answers.push((index, name, answer));
                 totals += usage;
             }
         }
@@ -1006,14 +1054,27 @@ impl SystemOneCall<'_> {
         // ones in flight are dropped. Usage already published for completed reads stays.
         let mut answered = stream::iter(questions.map(|question| Ok(self.answer(question))))
             .try_buffer_unordered(QUESTION_CONCURRENCY);
-        while let Some((name, answer, usage)) = answered.try_next().await? {
-            answers.insert(name, answer);
+        while let Some((index, name, answer, usage)) = answered.try_next().await? {
+            answers.push((index, name, answer));
             totals += usage;
         }
-        Ok((answers, totals))
+        // Questions complete in any order; the response keeps the caller's.
+        answers.sort_by_key(|(index, _, _)| *index);
+        Ok((
+            Entries(
+                answers
+                    .into_iter()
+                    .map(|(_, name, answer)| (name, answer))
+                    .collect(),
+            ),
+            totals,
+        ))
     }
 
-    async fn answer(&self, question: Lowered) -> Result<(String, Value, UsageTotals), ApiError> {
+    async fn answer(
+        &self,
+        question: Lowered,
+    ) -> Result<(usize, String, Answer, UsageTotals), ApiError> {
         let allowed: &[u32] = &NUMBER_TOKEN_IDS[..question.options.len()];
         let prompt = build_prompt(self.state_raw, &question).map_err(|e| {
             error!(
@@ -1076,8 +1137,8 @@ impl SystemOneCall<'_> {
             allowed.len(),
             totals.requests
         );
-        let answer = answer_json(&question, &probabilities, temperature, mass);
-        Ok((question.name, answer, totals))
+        let answer = answer_body(&question, &probabilities, temperature, mass);
+        Ok((question.index, question.name, answer, totals))
     }
 
     /// One masked single-token completion: claims the route's health probe, sends, bills
@@ -1551,17 +1612,12 @@ async fn system_one(
                 deadline_error()
             })??;
 
-    let response = json!({
-        "id": format!("so_{}", uuid::Uuid::new_v4()),
-        "model": PUBLIC_MODEL_ID,
-        "answers": answers,
-        "usage": {
-            "input_tokens": totals.input_tokens,
-            "output_tokens": totals.output_tokens,
-            "cached_tokens": totals.cached_tokens,
-            "requests": totals.requests,
-        },
-    });
+    let response = ResponseBody {
+        id: format!("so_{}", uuid::Uuid::new_v4()),
+        model: PUBLIC_MODEL_ID,
+        answers,
+        usage: totals,
+    };
     encrypt_response(&state, &session_id, &response).await
 }
 
@@ -1940,6 +1996,51 @@ mod tests {
         assert!(confidence(&calibrated) < confidence(&raw));
     }
 
+    /// An answer as a client sees it, for field assertions (object order is checked on text).
+    fn answer_value(
+        lowered: &Lowered,
+        probabilities: &[f64],
+        temperature: f64,
+        mass: f64,
+    ) -> Value {
+        serde_json::to_value(answer_body(lowered, probabilities, temperature, mass))
+            .expect("answers serialize")
+    }
+
+    #[test]
+    fn answers_and_distributions_keep_caller_order_on_the_wire() {
+        let choice = Lowered {
+            name: "c".into(),
+            index: 1,
+            kind: Kind::Choice,
+            question: String::new(),
+            options: vec![("zebra".into(), None), ("apple".into(), None)],
+        };
+        let body = ResponseBody {
+            id: "so_test".into(),
+            model: PUBLIC_MODEL_ID,
+            answers: Entries(vec![
+                ("zebra".into(), answer_body(&choice, &[0.6, 0.4], 1.0, 0.9)),
+                ("apple".into(), answer_body(&choice, &[0.1, 0.9], 1.0, 0.9)),
+            ]),
+            usage: UsageTotals::default(),
+        };
+        let text = serde_json::to_string(&body).expect("response serializes");
+        assert!(
+            text.contains(
+                r#""answers":{"zebra":{"type":"choice","choice":"zebra","probabilities":{"zebra":0.6,"apple":0.4}"#
+            ),
+            "{text}"
+        );
+        assert!(text.contains(r#""apple":{"type":"choice","choice":"apple","probabilities":{"zebra":0.1,"apple":0.9}"#), "{text}");
+        assert!(
+            text.ends_with(
+                r#""usage":{"input_tokens":0,"output_tokens":0,"cached_tokens":0,"requests":0}}"#
+            ),
+            "{text}"
+        );
+    }
+
     #[test]
     fn answers_carry_type_and_typesafe_shapes() {
         let noul = Lowered {
@@ -1949,7 +2050,7 @@ mod tests {
             question: String::new(),
             options: vec![("true".into(), None), ("false".into(), None)],
         };
-        let answer = answer_json(&noul, &[0.8, 0.2], 2.48, 0.97);
+        let answer = answer_value(&noul, &[0.8, 0.2], 2.48, 0.97);
         assert_eq!(answer["type"], json!("noul"));
         assert_eq!(answer["noul"], json!(0.8));
         assert_eq!(answer["temperature"], json!(2.48));
@@ -1963,7 +2064,7 @@ mod tests {
             question: String::new(),
             options: vec![("a".into(), None), ("b".into(), None)],
         };
-        let answer = answer_json(&choice, &[0.3, 0.7], 1.0, 0.5);
+        let answer = answer_value(&choice, &[0.3, 0.7], 1.0, 0.5);
         assert_eq!(answer["type"], json!("choice"));
         assert_eq!(answer["choice"], json!("b"));
         assert_eq!(answer["probabilities"], json!({"a": 0.3, "b": 0.7}));
@@ -1980,7 +2081,7 @@ mod tests {
                 ("level_2".into(), Some("Low".into())),
             ],
         };
-        let answer = answer_json(&score, &[0.0, 0.25, 0.75], 1.0, 0.9);
+        let answer = answer_value(&score, &[0.0, 0.25, 0.75], 1.0, 0.9);
         assert_eq!(answer["type"], json!("score"));
         assert_eq!(answer["score"], json!(1.75));
         assert_eq!(

@@ -21,15 +21,21 @@ separate choices; publishing does not update application dependencies.
 
 ## Consumer version policy
 
-Prefer published SDK versions for client applications, with each consumer
-choosing when to upgrade. Pin application manifests exactly and commit their
-lockfiles. Read each consumer's current manifest and lockfile to determine its
-selected version and source; the initial registry versions and command examples
-in this guide are not current dependency declarations. The reusable proxy
-library uses a compatible SDK requirement, so its embedding application can
-choose the version. The standalone proxy has its own lockfile.
-An SDK publication should not automatically upgrade every consumer, and an
-older published pin is not a reason to block an unrelated client release.
+Maple's own Rust consumers build the in-tree SDK: `proxy`, `apps/maple-agent`
+and the Research native shell take `maple-sdk` from `sdk/rust` through a
+`path` dependency plus a root `[patch.crates-io]` entry (so the embedded
+proxy's registry requirement resolves to the same source) and commit the
+resulting lockfiles. SDK changes are usable in this repository as soon as they
+merge; publication serves external SDK users and does not gate in-repo
+consumers (decided 2026-10-07). The reusable proxy library keeps a compatible
+SDK requirement so an external embedding application can choose a published
+version. Consumers that still pin a published version (the Research and Auth
+frontends' `@mapleai/sdk`) choose when to switch or upgrade; read each
+consumer's current manifest and lockfile for its selected source, since the
+registry versions and command examples in this guide are not current
+dependency declarations. An SDK publication does not automatically upgrade
+any consumer, and an older published pin is not a reason to block an
+unrelated client release.
 
 Local SDK dependencies are supported during active development, including on
 `master`. Edit the existing manifest and regenerate its lockfile with the
@@ -108,11 +114,14 @@ next.
    `just publish-npm X.Y.Z trusted false` and
    `just publish-cargo X.Y.Z trusted false`. Each run validates, then waits for
    the protected environment approval described below.
-3. **Consumer PR.** Pin every consumer to the published version and commit the
-   lockfiles: the Research frontend with the `bun --no-env-file add --exact`
-   command above, and the Research native shell, `apps/maple-agent`, and
-   `proxy` with `cargo update -p maple-sdk --precise X.Y.Z`. The host app and
-   its embedded proxy must resolve the same SDK version. When the SDK adds a
+3. **Consumer PR, for consumers on published pins only.** The in-repo Rust
+   consumers (`proxy`, `apps/maple-agent`, the Research native shell) already
+   build the in-tree SDK and need nothing here. A consumer still on a
+   published pin, such as the Research frontend's `@mapleai/sdk`, is updated
+   with the `bun --no-env-file add --exact` command above (or, for a Rust
+   consumer on a registry pin, `cargo update -p maple-sdk --precise X.Y.Z`),
+   and the host app and its embedded proxy must resolve the same SDK source
+   and version. When the SDK adds a
    user-facing condition, surface it through each client's own safe message
    (native clients keep SDK error details private). For enclave trust changes,
    review both apps' embedded PCR0 fallback lists against the approved

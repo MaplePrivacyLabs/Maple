@@ -508,6 +508,7 @@ impl IntoResponse for ApiError {
             ApiError::FreeTokenLimitExceeded => Some("free_tier_token_limit_exceeded"),
             ApiError::ModelNotAvailableOnPlan => Some("model_not_available_on_plan"),
             ApiError::MessageExceedsContextLimit => Some("message_exceeds_context_limit"),
+            ApiError::SystemOneRequest(error) => Some(error.code()),
             _ => None,
         };
         let error_code = match &self {
@@ -678,6 +679,22 @@ mod api_error_contract_tests {
         for (error, status, body, code) in cases {
             assert_error_response(error, status, body, Some(code)).await;
         }
+    }
+
+    #[tokio::test]
+    async fn system_one_rejections_carry_their_code_in_body_and_header() {
+        let error = web::system_one::SystemOneRequestError::TooManyQuestions;
+        let message = error.to_string();
+        let body = format!(
+            r#"{{"status":422,"message":"{message}","error":{{"message":"{message}","code":"system_one_too_many_questions"}}}}"#
+        );
+        assert_error_response(
+            ApiError::SystemOneRequest(error),
+            StatusCode::UNPROCESSABLE_ENTITY,
+            body.as_bytes(),
+            Some("system_one_too_many_questions"),
+        )
+        .await;
     }
 
     #[tokio::test]

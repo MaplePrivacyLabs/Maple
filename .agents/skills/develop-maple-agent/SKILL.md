@@ -40,8 +40,8 @@ shell when Agent files are staged; set `MAPLE_HOOK_FULL=1` for the complete
 contracts when CI, Nix, or routing changes.
 
 Agent has its own Cargo and Nix lockfiles. CI selects Agent for proxy runtime
-changes (a path dependency) but not for SDK-only changes; the Agent builds the
-SDK source its own manifest selects. Component-only
+changes and for Rust SDK build inputs, both path dependencies it builds from
+the tree, but not for TypeScript SDK changes. Component-only
 changes should not unnecessarily select Research packaging. Maintain the root
 selectors, their tests, `.github/workflows/agent-ci.yml`, and unsigned PR
 selection in `.github/workflows/agent-desktop-build.yml` together. The desktop

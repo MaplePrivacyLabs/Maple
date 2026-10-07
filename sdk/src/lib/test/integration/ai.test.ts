@@ -5,7 +5,13 @@ import {
   transcribeAudio,
   deleteConversations,
   batchDeleteConversations,
-  listConversations
+  listConversations,
+  createApiKey,
+  deleteApiKey,
+  systemOne,
+  SystemOneError,
+  type SystemOneRequest,
+  type SystemOneResponse
 } from "../../api";
 import { createCustomFetch } from "../../ai";
 import OpenAI from "openai";
@@ -1275,4 +1281,75 @@ test("Integration test: Batch delete conversations", async () => {
   // Verify all conversations are now deleted
   const finalList = await listConversations();
   expect(finalList.data.length).toBe(0);
+});
+
+test("System One: rejections keep status and code with JWT and API key; answers are typed when a route exists", async () => {
+  await setupTestUser();
+
+  // Validation runs before billing and the provider, so this is deterministic
+  // on any backend.
+  const oneOption: SystemOneRequest = {
+    state: "s",
+    questions: { q: { type: "choice", instructions: "x", criteria: { only: null } } }
+  };
+  const rejection = await systemOne(oneOption).catch((error: unknown) => error);
+  expect(rejection).toBeInstanceOf(SystemOneError);
+  expect((rejection as SystemOneError).status).toBe(422);
+  expect((rejection as SystemOneError).code).toBe("system_one_bad_option_count");
+
+  const keyName = `system-one-${Date.now()}`;
+  const created = await createApiKey(keyName);
+  try {
+    const withKey = await systemOne(oneOption, { apiKey: created.key }).catch(
+      (error: unknown) => error
+    );
+    expect(withKey).toBeInstanceOf(SystemOneError);
+    expect((withKey as SystemOneError).status).toBe(422);
+    expect((withKey as SystemOneError).code).toBe("system_one_bad_option_count");
+  } finally {
+    await deleteApiKey(keyName);
+  }
+
+  const ticket: SystemOneRequest = {
+    state: { ticket: "Payment went through twice and I need one refunded today." },
+    questions: {
+      is_urgent: { type: "noul", instructions: "Does the customer need help today?" },
+      intent: {
+        type: "choice",
+        instructions: "What does the customer want?",
+        criteria: { refund: "money back", question: "information", praise: "thanks" }
+      },
+      frustration: {
+        type: "score",
+        instructions: "How frustrated is the customer?",
+        criteria: ["Low", "Medium", "High"]
+      }
+    }
+  };
+  const result = await systemOne(ticket).catch((error: unknown) => error);
+  if (result instanceof SystemOneError && (result.status === 503 || result.status === 403)) {
+    // No Continuum route (CI) or no entitled plan: the typed error is the contract here.
+    console.log(
+      `System One answers skipped: ${result.status} ${result.code ?? ""} ${result.message}`
+    );
+    return;
+  }
+  const response = result as SystemOneResponse;
+  expect(Object.keys(response.answers)).toEqual(["is_urgent", "intent", "frustration"]);
+  expect(response.answers.is_urgent.type).toBe("noul");
+  const intent = response.answers.intent;
+  expect(intent.type).toBe("choice");
+  if (intent.type === "choice") {
+    expect(Object.keys(intent.probabilities)).toEqual(["refund", "question", "praise"]);
+    expect(intent.probabilities[intent.choice]).toBeGreaterThan(0);
+    expect(intent.confidence).toBeGreaterThanOrEqual(0);
+  }
+  const frustration = response.answers.frustration;
+  expect(frustration.type).toBe("score");
+  if (frustration.type === "score") {
+    expect(Object.keys(frustration.legend)).toEqual(["0", "1", "2"]);
+    expect(frustration.score).toBeGreaterThanOrEqual(0);
+    expect(frustration.score).toBeLessThanOrEqual(2);
+  }
+  expect(response.usage.requests).toBeGreaterThanOrEqual(3);
 });

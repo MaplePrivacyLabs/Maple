@@ -6,6 +6,7 @@ pub mod error;
 pub mod pcr;
 pub mod push;
 pub mod session;
+pub mod system_one;
 pub mod types;
 
 mod transport_v2;
@@ -18,4 +19,5 @@ pub use client::{
 pub use error::{Error, Result};
 pub use pcr::{Pcr0Environment, Pcr0TrustPolicy};
 pub use push::*;
+pub use system_one::*;
 pub use types::*;

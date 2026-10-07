@@ -3091,6 +3091,27 @@ export async function webExtract(request: WebExtractRequest): Promise<WebExtract
 }
 
 // ============================================================================
+// System One (typed decisions): implementation in ./systemOne
+// ============================================================================
+
+export { systemOne, SystemOneError } from "./systemOne";
+export type {
+  SystemOneNoulCriteria,
+  SystemOneNoulQuestion,
+  SystemOneChoiceQuestion,
+  SystemOneScoreQuestion,
+  SystemOneQuestion,
+  SystemOneRequest,
+  SystemOneNoulAnswer,
+  SystemOneChoiceAnswer,
+  SystemOneScoreAnswer,
+  SystemOneAnswer,
+  SystemOneUsage,
+  SystemOneResponse,
+  SystemOneOptions
+} from "./systemOne";
+
+// ============================================================================
 // Agent API Types
 // ============================================================================
 

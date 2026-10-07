@@ -54,4 +54,52 @@ pub enum Error {
     Other(String),
 }
 
+impl Error {
+    /// The HTTP status of an [`Error::Api`].
+    pub fn api_status(&self) -> Option<u16> {
+        match self {
+            Self::Api { status, .. } => Some(*status),
+            _ => None,
+        }
+    }
+
+    /// The backend's machine-readable code when an [`Error::Api`] body carries
+    /// one as `{"error":{"code":"..."}}`: `system_one_*` validation codes,
+    /// `usage_limit_reached`, `model_not_available_on_plan` and the like.
+    pub fn api_error_code(&self) -> Option<String> {
+        let Self::Api { message, .. } = self else {
+            return None;
+        };
+        let body: serde_json::Value = serde_json::from_str(message).ok()?;
+        body.get("error")?.get("code")?.as_str().map(str::to_owned)
+    }
+}
+
 pub type Result<T> = std::result::Result<T, Error>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn api_error_code_reads_the_backend_error_object() {
+        let error = Error::Api {
+            status: 422,
+            message: r#"{"status":422,"message":"At most 64 questions","error":{"message":"At most 64 questions","code":"system_one_too_many_questions"}}"#.to_string(),
+        };
+        assert_eq!(error.api_status(), Some(422));
+        assert_eq!(
+            error.api_error_code().as_deref(),
+            Some("system_one_too_many_questions")
+        );
+
+        let legacy = Error::Api {
+            status: 400,
+            message: r#"{"status":400,"message":"Bad Request"}"#.to_string(),
+        };
+        assert_eq!(legacy.api_status(), Some(400));
+        assert_eq!(legacy.api_error_code(), None);
+
+        assert_eq!(Error::Other("x".to_string()).api_status(), None);
+    }
+}
