@@ -852,18 +852,19 @@ pub struct ChatMessage {
     pub content: Value, // Now accepts both string and array formats
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_calls: Option<Vec<ToolCall>>,
-    /// The model's reasoning. Every current route returns it in this field;
+    /// The model's reasoning. Maple returns it in this field on every route;
     /// replaying it on an assistant message is accepted by every model.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning: Option<String>,
-    /// Deprecated duplicate of `reasoning` that one provider route still
-    /// sends. Read `reasoning` first and never concatenate the two.
+    /// The older spelling some OpenAI-compatible servers use. Maple never sends
+    /// it; it stays readable and replayable for other servers and history
+    /// recorded before `reasoning` existed.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reasoning_content: Option<String>,
 }
 
 impl ChatMessage {
-    /// The reasoning text, from whichever field the route populated.
+    /// The reasoning text, from whichever field is populated.
     pub fn reasoning_text(&self) -> Option<&str> {
         self.reasoning
             .as_deref()

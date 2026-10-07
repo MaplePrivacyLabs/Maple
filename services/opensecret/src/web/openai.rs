@@ -1361,7 +1361,7 @@ async fn read_non_streaming_completion_response(
         return Err(failure);
     }
 
-    canonicalize_response_model(&mut response_json, response_model_id);
+    canonicalize_completion_response(&mut response_json, response_model_id);
     Ok(response_json)
 }
 
@@ -1469,7 +1469,7 @@ async fn process_completion_stream(
                     }
 
                     usage_accumulator.observe(&json);
-                    canonicalize_response_model(&mut json, response_model_id);
+                    canonicalize_completion_response(&mut json, response_model_id);
 
                     let sent = tokio::select! {
                         biased;
@@ -3335,10 +3335,41 @@ fn has_terminal_stream_signal(json: &Value) -> bool {
         .is_some_and(|choices| choices.is_empty())
 }
 
+/// Make a provider's completion payload (a full response or one stream chunk)
+/// look the same on every route: the public model id and one reasoning field.
+fn canonicalize_completion_response(json: &mut Value, response_model_id: &str) {
+    canonicalize_response_model(json, response_model_id);
+    canonicalize_reasoning_field(json);
+}
+
 fn canonicalize_response_model(json: &mut Value, response_model_id: &str) {
     if let Some(model_value) = json.get_mut("model") {
         if model_value.as_str().is_some() {
             *model_value = json!(response_model_id);
+        }
+    }
+}
+
+/// Reasoning text is published in `reasoning`, the field vLLM emits. The
+/// Continuum proxy also copies it into the deprecated `reasoning_content`,
+/// which Tinfoil routes never send; drop the copy so clients see one field on
+/// every route and can never concatenate the two. Should a route ever send
+/// only the old name, its text is moved to `reasoning` instead.
+fn canonicalize_reasoning_field(json: &mut Value) {
+    let Some(choices) = json.get_mut("choices").and_then(Value::as_array_mut) else {
+        return;
+    };
+    for choice in choices {
+        for part in ["message", "delta"] {
+            let Some(object) = choice.get_mut(part).and_then(Value::as_object_mut) else {
+                continue;
+            };
+            let Some(legacy) = object.remove("reasoning_content") else {
+                continue;
+            };
+            if !legacy.is_null() && object.get("reasoning").is_none_or(Value::is_null) {
+                object.insert("reasoning".to_string(), legacy);
+            }
         }
     }
 }
@@ -7571,6 +7602,81 @@ mod tests {
         let mut response_without_model = json!({"choices": []});
         canonicalize_response_model(&mut response_without_model, "glm-5-3-flash");
         assert!(response_without_model.get("model").is_none());
+    }
+
+    #[test]
+    fn continuum_reasoning_content_copies_are_folded_into_reasoning() {
+        // Non-streaming: Continuum sends both fields with identical text.
+        let mut response = json!({
+            "model": "glm-5.3",
+            "choices": [{
+                "index": 0,
+                "message": {
+                    "role": "assistant",
+                    "content": "391",
+                    "reasoning": "17 * 23 = 391",
+                    "reasoning_content": "17 * 23 = 391"
+                },
+                "finish_reason": "stop"
+            }],
+            "usage": {"completion_tokens": 12}
+        });
+        canonicalize_completion_response(&mut response, "glm-5-3");
+        assert_eq!(response["model"], "glm-5-3");
+        let message = &response["choices"][0]["message"];
+        assert_eq!(message["reasoning"], "17 * 23 = 391");
+        assert!(message.get("reasoning_content").is_none());
+        assert_eq!(message["content"], "391");
+        assert_eq!(response["usage"]["completion_tokens"], 12);
+
+        // Streaming: every delta carries the copy too.
+        let mut chunk = json!({
+            "model": "glm-5.3",
+            "choices": [{
+                "index": 0,
+                "delta": {"reasoning": "17 * ", "reasoning_content": "17 * "},
+                "finish_reason": null
+            }]
+        });
+        canonicalize_completion_response(&mut chunk, "glm-5-3");
+        assert_eq!(chunk["choices"][0]["delta"], json!({"reasoning": "17 * "}));
+
+        // Thinking off: both fields are null on Continuum; neither survives.
+        let mut off = json!({
+            "choices": [{"delta": {"content": "391", "reasoning": null, "reasoning_content": null}}]
+        });
+        canonicalize_completion_response(&mut off, "glm-5-3");
+        assert_eq!(
+            off["choices"][0]["delta"],
+            json!({"content": "391", "reasoning": null})
+        );
+    }
+
+    #[test]
+    fn a_route_that_only_sends_the_old_reasoning_name_is_normalized() {
+        let mut response = json!({
+            "choices": [{"message": {"role": "assistant", "content": "391", "reasoning_content": "think"}}]
+        });
+        canonicalize_completion_response(&mut response, "glm-5-3");
+        assert_eq!(
+            response["choices"][0]["message"],
+            json!({"role": "assistant", "content": "391", "reasoning": "think"})
+        );
+    }
+
+    #[test]
+    fn payloads_without_reasoning_fields_are_untouched_by_canonicalization() {
+        for payload in [
+            json!({"choices": [{"delta": {"content": "hi"}}]}),
+            json!({"choices": [{"message": {"role": "assistant", "content": "hi", "reasoning": "r"}}]}),
+            json!({"choices": [], "usage": {"completion_tokens": 1}}),
+            json!({"usage": {"completion_tokens": 1}}),
+            json!({"choices": "not-an-array"}),
+        ] {
+            let mut canonical = payload.clone();
+            canonicalize_completion_response(&mut canonical, "glm-5-3");
+            assert_eq!(canonical, payload);
+        }
     }
 
     fn stream_usage_chunk(

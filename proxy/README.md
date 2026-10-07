@@ -218,10 +218,10 @@ Alias entries in the catalog publish only the efforts every model they can
 resolve to accepts.
 
 Reasoning text comes back in `message.reasoning` (non-streaming) and
-`delta.reasoning` (streaming); one provider route also sends a deprecated
-duplicate `reasoning_content`, so read `reasoning` first and never concatenate
-the two. `usage.completion_tokens_details.reasoning_tokens` is passed through
-where the provider reports it. Template switches such as
+`delta.reasoning` (streaming) on every route; the deprecated `reasoning_content`
+alias that one provider emits is folded into `reasoning` and never forwarded.
+`usage.completion_tokens_details.reasoning_tokens` is passed through where the
+provider reports it. Template switches such as
 `chat_template_kwargs.enable_thinking` are not part of the contract: switches
 that would turn thinking off are dropped for models whose reasoning is
 mandatory.

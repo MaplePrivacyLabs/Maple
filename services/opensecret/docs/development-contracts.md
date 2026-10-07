@@ -74,6 +74,8 @@ transport; protected routes are not ordinary plaintext `fetch`, `curl`, or
   unsupported value on an explicit model with OpenAI's `unsupported_value`
   error, move it to the nearest accepted effort on an `auto:` alias, and never
   forward a thinking-off control to a model whose reasoning is mandatory.
+  Reasoning text reaches clients in `reasoning` only; a provider's deprecated
+  `reasoning_content` copy is folded into it at the response boundary.
   Re-verify the table live whenever a provider changes its engine build.
 
 ## Persistence and migrations
