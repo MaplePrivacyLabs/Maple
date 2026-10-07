@@ -58,6 +58,12 @@ impl ProxyRouter {
         self.default_proxy.clone()
     }
 
+    /// The Continuum proxy, when the default inference proxy is one. System One is served
+    /// only through it.
+    pub fn continuum_proxy(&self) -> Option<ProxyConfig> {
+        (self.default_proxy.provider_name == "continuum").then(|| self.default_proxy.clone())
+    }
+
     pub fn get_completion_proxy(&self) -> ProxyConfig {
         self.tinfoil_proxy.clone()
     }

@@ -109,6 +109,61 @@ impl CompletionCachePolicy {
     }
 }
 
+/// What a completion surface needs to know about its caller before it spends anything.
+pub(crate) struct CompletionCaller {
+    pub(crate) model_plan: ModelPlan,
+    pub(crate) cache_policy: CompletionCachePolicy,
+}
+
+/// The entitlement rules every completion surface shares: paid guests are allowed, free
+/// guests are not, and a caller over their usage limit is refused. `surface` only names the
+/// endpoint in the log line.
+pub(crate) fn completion_entitlement(
+    user_uuid: Uuid,
+    is_guest: bool,
+    billing_access: Option<crate::billing::ChatBillingAccess>,
+    surface: &str,
+) -> Result<ModelPlan, ApiError> {
+    let model_plan = ModelPlan::from_is_paid(
+        billing_access.is_some_and(crate::billing::ChatBillingAccess::is_paid),
+    );
+    if is_guest && !model_plan.is_paid() {
+        error!(
+            "Guest user without a paid plan attempted to use {}: {}",
+            surface, user_uuid
+        );
+        return Err(ApiError::Unauthorized);
+    }
+    if billing_access.is_some_and(|access| !access.can_use()) {
+        error!("Usage limit reached for user: {}", user_uuid);
+        return Err(ApiError::UsageLimitReached);
+    }
+    Ok(model_plan)
+}
+
+/// Derives the cache policy for the transport session, looks the caller up in billing,
+/// and applies `completion_entitlement`. Shared by chat and System One so the rules cannot
+/// drift between them.
+pub(crate) async fn authorize_completion_caller(
+    state: &AppState,
+    user: &User,
+    auth_method: AuthMethod,
+    session: &TransportSession,
+    cache_namespace_root: Option<CacheNamespaceRoot>,
+    surface: &str,
+) -> Result<CompletionCaller, ApiError> {
+    let cache_policy =
+        CompletionCachePolicy::for_request(session, cache_namespace_root, user.uuid)?;
+    let billing_access = state
+        .chat_billing_access(user.uuid, auth_method == AuthMethod::ApiKey)
+        .await;
+    let model_plan = completion_entitlement(user.uuid, user.is_guest(), billing_access, surface)?;
+    Ok(CompletionCaller {
+        model_plan,
+        cache_policy,
+    })
+}
+
 #[derive(Clone, Default)]
 struct CompletionRequestLogMetadata {
     body_bytes: usize,
@@ -930,7 +985,7 @@ fn failed_completion_execution(
     }
 }
 
-fn attempt_failure_from_provider_error(error: &ProviderRequestError) -> AttemptFailure {
+pub(crate) fn attempt_failure_from_provider_error(error: &ProviderRequestError) -> AttemptFailure {
     match error {
         ProviderRequestError::TinfoilUnavailable => AttemptFailure::new(
             AttemptFailureKind::ProviderUnavailable,
@@ -986,7 +1041,10 @@ fn public_capacity_status(upstream_status: u16) -> Option<StatusCode> {
     }
 }
 
-fn public_completion_error(error: &ProviderRequestError, failure: &AttemptFailure) -> ApiError {
+pub(crate) fn public_completion_error(
+    error: &ProviderRequestError,
+    failure: &AttemptFailure,
+) -> ApiError {
     if failure.kind == AttemptFailureKind::CapacityRejected {
         let status = failure
             .status
@@ -1895,31 +1953,18 @@ async fn proxy_openai(
     cache_namespace_root: Option<axum::Extension<CacheNamespaceRoot>>,
     Decrypted(mut body): Decrypted<Value>,
 ) -> Result<Response, ApiError> {
-    let cache_policy = CompletionCachePolicy::for_request(
+    let CompletionCaller {
+        model_plan,
+        cache_policy,
+    } = authorize_completion_caller(
+        &state,
+        &user,
+        auth_method,
         &session_id,
         cache_namespace_root.map(|axum::Extension(root)| root),
-        user.uuid,
-    )?;
-    let billing_access = state
-        .chat_billing_access(user.uuid, auth_method == AuthMethod::ApiKey)
-        .await;
-    let model_plan = ModelPlan::from_is_paid(
-        billing_access.is_some_and(crate::billing::ChatBillingAccess::is_paid),
-    );
-
-    // Check if guest user is allowed (paid guests are allowed, free guests are not)
-    if user.is_guest() && !model_plan.is_paid() {
-        error!(
-            "Guest user without a paid plan attempted to use chat: {}",
-            user.uuid
-        );
-        return Err(ApiError::Unauthorized);
-    }
-
-    if billing_access.is_some_and(|access| !access.can_use()) {
-        error!("Usage limit reached for user: {}", user.uuid);
-        return Err(ApiError::UsageLimitReached);
-    }
+        "chat",
+    )
+    .await?;
 
     // Extract the model from the request
     let requested_model_name = body
@@ -2304,7 +2349,7 @@ pub(crate) async fn prepare_completion_request(
     Ok(PinnedCompletionRequest::new(intent, route))
 }
 
-fn probe_api_error(retry_after: Duration) -> ApiError {
+pub(crate) fn probe_api_error(retry_after: Duration) -> ApiError {
     ApiError::InferenceCapacity {
         status: StatusCode::SERVICE_UNAVAILABLE,
         retry_after: Some(retry_after),
@@ -3122,7 +3167,7 @@ pub(crate) fn ensure_completion_model_access(
 // ============================================================================
 
 /// Helper to extract usage from response JSON
-fn extract_usage(json: &Value) -> Option<CompletionUsage> {
+pub(crate) fn extract_usage(json: &Value) -> Option<CompletionUsage> {
     let observed = extract_usage_observation(json)?;
     let prompt_tokens = observed.prompt_tokens.unwrap_or(0);
 
@@ -3190,7 +3235,7 @@ fn tinfoil_user_cache_secret(user_uuid: Uuid) -> String {
     hex::encode(Sha256::digest(user_uuid.as_bytes()))
 }
 
-fn apply_provider_managed_request_fields(
+pub(crate) fn apply_provider_managed_request_fields(
     body: &mut serde_json::Map<String, Value>,
     provider_name: &str,
     user_uuid: Uuid,
@@ -3313,9 +3358,11 @@ fn find_sse_frame_boundary(buffer: &[u8]) -> Option<(usize, usize)> {
     }
 }
 
-/// Internal billing function - NEVER exposed outside this module
+/// Internal billing function. Its only callers are this module and the System One
+/// handler (`web::system_one`), which publishes usage through it for every upstream
+/// request; keep billing confined to those two call sites.
 /// This function publishes usage events to both the database and SQS
-async fn publish_usage_event_internal(
+pub(crate) async fn publish_usage_event_internal(
     state: &Arc<AppState>,
     user: &User,
     billing_context: &BillingContext,
@@ -4355,24 +4402,14 @@ async fn try_provider_observing(
             if response.is_success() {
                 Ok(response)
             } else {
-                let status = response.status_code();
-                let retry_after = parse_retry_after_hint(response.header_str(&header::RETRY_AFTER));
-                let upstream_request_id = upstream_request_id(&response);
-                error!(
-                    "Provider {} returned non-success status: {}",
-                    proxy_config.provider_name, status
-                );
-                // Status and safe headers remain the routing contract even if
-                // this bounded, best-effort diagnostic read fails or times out.
-                let mut upstream = UpstreamProviderError {
-                    status,
-                    retry_after,
-                    upstream_request_id,
-                    diagnostic: None,
-                };
-                observe_error_headers(&upstream);
-                upstream.diagnostic = Some(response.error_diagnostic().await);
-                Err(ProviderRequestError::Upstream(upstream))
+                Err(ProviderRequestError::Upstream(
+                    upstream_error_from_response(
+                        &proxy_config.provider_name,
+                        response,
+                        observe_error_headers,
+                    )
+                    .await,
+                ))
             }
         }
         Err(e) => {
@@ -4390,7 +4427,32 @@ async fn try_provider_observing(
     }
 }
 
-fn parse_retry_after_hint(value: Option<&str>) -> Option<Duration> {
+/// Classifies a non-2xx provider response. Status and safe headers remain the routing
+/// contract even if the bounded, best-effort diagnostic read fails or times out.
+pub(crate) async fn upstream_error_from_response(
+    provider_name: &str,
+    response: ProviderResponse,
+    observe_error_headers: impl FnOnce(&UpstreamProviderError),
+) -> UpstreamProviderError {
+    let status = response.status_code();
+    let retry_after = parse_retry_after_hint(response.header_str(&header::RETRY_AFTER));
+    let upstream_request_id = upstream_request_id(&response);
+    error!(
+        "Provider {} returned non-success status: {}",
+        provider_name, status
+    );
+    let mut upstream = UpstreamProviderError {
+        status,
+        retry_after,
+        upstream_request_id,
+        diagnostic: None,
+    };
+    observe_error_headers(&upstream);
+    upstream.diagnostic = Some(response.error_diagnostic().await);
+    upstream
+}
+
+pub(crate) fn parse_retry_after_hint(value: Option<&str>) -> Option<Duration> {
     const MAX_RETRY_AFTER_HINT_SECS: u64 = 60 * 60;
 
     let seconds = value?.trim().parse::<u64>().ok()?;

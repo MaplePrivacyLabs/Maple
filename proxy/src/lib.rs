@@ -36,6 +36,7 @@ pub(crate) fn create_app_with_state(config: Config, state: Arc<ProxyState>) -> R
         .route("/v1/models", get(proxy_openai_request))
         .route("/v1/chat/completions", post(proxy_openai_request))
         .route("/v1/embeddings", post(proxy_openai_request))
+        .route("/v1/systemone", post(proxy_openai_request))
         .with_state(state)
         .layer(
             ServiceBuilder::new()
