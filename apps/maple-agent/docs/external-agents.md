@@ -196,9 +196,8 @@ No provider-specific composer branch or database migration is needed.
 
 Task overrides live in the versioned `maple_integrations` extension data,
 keyed by provider ID. Missing entries mean disabled. A true entry grants access
-only while Settings also enables that provider. CUA
-keeps its existing `maple_cua` backend metadata so an old external driver
-task cannot silently switch to the embedded backend.
+only while Settings also enables that provider. CUA keeps its per-task state
+in its own `maple_cua` metadata.
 
 The selector carries a typed `kind` alongside `name` and `displayName`.
 MCP names and external provider IDs are separate domains; a custom MCP

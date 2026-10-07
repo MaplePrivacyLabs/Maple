@@ -458,7 +458,7 @@ shows unpackaged builds; packaged Dev and Prod append `maple-agent-dev` and
 | `<config>/agent/accounts/<scope>/goose/config/skills/` | Skills the account's tasks can load, including the delegation skills Maple installs while any external agent is enabled. |
 | `<config>/agent/goose-runtime/` | Goose process configuration. |
 | `<local data>/auth.json` | Sign-in credentials (mode 0600). Device-local; never in a roaming profile. |
-| `<local data>/agent/accounts/<scope>/integrations.json` | Per-account defaults and validated launch details for integrations detected on this device. |
+| `<local data>/agent/accounts/<scope>/integrations.json` | Per-account defaults for the integrations on this device. |
 | `<local data>/agent/accounts/<scope>/goose/data/sessions/sessions.db` | Goose session history and usage ledger (SQLite, WAL). |
 | `<local data>/agent/accounts/<scope>/tool_summaries.db` | Model-written one-line summaries of tool calls (SQLite, WAL). |
 | `<local data>/agent/accounts/<scope>/attachments/` | Image attachments. |
