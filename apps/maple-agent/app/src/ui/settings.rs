@@ -20,7 +20,7 @@ use crate::ui::popup::{Menu, MenuItem, Placement, Popup};
 use crate::ui::text_input::TextInput;
 
 use crate::backend::AgentBackend;
-use crate::settings::{self, AppSettings, UsageSummary};
+use crate::settings::{self, AppSettings};
 use crate::shortcuts::{
     ShortcutConflict, ShortcutConflictKind, ShortcutContextOverlap, ShortcutOverrides,
     ShortcutSnapshot,
@@ -132,7 +132,6 @@ pub struct SettingsScreen {
     account: AccountState,
     billing: BillingState,
     api_keys: ApiKeysState,
-    usage: Option<UsageSummary>,
     /// Plan usage meter, same source as the sidebar card.
     plan: Option<crate::billing::PlanUsage>,
     /// Account MCP servers; None until loaded.
@@ -292,7 +291,6 @@ impl SettingsScreen {
             account: AccountState::new(application_vim_enabled, application_focus.clone(), cx),
             billing: BillingState::new(),
             api_keys: ApiKeysState::new(application_vim_enabled, application_focus.clone(), cx),
-            usage: None,
             plan: None,
             mcp_servers: None,
             mcp_editor: None,
@@ -321,7 +319,6 @@ impl SettingsScreen {
         this.load_account(cx);
         this.load_billing(cx);
         this.load_api_keys(cx);
-        this.load_usage(cx);
         this.load_plan(cx);
         this.load_mcp_servers(cx);
         this.load_integrations(cx);
@@ -705,24 +702,6 @@ impl SettingsScreen {
         let mut servers = self.mcp_servers.clone().unwrap_or_default();
         servers.retain(|s| s.name != name);
         self.save_mcp_servers(servers, cx);
-    }
-
-    fn load_usage(&self, cx: &mut Context<Self>) {
-        let (spawn_backend, usage_backend) = (self.backend.clone(), self.backend.clone());
-        let user_id = self.user_id.clone();
-        let task = spawn_backend.spawn(async move {
-            let scope = usage_backend.account_scope(&user_id);
-            scope.map(|scope| settings::load_usage(&scope))
-        });
-        cx.spawn(async move |this, cx| {
-            let usage = task.await.ok().flatten().unwrap_or_default();
-            this.update(cx, |this, cx| {
-                this.usage = Some(usage);
-                cx.notify();
-            })
-            .ok();
-        })
-        .detach();
     }
 
     /// Change one setting: apply it to the local copy, queue the write
@@ -1699,30 +1678,6 @@ impl SettingsScreen {
                         .text_color(gpui::rgb(theme::text_muted()))
                         .child("Plan usage unavailable"),
                 });
-                pane = pane.child(section_title("Usage"));
-                if let Some(usage) = &self.usage {
-                    pane = pane
-                        .child(
-                            div()
-                                .flex()
-                                .gap_6()
-                                .child(stat("Turns", usage.totals.turns.to_string()))
-                                .child(stat("Sessions", usage.totals.sessions.to_string()))
-                                .child(stat(
-                                    "Total tokens",
-                                    format_tokens(usage.totals.total_tokens),
-                                ))
-                                .child(stat("Est. cost", format!("${:.2}", usage.totals.cost))),
-                        )
-                        .child(usage_table("By model", &usage.by_model))
-                        .child(usage_table("Recent sessions", &usage.by_session));
-                } else {
-                    pane = pane.child(
-                        div()
-                            .text_color(gpui::rgb(theme::text_muted()))
-                            .child("Loading usage…"),
-                    );
-                }
             }
             Section::About => {
                 pane = pane
@@ -3150,87 +3105,6 @@ fn info_row(label: &str, value: String) -> Div {
                 .text_color(gpui::rgb(theme::text_primary()))
                 .child(value),
         )
-}
-
-fn stat(label: &str, value: String) -> Div {
-    div()
-        .flex()
-        .flex_col()
-        .gap_1()
-        .child(
-            div()
-                .text_xs()
-                .text_color(gpui::rgb(theme::text_muted()))
-                .child(label.to_string()),
-        )
-        .child(
-            div()
-                .text_xl()
-                .font_weight(gpui::FontWeight::BOLD)
-                .text_color(gpui::rgb(theme::text_primary()))
-                .child(value),
-        )
-}
-
-fn usage_table(title: &str, rows: &[crate::settings::UsageRow]) -> Div {
-    let mut table = div().flex().flex_col().gap_2().child(
-        div()
-            .text_sm()
-            .font_weight(gpui::FontWeight::SEMIBOLD)
-            .text_color(gpui::rgb(theme::text_primary()))
-            .child(title.to_string()),
-    );
-    for row in rows.iter().take(10) {
-        table = table.child(
-            div()
-                .flex()
-                .items_center()
-                .justify_between()
-                .gap_3()
-                .px_3()
-                .py_2()
-                .rounded(theme::RADIUS_SM)
-                .bg(gpui::rgb(theme::bg_elevated()))
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .text_sm()
-                        .text_color(gpui::rgb(theme::text_primary()))
-                        .line_clamp(1)
-                        .child(row.label.clone()),
-                )
-                .child(
-                    div()
-                        .text_xs()
-                        .text_color(gpui::rgb(theme::text_secondary()))
-                        .child(format!("{} turns", row.turns)),
-                )
-                .child(
-                    div()
-                        .text_xs()
-                        .text_color(gpui::rgb(theme::text_secondary()))
-                        .child(format_tokens(row.total_tokens)),
-                )
-                .child(
-                    div()
-                        .text_xs()
-                        .text_color(gpui::rgb(theme::text_muted()))
-                        .child(format!("${:.2}", row.cost)),
-                ),
-        );
-    }
-    table
-}
-
-fn format_tokens(tokens: i64) -> String {
-    if tokens >= 1_000_000 {
-        format!("{:.1}M", tokens as f64 / 1_000_000.0)
-    } else if tokens >= 1_000 {
-        format!("{:.1}k", tokens as f64 / 1_000.0)
-    } else {
-        tokens.to_string()
-    }
 }
 
 #[cfg(test)]
