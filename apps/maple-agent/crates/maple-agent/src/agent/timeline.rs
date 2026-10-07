@@ -874,9 +874,6 @@ pub(super) fn session_summary(session: &Session) -> AgentSessionSummary {
             .model_config
             .as_ref()
             .map(|model| model.model_name.clone()),
-        // Every task runs with every tool call allowed; the stored column is
-        // Goose's own and no longer read.
-        mode: GooseMode::Auto.to_string(),
         web_enabled: session_web_enabled(session),
         state: stored_task_state(session),
         acp: session.session_type == SessionType::Acp,
@@ -931,7 +928,7 @@ pub(super) async fn record_and_emit_timeline_item(
     events: &AgentRunEventPublisher,
     live_timelines: &LiveTimelines,
     session_id: &str,
-    routing: AgentPermissionRouting,
+    routing: AgentRunSurface,
     item: AgentTimelineItem,
 ) {
     record_timeline_item(live_timelines, session_id, routing, item.clone()).await;
@@ -941,7 +938,7 @@ pub(super) async fn record_and_emit_timeline_item(
 pub(super) async fn record_timeline_item(
     live_timelines: &LiveTimelines,
     session_id: &str,
-    routing: AgentPermissionRouting,
+    routing: AgentRunSurface,
     item: AgentTimelineItem,
 ) {
     let mut timelines = live_timelines.lock().await;
@@ -987,7 +984,7 @@ pub(super) async fn record_timeline_item(
 pub(super) async fn reseed_live_timeline_after_history_replaced(
     live_timelines: &LiveTimelines,
     session_id: &str,
-    routing: AgentPermissionRouting,
+    routing: AgentRunSurface,
     conversation: &Conversation,
 ) {
     let replacement_boundary = conversation
@@ -1038,7 +1035,7 @@ pub(super) async fn reseed_live_timeline_after_history_replaced(
 pub(super) async fn overlay_live_timeline(
     live_timelines: &LiveTimelines,
     session_id: &str,
-    routing: AgentPermissionRouting,
+    routing: AgentRunSurface,
     conversation: &Conversation,
     persisted: Vec<AgentTimelineItem>,
 ) -> Vec<AgentTimelineItem> {

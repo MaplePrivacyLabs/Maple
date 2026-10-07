@@ -683,12 +683,11 @@ pub(super) fn parse_server_request(method: &str, params: &Value) -> CodexServerR
 }
 
 /// The answer to an approval request. Maple never grants `acceptForSession`:
-/// every decision is one-shot, like Maple's own permissions.
+/// every acceptance is one-shot.
 pub(super) fn approval_response(decision: super::super::AgentPermissionDecision) -> Value {
     use super::super::AgentPermissionDecision;
     let decision = match decision {
         AgentPermissionDecision::AllowOnce => "accept",
-        AgentPermissionDecision::DenyOnce => "decline",
         AgentPermissionDecision::Cancel => "cancel",
     };
     json!({ "decision": decision })
@@ -948,10 +947,6 @@ mod tests {
         assert_eq!(
             approval_response(AgentPermissionDecision::AllowOnce)["decision"],
             "accept"
-        );
-        assert_eq!(
-            approval_response(AgentPermissionDecision::DenyOnce)["decision"],
-            "decline"
         );
         assert_eq!(
             approval_response(AgentPermissionDecision::Cancel)["decision"],

@@ -451,13 +451,6 @@ async fn external_agent_approvals_are_accepted_without_a_card() {
     // The approval was accepted at once: no card, no waiting label.
     assert!(!events.iter().any(|event| matches!(
         event,
-        AgentServiceEvent::Run {
-            event: AgentRunEvent::PermissionRequested { .. },
-            ..
-        }
-    )));
-    assert!(!events.iter().any(|event| matches!(
-        event,
         AgentServiceEvent::TimelineItem { item, .. } if item.item_type == "permission"
     )));
     assert!(!rows.iter().any(|row| {
@@ -1220,14 +1213,6 @@ async fn claude_questions_still_use_the_question_card() {
             }),
             "{text}"
         );
-        let events = harness.sink.events();
-        assert!(!events.iter().any(|event| matches!(
-            event,
-            AgentServiceEvent::Run {
-                event: AgentRunEvent::PermissionRequested { .. },
-                ..
-            }
-        )));
         if mode == "approve" {
             assert!(harness.log().contains("\"behavior\":\"allow\""));
         }
