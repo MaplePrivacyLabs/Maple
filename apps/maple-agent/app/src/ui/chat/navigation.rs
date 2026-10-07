@@ -40,7 +40,6 @@ pub(super) struct ApplicationVimState {
     pub(super) count: CountState,
     transcript_by_task: HashMap<String, String>,
     follow_by_task: HashMap<String, bool>,
-    pub(super) permission_choice: usize,
 }
 
 impl Default for ApplicationVimState {
@@ -52,7 +51,6 @@ impl Default for ApplicationVimState {
             count: CountState::default(),
             transcript_by_task: HashMap::new(),
             follow_by_task: HashMap::new(),
-            permission_choice: 0,
         }
     }
 }
@@ -330,16 +328,6 @@ impl ChatScreen {
             }
             return;
         }
-        if self.current_permission().is_some() {
-            self.application_vim.permission_choice = stepped_index(
-                Some(self.application_vim.permission_choice),
-                2,
-                direction,
-                count,
-            );
-            cx.notify();
-            return;
-        }
         match self.application_vim.region {
             ChatRegion::Sidebar => self.move_sidebar_selection(direction, count, cx),
             ChatRegion::Transcript => self.move_transcript_selection(direction, count, cx),
@@ -360,11 +348,6 @@ impl ChatScreen {
             if len > 0 {
                 self.focus_question_option(step, if first { 0 } else { len - 1 }, cx);
             }
-            return;
-        }
-        if self.current_permission().is_some() {
-            self.application_vim.permission_choice = usize::from(!first);
-            cx.notify();
             return;
         }
         match self.application_vim.region {
@@ -543,10 +526,6 @@ impl ChatScreen {
                 window.focus(&handle, cx);
                 cx.notify();
             }
-            return;
-        }
-        if self.current_permission().is_some() {
-            self.respond_permission(self.application_vim.permission_choice == 0, cx);
             return;
         }
         match self.application_vim.region {
@@ -925,11 +904,6 @@ impl ChatScreen {
             }
             ChatRegion::Composer => {}
         }
-    }
-
-    pub(super) fn application_permission_choice(&self) -> Option<usize> {
-        (self.application_vim_enabled && self.current_permission().is_some())
-            .then_some(self.application_vim.permission_choice)
     }
 
     // Typed GPUI action adapters. Every one enters through ChatCommand so

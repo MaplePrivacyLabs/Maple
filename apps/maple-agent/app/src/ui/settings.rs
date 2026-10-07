@@ -20,7 +20,7 @@ use crate::ui::popup::{Menu, MenuItem, Placement, Popup};
 use crate::ui::text_input::TextInput;
 
 use crate::backend::AgentBackend;
-use crate::settings::{self, AppSettings, PermissionMode, UsageSummary};
+use crate::settings::{self, AppSettings, UsageSummary};
 use crate::shortcuts::{
     ShortcutConflict, ShortcutConflictKind, ShortcutContextOverlap, ShortcutOverrides,
     ShortcutSnapshot,
@@ -92,7 +92,6 @@ impl Section {
 /// toggling.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum SettingMenu {
-    Permission,
     Appearance,
     ChatFont,
     ChatSize,
@@ -104,7 +103,6 @@ impl SettingMenu {
     /// Stable id fragment for the popup panel and its rows.
     fn id(self) -> &'static str {
         match self {
-            Self::Permission => "permission",
             Self::Appearance => "appearance",
             Self::ChatFont => "chat-font",
             Self::ChatSize => "chat-size",
@@ -768,13 +766,6 @@ impl SettingsScreen {
     /// share this order, so an index means the same option in both.
     fn menu_options(&self, menu: SettingMenu) -> Vec<SettingOption> {
         match menu {
-            SettingMenu::Permission => [PermissionMode::SmartApprove, PermissionMode::Auto]
-                .iter()
-                .map(|&mode| SettingOption {
-                    label: mode.label().to_string(),
-                    current: self.settings.default_permission_mode == mode,
-                })
-                .collect(),
             SettingMenu::Appearance => [
                 theme::Preference::System,
                 theme::Preference::Dark,
@@ -824,7 +815,6 @@ impl SettingsScreen {
     /// The saved value shown on the dropdown's trigger button.
     fn menu_value(&self, menu: SettingMenu) -> String {
         match menu {
-            SettingMenu::Permission => self.settings.default_permission_mode.label().to_string(),
             SettingMenu::Appearance => self.theme.label().to_string(),
             SettingMenu::ChatFont => {
                 crate::ui::typography::ChatFontFamily::parse(&self.settings.chat_font_family)
@@ -944,14 +934,6 @@ impl SettingsScreen {
         cx: &mut Context<Self>,
     ) {
         match menu {
-            SettingMenu::Permission => {
-                let Some(mode) = [PermissionMode::SmartApprove, PermissionMode::Auto].get(index)
-                else {
-                    return;
-                };
-                let mode = *mode;
-                self.edit_setting(move |settings| settings.default_permission_mode = mode, cx);
-            }
             SettingMenu::Appearance => {
                 let Some(preference) = [
                     theme::Preference::System,
@@ -1536,19 +1518,6 @@ impl SettingsScreen {
             Section::General => {
                 pane = pane
                     .child(section_title("Defaults"))
-                    .child({
-                        let mode = self.settings.default_permission_mode;
-                        self.application_target(
-                            || SettingsTarget::General(GeneralTarget::Permission),
-                            self.setting_menu_row(
-                                "Default permission mode",
-                                mode.note(),
-                                SettingMenu::Permission,
-                                window,
-                                cx,
-                            ),
-                        )
-                    })
                     .child(self.application_target(
                         || SettingsTarget::General(GeneralTarget::Web),
                         toggle_row(
