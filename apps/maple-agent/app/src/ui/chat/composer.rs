@@ -633,7 +633,7 @@ impl ChatScreen {
                     .text_sm()
                     .font_weight(gpui::FontWeight::SEMIBOLD)
                     .text_color(gpui::rgb(theme::text_primary()))
-                    .child("Subagents"),
+                    .child("External agents"),
             )
             .child(
                 div()

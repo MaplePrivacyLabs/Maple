@@ -15,7 +15,7 @@ use convert::{
     acp_config_options, acp_session_config_options, acp_usage, bounded_chars, event_error_text,
     internal_acp_error, outbound_error, parse_slash_command, project_trust_elicitation_request,
     project_trust_permission_decision, project_trust_permission_options, prompt_images,
-    prompt_result_from_terminal, prompt_text, subagent_tool_update, timeline_update,
+    prompt_result_from_terminal, prompt_text, timeline_update,
 };
 use handler::{AcpCallerSessionFields, MapleAcpHandler};
 use session::{
@@ -1582,34 +1582,11 @@ impl AcpConnectionContext {
                         Err(AcpOutboundSendError::Transport(error)) => break Err(error),
                     }
                 }
-                // A subagent has no place of its own in ACP, so its work
-                // rides the `delegate` tool call that owns it.
+                // External agents report through the host's event sink, not
+                // the run stream, so nothing arrives here for them.
                 Some(
-                    AgentRunEvent::SubagentStarted { id, task, .. }
-                    | AgentRunEvent::SubagentActivity { id, tool: task },
-                ) => {
-                    match self
-                        .send_session_update(
-                            cx,
-                            SessionNotification::new(
-                                protocol_session_id.clone(),
-                                subagent_tool_update(&id, task),
-                            ),
-                            &prompt_lifetime,
-                        )
-                        .await
-                    {
-                        Ok(()) | Err(AcpOutboundSendError::UpdateTooLarge) => {}
-                        Err(AcpOutboundSendError::Cancelled) => {
-                            cancel_after_result = true;
-                            break Ok(PromptResponse::new(StopReason::Cancelled));
-                        }
-                        Err(AcpOutboundSendError::Transport(error)) => break Err(error),
-                    }
-                }
-                // The end of a subagent is the end of its tool call, which
-                // carries the result. Replacing that content with a notice
-                // would drop what the caller came for.
+                    AgentRunEvent::SubagentStarted { .. } | AgentRunEvent::SubagentActivity { .. },
+                ) => {}
                 // A semantic title landing mid-run renames the task; keep
                 // the caller's session list in sync.
                 Some(AgentRunEvent::SessionUpdated(summary)) => {
@@ -2488,25 +2465,6 @@ mod tests {
         assert_eq!(timeline_tool_text(&item).as_deref(), Some("/tmp/project"));
         assert_eq!(encoded["content"][0]["content"]["text"], "/tmp/project");
         assert_eq!(encoded["rawInput"]["command"], "pwd");
-    }
-
-    /// ACP has no subagent of its own, so live subagent work rides the
-    /// `delegate` tool call, the way Goose's own ACP server reports it.
-    #[test]
-    fn subagent_progress_updates_the_delegate_tool_call() {
-        let encoded = serde_json::to_value(subagent_tool_update(
-            "delegate-1",
-            "Terminal: cargo test".to_string(),
-        ))
-        .unwrap();
-
-        assert_eq!(encoded["sessionUpdate"], "tool_call_update");
-        assert_eq!(encoded["toolCallId"], "delegate-1");
-        assert_eq!(encoded["status"], "in_progress");
-        assert_eq!(
-            encoded["content"][0]["content"]["text"],
-            "Terminal: cargo test"
-        );
     }
 
     #[test]

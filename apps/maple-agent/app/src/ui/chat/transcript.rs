@@ -582,7 +582,7 @@ pub(super) struct PlanEntry {
 /// One subagent working for the selected task.
 #[derive(Clone, Debug)]
 pub(super) struct ActiveSubagent {
-    /// Request ID of the `delegate` call that started it.
+    /// Row ID of the agent, shared by every event about it.
     pub(super) id: String,
     /// What the subagent was asked to do.
     pub(super) task: SharedString,
@@ -902,8 +902,6 @@ fn render_tool_with_diff(
 pub(super) fn tool_label_title(title: &str) -> &str {
     const LABELS: &[&str] = &[
         "Terminal",
-        "Subagent",
-        "Load",
         "Editor",
         "Web Search",
         "Read file",

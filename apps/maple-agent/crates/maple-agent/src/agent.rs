@@ -39,7 +39,6 @@ pub use external_agents::{
 };
 use external_agents::{ExternalAgentHost, ExternalAgentRegistry};
 use futures_util::StreamExt;
-use goose::agents::SUBAGENT_TOOL_REQUEST_TYPE;
 use goose::agents::extension::Envs;
 use goose::agents::mcp_client::McpClientTrait;
 use goose::agents::platform_extensions::summon::EXTENSION_NAME as SUMMON_EXTENSION_NAME;
@@ -111,13 +110,6 @@ pub fn begin_integration_setup(
     }
 }
 const MAPLE_SKILLS_TOOLS: [&str; 1] = ["load_skill"];
-/// Goose's `summon` platform extension. Its tools are unprefixed, like
-/// Maple's own, so the model sees `delegate` and `load`.
-const MAPLE_SUBAGENT_TOOLS: [&str; 2] = [SUBAGENT_DELEGATE_TOOL, SUBAGENT_LOAD_TOOL];
-/// Runs one task in a subagent with its own context.
-const SUBAGENT_DELEGATE_TOOL: &str = "delegate";
-/// Loads a recipe, an agent file, or the result of a background subagent.
-const SUBAGENT_LOAD_TOOL: &str = "load";
 /// Maple-owned record in the session's extension data: whether the web
 /// tools (`web_search`, `open_url`) are offered to the model for this task.
 /// Absent means enabled; Maple manages its built-in tools itself rather
@@ -738,9 +730,6 @@ pub struct MapleAgentService {
     session_lifecycle: Arc<Mutex<()>>,
     session_title_lifecycles: SessionTitleLifecycles,
     live_timelines: LiveTimelines,
-    /// Subagents per task. A background subagent outlives the run that
-    /// started it, so this cannot live inside one run.
-    subagents: SessionSubagents,
     desktop_queues: Arc<Mutex<HashMap<(String, String), DesktopSessionQueue>>>,
     run_changed: Arc<tokio::sync::Notify>,
     admission: Arc<AtomicU8>,
@@ -757,7 +746,6 @@ pub struct AgentRuntimeHandle {
 }
 
 type LiveTimelines = Arc<Mutex<HashMap<String, LiveTimelineEntry>>>;
-type SessionSubagents = Arc<Mutex<HashMap<String, SubagentTracker>>>;
 
 /// Orders title-sensitive reads, writes, and update events within one account task.
 /// Weak entries avoid retaining completed task locks for the service lifetime.
@@ -823,7 +811,6 @@ impl MapleAgentService {
             session_lifecycle: Arc::new(Mutex::new(())),
             session_title_lifecycles: Arc::new(Mutex::new(HashMap::new())),
             live_timelines: Arc::new(Mutex::new(HashMap::new())),
-            subagents: Arc::new(Mutex::new(HashMap::new())),
             desktop_queues: Arc::new(Mutex::new(HashMap::new())),
             run_changed: Arc::new(tokio::sync::Notify::new()),
             admission: Arc::new(AtomicU8::new(AGENT_SERVICE_OPEN)),
@@ -1884,7 +1871,6 @@ async fn stop_runtime_inner(
     }
 
     state.live_timelines.lock().await.clear();
-    state.subagents.lock().await.clear();
     *state.inner.lock().await = None;
     Ok(())
 }
@@ -1932,18 +1918,10 @@ impl AgentRuntimeHandle {
         Ok(stopped_status())
     }
 
-    /// The subagents still working for a task. A caller that opens a task
-    /// whose run has ended reads this to show the background subagents
+    /// The external agents still working for a task. A caller that opens
+    /// a task whose run has ended reads this to show the background agents
     /// that work on.
     pub async fn session_subagents(&self, session_id: &str) -> Vec<AgentSubagent> {
-        let mut rows = self
-            .service
-            .subagents
-            .lock()
-            .await
-            .get(session_id)
-            .map(SubagentTracker::snapshot)
-            .unwrap_or_default();
         let external_agents = {
             let runtime = self.service.inner.lock().await;
             runtime
@@ -1951,10 +1929,10 @@ impl AgentRuntimeHandle {
                 .filter(|current| ensure_runtime_account(current, &self.account_scope).is_ok())
                 .and_then(|current| current.external_agents.clone())
         };
-        if let Some(external_agents) = external_agents {
-            rows.extend(external_agents.snapshot(session_id).await);
+        match external_agents {
+            Some(external_agents) => external_agents.snapshot(session_id).await,
+            None => Vec::new(),
         }
-        rows
     }
 
     /// Interrupt an external agent's current turn from its row. The agent
@@ -4162,7 +4140,6 @@ impl AgentRuntimeHandle {
         delete_persisted_agent_session(
             session_manager.as_ref(),
             &state.live_timelines,
-            &state.subagents,
             &session_id,
         )
         .await?;
@@ -4202,7 +4179,6 @@ impl AgentRuntimeHandle {
 async fn delete_persisted_agent_session(
     session_manager: &SessionManager,
     live_timelines: &LiveTimelines,
-    subagents: &SessionSubagents,
     session_id: &str,
 ) -> Result<(), String> {
     session_manager
@@ -4218,7 +4194,6 @@ async fn delete_persisted_agent_session(
     // needs it again, and the map would otherwise grow for the process life.
     store_session_system_prompt(session_id, None);
     live_timelines.lock().await.remove(session_id);
-    subagents.lock().await.remove(session_id);
 
     Ok(())
 }
@@ -4886,8 +4861,6 @@ impl AgentRuntimeHandle {
             return Err("Failed to create user timeline item".to_string());
         }
         let live_timelines = Arc::clone(&state.live_timelines);
-        let task_subagents = Arc::clone(&state.subagents);
-        let task_subagent_host = (self.clone(), runtime_lifetime.clone());
 
         // Claim the session before changing its title, provider, mode, or
         // extensions. A duplicate send must not mutate an Agent that is already
@@ -5284,14 +5257,11 @@ impl AgentRuntimeHandle {
                             session_manager: Arc::clone(&task_session_manager),
                             session_title_lifecycle: Arc::clone(&session_title_lifecycle),
                             live_timelines: live_timelines.clone(),
-                            subagents: Arc::clone(&task_subagents),
-                            subagent_host: Some(task_subagent_host.clone()),
                             session_id: session_id.clone(),
                             user_message: current_user_message.clone(),
                             cancel_token: task_cancel_token.clone(),
                             session_title_start: session_title_start.take(),
                             cancelled_permission_ids: Arc::clone(&task_cancelled_permission_ids),
-                            run_id: task_run_id.clone(),
                             run_surface,
                             steered_unacked: Arc::clone(&task_steered_unacked),
                         }),
@@ -5469,9 +5439,6 @@ impl AgentRuntimeHandle {
                 })
                 .unwrap_or_default();
             let _ = usage_tx.send(Some(usage));
-            // Drop the subagents that ended with the run, before the
-            // caller reads the snapshot this event sends it back for.
-            end_run_subagents(&task_subagents, &session_id).await;
             task_events.publish(AgentRunEvent::Finished(terminal)).await;
             let _ = terminal_tx.send(Some(terminal));
             // Remove the stored JoinHandle only after the final externally visible
@@ -5877,10 +5844,6 @@ struct AgentPromptRun {
     session_manager: Arc<SessionManager>,
     session_title_lifecycle: Arc<Mutex<()>>,
     live_timelines: LiveTimelines,
-    subagents: SessionSubagents,
-    /// The account handle and runtime lifetime a background watcher retains.
-    /// A watcher outlives this run, so it cannot borrow the run's state.
-    subagent_host: Option<(AgentRuntimeHandle, CancellationToken)>,
     session_id: String,
     user_message: Message,
     cancel_token: CancellationToken,
@@ -5888,7 +5851,6 @@ struct AgentPromptRun {
     /// Confirmations the run answered with Cancel after Stop. Goose records
     /// a declined call for each; the cancelled turn's repair strips them.
     cancelled_permission_ids: CancelledPermissionIds,
-    run_id: String,
     run_surface: AgentRunSurface,
     steered_unacked: Arc<Mutex<Vec<Message>>>,
 }
@@ -6027,191 +5989,6 @@ async fn answer_stray_tool_confirmations(
     answered
 }
 
-/// The `delegate` calls of one run, so the desktop can show which
-/// subagents are working now.
-///
-/// Everything is keyed by the request ID of the `delegate` call, which is
-/// also the ID of its timeline row.
-#[derive(Default)]
-struct SubagentTracker {
-    /// Subagents that have not reported a result yet.
-    running: HashMap<String, RunningSubagent>,
-    /// Background task ID -> the `delegate` request that started it. An
-    /// async `delegate` returns at once while its subagent keeps working.
-    background: HashMap<String, String>,
-    /// `load` request ID -> the background task it collects.
-    loads: HashMap<String, LoadedSubagent>,
-    /// Background tasks that have started but have no watcher yet, as
-    /// `(delegate request ID, Goose task ID)`.
-    unwatched: Vec<(String, String)>,
-}
-
-struct RunningSubagent {
-    /// What the subagent was asked to do.
-    task: String,
-    background: bool,
-    started: std::time::Instant,
-    /// The tool it called most recently.
-    activity: Option<String>,
-}
-
-struct LoadedSubagent {
-    delegate_id: String,
-    /// `peek` reads progress only; the subagent keeps working.
-    peek: bool,
-}
-
-impl SubagentTracker {
-    /// The task asked for a subagent, or asked for the result of one.
-    fn tool_request(
-        &mut self,
-        id: &str,
-        name: &str,
-        arguments: Option<&JsonObject>,
-    ) -> Option<AgentRunEvent> {
-        match name {
-            SUBAGENT_DELEGATE_TOOL => {
-                // Goose repeats a split tool-request message; the first
-                // one owns the row.
-                if self.running.contains_key(id) {
-                    return None;
-                }
-                let background = subagent_flag(arguments, "async");
-                let task = subagent_task_label(arguments);
-                self.running.insert(
-                    id.to_string(),
-                    RunningSubagent {
-                        task: task.clone(),
-                        background,
-                        started: std::time::Instant::now(),
-                        activity: None,
-                    },
-                );
-                Some(AgentRunEvent::SubagentStarted {
-                    id: id.to_string(),
-                    task,
-                    background,
-                    external: None,
-                })
-            }
-            SUBAGENT_LOAD_TOOL => {
-                let source = subagent_argument(arguments, "source")?;
-                let delegate_id = self.background.get(source)?.clone();
-                self.loads.insert(
-                    id.to_string(),
-                    LoadedSubagent {
-                        delegate_id,
-                        peek: subagent_flag(arguments, "peek"),
-                    },
-                );
-                None
-            }
-            _ => None,
-        }
-    }
-
-    /// A tool call returned. `result` is `None` when the call failed.
-    fn tool_response(
-        &mut self,
-        id: &str,
-        result: Option<&CallToolResult>,
-    ) -> Option<AgentRunEvent> {
-        if let Some(load) = self.loads.remove(id) {
-            if load.peek {
-                return None;
-            }
-            return self.finish(&load.delegate_id);
-        }
-        let running = self.running.get(id)?;
-        // An async `delegate` returns while its subagent works on. Keep
-        // the row and follow the task by the ID Goose reports back.
-        if running.background
-            && let Some(task_id) = result.and_then(background_task_id)
-        {
-            self.background.insert(task_id.clone(), id.to_string());
-            self.unwatched.push((id.to_string(), task_id));
-            return None;
-        }
-        self.finish(id)
-    }
-
-    /// The subagent of `request_id` called a tool. A background subagent
-    /// reports through the `load` call that is waiting for it.
-    fn notification(
-        &mut self,
-        request_id: &str,
-        notification: &ServerNotification,
-    ) -> Option<AgentRunEvent> {
-        let id = match self.loads.get(request_id) {
-            Some(load) => load.delegate_id.clone(),
-            None if self.running.contains_key(request_id) => request_id.to_string(),
-            None => return None,
-        };
-        let tool = subagent_notification_tool(notification)?;
-        if let Some(running) = self.running.get_mut(&id) {
-            running.activity = Some(tool.clone());
-        }
-        Some(AgentRunEvent::SubagentActivity { id, tool })
-    }
-
-    /// The subagents of this task that are still working, for a caller
-    /// that comes to the task after their run ended.
-    fn snapshot(&self) -> Vec<AgentSubagent> {
-        let now = std::time::Instant::now();
-        let mut subagents = self
-            .running
-            .iter()
-            .map(|(id, running)| AgentSubagent {
-                id: id.clone(),
-                task: running.task.clone(),
-                background: running.background,
-                elapsed_ms: now
-                    .saturating_duration_since(running.started)
-                    .as_millis()
-                    .min(u64::MAX as u128) as u64,
-                activity: running.activity.clone(),
-                external: None,
-            })
-            .collect::<Vec<_>>();
-        // The map has no order of its own; the oldest subagent reads first.
-        subagents.sort_by_key(|subagent| std::cmp::Reverse(subagent.elapsed_ms));
-        subagents
-    }
-
-    /// A run keeps no subagent past its own end, but a background task
-    /// works on and is collected by a later run of the same task.
-    fn retain_background(&mut self) {
-        self.running.retain(|_, running| running.background);
-        self.loads.clear();
-        self.background
-            .retain(|_, delegate_id| self.running.contains_key(delegate_id));
-    }
-
-    /// Background tasks that started since the last call. Nothing pushes
-    /// their end back, so each one needs a watcher.
-    fn take_unwatched(&mut self) -> Vec<(String, String)> {
-        std::mem::take(&mut self.unwatched)
-    }
-
-    /// Whether this task still shows the subagent of `delegate_id`.
-    fn is_watching(&self, delegate_id: &str) -> bool {
-        self.running.contains_key(delegate_id)
-    }
-
-    fn is_empty(&self) -> bool {
-        self.running.is_empty()
-    }
-
-    fn finish(&mut self, id: &str) -> Option<AgentRunEvent> {
-        self.running.remove(id)?;
-        self.background.retain(|_, delegate_id| delegate_id != id);
-        Some(AgentRunEvent::SubagentFinished { id: id.to_string() })
-    }
-}
-
-/// How often Maple asks Goose whether a background subagent has ended.
-const SUBAGENT_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(3);
-
 const MAX_BACKGROUND_RESULT_CHARS: usize = 8_000;
 
 /// Deliver an immutable, bounded snapshot as agent output, never as a user request.
@@ -6231,385 +6008,6 @@ fn background_result_message(agent: &str, status: &str, output: &str, retrieval:
         .with_generated_id()
 }
 
-struct BackgroundSubagentCompletion {
-    status: String,
-    output: String,
-}
-
-fn background_subagent_completion(
-    result: &rmcp::model::CallToolResult,
-) -> Option<BackgroundSubagentCompletion> {
-    let status = result
-        .meta
-        .as_ref()
-        .and_then(|meta| meta.0.get("task_status"))
-        .and_then(Value::as_str)
-        .unwrap_or("gone");
-    if status == "running" {
-        return None;
-    }
-    // Peek retains Goose's completed result for an optional later load. Keep
-    // one extra character so the message formatter can mark truncation.
-    let output = result
-        .content
-        .iter()
-        .filter_map(|content| content.as_text())
-        .flat_map(|text| text.text.chars().chain(std::iter::once('\n')))
-        .take(MAX_BACKGROUND_RESULT_CHARS + 1)
-        .collect::<String>();
-    Some(BackgroundSubagentCompletion {
-        status: status.to_string(),
-        output,
-    })
-}
-
-/// Everything one background subagent watcher needs to report an end.
-struct BackgroundSubagentWatch {
-    runtime: AgentRuntimeHandle,
-    lifetime: CancellationToken,
-    run_surface: AgentRunSurface,
-    /// Weak, so a watcher cannot keep a stopped runtime's Agent alive.
-    agent: std::sync::Weak<Agent>,
-    session_manager: Arc<SessionManager>,
-    subagents: SessionSubagents,
-    events: AgentEventDispatcher,
-    session_id: String,
-    run_id: String,
-    /// Request ID of the `delegate` call, which is the card's row ID.
-    delegate_id: String,
-    /// The ID Goose gave the background task.
-    task_id: String,
-    working_dir: PathBuf,
-    /// Whether this surface's events reach Maple Desktop. An ACP caller
-    /// keeps its run stream to itself; the desktop reads the same end
-    /// from the persisted history when it opens the task.
-    host_events: AgentHostEventPolicy,
-}
-
-/// Tell the task when its background subagent ends.
-///
-/// A background `delegate` returns at once and Goose pushes nothing back
-/// when the subagent finishes, so the model would learn of it only if the
-/// user asked again. Poll `load(peek)`, which reports status and never
-/// consumes the result, then deliver its output into the running turn or
-/// start a new Desktop turn. Caller-owned surfaces retain it in history.
-async fn watch_background_subagent(watch: BackgroundSubagentWatch) {
-    let completion = loop {
-        tokio::select! {
-            _ = watch.lifetime.cancelled() => return,
-            _ = tokio::time::sleep(SUBAGENT_POLL_INTERVAL) => {},
-        }
-        // A stopped runtime drops its agents, and with them the subagent.
-        let Some(agent) = watch.agent.upgrade() else {
-            return;
-        };
-        // The model may have collected the result itself, or the task may
-        // be gone. Either way the row is closed and nobody needs a notice.
-        if !subagent_is_watched(&watch.subagents, &watch.session_id, &watch.delegate_id).await {
-            return;
-        }
-        match background_subagent_status(&agent, &watch).await {
-            Some(completion) => break completion,
-            None => continue,
-        }
-    };
-
-    if !finish_watched_subagent(&watch.subagents, &watch.session_id, &watch.delegate_id).await {
-        // A `load` in a turn beat the watcher to it; the model has the
-        // result already.
-        return;
-    }
-    if watch.host_events.publishes() {
-        emit_agent_event(
-            &watch.events,
-            AgentServiceEvent::Run {
-                session_id: watch.session_id.clone(),
-                run_id: watch.run_id.clone(),
-                event: AgentRunEvent::SubagentFinished {
-                    id: watch.delegate_id.clone(),
-                },
-            },
-        );
-    }
-    report_background_subagent_end(&watch, &completion).await;
-}
-
-/// The status Goose reports for a background task, or `None` while it
-/// still runs. A task Goose no longer knows reads as ended.
-async fn background_subagent_status(
-    agent: &Arc<Agent>,
-    watch: &BackgroundSubagentWatch,
-) -> Option<BackgroundSubagentCompletion> {
-    let context = ToolCallContext::new(
-        watch.session_id.clone(),
-        Some(watch.working_dir.clone()),
-        None,
-    );
-    let call = rmcp::model::CallToolRequestParams::new(SUBAGENT_LOAD_TOOL.to_string())
-        .with_arguments(rmcp::object!({ "source": watch.task_id.clone(), "peek": true }));
-    let dispatched = agent
-        .extension_manager
-        .dispatch_tool_call(&context, call, watch.lifetime.child_token())
-        .await;
-    let unavailable = || {
-        Some(BackgroundSubagentCompletion {
-            status: "gone".to_string(),
-            output: "The background subagent result is no longer available.".to_string(),
-        })
-    };
-    let Ok(dispatched) = dispatched else {
-        return unavailable();
-    };
-    let Ok(result) = dispatched.result.await else {
-        return unavailable();
-    };
-    background_subagent_completion(&result)
-}
-
-/// Put the end of a background subagent where the model will read it, and
-/// leave a row in the transcript for the user.
-async fn report_background_subagent_end(
-    watch: &BackgroundSubagentWatch,
-    completion: &BackgroundSubagentCompletion,
-) {
-    let outcome = match completion.status.as_str() {
-        "completed" => "finished",
-        "gone" => "is no longer available",
-        _ => "failed",
-    };
-    let for_model = background_result_message(
-        &format!("subagent {}", watch.task_id),
-        &completion.status,
-        &completion.output,
-        &format!(
-            "If the output is truncated, use load(source: \"{}\") for the complete result.",
-            watch.task_id
-        ),
-    );
-    let delivered = if watch.run_surface == AgentRunSurface::Desktop {
-        watch
-            .runtime
-            .send_background_completion(
-                &watch.session_id,
-                for_model.clone(),
-                watch.lifetime.clone(),
-            )
-            .await
-            .is_ok()
-    } else {
-        false
-    };
-    let service = &watch.runtime.service;
-    let _runtime_guard = service.runtime_lifecycle.lock().await;
-    let _session_guard = service.session_lifecycle.lock().await;
-    if watch.lifetime.is_cancelled() || watch.runtime.verify_generation().await.is_err() {
-        return;
-    }
-    if !delivered
-        && let Err(error) = watch
-            .session_manager
-            .add_message(&watch.session_id, &for_model)
-            .await
-    {
-        log::warn!("Failed to record the end of a background subagent: {error}");
-        return;
-    }
-
-    let notice = Message::assistant()
-        .with_system_notification(
-            SystemNotificationType::InlineMessage,
-            format!(
-                "Background subagent {outcome}. {}",
-                if delivered {
-                    "The result was delivered to the task."
-                } else {
-                    "The result is saved for the task's next turn."
-                }
-            ),
-        )
-        .with_visibility(true, false)
-        .with_generated_id();
-    if let Err(error) = watch
-        .session_manager
-        .add_message(&watch.session_id, &notice)
-        .await
-    {
-        log::warn!("Failed to record a background subagent notice: {error}");
-        return;
-    }
-    if !watch.host_events.publishes() {
-        return;
-    }
-    for item in message_to_timeline_items(&notice, false) {
-        emit_agent_event(
-            &watch.events,
-            AgentServiceEvent::TimelineItem {
-                session_id: watch.session_id.clone(),
-                run_id: None,
-                item,
-            },
-        );
-    }
-}
-
-async fn subagent_is_watched(
-    subagents: &SessionSubagents,
-    session_id: &str,
-    delegate_id: &str,
-) -> bool {
-    subagents
-        .lock()
-        .await
-        .get(session_id)
-        .is_some_and(|tracker| tracker.is_watching(delegate_id))
-}
-
-/// Close a watched row. `false` when something else closed it first.
-async fn finish_watched_subagent(
-    subagents: &SessionSubagents,
-    session_id: &str,
-    delegate_id: &str,
-) -> bool {
-    let mut trackers = subagents.lock().await;
-    let Some(tracker) = trackers.get_mut(session_id) else {
-        return false;
-    };
-    let finished = tracker.finish(delegate_id).is_some();
-    if tracker.is_empty() {
-        trackers.remove(session_id);
-    }
-    finished
-}
-
-/// Apply `work` to this task's subagent tracker.
-///
-/// The map holds an entry only while a task has a subagent, so a task
-/// that never delegates costs one lookup.
-async fn track_subagents<T>(
-    subagents: &SessionSubagents,
-    session_id: &str,
-    work: impl FnOnce(&mut SubagentTracker) -> T,
-) -> T {
-    let mut trackers = subagents.lock().await;
-    let tracker = trackers.entry(session_id.to_string()).or_default();
-    let result = work(tracker);
-    if tracker.is_empty() {
-        trackers.remove(session_id);
-    }
-    result
-}
-
-/// End every subagent of a run that stopped. A background subagent works
-/// on, and a later run of the same task collects it with `load`.
-async fn end_run_subagents(subagents: &SessionSubagents, session_id: &str) {
-    let mut trackers = subagents.lock().await;
-    let Some(tracker) = trackers.get_mut(session_id) else {
-        return;
-    };
-    tracker.retain_background();
-    if tracker.is_empty() {
-        trackers.remove(session_id);
-    }
-}
-
-/// Read one Goose message for subagent starts and ends.
-fn subagent_events(tracker: &mut SubagentTracker, message: &Message) -> Vec<AgentRunEvent> {
-    let mut events = Vec::new();
-    for content in &message.content {
-        let event = match content {
-            MessageContent::ToolRequest(request) => match &request.tool_call {
-                Ok(call) => {
-                    tracker.tool_request(&request.id, call.name.as_ref(), call.arguments.as_ref())
-                }
-                Err(_) => None,
-            },
-            MessageContent::ToolResponse(response) => {
-                tracker.tool_response(&response.id, response.tool_result.as_ref().ok())
-            }
-            _ => None,
-        };
-        events.extend(event);
-    }
-    events
-}
-
-fn subagent_argument<'a>(arguments: Option<&'a JsonObject>, key: &str) -> Option<&'a str> {
-    arguments?
-        .get(key)
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-}
-
-fn subagent_flag(arguments: Option<&JsonObject>, key: &str) -> bool {
-    arguments
-        .and_then(|arguments| arguments.get(key))
-        .and_then(Value::as_bool)
-        .unwrap_or(false)
-}
-
-/// What the subagent was asked to do, for the card above the composer.
-fn subagent_task_label(arguments: Option<&JsonObject>) -> String {
-    let detail = subagent_argument(arguments, "source")
-        .or_else(|| subagent_argument(arguments, "instructions"));
-    let Some(detail) = detail else {
-        return "Delegated task".to_string();
-    };
-    let first_line = detail.lines().next().unwrap_or(detail).trim();
-    bounded_timeline_text(first_line, MAX_AGENT_SESSION_TITLE_CHARS)
-}
-
-/// The ID Goose gives a background subagent, from the result of the
-/// `delegate` call that started it.
-fn background_task_id(result: &CallToolResult) -> Option<String> {
-    if result.is_error.unwrap_or(false) {
-        return None;
-    }
-    Some(
-        result
-            .meta
-            .as_ref()?
-            .0
-            .get("subagent_session_id")?
-            .as_str()?
-            .to_string(),
-    )
-}
-
-/// Whether an MCP notification carries a subagent tool call. This is the
-/// cheap shape check the run loop applies before it takes the tracker
-/// lock; `subagent_notification_tool` does the full read.
-#[allow(deprecated)]
-fn is_subagent_notification(notification: &ServerNotification) -> bool {
-    let ServerNotification::LoggingMessageNotification(message) = notification else {
-        return false;
-    };
-    message
-        .params
-        .data
-        .as_object()
-        .and_then(|data| data.get("type"))
-        .and_then(Value::as_str)
-        == Some(SUBAGENT_TOOL_REQUEST_TYPE)
-}
-
-/// The tool a subagent called, from the notification Goose forwards while
-/// the parent waits.
-#[allow(deprecated)]
-fn subagent_notification_tool(notification: &ServerNotification) -> Option<String> {
-    let ServerNotification::LoggingMessageNotification(message) = notification else {
-        return None;
-    };
-    let data = message.params.data.as_object()?;
-    if data.get("type").and_then(Value::as_str) != Some(SUBAGENT_TOOL_REQUEST_TYPE) {
-        return None;
-    }
-    let call = data.get("tool_call")?.as_object()?;
-    let name = call.get("name")?.as_str()?;
-    let arguments = call.get("arguments").cloned().unwrap_or(Value::Null);
-    Some(descriptive_tool_title(name, &arguments).unwrap_or_else(|| friendly_tool_label(name)))
-}
-
 async fn run_agent_prompt(run: AgentPromptRun) -> Result<AgentPromptOutcome, String> {
     let AgentPromptRun {
         events,
@@ -6617,14 +6015,11 @@ async fn run_agent_prompt(run: AgentPromptRun) -> Result<AgentPromptOutcome, Str
         session_manager,
         session_title_lifecycle,
         live_timelines,
-        subagents,
-        subagent_host,
         session_id,
         user_message,
         cancel_token,
         session_title_start,
         cancelled_permission_ids,
-        run_id,
         run_surface,
         steered_unacked,
     } = run;
@@ -6652,7 +6047,6 @@ async fn run_agent_prompt(run: AgentPromptRun) -> Result<AgentPromptOutcome, Str
         .get_session(&session_id, false)
         .await
         .map_err(|e| format!("Failed to load updated Agent task: {e}"))?;
-    let working_dir = updated_session.working_dir.clone();
     events
         .publish(AgentRunEvent::SessionUpdated(session_summary(
             &updated_session,
@@ -6720,67 +6114,14 @@ async fn run_agent_prompt(run: AgentPromptRun) -> Result<AgentPromptOutcome, Str
                     )
                     .await;
                 }
-                // Subagent events name the `delegate` tool call that owns
-                // them, so they follow the timeline row that opens it.
-                // Only a message with tool traffic can move the tracker;
-                // plain streamed text skips the lock.
-                let has_tool_content = message.content.iter().any(|content| {
-                    matches!(
-                        content,
-                        MessageContent::ToolRequest(_) | MessageContent::ToolResponse(_)
-                    )
-                });
-                let (subagent_updates, started_in_background) = if has_tool_content {
-                    track_subagents(&subagents, &session_id, |tracker| {
-                        (subagent_events(tracker, &message), tracker.take_unwatched())
-                    })
-                    .await
-                } else {
-                    (Vec::new(), Vec::new())
-                };
-                for event in subagent_updates {
-                    events.publish(event).await;
-                }
-                if let Some((runtime, lifetime)) = subagent_host.as_ref() {
-                    for (delegate_id, task_id) in started_in_background {
-                        tokio::spawn(watch_background_subagent(BackgroundSubagentWatch {
-                            runtime: runtime.clone(),
-                            lifetime: lifetime.clone(),
-                            run_surface,
-                            agent: Arc::downgrade(&agent),
-                            session_manager: Arc::clone(&session_manager),
-                            subagents: Arc::clone(&subagents),
-                            events: events.dispatcher.clone(),
-                            session_id: session_id.clone(),
-                            run_id: run_id.clone(),
-                            delegate_id,
-                            task_id,
-                            working_dir: working_dir.clone(),
-                            host_events: events.host_events,
-                        }));
-                    }
-                }
             }
             // Usage ledgers remain in Goose's persisted messages for context
             // accounting, but Agent Mode does not render ephemeral token rows.
             Ok(AgentEvent::Usage(_) | AgentEvent::MessageUsage { .. }) => {}
             // Developer/MCP notifications are transport diagnostics. Tool
             // requests, results, permissions, and failures arrive as messages
-            // and form the stable user-facing timeline. The one exception is
-            // a subagent, whose tool calls reach the parent only here.
-            Ok(AgentEvent::McpNotification((request_id, notification))) => {
-                // MCP servers are chatty; check the shape before taking
-                // the tracker lock, so only subagent traffic pays for it.
-                if is_subagent_notification(&notification) {
-                    let event = track_subagents(&subagents, &session_id, |tracker| {
-                        tracker.notification(&request_id, &notification)
-                    })
-                    .await;
-                    if let Some(event) = event {
-                        events.publish(event).await;
-                    }
-                }
-            }
+            // and form the stable user-facing timeline.
+            Ok(AgentEvent::McpNotification(_)) => {}
             Ok(AgentEvent::HistoryReplaced(conversation)) => {
                 terminal_message = None;
                 reseed_live_timeline_after_history_replaced(
@@ -6988,24 +6329,6 @@ fn maple_skills_extension_config() -> ExtensionConfig {
         display_name: Some("Maple Skills Extension".to_string()),
         bundled: Some(true),
         available_tools: MAPLE_SKILLS_TOOLS
-            .iter()
-            .map(|tool| tool.to_string())
-            .collect(),
-    }
-}
-
-/// Goose's `summon` extension, which owns `delegate` and `load`.
-///
-/// Goose builds the client itself from its platform registry, so the
-/// subagent it starts inherits this task's provider and its enabled MCP
-/// servers.
-fn maple_subagent_extension_config() -> ExtensionConfig {
-    ExtensionConfig::Platform {
-        name: SUMMON_EXTENSION_NAME.to_string(),
-        description: "Delegate a task to a subagent that runs on its own".to_string(),
-        display_name: Some("Subagents".to_string()),
-        bundled: Some(true),
-        available_tools: MAPLE_SUBAGENT_TOOLS
             .iter()
             .map(|tool| tool.to_string())
             .collect(),
@@ -7562,13 +6885,19 @@ async fn finish_session_agent(
     // persisted platform extension with the real session root. Detach only for the extension-state
     // write, then restore unconditionally before propagating any persistence error.
     detach_transient_skills_client(&agent).await;
-    // Goose persists the extension state itself here. A task that cannot
-    // offer subagents is still a usable task, so a failure is a warning.
+    // Older tasks persisted Goose's `summon` extension (`delegate` and
+    // `load`), and Goose restores every persisted extension when it builds
+    // an agent. Remove it before the state is written back, so the next
+    // run of an old task offers no subagents. A task that never had it
+    // reports an error here, which is the common case.
     if let Err(error) = agent
-        .add_extension(maple_subagent_extension_config(), &session.id)
+        .remove_extension(SUMMON_EXTENSION_NAME, &session.id)
         .await
     {
-        log::warn!("Subagents are unavailable for this task: {error}");
+        log::debug!(
+            "No summon extension to remove from task {}: {error}",
+            session.id
+        );
     }
     let persist_result = agent.persist_extension_state(&session.id).await;
     attach_prepared_skills_client(&agent, skills_client).await;
@@ -9694,26 +9023,6 @@ mod tests {
         assert_eq!(payload["truncated"], false);
     }
 
-    #[test]
-    fn background_completion_peek_carries_finished_output_only() {
-        for status in ["running", "completed", "failed", "cancelled"] {
-            let result = rmcp::model::CallToolResult::success(vec![ContentBlock::text(
-                "SUBAGENT_RESULT_944",
-            )])
-            .with_meta(Some(rmcp::model::MetaObject(
-                json!({"task_status": status}).as_object().unwrap().clone(),
-            )));
-            let completion = background_subagent_completion(&result);
-            if status == "running" {
-                assert!(completion.is_none());
-            } else {
-                let completion = completion.unwrap();
-                assert_eq!(completion.status, status);
-                assert!(completion.output.contains("SUBAGENT_RESULT_944"));
-            }
-        }
-    }
-
     async fn background_completion_fixture()
     -> (test_support::StartedTestAgent, Session, CancellationToken) {
         let fixture = test_support::started_agent_runtime("background-completion").await;
@@ -10098,113 +9407,6 @@ mod tests {
         assert!(take_unconsumed_completion(&pending).await.is_empty());
     }
 
-    #[tokio::test]
-    async fn background_completion_subagent_delivery_respects_surface_and_lifetime() {
-        for (routing, cancelled) in [
-            (AgentRunSurface::Desktop, false),
-            (AgentRunSurface::CallingSurface, false),
-            (AgentRunSurface::Desktop, true),
-        ] {
-            let (fixture, session, lifetime) = background_completion_fixture().await;
-            let manager = Arc::clone(
-                &fixture
-                    .handle
-                    .service
-                    .inner
-                    .lock()
-                    .await
-                    .as_ref()
-                    .unwrap()
-                    .session_manager,
-            );
-            let watch = BackgroundSubagentWatch {
-                runtime: fixture.handle.clone(),
-                lifetime: lifetime.clone(),
-                run_surface: routing,
-                agent: Weak::new(),
-                session_manager: Arc::clone(&manager),
-                subagents: Arc::clone(&fixture.handle.service.subagents),
-                events: fixture.handle.service.host.events.clone(),
-                session_id: session.id.clone(),
-                run_id: "finished-parent".into(),
-                delegate_id: "delegate-1".into(),
-                task_id: "background-child".into(),
-                working_dir: fixture.project_root.clone(),
-                host_events: AgentHostEventPolicy::Suppress,
-            };
-            if cancelled {
-                lifetime.cancel();
-            }
-            report_background_subagent_end(
-                &watch,
-                &BackgroundSubagentCompletion {
-                    status: "completed".into(),
-                    output: "SUBAGENT_DIRECT_RESULT_944".into(),
-                },
-            )
-            .await;
-            if cancelled {
-                assert_eq!(
-                    manager
-                        .get_session(&session.id, true)
-                        .await
-                        .unwrap()
-                        .conversation
-                        .unwrap()
-                        .messages()
-                        .len(),
-                    2
-                );
-            } else {
-                let saved =
-                    tokio::time::timeout(std::time::Duration::from_secs(5), async {
-                        loop {
-                            let saved = manager.get_session(&session.id, true).await.unwrap();
-                            if saved.conversation.as_ref().unwrap().messages().iter().any(
-                                |message| {
-                                    message
-                                        .as_concat_text()
-                                        .contains("SUBAGENT_DIRECT_RESULT_944")
-                                },
-                            ) {
-                                break saved;
-                            }
-                            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-                        }
-                    })
-                    .await
-                    .unwrap();
-                let results = saved
-                    .conversation
-                    .as_ref()
-                    .unwrap()
-                    .messages()
-                    .iter()
-                    .filter(|message| {
-                        message
-                            .as_concat_text()
-                            .contains("SUBAGENT_DIRECT_RESULT_944")
-                    })
-                    .collect::<Vec<_>>();
-                assert_eq!(results.len(), 1);
-                assert!(!results[0].is_user_visible());
-                let active = !fixture
-                    .handle
-                    .service
-                    .inner
-                    .lock()
-                    .await
-                    .as_ref()
-                    .unwrap()
-                    .active_runs
-                    .is_empty();
-                assert_eq!(active, routing == AgentRunSurface::Desktop);
-            }
-            fixture.handle.stop().await.unwrap();
-            let _ = fs::remove_dir_all(fixture.root);
-        }
-    }
-
     #[async_trait::async_trait]
     impl provider::MapleInferenceTransport for InertMapleTransport {
         async fn send_inference_request(
@@ -10467,14 +9669,11 @@ mod tests {
                 session_manager: Arc::clone(&session_manager),
                 session_title_lifecycle: Arc::new(Mutex::new(())),
                 live_timelines: Arc::new(Mutex::new(HashMap::new())),
-                subagents: Arc::new(Mutex::new(HashMap::new())),
-                subagent_host: None,
                 session_id: session.id.clone(),
                 user_message: Message::user().with_text(prompt).with_generated_id(),
                 cancel_token: cancellation,
                 session_title_start: None,
                 cancelled_permission_ids: Arc::new(Mutex::new(HashSet::new())),
-                run_id,
                 run_surface: AgentRunSurface::Desktop,
                 steered_unacked: Arc::new(Mutex::new(Vec::new())),
             }),
@@ -13729,290 +12928,6 @@ mod tests {
         assert!(!model_catalog_is_fresh(now - MODEL_CATALOG_TTL_MS - 1_000));
     }
 
-    fn delegate_message(id: &str, arguments: serde_json::Map<String, Value>) -> Message {
-        Message::assistant().with_tool_request(
-            id,
-            Ok(
-                rmcp::model::CallToolRequestParams::new(SUBAGENT_DELEGATE_TOOL.to_string())
-                    .with_arguments(arguments),
-            ),
-        )
-    }
-
-    fn tool_result_message(id: &str, result: CallToolResult) -> Message {
-        Message::user().with_tool_response(id, Ok(result))
-    }
-
-    fn subagent_notification(session_id: &str, tool: &str, arguments: Value) -> ServerNotification {
-        #[expect(deprecated)]
-        ServerNotification::LoggingMessageNotification(rmcp::model::Notification::new(
-            rmcp::model::LoggingMessageNotificationParam::new(
-                rmcp::model::LoggingLevel::Info,
-                json!({
-                    "type": SUBAGENT_TOOL_REQUEST_TYPE,
-                    "subagent_id": session_id,
-                    "tool_call": { "name": tool, "arguments": arguments },
-                }),
-            ),
-        ))
-    }
-
-    #[test]
-    fn subagent_card_follows_one_delegated_task() {
-        let mut tracker = SubagentTracker::default();
-        let started = subagent_events(
-            &mut tracker,
-            &delegate_message(
-                "delegate-1",
-                rmcp::object!({ "instructions": "Review the parser\nand report back" }),
-            ),
-        );
-        assert!(matches!(
-            started.as_slice(),
-            [AgentRunEvent::SubagentStarted { id, task, background: false, external: None }]
-                if id == "delegate-1" && task == "Review the parser"
-        ));
-        // The same tool-request message repeated must not add a row.
-        assert!(
-            subagent_events(
-                &mut tracker,
-                &delegate_message("delegate-1", rmcp::object!({ "instructions": "Review" })),
-            )
-            .is_empty()
-        );
-
-        let activity = tracker.notification(
-            "delegate-1",
-            &subagent_notification("sub-1", "shell", json!({ "command": "cargo test" })),
-        );
-        assert!(matches!(
-            activity,
-            Some(AgentRunEvent::SubagentActivity { ref id, ref tool })
-                if id == "delegate-1" && tool == "Terminal: cargo test"
-        ));
-        // A notification for a tool call Maple is not tracking is ignored.
-        assert!(
-            tracker
-                .notification(
-                    "other-request",
-                    &subagent_notification("sub-1", "shell", json!({ "command": "ls" }))
-                )
-                .is_none()
-        );
-
-        let finished = subagent_events(
-            &mut tracker,
-            &tool_result_message(
-                "delegate-1",
-                CallToolResult::success(vec![ContentBlock::text("done")]),
-            ),
-        );
-        assert!(matches!(
-            finished.as_slice(),
-            [AgentRunEvent::SubagentFinished { id }] if id == "delegate-1"
-        ));
-        assert!(tracker.running.is_empty());
-    }
-
-    #[test]
-    fn background_subagent_stays_until_its_result_is_collected() {
-        let mut tracker = SubagentTracker::default();
-        subagent_events(
-            &mut tracker,
-            &delegate_message(
-                "delegate-1",
-                rmcp::object!({ "instructions": "Build the release", "async": true }),
-            ),
-        );
-        let mut meta = rmcp::model::MetaObject::new();
-        meta.0.insert(
-            "subagent_session_id".to_string(),
-            Value::String("task-9".to_string()),
-        );
-        // The call returns at once; the subagent keeps working.
-        assert!(
-            subagent_events(
-                &mut tracker,
-                &tool_result_message(
-                    "delegate-1",
-                    CallToolResult::success(vec![ContentBlock::text("Task task-9 started")])
-                        .with_meta(Some(meta)),
-                ),
-            )
-            .is_empty()
-        );
-
-        // Nothing pushes the end of a background task back, so it must
-        // be handed to a watcher exactly once.
-        assert_eq!(
-            tracker.take_unwatched(),
-            vec![("delegate-1".to_string(), "task-9".to_string())]
-        );
-        assert!(tracker.take_unwatched().is_empty());
-
-        // A peek reports progress against the same row and leaves it.
-        let peeking = Message::assistant().with_tool_request(
-            "load-1",
-            Ok(
-                rmcp::model::CallToolRequestParams::new(SUBAGENT_LOAD_TOOL.to_string())
-                    .with_arguments(rmcp::object!({ "source": "task-9", "peek": true })),
-            ),
-        );
-        assert!(subagent_events(&mut tracker, &peeking).is_empty());
-        assert!(matches!(
-            tracker.notification(
-                "load-1",
-                &subagent_notification("task-9", "write", json!({ "path": "out.txt" })),
-            ),
-            Some(AgentRunEvent::SubagentActivity { ref id, .. }) if id == "delegate-1"
-        ));
-        assert!(
-            subagent_events(
-                &mut tracker,
-                &tool_result_message(
-                    "load-1",
-                    CallToolResult::success(vec![ContentBlock::text("still running")]),
-                ),
-            )
-            .is_empty()
-        );
-
-        // Collecting the result ends the row.
-        let collecting = Message::assistant().with_tool_request(
-            "load-2",
-            Ok(
-                rmcp::model::CallToolRequestParams::new(SUBAGENT_LOAD_TOOL.to_string())
-                    .with_arguments(rmcp::object!({ "source": "task-9" })),
-            ),
-        );
-        assert!(subagent_events(&mut tracker, &collecting).is_empty());
-        let finished = subagent_events(
-            &mut tracker,
-            &tool_result_message(
-                "load-2",
-                CallToolResult::success(vec![ContentBlock::text("all done")]),
-            ),
-        );
-        assert!(matches!(
-            finished.as_slice(),
-            [AgentRunEvent::SubagentFinished { id }] if id == "delegate-1"
-        ));
-        assert!(tracker.running.is_empty());
-        assert!(tracker.background.is_empty());
-    }
-
-    #[test]
-    fn a_delegate_call_that_fails_clears_its_row() {
-        let mut tracker = SubagentTracker::default();
-        subagent_events(
-            &mut tracker,
-            &delegate_message(
-                "delegate-1",
-                rmcp::object!({ "source": "reviewer", "async": true }),
-            ),
-        );
-        // A denied or failed call carries no task ID to follow.
-        let finished = subagent_events(
-            &mut tracker,
-            &Message::user().with_tool_response(
-                "delegate-1",
-                Err(rmcp::model::ErrorData::new(
-                    rmcp::model::ErrorCode::INTERNAL_ERROR,
-                    "denied".to_string(),
-                    None,
-                )),
-            ),
-        );
-        assert!(matches!(
-            finished.as_slice(),
-            [AgentRunEvent::SubagentFinished { id }] if id == "delegate-1"
-        ));
-    }
-
-    #[test]
-    fn a_run_that_ends_keeps_only_its_background_subagents() {
-        let mut tracker = SubagentTracker::default();
-        subagent_events(
-            &mut tracker,
-            &delegate_message(
-                "waited-for",
-                rmcp::object!({ "instructions": "Review this" }),
-            ),
-        );
-        subagent_events(
-            &mut tracker,
-            &delegate_message(
-                "in-background",
-                rmcp::object!({ "instructions": "Build the release", "async": true }),
-            ),
-        );
-        let mut meta = rmcp::model::MetaObject::new();
-        meta.0.insert(
-            "subagent_session_id".to_string(),
-            Value::String("task-9".to_string()),
-        );
-        subagent_events(
-            &mut tracker,
-            &tool_result_message(
-                "in-background",
-                CallToolResult::success(vec![ContentBlock::text("started")]).with_meta(Some(meta)),
-            ),
-        );
-
-        // The turn ends while the subagent Maple waited for is still
-        // pending, which is what a Stop leaves behind.
-        tracker.retain_background();
-        let snapshot = tracker.snapshot();
-        assert_eq!(snapshot.len(), 1, "only the background subagent works on");
-        assert_eq!(snapshot[0].id, "in-background");
-        assert!(snapshot[0].background);
-        assert_eq!(snapshot[0].task, "Build the release");
-
-        // The next turn of the same task collects it, and the row ends.
-        let collecting = Message::assistant().with_tool_request(
-            "load-1",
-            Ok(
-                rmcp::model::CallToolRequestParams::new(SUBAGENT_LOAD_TOOL.to_string())
-                    .with_arguments(rmcp::object!({ "source": "task-9" })),
-            ),
-        );
-        assert!(subagent_events(&mut tracker, &collecting).is_empty());
-        let finished = subagent_events(
-            &mut tracker,
-            &tool_result_message(
-                "load-1",
-                CallToolResult::success(vec![ContentBlock::text("all done")]),
-            ),
-        );
-        assert!(matches!(
-            finished.as_slice(),
-            [AgentRunEvent::SubagentFinished { id }] if id == "in-background"
-        ));
-        assert!(tracker.is_empty());
-    }
-
-    #[test]
-    fn a_snapshot_repeats_the_latest_tool_of_each_subagent() {
-        let mut tracker = SubagentTracker::default();
-        subagent_events(
-            &mut tracker,
-            &delegate_message(
-                "delegate-1",
-                rmcp::object!({ "instructions": "Check the tests", "async": true }),
-            ),
-        );
-        tracker.notification(
-            "delegate-1",
-            &subagent_notification("sub-1", "shell", json!({ "command": "cargo test" })),
-        );
-        let snapshot = tracker.snapshot();
-        assert_eq!(snapshot.len(), 1);
-        assert_eq!(
-            snapshot[0].activity.as_deref(),
-            Some("Terminal: cargo test")
-        );
-    }
-
     #[test]
     fn legacy_powerful_agent_default_migrates_to_glm() {
         let mut config = AgentConfig {
@@ -15621,14 +14536,9 @@ mod tests {
         ])));
         store_session_system_prompt(&target.id, Some("target persona".to_string()));
         store_session_system_prompt(&survivor.id, Some("survivor persona".to_string()));
-        delete_persisted_agent_session(
-            &session_manager,
-            &live_timelines,
-            &Arc::new(Mutex::new(HashMap::new())),
-            &target.id,
-        )
-        .await
-        .expect("target session deletion should succeed");
+        delete_persisted_agent_session(&session_manager, &live_timelines, &target.id)
+            .await
+            .expect("target session deletion should succeed");
 
         assert!(
             session_manager
@@ -17367,58 +16277,6 @@ mod tests {
     }
 
     #[test]
-    fn subagent_session_ids_stay_out_of_the_transcript() {
-        // Collecting a background subagent is named by session ID, which
-        // means nothing to the user.
-        assert_eq!(
-            descriptive_tool_title("load", &json!({ "source": "20260831_4" })).as_deref(),
-            Some("Subagent result")
-        );
-        // A recipe or agent file is named by something the user chose.
-        assert_eq!(
-            descriptive_tool_title("load", &json!({ "source": "reviewer" })).as_deref(),
-            Some("Load: reviewer")
-        );
-        assert_eq!(
-            descriptive_tool_title("delegate", &json!({ "instructions": "Review the parser" }))
-                .as_deref(),
-            Some("Subagent: Review the parser")
-        );
-
-        assert!(looks_like_session_id("20260831_4"));
-        assert!(!looks_like_session_id("2026083_4"));
-        assert!(!looks_like_session_id("20260831_4_1"));
-        assert!(!looks_like_session_id("reviewer"));
-
-        // The two results Goose writes with an ID in them.
-        assert_eq!(
-            subagent_text_without_ids(
-                "Task 20260831_4 started in background: \"Build the release\"\n\
-                 Continue with other work. When you need the result, use load(source: \"20260831_4\")."
-            )
-            .as_deref(),
-            Some("Started in the background: Build the release")
-        );
-        assert_eq!(
-            subagent_text_without_ids(
-                "# Background Task Result: 20260831_4\n\n**Task:** Build\n\n## Output\n\nDone"
-            )
-            .as_deref(),
-            Some("# Background Task Result\n\n**Task:** Build\n\n## Output\n\nDone")
-        );
-        assert_eq!(
-            subagent_text_without_ids(
-                "# Background Task Status: 20260831_4\n\n**Status:** ⏳ Running"
-            )
-            .as_deref(),
-            Some("# Background Task Status\n\n**Status:** ⏳ Running")
-        );
-        // Any other tool result is left exactly as it came.
-        assert_eq!(subagent_text_without_ids("Task list: 3 open"), None);
-        assert_eq!(subagent_text_without_ids("# Background Task Result"), None);
-    }
-
-    #[test]
     fn descriptive_tool_title_prefers_the_file_over_editor_subcommands() {
         assert_eq!(
             descriptive_tool_title(
@@ -17569,14 +16427,11 @@ mod tests {
                 session_manager: Arc::clone(&session_manager),
                 session_title_lifecycle,
                 live_timelines: Arc::new(Mutex::new(HashMap::new())),
-                subagents: Arc::new(Mutex::new(HashMap::new())),
-                subagent_host: None,
                 session_id: session.id.clone(),
                 user_message: Message::user().with_text(prompt).with_generated_id(),
                 cancel_token: CancellationToken::new(),
                 session_title_start: Some(title_start),
                 cancelled_permission_ids: Arc::new(Mutex::new(HashSet::new())),
-                run_id: "fast-reply-run".to_string(),
                 run_surface: AgentRunSurface::Desktop,
                 steered_unacked: Arc::new(Mutex::new(Vec::new())),
             }),
@@ -17692,14 +16547,11 @@ mod tests {
             session_manager: Arc::clone(&session_manager),
             session_title_lifecycle: Arc::clone(&session_title_lifecycle),
             live_timelines: Arc::new(Mutex::new(HashMap::new())),
-            subagents: Arc::new(Mutex::new(HashMap::new())),
-            subagent_host: None,
             session_id: session.id.clone(),
             user_message: Message::user().with_text(prompt).with_generated_id(),
             cancel_token: CancellationToken::new(),
             session_title_start: None,
             cancelled_permission_ids: Arc::new(Mutex::new(HashSet::new())),
-            run_id: "rename-during-run-summary".to_string(),
             run_surface: AgentRunSurface::Desktop,
             steered_unacked: Arc::new(Mutex::new(Vec::new())),
         }));
@@ -17830,14 +16682,11 @@ mod tests {
             session_manager: Arc::clone(&session_manager),
             session_title_lifecycle,
             live_timelines: Arc::new(Mutex::new(HashMap::new())),
-            subagents: Arc::new(Mutex::new(HashMap::new())),
-            subagent_host: None,
             session_id: session.id.clone(),
             user_message: Message::user().with_text(prompt).with_generated_id(),
             cancel_token: CancellationToken::new(),
             session_title_start: None,
             cancelled_permission_ids: Arc::new(Mutex::new(HashSet::new())),
-            run_id: "reply-poll-session-isolation".to_string(),
             run_surface: AgentRunSurface::Desktop,
             steered_unacked: Arc::new(Mutex::new(Vec::new())),
         }));
@@ -18326,14 +17175,9 @@ mod tests {
         .await;
 
         let live_timelines = Arc::new(Mutex::new(HashMap::new()));
-        delete_persisted_agent_session(
-            session_manager.as_ref(),
-            &live_timelines,
-            &Arc::new(Mutex::new(HashMap::new())),
-            &session.id,
-        )
-        .await
-        .expect("the session should be deleted after its title task drains");
+        delete_persisted_agent_session(session_manager.as_ref(), &live_timelines, &session.id)
+            .await
+            .expect("the session should be deleted after its title task drains");
 
         // Releasing the fake provider cannot produce a late write or event: the
         // task was joined before deletion returned.
@@ -18969,14 +17813,11 @@ mod tests {
                     session_manager: Arc::clone(&session_manager),
                     session_title_lifecycle: Arc::new(Mutex::new(())),
                     live_timelines: Arc::new(Mutex::new(HashMap::new())),
-                    subagents: Arc::new(Mutex::new(HashMap::new())),
-                    subagent_host: None,
                     session_id: session.id.clone(),
                     user_message: user_message.clone(),
                     cancel_token: cancel_token.clone(),
                     session_title_start: None,
                     cancelled_permission_ids: Arc::clone(&cancelled_permission_ids),
-                    run_id: format!("{label}-run"),
                     run_surface: AgentRunSurface::Desktop,
                     steered_unacked: Arc::new(Mutex::new(Vec::new())),
                 }),
@@ -19148,14 +17989,11 @@ mod tests {
                 session_manager: Arc::clone(&run.session_manager),
                 session_title_lifecycle: Arc::new(Mutex::new(())),
                 live_timelines: Arc::new(Mutex::new(HashMap::new())),
-                subagents: Arc::new(Mutex::new(HashMap::new())),
-                subagent_host: None,
                 session_id: run.session.id.clone(),
                 user_message: Message::user().with_text("Carry on").with_generated_id(),
                 cancel_token: CancellationToken::new(),
                 session_title_start: None,
                 cancelled_permission_ids: Arc::new(Mutex::new(HashSet::new())),
-                run_id: "stray-confirmation-resumed".to_string(),
                 run_surface: AgentRunSurface::Desktop,
                 steered_unacked: Arc::new(Mutex::new(Vec::new())),
             }),
@@ -19266,6 +18104,178 @@ mod tests {
                 .unwrap()
                 .goose_mode,
             GooseMode::Auto
+        );
+        fixture.handle.stop().await.unwrap();
+        let _ = fs::remove_dir_all(fixture.root);
+    }
+
+    /// Build the agent of a task the way every run does, and return it with
+    /// the session manager and the fixture.
+    async fn configured_task_agent(
+        label: &str,
+    ) -> (
+        test_support::StartedTestAgent,
+        Arc<SessionManager>,
+        goose::session::Session,
+        Arc<Agent>,
+    ) {
+        let fixture = test_support::started_agent_runtime(label).await;
+        let detail = fixture
+            .handle
+            .create_session(Some(AgentCreateSessionRequest {
+                project_root: None,
+                title: Some(label.to_string()),
+                model: None,
+                context_limit: None,
+                mcp_server_names: None,
+                system_prompt: None,
+            }))
+            .await
+            .unwrap();
+        let service = &fixture.handle.service;
+        let (session_manager, transport) = {
+            let runtime = service.inner.lock().await;
+            let runtime = runtime.as_ref().unwrap();
+            (
+                runtime.session_manager.clone(),
+                runtime.maple_api_session.clone(),
+            )
+        };
+        let session = session_manager
+            .get_session(&detail.session.id, false)
+            .await
+            .unwrap();
+        let agent = Arc::new(Agent::with_config(GooseAgentConfig::new(
+            Arc::clone(&session_manager),
+            Arc::new(PermissionManager::new(fixture.root.join("permissions"))),
+            None,
+            GooseMode::Auto,
+            true,
+            GoosePlatform::GooseDesktop,
+        )));
+        // An old task persisted Goose's `summon` extension; Goose restores
+        // it into every agent it builds for the task.
+        agent
+            .add_extension(
+                ExtensionConfig::Platform {
+                    name: SUMMON_EXTENSION_NAME.to_string(),
+                    description: "Delegate a task to a subagent that runs on its own".to_string(),
+                    display_name: Some("Subagents".to_string()),
+                    bundled: Some(true),
+                    available_tools: vec!["delegate".to_string(), "load".to_string()],
+                },
+                &session.id,
+            )
+            .await
+            .unwrap();
+        agent.persist_extension_state(&session.id).await.unwrap();
+        let persisted = session_manager
+            .get_session(&session.id, false)
+            .await
+            .unwrap();
+        let persisted_extensions =
+            goose::session::EnabledExtensionsState::from_extension_data(&persisted.extension_data)
+                .expect("the old extension state should be persisted");
+        assert!(
+            persisted_extensions
+                .extensions
+                .iter()
+                .any(|extension| extension.name() == SUMMON_EXTENSION_NAME),
+            "the fixture must start as an old task with summon persisted"
+        );
+        let tools = agent.list_tools(&session.id, None).await;
+        assert!(
+            tools.iter().any(|tool| tool.name.as_ref() == "delegate"),
+            "the old task offers delegate before the run configures it"
+        );
+
+        let context = SharedAgentToolContext::new(AgentToolContextSpec::default());
+        let (configured, errors) = finish_session_agent(
+            PreparedSessionAgent {
+                agent,
+                mcp_errors: Vec::new(),
+            },
+            AgentSkillsScope {
+                paths: &service.host.paths,
+                user_id: fixture.handle.user_id.as_ref(),
+            },
+            &transport,
+            SessionAgentConfiguration {
+                session: &session,
+                model: DEFAULT_AGENT_MODEL,
+                context_limit: None,
+                primary_model_supports_vision: false,
+                tool_context: &context,
+                allow_embedded_cua: false,
+                external_agents: None,
+                host_search_path: None,
+            },
+        )
+        .await
+        .unwrap();
+        assert!(errors.is_empty());
+        (fixture, session_manager, session, configured)
+    }
+
+    /// A task saved by a build that offered subagents keeps `summon` in its
+    /// persisted extension list, and Goose would restore it on every run.
+    /// The run's setup removes it before the state is written back.
+    #[tokio::test]
+    async fn persisted_summon_extension_is_removed_on_the_next_run() {
+        let (fixture, session_manager, session, configured) =
+            configured_task_agent("summon-removal").await;
+        let persisted = session_manager
+            .get_session(&session.id, false)
+            .await
+            .unwrap();
+        let persisted_extensions =
+            goose::session::EnabledExtensionsState::from_extension_data(&persisted.extension_data)
+                .expect("extension state should be persisted");
+        assert!(
+            !persisted_extensions
+                .extensions
+                .iter()
+                .any(|extension| extension.name() == SUMMON_EXTENSION_NAME),
+            "the saved list no longer names summon: {:?}",
+            persisted_extensions
+                .extensions
+                .iter()
+                .map(|extension| extension.name())
+                .collect::<Vec<_>>()
+        );
+        let tools = configured.list_tools(&session.id, None).await;
+        assert!(
+            !tools
+                .iter()
+                .any(|tool| matches!(tool.name.as_ref(), "delegate" | "load")),
+            "the configured agent offers no subagent tools"
+        );
+        fixture.handle.stop().await.unwrap();
+        let _ = fs::remove_dir_all(fixture.root);
+    }
+
+    /// The catalog a run offers the model has Maple's own tools and no
+    /// `delegate` or `load`.
+    #[tokio::test]
+    async fn developer_catalog_offers_no_delegate_or_load() {
+        let (fixture, _session_manager, session, configured) =
+            configured_task_agent("no-delegate").await;
+        let names = configured
+            .list_tools(&session.id, None)
+            .await
+            .iter()
+            .map(|tool| tool.name.to_string())
+            .collect::<Vec<_>>();
+        assert!(names.iter().any(|name| name == "shell"), "{names:?}");
+        assert!(
+            names.iter().any(|name| name == "request_user_input"),
+            "{names:?}"
+        );
+        assert!(
+            !names
+                .iter()
+                .any(|name| name == "delegate" || name == "load"),
+            "{names:?}"
         );
         fixture.handle.stop().await.unwrap();
         let _ = fs::remove_dir_all(fixture.root);

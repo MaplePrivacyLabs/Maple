@@ -170,19 +170,6 @@ A completion that arrives as a turn ends is carried into the next turn. If the
 task cannot be resumed, the notice asks you to send a message instead. Stopping
 the runtime or signing out prevents pending completions from starting work.
 
-Built-in background subagents use the same delivery behavior. Maple reads their
-completed result with `load(peek: true)`, retains it for later retrieval, and
-injects up to 8,000 characters with an explicit truncation flag. The task can
-call `load(source: task_id)` if it needs the remaining output. Completion
-messages are hidden from the user's transcript and identify their contents as
-delegated agent output. Tasks owned by external clients such as ACP retain the
-result in history for their next turn; Maple does not start desktop runs for them.
-
-Goose currently buffers approval requests from built-in background subagents
-until a non-peek `load` attaches their permission flow. A subagent waiting for
-approval therefore still needs `load` before it can finish; completion delivery
-alone cannot unblock it.
-
 Stopping an agent, from its row or with `agent_cancel`, sends
 `turn/interrupt` (translated to Claude’s native `interrupt` control request), waits
 briefly for confirmation, then kills the

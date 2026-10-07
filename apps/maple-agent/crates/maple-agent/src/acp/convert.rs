@@ -349,24 +349,6 @@ pub(super) fn acp_tool_update(
     }
 }
 
-/// Live subagent progress as an update to the `delegate` tool call that
-/// owns it.
-///
-/// ACP has no concept of a subagent, so the tool call is where its work
-/// belongs. The content of a tool call is replaced, not appended, so this
-/// carries the latest line only, like the desktop card. The final content
-/// is the tool's own result, which arrives with the call's completion.
-pub(super) fn subagent_tool_update(delegate_id: &str, line: String) -> SessionUpdate {
-    SessionUpdate::ToolCallUpdate(ToolCallUpdate::new(
-        delegate_id.to_string(),
-        ToolCallUpdateFields::new()
-            .status(ToolCallStatus::InProgress)
-            .content(vec![ToolCallContent::from(ContentBlock::Text(
-                TextContent::new(line),
-            ))]),
-    ))
-}
-
 pub(super) fn timeline_tool_kind(item: &AgentTimelineItem) -> ToolKind {
     let title = item
         .title
