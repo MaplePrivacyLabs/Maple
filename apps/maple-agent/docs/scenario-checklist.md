@@ -1,10 +1,9 @@
-# Phase 0 scenario checklist
+# Scenario checklist
 
-One scenario per feature that carries over to the next runtime. Run it on the
-trimmed build at the end of phase 0 and again on the new runtime before it
-merges. Scenarios the runtime tests cover are marked **automated** with the
-test that covers them; the rest are run by hand and the result recorded in the
-table at the end.
+One scenario per user-facing feature of Maple Agent. Run it before and after a
+change to the Agent's runtime. Scenarios the runtime tests cover are marked
+**automated** with the test that covers them; the rest are run by hand and the
+result recorded in the table at the end.
 
 Setup: a signed-in account on a local or development stack, a project folder
 with a few files, the built-in computer-use backend set up (macOS or Linux),
@@ -27,7 +26,7 @@ stdio MCP server configured in Settings > Integrations.
 | # | Scenario | How | Pass when |
 |---|---|---|---|
 | C1 | Queued follow-up | Press Enter with a message while a run is active | The message waits in the queue and runs as the next turn (**automated**: `desktop_send_during_active_run_stages_a_native_queue`) |
-| C2 | Steering | Ctrl/Cmd+Enter during a run | The message lands inside the current turn (**automated**: `background_completion_steers_active_task_without_new_run`) |
+| C2 | Steering | Ctrl/Cmd+Enter during a run | The message lands inside the current turn |
 | C3 | Stop and resume | Stop a long shell command, then send a follow-up | The stopped notice shows, no orphaned declined pair, and the follow-up runs |
 | C4 | Attachments | Attach an image by picker and by paste, then send | The model sees the image (vision model) or a `read_image` reference (text model) |
 | C5 | Voice input | Dictate a message | The transcript of the dictation lands in the composer |
@@ -92,4 +91,4 @@ that did not pass with a note.
 
 | Date | Build | Machine | Lane | Result |
 |---|---|---|---|---|
-| 2026-10-07 | phase 0 trimmed tree (stack #1092 top), `just release` | Apple M3 Max virtual machine, 8 cores, 48 GB, macOS 27.0.1 | Local | Passed on this build: T1-T5, S1, L1, L3, C1, A1, A2, D1, D3, D4, D6. Passed earlier the same day on debug builds of the same stack: C3, C6, S2, S4, L2, L4, L5, E1-E5, U2, D7, M1 (stdio). Not run: C2 by hand (Cmd+Enter not deliverable by the test harness; automated test covers it), C4, C5, T6, S3, S5, U1 (the VM cannot grant the macOS permissions), M1 HTTP, D2, D5. No scenario failed. |
+| 2026-10-07 | `93a235d2`, `just release` | Apple M3 Max virtual machine, 8 cores, 48 GB, macOS 27.0.1 | Local | Passed on this build: T1-T5, S1, L1, L3, C1, A1, A2, D1, D3, D4, D6. Passed earlier the same day on debug builds of the same stack: C3, C6, S2, S4, L2, L4, L5, E1-E5, U2, D7, M1 (stdio). Not run: C2 (the test harness cannot deliver Cmd+Enter), C4, C5, T6, S3, S5, U1 (the VM cannot grant the macOS permissions), M1 HTTP, D2, D5. No scenario failed. |
