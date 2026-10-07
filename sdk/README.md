@@ -20,9 +20,12 @@ and tests.
 - repository-root `.github/workflows/sdk-*.yml` — path-scoped TypeScript, Rust,
   and supply-chain validation for this directory.
 
-Maple consumers prefer independently selected published SDK versions; local
-TypeScript `file:` and Rust `path` dependencies remain available for active
-development. The consumer's manifest and lockfile determine what it builds.
+Maple's own Rust consumers (`proxy`, `apps/maple-agent`, the Research native
+shell) build the in-tree Rust SDK through `path` dependencies, so SDK changes
+are usable in this repository as soon as they merge; publication serves
+external users. TypeScript consumers may use a `file:` dependency the same
+way or pin a published version. The consumer's manifest and lockfile
+determine what it builds.
 Research uses the Rust SDK on desktop and mobile for native authentication;
 the embedded proxy remains desktop-only. See the
 [consumer version policy](../docs/sdk-publishing.md#consumer-version-policy)
@@ -185,6 +188,48 @@ Deploy backend callback-selection support and register the URL with the
 provider before selecting a non-default callback. An older backend ignores
 the new field and uses its default; the SDK does not silently retry with a
 different callback. Native Apple sign-in and the Rust SDK are unchanged.
+
+### System One decisions
+
+`systemOne` answers typed questions (`noul`, `choice`, `score`) about a JSON
+state with calibrated probabilities instead of text (`POST /v1/systemone`,
+Continuum GLM-5.3-Flash). It uses the signed-in session, or an API key through
+`options.apiKey`; `useOpenSecret().systemOne` is the same function:
+
+```ts
+import { systemOne, SystemOneError } from "@mapleai/sdk";
+
+try {
+  const { answers } = await systemOne({
+    state: { ticket: "Charged twice, need a refund today." },
+    questions: {
+      is_urgent: { type: "noul", instructions: "Does the customer need help today?" },
+      intent: {
+        type: "choice",
+        instructions: "What does the customer want?",
+        criteria: { refund: "money back", question: "information", praise: "thanks" }
+      },
+      frustration: {
+        type: "score",
+        instructions: "How frustrated is the customer?",
+        criteria: ["Low", "Medium", "High"]
+      }
+    }
+  });
+  if (answers.intent.type === "choice") {
+    console.log(answers.intent.choice, answers.intent.confidence);
+  }
+} catch (error) {
+  if (error instanceof SystemOneError) console.log(error.status, error.code); // 422, system_one_*
+}
+```
+
+Choice options are numbered in the order of the `criteria` keys (JavaScript
+keeps insertion order for non-integer keys). Optional request fields are
+`images` (`data:` URLs shown with the state) and `temperature` (`1` returns
+raw probabilities). Rejections carry the backend's status (422 for schema
+problems, 413 for size limits, chat's statuses for quota and capacity) and
+its `x-opensecret-error-code`.
 
 ### Development
 

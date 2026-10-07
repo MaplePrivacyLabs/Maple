@@ -135,6 +135,7 @@ You should see:
    GET  /v1/models           - List available models
    POST /v1/chat/completions - Create chat completions (streaming & non-streaming)
    POST /v1/embeddings       - Create embeddings
+   POST /v1/systemone        - Typed decisions (System One)
 ```
 
 ### API Endpoints
@@ -173,6 +174,43 @@ curl http://localhost:8080/v1/embeddings \
     "input": "Generate an embedding for this text"
   }'
 ```
+
+#### System One Decisions
+```bash
+curl http://localhost:8080/v1/systemone \
+  -H "Authorization: Bearer YOUR_MAPLE_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "state": {"ticket": "Charged twice, need a refund today."},
+    "questions": {
+      "is_urgent": {"type": "noul", "instructions": "Does the customer need help today?"},
+      "intent": {
+        "type": "choice",
+        "instructions": "What does the customer want?",
+        "criteria": {"refund": "money back", "question": "information", "praise": "thanks"}
+      },
+      "frustration": {
+        "type": "score",
+        "instructions": "How frustrated is the customer?",
+        "criteria": ["Low", "Medium", "High"]
+      }
+    }
+  }'
+```
+
+Typed questions (`noul`, `choice`, `score`) answered with calibrated
+probabilities on Continuum GLM-5.3-Flash; request and response follow the
+TypeSafe System One schema, with optional `images` (`data:` URLs) and
+`temperature` fields. Rejections keep the backend's status and
+`x-opensecret-error-code` header, for example `422` with
+`system_one_too_many_questions`.
+
+This route needs the inference allowlist entry added in `maple-sdk` 4.1.0.
+`Cargo.toml` builds the in-tree SDK through a `[patch.crates-io]` entry, as do
+the Maple desktop apps that embed this proxy, so proxies built from this
+repository serve the route; a `maple-proxy` built against a published
+`maple-sdk` older than 4.1.0 rejects it. See the consumer version policy in
+`docs/sdk-publishing.md`.
 
 ### Using as a Library
 

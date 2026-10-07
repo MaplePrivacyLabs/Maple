@@ -11,7 +11,7 @@ bip85_extended = "1.1.0"
 bitcoin = { version = "0.32.2", default-features = false, features = ["std", "serde", "secp-recovery", "rand"] }
 aws-nitro-enclaves-nsm-api = "0.3.0"
 serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
+serde_json = { version = "1.0", features = ["raw_value"] }
 serde_bytes = "0.11"
 tokio = { version = "1.0", features = ["full"] }
 tracing = "0.1"

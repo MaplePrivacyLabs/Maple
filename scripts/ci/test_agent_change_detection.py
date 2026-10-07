@@ -62,7 +62,7 @@ class AgentChangeDetectionTests(unittest.TestCase):
             "apps/maple-agent/CLAUDE.md", "apps/maple-agent/LICENSE",
             "apps/maple-agent/docs/development.md", "README.md",
             "sdk/rust/README.md", "sdk/rust/tests/client.rs", "sdk/rust/Cargo.lock",
-            "sdk/rust/Cargo.toml", "sdk/rust/src/client.rs", "sdk/rust/build.rs",
+            "sdk/rust/examples/api_usage.rs",
             "sdk/src/lib/index.ts", "sdk/package.json",
             "proxy/README.md", "proxy/tests/health.rs", "proxy/Cargo.lock",
             "proxy/Dockerfile", "proxy/flake.nix",
@@ -70,6 +70,16 @@ class AgentChangeDetectionTests(unittest.TestCase):
             with self.subTest(path=path):
                 self.assertFalse(affects_agent(path))
                 self.assertEqual(research_routes(path), frozenset())
+
+    def test_rust_sdk_build_inputs_select_agent_and_desktop_research(self):
+        # The Agent and the Research native shell build sdk/rust from the tree.
+        for path in (
+            "sdk/rust/Cargo.toml", "sdk/rust/src/client.rs", "sdk/rust/build.rs",
+            "sdk/rust/assets/aws_nitro_root.der",
+        ):
+            with self.subTest(path=path):
+                self.assertTrue(affects_agent(path))
+                self.assertTrue(research_routes(path) >= {"macos", "linux", "windows"})
 
     def test_selector_and_shared_tooling_changes_select_agent(self):
         for path in (

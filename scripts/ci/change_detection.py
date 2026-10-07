@@ -34,6 +34,9 @@ INERT_FILES = frozenset(
 INERT_PREFIXES = (".agents/", ".githooks/", "docs/", "apps/maple-research/docs/", "apps/maple-research/.githooks/", "services/updates/", "services/opensecret/", "apps/maple-agent/", "apps/maple-auth/")
 PURE_FRONTEND_PREFIXES = ("apps/maple-research/frontend/public/", "apps/maple-research/frontend/src/")
 PURE_FRONTEND_FILES = frozenset({"apps/maple-research/frontend/icon.svg", "apps/maple-research/frontend/index.html"})
+RUST_SDK_PREFIX = "sdk/rust/"
+RUST_SDK_INERT_PREFIXES = ("sdk/rust/tests/", "sdk/rust/examples/", "sdk/rust/.githooks/")
+RUST_SDK_INERT_FILES = frozenset({"sdk/rust/Cargo.lock", "sdk/rust/LICENSE", "sdk/rust/README.md"})
 PROXY_RUNTIME_PREFIXES = ("proxy/src/",)
 PROXY_INERT_PREFIXES = ("proxy/tests/", "proxy/examples/", "proxy/.githooks/")
 PROXY_INERT_FILES = frozenset(
@@ -171,9 +174,17 @@ def classify_path(path: str) -> frozenset[str]:
         return ALL_OUTPUTS
     if path in INERT_FILES or path.startswith(INERT_PREFIXES):
         return frozenset()
+    if path.startswith(RUST_SDK_PREFIX):
+        # The proxy, the Agent and the Research native shell build sdk/rust from
+        # the tree (path dependencies), so its build inputs are theirs; the SDK's
+        # own tests, examples, docs and lockfile are not.
+        if path in RUST_SDK_INERT_FILES or path.startswith(RUST_SDK_INERT_PREFIXES):
+            return frozenset()
+        return NATIVE_PLATFORMS
     if path.startswith("sdk/"):
-        # Apps build whatever SDK source their own manifests select. Changing
-        # that manifest (a pin bump or a local link) selects the app's lanes.
+        # Frontends build whatever TypeScript SDK source their own manifests
+        # select. Changing that manifest (a pin bump or a local link) selects
+        # the app's lanes.
         return frozenset()
     if path == "proxy/Cargo.toml" or path.startswith(PROXY_RUNTIME_PREFIXES):
         return DESKTOP_PLATFORMS

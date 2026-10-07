@@ -2,6 +2,7 @@ use crate::{
     error::{Error, Result},
     pcr::{Pcr0Environment, Pcr0TrustPolicy},
     session::{CredentialFence, SessionManager},
+    system_one::{SystemOneRequest, SystemOneResponse},
     transport_v2::{
         client::{ResponseEventStream, TransportV2Client, TransportV2Session},
         envelope::{CacheNamespaceRoot, Credential, CredentialKind, LogicalHeader, LogicalRequest},
@@ -445,6 +446,39 @@ enum AuthHeaderMode {
     ApiKeyOrJwt,
 }
 
+/// Builds a JSON inference request for the typed helpers.
+pub(crate) fn json_inference_request<T: Serialize>(
+    endpoint: &str,
+    method: http::Method,
+    data: Option<&T>,
+) -> Result<InferenceRequest> {
+    let body = match data {
+        Some(data) => Bytes::from(serde_json::to_vec(data)?),
+        None => Bytes::new(),
+    };
+    let mut builder = HttpRequest::builder().method(method).uri(endpoint);
+    if !body.is_empty() {
+        builder = builder.header(header::CONTENT_TYPE, "application/json");
+    }
+    builder.body(body).map_err(|error| {
+        Error::Configuration(format!("Failed to build inference request: {error}"))
+    })
+}
+
+/// Decodes a typed helper's response: a non-2xx status becomes [`Error::Api`]
+/// with the backend's body, so its message and `error.code` survive.
+async fn json_inference_response<U: DeserializeOwned>(response: InferenceResponse) -> Result<U> {
+    let status = response.status();
+    let body = collect_response_body(response.into_body()).await?;
+    if !status.is_success() {
+        return Err(Error::Api {
+            status: status.as_u16(),
+            message: String::from_utf8_lossy(&body).into_owned(),
+        });
+    }
+    Ok(serde_json::from_slice(&body)?)
+}
+
 fn is_allowed_inference_endpoint(method: &http::Method, path: &str) -> bool {
     matches!(
         (method.as_str(), path),
@@ -452,6 +486,7 @@ fn is_allowed_inference_endpoint(method: &http::Method, path: &str) -> bool {
             | ("GET", "/v1/models/catalog")
             | ("POST", "/v1/chat/completions")
             | ("POST", "/v1/embeddings")
+            | ("POST", "/v1/systemone")
             | ("POST", "/v1/audio/speech")
             | ("POST", "/v1/audio/transcriptions")
     )
@@ -1448,27 +1483,9 @@ impl OpenSecretClient {
         let method = http::Method::from_bytes(method.as_bytes()).map_err(|error| {
             Error::Configuration(format!("Invalid inference HTTP method: {error}"))
         })?;
-        let body = match data {
-            Some(data) => Bytes::from(serde_json::to_vec(&data)?),
-            None => Bytes::new(),
-        };
-        let mut builder = HttpRequest::builder().method(method).uri(endpoint);
-        if !body.is_empty() {
-            builder = builder.header(header::CONTENT_TYPE, "application/json");
-        }
-        let request = builder.body(body).map_err(|error| {
-            Error::Configuration(format!("Failed to build inference request: {error}"))
-        })?;
+        let request = json_inference_request(endpoint, method, data.as_ref())?;
         let response = self.send_inference_request(request).await?;
-        let status = response.status();
-        let body = collect_response_body(response.into_body()).await?;
-        if !status.is_success() {
-            return Err(Error::Api {
-                status: status.as_u16(),
-                message: String::from_utf8_lossy(&body).into_owned(),
-            });
-        }
-        Ok(serde_json::from_slice(&body)?)
+        json_inference_response(response).await
     }
 
     async fn encrypted_stream_call<T: Serialize>(
@@ -2429,6 +2446,33 @@ impl OpenSecretClient {
             .await
     }
 
+    /// Answers typed System One questions about a state with calibrated
+    /// probabilities (`POST /v1/systemone`); see [`crate::system_one`].
+    ///
+    /// Uses the client's configured credential: an API key when one is set,
+    /// otherwise the signed-in session. A rejected request is [`Error::Api`]
+    /// with the backend's status (422 for schema problems, 413 for size limits,
+    /// chat's statuses for quota and capacity) and body;
+    /// [`Error::api_error_code`] reads its `system_one_*` code.
+    pub async fn system_one(&self, request: SystemOneRequest) -> Result<SystemOneResponse> {
+        self.encrypted_openai_call("/v1/systemone", "POST", Some(request))
+            .await
+    }
+
+    /// [`Self::system_one`] with an explicit per-request API key, encrypted
+    /// inside this one request and not retained by the client.
+    pub async fn system_one_with_api_key(
+        &self,
+        request: SystemOneRequest,
+        api_key: String,
+    ) -> Result<SystemOneResponse> {
+        let request = json_inference_request("/v1/systemone", http::Method::POST, Some(&request))?;
+        let response = self
+            .send_inference_request_with_api_key(request, api_key)
+            .await?;
+        json_inference_response(response).await
+    }
+
     /// Creates a chat completion (non-streaming)
     pub async fn create_chat_completion(
         &self,
@@ -3371,6 +3415,14 @@ mod tests {
         assert!(is_allowed_inference_endpoint(
             &http::Method::GET,
             "/v1/models"
+        ));
+        assert!(is_allowed_inference_endpoint(
+            &http::Method::POST,
+            "/v1/systemone"
+        ));
+        assert!(!is_allowed_inference_endpoint(
+            &http::Method::GET,
+            "/v1/systemone"
         ));
         assert!(!is_allowed_inference_endpoint(
             &http::Method::POST,

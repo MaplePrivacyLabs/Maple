@@ -60,3 +60,10 @@ http = "1.0"
 [dev-dependencies]
 axum-test = "18.0.1"
 tokio = { version = "1.47", features = ["test-util"] }
+
+# Maple's own consumers build the in-tree SDK (docs/sdk-publishing.md, consumer
+# version policy). A patch applies only to this workspace root; applications
+# embedding the proxy declare their own, and external embedders may keep a
+# published maple-sdk that satisfies the requirement above.
+[patch.crates-io]
+maple-sdk = { path = "../sdk/rust" }

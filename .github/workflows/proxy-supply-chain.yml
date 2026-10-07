@@ -6,6 +6,7 @@ on:
       - ".github/workflows/proxy-supply-chain.yml"
       - "proxy/deny.toml"
       - "proxy/Cargo.toml"
+      - "sdk/rust/Cargo.toml"
       - "proxy/Cargo.lock"
   push:
     branches: [master]
@@ -13,6 +14,7 @@ on:
       - ".github/workflows/proxy-supply-chain.yml"
       - "proxy/deny.toml"
       - "proxy/Cargo.toml"
+      - "sdk/rust/Cargo.toml"
       - "proxy/Cargo.lock"
   schedule:
     - cron: "29 7 * * *"

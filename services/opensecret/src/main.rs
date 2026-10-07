@@ -23,7 +23,7 @@ use crate::web::platform_login_routes;
 use crate::web::{
     conversation_projects_routes, conversations_routes, health_routes, instructions_routes,
     login_routes, native_handoff_routes, oauth_routes, openai_models_routes, openai_routes,
-    protected_routes, responses_routes, web_routes,
+    protected_routes, responses_routes, system_one_routes, web_routes,
 };
 use crate::{attestation_routes::SessionState, web::platform_routes};
 use bounded_ttl_cache::BoundedTtlCache;
@@ -391,6 +391,8 @@ pub enum ApiError {
 
     #[error("{0}")]
     InferenceProvider(web::provider_error::PublicProviderError),
+    #[error("{0}")]
+    SystemOneRequest(web::system_one::SystemOneRequestError),
 
     #[error("Bad Request")]
     BadRequest,
@@ -478,6 +480,7 @@ impl IntoResponse for ApiError {
             ApiError::ImageDescriptionUnavailable => StatusCode::SERVICE_UNAVAILABLE,
             ApiError::InferenceCapacity { status, .. } => *status,
             ApiError::InferenceProvider(error) => error.status(),
+            ApiError::SystemOneRequest(error) => error.status(),
             ApiError::BadRequest => StatusCode::BAD_REQUEST,
             ApiError::SessionNotFound => StatusCode::BAD_REQUEST,
             ApiError::Conflict => StatusCode::CONFLICT,
@@ -505,6 +508,7 @@ impl IntoResponse for ApiError {
             ApiError::FreeTokenLimitExceeded => Some("free_tier_token_limit_exceeded"),
             ApiError::ModelNotAvailableOnPlan => Some("model_not_available_on_plan"),
             ApiError::MessageExceedsContextLimit => Some("message_exceeds_context_limit"),
+            ApiError::SystemOneRequest(error) => Some(error.code()),
             _ => None,
         };
         let error_code = match &self {
@@ -514,6 +518,7 @@ impl IntoResponse for ApiError {
             ApiError::ImageDescriptionUnavailable => Some(IMAGE_DESCRIPTION_UNAVAILABLE_ERROR_CODE),
             ApiError::InferenceCapacity { .. } => Some(INFERENCE_CAPACITY_ERROR_CODE),
             ApiError::InferenceProvider(error) => Some(error.code()),
+            ApiError::SystemOneRequest(error) => Some(error.code()),
             _ => openai_error_code,
         };
         let message = self.to_string();
@@ -674,6 +679,22 @@ mod api_error_contract_tests {
         for (error, status, body, code) in cases {
             assert_error_response(error, status, body, Some(code)).await;
         }
+    }
+
+    #[tokio::test]
+    async fn system_one_rejections_carry_their_code_in_body_and_header() {
+        let error = web::system_one::SystemOneRequestError::TooManyQuestions;
+        let message = error.to_string();
+        let body = format!(
+            r#"{{"status":422,"message":"{message}","error":{{"message":"{message}","code":"system_one_too_many_questions"}}}}"#
+        );
+        assert_error_response(
+            ApiError::SystemOneRequest(error),
+            StatusCode::UNPROCESSABLE_ENTITY,
+            body.as_bytes(),
+            Some("system_one_too_many_questions"),
+        )
+        .await;
     }
 
     #[tokio::test]
@@ -1342,6 +1363,11 @@ impl AppStateBuilder {
             provider_client.tinfoil_base_url(),
         ));
         let provider_router = Arc::new(ProviderRouter::default());
+        if proxy_router.continuum_proxy().is_none() {
+            tracing::warn!(
+                "System One endpoint unavailable: the default inference proxy is not Continuum"
+            );
+        }
 
         let kagi_client = if let Some(ref api_key) = self.kagi_api_key {
             tracing::info!("Initializing Kagi client");
@@ -3677,6 +3703,10 @@ fn application_routes(app_state: Arc<AppState>) -> Router<()> {
                 app_state.clone(),
                 validate_optional_openai_auth,
             )),
+        )
+        .merge(
+            system_one_routes(app_state.clone())
+                .route_layer(from_fn_with_state(app_state.clone(), validate_openai_auth)),
         )
         .merge(
             responses_routes(app_state.clone())

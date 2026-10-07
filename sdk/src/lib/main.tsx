@@ -624,6 +624,13 @@ export type OpenSecretContextType = {
   webExtract: typeof api.webExtract;
 
   /**
+   * Answers typed System One questions (`noul`, `choice`, `score`) about a
+   * state with calibrated probabilities. Uses the signed-in session, or an API
+   * key through `options.apiKey`.
+   */
+  systemOne: typeof api.systemOne;
+
+  /**
    * Lists user's responses with pagination
    * @param params - Optional parameters for pagination and filtering
    * @returns A promise resolving to a paginated list of responses
@@ -919,6 +926,7 @@ export const OpenSecretContext = createContext<OpenSecretContextType>({
   transcribeAudio: api.transcribeAudio,
   webSearch: api.webSearch,
   webExtract: api.webExtract,
+  systemOne: api.systemOne,
   fetchResponsesList: api.fetchResponsesList,
   fetchResponse: api.fetchResponse,
   cancelResponse: api.cancelResponse,
@@ -1346,6 +1354,7 @@ export function OpenSecretProvider({
     transcribeAudio: api.transcribeAudio,
     webSearch: api.webSearch,
     webExtract: api.webExtract,
+    systemOne: api.systemOne,
     fetchResponsesList: api.fetchResponsesList,
     fetchResponse: api.fetchResponse,
     cancelResponse: (responseId) => api.cancelResponse(responseId, authenticatedUserId),

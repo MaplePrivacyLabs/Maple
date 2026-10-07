@@ -165,6 +165,46 @@ API keys can also be supplied per request with
 `send_inference_request_with_api_key`. The key is encrypted inside that one
 logical request and is not installed as mutable client state.
 
+### System One decisions
+
+`system_one` answers typed questions about a JSON state with one masked
+single-token decision each, returning calibrated probabilities instead of text
+(`POST /v1/systemone`, Continuum GLM-5.3-Flash). Questions and choice options
+keep the order you give them:
+
+```rust
+use maple_sdk::{SystemOneAnswer, SystemOneQuestion, SystemOneRequest};
+use serde_json::json;
+
+let request = SystemOneRequest::new(json!({"ticket": "Charged twice, need a refund today."}))
+    .with_question("is_urgent", SystemOneQuestion::noul("Does the customer need help today?"))
+    .with_question(
+        "intent",
+        SystemOneQuestion::choice(
+            "What does the customer want?",
+            [("refund", "money back"), ("question", "information"), ("praise", "thanks")],
+        ),
+    )
+    .with_question(
+        "frustration",
+        SystemOneQuestion::score("How frustrated is the customer?", ["Low", "Medium", "High"]),
+    );
+
+let response = client.system_one(request).await?;
+if let Some(SystemOneAnswer::Choice { choice, confidence, .. }) = response.answers.get("intent") {
+    println!("{choice} ({confidence:.2})");
+}
+```
+
+The client's configured credential is used (API key or signed-in session);
+`system_one_with_api_key` encrypts an explicit key inside one request. Optional
+request fields are `images` (`data:` URLs shown with the state) and
+`temperature` (`1` returns raw probabilities). A rejected request is
+`Error::Api` with the backend's status (422 for schema problems, 413 for size
+limits, chat's statuses for quota and capacity) and body;
+`Error::api_error_code` returns its `system_one_*` code. The example
+`examples/system_one.rs` runs the request above.
+
 ### Session recovery and retry limits
 
 Managed requests, including inference and mutations, permit one resend after a

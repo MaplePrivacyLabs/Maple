@@ -20,7 +20,7 @@ once_cell = "1.18.0"
 http = "1"
 reqwest = { version = "0.13", features = ["stream"] }
 # Shared monorepo crates retain their independent package names and versions.
-maple-sdk = "=4.0.1"
+maple-sdk = { path = "../../sdk/rust" }
 maple-proxy = { version = "0.4.0", path = "../../proxy" }
 
 [profile.dev]
@@ -30,3 +30,8 @@ opt-level = 1
 lto = "fat"
 codegen-units = 1
 strip = true
+
+# The embedded proxy requires `maple-sdk` from the registry; resolve it to the same
+# in-tree source as the workspace dependency above (docs/sdk-publishing.md).
+[patch.crates-io]
+maple-sdk = { path = "../../sdk/rust" }

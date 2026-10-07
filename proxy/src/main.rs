@@ -45,6 +45,7 @@ async fn main() -> anyhow::Result<()> {
     info!("   GET  /v1/models           - List available models");
     info!("   POST /v1/chat/completions - Create chat completions (streaming & non-streaming)");
     info!("   POST /v1/embeddings       - Create embeddings");
+    info!("   POST /v1/systemone        - Typed decisions (System One)");
     info!("");
     info!("💡 Usage:");
     info!(

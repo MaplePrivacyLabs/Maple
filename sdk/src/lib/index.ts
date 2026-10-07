@@ -111,6 +111,24 @@ export {
 // Export provider-neutral web API functions
 export { webSearch, webExtract } from "./api";
 
+// Export System One (typed decisions)
+export { systemOne, SystemOneError } from "./api";
+export type {
+  SystemOneRequest,
+  SystemOneQuestion,
+  SystemOneNoulQuestion,
+  SystemOneChoiceQuestion,
+  SystemOneScoreQuestion,
+  SystemOneNoulCriteria,
+  SystemOneOptions,
+  SystemOneResponse,
+  SystemOneAnswer,
+  SystemOneNoulAnswer,
+  SystemOneChoiceAnswer,
+  SystemOneScoreAnswer,
+  SystemOneUsage
+} from "./api";
+
 // Export Agent API functions
 export {
   getMainAgent,

@@ -9,6 +9,10 @@ on:
     paths:
       - ".github/workflows/proxy-rust.yml"
       - "proxy/Cargo.toml"
+      - "sdk/rust/Cargo.toml"
+      - "sdk/rust/build.rs"
+      - "sdk/rust/src/**"
+      - "sdk/rust/assets/**"
       - "proxy/Cargo.lock"
       - "proxy/clippy.toml"
       - "proxy/flake.nix"
@@ -23,6 +27,10 @@ on:
     paths:
       - ".github/workflows/proxy-rust.yml"
       - "proxy/Cargo.toml"
+      - "sdk/rust/Cargo.toml"
+      - "sdk/rust/build.rs"
+      - "sdk/rust/src/**"
+      - "sdk/rust/assets/**"
       - "proxy/Cargo.lock"
       - "proxy/clippy.toml"
       - "proxy/flake.nix"

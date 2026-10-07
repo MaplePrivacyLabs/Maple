@@ -36,6 +36,11 @@ impl ChatBillingAccess {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) const fn for_tests(can_use: bool, is_free: bool) -> Self {
+        Self { can_use, is_free }
+    }
+
     pub(crate) const fn can_use(self) -> bool {
         self.can_use
     }

@@ -12,6 +12,10 @@ on:
       - ".dockerignore"
       - "proxy/Dockerfile"
       - "proxy/Cargo.toml"
+      - "sdk/rust/Cargo.toml"
+      - "sdk/rust/build.rs"
+      - "sdk/rust/src/**"
+      - "sdk/rust/assets/**"
       - "proxy/Cargo.lock"
       - "proxy/src/**"
   pull_request:
@@ -21,6 +25,10 @@ on:
       - ".dockerignore"
       - "proxy/Dockerfile"
       - "proxy/Cargo.toml"
+      - "sdk/rust/Cargo.toml"
+      - "sdk/rust/build.rs"
+      - "sdk/rust/src/**"
+      - "sdk/rust/assets/**"
       - "proxy/Cargo.lock"
       - "proxy/src/**"
 

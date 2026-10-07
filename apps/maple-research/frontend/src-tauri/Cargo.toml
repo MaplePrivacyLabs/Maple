@@ -52,7 +52,7 @@ reqwest = { version = "0.13", features = ["stream"] }
 futures-util = "0.3"
 sha2 = "0.10"
 rand = "0.8.6"
-maple-sdk = "=4.0.1"
+maple-sdk = { path = "../../../../sdk/rust" }
 
 [target.'cfg(any(target_os = "macos", target_os = "windows", target_os = "linux", target_os = "android"))'.dependencies]
 # PDF OCR uses Maple's explicitly packaged ONNX Runtime. The loader policy
@@ -111,6 +111,9 @@ windows = { version = "0.62.2", features = ["Win32_System_Threading"] }
 [dev-dependencies]
 ciborium = "0.2"
 [patch.crates-io]
+# The embedded proxy requires `maple-sdk` from the registry; resolve it to the same
+# in-tree source as the dependency above (docs/sdk-publishing.md).
+maple-sdk = { path = "../../../../sdk/rust" }
 # Local patch for tao 0.35.2 Android intent crashes:
 # https://github.com/tauri-apps/tao/issues/1217
 #

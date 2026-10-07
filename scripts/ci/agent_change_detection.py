@@ -62,8 +62,11 @@ def affects_agent(path: str) -> bool:
         # Both desktop apps consume the local proxy crate. Reuse the existing
         # distinction between runtime/build inputs and standalone docs/tests/locks.
         return bool(research_routes(path) & DESKTOP_PLATFORMS)
+    if path.startswith("sdk/rust/"):
+        # The Agent builds sdk/rust from the tree, like the proxy crate.
+        return bool(research_routes(path) & DESKTOP_PLATFORMS)
     if path.startswith("sdk/"):
-        # The Agent builds the SDK source its own manifest selects.
+        # The TypeScript SDK is not an Agent input.
         return False
     if path in KNOWN_INDEPENDENT_FILES or path.startswith(KNOWN_INDEPENDENT_PREFIXES):
         return False
