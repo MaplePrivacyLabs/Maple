@@ -46,9 +46,8 @@ remove Tauri:
 - public visibility opened on the service surface the app consumes
 
 Goose is pinned to a fork revision based on upstream v1.53.0 in this
-component’s Cargo manifests and lockfile. The fork forwards subagent approvals
-to the parent and supports ephemeral native clients for embedded CUA. Research
-has an independent dependency graph.
+component’s Cargo manifests and lockfile. The fork supports ephemeral native
+clients for embedded CUA. Research has an independent dependency graph.
 
 ## Features
 
@@ -65,21 +64,18 @@ has an independent dependency graph.
   never sees, plus `/compact`, `/new`, `/pin`, `/web`, `/model`, and
   `/help`. The account's skills appear in the same list.
 - The task's latest todo list stays pinned above the composer.
-- Subagents: the task can give a piece of work to a subagent with the
-  `delegate` tool, which runs it in its own context. Subagents show above
-  the composer with the tool each one runs and how long it has worked. A subagent that runs in the background
-  keeps its row after the turn ends, and Maple tells the task when it
-  finishes, with a bounded result in the running turn or a new turn Maple
-  starts automatically. The task can use `load` to retrieve any truncated output.
 - External agents: a task can hand work to Codex or Claude Code installed on
   this computer with the `agent_start`, `agent_send`, `agent_status`,
   `agent_cancel`, and `list_agent_providers` tools, once the provider is enabled
   under Settings > Integrations. Each agent runs in the project with its own
   account, context, and sandbox settings; Maple accepts its approval
   requests, and its questions still come to you through Maple's question
-  card. Its progress streams into the tool call's row and its row above the
-  composer has a Stop button. Three skills, `/handoff`, `/committee`, and `/advisor`, teach the
-  task when and how to delegate. See
+  card. Its progress streams into the tool call's row, and its row above
+  the composer shows how long it has worked, with a Stop button. A
+  background agent keeps its row after the turn ends, and Maple tells the
+  task when it finishes, with a bounded result in the running turn or a new
+  turn Maple starts automatically. Three skills, `/handoff`, `/committee`,
+  and `/advisor`, teach the task when and how to delegate. See
   [`docs/external-agents.md`](docs/external-agents.md).
 - Voice: dictate a message with the microphone button, and read any
   message aloud. Both use Maple's speech models; the voice and speed

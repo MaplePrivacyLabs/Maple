@@ -3,10 +3,10 @@
 //! A task delegates through `agent_start`, `agent_send`, `agent_status`,
 //! `agent_cancel`, and `list_agent_providers`. Each external agent is one
 //! child process owned by the Maple session that started it. Goose stays
-//! the engine; the external agent runs under its own configuration, its
-//! approval requests come to the user through Maple's own permission card,
-//! and its progress streams into the transcript row of the tool call that
-//! started the turn.
+//! the engine; the external agent runs under its own configuration, Maple
+//! accepts its approval requests, its questions come to the user through
+//! Maple's question card, and its progress streams into the transcript row
+//! of the tool call that started the turn.
 //!
 //! Codex uses its app-server; Claude Code uses Goose’s native SDK protocol implementation.
 //! Both feed the same activity, permission, and lifecycle host.

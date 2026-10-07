@@ -438,8 +438,6 @@ pub(super) fn friendly_tool_label(name: &str) -> String {
     let bare = name.rsplit("__").next().unwrap_or(name);
     match bare {
         "shell" => "Terminal".to_string(),
-        "delegate" => "Subagent".to_string(),
-        "load" => "Load".to_string(),
         "text_editor" | "str_replace_editor" | "str_replace_based_edit_tool" => {
             "Editor".to_string()
         }
@@ -486,20 +484,6 @@ pub(super) fn descriptive_tool_title<T: Serialize>(
             "url",
             "uri",
         ]
-    } else if matches!(bare_name, "delegate" | "load") {
-        // Collecting a background subagent names it by session ID, which
-        // tells the user nothing.
-        if bare_name == "load"
-            && arguments
-                .get("source")
-                .and_then(|value| value.as_str())
-                .is_some_and(|source| looks_like_session_id(source.trim()))
-        {
-            return Some("Subagent result".to_string());
-        }
-        // A subagent is described by the recipe it runs, or by the task
-        // it was given.
-        &["source", "instructions"]
     } else {
         &[
             "path",
@@ -525,55 +509,6 @@ pub(super) fn descriptive_tool_title<T: Serialize>(
         "{label}: {}",
         bounded_timeline_text(first_line, MAX_AGENT_SESSION_TITLE_CHARS)
     ))
-}
-
-/// Whether `value` is a Goose session ID (`20260831_4`), which is how
-/// Goose names a background subagent.
-pub(super) fn looks_like_session_id(value: &str) -> bool {
-    let mut parts = value.split('_');
-    let (Some(date), Some(ordinal), None) = (parts.next(), parts.next(), parts.next()) else {
-        return false;
-    };
-    date.len() == 8
-        && date.bytes().all(|byte| byte.is_ascii_digit())
-        && !ordinal.is_empty()
-        && ordinal.bytes().all(|byte| byte.is_ascii_digit())
-}
-
-/// The user-facing text of a `delegate` or `load` result.
-///
-/// Goose names a background subagent by its session ID and repeats it in
-/// prose. The ID is the handle the model collects the result with, so it
-/// stays in the message Goose persists; only the transcript projection
-/// drops it. Returns `None` for text that carries no ID.
-pub(super) fn subagent_text_without_ids(text: &str) -> Option<String> {
-    // "Task 20260831_4 started in background: "Build the release"\n..."
-    if let Some(rest) = text.strip_prefix("Task ")
-        && let Some((id, rest)) = rest.split_once(' ')
-        && looks_like_session_id(id)
-        && let Some(description) = rest.strip_prefix("started in background: ")
-    {
-        let description = description
-            .lines()
-            .next()
-            .unwrap_or(description)
-            .trim()
-            .trim_matches('"');
-        return Some(format!("Started in the background: {description}"));
-    }
-
-    // "# Background Task Result: 20260831_4\n\n**Task:** ..."
-    for heading in ["# Background Task Result", "# Background Task Status"] {
-        if let Some(rest) = text.strip_prefix(heading)
-            && let Some(rest) = rest.strip_prefix(": ")
-            && let Some((id, rest)) = rest.split_once('\n')
-            && looks_like_session_id(id.trim())
-        {
-            return Some(format!("{heading}\n{rest}"));
-        }
-    }
-
-    None
 }
 
 pub(super) fn merged_tool_title(
@@ -613,8 +548,6 @@ pub(super) fn tool_response_item(
                 .filter_map(|content| content.as_text().map(|text| text.text.to_string()))
                 .collect::<Vec<_>>()
                 .join("\n");
-            // The transcript is a projection; Goose keeps the original.
-            let text = subagent_text_without_ids(&text).unwrap_or(text);
             let content = result
                 .content
                 .iter()

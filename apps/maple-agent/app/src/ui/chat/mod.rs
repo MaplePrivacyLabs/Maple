@@ -478,8 +478,8 @@ pub struct ChatScreen {
     btw_sequence: u64,
     /// The pinned plan card shows only its header.
     plan_collapsed: bool,
-    /// Subagents working for the selected task, pinned above the
-    /// composer. Empty unless a `delegate` call is in flight.
+    /// External agents working for the selected task, pinned above the
+    /// composer. Empty unless an external agent is working.
     subagents: Vec<ActiveSubagent>,
     /// A repaint that keeps the subagent elapsed times moving is already
     /// on its way; one at a time is enough.
