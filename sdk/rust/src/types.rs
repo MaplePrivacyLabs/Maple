@@ -683,6 +683,49 @@ pub struct Model {
     pub created: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub owned_by: Option<String>,
+    /// Most output tokens a request can receive. Input and output share the
+    /// context window, so the effective limit is this less the prompt.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_completion_tokens: Option<u64>,
+    /// How the model exposes reasoning effort; absent for models that never
+    /// reason.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning: Option<ModelReasoning>,
+}
+
+/// The reasoning controls a model accepts, as published in the catalog
+/// `reasoning` object (the same shape OpenRouter publishes).
+///
+/// Send one of `supported_efforts` as `reasoning_effort` (Chat Completions)
+/// or `reasoning.effort` (Responses). `none` turns reasoning off and is only
+/// accepted when `mandatory` is false. A model without `supported_efforts`
+/// has no tiers: any effort other than `none` turns reasoning on.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ModelReasoning {
+    /// Reasoning cannot be turned off; `none` is rejected.
+    #[serde(default)]
+    pub mandatory: bool,
+    /// The model reasons when a request names no effort.
+    #[serde(default)]
+    pub default_enabled: bool,
+    /// Accepted efforts, highest first.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub supported_efforts: Option<Vec<String>>,
+    /// The effort used when a request names none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_effort: Option<String>,
+}
+
+impl ModelReasoning {
+    /// Whether a request may name this effort for the model.
+    pub fn accepts(&self, effort: &str) -> bool {
+        if effort == "none" {
+            return !self.mandatory;
+        }
+        self.supported_efforts
+            .as_ref()
+            .is_none_or(|efforts| efforts.iter().any(|accepted| accepted == effort))
+    }
 }
 
 /// A catalog entry: model identity plus context and capability metadata.
@@ -699,6 +742,13 @@ pub struct CatalogModel {
     pub max_context_tokens: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub capabilities: Option<CatalogCapabilities>,
+    /// Most output tokens a request can receive; see [`Model::max_completion_tokens`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_completion_tokens: Option<u64>,
+    /// How the model exposes reasoning effort; absent for models that never
+    /// reason.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning: Option<ModelReasoning>,
 }
 
 /// Capability flags a catalog entry advertises.
@@ -724,6 +774,13 @@ pub struct CatalogAlias {
     pub target_model: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub capabilities: Option<CatalogCapabilities>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_window: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_completion_tokens: Option<u64>,
+    /// The reasoning controls every model the alias may resolve to accepts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning: Option<ModelReasoning>,
 }
 
 /// Default alias assignments from the catalog.
@@ -795,14 +852,34 @@ pub struct ChatMessage {
     pub content: Value, // Now accepts both string and array formats
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_calls: Option<Vec<ToolCall>>,
+    /// The model's reasoning. Every current route returns it in this field;
+    /// replaying it on an assistant message is accepted by every model.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning: Option<String>,
+    /// Deprecated duplicate of `reasoning` that one provider route still
+    /// sends. Read `reasoning` first and never concatenate the two.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reasoning_content: Option<String>,
+}
+
+impl ChatMessage {
+    /// The reasoning text, from whichever field the route populated.
+    pub fn reasoning_text(&self) -> Option<&str> {
+        self.reasoning
+            .as_deref()
+            .or(self.reasoning_content.as_deref())
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatCompletionRequest {
     pub model: String,
     pub messages: Vec<ChatMessage>,
+    /// One of the model's catalog `reasoning.supported_efforts`, or `none`
+    /// where reasoning is not mandatory. An unsupported value on an explicit
+    /// model is rejected with OpenAI's `unsupported_value` error.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub temperature: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]

@@ -3,6 +3,7 @@ pub mod audio_utils;
 pub mod encryption_middleware;
 mod health_routes;
 pub mod login_routes;
+pub(crate) mod model_request_policy;
 mod native_handoff_routes;
 mod oauth_routes;
 mod openai;

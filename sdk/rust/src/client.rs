@@ -3274,8 +3274,10 @@ mod tests {
     #[test]
     fn typed_stream_request_keeps_sse_and_json_headers_and_v2_stream_flags() {
         let request = ChatCompletionRequest {
+            reasoning_effort: None,
             model: "test-model".to_string(),
             messages: vec![ChatMessage {
+                reasoning: None,
                 role: "user".to_string(),
                 content: serde_json::json!("hello"),
                 tool_calls: None,

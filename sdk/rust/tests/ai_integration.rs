@@ -198,8 +198,10 @@ async fn test_chat_completion_streaming() {
         .expect("Failed to setup client");
 
     let request = ChatCompletionRequest {
+        reasoning_effort: None,
         model: chat_model(),
         messages: vec![ChatMessage {
+            reasoning: None,
             role: "user".to_string(),
             content: serde_json::json!(r#"please reply with exactly and only the word "echo""#),
             tool_calls: None,
@@ -272,8 +274,10 @@ async fn test_reasoning_content_with_kimi_k2() {
         .expect("Failed to setup client");
 
     let request = ChatCompletionRequest {
+        reasoning_effort: None,
         model: reasoning_model(),
         messages: vec![ChatMessage {
+            reasoning: None,
             role: "user".to_string(),
             content: serde_json::json!("What is 2+2?"),
             tool_calls: None,
@@ -326,9 +330,11 @@ async fn test_chat_completion_with_system_message() {
         .expect("Failed to setup client");
 
     let request = ChatCompletionRequest {
+        reasoning_effort: None,
         model: chat_model(),
         messages: vec![
             ChatMessage {
+                reasoning: None,
                 role: "system".to_string(),
                 content: serde_json::json!(
                     "You are a helpful assistant that always responds with exactly one word."
@@ -337,6 +343,7 @@ async fn test_chat_completion_with_system_message() {
                 reasoning_content: None,
             },
             ChatMessage {
+                reasoning: None,
                 role: "user".to_string(),
                 content: serde_json::json!("What is 2+2? Answer in one word."),
                 tool_calls: None,
@@ -448,8 +455,10 @@ async fn test_guest_user_cannot_use_ai() {
 
     // Try to create completion - should fail
     let request = ChatCompletionRequest {
+        reasoning_effort: None,
         model: "some-model".to_string(),
         messages: vec![ChatMessage {
+            reasoning: None,
             role: "user".to_string(),
             content: serde_json::json!("test"),
             tool_calls: None,
@@ -691,8 +700,10 @@ async fn test_streaming_multi_tool_calls() {
     ];
 
     let request = ChatCompletionRequest {
+        reasoning_effort: None,
         model: chat_model(),
         messages: vec![ChatMessage {
+            reasoning: None,
             role: "user".to_string(),
             content: serde_json::json!("What is the weather in NYC and what time is it there?"),
             tool_calls: None,

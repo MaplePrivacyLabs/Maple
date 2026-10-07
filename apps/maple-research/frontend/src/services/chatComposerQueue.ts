@@ -4,6 +4,7 @@ import {
   queuedMessageEditStillPresent as sharedQueuedMessageEditStillPresent,
   type QueuedMessageEdit
 } from "./composerQueue";
+import type { ReasoningEffort } from "@/state/LocalStateContextDef";
 
 export const MAX_CHAT_QUEUED_MESSAGES = 16;
 export const MAX_CHAT_QUEUED_TEXT_BYTES = 32 * 1024;
@@ -27,6 +28,8 @@ export type ChatQueuedMessage = {
   draftProjectId: string | null;
   model: string;
   webSearchEnabled: boolean;
+  /** The thinking level chosen at submit time, if the model offered one. */
+  reasoningEffort?: ReasoningEffort;
   createdMs: number;
 };
 
@@ -39,7 +42,7 @@ export type ChatComposerQueueState = {
 
 export type ChatQueuedMessageMetadata = Pick<
   ChatQueuedMessage,
-  "queueId" | "messageId" | "model" | "webSearchEnabled" | "createdMs"
+  "queueId" | "messageId" | "model" | "webSearchEnabled" | "reasoningEffort" | "createdMs"
 >;
 
 export type ChatComposerDraft = {

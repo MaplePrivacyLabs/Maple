@@ -66,6 +66,15 @@ transport; protected routes are not ordinary plaintext `fetch`, `curl`, or
   current SSRF policy.
 - Keep usage tied to the actual provider and canonical public model while
   preserving the established user or API-key attribution.
+- Reasoning effort is one per-model table (`model_config::ModelReasoning`) that
+  feeds the catalog `reasoning` object, request validation and tests. Clients
+  choose a level only through OpenAI's `reasoning_effort` (Chat Completions) and
+  `reasoning.effort` (Responses); template switches are not a client contract.
+  Validate after alias resolution against the model that runs: reject an
+  unsupported value on an explicit model with OpenAI's `unsupported_value`
+  error, move it to the nearest accepted effort on an `auto:` alias, and never
+  forward a thinking-off control to a model whose reasoning is mandatory.
+  Re-verify the table live whenever a provider changes its engine build.
 
 ## Persistence and migrations
 

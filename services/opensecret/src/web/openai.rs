@@ -11,7 +11,7 @@ use crate::inference::{
 };
 use crate::inference_planning::{RoutePlan, RoutePlanningError};
 use crate::model_config::{
-    model_catalog_response, openai_models_response, ModelAliasTargets, ModelPlan,
+    model_catalog_response, openai_models_response, ModelAliasTargets, ModelPlan, ReasoningEffort,
 };
 use crate::models::token_usage::NewTokenUsage;
 use crate::models::users::User;
@@ -34,6 +34,10 @@ use crate::tokens::count_tokens;
 use crate::web::audio_utils::{merge_transcriptions, AudioSplitter, TINFOIL_MAX_SIZE};
 use crate::web::encryption_middleware::{
     decrypt_request, encrypt_response, Decrypted, TransportSession,
+};
+use crate::web::model_request_policy::{
+    apply_model_request_policy, resolve_reasoning_effort, ModelSelection,
+    CHAT_REASONING_EFFORT_PARAM,
 };
 use crate::web::openai_auth::AuthMethod;
 use crate::web::responses::context_builder::tool_call_ids_are_kimi_compatible;
@@ -181,6 +185,9 @@ struct CompletionRequestLogMetadata {
     tools_json_bytes: usize,
     include_reasoning: Option<bool>,
     chat_template_enable_thinking: Option<bool>,
+    /// The caller's `reasoning_effort`, reduced to the known enum (or
+    /// `invalid`) so the log never carries free text.
+    reasoning_effort: Option<&'static str>,
     messages_json_bytes: usize,
     messages: MessageLogMetadata,
 }
@@ -205,6 +212,7 @@ impl std::fmt::Debug for CompletionRequestLogMetadata {
             .field("tools_count", &self.tools_count)
             .field("tools_json_bytes", &self.tools_json_bytes)
             .field("include_reasoning", &self.include_reasoning)
+            .field("reasoning_effort", &self.reasoning_effort)
             .field(
                 "chat_template_enable_thinking",
                 &self.chat_template_enable_thinking,
@@ -284,6 +292,15 @@ impl CompletionRequestLogMetadata {
                 .get("chat_template_kwargs")
                 .and_then(|kwargs| kwargs.get("enable_thinking"))
                 .and_then(Value::as_bool),
+            reasoning_effort: body
+                .get(CHAT_REASONING_EFFORT_PARAM)
+                .filter(|value| !value.is_null())
+                .map(|value| {
+                    value
+                        .as_str()
+                        .and_then(ReasoningEffort::parse)
+                        .map_or("invalid", ReasoningEffort::as_str)
+                }),
             messages_json_bytes: messages.map(json_value_len).unwrap_or_default(),
             messages: MessageLogMetadata::from_messages(messages.and_then(Value::as_array)),
         }
@@ -1979,6 +1996,7 @@ async fn proxy_openai(
     let routing = InferenceRoutingContext::new(model_plan);
     let alias_targets = ModelAliasTargets::for_plan(model_plan);
     let alias_target = alias_targets.resolve(&requested_model_name).to_string();
+    let model_selection = ModelSelection::for_request(&requested_model_name, &alias_target);
     let billing_context = BillingContext::new(auth_method, requested_model_name.clone());
 
     // Router v2 Auto may choose another approved model of the tier before the
@@ -2006,6 +2024,15 @@ async fn proxy_openai(
         )?;
         let can_reselect = !reselected && resolved_model.auto_decision().is_some();
         let model_name = resolved_model.public_model_id().to_string();
+        // Validate the caller's effort against the model that will run, before
+        // any route is claimed. An explicit model rejects an unsupported level;
+        // an alias is moved to the nearest level its resolved model accepts.
+        let reasoning_effort = resolve_reasoning_effort(
+            &model_name,
+            body.get(CHAT_REASONING_EFFORT_PARAM),
+            model_selection,
+            CHAT_REASONING_EFFORT_PARAM,
+        )?;
         let intent = resolved_model.intent(
             user.uuid,
             &requested_model_name,
@@ -2041,10 +2068,13 @@ async fn proxy_openai(
         } else {
             std::mem::take(&mut body)
         };
-        request_body
-            .as_object_mut()
-            .expect("model was read from a JSON object")
-            .insert("model".to_string(), json!(model_name));
+        {
+            let request = request_body
+                .as_object_mut()
+                .expect("model was read from a JSON object");
+            request.insert("model".to_string(), json!(model_name));
+            apply_model_request_policy(request, &model_name, reasoning_effort);
+        }
 
         match get_chat_completion_response(
             &state,
@@ -3593,8 +3623,7 @@ async fn proxy_model_catalog(
     let model_plan = ModelPlan::from_is_paid(
         billing_access.is_some_and(crate::billing::ChatBillingAccess::is_paid),
     );
-    let alias_targets = ModelAliasTargets::for_plan(model_plan);
-    let catalog_response = model_catalog_response(alias_targets);
+    let catalog_response = model_catalog_response(model_plan);
     encrypt_response(&state, &session_id, &catalog_response).await
 }
 

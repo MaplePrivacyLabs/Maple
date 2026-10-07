@@ -1,11 +1,227 @@
 //! Central model-specific configuration and public model catalog.
 
+use crate::inference::auto_model::auto_model_candidates;
+use crate::inference::ModelSelectionMode;
 use serde_json::{json, Value};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ModelConfig {
     pub context_window: usize,
     pub responses: ResponsesModelConfig,
+    /// How the model exposes reasoning effort; `None` for models that never
+    /// reason and for models outside the catalog.
+    pub reasoning: Option<ModelReasoning>,
+    /// The model's renderer rejects OpenAI's `developer` role, so requests
+    /// carry those messages as `system`.
+    pub developer_role_as_system: bool,
+}
+
+/// One value of OpenAI's `reasoning_effort` enum, ordered from least to most
+/// reasoning so an unsupported request can be moved to the nearest effort a
+/// model accepts. The wire spelling is `as_str`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[repr(u8)]
+pub enum ReasoningEffort {
+    None,
+    Minimal,
+    Low,
+    Medium,
+    High,
+    XHigh,
+    Max,
+}
+
+impl ReasoningEffort {
+    /// Every value, lowest effort first.
+    pub const ALL: [Self; 7] = [
+        Self::None,
+        Self::Minimal,
+        Self::Low,
+        Self::Medium,
+        Self::High,
+        Self::XHigh,
+        Self::Max,
+    ];
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Minimal => "minimal",
+            Self::Low => "low",
+            Self::Medium => "medium",
+            Self::High => "high",
+            Self::XHigh => "xhigh",
+            Self::Max => "max",
+        }
+    }
+
+    /// Parse the exact OpenAI spelling; anything else is not an effort.
+    pub fn parse(value: &str) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|effort| effort.as_str() == value)
+    }
+}
+
+/// A set of reasoning efforts, small enough to live in `const` model tables.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReasoningEffortSet(u8);
+
+impl ReasoningEffortSet {
+    pub const fn of(efforts: &[ReasoningEffort]) -> Self {
+        let mut bits = 0u8;
+        let mut index = 0;
+        while index < efforts.len() {
+            bits |= 1 << efforts[index] as u8;
+            index += 1;
+        }
+        Self(bits)
+    }
+
+    pub const fn contains(self, effort: ReasoningEffort) -> bool {
+        self.0 & (1 << effort as u8) != 0
+    }
+
+    pub const fn intersection(self, other: Self) -> Self {
+        Self(self.0 & other.0)
+    }
+
+    #[cfg(test)]
+    pub const fn is_empty(self) -> bool {
+        self.0 == 0
+    }
+
+    /// Members, lowest effort first.
+    pub fn iter(self) -> impl DoubleEndedIterator<Item = ReasoningEffort> {
+        ReasoningEffort::ALL
+            .into_iter()
+            .filter(move |effort| self.contains(*effort))
+    }
+}
+
+/// How a model exposes reasoning effort: the catalog `reasoning` object
+/// (OpenRouter's `ModelReasoning` shape, the shape third-party catalogs
+/// already use for these model families) and the rule every request is
+/// checked against after alias resolution.
+///
+/// Values were verified live against both providers on 2026-10-07 (Maple
+/// issue #1087). Re-verify them whenever a provider upgrades its engine: the
+/// level names stay valid across vLLM versions, the budgets behind them move.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ModelReasoning {
+    /// Reasoning cannot be turned off: `none` is rejected on an explicit model
+    /// and moved to the lowest accepted effort on an alias.
+    pub mandatory: bool,
+    /// The model reasons when a request names no effort.
+    pub default_enabled: bool,
+    /// Accepted efforts. `None` when the model has no tiers: any effort other
+    /// than `none` turns reasoning on.
+    pub supported_efforts: Option<ReasoningEffortSet>,
+    /// The effort used when a request names none; `None` for models without
+    /// tiers.
+    pub default_effort: Option<ReasoningEffort>,
+}
+
+impl ModelReasoning {
+    const fn tiers(
+        mandatory: bool,
+        supported_efforts: ReasoningEffortSet,
+        default_effort: ReasoningEffort,
+    ) -> Self {
+        Self {
+            mandatory,
+            default_enabled: true,
+            supported_efforts: Some(supported_efforts),
+            default_effort: Some(default_effort),
+        }
+    }
+
+    const fn toggle(default_enabled: bool) -> Self {
+        Self {
+            mandatory: false,
+            default_enabled,
+            supported_efforts: None,
+            default_effort: None,
+        }
+    }
+
+    /// Whether a request may name this effort for the model.
+    pub fn accepts(self, effort: ReasoningEffort) -> bool {
+        if effort == ReasoningEffort::None {
+            return !self.mandatory;
+        }
+        self.supported_efforts
+            .is_none_or(|efforts| efforts.contains(effort))
+    }
+
+    /// Every effort a request may name, lowest first.
+    pub fn accepted_efforts(self) -> Vec<ReasoningEffort> {
+        ReasoningEffort::ALL
+            .into_iter()
+            .filter(|effort| self.accepts(*effort))
+            .collect()
+    }
+
+    /// The nearest accepted effort: the requested one when accepted, else the
+    /// next higher accepted effort, else the next lower one. This is the rule
+    /// Pi applies on the client; the server applies it to Auto aliases, whose
+    /// resolved model can change between requests.
+    pub fn clamp(self, requested: ReasoningEffort) -> ReasoningEffort {
+        if self.accepts(requested) {
+            return requested;
+        }
+        let accepted = self.accepted_efforts();
+        accepted
+            .iter()
+            .copied()
+            .find(|effort| *effort > requested)
+            .or_else(|| {
+                accepted
+                    .iter()
+                    .rev()
+                    .copied()
+                    .find(|effort| *effort < requested)
+            })
+            .unwrap_or(requested)
+    }
+
+    /// What an alias can promise: the efforts every model it may resolve to
+    /// accepts. The preferred target's defaults stand, since it serves unless
+    /// it is unavailable.
+    fn intersect(self, other: Self) -> Self {
+        Self {
+            mandatory: self.mandatory || other.mandatory,
+            default_enabled: self.default_enabled,
+            supported_efforts: match (self.supported_efforts, other.supported_efforts) {
+                (Some(mine), Some(theirs)) => Some(mine.intersection(theirs)),
+                (Some(efforts), None) | (None, Some(efforts)) => Some(efforts),
+                (None, None) => None,
+            },
+            default_effort: self.default_effort,
+        }
+    }
+
+    /// The catalog `reasoning` object. `supported_efforts` lists the highest
+    /// effort first, as OpenRouter does.
+    pub fn json(self) -> Value {
+        let mut value = json!({
+            "mandatory": self.mandatory,
+            "default_enabled": self.default_enabled,
+        });
+        if let Some(efforts) = self.supported_efforts {
+            value["supported_efforts"] = Value::Array(
+                efforts
+                    .iter()
+                    .rev()
+                    .map(|effort| json!(effort.as_str()))
+                    .collect(),
+            );
+        }
+        if let Some(default_effort) = self.default_effort {
+            value["default_effort"] = json!(default_effort.as_str());
+        }
+        value
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -296,6 +512,8 @@ impl ModelConfigEntry {
             config: ModelConfig {
                 context_window,
                 responses,
+                reasoning: None,
+                developer_role_as_system: false,
             },
             catalog_metadata: None,
         }
@@ -334,6 +552,8 @@ impl ModelConfigEntry {
             config: ModelConfig {
                 context_window,
                 responses,
+                reasoning: None,
+                developer_role_as_system: false,
             },
             catalog_metadata: None,
         }
@@ -352,6 +572,30 @@ impl ModelConfigEntry {
     const fn with_catalog_metadata(mut self, metadata: ModelCatalogMetadata) -> Self {
         self.catalog_metadata = Some(metadata);
         self
+    }
+
+    const fn with_reasoning(mut self, reasoning: ModelReasoning) -> Self {
+        self.config.reasoning = Some(reasoning);
+        self
+    }
+
+    const fn with_developer_role_as_system(mut self) -> Self {
+        self.config.developer_role_as_system = true;
+        self
+    }
+
+    /// vLLM has no output cap of its own: input and output share the context
+    /// window, so the most a request can receive is the window less its prompt.
+    const fn max_completion_tokens(self) -> usize {
+        self.config.context_window
+    }
+
+    /// Catalog fields shared by the public catalog and the OpenAI models list.
+    fn write_reasoning_metadata(self, value: &mut Value) {
+        value["max_completion_tokens"] = json!(self.max_completion_tokens());
+        if let Some(reasoning) = self.config.reasoning {
+            value["reasoning"] = reasoning.json();
+        }
     }
 
     fn catalog_json(self) -> Value {
@@ -375,6 +619,7 @@ impl ModelConfigEntry {
             "deprecated": self.deprecated,
             "sort_order": self.sort_order,
         });
+        self.write_reasoning_metadata(&mut value);
 
         if let Some(metadata) = self.catalog_metadata {
             value["input_modalities"] = json!(metadata.input_modalities);
@@ -391,7 +636,7 @@ impl ModelConfigEntry {
     }
 
     fn openai_model_json(self) -> Value {
-        json!({
+        let mut value = json!({
             "id": self.id,
             "object": "model",
             "created": 0,
@@ -404,7 +649,9 @@ impl ModelConfigEntry {
             "access": self.access.as_str(),
             "capabilities": self.capabilities.json(),
             "badges": self.badges,
-        })
+        });
+        self.write_reasoning_metadata(&mut value);
+        value
     }
 
     fn tasks(self) -> Vec<&'static str> {
@@ -528,12 +775,15 @@ impl ModelCapabilities {
 }
 
 impl ModelAliasEntry {
-    fn catalog_json(self, alias_targets: ModelAliasTargets) -> Value {
-        let target_model = alias_targets
+    fn catalog_json(self, plan: ModelPlan) -> Value {
+        let target_model = ModelAliasTargets::for_plan(plan)
             .target_for(self.id)
             .expect("catalog alias must have a configured target");
         let target = model_entry(target_model);
-        json!({
+        let context_window = target
+            .map(|entry| entry.config.context_window)
+            .unwrap_or(DEFAULT_CONTEXT_WINDOW);
+        let mut value = json!({
             "id": self.id,
             "label": self.label,
             "short_name": self.short_name,
@@ -541,14 +791,78 @@ impl ModelAliasEntry {
             "target_model": target_model,
             "access": target.map(|entry| entry.access.as_str()).unwrap_or("free"),
             "capabilities": target.map(|entry| entry.capabilities.json()).unwrap_or_else(|| ModelCapabilities::chat(false, false).json()),
-        })
+            "context_window": context_window,
+            "max_completion_tokens": context_window,
+        });
+        if let Some(reasoning) = alias_reasoning(self.id, plan) {
+            value["reasoning"] = reasoning.json();
+        }
+        value
     }
 }
 
 const DEFAULT_MODEL_CONFIG: ModelConfig = ModelConfig {
     context_window: DEFAULT_CONTEXT_WINDOW,
     responses: UNCATALOGED_RESPONSES_MODEL_CONFIG,
+    reasoning: None,
+    developer_role_as_system: false,
 };
+
+// Reasoning controls each deployed build honors, verified live on both
+// providers on 2026-10-07 (issue #1087). Harmony (gpt-oss) rejects every other
+// value with a 400 and defaults to medium.
+const GPT_OSS_REASONING: ModelReasoning = ModelReasoning::tiers(
+    true,
+    ReasoningEffortSet::of(&[
+        ReasoningEffort::Low,
+        ReasoningEffort::Medium,
+        ReasoningEffort::High,
+    ]),
+    ReasoningEffort::Medium,
+);
+
+// Gemma 4 only has a thinking switch: `none` keeps it off, any other effort
+// turns it on, and the model itself defaults to off.
+const GEMMA4_REASONING: ModelReasoning = ModelReasoning::toggle(false);
+
+// Kimi K3's renderer accepts low/high/max, treats `none` as thinking off and
+// rejects everything else with a 400; it defaults to max.
+const KIMI_K3_REASONING: ModelReasoning = ModelReasoning::tiers(
+    false,
+    ReasoningEffortSet::of(&[
+        ReasoningEffort::Low,
+        ReasoningEffort::High,
+        ReasoningEffort::Max,
+    ]),
+    ReasoningEffort::Max,
+);
+
+// GLM-5.3 and GLM-5.3-Flash never reject a value: anything but low/high runs
+// at max, and every thinking-off control leaks the reasoning into `content`
+// on the deployed builds (vLLM fix d95d1dc is unreleased). Reasoning is
+// therefore mandatory and unsupported values must be caught here.
+const GLM_5_3_REASONING: ModelReasoning = ModelReasoning::tiers(
+    true,
+    ReasoningEffortSet::of(&[
+        ReasoningEffort::Low,
+        ReasoningEffort::High,
+        ReasoningEffort::Max,
+    ]),
+    ReasoningEffort::Max,
+);
+
+// DeepSeek V4.1 accepts low/high/xhigh/max, treats `none` as chat mode and
+// rejects minimal/medium with a 400; its template default is high.
+const DEEPSEEK_V4_1_FLASH_REASONING: ModelReasoning = ModelReasoning::tiers(
+    false,
+    ReasoningEffortSet::of(&[
+        ReasoningEffort::Low,
+        ReasoningEffort::High,
+        ReasoningEffort::XHigh,
+        ReasoningEffort::Max,
+    ]),
+    ReasoningEffort::High,
+);
 
 // Each catalog model uses its creator's published sampling and reasoning-history
 // rules. Change these only from a cited model card, generation config, or
@@ -614,7 +928,8 @@ const MODEL_CONFIGS: &[ModelConfigEntry] = &[
         10,
         131_072,
         GPT_OSS_RESPONSES_MODEL_CONFIG,
-    ),
+    )
+    .with_reasoning(GPT_OSS_REASONING),
     ModelConfigEntry::new(
         "gemma4-31b",
         "Gemma 4 31B",
@@ -629,7 +944,8 @@ const MODEL_CONFIGS: &[ModelConfigEntry] = &[
         20,
         262_144,
         GEMMA4_RESPONSES_MODEL_CONFIG,
-    ),
+    )
+    .with_reasoning(GEMMA4_REASONING),
     ModelConfigEntry::new(
         GLM_5_3_FLASH_MODEL_ID,
         "GLM-5.3 Flash",
@@ -647,6 +963,7 @@ const MODEL_CONFIGS: &[ModelConfigEntry] = &[
         1_048_576,
         GLM_5_3_RESPONSES_MODEL_CONFIG,
     )
+    .with_reasoning(GLM_5_3_REASONING)
     .with_catalog_metadata(ModelCatalogMetadata::new(
         &["text", "image"],
         &["text"],
@@ -668,6 +985,8 @@ const MODEL_CONFIGS: &[ModelConfigEntry] = &[
         262_144,
         KIMI_K3_RESPONSES_MODEL_CONFIG,
     )
+    .with_reasoning(KIMI_K3_REASONING)
+    .with_developer_role_as_system()
     .with_catalog_metadata(ModelCatalogMetadata::new(
         &["text", "image"],
         &["text"],
@@ -690,6 +1009,7 @@ const MODEL_CONFIGS: &[ModelConfigEntry] = &[
         262_144,
         GLM_5_3_RESPONSES_MODEL_CONFIG,
     )
+    .with_reasoning(GLM_5_3_REASONING)
     .with_catalog_provider("continuum", "glm-5.3")
     .with_catalog_metadata(ModelCatalogMetadata::new(&["text"], &["text"], None, None)),
     ModelConfigEntry::new(
@@ -707,6 +1027,7 @@ const MODEL_CONFIGS: &[ModelConfigEntry] = &[
         1_048_576,
         DEEPSEEK_V4_1_FLASH_RESPONSES_MODEL_CONFIG,
     )
+    .with_reasoning(DEEPSEEK_V4_1_FLASH_REASONING)
     .with_catalog_metadata(ModelCatalogMetadata::new(
         &["text", "image"],
         &["text"],
@@ -741,7 +1062,8 @@ const MODEL_CONFIGS: &[ModelConfigEntry] = &[
         900,
         131_072,
         GPT_OSS_RESPONSES_MODEL_CONFIG,
-    ),
+    )
+    .with_reasoning(GPT_OSS_REASONING),
 ];
 
 const MODEL_ALIAS_ENTRIES: &[ModelAliasEntry] = &[
@@ -819,7 +1141,25 @@ pub fn model_reasoning_replay(model: &str, tools_enabled: bool) -> ReasoningRepl
     model_reasoning_history_strategy(model).replay(tools_enabled)
 }
 
-pub(crate) fn model_catalog_response(alias_targets: ModelAliasTargets) -> Value {
+/// The reasoning controls of a canonical public model, if it reasons.
+pub fn model_reasoning(model: &str) -> Option<ModelReasoning> {
+    model_entry(model).and_then(|entry| entry.config.reasoning)
+}
+
+/// The reasoning an alias publishes: what every model it may resolve to for the
+/// plan accepts (its target first, then its Auto alternates). `None` when any
+/// candidate never reasons.
+pub(crate) fn alias_reasoning(alias: &str, plan: ModelPlan) -> Option<ModelReasoning> {
+    let mut candidates =
+        auto_model_candidates(ModelSelectionMode::from_requested_model(alias), plan)?.into_iter();
+    let mut reasoning = model_reasoning(candidates.next()?)?;
+    for candidate in candidates {
+        reasoning = reasoning.intersect(model_reasoning(candidate)?);
+    }
+    Some(reasoning)
+}
+
+pub(crate) fn model_catalog_response(plan: ModelPlan) -> Value {
     let data = MODEL_CONFIGS
         .iter()
         .filter(|entry| entry.listed)
@@ -827,7 +1167,7 @@ pub(crate) fn model_catalog_response(alias_targets: ModelAliasTargets) -> Value 
         .collect::<Vec<_>>();
     let aliases = MODEL_ALIAS_ENTRIES
         .iter()
-        .map(|entry| entry.catalog_json(alias_targets))
+        .map(|entry| entry.catalog_json(plan))
         .collect::<Vec<_>>();
 
     json!({
@@ -1196,7 +1536,7 @@ mod tests {
     fn test_catalog_alias_metadata_matches_resolved_models() {
         for plan in [ModelPlan::Free, ModelPlan::Paid] {
             let targets = ModelAliasTargets::for_plan(plan);
-            let catalog = model_catalog_response(targets);
+            let catalog = model_catalog_response(plan);
             for alias in catalog["aliases"].as_array().expect("aliases") {
                 let selector = alias["id"].as_str().expect("alias ID");
                 let target = targets.resolve(selector);
@@ -1263,8 +1603,7 @@ mod tests {
 
     #[test]
     fn test_catalog_alias_metadata_tracks_paid_targets() {
-        let targets = ModelAliasTargets::for_plan(ModelPlan::Paid);
-        let catalog = model_catalog_response(targets);
+        let catalog = model_catalog_response(ModelPlan::Paid);
         let aliases = catalog["aliases"].as_array().expect("aliases");
         let quick = aliases
             .iter()
@@ -1314,7 +1653,7 @@ mod tests {
 
     #[test]
     fn test_catalog_hides_api_only_models_and_includes_aliases() {
-        let response = model_catalog_response(ModelAliasTargets::default());
+        let response = model_catalog_response(ModelPlan::Free);
         let data = response["data"].as_array().expect("catalog data");
         assert!(data.iter().any(|model| model["id"] == QUICK_MODEL_ID));
         assert!(!data
@@ -1334,7 +1673,7 @@ mod tests {
             (ModelPlan::Free, QUICK_MODEL_ID, "free"),
             (ModelPlan::Paid, GLM_5_3_FLASH_MODEL_ID, "pro"),
         ] {
-            let catalog = model_catalog_response(ModelAliasTargets::for_plan(plan));
+            let catalog = model_catalog_response(plan);
             let aliases = catalog["aliases"].as_array().expect("aliases");
             let quick = aliases
                 .iter()
@@ -1367,7 +1706,7 @@ mod tests {
 
     #[test]
     fn test_catalog_advertises_voxtral_as_default_speech_model() {
-        let response = model_catalog_response(ModelAliasTargets::default());
+        let response = model_catalog_response(ModelPlan::Free);
 
         assert_eq!(response["audio"]["speech"]["available"], true);
         assert_eq!(response["audio"]["speech"]["model"], "voxtral-tts");
@@ -1376,7 +1715,7 @@ mod tests {
 
     #[test]
     fn test_catalog_removes_deprecated_kimi_k2_6() {
-        let catalog = model_catalog_response(ModelAliasTargets::default());
+        let catalog = model_catalog_response(ModelPlan::Free);
         let openai_models = openai_models_response();
 
         assert!(!has_model(&catalog, "kimi-k2-6"));
@@ -1386,7 +1725,7 @@ mod tests {
 
     #[test]
     fn test_catalog_adds_glm_5_3_directly_through_continuum_without_changing_aliases() {
-        let catalog = model_catalog_response(ModelAliasTargets::for_plan(ModelPlan::Paid));
+        let catalog = model_catalog_response(ModelPlan::Paid);
         let glm = catalog_model(&catalog, GLM_5_3_MODEL_ID);
 
         assert_eq!(glm["provider"], "continuum");
@@ -1410,7 +1749,7 @@ mod tests {
 
     #[test]
     fn test_catalog_adds_glm_5_3_flash_through_tinfoil_with_image_and_shared_1m_context() {
-        let catalog = model_catalog_response(ModelAliasTargets::for_plan(ModelPlan::Paid));
+        let catalog = model_catalog_response(ModelPlan::Paid);
         let glm = catalog_model(&catalog, GLM_5_3_FLASH_MODEL_ID);
 
         assert_eq!(glm["provider"], "tinfoil");
@@ -1429,7 +1768,7 @@ mod tests {
 
     #[test]
     fn test_catalog_adds_deepseek_v4_1_flash_through_tinfoil_with_image_and_1m_context() {
-        let catalog = model_catalog_response(ModelAliasTargets::for_plan(ModelPlan::Paid));
+        let catalog = model_catalog_response(ModelPlan::Paid);
         let deepseek = catalog_model(&catalog, DEEPSEEK_V4_1_FLASH_MODEL_ID);
 
         assert_eq!(deepseek["provider"], "tinfoil");
@@ -1448,7 +1787,7 @@ mod tests {
 
     #[test]
     fn test_new_tinfoil_models_are_generally_listed() {
-        let catalog = model_catalog_response(ModelAliasTargets::default());
+        let catalog = model_catalog_response(ModelPlan::Free);
         let openai_models = openai_models_response();
 
         for model in [
@@ -1471,24 +1810,22 @@ mod tests {
         ];
 
         assert_eq!(
-            model_ids_with_badge(&model_catalog_response(ModelAliasTargets::default()), "New"),
+            model_ids_with_badge(&model_catalog_response(ModelPlan::Free), "New"),
             expected
         );
         assert_eq!(
             model_ids_with_badge(&openai_models_response(), "New"),
             expected
         );
-        assert!(model_ids_with_badge(
-            &model_catalog_response(ModelAliasTargets::default()),
-            "Reasoning"
-        )
-        .is_empty());
+        assert!(
+            model_ids_with_badge(&model_catalog_response(ModelPlan::Free), "Reasoning").is_empty()
+        );
         assert!(model_ids_with_badge(&openai_models_response(), "Reasoning").is_empty());
     }
 
     #[test]
     fn test_enriched_catalog_has_verified_new_model_metadata() {
-        let catalog = model_catalog_response(ModelAliasTargets::default());
+        let catalog = model_catalog_response(ModelPlan::Free);
         let kimi = catalog_model(&catalog, "kimi-k3");
         assert_eq!(kimi["access"], "pro");
         assert_eq!(kimi["provider_id"], "kimi-k3");
@@ -1522,5 +1859,232 @@ mod tests {
         let minimal_kimi = catalog_model(&minimal, "kimi-k3");
         assert!(minimal_kimi.get("input_modalities").is_none());
         assert!(minimal_kimi.get("parameter_size").is_none());
+    }
+
+    #[test]
+    fn test_catalog_publishes_the_verified_reasoning_controls_per_model() {
+        // (model, mandatory, default_enabled, supported efforts highest first, default)
+        type Expected = (
+            &'static str,
+            bool,
+            bool,
+            Option<&'static [&'static str]>,
+            Option<&'static str>,
+        );
+        let expected: [Expected; 8] = [
+            (
+                "gpt-oss-120b",
+                true,
+                true,
+                Some(&["high", "medium", "low"]),
+                Some("medium"),
+            ),
+            (
+                "gpt-oss-safeguard-120b",
+                true,
+                true,
+                Some(&["high", "medium", "low"]),
+                Some("medium"),
+            ),
+            ("gemma4-31b", false, false, None, None),
+            (
+                "kimi-k3",
+                false,
+                true,
+                Some(&["max", "high", "low"]),
+                Some("max"),
+            ),
+            (
+                "glm-5-3",
+                true,
+                true,
+                Some(&["max", "high", "low"]),
+                Some("max"),
+            ),
+            (
+                "glm-5-3-flash",
+                true,
+                true,
+                Some(&["max", "high", "low"]),
+                Some("max"),
+            ),
+            (
+                "deepseek-v4-1-flash",
+                false,
+                true,
+                Some(&["max", "xhigh", "high", "low"]),
+                Some("high"),
+            ),
+            ("llama3-3-70b", false, false, None, None),
+        ];
+        assert_eq!(expected.len(), MODEL_CONFIGS.len());
+        let models = openai_models_response();
+
+        for (model, mandatory, default_enabled, supported, default_effort) in expected {
+            let entry = model_entry(model).expect("catalog model");
+            let listed = models["data"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|listed| listed["id"] == model)
+                .expect("listed model");
+            assert_eq!(
+                listed["max_completion_tokens"],
+                json!(entry.config.context_window),
+                "{model}"
+            );
+            match entry.config.reasoning {
+                None => {
+                    assert!(!entry.capabilities.reasoning, "{model}");
+                    assert!(listed.get("reasoning").is_none(), "{model}");
+                }
+                Some(reasoning) => {
+                    assert!(entry.capabilities.reasoning, "{model}");
+                    assert_eq!(reasoning.mandatory, mandatory, "{model}");
+                    assert_eq!(reasoning.default_enabled, default_enabled, "{model}");
+                    let published = &listed["reasoning"];
+                    assert_eq!(published["mandatory"], json!(mandatory), "{model}");
+                    assert_eq!(
+                        published["default_enabled"],
+                        json!(default_enabled),
+                        "{model}"
+                    );
+                    assert_eq!(
+                        published.get("supported_efforts").cloned(),
+                        supported.map(|efforts| json!(efforts)),
+                        "{model}"
+                    );
+                    assert_eq!(
+                        published.get("default_effort").cloned(),
+                        default_effort.map(|effort| json!(effort)),
+                        "{model}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_reasoning_controls_match_between_catalog_and_models_endpoints() {
+        let catalog = model_catalog_response(ModelPlan::Paid);
+        let models = openai_models_response();
+        for model in catalog["data"].as_array().expect("catalog data") {
+            let listed = models["data"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|listed| listed["id"] == model["id"])
+                .expect("every catalog model is listed");
+            assert_eq!(
+                model.get("reasoning"),
+                listed.get("reasoning"),
+                "{}",
+                model["id"]
+            );
+            assert_eq!(
+                model["max_completion_tokens"], listed["max_completion_tokens"],
+                "{}",
+                model["id"]
+            );
+        }
+    }
+
+    #[test]
+    fn test_reasoning_effort_round_trips_openai_spellings() {
+        for effort in ReasoningEffort::ALL {
+            assert_eq!(ReasoningEffort::parse(effort.as_str()), Some(effort));
+        }
+        assert_eq!(ReasoningEffort::parse("ultra"), None);
+        assert_eq!(ReasoningEffort::parse("Low"), None);
+        assert!(ReasoningEffort::None < ReasoningEffort::Minimal);
+        assert!(ReasoningEffort::XHigh < ReasoningEffort::Max);
+    }
+
+    #[test]
+    fn test_reasoning_accepts_and_clamps_per_model() {
+        let glm = model_reasoning(GLM_5_3_MODEL_ID).unwrap();
+        assert!(!glm.accepts(ReasoningEffort::None));
+        assert!(!glm.accepts(ReasoningEffort::Medium));
+        assert!(glm.accepts(ReasoningEffort::Max));
+        assert_eq!(glm.clamp(ReasoningEffort::None), ReasoningEffort::Low);
+        assert_eq!(glm.clamp(ReasoningEffort::Minimal), ReasoningEffort::Low);
+        assert_eq!(glm.clamp(ReasoningEffort::Medium), ReasoningEffort::High);
+        assert_eq!(glm.clamp(ReasoningEffort::XHigh), ReasoningEffort::Max);
+        assert_eq!(glm.clamp(ReasoningEffort::High), ReasoningEffort::High);
+
+        let gpt_oss = model_reasoning(QUICK_MODEL_ID).unwrap();
+        assert_eq!(gpt_oss.clamp(ReasoningEffort::Max), ReasoningEffort::High);
+        assert_eq!(gpt_oss.clamp(ReasoningEffort::XHigh), ReasoningEffort::High);
+        assert_eq!(gpt_oss.clamp(ReasoningEffort::None), ReasoningEffort::Low);
+
+        let kimi = model_reasoning(KIMI_K3_MODEL_ID).unwrap();
+        assert!(kimi.accepts(ReasoningEffort::None));
+        assert_eq!(kimi.clamp(ReasoningEffort::Medium), ReasoningEffort::High);
+        assert_eq!(
+            kimi.accepted_efforts(),
+            vec![
+                ReasoningEffort::None,
+                ReasoningEffort::Low,
+                ReasoningEffort::High,
+                ReasoningEffort::Max
+            ]
+        );
+
+        let gemma = model_reasoning("gemma4-31b").unwrap();
+        for effort in ReasoningEffort::ALL {
+            assert!(gemma.accepts(effort), "{effort:?}");
+        }
+        assert_eq!(model_reasoning("llama3-3-70b"), None);
+        assert_eq!(model_reasoning(AUTO_QUICK_MODEL_ID), None);
+    }
+
+    #[test]
+    fn test_alias_reasoning_is_what_every_candidate_accepts() {
+        // Paid Quick may run on GLM-5.3-Flash or DeepSeek: xhigh and none are
+        // not shared, so neither is promised; Flash's mandatory reasoning wins.
+        let paid_quick = alias_reasoning(AUTO_QUICK_MODEL_ID, ModelPlan::Paid).unwrap();
+        assert_eq!(
+            paid_quick.json(),
+            json!({
+                "mandatory": true,
+                "default_enabled": true,
+                "supported_efforts": ["max", "high", "low"],
+                "default_effort": "max"
+            })
+        );
+        // Paid Powerful may run on GLM-5.3 or Kimi K3.
+        let paid_powerful = alias_reasoning(AUTO_POWERFUL_MODEL_ID, ModelPlan::Paid).unwrap();
+        assert_eq!(paid_powerful, paid_quick);
+        // Free aliases have no alternates and publish their target's controls.
+        assert_eq!(
+            alias_reasoning(AUTO_QUICK_MODEL_ID, ModelPlan::Free),
+            model_reasoning(QUICK_MODEL_ID)
+        );
+        assert_eq!(
+            alias_reasoning(AUTO_POWERFUL_MODEL_ID, ModelPlan::Free),
+            model_reasoning(GLM_5_3_MODEL_ID)
+        );
+        assert_eq!(alias_reasoning(GLM_5_3_MODEL_ID, ModelPlan::Paid), None);
+
+        for plan in [ModelPlan::Free, ModelPlan::Paid] {
+            let catalog = model_catalog_response(plan);
+            for alias in catalog["aliases"].as_array().expect("aliases") {
+                let selector = alias["id"].as_str().expect("alias ID");
+                let reasoning = alias_reasoning(selector, plan).expect("alias reasoning");
+                assert_eq!(alias["reasoning"], reasoning.json(), "{selector} {plan:?}");
+                assert!(
+                    reasoning
+                        .supported_efforts
+                        .is_none_or(|efforts| !efforts.is_empty()),
+                    "{selector} {plan:?} must accept some effort"
+                );
+                let target = catalog_model(&catalog, alias["target_model"].as_str().unwrap());
+                assert_eq!(alias["context_window"], target["context_window"]);
+                assert_eq!(
+                    alias["max_completion_tokens"],
+                    target["max_completion_tokens"]
+                );
+            }
+        }
     }
 }

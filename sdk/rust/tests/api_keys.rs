@@ -155,8 +155,10 @@ async fn test_streaming_chat_with_api_key() -> Result<()> {
 
     // Test streaming chat completion
     let request = ChatCompletionRequest {
+        reasoning_effort: None,
         model: chat_model(),
         messages: vec![ChatMessage {
+            reasoning: None,
             role: "user".to_string(),
             content: serde_json::json!("Please reply with exactly and only the word 'echo'"),
             tool_calls: None,

@@ -165,6 +165,67 @@ Set `stream` to `true` for Server-Sent Events or `false` for one JSON response.
 Additional provider-specific JSON fields are forwarded without being parsed or
 rewritten by the proxy or Rust SDK.
 
+#### Reasoning effort (thinking levels)
+
+Reasoning models accept OpenAI's top-level `reasoning_effort` field with the
+standard vocabulary `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`.
+Each model accepts a subset, published on its `/v1/models` entry as a
+`reasoning` object (the same shape OpenRouter publishes):
+
+```json
+{
+  "id": "glm-5-3",
+  "max_completion_tokens": 262144,
+  "reasoning": {
+    "mandatory": true,
+    "default_enabled": true,
+    "supported_efforts": ["max", "high", "low"],
+    "default_effort": "max"
+  }
+}
+```
+
+- `supported_efforts` lists the accepted values, highest first. Omit the field
+  to get `default_effort`.
+- `none` turns reasoning off and is only accepted when `mandatory` is `false`.
+- A model without `supported_efforts` has no tiers: any effort other than
+  `none` turns reasoning on.
+- Models that never reason have no `reasoning` object and ignore the field.
+- `max_completion_tokens` is the most a request can receive; input and output
+  share the context window, so the effective limit is that less the prompt.
+  Reasoning tokens count against `max_completion_tokens` (and `max_tokens`).
+
+An unsupported value on an explicit model is rejected before any provider is
+called, in OpenAI's shape:
+
+```json
+{
+  "status": 400,
+  "message": "Unsupported value: 'medium' is not supported with the 'glm-5-3' model. Supported values are: 'low', 'high', 'max'.",
+  "error": {
+    "message": "Unsupported value: 'medium' is not supported with the 'glm-5-3' model. Supported values are: 'low', 'high', 'max'.",
+    "code": "unsupported_value",
+    "type": "invalid_request_error",
+    "param": "reasoning_effort"
+  }
+}
+```
+
+On the `auto:quick` and `auto:powerful` aliases the value is instead moved to
+the nearest effort the resolved model accepts (the next higher one, else the
+next lower one), so a fallback to another model never fails a running task.
+Alias entries in the catalog publish only the efforts every model they can
+resolve to accepts.
+
+Reasoning text comes back in `message.reasoning` (non-streaming) and
+`delta.reasoning` (streaming); one provider route also sends a deprecated
+duplicate `reasoning_content`, so read `reasoning` first and never concatenate
+the two. `usage.completion_tokens_details.reasoning_tokens` is passed through
+where the provider reports it. Template switches such as
+`chat_template_kwargs.enable_thinking` are not part of the contract: switches
+that would turn thinking off are dropped for models whose reasoning is
+mandatory.
+
 #### Embeddings
 ```bash
 curl http://localhost:8080/v1/embeddings \
