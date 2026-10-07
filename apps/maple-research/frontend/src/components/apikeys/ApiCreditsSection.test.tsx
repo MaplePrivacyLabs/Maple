@@ -23,9 +23,12 @@ describe("API credits platform policy", () => {
       .forEach((restore) => restore());
   });
 
-  async function mount(ios: boolean) {
-    const iosSpy = spyOn(platform, "isIOS").mockReturnValue(ios);
-    const mobileSpy = spyOn(platform, "isMobile").mockReturnValue(ios);
+  async function mount(platformName: "ios" | "android" | "web" | "desktop") {
+    const iosSpy = spyOn(platform, "isIOS").mockReturnValue(platformName === "ios");
+    const androidSpy = spyOn(platform, "isAndroid").mockReturnValue(platformName === "android");
+    const mobileSpy = spyOn(platform, "isMobile").mockReturnValue(
+      platformName === "ios" || platformName === "android"
+    );
     const authSpy = spyOn(sdk, "useOpenSecret").mockReturnValue({
       auth: {
         user: {
@@ -36,6 +39,7 @@ describe("API credits platform policy", () => {
     } as ReturnType<typeof sdk.useOpenSecret>);
     cleanup.push(
       () => iosSpy.mockRestore(),
+      () => androidSpy.mockRestore(),
       () => mobileSpy.mockRestore(),
       () => authSpy.mockRestore()
     );
@@ -53,20 +57,22 @@ describe("API credits platform policy", () => {
     });
   }
 
-  test("iOS retains existing credit balance and consumption explanation without checkout", async () => {
-    await mount(true);
-    expect(textContent(renderer!.root)).toContain("Extra Credit Balance");
-    expect(textContent(renderer!.root)).toContain("12,345");
-    expect(textContent(renderer!.root)).toContain(
-      "Extends your subscription when plan credits run out"
-    );
-    expect(textContent(renderer!.root)).not.toContain("Purchase Credits");
-    expect(textContent(renderer!.root)).not.toContain("$1 per 1,000 credits");
-    expect(renderer!.root.findAllByType("button")).toHaveLength(0);
-  });
+  for (const platformName of ["ios", "android"] as const) {
+    test(`${platformName} retains existing credit balance and consumption explanation without checkout`, async () => {
+      await mount(platformName);
+      expect(textContent(renderer!.root)).toContain("Extra Credit Balance");
+      expect(textContent(renderer!.root)).toContain("12,345");
+      expect(textContent(renderer!.root)).toContain(
+        "Extends your subscription when plan credits run out"
+      );
+      expect(textContent(renderer!.root)).not.toContain("Purchase Credits");
+      expect(textContent(renderer!.root)).not.toContain("$1 per 1,000 credits");
+      expect(renderer!.root.findAllByType("button")).toHaveLength(0);
+    });
+  }
 
   test("other clients preserve credit packages, custom amounts, and both payment methods", async () => {
-    await mount(false);
+    await mount("web");
     const content = textContent(renderer!.root);
     for (const text of [
       "12,345",

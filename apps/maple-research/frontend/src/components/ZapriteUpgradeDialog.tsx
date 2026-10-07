@@ -18,7 +18,7 @@ import {
   type ZapriteUpgradeQuote,
   type ZapriteUpgradeStatusResponse
 } from "@/billing/zapriteUpgrade";
-import { isIOS, isMobile, isTauri } from "@/utils/platform";
+import { isAndroid, isIOS, isMobile, isTauri } from "@/utils/platform";
 
 type ZapriteUpgradeDialogProps = {
   open: boolean;
@@ -65,7 +65,12 @@ function statusCopy(status: string, planName?: string): string {
   }
 }
 
-export function ZapriteUpgradeDialog({
+export function ZapriteUpgradeDialog(props: ZapriteUpgradeDialogProps) {
+  if (isAndroid()) return null;
+  return <WebZapriteUpgradeDialog {...props} />;
+}
+
+function WebZapriteUpgradeDialog({
   open,
   onOpenChange,
   userId,

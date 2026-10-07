@@ -3,6 +3,7 @@ import { Link } from "@tanstack/react-router";
 import { TopNav } from "@/components/TopNav";
 import { FullPageMain } from "@/components/FullPageMain";
 import { MarketingHeader } from "@/components/MarketingHeader";
+import { isAndroid } from "@/utils/platform";
 
 export const Route = createFileRoute("/terms")({
   component: Terms
@@ -43,12 +44,18 @@ function Terms(): JSX.Element {
           >
             <p>
               The website located at <a href="https://opensecret.cloud">https://opensecret.cloud</a>
-              , <a href="https://trymaple.ai">https://trymaple.ai</a>, and the products Maple AI and
-              OpenSecret (together, the "Products") are copyrighted works belonging to Maple Privacy
-              Labs Inc. ("Company", "us", "our", and "we"). Certain features of the Products and
-              products may be subject to additional guidelines, terms, or rules, which will be
-              posted on the Products in connection with such features. All such additional terms,
-              guidelines, and rules are incorporated by reference into these Terms.
+              ,{" "}
+              {isAndroid() ? (
+                "https://trymaple.ai"
+              ) : (
+                <a href="https://trymaple.ai">https://trymaple.ai</a>
+              )}
+              , and the products Maple AI and OpenSecret (together, the "Products") are copyrighted
+              works belonging to Maple Privacy Labs Inc. ("Company", "us", "our", and "we"). Certain
+              features of the Products and products may be subject to additional guidelines, terms,
+              or rules, which will be posted on the Products in connection with such features. All
+              such additional terms, guidelines, and rules are incorporated by reference into these
+              Terms.
             </p>
             <p>
               <strong>

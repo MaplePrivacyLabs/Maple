@@ -4,6 +4,7 @@ import { Button } from "./ui/button";
 import { useOpenSecret } from "@mapleai/sdk";
 import { Menu, X } from "lucide-react";
 import { useState, type ReactNode } from "react";
+import { isAndroid } from "@/utils/platform";
 
 function NavLink({
   to,
@@ -35,6 +36,7 @@ export function TopNav() {
   const os = useOpenSecret();
   const navigate = useNavigate();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const androidConsumptionOnly = isAndroid();
 
   return (
     <div className="fixed top-0 left-0 right-0 z-50 px-4 sm:px-6 lg:px-8">
@@ -59,16 +61,20 @@ export function TopNav() {
             {/* Desktop Navigation */}
             <div className="hidden sm:flex items-center justify-between">
               <div className="flex items-center gap-6 sm:gap-10">
-                <NavLink to="/pricing">Pricing</NavLink>
+                <NavLink to="/pricing">
+                  {androidConsumptionOnly ? "Plan details" : "Pricing"}
+                </NavLink>
                 <NavLink to="/proof">Proof</NavLink>
-                <a
-                  href="https://blog.trymaple.ai/tag/guides/"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="transition-colors font-light tracking-tight text-lg text-[#E2E2E2]/70 hover:text-[#E2E2E2]"
-                >
-                  Guides
-                </a>
+                {!androidConsumptionOnly && (
+                  <a
+                    href="https://blog.trymaple.ai/tag/guides/"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="transition-colors font-light tracking-tight text-lg text-[#E2E2E2]/70 hover:text-[#E2E2E2]"
+                  >
+                    Guides
+                  </a>
+                )}
               </div>
             </div>
 
@@ -113,20 +119,22 @@ export function TopNav() {
           <div className="sm:hidden absolute left-4 right-4 sm:left-8 sm:right-8 mt-2 p-6 rounded-xl border border-[#E2E2E2]/10 bg-[#111111]/95 backdrop-blur-md">
             <div className="flex flex-col gap-6">
               <NavLink to="/pricing" onClick={() => setMobileMenuOpen(false)}>
-                Pricing
+                {androidConsumptionOnly ? "Plan details" : "Pricing"}
               </NavLink>
               <NavLink to="/proof" onClick={() => setMobileMenuOpen(false)}>
                 Proof
               </NavLink>
-              <a
-                href="https://blog.trymaple.ai/tag/guides/"
-                target="_blank"
-                rel="noopener noreferrer"
-                className="transition-colors font-light tracking-tight text-lg text-[#E2E2E2]/70 hover:text-[#E2E2E2]"
-                onClick={() => setMobileMenuOpen(false)}
-              >
-                Guides
-              </a>
+              {!androidConsumptionOnly && (
+                <a
+                  href="https://blog.trymaple.ai/tag/guides/"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="transition-colors font-light tracking-tight text-lg text-[#E2E2E2]/70 hover:text-[#E2E2E2]"
+                  onClick={() => setMobileMenuOpen(false)}
+                >
+                  Guides
+                </a>
+              )}
             </div>
           </div>
         )}

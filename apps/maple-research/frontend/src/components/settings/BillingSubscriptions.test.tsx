@@ -1,7 +1,8 @@
-import { afterEach, describe, expect, mock, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, mock, spyOn, test } from "bun:test";
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
 import type { BillingStatus, BillingSubscription } from "@/billing/billingApi";
 import type { AppleBillingContextValue } from "@/billing/useAppleBilling";
+import * as platform from "@/utils/platform";
 import { BillingSubscriptions } from "./BillingSubscriptions";
 import { ApplePurchaseRecovery } from "./ApplePurchaseRecovery";
 
@@ -57,9 +58,52 @@ function recovery(overrides: Partial<AppleBillingContextValue> = {}): AppleBilli
 
 describe("billing subscription settings", () => {
   let renderer: ReactTestRenderer | null = null;
+  let androidSpy: ReturnType<typeof spyOn<typeof platform, "isAndroid">>;
+  beforeEach(() => {
+    androidSpy = spyOn(platform, "isAndroid").mockReturnValue(false);
+  });
   afterEach(() => {
     if (renderer) act(() => renderer?.unmount());
     renderer = null;
+    androidSpy.mockRestore();
+  });
+
+  test("Android shows every subscription but directs management to support without opening payment pages", async () => {
+    androidSpy.mockReturnValue(true);
+    const manageApple = mock(async () => {});
+    const manageStripe = mock(async () => {});
+    const manageSupport = mock(async () => {});
+    act(() => {
+      renderer = create(
+        <BillingSubscriptions
+          status={status([
+            {
+              ...appleSubscription,
+              provider: "stripe",
+              plan: "Max",
+              manage: "portal",
+              selected: true,
+              environment: undefined
+            },
+            appleSubscription
+          ])}
+          manageApple={manageApple}
+          manageStripe={manageStripe}
+          manageSupport={manageSupport}
+        />
+      );
+    });
+    expect(textContent(renderer!.root)).toContain("Supplies your current plan");
+    expect(textContent(renderer!.root)).toContain("Max");
+    expect(textContent(renderer!.root)).toContain("Pro");
+    const buttons = renderer!.root.findAllByType("button");
+    expect(buttons.map(textContent)).toEqual(["Contact support", "Contact support"]);
+    for (const button of buttons) {
+      await act(async () => button.props.onClick());
+    }
+    expect(manageSupport).toHaveBeenCalledTimes(2);
+    expect(manageApple).not.toHaveBeenCalled();
+    expect(manageStripe).not.toHaveBeenCalled();
   });
 
   test("renders selected Stripe and unselected Apple management with sandbox/conflict labels", async () => {

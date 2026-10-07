@@ -23,6 +23,7 @@ import {
 import { useNavigate } from "@tanstack/react-router";
 import { useBillingState } from "@/state/useLocalState";
 import { hasApiAccess } from "@/billing/billingAccess";
+import { isAndroid } from "@/utils/platform";
 
 interface UpgradePromptDialogProps {
   open: boolean;
@@ -216,6 +217,37 @@ export function UpgradePromptDialog({
   };
 
   const info = getFeatureInfo();
+
+  if (isAndroid()) {
+    return (
+      <Dialog open={open} onOpenChange={onOpenChange}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>{info.title}</DialogTitle>
+            <DialogDescription>
+              {feature === "usage"
+                ? "You've reached your plan's usage limit. Usage becomes available again when your allowance resets."
+                : feature === "tokens"
+                  ? "This conversation has reached your plan's limit. You can start a new chat."
+                  : `This feature requires a ${info.requiredPlan} plan or above.`}
+            </DialogDescription>
+          </DialogHeader>
+          <p className="text-sm text-muted-foreground">
+            Purchases and plan changes are not available in the Android app. You can manage your
+            plan on the Maple website and use it here with the same account.
+          </p>
+          <DialogFooter>
+            {feature === "tokens" && (
+              <Button variant="outline" onClick={handleNewChat}>
+                Start New Chat
+              </Button>
+            )}
+            <Button onClick={() => onOpenChange(false)}>Got it</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    );
+  }
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>

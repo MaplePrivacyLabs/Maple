@@ -11,7 +11,7 @@ import {
 import { AlertTriangle } from "lucide-react";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
-import { isIOS } from "@/utils/platform";
+import { isAndroid, isIOS } from "@/utils/platform";
 
 interface GuestSignupWarningDialogProps {
   open: boolean;
@@ -28,6 +28,7 @@ export function GuestSignupWarningDialog({
   const [noSupportAgreed, setNoSupportAgreed] = useState(false);
   const [backupCredentialsAgreed, setBackupCredentialsAgreed] = useState(false);
   const applePayments = isIOS();
+  const androidConsumptionOnly = isAndroid();
 
   const allAgreed = bitcoinPaymentAgreed && noSupportAgreed && backupCredentialsAgreed;
 
@@ -70,7 +71,14 @@ export function GuestSignupWarningDialog({
                   htmlFor="bitcoin-payment"
                   className="text-sm font-medium leading-relaxed cursor-pointer break-words"
                 >
-                  {applePayments ? (
+                  {androidConsumptionOnly ? (
+                    <>
+                      I understand that anonymous accounts require paid access to chat.{" "}
+                      <strong>Purchases are not available in the Android app.</strong> I can sign in
+                      with an existing subscribed Maple account or redeem an existing subscription
+                      pass.
+                    </>
+                  ) : applePayments ? (
                     <>
                       I understand that Apple subscriptions are linked to this Maple account.{" "}
                       <strong>

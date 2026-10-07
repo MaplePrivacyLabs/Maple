@@ -7,7 +7,7 @@ import { Loader2, CreditCard, Bitcoin, Coins, CheckCircle, Edit } from "lucide-r
 import { useQuery } from "@tanstack/react-query";
 import { getBillingService } from "@/billing/billingService";
 import { useOpenSecret } from "@mapleai/sdk";
-import { isIOS, isMobile, isTauri } from "@/utils/platform";
+import { isMobile, isTauri } from "@/utils/platform";
 import {
   MIN_PURCHASE_CREDITS,
   MIN_PURCHASE_AMOUNT,
@@ -44,7 +44,7 @@ function CreditBalanceCard({ balance }: { balance: number }) {
             {formatCredits(balance)}
           </p>
           <p className="text-xs text-muted-foreground mt-1">
-            {!isIOS() && "$1 per 1,000 credits • "}
+            {!isMobile() && "$1 per 1,000 credits • "}
             Extends your subscription when plan credits run out
           </p>
         </div>
@@ -95,8 +95,8 @@ export function ApiCreditsSection({ showSuccessMessage = false }: ApiCreditsSect
   });
 
   const handlePurchase = async (method: "stripe" | "zaprite") => {
-    // Credits are consumed on iOS, but are not sold there in this IAP version.
-    if (isIOS()) return;
+    // Mobile apps can consume existing credits but do not sell credit top-ups.
+    if (isMobile()) return;
     // Clear any previous errors
     setPurchaseError(null);
 
@@ -216,7 +216,7 @@ export function ApiCreditsSection({ showSuccessMessage = false }: ApiCreditsSect
     );
   }
 
-  if (isIOS()) {
+  if (isMobile()) {
     return <CreditBalanceCard balance={creditBalance?.balance ?? 0} />;
   }
 

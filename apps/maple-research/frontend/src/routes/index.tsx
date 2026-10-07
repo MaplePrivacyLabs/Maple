@@ -11,7 +11,7 @@ import type { DiscountResponse } from "@/billing/billingApi";
 import { appUrl } from "@/config/domains";
 import { useRouteMeta } from "@/utils/routeMeta";
 import { getSafeInternalRedirect } from "@/utils/internalRedirect";
-import { isIOS } from "@/utils/platform";
+import { isAndroid, isIOS } from "@/utils/platform";
 
 const appHomeUrl = appUrl("/");
 
@@ -44,7 +44,7 @@ function Index() {
   const navigate = useNavigate();
   const os = useOpenSecret();
   const queryClient = useQueryClient();
-  const showWebPromotions = !isIOS();
+  const showWebPromotions = !isIOS() && !isAndroid();
   const { setBillingStatus, billingStatus } = useBillingState();
 
   useRouteMeta({

@@ -5,7 +5,7 @@ import { billingPeriodDate } from "@/billing/subscriptionManagement";
 import { useAppleBilling } from "@/billing/useAppleBilling";
 import { Button } from "@/components/ui/button";
 import { useBillingState } from "@/state/useLocalState";
-import { isIOS } from "@/utils/platform";
+import { isAndroid, isMobile } from "@/utils/platform";
 import { SettingsPage, SettingsSection } from "./SettingsPage";
 import { BillingSubscriptions } from "./BillingSubscriptions";
 import { ApplePurchaseRecovery } from "./ApplePurchaseRecovery";
@@ -18,7 +18,9 @@ export function BillingSettings() {
   const productName = billingStatus?.product_name ?? "";
   const normalizedProductName = productName.toLowerCase();
   const showUpgrade =
-    !normalizedProductName.includes("max") && !normalizedProductName.includes("team");
+    !isAndroid() &&
+    !normalizedProductName.includes("max") &&
+    !normalizedProductName.includes("team");
 
   const periodLabel =
     billingStatus?.payment_provider === "subscription_pass" ||
@@ -63,7 +65,7 @@ export function BillingSettings() {
       <SettingsSection
         title="API credits"
         description={
-          isIOS()
+          isMobile()
             ? "View your extra credit balance and manage API access."
             : "View your extra credit balance or purchase credits for API and extended plan usage."
         }

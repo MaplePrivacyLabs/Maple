@@ -22,7 +22,7 @@ import { getBillingService } from "@/billing/billingService";
 import { useChatRuntimeStore } from "@/contexts/ChatRuntimeContext";
 import { beginAllChatRuntimeDeletionFence } from "@/services/chatRuntimeDeletionFence";
 import { assertChatAccountCredential } from "@/services/chatAccountCredential";
-import { isIOS } from "@/utils/platform";
+import { isAndroid, isIOS } from "@/utils/platform";
 
 interface GuestPaymentWarningDialogProps {
   open: boolean;
@@ -145,9 +145,11 @@ export function GuestPaymentWarningDialog({ open, onOpenChange }: GuestPaymentWa
               Your anonymous account is not activated yet and cannot use the chat feature.
             </p>
             <p className="text-sm text-muted-foreground">
-              {isIOS()
-                ? "You can subscribe with Apple or restore an existing Apple purchase. Keep your Maple Account ID and password so you can sign in again."
-                : "To start chatting with Maple AI, you need to subscribe to a paid plan. Anonymous accounts must pay for a full year using Bitcoin or redeem a subscription pass."}
+              {isAndroid()
+                ? "Purchases are not available in the Android app. Sign in with a Maple account that already has a subscription, including one purchased on the web, or redeem an existing subscription pass."
+                : isIOS()
+                  ? "You can subscribe with Apple or restore an existing Apple purchase. Keep your Maple Account ID and password so you can sign in again."
+                  : "To start chatting with Maple AI, you need to subscribe to a paid plan. Anonymous accounts must pay for a full year using Bitcoin or redeem a subscription pass."}
             </p>
           </div>
 
@@ -160,7 +162,7 @@ export function GuestPaymentWarningDialog({ open, onOpenChange }: GuestPaymentWa
           <div className="space-y-2">
             <Button onClick={handleGoToPricing} className="w-full gap-2">
               <CreditCard className="w-4 h-4" />
-              View Pricing & Subscribe
+              {isAndroid() ? "View plan details" : "View Pricing & Subscribe"}
             </Button>
             <Button
               variant="outline"

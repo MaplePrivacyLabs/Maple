@@ -14,7 +14,7 @@ import { getBillingService } from "@/billing/billingService";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { useBillingState } from "@/state/useLocalState";
-import { isIOS, isTauriDesktop } from "@/utils/platform";
+import { isAndroid, isIOS, isTauriDesktop } from "@/utils/platform";
 import { cn } from "@/utils/utils";
 import { SettingsPage, SettingsSection } from "../SettingsPage";
 
@@ -122,17 +122,21 @@ export function ApiSettingsLayout() {
         <SettingsSection
           title="Unlock API access"
           description={
-            isIOSPlatform
-              ? "Upgrade to Pro or Max to create API keys and use Maple programmatically."
-              : "Upgrade to Pro, Max, or a Team plan to create API keys, purchase extra credits, and use Maple programmatically."
+            isAndroid()
+              ? "API access is included with Pro, Max, and Team plans. Sign in with an account that has an eligible plan."
+              : isIOSPlatform
+                ? "Upgrade to Pro or Max to create API keys and use Maple programmatically."
+                : "Upgrade to Pro, Max, or a Team plan to create API keys, purchase extra credits, and use Maple programmatically."
           }
         >
-          <Button asChild variant="primary">
-            <Link to="/pricing">
-              <Sparkles className="mr-2 h-4 w-4" />
-              View pricing plans
-            </Link>
-          </Button>
+          {!isAndroid() && (
+            <Button asChild variant="primary">
+              <Link to="/pricing">
+                <Sparkles className="mr-2 h-4 w-4" />
+                View pricing plans
+              </Link>
+            </Button>
+          )}
         </SettingsSection>
       </SettingsPage>
     );

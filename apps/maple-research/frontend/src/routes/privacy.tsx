@@ -2,6 +2,7 @@ import { createFileRoute } from "@tanstack/react-router";
 import { TopNav } from "@/components/TopNav";
 import { FullPageMain } from "@/components/FullPageMain";
 import { MarketingHeader } from "@/components/MarketingHeader";
+import { isAndroid } from "@/utils/platform";
 
 export const Route = createFileRoute("/privacy")({
   component: Privacy
@@ -46,10 +47,15 @@ function Privacy(): JSX.Element {
               This privacy notice for Maple Privacy Labs Inc. ("Company," "we," "us," or "our"),
               describes how and why we might collect, store, use, and/or share ("process") your
               information when you use our services ("Services"). By using our Services, or by
-              accessing our website <a href="https://trymaple.ai">https://trymaple.ai</a>,{" "}
-              <a href="https://opensecret.cloud">https://opensecret.cloud</a>, or the products Maple
-              AI and OpenSecret, or any website of ours that links to this privacy notice, you are
-              accepting and consenting to this Privacy Policy.
+              accessing our website{" "}
+              {isAndroid() ? (
+                "https://trymaple.ai"
+              ) : (
+                <a href="https://trymaple.ai">https://trymaple.ai</a>
+              )}
+              , <a href="https://opensecret.cloud">https://opensecret.cloud</a>, or the products
+              Maple AI and OpenSecret, or any website of ours that links to this privacy notice, you
+              are accepting and consenting to this Privacy Policy.
             </p>
 
             <p>

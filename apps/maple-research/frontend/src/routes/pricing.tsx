@@ -29,6 +29,7 @@ import { isIOS, isAndroid, isMobile, isTauri } from "@/utils/platform";
 import { cn } from "@/utils/utils";
 import packageJson from "../../package.json";
 import { ApplePricingPage } from "@/components/billing/ApplePricingPage";
+import { AndroidPlanPage } from "@/components/billing/AndroidPlanPage";
 import {
   hasAppleSubscriptionToManage,
   hasConfirmedBillingStatus
@@ -246,8 +247,9 @@ function PricingFAQ() {
 }
 
 function PricingPage() {
-  // Keep the legacy checkout effects unmounted on iOS, including selected_plan
-  // callbacks. IAP availability never falls back to Stripe or Zaprite checkout.
+  // Never mount legacy checkout effects (including selected_plan callbacks) on
+  // Android. Existing subscriptions remain usable without purchasing in the app.
+  if (isAndroid()) return <AndroidPlanPage />;
   return isIOS() ? <ApplePricingPage /> : <LegacyPricingPage />;
 }
 
