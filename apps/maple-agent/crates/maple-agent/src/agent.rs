@@ -5617,9 +5617,6 @@ impl AgentRuntimeHandle {
         // followed by this send path re-appending the cancelled prompt.
         drop(session_lifecycle_guard.take());
 
-        let permission_responder =
-            matches!(permission_routing, AgentPermissionRouting::CallingSurface)
-                .then_some(AgentRunPermissionResponder);
         let cancellation = matches!(permission_routing, AgentPermissionRouting::CallingSurface)
             .then(|| AgentRunCancellation {
                 agent: self.clone(),
@@ -5633,7 +5630,6 @@ impl AgentRuntimeHandle {
             terminal: terminal_rx,
             usage: usage_rx,
             event_overflowed: run_events.overflow_flag(),
-            permission_responder,
             cancellation,
             queued: None,
             queue: started_queue,
@@ -8992,7 +8988,6 @@ fn steered_run_handle(run_id: String, queue: AgentDesktopQueueSnapshot) -> Agent
         terminal,
         usage,
         event_overflowed: Arc::new(AtomicBool::new(false)),
-        permission_responder: None,
         cancellation: None,
         queued: None,
         queue,
@@ -9013,7 +9008,6 @@ fn staged_run_handle(
         terminal,
         usage,
         event_overflowed: Arc::new(AtomicBool::new(false)),
-        permission_responder: None,
         cancellation: None,
         queued: Some(queued),
         queue,

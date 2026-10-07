@@ -638,7 +638,6 @@ pub struct AgentRunHandle {
     pub terminal: watch::Receiver<Option<AgentRunTerminal>>,
     pub usage: watch::Receiver<Option<AgentRunUsage>>,
     pub event_overflowed: Arc<AtomicBool>,
-    pub(crate) permission_responder: Option<AgentRunPermissionResponder>,
     pub(crate) cancellation: Option<AgentRunCancellation>,
     pub queued: Option<AgentQueuedMessage>,
     pub queue: AgentDesktopQueueSnapshot,
@@ -695,21 +694,6 @@ pub(super) fn nonnegative_tokens(tokens: Option<i32>) -> u64 {
     tokens
         .and_then(|tokens| u64::try_from(tokens).ok())
         .unwrap_or(0)
-}
-
-/// Kept for surfaces that still hold one. Maple no longer asks for tool
-/// permissions, so there is never a request to answer.
-#[derive(Clone)]
-pub(crate) struct AgentRunPermissionResponder;
-
-impl AgentRunPermissionResponder {
-    pub async fn respond(
-        &self,
-        _request_id: String,
-        _decision: AgentPermissionDecision,
-    ) -> Result<(), String> {
-        Err("Maple no longer asks for tool permissions".to_string())
-    }
 }
 
 /// Opaque cancellation capability for one run owned by a calling surface.

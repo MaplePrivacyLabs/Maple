@@ -11,25 +11,12 @@ use std::sync::atomic::AtomicUsize;
 pub(super) const MAX_ACP_CONNECTIONS: usize = 8;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum AgentAcpPermissionMode {
-    ReadOnly,
-    AllowAll,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentAcpConfig {
-    #[serde(default = "default_permission_mode")]
-    pub permission_mode: AgentAcpPermissionMode,
     #[serde(default)]
     pub allowed_project_roots: Vec<String>,
     #[serde(default = "default_max_connections")]
     pub max_connections: usize,
-}
-
-fn default_permission_mode() -> AgentAcpPermissionMode {
-    AgentAcpPermissionMode::ReadOnly
 }
 
 fn default_max_connections() -> usize {
@@ -39,7 +26,6 @@ fn default_max_connections() -> usize {
 impl Default for AgentAcpConfig {
     fn default() -> Self {
         Self {
-            permission_mode: default_permission_mode(),
             allowed_project_roots: Vec::new(),
             max_connections: default_max_connections(),
         }
@@ -151,10 +137,10 @@ pub(super) fn save_config_for_scope(
     Ok(())
 }
 
+/// Files written by older builds may still carry `enabled` or
+/// `permissionMode`; serde ignores unknown fields, so they load and the next
+/// save drops them.
 pub(super) fn normalize_config(mut config: AgentAcpConfig) -> Result<AgentAcpConfig, String> {
-    // `allow_all` was the exploratory Desktop-owned bypass. Caller-owned ACP
-    // supersedes it; old files migrate to the guarded policy on their next load.
-    config.permission_mode = AgentAcpPermissionMode::ReadOnly;
     config.max_connections = config.max_connections.clamp(1, MAX_ACP_CONNECTIONS);
     let mut roots = Vec::new();
     for root in config.allowed_project_roots {
