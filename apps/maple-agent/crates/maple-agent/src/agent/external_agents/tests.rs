@@ -13,6 +13,7 @@ use crate::agent::{AgentEventSink, AgentPathLayout, MapleAgentHostResources};
 use std::io::{BufRead, Write};
 use std::os::fd::FromRawFd;
 use std::os::unix::fs::PermissionsExt;
+use std::sync::Mutex as StdMutex;
 
 mod claude_fixture;
 
@@ -88,7 +89,6 @@ impl Harness {
             },
             service: service.clone(),
             session_manager: Arc::new(SessionManager::new(history)),
-            permission_modes: Arc::new(Mutex::new(HashMap::new())),
             project_root: project.clone(),
             lifetime: CancellationToken::new(),
         };
@@ -138,14 +138,6 @@ impl Harness {
                 .snapshot(),
             cancel_token: CancellationToken::new(),
         }
-    }
-
-    async fn set_mode(&self, session_id: &str, mode: GooseMode) {
-        self.host
-            .permission_modes
-            .lock()
-            .await
-            .insert(session_id.to_string(), mode);
     }
 
     async fn fixture_pid(&self) -> i32 {
@@ -387,9 +379,8 @@ fn fake_codex_app_server() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn allow_all_turn_auto_approves_and_streams_activity() {
+async fn external_agent_approvals_are_accepted_without_a_card() {
     let harness = Harness::new("approve");
-    harness.set_mode("session-1", GooseMode::Auto).await;
 
     let result = harness
         .registry
@@ -457,7 +448,7 @@ async fn allow_all_turn_auto_approves_and_streams_activity() {
         last.output.as_ref().unwrap()["structuredContent"][ACTIVITY_KEY]["fileChanges"][0]["path"],
         "src/lib.rs"
     );
-    // No permission card was needed in Allow all.
+    // The approval was accepted at once: no card, no waiting label.
     assert!(!events.iter().any(|event| matches!(
         event,
         AgentServiceEvent::Run {
@@ -465,91 +456,21 @@ async fn allow_all_turn_auto_approves_and_streams_activity() {
             ..
         }
     )));
-
-    harness.registry.shutdown_all(Duration::from_secs(5)).await;
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn read_only_turn_puts_the_approval_in_the_permission_table() {
-    let harness = Harness::new("approve");
-    let registry = Arc::clone(&harness.registry);
-    let call = harness.call("session-2", "row-2");
-    let turn = tokio::spawn(async move {
-        registry
-            .start(
-                call,
-                AgentStartParams {
-                    provider: "codex".into(),
-                    prompt: "Run the tests".into(),
-                    background: false,
-                    model: None,
-                    effort: None,
-                    cwd: None,
-                },
-            )
-            .await
-    });
-
-    let pending = {
-        let service = harness.service.clone();
-        wait_for(|| {
-            service
-                .pending_permissions
-                .try_lock()
-                .ok()
-                .and_then(|pending| {
-                    pending
-                        .iter()
-                        .next()
-                        .map(|(key, entry)| (key.clone(), entry.clone()))
-                })
-        })
-        .await
-    };
-    let ((session_id, request_id), entry) = pending;
-    assert_eq!(session_id, "session-2");
-    assert_eq!(request_id, "codex-1-cmd-1");
-    assert_eq!(entry.run_id, "external-codex-1");
-    assert_eq!(entry.routing, AgentPermissionRouting::Desktop);
-    assert_eq!(entry.request.tool_name, "codex_command");
-    assert_eq!(entry.request.arguments["command"], "cargo test");
-    let events = harness.sink.events();
-    assert!(events.iter().any(|event| matches!(
+    assert!(!events.iter().any(|event| matches!(
         event,
-        AgentServiceEvent::Run { run_id, event: AgentRunEvent::PermissionRequested { request, item }, .. }
-            if run_id == "external-codex-1" && request.request_id == "codex-1-cmd-1" && item.id == "permission-codex-1-cmd-1"
+        AgentServiceEvent::TimelineItem { item, .. } if item.item_type == "permission"
     )));
-    // The row shows the agent waiting on the user.
-    assert!(events.iter().any(|event| matches!(
-        event,
-        AgentServiceEvent::TimelineItem { item, .. }
-            if item.id == "row-2" && item.output.as_ref().unwrap()["structuredContent"][ACTIVITY_KEY]["pendingPermission"] == "run `cargo test`"
-    )));
+    assert!(!rows.iter().any(|row| {
+        row.output.as_ref().unwrap()["structuredContent"][ACTIVITY_KEY]["pendingPermission"]
+            .is_string()
+    }));
 
-    // The user declines. In the app this comes through resolve_permission;
-    // the responder is what that path resolves.
-    let PendingPermissionOrigin::ExternalAgent(responder) = entry.origin else {
-        panic!("expected an external origin");
-    };
-    harness
-        .service
-        .pending_permissions
-        .lock()
-        .await
-        .remove(&(session_id, request_id));
-    assert!(responder.resolve(AgentPermissionDecision::DenyOnce));
-
-    let result = turn.await.unwrap();
-    let text = result_text(&result);
-    assert!(text.contains("Done: decline"), "{text}");
-    assert!(text.contains("Commands run: 1 (1 failed)"), "{text}");
     harness.registry.shutdown_all(Duration::from_secs(5)).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn cancelling_the_run_interrupts_the_turn_and_shutdown_kills_the_process() {
     let harness = Harness::new("slow");
-    harness.set_mode("session-3", GooseMode::Auto).await;
     let registry = Arc::clone(&harness.registry);
     let call = harness.call("session-3", "row-3");
     let cancel = call.cancel_token.clone();
@@ -657,7 +578,6 @@ async fn background_turn_reports_its_end_into_the_transcript() {
         )
         .await
         .unwrap();
-    harness.set_mode(&session.id, GooseMode::Auto).await;
     let result = harness
         .registry
         .start(
@@ -807,7 +727,6 @@ async fn registry_rejects_unknown_providers_bad_cwd_and_too_many_agents() {
                     "idle".into(),
                     harness.project.clone(),
                     harness.host.clone(),
-                    Arc::clone(&harness.registry.issued_permission_ids),
                 )),
             );
         }
@@ -843,7 +762,6 @@ impl Harness {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_question_from_the_agent_goes_through_the_question_card() {
     let harness = Harness::new("question");
-    harness.set_mode("session-6", GooseMode::Auto).await;
     let registry = Arc::clone(&harness.registry);
     let call = harness.call("session-6", "row-6");
     let turn = tokio::spawn(async move {
@@ -896,7 +814,6 @@ async fn a_question_from_the_agent_goes_through_the_question_card() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_async_question_is_answered_in_a_turn_of_maples_own() {
     let harness = Harness::new("async-question");
-    harness.set_mode("session-7", GooseMode::Auto).await;
     let result = harness
         .registry
         .start(
@@ -1027,7 +944,6 @@ async fn claude_detection_distinguishes_sign_in_from_probe_failures() {
 async fn claude_native_streams_resumes_and_binds_the_provider() {
     let harness = Harness::new("approve");
     fs::create_dir(harness.project.join("sub")).unwrap();
-    harness.set_mode("claude-task", GooseMode::Auto).await;
     let result = harness
         .registry
         .start(harness.call("claude-task", "r1"), claude_start(false))
@@ -1117,7 +1033,6 @@ async fn claude_native_retries_only_resume_confirmed_sessions() {
     ] {
         let harness = Harness::new(mode);
         fs::create_dir(harness.project.join("sub")).unwrap();
-        harness.set_mode("retry", GooseMode::Auto).await;
         let result = harness
             .registry
             .start(harness.call("retry", "r1"), claude_start(false))
@@ -1227,7 +1142,6 @@ async fn claude_native_cancellation_kills_cli_and_descendants() {
     .await;
     // Reconnect through a new CLI process and resume the session saved before Stop.
     harness.install_fixture("claude", "approve");
-    harness.set_mode("claude-stop", GooseMode::Auto).await;
     let result = harness
         .registry
         .send(
@@ -1255,43 +1169,14 @@ async fn claude_native_cancellation_kills_cli_and_descendants() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn claude_native_permission_denial_and_questions_use_maple_brokers() {
+async fn claude_questions_still_use_the_question_card() {
     for mode in ["approve", "question", "multi-question"] {
         let harness = Harness::new(mode);
         fs::create_dir(harness.project.join("sub")).unwrap();
         let registry = harness.registry.clone();
         let call = harness.call("claude-input", "r1");
         let turn = tokio::spawn(async move { registry.start(call, claude_start(false)).await });
-        if mode == "approve" {
-            let pending = wait_for(|| {
-                harness
-                    .service
-                    .pending_permissions
-                    .try_lock()
-                    .ok()
-                    .and_then(|entries| {
-                        entries
-                            .iter()
-                            .next()
-                            .map(|(id, entry)| (id.clone(), entry.clone()))
-                    })
-            })
-            .await;
-            let (key, entry) = pending;
-            assert_eq!(entry.request.tool_name, "claude_tool");
-            assert_eq!(entry.request.arguments["command"], "cargo test");
-            harness
-                .service
-                .pending_permissions
-                .lock()
-                .await
-                .remove(&key);
-            let PendingPermissionOrigin::ExternalAgent(responder) = entry.origin else {
-                panic!("external responder expected")
-            };
-            assert!(responder.resolve(AgentPermissionDecision::DenyOnce));
-            assert!(!responder.resolve(AgentPermissionDecision::AllowOnce));
-        } else {
+        if mode != "approve" {
             let (request_id, questions) = wait_for(|| {
                 harness.sink.events().iter().find_map(|event| match event {
                     AgentServiceEvent::Question {
@@ -1326,7 +1211,8 @@ async fn claude_native_permission_denial_and_questions_use_maple_brokers() {
         let text = result_text(&result);
         assert!(
             text.contains(if mode == "approve" {
-                "Denied"
+                // The approval request was accepted without asking.
+                "Allowed"
             } else if mode == "multi-question" {
                 "Spaces, Tabs"
             } else {
@@ -1334,6 +1220,17 @@ async fn claude_native_permission_denial_and_questions_use_maple_brokers() {
             }),
             "{text}"
         );
+        let events = harness.sink.events();
+        assert!(!events.iter().any(|event| matches!(
+            event,
+            AgentServiceEvent::Run {
+                event: AgentRunEvent::PermissionRequested { .. },
+                ..
+            }
+        )));
+        if mode == "approve" {
+            assert!(harness.log().contains("\"behavior\":\"allow\""));
+        }
         harness.registry.shutdown_all(Duration::from_secs(5)).await;
     }
 }
@@ -1357,43 +1254,4 @@ async fn claude_native_failures_are_not_success_or_unsanitized_output() {
         wait_for(|| (!process_alive(pid)).then_some(())).await;
         harness.registry.shutdown_all(Duration::from_secs(5)).await;
     }
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn claude_native_stop_withdraws_pending_permission() {
-    let harness = Harness::new("approve");
-    fs::create_dir(harness.project.join("sub")).unwrap();
-    let result = harness
-        .registry
-        .start(harness.call("claude-pending", "r1"), claude_start(true))
-        .await;
-    assert!(result_text(&result).contains("claude-1"));
-    let key = wait_for(|| {
-        harness
-            .service
-            .pending_permissions
-            .try_lock()
-            .ok()
-            .and_then(|pending| pending.keys().next().cloned())
-    })
-    .await;
-    let pid = harness.fixture_pid().await;
-    let activity = harness
-        .registry
-        .cancel("claude-pending", "claude-1")
-        .await
-        .unwrap();
-    assert_eq!(activity.status, "cancelled");
-    wait_for(|| (!process_alive(pid)).then_some(())).await;
-    wait_for(|| {
-        harness
-            .service
-            .pending_permissions
-            .try_lock()
-            .ok()
-            .and_then(|pending| (!pending.contains_key(&key)).then_some(()))
-    })
-    .await;
-    assert!(!harness.log().contains("\"behavior\":\"allow\""));
-    harness.registry.shutdown_all(Duration::from_secs(5)).await;
 }

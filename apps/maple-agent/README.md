@@ -16,8 +16,8 @@ app/                  The maple-agent binary. Owns the window, login, chat,
 crates/maple-agent/   Maple's transport-neutral agent runtime, extracted from
                       the Tauri app with Tauri removed. Owns embedded Goose,
                       the Maple provider over the Maple Rust SDK, developer
-                      tools, permission policy, account-scoped session
-                      storage, and the ACP server.
+                      tools, account-scoped session storage, and the ACP
+                      server.
 crates/maple-billing/ HTTP client for the Maple billing API.
 docs/                 Theme spec measured from the Tauri app.
 scripts/              One maintainer helper: screenshot.py takes a desktop
@@ -61,19 +61,17 @@ has an independent dependency graph.
   the `acp` mode skip sign-in. The window opens while the saved session is
   checked, and a check that cannot reach the server keeps the credentials
   for the next launch; only a refusal from the server signs the user out.
-- Agent chat with streaming Markdown, tool calls, permission prompts,
-  agent questions, image attachments (picker, paste, or drag and drop),
-  a per-message Copy button, and a context-window indicator.
+- Agent chat with streaming Markdown, tool calls, agent questions, image
+  attachments (picker, paste, or drag and drop), a per-message Copy button,
+  and a context-window indicator. Every tool call runs without asking for
+  approval.
 - Slash commands in the composer: `/btw` asks a side question the task
   never sees, plus `/compact`, `/new`, `/pin`, `/web`, `/model`, and
   `/help`. The account's skills appear in the same list.
 - The task's latest todo list stays pinned above the composer.
 - Subagents: the task can give a piece of work to a subagent with the
-  `delegate` tool, which runs it in its own context. The Goose fork makes
-  the subagent inherit the task's permission mode and forwards its approval
-  requests to the parent session. Maple also asks before each handoff in
-  Read only mode. Subagents show above the composer with the tool each one
-  runs and how long it has worked. A subagent that runs in the background
+  `delegate` tool, which runs it in its own context. Subagents show above
+  the composer with the tool each one runs and how long it has worked. A subagent that runs in the background
   keeps its row after the turn ends, and Maple tells the task when it
   finishes, with a bounded result in the running turn or a new turn Maple
   starts automatically. The task can use `load` to retrieve any truncated output.
@@ -81,10 +79,10 @@ has an independent dependency graph.
   this computer with the `agent_start`, `agent_send`, `agent_status`,
   `agent_cancel`, and `list_agent_providers` tools, once the provider is enabled
   under Settings > Integrations. Each agent runs in the project with its own
-  account, context, and sandbox settings; whatever it asks approval for
-  comes to you through Maple's permission card, and Allow all grants it. Its progress streams
-  into the tool call's row and its row above the composer has a Stop
-  button. Three skills, `/handoff`, `/committee`, and `/advisor`, teach the
+  account, context, and sandbox settings; Maple accepts its approval
+  requests, and its questions still come to you through Maple's question
+  card. Its progress streams into the tool call's row and its row above the
+  composer has a Stop button. Three skills, `/handoff`, `/committee`, and `/advisor`, teach the
   task when and how to delegate. See
   [`docs/external-agents.md`](docs/external-agents.md).
 - Voice: dictate a message with the microphone button, and read any
@@ -164,7 +162,7 @@ documented in [`docs/embedded-cua.md`](docs/embedded-cua.md).
 #### Claude Code
 
 Settings > Integrations lists Claude Code (`claude`) alongside Codex, with the
-same per-task selection, streamed activity, permission cards, and Stop control.
+same per-task selection, streamed activity, question cards, and Stop control.
 Install the Claude Code CLI on the app's PATH and sign in using
 `claude auth login`. Maple uses a Rust transport adapted from Goose's Claude
 Code provider. The CLI is the only external runtime dependency. The integration
@@ -467,7 +465,6 @@ shows unpackaged builds; packaged Dev and Prod append `maple-agent-dev` and
 | --- | --- |
 | `<config>/settings.json` | App settings. |
 | `<config>/agent/accounts/<scope>/config.json` | Per-account agent configuration (default root, model, custom MCP servers, project trust). May roam between machines. |
-| `<config>/agent/accounts/<scope>/goose/config/` | Goose permission file for the account. |
 | `<config>/agent/accounts/<scope>/goose/config/skills/` | Skills the account's tasks can load, including the delegation skills Maple installs while any external agent is enabled. |
 | `<config>/agent/goose-runtime/` | Goose process configuration. |
 | `<local data>/auth.json` | Sign-in credentials (mode 0600). Device-local; never in a roaming profile. |

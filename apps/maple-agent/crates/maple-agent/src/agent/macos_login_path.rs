@@ -405,7 +405,6 @@ for raw_line in sys.stdin:
         crate::agent::configure_embedded_goose(
             &fixture_root.join("goose-runtime"),
             crate::agent::DEFAULT_AGENT_MODEL,
-            crate::agent::DEFAULT_GOOSE_MODE,
             Some(&recovered),
         )
         .unwrap();
@@ -451,7 +450,7 @@ for raw_line in sys.stdin:
                 fixture_root.clone(),
                 "Maple 730 PATH fixture".to_string(),
                 goose::session::SessionType::User,
-                goose::config::GooseMode::SmartApprove,
+                goose::config::GooseMode::Auto,
             )
             .await
             .unwrap();
@@ -460,7 +459,7 @@ for raw_line in sys.stdin:
                 std::sync::Arc::clone(&session_manager),
                 permission_manager,
                 None,
-                goose::config::GooseMode::SmartApprove,
+                goose::config::GooseMode::Auto,
                 true,
                 goose::agents::GoosePlatform::GooseDesktop,
             ),

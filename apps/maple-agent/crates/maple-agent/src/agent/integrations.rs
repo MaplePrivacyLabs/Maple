@@ -1385,7 +1385,7 @@ mod tests {
                 temp.path().to_path_buf(),
                 "Old task".into(),
                 SessionType::User,
-                GooseMode::SmartApprove,
+                GooseMode::Auto,
             )
             .await
             .unwrap();
@@ -1422,7 +1422,7 @@ mod tests {
                 temp.path().to_path_buf(),
                 "Other task".into(),
                 SessionType::User,
-                GooseMode::SmartApprove,
+                GooseMode::Auto,
             )
             .await
             .unwrap();
@@ -1512,13 +1512,12 @@ mod tests {
         let service = &fixture.handle.service;
         let user = fixture.handle.user_id.as_ref();
         let paths = &service.host.paths;
-        let (manager, transport, web_state) = {
+        let (manager, transport) = {
             let runtime = service.inner.lock().await;
             let runtime = runtime.as_ref().unwrap();
             (
                 runtime.session_manager.clone(),
                 runtime.maple_api_session.clone(),
-                runtime.web_tool_state.clone(),
             )
         };
         let session = manager
@@ -1526,7 +1525,7 @@ mod tests {
                 fixture.project_root.clone(),
                 "Before Codex".into(),
                 SessionType::User,
-                GooseMode::SmartApprove,
+                GooseMode::Auto,
             )
             .await
             .unwrap();
@@ -1534,7 +1533,6 @@ mod tests {
             service: service.clone(),
             runtime: fixture.handle.clone(),
             session_manager: manager.clone(),
-            permission_modes: Arc::new(Mutex::new(HashMap::new())),
             project_root: fixture.project_root.clone(),
             lifetime: CancellationToken::new(),
         }));
@@ -1542,7 +1540,7 @@ mod tests {
             manager.clone(),
             Arc::new(PermissionManager::new(fixture.root.join("permissions"))),
             None,
-            GooseMode::SmartApprove,
+            GooseMode::Auto,
             true,
             GoosePlatform::GooseDesktop,
         );
@@ -1590,14 +1588,11 @@ mod tests {
                     paths,
                     user_id: user,
                 },
-                &manager,
                 &transport,
                 SessionAgentConfiguration {
-                    web_tool_state: &web_state,
                     session: &session,
                     model: DEFAULT_AGENT_MODEL,
                     context_limit: None,
-                    mode: DEFAULT_GOOSE_MODE,
                     primary_model_supports_vision: false,
                     tool_context: &context,
                     allow_embedded_cua: desktop,
@@ -1677,7 +1672,6 @@ mod tests {
             agent.extension_manager.get_context().clone(),
             false,
             transport,
-            web_state,
             context,
         )
         .unwrap()

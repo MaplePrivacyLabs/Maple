@@ -2363,8 +2363,8 @@ mod tests {
 
         // A persisted task must be loadable by a later connection. The ACP
         // task above stays hidden from listing until its first prompt, so load
-        // a desktop task saved under the same caller-mediated mode: this only
-        // succeeds while the mode ACP persists is one the load path accepts.
+        // a desktop task instead. Whatever mode a caller named, every task
+        // runs with every tool call allowed, which is what the load reports.
         let created = agent
             .handle
             .create_session(Some(crate::agent::AgentCreateSessionRequest {
@@ -2400,8 +2400,8 @@ mod tests {
             loaded["error"]
         );
         assert_eq!(
-            loaded["result"]["modes"]["currentModeId"], "interactive",
-            "a persisted caller-mediated task loads as interactive: {loaded}"
+            loaded["result"]["modes"]["currentModeId"], "approve_all",
+            "a persisted task loads with every tool call allowed: {loaded}"
         );
         client.shutdown().await;
         finish_acp_stdio_serve(serving).await;
