@@ -197,7 +197,6 @@ impl AcpConnectionContext {
                     ),
                     model: Some(model.clone()),
                     context_limit: None,
-                    mode: None,
                     mcp_server_names: None,
                     system_prompt: caller.system_prompt,
                 }),
@@ -1307,7 +1306,6 @@ impl AcpConnectionContext {
                     text: prompt,
                     model: Some(model.clone()),
                     context_limit: None,
-                    mode: None,
                     vision_capable,
                     steer: false,
                     queue_id: None,
@@ -1514,9 +1512,6 @@ impl AcpConnectionContext {
                         }
                     }
                 }
-                // The runtime no longer asks for tool permissions; the
-                // variant stays declared until the API drops it.
-                Some(AgentRunEvent::PermissionRequested { .. }) => {}
                 Some(AgentRunEvent::Error(item)) => {
                     if let Some(message) = event_error_text(&item) {
                         match self
@@ -2071,9 +2066,9 @@ mod tests {
     /// `initialize` answers, `session/new` returns the mode list AND the model
     /// list, and the task it persists is loadable by a later connection.
     /// `session/new` and `session/load` advertise no modes and offer the
-    /// model selector only; a persisted task loads whatever mode it was saved
-    /// in. Regression shape: a gate on the persisted mode turned `session/load`
-    /// into an error and the editor lost the model list entirely.
+    /// model selector only. Regression shape: a gate on the persisted mode
+    /// turned `session/load` into an error and the editor lost the model list
+    /// entirely.
     #[tokio::test]
     async fn session_new_and_load_advertise_no_modes() {
         let agent = started_agent_runtime("acp-stdio").await;
@@ -2153,8 +2148,7 @@ mod tests {
 
         // A persisted task must be loadable by a later connection. The ACP
         // task above stays hidden from listing until its first prompt, so load
-        // a desktop task instead, one saved in a mode older builds used to
-        // refuse. Every task runs with every tool call allowed.
+        // a desktop task instead.
         let created = agent
             .handle
             .create_session(Some(crate::agent::AgentCreateSessionRequest {
@@ -2162,7 +2156,6 @@ mod tests {
                 title: Some("acp load target".to_string()),
                 model: None,
                 context_limit: None,
-                mode: Some("smart_approve".to_string()),
                 mcp_server_names: None,
                 system_prompt: None,
             }))
@@ -2416,7 +2409,7 @@ mod tests {
         assert!(canonical_session_id(&SessionId::new(" \n\t ")).is_err());
     }
 
-    fn session_summary_with_mode(id: &str, mode: &str) -> AgentSessionSummary {
+    fn session_summary(id: &str) -> AgentSessionSummary {
         AgentSessionSummary {
             id: id.to_string(),
             title: id.to_string(),
@@ -2425,24 +2418,18 @@ mod tests {
             updated_ms: 1,
             message_count: 0,
             model: Some("model".to_string()),
-            mode: mode.to_string(),
             web_enabled: false,
             state: AgentTaskState::Active,
             acp: false,
         }
     }
 
-    /// Every persisted task loads, whatever mode it was saved in; only a
-    /// missing task is refused.
+    /// Only a missing task is refused.
     #[test]
-    fn session_load_preflight_accepts_every_saved_mode_and_rejects_missing_tasks() {
-        let sessions = [
-            session_summary_with_mode("ask-first", "smart_approve"),
-            session_summary_with_mode("allow-all", "auto"),
-            session_summary_with_mode("chat", "chat"),
-        ];
+    fn session_load_preflight_rejects_missing_tasks() {
+        let sessions = [session_summary("one"), session_summary("two")];
 
-        for id in ["ask-first", "allow-all", "chat"] {
+        for id in ["one", "two"] {
             assert_eq!(find_acp_session(&sessions, id).unwrap().id, id);
         }
         assert!(

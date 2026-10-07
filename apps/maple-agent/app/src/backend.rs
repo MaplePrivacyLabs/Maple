@@ -1385,13 +1385,11 @@ impl AgentBackend {
             Some(AgentStartRequest {
                 project_root: None,
                 model,
-                mode,
             }) => {
                 let config = handle.load_config().await?;
                 Some(AgentStartRequest {
                     project_root: gui_start_root(&config),
                     model,
-                    mode,
                 })
             }
             other => other,
@@ -2167,7 +2165,6 @@ impl AgentBackend {
         AgentStartRequest {
             project_root: None,
             model: std::env::var("MAPLE_MODEL").ok(),
-            mode: None,
         }
     }
 

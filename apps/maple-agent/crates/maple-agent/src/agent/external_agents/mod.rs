@@ -1895,8 +1895,7 @@ impl ExternalAgent {
             let runtime = self.host.service.inner.lock().await;
             runtime.as_ref().is_some_and(|current| {
                 current.active_runs.values().any(|run| {
-                    run.session_id == self.session_id
-                        && run.permission_routing == AgentPermissionRouting::Desktop
+                    run.session_id == self.session_id && run.run_surface == AgentRunSurface::Desktop
                 })
             })
         };
@@ -1904,7 +1903,7 @@ impl ExternalAgent {
             record_timeline_item(
                 &self.host.service.live_timelines,
                 &self.session_id,
-                AgentPermissionRouting::Desktop,
+                AgentRunSurface::Desktop,
                 item,
             )
             .await;

@@ -30,7 +30,6 @@ mod state_tests {
             updated_ms: 0,
             message_count: 1,
             model: None,
-            mode: "smart_approve".to_string(),
         }
     }
 
@@ -1835,7 +1834,6 @@ mod state_tests {
                 },
             ]);
             let request = this.new_session_request().expect("draft request");
-            assert!(request.mode.is_none());
             assert_eq!(request.mcp_server_names, Some(vec!["docs".to_string()]));
             this.send_text("hello".to_string(), cx);
             assert!(this.session_setup_pending);
@@ -3053,7 +3051,6 @@ mod state_tests {
                 running: true,
                 project_root: None,
                 model: None,
-                mode: None,
                 active_runs: HashMap::new(),
             };
             assert!(
@@ -4544,10 +4541,6 @@ mod state_tests {
             this.project_root = Some("/work/beta".to_string());
             let request = this.new_session_request().expect("explicit root request");
             assert_eq!(request.project_root.as_deref(), Some("/work/beta"));
-            assert!(
-                request.mode.is_none(),
-                "a new task names no permission mode"
-            );
         });
     }
 
@@ -4703,7 +4696,6 @@ mod state_tests {
                     running: true,
                     project_root: Some("/work/alpha".to_string()),
                     model: None,
-                    mode: None,
                     active_runs: HashMap::from([("s2".to_string(), "run-2".to_string())]),
                 }),
                 cx,

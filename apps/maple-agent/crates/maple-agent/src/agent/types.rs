@@ -484,7 +484,6 @@ pub struct AgentSetSessionMcpServerRequest {
 pub struct AgentStartRequest {
     pub project_root: Option<String>,
     pub model: Option<String>,
-    pub mode: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -493,7 +492,6 @@ pub struct AgentRuntimeStatus {
     pub running: bool,
     pub project_root: Option<String>,
     pub model: Option<String>,
-    pub mode: Option<String>,
     pub active_runs: HashMap<String, String>,
 }
 
@@ -521,7 +519,6 @@ pub struct AgentCreateSessionRequest {
     pub model: Option<String>,
     #[serde(default)]
     pub context_limit: Option<usize>,
-    pub mode: Option<String>,
     pub mcp_server_names: Option<Vec<String>>,
     /// Caller-owned system prompt, appended to Maple's own. Surfaces such
     /// as ACP pass the persona text their client supplies with the task.
@@ -537,7 +534,6 @@ pub struct AgentSendMessageRequest {
     pub model: Option<String>,
     #[serde(default)]
     pub context_limit: Option<usize>,
-    pub mode: Option<String>,
     #[serde(default)]
     pub vision_capable: bool,
     #[serde(default)]
@@ -555,40 +551,30 @@ pub struct AgentRenameSessionRequest {
     pub title: String,
 }
 
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AgentPermissionResponse {
-    pub session_id: String,
-    pub request_id: String,
-    pub decision: String,
-}
-
+/// An approval request raised by an external agent (Codex, Claude Code).
+/// Maple accepts every one; the shape is kept for the activity log.
 #[derive(Debug, Clone, PartialEq)]
-pub struct AgentPermissionRequest {
+pub(crate) struct AgentPermissionRequest {
     pub request_id: String,
     pub tool_name: String,
     pub arguments: serde_json::Map<String, Value>,
     pub prompt: Option<String>,
 }
 
+/// Maple's answer to an external agent's approval request: accepted at
+/// once, or cancelled once the agent or its turn has ended.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AgentPermissionDecision {
+pub(crate) enum AgentPermissionDecision {
     AllowOnce,
-    DenyOnce,
     Cancel,
 }
 
+/// Which surface owns a run: Maple Desktop, or a calling surface such as
+/// ACP that keeps its own run handle, cancellation scope and live timeline.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AgentPermissionRouting {
+pub enum AgentRunSurface {
     Desktop,
     CallingSurface,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AgentPermissionModeRequest {
-    pub session_id: String,
-    pub mode: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -706,7 +692,7 @@ pub(crate) struct AgentRunCancellation {
     pub(super) agent: AgentRuntimeHandle,
     pub(super) session_id: Arc<str>,
     pub(super) run_id: Arc<str>,
-    pub(super) routing: AgentPermissionRouting,
+    pub(super) routing: AgentRunSurface,
 }
 
 impl AgentRunCancellation {
@@ -988,10 +974,6 @@ pub enum AgentRunEvent {
     SessionUpdated(AgentSessionSummary),
     Started,
     TimelineItem(AgentTimelineItem),
-    PermissionRequested {
-        request: AgentPermissionRequest,
-        item: AgentTimelineItem,
-    },
     SetupWarning(String),
     /// A `delegate` call handed a task to a subagent. `id` is the request
     /// ID of that call, which the two events below repeat.
@@ -1138,7 +1120,6 @@ pub struct AgentSessionSummary {
     pub updated_ms: i64,
     pub message_count: usize,
     pub model: Option<String>,
-    pub mode: String,
     /// Whether the task can use `web_search` / `open_url`.
     pub web_enabled: bool,
     /// Where the task sits in the sidebar ladder.

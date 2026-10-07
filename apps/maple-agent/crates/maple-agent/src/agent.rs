@@ -253,7 +253,7 @@ fn validate_session_model_lock(
 
 struct ActiveAgentRun {
     agent: Arc<Agent>,
-    permission_routing: AgentPermissionRouting,
+    run_surface: AgentRunSurface,
     token: CancellationToken,
     tool_context: SharedAgentToolContext,
     session_id: String,
@@ -577,28 +577,23 @@ impl AgentRuntime {
             running: true,
             project_root: Some(path_string(&self.project_root)),
             model: Some(self.model.clone()),
-            // Every task runs with every tool call allowed; the field stays
-            // for hosts that still read it.
-            mode: Some(GooseMode::Auto.to_string()),
             // AgentRuntimeStatus is Maple Desktop's projection. Calling surfaces
             // retain their own run handles and lifecycle signals instead of
             // becoming actionable through the Tauri command boundary.
-            active_runs: active_run_status(self.active_runs.iter().map(|(run_id, run)| {
-                (
-                    run_id.as_str(),
-                    run.session_id.as_str(),
-                    run.permission_routing,
-                )
-            })),
+            active_runs: active_run_status(
+                self.active_runs.iter().map(|(run_id, run)| {
+                    (run_id.as_str(), run.session_id.as_str(), run.run_surface)
+                }),
+            ),
         }
     }
 }
 
 fn active_run_status<'a>(
-    runs: impl IntoIterator<Item = (&'a str, &'a str, AgentPermissionRouting)>,
+    runs: impl IntoIterator<Item = (&'a str, &'a str, AgentRunSurface)>,
 ) -> HashMap<String, String> {
     runs.into_iter()
-        .filter(|(_, _, routing)| *routing == AgentPermissionRouting::Desktop)
+        .filter(|(_, _, routing)| *routing == AgentRunSurface::Desktop)
         .map(|(run_id, session_id, _)| (session_id.to_string(), run_id.to_string()))
         .collect()
 }
@@ -786,7 +781,7 @@ async fn resolve_session_title_lifecycle(
 
 #[derive(Clone, Debug, PartialEq)]
 struct LiveTimelineEntry {
-    routing: AgentPermissionRouting,
+    routing: AgentRunSurface,
     timeline: LiveTimeline,
 }
 
@@ -2027,7 +2022,6 @@ async fn start_runtime_for_user(
     let request = request.unwrap_or(AgentStartRequest {
         project_root: None,
         model: None,
-        mode: None,
     });
 
     let project_root = resolve_project_root(request.project_root.as_deref(), &agent_config)
@@ -2676,7 +2670,6 @@ impl AgentRuntimeHandle {
             title: None,
             model: None,
             context_limit: None,
-            mode: None,
             mcp_server_names: None,
             system_prompt: None,
         });
@@ -3616,7 +3609,7 @@ impl AgentRuntimeHandle {
         let mut timeline = overlay_live_timeline(
             &state.live_timelines,
             &session_id,
-            AgentPermissionRouting::Desktop,
+            AgentRunSurface::Desktop,
             conversation,
             timeline,
         )
@@ -4234,7 +4227,7 @@ async fn finalize_cancelled_agent_turn(
     session_manager: &SessionManager,
     live_timelines: &LiveTimelines,
     session_id: &str,
-    routing: AgentPermissionRouting,
+    routing: AgentRunSurface,
     user_message: &Message,
     cancelled_permission_ids: &HashSet<String>,
 ) -> Result<(), String> {
@@ -4639,7 +4632,6 @@ impl AgentRuntimeHandle {
                         .model_config
                         .as_ref()
                         .and_then(|model| model.context_limit),
-                    mode: None,
                     vision_capable,
                     steer: true,
                     queue_id: None,
@@ -4648,7 +4640,7 @@ impl AgentRuntimeHandle {
                 None,
                 Some(lifetime),
                 AgentHostEventPolicy::Publish,
-                AgentPermissionRouting::Desktop,
+                AgentRunSurface::Desktop,
                 DesktopSendDisposition::BackgroundCompletion(Box::new(message)),
             )
             .await
@@ -4664,7 +4656,7 @@ impl AgentRuntimeHandle {
             None,
             None,
             AgentHostEventPolicy::Publish,
-            AgentPermissionRouting::Desktop,
+            AgentRunSurface::Desktop,
             DesktopSendDisposition::StageOrStart,
         )
         .await
@@ -4682,7 +4674,7 @@ impl AgentRuntimeHandle {
             Some(access),
             Some(surface_lifetime),
             host_events,
-            AgentPermissionRouting::CallingSurface,
+            AgentRunSurface::CallingSurface,
             DesktopSendDisposition::StartOnly,
         )
         .await
@@ -4694,7 +4686,7 @@ impl AgentRuntimeHandle {
         tool_context_access: Option<AgentToolContextAccess>,
         surface_lifetime: Option<CancellationToken>,
         host_events: AgentHostEventPolicy,
-        permission_routing: AgentPermissionRouting,
+        run_surface: AgentRunSurface,
         desktop_send: DesktopSendDisposition,
     ) -> Result<AgentRunHandle, String> {
         let state = &self.service;
@@ -5058,7 +5050,7 @@ impl AgentRuntimeHandle {
                     context_limit: request.context_limit,
                     primary_model_supports_vision: request.vision_capable,
                     tool_context: &tool_context,
-                    allow_embedded_cua: permission_routing == AgentPermissionRouting::Desktop,
+                    allow_embedded_cua: run_surface == AgentRunSurface::Desktop,
                     external_agents: external_agents.as_ref(),
                     host_search_path: self.tool_search_path(),
                 },
@@ -5253,7 +5245,7 @@ impl AgentRuntimeHandle {
                         // give the unpersisted ones back as chips and tell the
                         // surface why the run stopped.
                         let _promote_guard = session_lifecycle.lock().await;
-                        if permission_routing == AgentPermissionRouting::Desktop {
+                        if run_surface == AgentRunSurface::Desktop {
                             let snapshot = restore_unpersisted_desktop_queue_messages(
                                 &task_desktop_queues,
                                 &task_account_scope,
@@ -5271,7 +5263,7 @@ impl AgentRuntimeHandle {
                             apply_failed_prompt_outcome(
                                 &mut timelines,
                                 &session_id,
-                                permission_routing,
+                                run_surface,
                                 item.clone(),
                             );
                         }
@@ -5300,7 +5292,7 @@ impl AgentRuntimeHandle {
                             session_title_start: session_title_start.take(),
                             cancelled_permission_ids: Arc::clone(&task_cancelled_permission_ids),
                             run_id: task_run_id.clone(),
-                            permission_routing,
+                            run_surface,
                             steered_unacked: Arc::clone(&task_steered_unacked),
                         }),
                     )
@@ -5317,7 +5309,7 @@ impl AgentRuntimeHandle {
                             apply_successful_prompt_outcome(
                                 &mut timelines,
                                 &session_id,
-                                permission_routing,
+                                run_surface,
                                 outcome,
                             );
                             drop(timelines);
@@ -5325,7 +5317,7 @@ impl AgentRuntimeHandle {
                             // Only Desktop may promote leftover chips. Goose
                             // merges consecutive user roles for the provider
                             // request, so the model still sees one user turn.
-                            if permission_routing != AgentPermissionRouting::Desktop {
+                            if run_surface != AgentRunSurface::Desktop {
                                 task_accepting_queue.store(false, Ordering::Release);
                                 false
                             } else {
@@ -5351,7 +5343,7 @@ impl AgentRuntimeHandle {
                                         &task_events,
                                         &live_timelines,
                                         &session_id,
-                                        permission_routing,
+                                        run_surface,
                                         &queued,
                                         snapshot,
                                     )
@@ -5373,7 +5365,7 @@ impl AgentRuntimeHandle {
                                     apply_failed_prompt_outcome(
                                         &mut timelines,
                                         &session_id,
-                                        permission_routing,
+                                        run_surface,
                                         item.clone(),
                                     );
                                 }
@@ -5415,7 +5407,7 @@ impl AgentRuntimeHandle {
                     task_session_manager.as_ref(),
                     &live_timelines,
                     &session_id,
-                    permission_routing,
+                    run_surface,
                     &current_user_message,
                     &cancelled_permission_ids,
                 )
@@ -5454,7 +5446,7 @@ impl AgentRuntimeHandle {
                     apply_failed_prompt_outcome(
                         &mut timelines,
                         &session_id,
-                        permission_routing,
+                        run_surface,
                         item.clone(),
                     );
                 }
@@ -5513,7 +5505,7 @@ impl AgentRuntimeHandle {
                             run_id.clone(),
                             ActiveAgentRun {
                                 agent: active_agent,
-                                permission_routing,
+                                run_surface,
                                 token: cancel_token.clone(),
                                 tool_context: tool_context.clone(),
                                 session_id: request.session_id.clone(),
@@ -5605,7 +5597,7 @@ impl AgentRuntimeHandle {
                     &run_events,
                     &state.live_timelines,
                     &request.session_id,
-                    permission_routing,
+                    run_surface,
                     item,
                 )
                 .await;
@@ -5617,12 +5609,12 @@ impl AgentRuntimeHandle {
         // followed by this send path re-appending the cancelled prompt.
         drop(session_lifecycle_guard.take());
 
-        let cancellation = matches!(permission_routing, AgentPermissionRouting::CallingSurface)
-            .then(|| AgentRunCancellation {
+        let cancellation =
+            matches!(run_surface, AgentRunSurface::CallingSurface).then(|| AgentRunCancellation {
                 agent: self.clone(),
                 session_id: Arc::from(request.session_id.as_str()),
                 run_id: Arc::from(run_id.as_str()),
-                routing: permission_routing,
+                routing: run_surface,
             });
         Ok(AgentRunHandle {
             run_id,
@@ -5756,7 +5748,7 @@ impl AgentRuntimeHandle {
     }
 
     pub async fn cancel_desktop_run(&self, run_id: String) -> Result<(), String> {
-        self.cancel_run_scoped(&run_id, None, AgentPermissionRouting::Desktop)
+        self.cancel_run_scoped(&run_id, None, AgentRunSurface::Desktop)
             .await
     }
 
@@ -5764,7 +5756,7 @@ impl AgentRuntimeHandle {
         &self,
         run_id: &str,
         expected_session_id: Option<&str>,
-        expected_routing: AgentPermissionRouting,
+        expected_routing: AgentRunSurface,
     ) -> Result<(), String> {
         let state = &self.service;
         let account_scope = self.account_scope.as_ref();
@@ -5793,7 +5785,7 @@ impl AgentRuntimeHandle {
             };
             validate_run_cancellation_scope(
                 active_run.session_id.as_str(),
-                active_run.permission_routing,
+                active_run.run_surface,
                 expected_session_id,
                 expected_routing,
             )?;
@@ -5862,41 +5854,13 @@ impl AgentRuntimeHandle {
             .map_err(|error| format!("Failed to load Agent task: {error}"))?;
         Ok(session_summary(&session))
     }
-
-    /// Kept for hosts that still call it. Every task runs with every tool
-    /// call allowed, so there is no per-task mode to persist.
-    pub async fn persist_session_permission_mode(
-        &self,
-        _session_id: &str,
-        _mode: &str,
-    ) -> Result<(), String> {
-        Ok(())
-    }
-
-    /// Kept for hosts that still call it. Every task runs with every tool
-    /// call allowed, so there is no mode to switch.
-    pub async fn set_permission_mode(
-        &self,
-        _request: AgentPermissionModeRequest,
-    ) -> Result<(), String> {
-        Ok(())
-    }
-
-    /// Maple no longer asks the user to approve tool calls, so there is
-    /// never a request to answer.
-    pub async fn permission_respond(
-        &self,
-        _response: AgentPermissionResponse,
-    ) -> Result<(), String> {
-        Err("Maple no longer asks for tool permissions".to_string())
-    }
 }
 
 fn validate_run_cancellation_scope(
     actual_session_id: &str,
-    actual_routing: AgentPermissionRouting,
+    actual_routing: AgentRunSurface,
     expected_session_id: Option<&str>,
-    expected_routing: AgentPermissionRouting,
+    expected_routing: AgentRunSurface,
 ) -> Result<(), String> {
     if actual_routing != expected_routing {
         return Err("Agent run is controlled by another Agent surface".to_string());
@@ -5925,7 +5889,7 @@ struct AgentPromptRun {
     /// a declined call for each; the cancelled turn's repair strips them.
     cancelled_permission_ids: CancelledPermissionIds,
     run_id: String,
-    permission_routing: AgentPermissionRouting,
+    run_surface: AgentRunSurface,
     steered_unacked: Arc<Mutex<Vec<Message>>>,
 }
 
@@ -5948,10 +5912,10 @@ struct LiveMessageCandidate {
 fn apply_successful_prompt_outcome(
     timelines: &mut HashMap<String, LiveTimelineEntry>,
     session_id: &str,
-    routing: AgentPermissionRouting,
+    routing: AgentRunSurface,
     outcome: &AgentPromptOutcome,
 ) {
-    if routing == AgentPermissionRouting::CallingSurface {
+    if routing == AgentRunSurface::CallingSurface {
         remove_live_timeline_for_routing(timelines, session_id, routing);
         return;
     }
@@ -5974,10 +5938,10 @@ fn apply_successful_prompt_outcome(
 fn apply_failed_prompt_outcome(
     timelines: &mut HashMap<String, LiveTimelineEntry>,
     session_id: &str,
-    routing: AgentPermissionRouting,
+    routing: AgentRunSurface,
     item: AgentTimelineItem,
 ) {
-    if routing == AgentPermissionRouting::CallingSurface {
+    if routing == AgentRunSurface::CallingSurface {
         remove_live_timeline_for_routing(timelines, session_id, routing);
         return;
     }
@@ -5993,7 +5957,7 @@ fn apply_failed_prompt_outcome(
 fn remove_live_timeline_for_routing(
     timelines: &mut HashMap<String, LiveTimelineEntry>,
     session_id: &str,
-    routing: AgentPermissionRouting,
+    routing: AgentRunSurface,
 ) -> Option<LiveTimelineEntry> {
     timelines
         .get(session_id)
@@ -6303,7 +6267,7 @@ fn background_subagent_completion(
 struct BackgroundSubagentWatch {
     runtime: AgentRuntimeHandle,
     lifetime: CancellationToken,
-    permission_routing: AgentPermissionRouting,
+    run_surface: AgentRunSurface,
     /// Weak, so a watcher cannot keep a stopped runtime's Agent alive.
     agent: std::sync::Weak<Agent>,
     session_manager: Arc<SessionManager>,
@@ -6422,7 +6386,7 @@ async fn report_background_subagent_end(
             watch.task_id
         ),
     );
-    let delivered = if watch.permission_routing == AgentPermissionRouting::Desktop {
+    let delivered = if watch.run_surface == AgentRunSurface::Desktop {
         watch
             .runtime
             .send_background_completion(
@@ -6661,7 +6625,7 @@ async fn run_agent_prompt(run: AgentPromptRun) -> Result<AgentPromptOutcome, Str
         session_title_start,
         cancelled_permission_ids,
         run_id,
-        permission_routing,
+        run_surface,
         steered_unacked,
     } = run;
     let mut terminal_message = None;
@@ -6751,7 +6715,7 @@ async fn run_agent_prompt(run: AgentPromptRun) -> Result<AgentPromptOutcome, Str
                         &events,
                         &live_timelines,
                         &session_id,
-                        permission_routing,
+                        run_surface,
                         item,
                     )
                     .await;
@@ -6782,7 +6746,7 @@ async fn run_agent_prompt(run: AgentPromptRun) -> Result<AgentPromptOutcome, Str
                         tokio::spawn(watch_background_subagent(BackgroundSubagentWatch {
                             runtime: runtime.clone(),
                             lifetime: lifetime.clone(),
-                            permission_routing,
+                            run_surface,
                             agent: Arc::downgrade(&agent),
                             session_manager: Arc::clone(&session_manager),
                             subagents: Arc::clone(&subagents),
@@ -6822,7 +6786,7 @@ async fn run_agent_prompt(run: AgentPromptRun) -> Result<AgentPromptOutcome, Str
                 reseed_live_timeline_after_history_replaced(
                     &live_timelines,
                     &session_id,
-                    permission_routing,
+                    run_surface,
                     &conversation,
                 )
                 .await;
@@ -7848,7 +7812,6 @@ fn stopped_status() -> AgentRuntimeStatus {
         running: false,
         project_root: None,
         model: None,
-        mode: None,
         active_runs: HashMap::new(),
     }
 }
@@ -8877,7 +8840,7 @@ async fn steer_into_desktop_run(
     session_id: &str,
     message: &Message,
 ) -> Result<(), String> {
-    let (agent, events, permission_routing, steered_unacked) = {
+    let (agent, events, run_surface, steered_unacked) = {
         let runtime = state.inner.lock().await;
         let current = runtime
             .as_ref()
@@ -8891,7 +8854,7 @@ async fn steer_into_desktop_run(
         (
             Arc::clone(&active_run.agent),
             active_run.events.clone(),
-            active_run.permission_routing,
+            active_run.run_surface,
             Arc::clone(&active_run.steered_unacked),
         )
     };
@@ -8905,7 +8868,7 @@ async fn steer_into_desktop_run(
             &events,
             &state.live_timelines,
             session_id,
-            permission_routing,
+            run_surface,
             item,
         )
         .await;
@@ -9015,7 +8978,7 @@ fn staged_run_handle(
 }
 
 fn desktop_run_is_stageable(run: &ActiveAgentRun) -> bool {
-    run.permission_routing == AgentPermissionRouting::Desktop
+    run.run_surface == AgentRunSurface::Desktop
         && !run.token.is_cancelled()
         && run.accepting_queue.load(Ordering::Acquire)
 }
@@ -9035,8 +8998,7 @@ async fn reject_foreign_surface_session(
     };
     ensure_runtime_account(current, account_scope)?;
     if current.active_runs.values().any(|run| {
-        run.session_id == session_id
-            && run.permission_routing == AgentPermissionRouting::CallingSurface
+        run.session_id == session_id && run.run_surface == AgentRunSurface::CallingSurface
     }) {
         return Err("This Agent task is controlled by another Agent surface".to_string());
     }
@@ -9148,7 +9110,7 @@ async fn emit_promoted_queue_items(
     events: &AgentRunEventPublisher,
     live_timelines: &LiveTimelines,
     session_id: &str,
-    permission_routing: AgentPermissionRouting,
+    run_surface: AgentRunSurface,
     queued: &[AgentQueuedMessage],
     snapshot: AgentDesktopQueueSnapshot,
 ) {
@@ -9162,7 +9124,7 @@ async fn emit_promoted_queue_items(
                 events,
                 live_timelines,
                 session_id,
-                permission_routing,
+                run_surface,
                 user_item.clone(),
             )
             .await;
@@ -9975,7 +9937,7 @@ mod tests {
             "existing-run".into(),
             ActiveAgentRun {
                 agent,
-                permission_routing: AgentPermissionRouting::Desktop,
+                run_surface: AgentRunSurface::Desktop,
                 token: CancellationToken::new(),
                 tool_context: SharedAgentToolContext::new(AgentToolContextSpec::default()),
                 session_id: session.id.clone(),
@@ -10101,7 +10063,7 @@ mod tests {
             .active_runs
             .get_mut("existing-run")
             .unwrap()
-            .permission_routing = AgentPermissionRouting::CallingSurface;
+            .run_surface = AgentRunSurface::CallingSurface;
         let result = tokio::time::timeout(
             std::time::Duration::from_secs(5),
             fixture.handle.send_background_completion(
@@ -10139,9 +10101,9 @@ mod tests {
     #[tokio::test]
     async fn background_completion_subagent_delivery_respects_surface_and_lifetime() {
         for (routing, cancelled) in [
-            (AgentPermissionRouting::Desktop, false),
-            (AgentPermissionRouting::CallingSurface, false),
-            (AgentPermissionRouting::Desktop, true),
+            (AgentRunSurface::Desktop, false),
+            (AgentRunSurface::CallingSurface, false),
+            (AgentRunSurface::Desktop, true),
         ] {
             let (fixture, session, lifetime) = background_completion_fixture().await;
             let manager = Arc::clone(
@@ -10158,7 +10120,7 @@ mod tests {
             let watch = BackgroundSubagentWatch {
                 runtime: fixture.handle.clone(),
                 lifetime: lifetime.clone(),
-                permission_routing: routing,
+                run_surface: routing,
                 agent: Weak::new(),
                 session_manager: Arc::clone(&manager),
                 subagents: Arc::clone(&fixture.handle.service.subagents),
@@ -10236,7 +10198,7 @@ mod tests {
                     .unwrap()
                     .active_runs
                     .is_empty();
-                assert_eq!(active, routing == AgentPermissionRouting::Desktop);
+                assert_eq!(active, routing == AgentRunSurface::Desktop);
             }
             fixture.handle.stop().await.unwrap();
             let _ = fs::remove_dir_all(fixture.root);
@@ -10513,7 +10475,7 @@ mod tests {
                 session_title_start: None,
                 cancelled_permission_ids: Arc::new(Mutex::new(HashSet::new())),
                 run_id,
-                permission_routing: AgentPermissionRouting::Desktop,
+                run_surface: AgentRunSurface::Desktop,
                 steered_unacked: Arc::new(Mutex::new(Vec::new())),
             }),
         )
@@ -10664,26 +10626,15 @@ mod tests {
         roots.iter().map(|root| root.path.clone()).collect()
     }
 
-    fn test_live_timeline(
-        routing: AgentPermissionRouting,
-        timeline: LiveTimeline,
-    ) -> LiveTimelineEntry {
+    fn test_live_timeline(routing: AgentRunSurface, timeline: LiveTimeline) -> LiveTimelineEntry {
         LiveTimelineEntry { routing, timeline }
     }
 
     #[test]
     fn desktop_status_excludes_calling_surface_runs() {
         let status = active_run_status([
-            (
-                "desktop-run",
-                "desktop-session",
-                AgentPermissionRouting::Desktop,
-            ),
-            (
-                "acp-run",
-                "acp-session",
-                AgentPermissionRouting::CallingSurface,
-            ),
+            ("desktop-run", "desktop-session", AgentRunSurface::Desktop),
+            ("acp-run", "acp-session", AgentRunSurface::CallingSurface),
         ]);
 
         assert_eq!(
@@ -10778,7 +10729,6 @@ mod tests {
                     text: "start the stalled task".to_string(),
                     model: None,
                     context_limit: None,
-                    mode: None,
                     vision_capable: false,
                     steer: false,
                     queue_id: None,
@@ -10883,7 +10833,7 @@ mod tests {
                 "desktop-steer-run".to_string(),
                 ActiveAgentRun {
                     agent,
-                    permission_routing: AgentPermissionRouting::Desktop,
+                    run_surface: AgentRunSurface::Desktop,
                     token: CancellationToken::new(),
                     tool_context: SharedAgentToolContext::new(AgentToolContextSpec::default()),
                     session_id: session.id.clone(),
@@ -10921,7 +10871,6 @@ mod tests {
                 text: "also check the tests".to_string(),
                 model: None,
                 context_limit: None,
-                mode: None,
                 vision_capable: false,
                 steer: false,
                 queue_id: None,
@@ -10937,7 +10886,6 @@ mod tests {
                 text: "then open the readme".to_string(),
                 model: None,
                 context_limit: None,
-                mode: None,
                 vision_capable: false,
                 steer: false,
                 queue_id: None,
@@ -11005,7 +10953,6 @@ mod tests {
                 text: "retry after edit".to_string(),
                 model: None,
                 context_limit: None,
-                mode: None,
                 vision_capable: false,
                 steer: false,
                 queue_id: None,
@@ -11023,7 +10970,6 @@ mod tests {
                 text: "keep me queued".to_string(),
                 model: None,
                 context_limit: None,
-                mode: None,
                 vision_capable: false,
                 steer: false,
                 queue_id: None,
@@ -11038,7 +10984,6 @@ mod tests {
                 text: String::new(),
                 model: None,
                 context_limit: None,
-                mode: None,
                 vision_capable: false,
                 steer: true,
                 queue_id: Some(first_chip),
@@ -11176,7 +11121,7 @@ mod tests {
                 "acp-steer-run".to_string(),
                 ActiveAgentRun {
                     agent,
-                    permission_routing: AgentPermissionRouting::CallingSurface,
+                    run_surface: AgentRunSurface::CallingSurface,
                     token: CancellationToken::new(),
                     tool_context: SharedAgentToolContext::new(AgentToolContextSpec::default()),
                     session_id: session.id.clone(),
@@ -11202,7 +11147,6 @@ mod tests {
                 text: "should not join the ACP run".to_string(),
                 model: None,
                 context_limit: None,
-                mode: None,
                 vision_capable: false,
                 steer: false,
                 queue_id: None,
@@ -11466,7 +11410,6 @@ mod tests {
                 text: String::new(),
                 model: None,
                 context_limit: None,
-                mode: None,
                 vision_capable: false,
                 steer: true,
                 queue_id: Some(first_id.clone()),
@@ -11617,7 +11560,7 @@ mod tests {
                 "desktop-steer-empty-stack-run".to_string(),
                 ActiveAgentRun {
                     agent,
-                    permission_routing: AgentPermissionRouting::Desktop,
+                    run_surface: AgentRunSurface::Desktop,
                     token: CancellationToken::new(),
                     tool_context: SharedAgentToolContext::new(AgentToolContextSpec::default()),
                     session_id: session.id.clone(),
@@ -11643,7 +11586,6 @@ mod tests {
                 text: String::new(),
                 model: None,
                 context_limit: None,
-                mode: None,
                 vision_capable: false,
                 steer: true,
                 queue_id: None,
@@ -11662,7 +11604,6 @@ mod tests {
                 text: "first leftover".to_string(),
                 model: None,
                 context_limit: None,
-                mode: None,
                 vision_capable: false,
                 steer: false,
                 queue_id: None,
@@ -11676,7 +11617,6 @@ mod tests {
                 text: "second leftover".to_string(),
                 model: None,
                 context_limit: None,
-                mode: None,
                 vision_capable: false,
                 steer: false,
                 queue_id: None,
@@ -11698,7 +11638,6 @@ mod tests {
                 text: String::new(),
                 model: None,
                 context_limit: None,
-                mode: None,
                 vision_capable: false,
                 steer: true,
                 queue_id: None,
@@ -11723,7 +11662,6 @@ mod tests {
                 text: String::new(),
                 model: None,
                 context_limit: None,
-                mode: None,
                 vision_capable: false,
                 steer: true,
                 queue_id: None,
@@ -11829,27 +11767,27 @@ mod tests {
         assert!(
             validate_run_cancellation_scope(
                 "session-1",
-                AgentPermissionRouting::CallingSurface,
+                AgentRunSurface::CallingSurface,
                 None,
-                AgentPermissionRouting::Desktop,
+                AgentRunSurface::Desktop,
             )
             .is_err()
         );
         assert!(
             validate_run_cancellation_scope(
                 "session-1",
-                AgentPermissionRouting::CallingSurface,
+                AgentRunSurface::CallingSurface,
                 Some("session-2"),
-                AgentPermissionRouting::CallingSurface,
+                AgentRunSurface::CallingSurface,
             )
             .is_err()
         );
         assert!(
             validate_run_cancellation_scope(
                 "session-1",
-                AgentPermissionRouting::CallingSurface,
+                AgentRunSurface::CallingSurface,
                 Some("session-1"),
-                AgentPermissionRouting::CallingSurface,
+                AgentRunSurface::CallingSurface,
             )
             .is_ok()
         );
@@ -13578,7 +13516,6 @@ mod tests {
             updated_ms,
             message_count: 0,
             model: None,
-            mode: GooseMode::Auto.to_string(),
             state: AgentTaskState::Active,
             acp: false,
         };
@@ -13683,8 +13620,7 @@ mod tests {
         let without_capability: AgentSendMessageRequest = serde_json::from_value(json!({
             "sessionId": "session-1",
             "text": "Inspect the image",
-            "model": "future-vision-model",
-            "mode": "smart_approve"
+            "model": "future-vision-model"
         }))
         .unwrap();
         assert!(!without_capability.vision_capable);
@@ -13694,7 +13630,6 @@ mod tests {
             "sessionId": "session-1",
             "text": "Inspect the image",
             "model": "future-vision-model",
-            "mode": "smart_approve",
             "contextLimit": 384000,
             "visionCapable": true
         }))
@@ -14323,7 +14258,7 @@ mod tests {
         let live_timelines = Arc::new(Mutex::new(HashMap::from([(
             session_id.to_string(),
             test_live_timeline(
-                AgentPermissionRouting::Desktop,
+                AgentRunSurface::Desktop,
                 LiveTimeline::Completed(reply_candidate),
             ),
         )])));
@@ -14331,7 +14266,7 @@ mod tests {
         let loaded = overlay_live_timeline(
             &live_timelines,
             session_id,
-            AgentPermissionRouting::Desktop,
+            AgentRunSurface::Desktop,
             &persisted_conversation,
             persisted_timeline.clone(),
         )
@@ -14348,7 +14283,7 @@ mod tests {
         apply_successful_prompt_outcome(
             &mut timelines,
             session_id,
-            AgentPermissionRouting::Desktop,
+            AgentRunSurface::Desktop,
             &AgentPromptOutcome {
                 terminal_message: Some(notice_candidate),
                 answered_confirmations: HashSet::new(),
@@ -14358,7 +14293,7 @@ mod tests {
         let loaded = overlay_live_timeline(
             &live_timelines,
             session_id,
-            AgentPermissionRouting::Desktop,
+            AgentRunSurface::Desktop,
             &persisted_conversation,
             persisted_timeline,
         )
@@ -14370,7 +14305,7 @@ mod tests {
         assert!(matches!(
             live_timelines.lock().await.get(session_id),
             Some(LiveTimelineEntry {
-                routing: AgentPermissionRouting::Desktop,
+                routing: AgentRunSurface::Desktop,
                 timeline: LiveTimeline::Completed(_),
             })
         ));
@@ -14379,7 +14314,7 @@ mod tests {
         apply_successful_prompt_outcome(
             &mut timelines,
             session_id,
-            AgentPermissionRouting::Desktop,
+            AgentRunSurface::Desktop,
             &AgentPromptOutcome::default(),
         );
         assert!(!timelines.contains_key(session_id));
@@ -14401,7 +14336,7 @@ mod tests {
         let live_timelines = Arc::new(Mutex::new(HashMap::from([(
             session_id.to_string(),
             test_live_timeline(
-                AgentPermissionRouting::CallingSurface,
+                AgentRunSurface::CallingSurface,
                 LiveTimeline::Streaming(vec![live_only.clone()]),
             ),
         )])));
@@ -14409,7 +14344,7 @@ mod tests {
         let loaded = overlay_live_timeline(
             &live_timelines,
             session_id,
-            AgentPermissionRouting::Desktop,
+            AgentRunSurface::Desktop,
             &persisted_conversation,
             persisted.clone(),
         )
@@ -14419,7 +14354,7 @@ mod tests {
         assert!(!loaded.iter().any(|item| item.id == live_only.id));
         assert_eq!(
             live_timelines.lock().await.get(session_id).unwrap().routing,
-            AgentPermissionRouting::CallingSurface
+            AgentRunSurface::CallingSurface
         );
     }
 
@@ -14430,7 +14365,7 @@ mod tests {
         let mut timelines = HashMap::from([(
             session_id.to_string(),
             test_live_timeline(
-                AgentPermissionRouting::Desktop,
+                AgentRunSurface::Desktop,
                 LiveTimeline::Streaming(vec![desktop_item]),
             ),
         )]);
@@ -14438,25 +14373,25 @@ mod tests {
         apply_successful_prompt_outcome(
             &mut timelines,
             session_id,
-            AgentPermissionRouting::CallingSurface,
+            AgentRunSurface::CallingSurface,
             &AgentPromptOutcome::default(),
         );
         assert_eq!(
             timelines.get(session_id).unwrap().routing,
-            AgentPermissionRouting::Desktop
+            AgentRunSurface::Desktop
         );
 
         timelines.insert(
             session_id.to_string(),
             test_live_timeline(
-                AgentPermissionRouting::CallingSurface,
+                AgentRunSurface::CallingSurface,
                 LiveTimeline::Streaming(Vec::new()),
             ),
         );
         apply_successful_prompt_outcome(
             &mut timelines,
             session_id,
-            AgentPermissionRouting::CallingSurface,
+            AgentRunSurface::CallingSurface,
             &AgentPromptOutcome::default(),
         );
         assert!(!timelines.contains_key(session_id));
@@ -14474,7 +14409,7 @@ mod tests {
         let mut timelines = HashMap::from([(
             session_id.to_string(),
             test_live_timeline(
-                AgentPermissionRouting::Desktop,
+                AgentRunSurface::Desktop,
                 LiveTimeline::Streaming(prior_turn),
             ),
         )]);
@@ -14482,13 +14417,13 @@ mod tests {
         apply_failed_prompt_outcome(
             &mut timelines,
             session_id,
-            AgentPermissionRouting::Desktop,
+            AgentRunSurface::Desktop,
             error_item("First failure".to_string()),
         );
         apply_failed_prompt_outcome(
             &mut timelines,
             session_id,
-            AgentPermissionRouting::Desktop,
+            AgentRunSurface::Desktop,
             error_item("Second failure".to_string()),
         );
 
@@ -14509,7 +14444,7 @@ mod tests {
         record_timeline_item(
             &live_timelines,
             session_id,
-            AgentPermissionRouting::Desktop,
+            AgentRunSurface::Desktop,
             next_user,
         )
         .await;
@@ -15344,16 +15279,13 @@ mod tests {
         ));
         let live_timelines = Arc::new(Mutex::new(HashMap::from([(
             session_id.to_string(),
-            test_live_timeline(
-                AgentPermissionRouting::Desktop,
-                LiveTimeline::Streaming(live),
-            ),
+            test_live_timeline(AgentRunSurface::Desktop, LiveTimeline::Streaming(live)),
         )])));
 
         reseed_live_timeline_after_history_replaced(
             &live_timelines,
             session_id,
-            AgentPermissionRouting::Desktop,
+            AgentRunSurface::Desktop,
             &conversation,
         )
         .await;
@@ -15390,7 +15322,7 @@ mod tests {
         let live_timelines = Arc::new(Mutex::new(HashMap::from([(
             session_id.to_string(),
             test_live_timeline(
-                AgentPermissionRouting::Desktop,
+                AgentRunSurface::Desktop,
                 LiveTimeline::Streaming(message_to_timeline_items(&current_user, false)),
             ),
         )])));
@@ -15398,7 +15330,7 @@ mod tests {
         reseed_live_timeline_after_history_replaced(
             &live_timelines,
             session_id,
-            AgentPermissionRouting::Desktop,
+            AgentRunSurface::Desktop,
             &conversation,
         )
         .await;
@@ -15441,7 +15373,7 @@ mod tests {
         reseed_live_timeline_after_history_replaced(
             &live_timelines,
             session_id,
-            AgentPermissionRouting::Desktop,
+            AgentRunSurface::Desktop,
             &replacement,
         )
         .await;
@@ -15453,13 +15385,7 @@ mod tests {
             "",
         );
         for item in message_to_timeline_items(&live_response, true) {
-            record_timeline_item(
-                &live_timelines,
-                session_id,
-                AgentPermissionRouting::Desktop,
-                item,
-            )
-            .await;
+            record_timeline_item(&live_timelines, session_id, AgentRunSurface::Desktop, item).await;
         }
 
         let persisted_conversation = Conversation::new_unvalidated(vec![
@@ -15483,7 +15409,7 @@ mod tests {
         let overlaid = overlay_live_timeline(
             &live_timelines,
             session_id,
-            AgentPermissionRouting::Desktop,
+            AgentRunSurface::Desktop,
             &persisted_conversation,
             persisted,
         )
@@ -15681,14 +15607,14 @@ mod tests {
             (
                 target.id.clone(),
                 test_live_timeline(
-                    AgentPermissionRouting::Desktop,
+                    AgentRunSurface::Desktop,
                     LiveTimeline::Streaming(Vec::new()),
                 ),
             ),
             (
                 survivor.id.clone(),
                 test_live_timeline(
-                    AgentPermissionRouting::Desktop,
+                    AgentRunSurface::Desktop,
                     LiveTimeline::Streaming(Vec::new()),
                 ),
             ),
@@ -15805,7 +15731,7 @@ mod tests {
         let live_timelines = Arc::new(Mutex::new(HashMap::from([(
             session.id.clone(),
             test_live_timeline(
-                AgentPermissionRouting::Desktop,
+                AgentRunSurface::Desktop,
                 LiveTimeline::Streaming(vec![error_item("speculative partial event".to_string())]),
             ),
         )])));
@@ -15813,7 +15739,7 @@ mod tests {
             &session_manager,
             &live_timelines,
             &session.id,
-            AgentPermissionRouting::Desktop,
+            AgentRunSurface::Desktop,
             &stopped_user,
             &HashSet::from(["declined-tool".to_string()]),
         )
@@ -15897,7 +15823,7 @@ mod tests {
         live_timelines.lock().await.insert(
             first_turn_session.id.clone(),
             test_live_timeline(
-                AgentPermissionRouting::Desktop,
+                AgentRunSurface::Desktop,
                 LiveTimeline::Streaming(vec![error_item("optimistic first turn".to_string())]),
             ),
         );
@@ -15905,7 +15831,7 @@ mod tests {
             &session_manager,
             &live_timelines,
             &first_turn_session.id,
-            AgentPermissionRouting::Desktop,
+            AgentRunSurface::Desktop,
             &first_turn_user,
             &HashSet::new(),
         )
@@ -17005,8 +16931,6 @@ mod tests {
         assert_eq!(summary.project_root, path_string(&project_root));
         assert_eq!(summary.message_count, 1);
         assert_eq!(summary.model.as_deref(), Some("preserved-model"));
-        // The stored Goose column is not read back; every task reports auto.
-        assert_eq!(summary.mode, "auto");
 
         let persisted = first_manager
             .get_session(&first_session.id, true)
@@ -17653,7 +17577,7 @@ mod tests {
                 session_title_start: Some(title_start),
                 cancelled_permission_ids: Arc::new(Mutex::new(HashSet::new())),
                 run_id: "fast-reply-run".to_string(),
-                permission_routing: AgentPermissionRouting::Desktop,
+                run_surface: AgentRunSurface::Desktop,
                 steered_unacked: Arc::new(Mutex::new(Vec::new())),
             }),
         )
@@ -17776,7 +17700,7 @@ mod tests {
             session_title_start: None,
             cancelled_permission_ids: Arc::new(Mutex::new(HashSet::new())),
             run_id: "rename-during-run-summary".to_string(),
-            permission_routing: AgentPermissionRouting::Desktop,
+            run_surface: AgentRunSurface::Desktop,
             steered_unacked: Arc::new(Mutex::new(Vec::new())),
         }));
         tokio::time::timeout(std::time::Duration::from_secs(1), async {
@@ -17914,7 +17838,7 @@ mod tests {
             session_title_start: None,
             cancelled_permission_ids: Arc::new(Mutex::new(HashSet::new())),
             run_id: "reply-poll-session-isolation".to_string(),
-            permission_routing: AgentPermissionRouting::Desktop,
+            run_surface: AgentRunSurface::Desktop,
             steered_unacked: Arc::new(Mutex::new(Vec::new())),
         }));
 
@@ -18243,7 +18167,7 @@ mod tests {
             session_manager.as_ref(),
             &Arc::new(Mutex::new(HashMap::new())),
             &session.id,
-            AgentPermissionRouting::Desktop,
+            AgentRunSurface::Desktop,
             &user_message,
             &HashSet::new(),
         )
@@ -19053,7 +18977,7 @@ mod tests {
                     session_title_start: None,
                     cancelled_permission_ids: Arc::clone(&cancelled_permission_ids),
                     run_id: format!("{label}-run"),
-                    permission_routing: AgentPermissionRouting::Desktop,
+                    run_surface: AgentRunSurface::Desktop,
                     steered_unacked: Arc::new(Mutex::new(Vec::new())),
                 }),
             ),
@@ -19111,11 +19035,6 @@ mod tests {
         );
         assert_eq!(run.provider.calls.load(Ordering::SeqCst), 2);
         assert!(run.cancelled_permission_ids.is_empty());
-        assert!(
-            !run.run_events
-                .iter()
-                .any(|event| matches!(event, AgentRunEvent::PermissionRequested { .. }))
-        );
         assert!(!run.run_events.iter().any(|event| matches!(
             event,
             AgentRunEvent::TimelineItem(item) if item.item_type == "permission"
@@ -19183,7 +19102,7 @@ mod tests {
             run.session_manager.as_ref(),
             &live_timelines,
             &run.session.id,
-            AgentPermissionRouting::Desktop,
+            AgentRunSurface::Desktop,
             &run.user_message,
             &run.cancelled_permission_ids,
         )
@@ -19237,7 +19156,7 @@ mod tests {
                 session_title_start: None,
                 cancelled_permission_ids: Arc::new(Mutex::new(HashSet::new())),
                 run_id: "stray-confirmation-resumed".to_string(),
-                permission_routing: AgentPermissionRouting::Desktop,
+                run_surface: AgentRunSurface::Desktop,
                 steered_unacked: Arc::new(Mutex::new(Vec::new())),
             }),
         )
@@ -19273,13 +19192,11 @@ mod tests {
                 title: Some("Auto".to_string()),
                 model: None,
                 context_limit: None,
-                mode: Some("smart_approve".to_string()),
                 mcp_server_names: None,
                 system_prompt: None,
             }))
             .await
             .unwrap();
-        assert_eq!(detail.session.mode, "auto");
         let service = &fixture.handle.service;
         let (session_manager, transport) = {
             let runtime = service.inner.lock().await;

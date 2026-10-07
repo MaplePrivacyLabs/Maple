@@ -2146,7 +2146,6 @@ impl ChatScreen {
             title: None,
             model: self.selected_model.clone(),
             context_limit: None,
-            mode: None,
             // The draft's switches decide which servers start with the
             // task; the runtime reads curated MCP integrations (CUA) from
             // this list too. External agents are not servers and are
@@ -3943,7 +3942,6 @@ impl ChatScreen {
             text: text.clone(),
             model,
             context_limit: None,
-            mode: None,
             vision_capable,
             steer: steer && run_active,
             queue_id,
@@ -4751,9 +4749,6 @@ impl ChatScreen {
                     return false;
                 }
             }
-            // The runtime no longer asks for tool permissions; the variant
-            // stays declared until the API drops it.
-            AgentRunEvent::PermissionRequested { .. } => {}
             AgentRunEvent::SubagentStarted {
                 id,
                 task,
