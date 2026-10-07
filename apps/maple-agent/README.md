@@ -109,15 +109,15 @@ has an independent dependency graph.
   projects that provide skills ask once for a trust decision before
   their guidance loads.
 - Sessions grouped by project, with rename, archive, and restore.
-- Settings: General (default permission mode, web tools, appearance,
-  tool call details, desktop notifications, tool call summaries, composer Vim,
-  application Vim, and the speech voice and speed), Keyboard Shortcuts, System
-  prompt, Integrations (detected built-ins and custom MCP servers), Usage (plan
-  meter from the billing API plus totals from the Goose ledger), and About.
+- Settings: General (web tools, appearance, tool call details, desktop
+  notifications, tool call summaries, composer Vim, application Vim, and the
+  speech voice and speed), Keyboard Shortcuts, System prompt, Integrations
+  (detected built-ins and custom MCP servers), Usage (plan meter from the
+  billing API plus totals from the Goose ledger), and About.
 - Dark and light themes; the default follows the system.
 - Billing status from the Maple billing API.
-- Desktop notifications when a task finishes, asks a question, or needs
-  permission while the window is not focused.
+- Desktop notifications when a task finishes or asks a question while the
+  window is not focused.
 - Release check on launch: a banner links to a newer GitHub release.
   Nothing is downloaded or installed by the app.
 - Window size and maximized state persist between launches.
@@ -441,7 +441,6 @@ ignored. See [build profiles](docs/release-profiles.md).
 | `MAPLE_BILLING_API_URL` | Maple billing API. | `https://billing.opensecret.cloud` |
 | `MAPLE_CLIENT_ID` | OpenSecret client id (UUID). | Maple's id |
 | `MAPLE_MODEL` | Model to select at start. | Runtime default |
-| `MAPLE_PERMISSION_MODE` | `smart_approve` or `auto`. Overrides the saved setting. | Saved setting |
 | `MAPLE_CONTEXT_LIMIT` | Context window size in tokens, when the model catalog does not report one. | Catalog value |
 | `GOOSE_SHELL` | Shell for the agent's shell tool. | `bash` (Windows: `cmd`) |
 | `MAPLE_UPDATE_REPO` | GitHub `owner/repo` containing stable `maple-agent-vX.Y.Z` releases. | `MaplePrivacyLabs/Maple` |

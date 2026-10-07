@@ -12,10 +12,8 @@ use maple_agent::agent::{
 };
 
 use super::cache::{MAX_DIFF_LINES, MarkdownKind};
-use super::commands::ChatCommand;
 use super::speech::speak_message_button;
 use super::{CONTENT_WIDTH, ChatScreen, QuestionSelection, TranscriptCtx};
-use crate::backend::PendingPermission;
 
 use crate::ui::icons::{icon, spinner, spinner_with_id};
 use crate::ui::markdown;
@@ -554,7 +552,7 @@ fn tool_status_style(status: Option<&str>) -> (&'static str, u32) {
     match status {
         Some("completed") => ("completed", theme::status_success()),
         Some("failed") | Some("error") => ("failed", theme::status_error()),
-        Some("cancelled") | Some("controlled_externally") => ("stopped", theme::text_muted()),
+        Some("cancelled") => ("stopped", theme::text_muted()),
         _ => ("running", theme::status_running()),
     }
 }
@@ -929,7 +927,7 @@ fn render_tool(
     let (label, status_color) = tool_status_style(item.status.as_deref());
     let running = !matches!(
         item.status.as_deref(),
-        Some("completed" | "failed" | "error" | "cancelled" | "controlled_externally")
+        Some("completed" | "failed" | "error" | "cancelled")
     );
     let item_id = item.id.clone();
     let chat_header = transcript.chat.clone();
@@ -1244,11 +1242,13 @@ fn render_error(item: &AgentTimelineItem) -> Div {
     widgets::banner(theme::status_error()).child(text)
 }
 
+/// The row for an MCP elicitation ("Input requested"). It has no answer
+/// path yet; the row shows whether the turn settled it.
 fn render_permission_row(item: &AgentTimelineItem) -> Div {
     let title = item
         .title
         .clone()
-        .unwrap_or_else(|| "Permission".to_string());
+        .unwrap_or_else(|| "Input requested".to_string());
     let status = match item.status.as_deref() {
         Some("completed") => ("allowed", theme::status_success()),
         Some("denied") | Some("cancelled") => ("denied", theme::text_muted()),
@@ -1518,117 +1518,4 @@ pub(super) fn render_waiting_indicator() -> gpui::Stateful<Div> {
                 .text_color(gpui::rgb(theme::text_muted()))
                 .child("Maple is thinking"),
         )
-}
-
-/// The card's heading names who is asking: Maple's own tools, or an
-/// external agent whose request Maple relays.
-pub(super) fn permission_card_heading(tool_name: &str) -> &'static str {
-    match tool_name {
-        "claude_tool" => "Claude Code wants to use a tool",
-        "codex_command" => "Codex wants to run a command",
-        "codex_file_change" => "Codex wants to change files",
-        _ => "Permission required",
-    }
-}
-
-pub(super) fn render_permission_card(
-    permission: &PendingPermission,
-    responding: bool,
-    application_choice: Option<usize>,
-    cx: &mut Context<ChatScreen>,
-) -> Div {
-    let description: SharedString = match permission.prompt.as_deref() {
-        Some(prompt) => prompt.to_string().into(),
-        None => format!("Run tool {}?", permission.tool_name).into(),
-    };
-    let heading = permission_card_heading(&permission.tool_name);
-    let arguments: SharedString = permission.arguments.clone().into();
-    let mut card = div()
-        .my_3()
-        .mx_auto()
-        .w_full()
-        .max_w(CONTENT_WIDTH - px(48.))
-        .px_4()
-        .py_3()
-        .rounded(theme::RADIUS_MD)
-        .bg(gpui::rgb(theme::permission_fill()))
-        .border_1()
-        .border_color(gpui::rgb(theme::permission_border()))
-        .flex()
-        .flex_col()
-        .gap_2()
-        .child(
-            div()
-                .font_weight(gpui::FontWeight::SEMIBOLD)
-                .text_color(gpui::rgb(theme::text_primary()))
-                .child(heading),
-        )
-        .child(
-            div()
-                .text_sm()
-                .text_color(gpui::rgb(theme::text_secondary()))
-                .child(description),
-        );
-    if !arguments.is_empty() {
-        card = card.child(
-            div()
-                .text_xs()
-                .text_color(gpui::rgb(theme::text_muted()))
-                .font_family(crate::assets::FONT_MONO)
-                .max_h(gpui::px(120.))
-                .overflow_hidden()
-                .child(arguments),
-        );
-    }
-    let mut buttons = div().flex().gap_2();
-    for (index, (id, label, allow, color)) in [
-        (
-            "permission-allow-once",
-            "Allow once",
-            true,
-            theme::status_success(),
-        ),
-        ("permission-deny", "Deny", false, theme::status_error()),
-    ]
-    .into_iter()
-    .enumerate()
-    {
-        buttons = buttons.child(
-            div()
-                .id(id)
-                .px_4()
-                .py_1()
-                .rounded_full()
-                .font_weight(gpui::FontWeight::MEDIUM)
-                .when(application_choice == Some(index), |button| {
-                    button
-                        .border_2()
-                        .border_color(gpui::rgb(theme::text_primary()))
-                })
-                .bg(gpui::rgb(if responding { theme::border() } else { color }))
-                .text_sm()
-                .text_color(gpui::rgb(theme::on_accent()))
-                .when(!responding, |el| {
-                    el.hover(|style| style.opacity(0.9).cursor_pointer())
-                        .active(|style| style.opacity(0.75))
-                        .on_click(cx.listener(move |this, _event, window, cx| {
-                            this.execute_command(
-                                ChatCommand::RespondPermission { allow },
-                                window,
-                                cx,
-                            );
-                        }))
-                })
-                .child(label.to_string()),
-        );
-    }
-    if responding {
-        card = card.child(
-            div()
-                .text_xs()
-                .text_color(gpui::rgb(theme::text_muted()))
-                .child("Sending decision…"),
-        );
-    }
-    card.child(buttons)
 }

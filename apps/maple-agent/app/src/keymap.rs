@@ -61,7 +61,6 @@ enum SlotAction {
     ChooseProject,
     PreviousTask,
     NextTask,
-    AllowPermission,
     PickQuestionOption(usize),
     CopySelection,
     SelectAllTranscript,
@@ -156,7 +155,6 @@ impl SlotAction {
             Self::ChooseProject => Box::new(chat::ChooseProject),
             Self::PreviousTask => Box::new(chat::PreviousTask),
             Self::NextTask => Box::new(chat::NextTask),
-            Self::AllowPermission => Box::new(chat::AllowPermission),
             Self::PickQuestionOption(index) => Box::new(chat::PickQuestionOption { index }),
             Self::CopySelection => Box::new(chat::CopySelection),
             Self::SelectAllTranscript => Box::new(chat::SelectAllTranscript),
@@ -270,6 +268,13 @@ fn slot(
         action,
     }
 }
+
+/// Slot ids removed since they could be customized. A saved override under
+/// one of these is ignored without a warning and dropped on the next edit.
+pub(crate) const RETIRED_SLOT_IDS: &[&str] = &[
+    // The approval card went with Maple's tool permissions.
+    "chat.allow_permission",
+];
 
 /// Slot ids renamed since they could be customized, and their current ids.
 /// A saved override under an old id still applies to the renamed slot.
@@ -404,14 +409,6 @@ fn catalog_for(os: HostOs) -> Vec<ShortcutSlot> {
             Some("Chat"),
             next_task,
             SlotAction::NextTask,
-        ),
-        slot(
-            "chat.allow_permission",
-            "Allow permission request",
-            ShortcutCategory::Chat,
-            Some("Chat"),
-            "secondary-y",
-            SlotAction::AllowPermission,
         ),
     ];
     if matches!(os, HostOs::Macos) {

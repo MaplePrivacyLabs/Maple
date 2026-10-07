@@ -1,8 +1,7 @@
 //! The agent chat surface: session sidebar, streaming transcript with tool
-//! calls, permission prompts, and the composer. Pure consumer of the backend
+//! calls, questions, and the composer. Pure consumer of the backend
 //! facade + event stream.
 
-use crate::settings::PermissionMode;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
 
@@ -18,7 +17,7 @@ use maple_agent::agent::{
     AgentTimelineItem, SideQuestionEvent,
 };
 
-use crate::backend::{AgentBackend, PendingPermission, PendingQuestion};
+use crate::backend::{AgentBackend, PendingQuestion};
 use crate::ui::icons::{icon, spinner, wordmark};
 use crate::ui::markdown;
 use crate::ui::motion;
@@ -51,14 +50,13 @@ use self::navigation::ApplicationVimState;
 use self::sidebar::SessionActivity;
 use self::sidebar::{Sidebar, SidebarEvent, root_display_name, session_summary_eq};
 use self::transcript::{
-    ActiveSubagent, PlanEntry, PlanStatus, plan_entries, render_permission_card,
-    render_question_card, render_waiting_indicator,
+    ActiveSubagent, PlanEntry, PlanStatus, plan_entries, render_question_card,
+    render_waiting_indicator,
 };
 
 gpui::actions!(
     chat,
     [
-        AllowPermission,
         ChatEscape,
         ChooseProject,
         CopySelection,
@@ -180,7 +178,6 @@ pub(super) enum ChatPopup {
     /// The header chip's project menu.
     Project,
     Model,
-    Mode,
     Integrations,
     /// The transcript's right-click menu, at a window position.
     Transcript(gpui::Point<gpui::Pixels>),
@@ -226,13 +223,12 @@ struct DraftMcpChange {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct NewSessionChanges {
     web: Option<bool>,
-    mode: Option<String>,
     mcp: Vec<DraftMcpChange>,
 }
 
 impl NewSessionChanges {
     fn is_empty(&self) -> bool {
-        self.web.is_none() && self.mode.is_none() && self.mcp.is_empty()
+        self.web.is_none() && self.mcp.is_empty()
     }
 }
 
@@ -337,11 +333,6 @@ pub struct ChatScreen {
     /// capped at `FINISHED_RUNS_KEPT`. A send that returns after its run
     /// finished must not mark that run active again.
     finished_runs: std::collections::VecDeque<String>,
-    /// Permission requests waiting for a decision, one per request,
-    /// across every session. The card shows the first one for the
-    /// selected session; the others wait until their session is opened.
-    pending_permissions: Vec<PendingPermission>,
-    permission_responding: bool,
     /// Suppresses duplicate session creation while one is in flight.
     session_setup_pending: bool,
     /// The new-task screen is a draft the user started (or the auto-select
@@ -424,12 +415,6 @@ pub struct ChatScreen {
     /// Whether tool cards show their input/output payloads. Toggled from
     /// the header; off gives a one-line card per tool call.
     tool_details: bool,
-    /// Permission policy for new runs: ask per gated tool, or approve
-    /// every call.
-    permission_mode: PermissionMode,
-    /// False once the user picks a mode for this specific session; the
-    /// settings default then no longer overrides it.
-    uses_default_permission_mode: bool,
     /// Project context shown by the UI and used explicitly for new tasks.
     /// Existing tasks always execute in their own persisted project root.
     project_root: Option<String>,
@@ -1017,8 +1002,6 @@ impl ChatScreen {
             active_runs: HashMap::new(),
             completed_unread_sessions: HashSet::new(),
             finished_runs: std::collections::VecDeque::new(),
-            pending_permissions: Vec::new(),
-            permission_responding: false,
             session_setup_pending: false,
             draft: false,
             pending_first_send: None,
@@ -1052,14 +1035,6 @@ impl ChatScreen {
             loading_session: None,
             list_state: transcript_list_state(),
             tool_details: settings.tool_details,
-            // An unset or unknown value in either place means "use the
-            // saved default", so only a known mode counts as an override.
-            permission_mode: std::env::var("MAPLE_PERMISSION_MODE")
-                .ok()
-                .and_then(|mode| PermissionMode::from_str(&mode))
-                .or(Some(settings.default_permission_mode))
-                .unwrap_or_default(),
-            uses_default_permission_mode: std::env::var("MAPLE_PERMISSION_MODE").is_err(),
             project_root: None,
             recent_roots: Vec::new(),
             popup: Popup::new(|this| &mut this.popup, cx),
@@ -1948,18 +1923,16 @@ impl ChatScreen {
     }
 
     /// The settings the composer shows that `session`, just created, does
-    /// not have: web access, the permission mode, and the integration
-    /// rows whose switch differs from `task_mcp`. Chips flipped while the
-    /// create was in flight show up here like any other.
+    /// not have: web access and the integration rows whose switch differs
+    /// from `task_mcp`. Chips flipped while the create was in flight show
+    /// up here like any other.
     fn new_session_changes(
         &self,
         session: &AgentSessionSummary,
         task_mcp: &[DraftMcpChange],
     ) -> NewSessionChanges {
-        let mode = self.permission_mode.as_str();
         NewSessionChanges {
             web: (self.web_enabled != session.web_enabled).then_some(self.web_enabled),
-            mode: (mode != session.mode).then(|| mode.to_string()),
             mcp: self
                 .session_mcp
                 .iter()
@@ -2014,13 +1987,6 @@ impl ChatScreen {
                         .set_session_web_enabled(&user_id, &session.id, enabled)
                         .await
                         .map_err(|message| format!("Could not change web access: {message}"))?;
-                }
-                if let Some(mode) = changes.mode {
-                    backend
-                        .set_permission_mode(&user_id, &session.id, &mode)
-                        .await
-                        .map_err(|message| format!("Could not set permission mode: {message}"))?;
-                    session.mode = mode;
                 }
                 for change in &changes.mcp {
                     backend
@@ -2180,12 +2146,7 @@ impl ChatScreen {
             title: None,
             model: self.selected_model.clone(),
             context_limit: None,
-            // Persist the composer's mode — the saved default until the
-            // user picks one for this task — so the created row, its
-            // summary, and the chip agree. `None` would fall back to the
-            // runtime's SmartApprove startup default, and adopting that
-            // summary would reset the chip to Ask First.
-            mode: Some(self.permission_mode.as_str().to_string()),
+            mode: None,
             // The draft's switches decide which servers start with the
             // task; the runtime reads curated MCP integrations (CUA) from
             // this list too. External agents are not servers and are
@@ -2209,7 +2170,7 @@ impl ChatScreen {
     }
 
     /// Replace the timeline after a mid-run history compaction without
-    /// disturbing the active run or a pending permission.
+    /// disturbing the active run or a pending question.
     fn reload_timeline(&mut self, session_id: &str, cx: &mut Context<Self>) {
         self.load_session(session_id, LoadMode::Reload, LOAD_RETRIES, cx);
     }
@@ -2392,9 +2353,8 @@ impl ChatScreen {
         self.refresh_selected_title();
     }
 
-    /// Apply settings-default changes when returning from the settings
-    /// screen: tool verbosity updates live; the permission default only
-    /// affects sessions that still follow the default.
+    /// Apply settings changes when returning from the settings screen:
+    /// every default the composer and transcript read updates live.
     pub fn apply_defaults(
         &mut self,
         settings: &crate::settings::AppSettings,
@@ -2430,10 +2390,6 @@ impl ChatScreen {
         self.screen_focus_pending = true;
         self.tts_voice.clone_from(&settings.tts_voice);
         self.tts_speed = settings.tts_speed;
-        if self.uses_default_permission_mode {
-            self.permission_mode = settings.default_permission_mode;
-            self.apply_permission_mode(cx);
-        }
         // Servers may have been added or removed in settings.
         self.refresh_session_mcp(cx);
         cx.notify();
@@ -2633,33 +2589,10 @@ impl ChatScreen {
         );
     }
 
-    fn apply_permission_mode(&self, cx: &mut Context<Self>) {
-        let Some(session_id) = self.selected_session.clone() else {
-            return;
-        };
-        let backend = self.backend.clone();
-        let user_id = self.user_id.clone();
-        let mode = self.permission_mode.as_str().to_string();
-        self.call(
-            async move {
-                backend
-                    .set_permission_mode(&user_id, &session_id, &mode)
-                    .await
-            },
-            cx,
-            |this, result, cx| {
-                if let Err(message) = result {
-                    this.notice = Some(format!("Could not set permission mode: {message}").into());
-                    cx.notify();
-                }
-            },
-        );
-    }
-
     /// Leave the selected task's presentation without discarding anything
     /// the account runtime still needs for background work. Pending
-    /// permissions and questions remain keyed by session and reappear when
-    /// that task is opened again.
+    /// questions remain keyed by session and reappear when that task is
+    /// opened again.
     pub(super) fn clear_selected_session_presentation(
         &mut self,
         cx: &mut Context<Self>,
@@ -2711,7 +2644,6 @@ impl ChatScreen {
         self.list_state.scroll_to_end();
         self.awaiting_first_token = false;
         self.lightbox = None;
-        self.permission_responding = false;
         self.popup.close(cx);
     }
 
@@ -2753,11 +2685,6 @@ impl ChatScreen {
         }
         self.refresh_selected_title();
         self.set_queue(Vec::new());
-        // Adopt the session's stored policy; it persists per session in the
-        // runtime.
-        if let Some(mode) = PermissionMode::from_str(&session.mode) {
-            self.permission_mode = mode;
-        }
         self.web_enabled = session.web_enabled;
         self.apply_session_model(&session, cx);
         self.replace_timeline(timeline);
@@ -3476,10 +3403,6 @@ impl ChatScreen {
             self.skip_question(cx);
             return;
         }
-        if self.current_permission().is_some() {
-            self.respond_permission(false, cx);
-            return;
-        }
         if let Some(selection) = self.selection.clone()
             && selection.read(cx).has_selection()
         {
@@ -4020,7 +3943,7 @@ impl ChatScreen {
             text: text.clone(),
             model,
             context_limit: None,
-            mode: Some(self.permission_mode.as_str().to_string()),
+            mode: None,
             vision_capable,
             steer: steer && run_active,
             queue_id,
@@ -4405,47 +4328,6 @@ impl ChatScreen {
         composed
     }
 
-    fn respond_permission(&mut self, allow: bool, cx: &mut Context<Self>) {
-        let Some(permission) = self.current_permission().cloned() else {
-            return;
-        };
-        if self.permission_responding {
-            return;
-        }
-        self.permission_responding = true;
-        cx.notify();
-        let backend = self.backend.clone();
-        let user_id = self.user_id.clone();
-        let request_id = permission.request_id.clone();
-        self.call(
-            async move {
-                backend
-                    .permission_respond(
-                        &user_id,
-                        &permission.session_id,
-                        &permission.request_id,
-                        allow,
-                    )
-                    .await
-            },
-            cx,
-            move |this, result, cx| {
-                this.permission_responding = false;
-                match result {
-                    Ok(()) => {
-                        this.pending_permissions
-                            .retain(|pending| pending.request_id != request_id);
-                    }
-                    Err(message) => {
-                        // Keep the card so the decision can be retried.
-                        this.notice = Some(format!("Permission response failed: {message}").into());
-                    }
-                }
-                cx.notify();
-            },
-        );
-    }
-
     pub(crate) fn sign_out(&mut self, cx: &mut Context<Self>) {
         self.stop_speech(cx);
         if self.recording {
@@ -4661,7 +4543,6 @@ impl ChatScreen {
         // work; the summary check reads the stored item after the merge.
         let completed = item.status.as_deref() == Some("completed");
         let is_tool = matches!(item.item_type.as_str(), "tool" | "toolCall");
-        self.retire_decided_permission(&item);
         self.load_attachment_images_for(&item, cx);
         if let Some(plan) = plan_entries(&item) {
             self.set_plan(plan);
@@ -4689,36 +4570,6 @@ impl ChatScreen {
             self.refresh_context_usage(cx);
         }
     }
-    /// Drop the permission card when the runtime decided its request
-    /// without the card: switching the session to "Allow all" approves
-    /// every pending request and replaces the permission row with a
-    /// status.
-    fn retire_decided_permission(&mut self, item: &AgentTimelineItem) {
-        if item.status.is_none() {
-            return;
-        }
-        let Some(request_id) = item.id.strip_prefix("permission-") else {
-            return;
-        };
-        let showing = self
-            .current_permission()
-            .is_some_and(|permission| permission.request_id == request_id);
-        let before = self.pending_permissions.len();
-        self.pending_permissions
-            .retain(|pending| pending.request_id != request_id);
-        if showing && self.pending_permissions.len() != before {
-            self.permission_responding = false;
-        }
-    }
-
-    /// The permission card shown for the selected session, if any.
-    fn current_permission(&self) -> Option<&PendingPermission> {
-        let selected = self.selected_session.as_deref()?;
-        self.pending_permissions
-            .iter()
-            .find(|permission| permission.session_id == selected)
-    }
-
     pub fn handle_service_events(
         &mut self,
         events: Vec<AgentServiceEvent>,
@@ -4900,47 +4751,9 @@ impl ChatScreen {
                     return false;
                 }
             }
-            AgentRunEvent::PermissionRequested { request, item } => {
-                let selected = self.is_selected(session_id);
-                if selected {
-                    // The permission row stays in the transcript so the
-                    // decision is visible after the card is answered.
-                    self.load_attachment_images_for(&item, cx);
-                    self.apply_timeline_item(session_id, item);
-                }
-                let arguments = serde_json::Value::Object(request.arguments);
-                let arguments: std::sync::Arc<str> = if arguments.is_null() {
-                    "".into()
-                } else {
-                    serde_json::to_string_pretty(&arguments)
-                        .unwrap_or_default()
-                        .into()
-                };
-                let prompt = request
-                    .prompt
-                    .clone()
-                    .unwrap_or_else(|| format!("Run tool {}?", request.tool_name));
-                self.notify_desktop(session_id, "Maple needs permission", &prompt, cx);
-                // The request is kept even when its session is not on
-                // screen: the run blocks until it is answered, so the card
-                // must appear when the user opens that session.
-                self.pending_permissions
-                    .retain(|pending| pending.request_id != request.request_id);
-                self.pending_permissions.push(PendingPermission {
-                    session_id: session_id.to_string(),
-                    run_id: run_id.to_string(),
-                    request_id: request.request_id,
-                    tool_name: request.tool_name,
-                    prompt: request.prompt,
-                    arguments,
-                });
-                if selected {
-                    self.permission_responding = false;
-                } else {
-                    self.bump_timeline_revision(session_id);
-                    return false;
-                }
-            }
+            // The runtime no longer asks for tool permissions; the variant
+            // stays declared until the API drops it.
+            AgentRunEvent::PermissionRequested { .. } => {}
             AgentRunEvent::SubagentStarted {
                 id,
                 task,
@@ -4984,8 +4797,7 @@ impl ChatScreen {
             }
             AgentRunEvent::HistoryReplaced => {
                 if self.is_selected(session_id) {
-                    // Replace history only; the run and any pending
-                    // permission keep flowing.
+                    // Replace history only; the run keeps flowing.
                     let session_id = session_id.to_string();
                     self.reload_timeline(&session_id, cx);
                 }
@@ -5041,14 +4853,6 @@ impl ChatScreen {
                     // The run that asked is gone (stopped or failed): its
                     // questions would block the composer forever.
                     self.clear_session_questions(session_id, cx);
-                }
-                let showing = self
-                    .current_permission()
-                    .is_some_and(|permission| permission.run_id == run_id);
-                self.pending_permissions
-                    .retain(|permission| permission.run_id != run_id);
-                if showing {
-                    self.permission_responding = false;
                 }
                 if self.is_selected(session_id) {
                     // Another task finishing must not hide the dots for
@@ -5155,7 +4959,6 @@ impl Render for ChatScreen {
         if self.question_focus_pending {
             self.question_focus_pending = false;
             if self.application_vim_enabled {
-                self.application_vim.permission_choice = 0;
                 if let Some(handle) = self.application_focus.clone() {
                     window.focus(&handle, cx);
                 }
@@ -5207,14 +5010,6 @@ impl Render for ChatScreen {
                         step,
                         input,
                         &self.question_selected,
-                        cx,
-                    ))
-                })
-                .when_some(self.current_permission(), |container, permission| {
-                    container.child(render_permission_card(
-                        permission,
-                        self.permission_responding,
-                        self.application_permission_choice(),
                         cx,
                     ))
                 })
@@ -5270,7 +5065,6 @@ impl Render for ChatScreen {
             .on_action(cx.listener(Self::choose_project))
             .on_action(cx.listener(Self::previous_task))
             .on_action(cx.listener(Self::next_task))
-            .on_action(cx.listener(Self::allow_permission))
             .on_action(cx.listener(Self::pick_question_option))
             .on_action(cx.listener(Self::select_all_transcript))
             .on_action(cx.listener(Self::app_vim_next))

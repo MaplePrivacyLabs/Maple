@@ -154,7 +154,7 @@ tokens! {
     text_muted: 0x9c9dab, 0x6b6b6b;
     text_faint: 0x5e5f6e, 0xd4d4d4;
 
-    /// Maple coral (maple-500): send button, focus, caret, permission prompts.
+    /// Maple coral (maple-500): send button, focus, caret, question cards.
     accent: 0xff9771, 0xff9771;
     /// Hover for accent fills: maple-400 on dark, maple-600 on light.
     accent_hover: 0xffa88a, 0xf67d57;
@@ -175,7 +175,7 @@ tokens! {
     /// Links take the tertiary Bark scale (bark-300 / bark-500).
     link: 0xc29a8d, 0x9e7469;
 
-    /// Permission card fill/border: the coral container and maple-300.
+    /// Elicitation row fill/border: the coral container and maple-300.
     permission_fill: 0x2a1a14, 0xffe8e0;
     permission_border: 0x784a38, 0xffbaa2;
 

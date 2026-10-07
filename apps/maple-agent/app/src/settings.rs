@@ -10,9 +10,6 @@ use std::path::PathBuf;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct AppSettings {
-    /// Default permission policy for new sessions; see [`PermissionMode`].
-    #[serde(default)]
-    pub default_permission_mode: PermissionMode,
     /// Whether tool cards show input/output payloads by default.
     #[serde(default = "default_tool_details")]
     pub tool_details: bool,
@@ -41,8 +38,8 @@ pub struct AppSettings {
     /// Display names for project roots, keyed by absolute path.
     #[serde(default)]
     pub project_names: std::collections::HashMap<String, String>,
-    /// Whether run completion, permissions, and questions raise desktop
-    /// notifications while the window is not focused.
+    /// Whether run completion and questions raise desktop notifications
+    /// while the window is not focused.
     #[serde(default = "default_desktop_notifications")]
     pub desktop_notifications: bool,
     /// Skip looping and reveal animations. gpui reads no OS preference for
@@ -121,86 +118,6 @@ fn default_tts_speed() -> f32 {
     DEFAULT_TTS_SPEED
 }
 
-/// Permission policy for a session: whether a gated tool call needs a
-/// decision from the user. Modelled on [`crate::ui::theme::Preference`],
-/// including the same infallible `parse` so an unknown value on disk
-/// degrades to the safer mode instead of failing the whole settings load.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum PermissionMode {
-    /// Confirm each gated tool call.
-    #[default]
-    SmartApprove,
-    /// Approve every tool call without asking.
-    Auto,
-}
-
-impl PermissionMode {
-    /// Anything unknown reads as the safer mode.
-    pub fn parse(value: &str) -> Self {
-        match value {
-            "auto" => Self::Auto,
-            _ => Self::SmartApprove,
-        }
-    }
-
-    /// The mode named by `value`, or `None` when it names no mode. Use
-    /// this where an unknown value must fall back to a saved default
-    /// rather than to the safer mode.
-    pub fn from_str(value: &str) -> Option<Self> {
-        match value {
-            "auto" => Some(Self::Auto),
-            "smart_approve" => Some(Self::SmartApprove),
-            _ => None,
-        }
-    }
-
-    /// Icon name: a bolt for allow all, a shield for ask first.
-    pub fn icon(self) -> &'static str {
-        match self {
-            Self::SmartApprove => "shield-check",
-            Self::Auto => "zap",
-        }
-    }
-
-    /// The value written to disk and handed to the agent runtime.
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::SmartApprove => "smart_approve",
-            Self::Auto => "auto",
-        }
-    }
-
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::SmartApprove => "Ask first",
-            Self::Auto => "Allow all",
-        }
-    }
-
-    /// One line of explanation under the label.
-    pub fn note(self) -> &'static str {
-        match self {
-            Self::SmartApprove => "Confirm each gated tool call",
-            Self::Auto => "Approve every tool call without asking",
-        }
-    }
-}
-
-// Serialized as the bare string it has always been, so settings.json and
-// the runtime's mode field keep their format.
-impl serde::Serialize for PermissionMode {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.serialize_str(self.as_str())
-    }
-}
-
-impl<'de> serde::Deserialize<'de> for PermissionMode {
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let value = <String as serde::Deserialize>::deserialize(deserializer)?;
-        Ok(Self::parse(&value))
-    }
-}
-
 /// Persisted window geometry. Position is left to the window manager:
 /// Wayland does not expose it, and a stale position can open the window
 /// off-screen after a monitor change.
@@ -274,7 +191,6 @@ fn default_tool_summaries() -> bool {
 impl Default for AppSettings {
     fn default() -> Self {
         Self {
-            default_permission_mode: PermissionMode::default(),
             tool_details: default_tool_details(),
             default_web_enabled: default_web_enabled(),
             tool_summaries: default_tool_summaries(),
@@ -591,27 +507,24 @@ mod tests {
         assert_eq!(usage.totals.total_tokens, 1200);
     }
 
+    /// A settings file written while the app still saved a permission mode
+    /// and a shortcut for the approval card loads as it is; the next save
+    /// drops the mode, and the retired shortcut slot is ignored at run time
+    /// (see `shortcuts::tests::an_override_for_a_retired_slot_is_dropped_quietly`).
     #[test]
-    fn permission_mode_round_trips_as_a_string() {
-        for mode in [PermissionMode::SmartApprove, PermissionMode::Auto] {
-            let json = serde_json::to_string(&mode).expect("serialize");
-            assert_eq!(json, format!("\"{}\"", mode.as_str()));
-            let back: PermissionMode = serde_json::from_str(&json).expect("deserialize");
-            assert_eq!(back, mode);
-        }
-    }
-
-    #[test]
-    fn unknown_permission_mode_reads_as_the_safer_one() {
-        assert_eq!(PermissionMode::parse("chat"), PermissionMode::SmartApprove);
-        assert_eq!(PermissionMode::parse(""), PermissionMode::SmartApprove);
-        assert_eq!(PermissionMode::default(), PermissionMode::SmartApprove);
-    }
-
-    #[test]
-    fn default_settings_keep_the_on_disk_permission_string() {
-        let json = serde_json::to_value(AppSettings::default()).expect("serialize");
-        assert_eq!(json["default_permission_mode"], "smart_approve");
+    fn settings_with_a_saved_permission_mode_still_load() {
+        let settings: AppSettings = serde_json::from_str(
+            r#"{"default_permission_mode":"auto","tool_details":true,
+                "shortcut_overrides":{"chat.allow_permission":null,"chat.new_task":"secondary-shift-n"}}"#,
+        )
+        .expect("an old settings file still loads");
+        assert!(settings.tool_details);
+        assert_eq!(
+            settings.shortcut_overrides.get("chat.allow_permission"),
+            Some(&None)
+        );
+        let json = serde_json::to_value(&settings).expect("serialize");
+        assert!(json.get("default_permission_mode").is_none());
     }
 
     #[test]
