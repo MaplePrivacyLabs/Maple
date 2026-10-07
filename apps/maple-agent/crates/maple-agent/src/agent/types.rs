@@ -134,9 +134,6 @@ pub struct AgentIntegration {
     pub backend: Option<AgentIntegrationBackend>,
     /// Version of the implementation built into Maple, when one exists.
     pub version: Option<String>,
-    /// Version of a separately-installed compatible application, when one was
-    /// discovered. Its presence never grants Maple permission or enables it.
-    pub standalone_version: Option<String>,
     /// Host-process permissions needed by the built-in implementation.
     pub permissions: Option<AgentIntegrationPermissions>,
     /// Whether a setup action would still do something. It is false once the
@@ -150,11 +147,13 @@ pub struct AgentIntegration {
     pub detail: Option<String>,
 }
 
+/// The implementation behind a curated integration. Only Maple's own
+/// embedded backend remains; tasks saved with the retired standalone driver
+/// read as having no backend.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentIntegrationBackend {
     Embedded,
-    External,
 }
 
 /// One host-process permission that a built-in integration needs.

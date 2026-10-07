@@ -700,8 +700,7 @@ mod tests {
                             ),
                     ),
                     setup_available: true,
-                    standalone_version: Some("0.23.2".to_string()),
-                    backend: Some(maple_agent::agent::AgentIntegrationBackend::External),
+                    backend: Some(maple_agent::agent::AgentIntegrationBackend::Embedded),
                 },
                 // An undetected integration contributes no focus target.
                 maple_agent::agent::AgentIntegration {
@@ -714,7 +713,6 @@ mod tests {
                     detail: None,
                     permissions: None,
                     setup_available: false,
-                    standalone_version: None,
                     backend: None,
                 },
             ]);

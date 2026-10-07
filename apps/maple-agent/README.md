@@ -141,12 +141,11 @@ the embedded transport.
 Enabling an integration sets a device-local default for new tasks. Existing
 tasks keep their frozen integration choice and expose CUA as an independent
 per-task switch in the composer. A task that never chose a backend adopts the
-device default only when it can actually run it. A detected standalone
-CuaDriver, which Maple looks for on macOS only, remains a legacy-compatible
-backend until the user explicitly sets up the built-in one;
-Maple does not install or update it, start or stop its daemon, or alter another
-client's configuration. Custom STDIO and Streamable HTTP MCP servers remain
-account configuration that may roam between devices.
+device default only when it can actually run it. Maple no longer looks for a
+separately installed CuaDriver application: a task saved with its stdio entry
+loses that entry on its next run, and a device setting that selected it reads
+as not set up. Custom STDIO and Streamable HTTP MCP servers remain account
+configuration that may roam between devices.
 
 The embedded design, migration rules, privacy boundary, and preview limits are
 documented in [`docs/embedded-cua.md`](docs/embedded-cua.md).
