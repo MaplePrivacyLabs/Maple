@@ -153,6 +153,20 @@ pub(super) fn settle_turn_permission_items(
     }
 }
 
+/// Maple has no answer path for MCP elicitation. Once no run of the task is
+/// live, a pending "Input requested" row can never be answered, for example
+/// after a failed turn or an app exit, so it is shown as cancelled.
+pub(super) fn cancel_unanswerable_elicitation_items(items: &mut [AgentTimelineItem]) {
+    for item in items {
+        if item.item_type == "permission"
+            && item.status.as_deref() == Some("pending")
+            && item.id.starts_with("elicitation-")
+        {
+            item.status = Some("cancelled".to_string());
+        }
+    }
+}
+
 pub(super) fn is_real_user_message(message: &Message, role: &str) -> bool {
     if role != "user" || !message.is_user_visible() {
         return false;
