@@ -108,8 +108,8 @@ clients for embedded CUA. Research has an independent dependency graph.
 - Settings: General (web tools, appearance, tool call details, desktop
   notifications, tool call summaries, composer Vim, application Vim, and the
   speech voice and speed), Keyboard Shortcuts, System prompt, Integrations
-  (detected built-ins and custom MCP servers), Usage (plan meter from the
-  billing API plus totals from the Goose ledger), and About.
+  (detected built-ins and custom MCP servers), Usage (the plan meter from
+  the billing API), and About.
 - Dark and light themes; the default follows the system.
 - Billing status from the Maple billing API.
 - Desktop notifications when a task finishes or asks a question while the
