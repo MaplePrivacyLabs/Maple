@@ -684,7 +684,9 @@ mod tests {
             );
         });
         cx.run_until_parked();
-        drop(screen);
+        // GPUI queues entity disposal until an App update flushes its effects.
+        // Run that cycle so LoginScreen::Drop aborts the pending backend task.
+        cx.update(|_| drop(screen));
         cx.run_until_parked();
         assert!(
             weak.upgrade().is_none(),
