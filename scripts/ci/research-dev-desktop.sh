@@ -22,6 +22,11 @@ use_xcode_toolchain
 prepare_macos_onnxruntime
 export MACOSX_DEPLOYMENT_TARGET="13.4"
 export CMAKE_OSX_DEPLOYMENT_TARGET="${MACOSX_DEPLOYMENT_TARGET}"
+# Match Research's macOS PR/release linker setup: prefer Apple's SDK libraries
+# over the Nix libiconv directory added by use_xcode_toolchain.
+export SDKROOT="$(xcrun --sdk macosx --show-sdk-path)"
+export LIBRARY_PATH="${SDKROOT}/usr/lib${LIBRARY_PATH:+:${LIBRARY_PATH}}"
+export RUSTFLAGS="${RUSTFLAGS:+${RUSTFLAGS} }-Clink-arg=-isysroot -Clink-arg=${SDKROOT}"
 cd "${FRONTEND_DIR}"
 bun tauri build --debug --bundles app --no-sign --config src-tauri/tauri.desktop-dev.conf.json
 verify_frontend_dist_unchanged

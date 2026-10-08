@@ -6,7 +6,9 @@ import json
 import os
 from pathlib import Path
 import plistlib
+import re
 import shlex
+import subprocess
 
 ROOT = Path(__file__).resolve().parents[2]
 TAURI = ROOT / "apps/maple-research/frontend/src-tauri"
@@ -41,6 +43,28 @@ def verify_bundle(bundle, profile):
             "executable_sha256": hashlib.sha256(binary.read_bytes()).hexdigest()}
 
 
+def verify_macos_runtime_paths(binary):
+    loads = subprocess.check_output(["/usr/bin/otool", "-L", str(binary)], text=True)
+    paths = re.findall(r"^\s+(.+?) \(compatibility version ", loads, re.MULTILINE)
+    if not paths:
+        raise ValueError("Packaged executable has no inspectable Mach-O dependencies")
+    commands = subprocess.check_output(["/usr/bin/otool", "-l", str(binary)], text=True)
+    is_rpath = False
+    for line in commands.splitlines():
+        if line.strip().startswith("cmd "):
+            is_rpath = line.strip() == "cmd LC_RPATH"
+        elif is_rpath:
+            match = re.match(r"\s*path (.+?) \(offset \d+\)", line)
+            if match:
+                paths.append(match[1])
+                is_rpath = False
+    for path in paths:
+        if path.startswith(("@rpath/", "@loader_path/", "@executable_path/")):
+            continue
+        if not os.path.normpath(path).startswith(("/usr/lib/", "/System/Library/")):
+            raise ValueError(f"Packaged executable depends on a build-host runtime path: {path}")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command", choices=["environment", "verify"])
@@ -57,6 +81,7 @@ def main():
         if any(os.environ.get(key) != value for key, value in profile["environment"].items()):
             raise ValueError("Build environment drifted from the fixed Dev profile")
         evidence = verify_bundle(args.bundle, profile)
+        verify_macos_runtime_paths(args.bundle / "Contents/MacOS/maple")
         print(json.dumps({"profile": profile, "artifact": evidence,
                           "frontend_sha256": os.environ["MAPLE_FRONTEND_DIST_TREE_SHA256"]}, indent=2))
 

@@ -35,7 +35,9 @@ nix develop --no-update-lock-file .#ci -c ./scripts/ci/research-dev-desktop.sh
 This builds a debug, host-architecture `.app`, without signing, notarization,
 upload, a new release lane, or updater artifacts. It verifies the actual bundle's
 identifier, display name, and registered scheme and records the executable hash
-and frontend tree hash:
+and frontend tree hash. It uses Research's existing macOS SDK linker setup and
+rejects executable dependencies or runtime search paths pointing into the build
+host's filesystem, including the Nix store:
 
 ```text
 apps/maple-research/frontend/src-tauri/target/debug/bundle/macos/Maple Research Dev.app

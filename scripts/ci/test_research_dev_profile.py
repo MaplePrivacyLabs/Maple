@@ -6,6 +6,7 @@ import plistlib
 import subprocess
 import tempfile
 import unittest
+from unittest.mock import patch
 
 SPEC = importlib.util.spec_from_file_location("research_dev_profile", Path(__file__).with_name("research-dev-profile.py"))
 profile_module = importlib.util.module_from_spec(SPEC)
@@ -65,6 +66,22 @@ class ResearchDevProfileTests(unittest.TestCase):
         self.assertEqual(artifact["if-no-files-found"], "error")
         self.assertIn("build-profile.json", artifact["path"])
         self.assertIn("maple-research-dev-macos.tar.gz", artifact["path"])
+
+    def test_runtime_audit_rejects_host_dependencies_and_search_paths(self):
+        system_loads = "maple:\n\t/usr/lib/libiconv.2.dylib (compatibility version 7.0.0, current version 7.0.0)\n"
+        bundle_rpath = "Load command 0\n cmd LC_RPATH\n path @executable_path/../Frameworks (offset 12)\n"
+        with patch.object(profile_module.subprocess, "check_output", side_effect=[system_loads, bundle_rpath]):
+            profile_module.verify_macos_runtime_paths(Path("fixture/maple"))
+        for host_path in ("/nix/store/fixture/lib/libiconv.2.dylib", "/Volumes/runner/lib/libiconv.2.dylib", "/Users/runner/lib/libiconv.2.dylib"):
+            with self.subTest(host_path=host_path):
+                loads = system_loads.replace("/usr/lib/libiconv.2.dylib", host_path)
+                with patch.object(profile_module.subprocess, "check_output", side_effect=[loads, bundle_rpath]):
+                    with self.assertRaisesRegex(ValueError, "build-host runtime path"):
+                        profile_module.verify_macos_runtime_paths(Path("fixture/maple"))
+                commands = bundle_rpath.replace("@executable_path/../Frameworks", str(Path(host_path).parent))
+                with patch.object(profile_module.subprocess, "check_output", side_effect=[system_loads, commands]):
+                    with self.assertRaisesRegex(ValueError, "build-host runtime path"):
+                        profile_module.verify_macos_runtime_paths(Path("fixture/maple"))
 
 
 if __name__ == "__main__":
