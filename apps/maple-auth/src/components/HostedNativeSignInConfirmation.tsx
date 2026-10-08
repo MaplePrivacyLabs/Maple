@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { readNativeUserAuth, useOpenSecret } from "@mapleai/sdk";
 import { Button } from "@/components/ui/button";
+import { isNativeAppVariantAllowed } from "@/config/authEnvironment";
 import {
   clearDesktopOAuthTarget,
   isCurrentDesktopOAuthTarget,
@@ -38,7 +39,13 @@ export function HostedNativeSignInConfirmation({
   const [deepLink, setDeepLink] = useState<string | null>(null);
 
   const ownsAccount = () => {
-    if (!active.current || cancelled.current || !account) return false;
+    if (
+      !active.current ||
+      cancelled.current ||
+      !account ||
+      !isNativeAppVariantAllowed(target.nativeAppVariant)
+    )
+      return false;
     const current = currentOs.current;
     if (current.apiUrl !== account.apiUrl || current.auth.user?.user.id !== account.id)
       return false;

@@ -1,6 +1,4 @@
-import { openSecretPcrEnvironment } from "./openSecretPcrEnvironment";
-
-const DEFAULT_OPEN_SECRET_CLIENT_ID = "ba5a14b5-d915-47b1-b7b1-afda52bc5fc6";
+import { authConfig } from "./authEnvironment";
 
 const PCR0_VALUES = [
   // Approved 2026-09-14 (services/opensecret signed history)
@@ -54,11 +52,12 @@ const PCR0_DEV_VALUES = [
 ];
 
 export function openSecretClientConfig() {
+  const config = authConfig();
   return {
-    apiUrl: import.meta.env.VITE_OPEN_SECRET_API_URL,
-    clientId: import.meta.env.VITE_CLIENT_ID || DEFAULT_OPEN_SECRET_CLIENT_ID,
+    apiUrl: config.apiUrl,
+    clientId: config.clientId,
     pcrConfig: {
-      environment: openSecretPcrEnvironment(),
+      environment: config.pcrEnvironment,
       pcr0Values: [...PCR0_VALUES],
       pcr0DevValues: [...PCR0_DEV_VALUES]
     }

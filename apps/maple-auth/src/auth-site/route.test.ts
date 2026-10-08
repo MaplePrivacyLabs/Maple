@@ -15,7 +15,10 @@ function startParams(provider = "github"): URLSearchParams {
 }
 
 function parse(pathname: string, params?: URLSearchParams) {
-  return parseAuthSiteRoute({ pathname, search: params ? `?${params.toString()}` : "" });
+  return parseAuthSiteRoute(
+    { pathname, search: params ? `?${params.toString()}` : "" },
+    "production"
+  );
 }
 
 describe("auth site start routes", () => {
@@ -112,10 +115,13 @@ describe("auth site start routes", () => {
 
   test("detects duplicate keys after percent decoding", () => {
     expect(
-      parseAuthSiteRoute({
-        pathname: "/start",
-        search: `?${startParams().toString()}&%70rovider=google`
-      })
+      parseAuthSiteRoute(
+        {
+          pathname: "/start",
+          search: `?${startParams().toString()}&%70rovider=google`
+        },
+        "production"
+      )
     ).toEqual({ kind: "invalid" });
   });
 });
@@ -201,6 +207,61 @@ describe("auth site route boundaries", () => {
       "/auth/github%2fcallback"
     ]) {
       expect(parse(pathname, startParams())).toEqual({ kind: "invalid" });
+    }
+  });
+});
+
+describe("native application profile admission", () => {
+  for (const pathname of ["/start", "/desktop-auth"]) {
+    for (const provider of providers) {
+      test(`Dev ${provider} through ${pathname} requires the Dev identity`, () => {
+        const params = startParams(provider);
+        const location = () => ({ pathname, search: `?${params}` });
+        expect(parseAuthSiteRoute(location(), "development")).toEqual({ kind: "invalid" });
+        params.set("native_app_variant", "dev");
+        expect(parseAuthSiteRoute(location(), "development")).toEqual({
+          kind: "start",
+          provider,
+          nativeSessionId,
+          nativeRequestId,
+          nativeAppVariant: "dev"
+        });
+        expect(parseAuthSiteRoute(location(), "production")).toEqual({ kind: "invalid" });
+      });
+    }
+  }
+
+  test("rejects ambiguous identities and caller-chosen destinations on either profile", () => {
+    for (const environment of ["development", "production"] as const) {
+      for (const value of [
+        "",
+        "prod",
+        "Dev",
+        "dev ",
+        "cloud.opensecret.maple.dev",
+        "https://other.test"
+      ]) {
+        const params = startParams();
+        params.set("native_app_variant", value);
+        expect(
+          parseAuthSiteRoute({ pathname: "/start", search: `?${params}` }, environment)
+        ).toEqual({ kind: "invalid" });
+      }
+      const params = startParams();
+      params.append("native_app_variant", "dev");
+      params.append("native_app_variant", "dev");
+      expect(parseAuthSiteRoute({ pathname: "/start", search: `?${params}` }, environment)).toEqual(
+        { kind: "invalid" }
+      );
+      params.delete("native_app_variant");
+      if (environment === "development") params.set("native_app_variant", "dev");
+      for (const field of ["return_url", "native_scheme", "api_url", "client_id", "environment"]) {
+        params.set(field, "https://other.test");
+        expect(
+          parseAuthSiteRoute({ pathname: "/start", search: `?${params}` }, environment)
+        ).toEqual({ kind: "invalid" });
+        params.delete(field);
+      }
     }
   });
 });

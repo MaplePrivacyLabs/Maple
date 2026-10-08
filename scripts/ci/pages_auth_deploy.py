@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import argparse
+from dataclasses import dataclass
+from functools import partial
 import json
 import os
 from pathlib import Path
@@ -25,9 +27,40 @@ AUTH_HEADERS = """/*
   X-Frame-Options: DENY
   Content-Security-Policy: frame-ancestors 'none'
 """
-DESTINATION = pages.Destination("maple-auth", "maple-auth.pages.dev",
-                                "auth-pages-production", "auth-pages-production",
-                                "https://auth.trymaple.ai", AUTH_HEADERS, allow_direct_upload=True)
+
+
+@dataclass(frozen=True)
+class AuthTarget:
+    build_workflow: str
+    profile: str
+    artifact_prefix: str
+    enabled_variable: str
+    destination: pages.Destination
+
+
+# Fixed trusted destinations: no dispatch input or artifact can name a host,
+# environment, ref, project, or alternate workflow.
+TARGETS = {
+    "production": AuthTarget(
+        BUILD_WORKFLOW, "auth-release", "maple-auth-production",
+        "MAPLE_AUTH_PAGES_PRODUCTION_ENABLED",
+        pages.Destination("maple-auth", "maple-auth.pages.dev",
+                          "auth-pages-production", "auth-pages-production",
+                          "https://auth.maple.ai", AUTH_HEADERS, allow_direct_upload=True)),
+    "development": AuthTarget(
+        "auth-pages-dev-build.yml", "auth-dev", "maple-auth-development",
+        "MAPLE_AUTH_PAGES_DEVELOPMENT_ENABLED",
+        pages.Destination("maple-auth-dev", "maple-auth-dev.pages.dev",
+                          "auth-pages-development", "auth-pages-development",
+                          "https://auth-dev.maple.ai", AUTH_HEADERS,
+                          allow_direct_upload=True, github_production=False)),
+}
+DESTINATION = TARGETS["production"].destination
+
+
+def auth_target(environment):
+    pages.require(environment in TARGETS, "Invalid auth environment")
+    return TARGETS[environment]
 
 
 def input_number(value):
@@ -36,56 +69,60 @@ def input_number(value):
     return pages.number(int(value))
 
 
-def select_plan(gh, event, target="production"):
+def select_plan(gh, event, target="production", *, environment="production"):
+    config = auth_target(environment)
     pages.require(target == "production" and "workflow_run" not in event,
-                  "Auth publication requires a manual production selection")
+                  "Auth publication requires a manual selection")
     repo = gh.get("")
     pages.require(gh.repository_id == REPOSITORY_ID and repo["id"] == REPOSITORY_ID
                   and repo["default_branch"] == "master", "Unexpected auth repository identity")
     inputs = event["inputs"]
     pages.require(set(inputs) == {"build_run_id", "build_run_attempt"}, "Unexpected auth build inputs")
     run_id, attempt = (input_number(inputs[key]) for key in ("build_run_id", "build_run_attempt"))
-    run = gh.run(run_id, BUILD_WORKFLOW, "workflow_dispatch", attempt)
+    run = gh.run(run_id, config.build_workflow, "workflow_dispatch", attempt)
     pages.require(run["id"] == run_id and run["head_branch"] == "master",
                   "Auth build must be dispatched from master")
     if gh.get("/git/ref/heads/master")["object"]["sha"] != run["head_sha"]:
         raise pages.Superseded("Auth build no longer matches master; build the current revision")
-    previous_sha = pages.sha(gh.get(f"/git/ref/heads/{DESTINATION.production_branch}")["object"]["sha"])
+    previous_sha = pages.sha(gh.get(f"/git/ref/heads/{config.destination.production_branch}")["object"]["sha"])
     if previous_sha != run["head_sha"]:
         pages.require(gh.get(f"/compare/{previous_sha}...{run['head_sha']}")["status"] == "ahead",
-                      "Non-forward auth production change")
+                      "Non-forward auth deployment change")
     artifacts = gh.get(f"/actions/runs/{run_id}/artifacts?per_page=100")
     pages.require(type(artifacts["total_count"]) is int and 0 < artifacts["total_count"] <= 100,
                   "Invalid auth build artifact count")
-    artifact_name = f"maple-auth-production-{run_id}-{attempt}"
+    artifact_name = f"{config.artifact_prefix}-{run_id}-{attempt}"
     matches = [item for item in artifacts["artifacts"]
                if item["name"] == artifact_name and item["expired"] is False]
     pages.require(len(matches) == 1, "Expected one auth artifact from this build attempt")
     artifact = matches[0]
     pages.require(type(artifact["size_in_bytes"]) is int
                   and 0 < artifact["size_in_bytes"] <= pages.MAX_DOWNLOAD, "Invalid auth artifact size")
-    return {"target": "production", "profile": "auth-release", "sha": run["head_sha"],
-            "branch": DESTINATION.production_branch, "previous_sha": previous_sha,
+    return {"target": "production", "auth_environment": environment,
+            "profile": config.profile, "sha": run["head_sha"],
+            "branch": config.destination.production_branch, "previous_sha": previous_sha,
             "run_id": run_id, "run_attempt": attempt, "artifact_id": pages.number(artifact["id"]),
             "artifact_digest": pages.digest(artifact["digest"])}
 
 
-def prepare(gh, event, state):
-    plan = select_plan(gh, event)
+def prepare(gh, event, state, *, environment="production"):
+    config = auth_target(environment)
+    plan = select_plan(gh, event, environment=environment)
     pages.require(not state.exists() and not state.is_symlink(), "Auth deployment state already exists")
     state.mkdir(mode=0o700, parents=False)
     archive_digest = pages.download_build_artifact(gh, plan, state,
                                                   archive_name=AUTH_ARCHIVE_NAME,
-                                                  expected_profile="auth-release")
+                                                  expected_profile=config.profile)
     files = extract_static(state / "web.tar.gz", state / "assets", archive_digest)
     (state / "plan.json").write_text(json.dumps({"selection": plan, "archive_digest": archive_digest,
                                                 "files": files}))
     return plan
 
 
-def require_publisher_environment():
-    pages.require(os.environ.get("MAPLE_AUTH_PAGES_PRODUCTION_ENABLED") == "true",
-                  "Auth production publication is disabled")
+def require_publisher_environment(environment="production"):
+    config = auth_target(environment)
+    pages.require(os.environ.get(config.enabled_variable) == "true",
+                  "Auth publication is disabled for the selected environment")
     pages.require(os.environ.get("GITHUB_REF") == "refs/heads/master"
                   and os.environ.get("GITHUB_EVENT_NAME") == "workflow_dispatch",
                   "Auth publisher must be manually dispatched from protected master")
@@ -95,8 +132,10 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command", choices=["prepare", "deploy"])
     parser.add_argument("--state", type=Path, required=True)
+    parser.add_argument("--environment", choices=tuple(TARGETS), default="production")
     args = parser.parse_args()
-    require_publisher_environment()
+    require_publisher_environment(args.environment)
+    config = auth_target(args.environment)
     checkout_sha = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
     pages.require(checkout_sha == pages.sha(os.environ.get("GITHUB_SHA")),
                   "Auth publisher checkout must match the trusted workflow SHA")
@@ -107,9 +146,10 @@ def main():
     pages.require(state.parent == Path(os.environ["RUNNER_TEMP"]).resolve(),
                   "Auth state must be outside the checkout in runner temp")
     if args.command == "prepare":
-        prepare(gh, event, state)
+        prepare(gh, event, state, environment=args.environment)
     else:
-        pages.deploy(gh, event, state, destination=DESTINATION, selector=select_plan)
+        pages.deploy(gh, event, state, destination=config.destination,
+                     selector=partial(select_plan, environment=args.environment))
 
 
 if __name__ == "__main__":

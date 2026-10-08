@@ -1,3 +1,9 @@
+import {
+  isNativeAppVariantAllowed,
+  nativeAuthReturnUrl,
+  type NativeAppVariant
+} from "@/config/authEnvironment";
+
 export type DesktopOAuthProvider = "github" | "google" | "apple";
 
 const DESKTOP_OAUTH_TRANSPORT_KEY = "maple_desktop_oauth_transport_v1";
@@ -18,6 +24,7 @@ export interface TransportV2DesktopOAuthState {
   provider: DesktopOAuthProvider;
   nativeSessionId: string;
   nativeRequestId: string;
+  nativeAppVariant?: NativeAppVariant;
   startedAt: number;
 }
 
@@ -41,7 +48,7 @@ function assertTransportV2PublicId(value: unknown, label: string): asserts value
 }
 
 function pendingClaim(state: TransportV2DesktopOAuthState): string {
-  return `${state.provider}:${state.nativeSessionId}:${state.nativeRequestId}`;
+  return `${state.provider}:${state.nativeSessionId}:${state.nativeRequestId}${state.nativeAppVariant ? `:${state.nativeAppVariant}` : ""}`;
 }
 
 function hasValidTimestamp(startedAt: unknown, now: number): startedAt is number {
@@ -71,6 +78,9 @@ export function markTransportV2DesktopOAuth(
 ): void {
   if (!isDesktopOAuthProvider(state.provider)) {
     throw new Error("Desktop authentication provider is missing or invalid");
+  }
+  if (!isNativeAppVariantAllowed(state.nativeAppVariant)) {
+    throw new Error("Native application does not match this authentication environment");
   }
   assertTransportV2PublicId(state.nativeSessionId, "native session");
   assertTransportV2PublicId(state.nativeRequestId, "native request");
@@ -107,6 +117,7 @@ export function readTransportV2DesktopOAuth(
     const parsed = JSON.parse(encoded) as Partial<TransportV2DesktopOAuthState>;
     if (
       !isDesktopOAuthProvider(parsed.provider) ||
+      !isNativeAppVariantAllowed(parsed.nativeAppVariant) ||
       !isTransportV2PublicId(parsed.nativeSessionId) ||
       !isTransportV2PublicId(parsed.nativeRequestId) ||
       !hasValidTimestamp(parsed.startedAt, now)
@@ -130,7 +141,8 @@ export function claimTransportV2DesktopOAuthInitiation(
   if (
     !current ||
     current.nativeSessionId !== expected.nativeSessionId ||
-    current.nativeRequestId !== expected.nativeRequestId
+    current.nativeRequestId !== expected.nativeRequestId ||
+    current.nativeAppVariant !== expected.nativeAppVariant
   ) {
     throw new Error("Desktop authentication state changed before initiation");
   }
@@ -150,7 +162,10 @@ export function isNativeOAuthRedirect(): boolean {
   );
 }
 
-export function buildTransportV2NativeAuthDeepLink(handoffGrant: string): string {
+export function buildTransportV2NativeAuthDeepLink(
+  handoffGrant: string,
+  nativeAppVariant?: NativeAppVariant
+): string {
   const grantSegments = handoffGrant.split(".");
   if (
     handoffGrant.length === 0 ||
@@ -162,7 +177,7 @@ export function buildTransportV2NativeAuthDeepLink(handoffGrant: string): string
     throw new Error("The desktop authentication grant is missing or invalid");
   }
 
-  const deepLink = new URL("cloud.opensecret.maple://auth");
+  const deepLink = new URL(nativeAuthReturnUrl(nativeAppVariant));
   deepLink.searchParams.set("handoff_grant", handoffGrant);
   return deepLink.toString();
 }
@@ -216,7 +231,7 @@ export async function mintTransportV2NativeAuthDeepLink(
     if (!isCurrentDesktopOAuthTarget(handoffTarget, now()) || !ownsConfirmation()) {
       throw new Error("Native sign-in changed or expired; please restart login in Maple.");
     }
-    return buildTransportV2NativeAuthDeepLink(grant);
+    return buildTransportV2NativeAuthDeepLink(grant, handoffTarget.nativeAppVariant);
   } finally {
     clearDesktopOAuthTarget(handoffTarget);
   }

@@ -19,6 +19,17 @@ ARTIFACT_DIRECTORY = "apps/maple-auth/target/reproducibility"
 
 
 class AuthPagesWorkflowTests(unittest.TestCase):
+    build = BUILD
+    publish = PUBLISH
+    environment = "production"
+    build_profile = "release"
+    artifact_profile = "auth-release"
+    enabled_variable = "MAPLE_AUTH_PAGES_PRODUCTION_ENABLED"
+    build_name = "Auth Pages build"
+    publish_name = "Publish Auth Pages"
+    cli_environment = ""
+    state_name = "maple-auth-pages"
+
     def assert_no_secrets(self, value):
         for text in strings(value):
             self.assertNotRegex(text, r"\bsecrets\b")
@@ -57,7 +68,7 @@ class AuthPagesWorkflowTests(unittest.TestCase):
             self.assertIn("scripts/ci/auth-*.sh", test_paths)
 
     def test_builds_are_unprivileged_and_have_distinct_profiles(self):
-        for name, job_name, profile in ((CI, "auth", "pr"), (BUILD, "build", "release")):
+        for name, job_name, profile in ((CI, "auth", "pr"), (self.build, "build", self.build_profile)):
             with self.subTest(workflow=name):
                 config = workflow(name)
                 self.assertEqual(config["permissions"], {"contents": "read"})
@@ -82,7 +93,7 @@ class AuthPagesWorkflowTests(unittest.TestCase):
         self.assertFalse(any(action.startswith("actions/upload-artifact@") for action in ci_actions))
 
     def test_builds_test_only_the_standalone_auth_application(self):
-        for name, job in ((CI, "auth"), (BUILD, "build")):
+        for name, job in ((CI, "auth"), (self.build, "build")):
             with self.subTest(workflow=name):
                 steps = workflow(name)["jobs"][job]["steps"]
                 checks = [step for step in steps if step.get("run") == CHECK_AUTH]
@@ -96,8 +107,8 @@ class AuthPagesWorkflowTests(unittest.TestCase):
                     self.assertNotIn(research_input, commands)
 
     def test_production_build_is_manual_and_master_only(self):
-        build = workflow(BUILD)
-        self.assertEqual(build["name"], "Auth Pages build")
+        build = workflow(self.build)
+        self.assertEqual(build["name"], self.build_name)
         self.assertEqual(build["on"], {"workflow_dispatch": None})
         self.assertEqual(set(build["jobs"]), {"build"})
         job = build["jobs"]["build"]
@@ -112,7 +123,7 @@ class AuthPagesWorkflowTests(unittest.TestCase):
                          {"ref": "${{ github.sha }}", "persist-credentials": False})
 
     def test_production_artifact_is_bound_to_auth_source_run_and_attempt(self):
-        steps = workflow(BUILD)["jobs"]["build"]["steps"]
+        steps = workflow(self.build)["jobs"]["build"]["steps"]
         descriptions = [step["run"] for step in steps
                         if "scripts/ci/pages_artifact.py" in step.get("run", "")]
         self.assertEqual(len(descriptions), 1)
@@ -121,7 +132,7 @@ class AuthPagesWorkflowTests(unittest.TestCase):
             f'artifact_dir="{ARTIFACT_DIRECTORY}"',
             "nix develop --no-update-lock-file .#pages -c python3 -I scripts/ci/pages_artifact.py manifest",
             '--archive "$artifact_dir/maple-auth-dist.tar.gz"',
-            "--profile auth-release", '--sha "$GITHUB_SHA"',
+            f"--profile {self.artifact_profile}", '--sha "$GITHUB_SHA"',
             '--run-id "$GITHUB_RUN_ID"', '--run-attempt "$GITHUB_RUN_ATTEMPT"',
             '--output "$artifact_dir/pages-artifact.json"',
         ):
@@ -131,7 +142,7 @@ class AuthPagesWorkflowTests(unittest.TestCase):
         self.assertEqual(len(uploads), 1)
         upload = uploads[0]["with"]
         self.assertEqual(upload["name"],
-                         "maple-auth-production-${{ github.run_id }}-${{ github.run_attempt }}")
+                         "maple-auth-" + self.environment + "-${{ github.run_id }}-${{ github.run_attempt }}")
         self.assertEqual(upload["path"].splitlines(), [
             f"{ARTIFACT_DIRECTORY}/maple-auth-dist.tar.gz",
             f"{ARTIFACT_DIRECTORY}/pages-artifact.json",
@@ -139,8 +150,8 @@ class AuthPagesWorkflowTests(unittest.TestCase):
         self.assertEqual(upload["if-no-files-found"], "error")
 
     def test_publisher_is_manual_master_only_and_disabled_by_default(self):
-        publish = workflow(PUBLISH)
-        self.assertEqual(publish["name"], "Publish Auth Pages")
+        publish = workflow(self.publish)
+        self.assertEqual(publish["name"], self.publish_name)
         self.assertEqual(set(publish["on"]), {"workflow_dispatch"})
         inputs = publish["on"]["workflow_dispatch"]["inputs"]
         self.assertEqual(set(inputs), {"build_run_id", "build_run_attempt"})
@@ -149,25 +160,25 @@ class AuthPagesWorkflowTests(unittest.TestCase):
             self.assertIs(value["required"], True)
             self.assertNotIn("default", value)
         self.assertEqual(publish["permissions"], {"contents": "read"})
-        self.assertEqual(set(publish["jobs"]), {"production"})
-        job = publish["jobs"]["production"]
+        self.assertEqual(set(publish["jobs"]), {self.environment})
+        job = publish["jobs"][self.environment]
         self.assertEqual(
             normalized(job["if"]),
-            "vars.MAPLE_AUTH_PAGES_PRODUCTION_ENABLED == 'true' && "
+            f"vars.{self.enabled_variable} == 'true' && "
             "github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/master'",
         )
         self.assertEqual(job["permissions"],
                          {"contents": "write", "actions": "read", "deployments": "write"})
         self.assertEqual(job["environment"],
-                         {"name": "auth-pages-production", "deployment": False})
+                         {"name": f"auth-pages-{self.environment}", "deployment": False})
         self.assertEqual(job["concurrency"],
-                         {"group": "pages-auth-production", "cancel-in-progress": False})
+                         {"group": f"pages-auth-{self.environment}", "cancel-in-progress": False})
         app_job = workflow("pages-publish.yml")["jobs"]["production"]
         self.assertNotEqual(job["concurrency"]["group"], app_job["concurrency"]["group"])
         self.assertNotEqual(job["environment"]["name"], app_job["environment"]["name"])
 
     def test_publisher_executes_only_trusted_code_and_dependencies(self):
-        job = workflow(PUBLISH)["jobs"]["production"]
+        job = workflow(self.publish)["jobs"][self.environment]
         steps = job["steps"]
         actions = [step["uses"].split("@")[0] for step in steps if "uses" in step]
         self.assertEqual(actions, ["actions/checkout", "DeterminateSystems/nix-installer-action"])
@@ -187,14 +198,14 @@ class AuthPagesWorkflowTests(unittest.TestCase):
         self.assertNotIn("scripts/ci/auth-web.sh", " ".join(strings(steps)))
 
     def test_credentials_are_scoped_to_preparation_and_final_deployment(self):
-        publish = workflow(PUBLISH)
+        publish = workflow(self.publish)
         self.assertNotIn("env", publish)
-        job = publish["jobs"]["production"]
+        job = publish["jobs"][self.environment]
         self.assertNotIn("env", job)
         steps = job["steps"]
         common_env = {
             "GH_TOKEN": "${{ github.token }}",
-            "MAPLE_AUTH_PAGES_PRODUCTION_ENABLED": "${{ vars.MAPLE_AUTH_PAGES_PRODUCTION_ENABLED }}",
+            self.enabled_variable: "${{ vars." + self.enabled_variable + " }}",
         }
         self.assertEqual(steps[-2]["env"], common_env)
         self.assertEqual(steps[-1]["env"], {
@@ -205,7 +216,7 @@ class AuthPagesWorkflowTests(unittest.TestCase):
         for step, command in ((steps[-2], "prepare"), (steps[-1], "deploy")):
             self.assertEqual(step["run"],
                              "nix develop --no-update-lock-file .#pages -c python3 -I "
-                             f'scripts/ci/pages_auth_deploy.py {command} --state "$RUNNER_TEMP/maple-auth-pages"')
+                             f'scripts/ci/pages_auth_deploy.py {command}{self.cli_environment} --state "$RUNNER_TEMP/{self.state_name}"')
         before_deploy = copy.deepcopy(job)
         before_deploy["steps"] = steps[:-1]
         self.assert_no_secrets(before_deploy)
@@ -213,7 +224,7 @@ class AuthPagesWorkflowTests(unittest.TestCase):
             self.assertNotIn("env", step)
 
     def test_actions_are_immutable_without_caches_or_persisted_credentials(self):
-        for name in (CI, BUILD, PUBLISH):
+        for name in (CI, self.build, self.publish):
             for job in workflow(name)["jobs"].values():
                 for step in job["steps"]:
                     if "uses" not in step:
@@ -225,6 +236,27 @@ class AuthPagesWorkflowTests(unittest.TestCase):
                             self.assertIs(step["with"]["persist-credentials"], False)
                         if step["uses"].startswith("DeterminateSystems/nix-installer-action@"):
                             self.assertEqual(step["with"]["github-token"], "")
+
+
+class AuthDevPagesWorkflowTests(AuthPagesWorkflowTests):
+    build = "auth-pages-dev-build.yml"
+    publish = "auth-pages-dev-publish.yml"
+    environment = "development"
+    build_profile = "dev"
+    artifact_profile = "auth-dev"
+    enabled_variable = "MAPLE_AUTH_PAGES_DEVELOPMENT_ENABLED"
+    build_name = "Auth Dev Pages build"
+    publish_name = "Publish Auth Dev Pages"
+    cli_environment = " --environment development"
+    state_name = "maple-auth-dev-pages"
+
+    def test_dev_and_production_authority_are_separate(self):
+        dev = workflow(self.publish)["jobs"]["development"]
+        prod = workflow(PUBLISH)["jobs"]["production"]
+        for field in ("environment", "concurrency"):
+            self.assertNotEqual(dev[field], prod[field])
+        self.assertNotIn("MAPLE_AUTH_PAGES_PRODUCTION_ENABLED", " ".join(strings(dev)))
+        self.assertNotIn("MAPLE_AUTH_PAGES_DEVELOPMENT_ENABLED", " ".join(strings(prod)))
 
 
 if __name__ == "__main__":

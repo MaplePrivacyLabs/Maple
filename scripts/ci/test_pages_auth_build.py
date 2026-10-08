@@ -26,9 +26,14 @@ class AuthBuildProfileTests(unittest.TestCase):
             shared = {"VITE_CLIENT_ID": "ba5a14b5-d915-47b1-b7b1-afda52bc5fc6"}
             for profile, expected in (
                 ("pr", {"VITE_OPEN_SECRET_API_URL": "https://enclave.secretgpt.ai",
-                        "VITE_OPEN_SECRET_PCR_ENVIRONMENT": "development"}),
+                        "VITE_OPEN_SECRET_PCR_ENVIRONMENT": "development",
+                        "VITE_AUTH_ENVIRONMENT": "development"}),
+                ("dev", {"VITE_OPEN_SECRET_API_URL": "https://enclave.secretgpt.ai",
+                         "VITE_OPEN_SECRET_PCR_ENVIRONMENT": "development",
+                         "VITE_AUTH_ENVIRONMENT": "development"}),
                 ("release", {"VITE_OPEN_SECRET_API_URL": "https://enclave.trymaple.ai",
-                             "VITE_OPEN_SECRET_PCR_ENVIRONMENT": "production"}),
+                             "VITE_OPEN_SECRET_PCR_ENVIRONMENT": "production",
+                             "VITE_AUTH_ENVIRONMENT": "production"}),
             ):
                 with self.subTest(profile=profile):
                     expected = {**shared, **expected}
@@ -50,7 +55,7 @@ class AuthBuildProfileTests(unittest.TestCase):
             text=True, capture_output=True,
         )
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("expected pr or release", result.stderr)
+        self.assertIn("expected pr, dev or release", result.stderr)
 
 
 class AuthSDKPinTests(unittest.TestCase):

@@ -15,18 +15,36 @@ build and publication controls.
 ## Routes and account state
 
 - `/start` and the permanent `/desktop-auth` alias accept exactly `provider`,
-  `transport=v2`, `native_session_id`, and `native_request_id`.
+  `transport=v2`, `native_session_id`, and `native_request_id` on Prod. Dev
+  additionally requires `native_app_variant=dev`. Prod rejects that parameter;
+  Dev rejects the Prod request form. Neither accepts a caller-selected backend,
+  scheme, return URL, or project.
 - `/auth/github/callback` and `/auth/google/callback` use the same-origin SDK
   pending state. OAuth initiation explicitly selects this origin's callback.
 - Apple uses its popup flow. `/auth/apple/callback` only explains how to restart
   sign-in; it does not exchange a redirect callback or expose a copyable code.
 - `/complete` presents completion guidance; other routes fail closed.
 
+`VITE_AUTH_ENVIRONMENT` is a required build selector, not a request parameter:
+
+| Selector      | Backend / PCR trust                          | Native return                                       |
+| ------------- | -------------------------------------------- | --------------------------------------------------- |
+| `production`  | `https://enclave.trymaple.ai` / production   | `cloud.opensecret.maple://auth?handoff_grant=…`     |
+| `development` | `https://enclave.secretgpt.ai` / development | `cloud.opensecret.maple.dev://auth?handoff_grant=…` |
+
+Both profiles use the fixed public Maple project ID and published SDK pin.
+The selector chooses backend, PCR environment, and native identity together;
+independent API/project/PCR overrides are not supported. Vite rejects a missing
+or unknown selector. Dev and Prod use separate hosted origins (`auth-dev.maple.ai`
+and `auth.maple.ai`) and independently published artifacts. This foundation
+adds the Dev hosted contract; native client adoption is separate work.
+
 The SDK initializes retained credentials before a hosted flow starts. Native
 handoff requires account confirmation and a single grant for the stored native
-session and request. Target and account ownership are checked again after
-asynchronous work. Cancellation, timeout, or a replacement flow prevents a late
-grant from opening the app. The manual Open Maple link remains available after
+session and request. The fixed native identity is stored with the target and
+revalidated on callback and mint. Target and account ownership are checked
+again after asynchronous work. Cancellation, timeout, or a replacement flow
+prevents a late grant from opening the app. The manual Open Maple link remains available after
 a successful mint. SDK credentials remain on this origin; finishing a handoff
 does not sign out another tab or the user.
 
@@ -38,8 +56,7 @@ From the repository root, enter the pinned toolchain and install this app only:
 nix develop .#ci --no-update-lock-file
 cd apps/maple-auth
 bun install --frozen-lockfile
-VITE_OPEN_SECRET_API_URL=https://enclave.secretgpt.ai \
-  VITE_OPEN_SECRET_PCR_ENVIRONMENT=development bun --no-env-file run dev
+VITE_AUTH_ENVIRONMENT=development bun --no-env-file run dev
 ```
 
 The server listens on `127.0.0.1:5174`. Actual provider sign-in also requires
@@ -53,14 +70,20 @@ Run the independent validation or build profiles from the repository root:
 ```sh
 nix develop .#ci --no-update-lock-file -c bash scripts/ci/auth-ci.sh
 MAPLE_AUTH_ENVIRONMENT=pr nix develop .#ci --no-update-lock-file -c bash scripts/ci/auth-web.sh
+MAPLE_AUTH_ENVIRONMENT=dev nix develop .#ci --no-update-lock-file -c bash scripts/ci/auth-web.sh
 MAPLE_AUTH_ENVIRONMENT=release nix develop .#ci --no-update-lock-file -c bash scripts/ci/auth-web.sh
 ```
 
+`pr` and `dev` both compile the Dev environment; `release` compiles Prod.
+Only the separate manual Dev publisher accepts the `auth-dev` artifact profile.
+
 The package also exposes `format:check`, `lint`, `typecheck`, `test`, and `build`.
-Tests cover route admission, pending handoff ownership and expiry, real SDK
-bootstrap, retained sessions, provider UI, cancellation and manual open, and
-build isolation. A build rejects modules outside this application (including
-linked SDK source or sibling app imports) and the legacy SDK. Output goes to
+Tests cover both profiles: route and target admission, pending handoff ownership
+and expiry, real SDK bootstrap, retained sessions, provider UI, cancellation,
+manual open, and build isolation. Prod request and return bytes stay compatible
+with installed clients; Dev grants open only the fixed Research Dev scheme.
+A build rejects modules outside this application (including linked SDK source
+or sibling app imports) and the legacy SDK. Output goes to
 `dist/`; the reproducible Pages archive and checksum go to
 `target/reproducibility/`.
 

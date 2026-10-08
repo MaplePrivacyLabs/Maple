@@ -1,3 +1,4 @@
+import { authEnvironment } from "@/config/authEnvironment";
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import type { Provider } from "react";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
@@ -50,7 +51,10 @@ const originals = Object.fromEntries(
     Object.getOwnPropertyDescriptor(globalThis, key)
   ])
 );
+const nativeVariant =
+  authEnvironment() === "development" ? { nativeAppVariant: "dev" as const } : {};
 const nativeTarget = {
+  ...nativeVariant,
   provider: "apple" as const,
   nativeSessionId: "11".repeat(16),
   nativeRequestId: "22".repeat(16)
@@ -276,11 +280,19 @@ describe("hosted Apple popup and shared native confirmation", () => {
     expect(mint).not.toHaveBeenCalled();
     await act(async () => button("Continue to Maple").props.onClick());
     expect(mint).toHaveBeenCalledWith(nativeTarget.nativeSessionId, nativeTarget.nativeRequestId);
-    expect(window.location.href).toBe("cloud.opensecret.maple://auth?handoff_grant=aaa.bbb.ccc");
+    expect(window.location.href).toBe(
+      authEnvironment() === "development"
+        ? "cloud.opensecret.maple.dev://auth?handoff_grant=aaa.bbb.ccc"
+        : "cloud.opensecret.maple://auth?handoff_grant=aaa.bbb.ccc"
+    );
     expect(readTransportV2DesktopOAuth("apple")).toBeNull();
     window.location.href = "https://auth.example.test/start";
     act(() => button("Open Maple").props.onClick());
-    expect(window.location.href).toBe("cloud.opensecret.maple://auth?handoff_grant=aaa.bbb.ccc");
+    expect(window.location.href).toBe(
+      authEnvironment() === "development"
+        ? "cloud.opensecret.maple.dev://auth?handoff_grant=aaa.bbb.ccc"
+        : "cloud.opensecret.maple://auth?handoff_grant=aaa.bbb.ccc"
+    );
     expect(mint).toHaveBeenCalledTimes(1);
     expect([...local.values]).toEqual(before);
   });

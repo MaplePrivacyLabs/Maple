@@ -1,3 +1,4 @@
+import { authEnvironment } from "@/config/authEnvironment";
 import assert from "node:assert/strict";
 import { StrictMode, type ComponentType, type ReactNode } from "react";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
@@ -35,7 +36,12 @@ const retained = scenario.startsWith("retained-");
 const callback = scenario.endsWith("-callback");
 const apiUrl = "https://bootstrap-api.example.test";
 const authOrigin = "https://auth.example.test";
+const nativeVariant =
+  authEnvironment() === "development" ? { nativeAppVariant: "dev" as const } : {};
+const nativeVariantQuery: Record<string, string> =
+  authEnvironment() === "development" ? { native_app_variant: "dev" } : {};
 const target = {
+  ...nativeVariant,
   provider: "github" as const,
   nativeSessionId: "00112233445566778899aabbccddeeff",
   nativeRequestId: "ffeeddccbbaa99887766554433221100"
@@ -44,7 +50,8 @@ const params = new URLSearchParams({
   provider: target.provider,
   transport: "v2",
   native_session_id: target.nativeSessionId,
-  native_request_id: target.nativeRequestId
+  native_request_id: target.nativeRequestId,
+  ...nativeVariantQuery
 });
 const location = new URL(
   callback

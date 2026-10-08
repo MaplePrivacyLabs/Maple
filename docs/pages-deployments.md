@@ -127,14 +127,30 @@ publication requires a Research release.
 | Lane | Source and configuration | Result |
 | --- | --- | --- |
 | `Auth Pages CI` | PRs targeting any base, including forks and stacked branches; relevant master pushes; `pr` profile | Offline publisher checks, standalone Auth checks and Auth build; no Research build or publication |
-| `Auth Pages build` | Manual dispatch on protected `master`; `release` profile | `maple-auth-production-RUN-ATTEMPT` artifact containing `maple-auth-dist.tar.gz` and `pages-artifact.json` |
-| `Publish Auth Pages` | Separate manual dispatch on protected `master`, selecting the exact successful build run and attempt | Fixed `maple-auth` Pages project, `maple-auth.pages.dev`, `auth-pages-production` Git ref and protected environment, reported URL `https://auth.trymaple.ai` |
+| `Auth Pages build` | Manual dispatch on protected `master`; `release` profile | `maple-auth-production-RUN-ATTEMPT` artifact with manifest profile `auth-release` |
+| `Auth Dev Pages build` | Separate manual dispatch on protected `master`; `dev` profile | `maple-auth-development-RUN-ATTEMPT` artifact with manifest profile `auth-dev` |
+| `Publish Auth Pages` | Manual protected-master dispatch selecting the exact successful production build run/attempt | `maple-auth` / `maple-auth.pages.dev`, ref and environment `auth-pages-production`, public URL `https://auth.maple.ai` |
+| `Publish Auth Dev Pages` | Separate manual protected-master dispatch selecting the exact successful Dev build run/attempt | `maple-auth-dev` / `maple-auth-dev.pages.dev`, ref and environment `auth-pages-development`, public URL `https://auth-dev.maple.ai` |
 
-`MAPLE_AUTH_PAGES_PRODUCTION_ENABLED` must be the literal string `true` in both
-the workflow and publisher process. It is off when absent, empty or false.
-Merging these files starts neither production auth publication nor native-client
-entry changes. No auth preview is automatically hosted. The native auth-entry
-origin remains the existing apex until a separately authorized rollout changes it.
+Both build artifacts contain `maple-auth-dist.tar.gz` and `pages-artifact.json`.
+Their workflow identity, artifact name, manifest profile, and protected
+publishing destination are checked together; Dev and production artifacts
+cannot be interchanged even at the same source SHA.
+
+`MAPLE_AUTH_PAGES_PRODUCTION_ENABLED` and
+`MAPLE_AUTH_PAGES_DEVELOPMENT_ENABLED` must each equal literal `true` in their
+own workflow and publisher process. Each is off when absent, empty or false;
+one cannot enable the other. Neither build dispatch publishes a site.
+Merging these files starts no Auth publication, configures no custom domain,
+and changes no native client's entry URL. The production publisher's public
+URL is now `auth.maple.ai`; operators must configure and verify that domain
+before enabling it. Existing project/ref/environment names stay unchanged.
+
+No Auth PR preview is automatically hosted. The `pr` lane is an offline build
+using development configuration, while Auth Dev is an independently authorized
+stable site built from trusted master. Arbitrary PR/localhost provider callbacks
+are not registered by these workflows. Production Research retains its current
+entry; Research Dev requires its explicit Dev marker and native integration.
 
 `scripts/ci/auth-ci.sh` installs and checks only Auth. `scripts/ci/auth-web.sh`
 builds its `index.html` entry to `apps/maple-auth/dist`, then archives it under
@@ -143,9 +159,14 @@ use Auth's own helper, not Research/Tauri build tooling. Auth-only source edits
 select the Auth lane without Research or Agent component checks/packaging.
 Shared CI or release infrastructure edits can still select other affected lanes.
 
-The fixed `pr` profile uses `https://enclave.secretgpt.ai` and development PCRs;
-`release` uses `https://enclave.trymaple.ai` and production PCRs. Both use the
-existing public Maple client ID. Build/run commands use Bun's `--no-env-file`,
+The fixed `pr` and `dev` profiles set `VITE_AUTH_ENVIRONMENT=development`;
+`release` sets it to `production`. The Auth app derives its API, client, PCR
+environment and permitted native return from that explicit selector. The
+development API remains `https://enclave.secretgpt.ai`, production remains
+`https://enclave.trymaple.ai`, and both use the existing public Maple client ID.
+No request parameter can select a backend or environment. The build helper also
+exports the matching API/PCR values for build provenance and scrubs inherited
+`VITE_*` values before selecting the profile. Build/run commands use Bun's `--no-env-file`,
 and Auth's Vite configuration disables dotenv loading for these fixed builds.
 Dependency installation uses Auth's frozen lockfile with lifecycle scripts
 disabled. The pinned Bun 1.3.5 installer can still read local dotenv files
@@ -155,7 +176,7 @@ contain no managed workspace dotenv files. The pinned CI shell provides Node
 (required by TypeScript/Vite CLI shebangs), Bun, and Python.
 
 Auth pins published `@mapleai/sdk` 4.1.1; Research retains its own 4.0.1 pin.
-Both fixed Auth profiles reject local SDK links and source overrides, require
+All fixed Auth profiles reject local SDK links and source overrides, require
 an exact stable SDK version of at least 4.1.0, and check the installed package
 name/version and resolution inside Auth's own `node_modules`. Future Auth
 upgrades publish the SDK first, then update only Auth's manifest and lockfile.
@@ -174,11 +195,12 @@ refresh the hosted Auth copy, and the two lists need not be byte-identical.
 
 The auth publisher uses trusted master tooling and the same static archive,
 download, Wrangler and credential boundaries described above. It accepts only
-the auth build workflow's successful manual master run, current run attempt and
-exact current master SHA in the expected repository. The archive name and
-`auth-release` manifest profile cannot substitute for an app artifact. It
-rechecks the selection before upload and after deployment. The auth production
-ref must already exist, and advances without force; a stale build or non-forward
+the selected environment's build workflow, successful manual master run, current
+run attempt and exact current master SHA in the expected repository. Its fixed
+archive/profile pair cannot substitute for an app artifact or the other Auth
+environment. Selection records the Auth environment separately from Cloudflare
+deployment mode and is rechecked before upload and after deployment. Each
+Auth ref must already exist and advances without force; a stale build or non-forward
 selection fails closed. Operators must create the project, ref, protected
 environment, scoped credentials, custom-domain configuration and activation
 variable separately. The project must have the fixed identity above and either
@@ -187,10 +209,15 @@ no Git source (a Direct Upload project) or an explicit
 Git-source configuration is rejected. The existing app project retains its
 requirement for explicitly disabled native Git production builds.
 
-Only the final auth deploy step receives CF credentials. Its protected
-`auth-pages-production` environment uses `deployment: false`, with the same
-protection and explicit artifact-SHA status semantics as the app publisher.
-The auth path does not write `pages-production` or report the app's public URL.
+Only each final Auth deploy step receives that protected environment's CF
+credentials. Both environments use `deployment: false`, with the same protection
+and explicit artifact-SHA status semantics as the app publisher. Each site uses
+its project's Cloudflare production branch, enabling canonical deployment
+verification and forward-only ref updates; Auth Dev is nevertheless reported
+to GitHub with `production_environment: false`. Dev and production publishers
+have separate concurrency groups and credentials. Neither Auth path writes
+`pages-production` or reports the Research public URL. The Dev publisher does
+not write `auth-pages-production`.
 
 Auth response headers come from the trusted publisher's fixed `AUTH_HEADERS`
 constant, applied to `/*`: `Cache-Control: no-store, max-age=0`,
@@ -208,9 +235,11 @@ For unprivileged local Auth checks and build (no services or publication):
 ```bash
 nix develop --no-update-lock-file .#ci -c ./scripts/ci/auth-ci.sh
 MAPLE_AUTH_ENVIRONMENT=pr nix develop --no-update-lock-file .#ci -c ./scripts/ci/auth-web.sh
+MAPLE_AUTH_ENVIRONMENT=dev nix develop --no-update-lock-file .#ci -c ./scripts/ci/auth-web.sh
 ```
 
 The Pages offline test target also covers auth provenance, SDK pinning, static
-artifact rejection, fixed response headers and destination isolation. A passing
+artifact rejection, fixed response headers, independent activation, and Dev/Prod
+destination isolation. A passing
 build or publisher test is source evidence; retained-session login, callback
 allowlists and deployed handoff behavior require the later rehearsal.

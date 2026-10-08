@@ -46,6 +46,7 @@ class Destination:
     public_url: str
     headers: str | None = None
     allow_direct_upload: bool = False
+    github_production: bool = True
 
 
 APP_DESTINATION = Destination(PROJECT, SUBDOMAIN, PRODUCTION_BRANCH,
@@ -381,7 +382,7 @@ def report(gh, plan, result, destination=APP_DESTINATION):
     environment = destination.environment if plan["target"] == "production" else f"pages-{plan['branch']}"
     deployment = gh.write("/deployments", {"ref": plan["sha"], "environment": environment,
                           "auto_merge": False, "required_contexts": [], "transient_environment": plan["target"] == "preview",
-                          "production_environment": plan["target"] == "production",
+                          "production_environment": plan["target"] == "production" and destination.github_production,
                           "description": "Verified static Pages artifact"})
     public_url = destination.public_url if plan["target"] == "production" else result["url"]
     gh.write(f"/deployments/{number(deployment['id'])}/statuses", {"state": "success", "environment_url": public_url,
