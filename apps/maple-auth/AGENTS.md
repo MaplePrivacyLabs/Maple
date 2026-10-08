@@ -30,5 +30,9 @@ crypto and backend authority in the SDK and OpenSecret.
 
 The build boundary must reject sibling app code, linked SDK source and the
 legacy SDK. Preserve the unprivileged build and trusted independent publisher.
-A merge or successful build does not authorize publication or redirects.
+Once configured, relevant master builds and internal PR builds automatically
+publish Dev and previews through trusted master tooling. Production publication
+remains manually dispatched and independent of client releases; no workflow here
+authorizes a production redirect change. Preview hosting does not configure OAuth
+callbacks; use the stable Dev origin for provider rehearsal.
 Report automated checks separately from real provider/native/browser testing.

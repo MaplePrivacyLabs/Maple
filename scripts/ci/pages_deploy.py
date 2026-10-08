@@ -47,6 +47,9 @@ class Destination:
     headers: str | None = None
     allow_direct_upload: bool = False
     github_production: bool = True
+    preview_environment_prefix: str = "pages"
+    preview_label: str = "Maple development preview"
+    preview_description: str = "Uses development API, billing, flags and PCR configuration. Cloudflare Access applies."
 
 
 APP_DESTINATION = Destination(PROJECT, SUBDOMAIN, PRODUCTION_BRANCH,
@@ -379,7 +382,7 @@ def verify_deployment(cf, account, plan, result, destination=APP_DESTINATION):
 
 
 def report(gh, plan, result, destination=APP_DESTINATION):
-    environment = destination.environment if plan["target"] == "production" else f"pages-{plan['branch']}"
+    environment = destination.environment if plan["target"] == "production" else f"{destination.preview_environment_prefix}-{plan['branch']}"
     deployment = gh.write("/deployments", {"ref": plan["sha"], "environment": environment,
                           "auto_merge": False, "required_contexts": [], "transient_environment": plan["target"] == "preview",
                           "production_environment": plan["target"] == "production" and destination.github_production,
@@ -389,8 +392,8 @@ def report(gh, plan, result, destination=APP_DESTINATION):
              "description": "Cloudflare deployment verified; application smoke is separate", "auto_inactive": True})
     if plan.get("pr_number"):
         # A small comment update uses only validated numbers, SHA and Cloudflare URL.
-        marker = "<!-- maple-pages-preview -->"
-        body = f"{marker}\nMaple development preview: {result['url']}\n\nCommit: `{plan['sha']}`\n\nUses development API, billing, flags and PCR configuration. Cloudflare Access applies."
+        marker = f"<!-- maple-{destination.preview_environment_prefix}-preview -->"
+        body = f"{marker}\n{destination.preview_label}: {result['url']}\n\nCommit: `{plan['sha']}`\n\n{destination.preview_description}"
         comments = gh.get(f"/issues/{plan['pr_number']}/comments?per_page=100")
         own = [c for c in comments if c["user"]["login"] == "github-actions[bot]" and c["body"].startswith(marker)]
         if own:

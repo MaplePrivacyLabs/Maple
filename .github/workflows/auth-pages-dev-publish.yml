@@ -4,14 +4,17 @@ permissions:
   contents: read
 
 on:
+  workflow_run:
+    workflows: ["Auth Pages CI"]
+    types: [completed]
   workflow_dispatch:
     inputs:
       build_run_id:
-        description: Successful Auth Dev Pages build run ID
+        description: Successful master Auth Pages CI run ID (manual recovery)
         required: true
         type: string
       build_run_attempt:
-        description: Successful Auth Dev Pages build run attempt
+        description: Successful master Auth Pages CI run attempt
         required: true
         type: string
 
@@ -20,7 +23,13 @@ jobs:
     name: Publish verified auth build
     if: >-
       vars.MAPLE_AUTH_PAGES_DEVELOPMENT_ENABLED == 'true' &&
-      github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/master'
+      ((github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/master') ||
+        (github.event_name == 'workflow_run' &&
+          github.event.workflow_run.conclusion == 'success' &&
+          github.event.workflow_run.path == '.github/workflows/auth-pages-ci.yml' &&
+          github.event.workflow_run.head_repository.full_name == github.repository &&
+          github.event.workflow_run.head_branch == 'master' &&
+          (github.event.workflow_run.event == 'push' || github.event.workflow_run.event == 'workflow_dispatch')))
     runs-on: ubuntu-latest
     timeout-minutes: 20
     concurrency:
@@ -56,7 +65,7 @@ jobs:
           MAPLE_AUTH_PAGES_DEVELOPMENT_ENABLED: ${{ vars.MAPLE_AUTH_PAGES_DEVELOPMENT_ENABLED }}
         run: >-
           nix develop --no-update-lock-file .#pages -c python3 -I scripts/ci/pages_auth_deploy.py
-          prepare --environment development --state "$RUNNER_TEMP/maple-auth-dev-pages"
+          prepare --environment development --target production --state "$RUNNER_TEMP/maple-auth-dev-pages"
 
       - name: Deploy the verified auth artifact
         env:
@@ -66,4 +75,61 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
         run: >-
           nix develop --no-update-lock-file .#pages -c python3 -I scripts/ci/pages_auth_deploy.py
-          deploy --environment development --state "$RUNNER_TEMP/maple-auth-dev-pages"
+          deploy --environment development --target production --state "$RUNNER_TEMP/maple-auth-dev-pages"
+
+  preview:
+    name: Publish Auth Dev PR preview
+    if: >-
+      vars.MAPLE_AUTH_PAGES_DEVELOPMENT_ENABLED == 'true' &&
+      github.event_name == 'workflow_run' &&
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.path == '.github/workflows/auth-pages-ci.yml' &&
+      github.event.workflow_run.head_repository.full_name == github.repository &&
+      github.event.workflow_run.event == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    concurrency:
+      group: pages-auth-preview-${{ github.event.workflow_run.head_branch }}
+      cancel-in-progress: false
+    environment:
+      name: auth-pages-development
+      deployment: false
+    permissions:
+      contents: read
+      actions: read
+      pull-requests: write
+      deployments: write
+    steps:
+      # workflow_run executes trusted master, never the PR's code or dependencies.
+      - name: Checkout trusted publisher
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
+        with:
+          github-token: ""
+
+      - name: Install trusted deployment dependencies
+        working-directory: services/updates
+        run: nix develop --no-update-lock-file ../..#pages -c bun install --frozen-lockfile --ignore-scripts
+
+      - name: Verify and prepare the auth preview
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MAPLE_AUTH_PAGES_DEVELOPMENT_ENABLED: ${{ vars.MAPLE_AUTH_PAGES_DEVELOPMENT_ENABLED }}
+        run: >-
+          nix develop --no-update-lock-file .#pages -c python3 -I scripts/ci/pages_auth_deploy.py
+          prepare --environment development --target preview --state "$RUNNER_TEMP/maple-auth-preview-pages"
+
+      - name: Deploy the verified auth preview
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MAPLE_AUTH_PAGES_DEVELOPMENT_ENABLED: ${{ vars.MAPLE_AUTH_PAGES_DEVELOPMENT_ENABLED }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: >-
+          nix develop --no-update-lock-file .#pages -c python3 -I scripts/ci/pages_auth_deploy.py
+          deploy --environment development --target preview --state "$RUNNER_TEMP/maple-auth-preview-pages"

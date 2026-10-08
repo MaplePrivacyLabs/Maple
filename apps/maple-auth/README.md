@@ -75,7 +75,16 @@ MAPLE_AUTH_ENVIRONMENT=release nix develop .#ci --no-update-lock-file -c bash sc
 ```
 
 `pr` and `dev` both compile the Dev environment; `release` compiles Prod.
-Only the separate manual Dev publisher accepts the `auth-dev` artifact profile.
+Once Dev publication is configured, relevant `master` pushes automatically
+test, build and publish to `auth-dev.maple.ai`. Internal PRs, including stacked
+PRs, get their own Dev-configured Pages previews and a PR link. Forks get CI
+without hosted previews. Production `auth.maple.ai` keeps separate, manually
+dispatched build and publish workflows, independent of client releases.
+See [Pages deployment architecture](../../docs/pages-deployments.md#independent-auth-site).
+
+Preview URLs do not acquire OAuth provider or backend callback registrations.
+Use stable `auth-dev.maple.ai` for real provider and native-return rehearsal;
+preview publication itself proves neither callback eligibility nor OAuth success.
 
 The package also exposes `format:check`, `lint`, `typecheck`, `test`, and `build`.
 Tests cover both profiles: route and target admission, pending handoff ownership

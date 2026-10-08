@@ -126,11 +126,20 @@ publication requires a Research release.
 
 | Lane | Source and configuration | Result |
 | --- | --- | --- |
-| `Auth Pages CI` | PRs targeting any base, including forks and stacked branches; relevant master pushes; `pr` profile | Offline publisher checks, standalone Auth checks and Auth build; no Research build or publication |
+| `Auth Pages CI` | PRs targeting any base, including forks and stacked branches; relevant master pushes; optional master dispatch; `dev` profile | Publisher checks, standalone Auth checks/build; internal PR and master runs produce `maple-auth-development-RUN-ATTEMPT` with manifest profile `auth-dev` |
 | `Auth Pages build` | Manual dispatch on protected `master`; `release` profile | `maple-auth-production-RUN-ATTEMPT` artifact with manifest profile `auth-release` |
-| `Auth Dev Pages build` | Separate manual dispatch on protected `master`; `dev` profile | `maple-auth-development-RUN-ATTEMPT` artifact with manifest profile `auth-dev` |
 | `Publish Auth Pages` | Manual protected-master dispatch selecting the exact successful production build run/attempt | `maple-auth` / `maple-auth.pages.dev`, ref and environment `auth-pages-production`, public URL `https://auth.maple.ai` |
-| `Publish Auth Dev Pages` | Separate manual protected-master dispatch selecting the exact successful Dev build run/attempt | `maple-auth-dev` / `maple-auth-dev.pages.dev`, ref and environment `auth-pages-development`, public URL `https://auth-dev.maple.ai` |
+| `Publish Auth Dev Pages` — stable | Automatically follows successful master `Auth Pages CI`; optional manual recovery selecting run/attempt | `maple-auth-dev` / `maple-auth-dev.pages.dev`, ref and environment `auth-pages-development`, public URL `https://auth-dev.maple.ai` |
+| `Publish Auth Dev Pages` — PR | Automatically follows a successful current internal PR head, including stacked PRs | `pr-N` preview on `maple-auth-dev`, a distinct Auth deployment status and PR comment; does not advance either Auth production ref |
+
+The Dev producer reuses the existing Auth CI job rather than running a second
+test/build lane. Push and PR path filters cover Auth source, its build scripts,
+Pages tooling/workflows and shared Nix inputs. Unrelated application changes
+alone do not trigger it. PR checkout and manifest use the exact PR head SHA,
+not GitHub's synthetic merge SHA. Forks retain the unprivileged CI checks but
+do not produce a publishable artifact. Each publisher executes trusted master
+tooling in a separate `workflow_run` job; PR code never receives publication
+credentials.
 
 Both build artifacts contain `maple-auth-dist.tar.gz` and `pages-artifact.json`.
 Their workflow identity, artifact name, manifest profile, and protected
@@ -140,17 +149,24 @@ cannot be interchanged even at the same source SHA.
 `MAPLE_AUTH_PAGES_PRODUCTION_ENABLED` and
 `MAPLE_AUTH_PAGES_DEVELOPMENT_ENABLED` must each equal literal `true` in their
 own workflow and publisher process. Each is off when absent, empty or false;
-one cannot enable the other. Neither build dispatch publishes a site.
-Merging these files starts no Auth publication, configures no custom domain,
-and changes no native client's entry URL. The production publisher's public
-URL is now `auth.maple.ai`; operators must configure and verify that domain
-before enabling it. Existing project/ref/environment names stay unchanged.
+one cannot enable the other. The Dev flag enables both stable Dev and internal
+PR preview publication. Initial provisioning and activation are separate from
+this source change; once enabled, ordinary Dev changes need no manual dispatch.
+The Dev environment must allow automated jobs without a per-deployment approval
+if unattended publication is desired. Merging relevant changes then publishes
+Dev automatically, but does not configure a domain or change client entry URLs.
+Production still requires its own build and publish dispatches; neither a master
+push nor a client release can publish `auth.maple.ai`. Existing production
+project/ref/environment names stay unchanged.
 
-No Auth PR preview is automatically hosted. The `pr` lane is an offline build
-using development configuration, while Auth Dev is an independently authorized
-stable site built from trusted master. Arbitrary PR/localhost provider callbacks
-are not registered by these workflows. Production Research retains its current
-entry; Research Dev requires its explicit Dev marker and native integration.
+Auth PR previews use development configuration and the Dev Pages project, with
+separate branch URLs and Auth-specific deployment/comment identities so a PR
+touching both applications retains its Research preview too. Provider and backend
+callback allowlists do not automatically include these preview URLs. Real OAuth
+and native-return acceptance use the stable `auth-dev.maple.ai` origin; these
+workflows do not register wildcard, PR or localhost callbacks. Production
+Research retains its current entry; Research Dev requires its explicit Dev
+marker and native integration.
 
 `scripts/ci/auth-ci.sh` installs and checks only Auth. `scripts/ci/auth-web.sh`
 builds its `index.html` entry to `apps/maple-auth/dist`, then archives it under
@@ -195,13 +211,19 @@ refresh the hosted Auth copy, and the two lists need not be byte-identical.
 
 The auth publisher uses trusted master tooling and the same static archive,
 download, Wrangler and credential boundaries described above. It accepts only
-the selected environment's build workflow, successful manual master run, current
-run attempt and exact current master SHA in the expected repository. Its fixed
+the selected environment's build workflow and a successful current run attempt
+in the expected repository. Production requires a manual master build at the
+exact current master SHA. Stable Dev accepts a master push or dispatched build
+that is still an ancestor of master, and advances its published ref only forward.
+Thus an unrelated merge during a build does not strand Dev publication, while
+a late older build cannot overwrite an already-published newer build. A PR
+preview requires an open same-repository PR whose head SHA/ref still match;
+its base must belong to the same repository, including stacked branches. Its fixed
 archive/profile pair cannot substitute for an app artifact or the other Auth
 environment. Selection records the Auth environment separately from Cloudflare
 deployment mode and is rechecked before upload and after deployment. Each
-Auth ref must already exist and advances without force; a stale build or non-forward
-selection fails closed. Operators must create the project, ref, protected
+stable Auth ref must already exist and advances without force; invalid, superseded
+or non-forward selections fail closed. Operators must create the project, ref, protected
 environment, scoped credentials, custom-domain configuration and activation
 variable separately. The project must have the fixed identity above and either
 no Git source (a Direct Upload project) or an explicit
@@ -211,11 +233,13 @@ requirement for explicitly disabled native Git production builds.
 
 Only each final Auth deploy step receives that protected environment's CF
 credentials. Both environments use `deployment: false`, with the same protection
-and explicit artifact-SHA status semantics as the app publisher. Each site uses
-its project's Cloudflare production branch, enabling canonical deployment
+and explicit artifact-SHA status semantics as the app publisher. Each stable site
+uses its project's Cloudflare production branch, enabling canonical deployment
 verification and forward-only ref updates; Auth Dev is nevertheless reported
-to GitHub with `production_environment: false`. Dev and production publishers
-have separate concurrency groups and credentials. Neither Auth path writes
+to GitHub with `production_environment: false`, as are its PR previews. Automatic
+and manual stable Dev publication share a concurrency group; PR previews have
+separate per-source-branch groups and do not move the stable ref. Dev and production
+publishers have separate concurrency groups and credentials. Neither Auth path writes
 `pages-production` or reports the Research public URL. The Dev publisher does
 not write `auth-pages-production`.
 
