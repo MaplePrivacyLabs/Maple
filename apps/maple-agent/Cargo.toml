@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/maple-agent", "crates/maple-billing", "crates/pi-ai", "crates/pi-agent-core", "app"]
+members = ["crates/maple-agent", "crates/maple-billing", "crates/pi-ai", "crates/pi-agent-core", "crates/pi-coding-agent", "app"]
 
 [workspace.package]
 edition = "2024"
