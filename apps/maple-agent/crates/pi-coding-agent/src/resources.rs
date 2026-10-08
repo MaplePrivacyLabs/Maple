@@ -252,8 +252,9 @@ fn scan_skills(
     }
 }
 
-/// Skills from the user and project folders and any extra paths. The first skill with a
-/// name wins; later ones are reported as collisions.
+/// Skills from the project and user folders and any extra paths. The first skill with a
+/// name wins, so a project's skill overrides the user's; later ones are reported as
+/// collisions.
 pub fn load_skills(
     cwd: &Path,
     paths: &ResourcePaths,
@@ -262,15 +263,15 @@ pub fn load_skills(
     let mut found = Vec::new();
     let mut diagnostics = Vec::new();
     scan_skills(
-        &paths.agent_dir.join("skills"),
-        ResourceSource::User,
+        &paths.project_dir(cwd).join("skills"),
+        ResourceSource::Project,
         true,
         &mut found,
         &mut diagnostics,
     );
     scan_skills(
-        &paths.project_dir(cwd).join("skills"),
-        ResourceSource::Project,
+        &paths.agent_dir.join("skills"),
+        ResourceSource::User,
         true,
         &mut found,
         &mut diagnostics,
@@ -459,8 +460,9 @@ fn load_templates_in(
     }
 }
 
-/// Templates from the user and project `prompts` folders and any extra folders. The
-/// first template with a name wins; later ones are reported as collisions.
+/// Templates from the project and user `prompts` folders and any extra folders. The
+/// first template with a name wins, so a project's template overrides the user's; later
+/// ones are reported as collisions.
 pub fn load_prompt_templates(
     cwd: &Path,
     paths: &ResourcePaths,
@@ -469,14 +471,14 @@ pub fn load_prompt_templates(
     let mut templates = Vec::new();
     let mut diagnostics = Vec::new();
     load_templates_in(
-        &paths.agent_dir.join("prompts"),
-        ResourceSource::User,
+        &paths.project_dir(cwd).join("prompts"),
+        ResourceSource::Project,
         &mut templates,
         &mut diagnostics,
     );
     load_templates_in(
-        &paths.project_dir(cwd).join("prompts"),
-        ResourceSource::Project,
+        &paths.agent_dir.join("prompts"),
+        ResourceSource::User,
         &mut templates,
         &mut diagnostics,
     );
@@ -712,8 +714,9 @@ mod tests {
 
         let (skills, diagnostics) = load_skills(&cwd, &paths, &[]);
         let names: Vec<&str> = skills.iter().map(|skill| skill.name.as_str()).collect();
-        assert_eq!(names, ["review", "commit", "Deploy_It"]);
-        assert_eq!(skills[0].description, "Review code");
+        assert_eq!(names, ["commit", "Deploy_It", "review"]);
+        // The project's skill overrides the user's.
+        assert_eq!(skills[2].description, "Project review");
         assert!(diagnostics.iter().any(|d| d.message.contains("collides")));
         assert!(
             diagnostics
@@ -786,7 +789,8 @@ mod tests {
             .map(|template| template.name.as_str())
             .collect();
         assert_eq!(names, ["explain", "fix"]);
-        assert_eq!(templates[0].description, "Explain $@ in simple terms");
+        // The project's template overrides the user's.
+        assert_eq!(templates[0].description, "Explain $@ in detail");
         assert!(diagnostics.iter().any(|d| d.message.contains("collides")));
         assert_eq!(templates[1].argument_hint.as_deref(), Some("<issue>"));
         assert_eq!(

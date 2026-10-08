@@ -765,3 +765,41 @@ async fn a_fork_that_cannot_be_written_still_moves_the_conversation() {
             .contains(&"persistence_error".to_string())
     );
 }
+
+#[tokio::test]
+async fn stopping_cancels_a_branch_summary() {
+    let harness = Harness::new();
+    harness.faux.push_text("first answer");
+    harness.faux.push_text("second answer");
+    harness.faux.push_hang();
+    let session = harness.session().await;
+    session
+        .prompt("first", PromptOptions::default())
+        .await
+        .unwrap();
+    let target = session.with_session(|tree| tree.leaf_id().unwrap().to_string());
+    session
+        .prompt("second", PromptOptions::default())
+        .await
+        .unwrap();
+    let leaf = session.with_session(|tree| tree.leaf_id().unwrap().to_string());
+
+    let navigator = session.clone();
+    let navigation =
+        tokio::spawn(async move { navigator.navigate_tree(&target, true, None).await });
+    while harness.faux.requests().len() < 3 {
+        tokio::time::sleep(Duration::from_millis(1)).await;
+    }
+    session.abort();
+    assert!(matches!(
+        navigation.await.unwrap(),
+        Err(AgentSessionError::Cancelled)
+    ));
+    // The session stays where it was and is free again.
+    assert_eq!(
+        session.with_session(|tree| tree.leaf_id().map(str::to_string)),
+        Some(leaf)
+    );
+    session.wait_for_idle().await;
+    assert_eq!(last_assistant_text(&session), "second answer");
+}

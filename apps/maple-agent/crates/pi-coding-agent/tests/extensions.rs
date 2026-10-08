@@ -8,7 +8,7 @@ use pi_agent_core::{
     AfterToolCallResult, AgentEvent, AgentToolResult, BeforeToolCallResult, FnTool,
 };
 use pi_ai::faux::FauxProvider;
-use pi_ai::{AssistantContent, Content, Message, Tool, content_text};
+use pi_ai::{AssistantContent, Content, Message, ThinkingLevel, Tool, content_text};
 use pi_coding_agent::compaction::CompactionResult;
 use pi_coding_agent::extensions::{
     AgentEventSeen, BeforeAgentStart, BeforeAgentStartResult, BeforeCompactResult, Context,
@@ -650,5 +650,49 @@ async fn prompt_options_that_cannot_build_a_prompt_are_refused() {
             .lock()
             .unwrap()
             .contains(&"extension_error:sections:before_agent_start".to_string())
+    );
+}
+
+#[tokio::test]
+async fn changes_made_during_a_run_reach_its_next_request() {
+    let harness = Harness::new();
+    let mut other = FauxProvider::default_model();
+    other.id = "faux-2".into();
+    harness.models.register_models([other.clone()]);
+    harness.faux.push_tool_call("echo", json!({ "text": "a" }));
+    harness.faux.push_text("done");
+    let switch = extension("switch", move |api| {
+        let other = other.clone();
+        api.on(move |_event: ToolCall, ctx| {
+            let other = other.clone();
+            async move {
+                ctx.set_active_tools(&[]);
+                ctx.set_model(other).await;
+                ctx.set_thinking_level(ThinkingLevel::High).await;
+                Ok(None)
+            }
+        });
+    });
+    let session = harness
+        .session_with(|options| {
+            options.tools = vec![echo_tool(true)];
+            options.extensions = vec![switch];
+        })
+        .await;
+    session
+        .prompt("go", PromptOptions::default())
+        .await
+        .unwrap();
+
+    // The tool call that triggered the changes still ran; the next request saw them.
+    assert_eq!(tool_result_text(&session), "a");
+    let requests = harness.faux.requests();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(requests[1].model.id, "faux-2");
+    assert_eq!(requests[1].options.reasoning, Some(ThinkingLevel::High));
+    assert!(pi_ai::transcript::current_tools(&requests[1].context.messages).is_empty());
+    assert!(
+        !pi_ai::transcript::current_system_prompt(&requests[1].context.messages)
+            .contains("- echo:")
     );
 }

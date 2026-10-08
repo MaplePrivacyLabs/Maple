@@ -64,7 +64,7 @@ pub enum AgentSessionError {
     Busy,
     NoModel,
     NothingToCompact,
-    /// An extension cancelled the operation.
+    /// An extension cancelled the operation, or stopping the session did.
     Cancelled,
     Agent(AgentError),
     Session(SessionError),
@@ -79,7 +79,7 @@ impl fmt::Display for AgentSessionError {
             }
             Self::NoModel => formatter.write_str("No model selected"),
             Self::NothingToCompact => formatter.write_str("Nothing to compact"),
-            Self::Cancelled => formatter.write_str("Cancelled by an extension"),
+            Self::Cancelled => formatter.write_str("Cancelled"),
             Self::Agent(error) => error.fmt(formatter),
             Self::Session(error) => error.fmt(formatter),
             Self::Failed(error) => formatter.write_str(error),
@@ -299,6 +299,7 @@ struct RunState {
     retry_attempt: u32,
     retry_cancel: Option<CancellationToken>,
     compaction_cancel: Option<CancellationToken>,
+    branch_summary_cancel: Option<CancellationToken>,
     overflow_recovery_attempted: bool,
     /// A complete system prompt that replaces the transcript's for the current run.
     forced_prompt: Option<String>,
@@ -791,16 +792,19 @@ impl SessionCore {
         self.agent.replace_messages(messages);
     }
 
-    fn sync_tools(&self) {
+    /// The active tools, in order.
+    fn executable_tools(&self) -> Vec<Arc<dyn AgentTool>> {
         let active = lock(&self.active_tools).clone();
         let tools = lock(&self.tools);
-        let executable: Vec<Arc<dyn AgentTool>> = active
+        active
             .iter()
             .filter_map(|name| tools.iter().find(|tool| tool.tool.name() == name))
             .map(|tool| tool.tool.clone())
-            .collect();
-        drop(tools);
-        self.agent.set_tools(executable);
+            .collect()
+    }
+
+    fn sync_tools(&self) {
+        self.agent.set_tools(self.executable_tools());
     }
 
     fn set_active_tools(&self, names: &[String]) {
@@ -892,9 +896,13 @@ impl SessionCore {
     fn abort(&self) {
         let mut run = lock(&self.run);
         run.abort_requested = true;
-        for token in [run.retry_cancel.take(), run.compaction_cancel.clone()]
-            .into_iter()
-            .flatten()
+        for token in [
+            run.retry_cancel.take(),
+            run.compaction_cancel.clone(),
+            run.branch_summary_cancel.clone(),
+        ]
+        .into_iter()
+        .flatten()
         {
             token.cancel();
         }
@@ -1375,11 +1383,16 @@ impl SessionCore {
                 let model = self.model().ok_or(AgentSessionError::NoModel)?;
                 let settings = lock(&self.settings).clone();
                 let stream_fn = self.models.stream_fn();
+                // Registered so that stopping the session stops the summary too.
+                let cancel = CancellationToken::new();
+                lock(&self.run).branch_summary_cancel = Some(cancel.clone());
                 let summarizer = Summarizer {
                     model: &model,
                     stream_fn: &*stream_fn,
                     options: StreamOptions {
                         api_key: self.models.api_key(&model.provider).await,
+                        session_id: Some(self.session_id()),
+                        cancel: cancel.clone(),
                         ..StreamOptions::default()
                     },
                     max_retries: settings.retry.max_retries,
@@ -1390,10 +1403,14 @@ impl SessionCore {
                     .saturating_sub(settings.compaction.reserve_tokens)
                     .max(4_096);
                 let entries: Vec<_> = abandoned.iter().collect();
-                let (text, usage) =
-                    summarize_branch(&entries, &summarizer, budget, custom_instructions)
-                        .await
-                        .map_err(AgentSessionError::Failed)?;
+                let summary =
+                    summarize_branch(&entries, &summarizer, budget, custom_instructions).await;
+                lock(&self.run).branch_summary_cancel = None;
+                // A stopped summary leaves the session where it was.
+                if cancel.is_cancelled() {
+                    return Err(AgentSessionError::Cancelled);
+                }
+                let (text, usage) = summary.map_err(AgentSessionError::Failed)?;
                 Some((text, Some(usage), false))
             }
             None => None,
@@ -1565,30 +1582,42 @@ impl AgentHooks<SessionMessage> for SessionHooks {
     ) -> Option<TurnUpdate<SessionMessage>> {
         let core = self.core.upgrade()?;
         // Extension messages queued during the turn go in now, after its tool results.
-        let pending = std::mem::take(&mut lock(&core.run).pending_custom);
+        let mut messages = std::mem::take(&mut lock(&core.run).pending_custom);
         let model = core.model()?;
         let settings = lock(&core.settings).compaction.clone();
         let tokens = estimate_context_tokens(&turn.context.messages);
-        let mut update = TurnUpdate {
-            messages: pending,
-            ..TurnUpdate::default()
-        };
         // A long tool loop can outgrow the context within one run. An aborted run ends
         // with its next request, so it is not compacted first.
-        if !cancel.is_cancelled()
+        let compacted = !cancel.is_cancelled()
             && should_compact(tokens, model.context_window, &settings)
             && core
                 .clone()
                 .compact(CompactionReason::Threshold, None)
                 .await
-                .is_ok()
-        {
-            update.context = Some(AgentContext::new(
-                core.agent.messages(),
-                turn.context.tools.clone(),
-            ));
-        }
-        (update.context.is_some() || !update.messages.is_empty()).then_some(update)
+                .is_ok();
+        // The next request uses the session's current model, thinking level, tools and
+        // prompt, which extensions or the host may have changed during the turn. The
+        // loop declares a changed tool set to the model.
+        let tools = core.executable_tools();
+        let tools_changed = !tools.iter().map(|tool| tool.name()).eq(turn
+            .context
+            .tools
+            .iter()
+            .map(|tool| tool.name()));
+        let context = if compacted {
+            Some(AgentContext::new(core.agent.messages(), tools))
+        } else if tools_changed {
+            Some(AgentContext::new(turn.context.messages.clone(), tools))
+        } else {
+            None
+        };
+        messages.extend(core.system_update(&core.prompt_options()).ok().flatten());
+        Some(TurnUpdate {
+            context,
+            messages,
+            model: Some(model),
+            thinking_level: Some(core.agent.thinking_level()),
+        })
     }
 }
 
