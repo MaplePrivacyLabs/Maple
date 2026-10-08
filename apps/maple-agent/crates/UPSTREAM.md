@@ -14,8 +14,8 @@ Rust ownership, async, or host-interface adaptations there.
 
 The port is in progress. Step 1 implements 19 selected `pi-ai` files:
 contracts, model helpers, session resources, utilities and the scripted
-provider. Step 2 adds six chat-completions modules. The other 56 selected
-source files remain pending. Rust-only
+provider. Step 2 adds six chat-completions modules; Step 3 adds the four
+agent-core modules. The other 52 selected source files remain pending. Rust-only
 `js_value`, `js_string`, `js_json`, `js_serde`, `js_deserialize` and
 `raw_message` modules support
 JavaScript binary64 values, UTF-16 strings, ordered properties, field presence
@@ -77,6 +77,34 @@ explicit input gates and retain shared streaming identity. The scoped
 [`deviations.toml`](../pi-conformance/coverage/deviations.toml) enforce that
 observation schedule; they do not ignore partials or any other fields. This
 does not establish equivalence of ungated producer/consumer scheduling.
+
+## Agent core
+
+Step 3 ports the four selected agent modules in **2,619 production Rust code
+lines** against the 1,900–2,300 estimate, excluding tests and module wiring
+with the same counting method. Explicit shared ownership, callback failure
+continuations and eager async lifecycle handling account for the added code.
+Its three upstream files expand to 87 selected cases: 71 ported and 16
+adapted, with no exclusions. Thirteen additional regressions cover identity,
+raw messages, configuration forwarding and lifecycle boundaries. The agent
+interpreter compares 13 source-recorded scenarios through the actual Rust
+Agent and faux provider.
+
+Shared handles preserve executable tools, models, messages, arguments and
+results across the loop's explicit shallow-copy points. Before-tool hooks can
+mutate validated arguments without revalidation. Tool completion events follow
+settlement order while persisted result artifacts follow source order. Prompt
+and continuation execute their initial synchronous prefix eagerly, then an
+owned Tokio task progresses the run independently of the returned completion
+future. Abort and awaited subscribers retain the source lifecycle barriers. Observer
+rejection settles promptly while already-started sibling tools or observers
+continue in an owned driver, including when their gates remain blocked.
+
+The default provider slot starts unset. Direct low-level calls after explicitly
+clearing the model preserve the source event/history/error/cleanup sequence,
+but cannot invoke the typed provider with JavaScript `undefined`. The owner
+approved this narrow boundary on 2026-10-08; the ordinary session API keeps its
+`No model selected` guard. This does not permit substituting a fabricated model.
 
 ## Boundaries
 

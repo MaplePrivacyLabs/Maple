@@ -1,0 +1,412 @@
+{
+  "state": {
+    "systemPrompt": "You are a helpful assistant.\n\nprepared guidance",
+    "model": {
+      "id": "faux-1",
+      "name": "Faux Model",
+      "api": "faux",
+      "provider": "faux",
+      "baseUrl": "http://localhost:0",
+      "reasoning": false,
+      "input": [
+        "text",
+        "image"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 128000,
+      "maxTokens": 16384
+    },
+    "thinkingLevel": "high",
+    "tools": [
+      {
+        "name": "old",
+        "label": "old",
+        "description": "",
+        "parameters": {
+          "type": "object",
+          "properties": {},
+          "additionalProperties": false
+        }
+      }
+    ],
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are a helpful assistant.",
+        "toolsAdded": [
+          {
+            "name": "old",
+            "description": "",
+            "parameters": {
+              "type": "object",
+              "properties": {},
+              "additionalProperties": false
+            }
+          }
+        ],
+        "timestamp": 0
+      },
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "original prompt"
+          }
+        ],
+        "timestamp": 1767225600000
+      },
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "initial steering"
+          }
+        ],
+        "timestamp": 1767225600000
+      },
+      {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "text",
+            "text": "canonical one"
+          }
+        ],
+        "api": "faux",
+        "provider": "faux",
+        "model": "replacement",
+        "usage": {
+          "input": 5,
+          "output": 4,
+          "cacheRead": 0,
+          "cacheWrite": 0,
+          "totalTokens": 9,
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "total": 0
+          }
+        },
+        "stopReason": "stop",
+        "timestamp": 1767225600000,
+        "thinkingLevel": "high"
+      },
+      {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "text",
+            "text": "canonical two"
+          }
+        ],
+        "api": "faux",
+        "provider": "faux",
+        "model": "replacement",
+        "usage": {
+          "input": 11,
+          "output": 4,
+          "cacheRead": 0,
+          "cacheWrite": 0,
+          "totalTokens": 15,
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "total": 0
+          }
+        },
+        "stopReason": "stop",
+        "timestamp": 1767225600000,
+        "thinkingLevel": "high"
+      },
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "end with queues"
+          }
+        ],
+        "timestamp": 1767225600000
+      },
+      {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "toolCall",
+            "id": "end_tool",
+            "name": "old",
+            "arguments": {}
+          }
+        ],
+        "api": "faux",
+        "provider": "faux",
+        "model": "faux-1",
+        "usage": {
+          "input": 67,
+          "output": 2,
+          "cacheRead": 0,
+          "cacheWrite": 0,
+          "totalTokens": 69,
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "total": 0
+          }
+        },
+        "stopReason": "toolUse",
+        "timestamp": 1767225600000,
+        "thinkingLevel": "off"
+      },
+      {
+        "role": "toolResult",
+        "toolCallId": "end_tool",
+        "toolName": "old",
+        "content": [
+          {
+            "type": "text",
+            "text": "ok"
+          }
+        ],
+        "isError": false,
+        "timestamp": 1767225600000
+      },
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "resume after end"
+          }
+        ],
+        "timestamp": 1767225600000
+      },
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "surviving steering"
+          }
+        ],
+        "timestamp": 1767225600000
+      },
+      {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "text",
+            "text": "resume steering"
+          }
+        ],
+        "api": "faux",
+        "provider": "faux",
+        "model": "faux-1",
+        "usage": {
+          "input": 88,
+          "output": 4,
+          "cacheRead": 0,
+          "cacheWrite": 0,
+          "totalTokens": 92,
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "total": 0
+          }
+        },
+        "stopReason": "stop",
+        "timestamp": 1767225600000,
+        "thinkingLevel": "off"
+      },
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "surviving follow-up"
+          }
+        ],
+        "timestamp": 1767225600000
+      },
+      {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "text",
+            "text": "resume follow-up"
+          }
+        ],
+        "api": "faux",
+        "provider": "faux",
+        "model": "faux-1",
+        "usage": {
+          "input": 101,
+          "output": 4,
+          "cacheRead": 0,
+          "cacheWrite": 0,
+          "totalTokens": 105,
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "total": 0
+          }
+        },
+        "stopReason": "stop",
+        "timestamp": 1767225600000,
+        "thinkingLevel": "off"
+      },
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "prepare next turn"
+          }
+        ],
+        "timestamp": 1767225600000
+      },
+      {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "toolCall",
+            "id": "old_call",
+            "name": "old",
+            "arguments": {}
+          }
+        ],
+        "api": "faux",
+        "provider": "faux",
+        "model": "faux-1",
+        "usage": {
+          "input": 114,
+          "output": 2,
+          "cacheRead": 0,
+          "cacheWrite": 0,
+          "totalTokens": 116,
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "total": 0
+          }
+        },
+        "stopReason": "toolUse",
+        "timestamp": 1767225600000,
+        "thinkingLevel": "high"
+      },
+      {
+        "role": "toolResult",
+        "toolCallId": "old_call",
+        "toolName": "old",
+        "content": [
+          {
+            "type": "text",
+            "text": "ok"
+          }
+        ],
+        "isError": false,
+        "timestamp": 1767225600000
+      },
+      {
+        "role": "system",
+        "content": "prepared guidance",
+        "timestamp": 1767225600000,
+        "toolsAdded": [
+          {
+            "name": "new",
+            "description": "",
+            "parameters": {
+              "type": "object",
+              "properties": {},
+              "additionalProperties": false
+            }
+          }
+        ],
+        "toolsRemoved": [
+          {
+            "name": "old"
+          }
+        ]
+      },
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "late steering"
+          }
+        ],
+        "timestamp": 1767225600000
+      },
+      {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "toolCall",
+            "id": "new_call",
+            "name": "new",
+            "arguments": {}
+          }
+        ],
+        "api": "faux",
+        "provider": "faux",
+        "model": "next-model",
+        "usage": {
+          "input": 169,
+          "output": 2,
+          "cacheRead": 0,
+          "cacheWrite": 0,
+          "totalTokens": 171,
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "total": 0
+          }
+        },
+        "stopReason": "toolUse",
+        "timestamp": 1767225600000,
+        "thinkingLevel": "off"
+      },
+      {
+        "role": "toolResult",
+        "toolCallId": "new_call",
+        "toolName": "new",
+        "content": [
+          {
+            "type": "text",
+            "text": "ok"
+          }
+        ],
+        "isError": false,
+        "timestamp": 1767225600000
+      }
+    ],
+    "isStreaming": false,
+    "pendingToolCalls": []
+  },
+  "queues": {
+    "hasQueuedMessages": false,
+    "next": []
+  },
+  "errors": []
+}

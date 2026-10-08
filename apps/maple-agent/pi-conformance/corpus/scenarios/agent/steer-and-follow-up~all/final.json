@@ -1,0 +1,182 @@
+{
+  "state": {
+    "systemPrompt": "You are a helpful assistant.",
+    "model": {
+      "id": "faux-1",
+      "name": "Faux Model",
+      "api": "faux",
+      "provider": "faux",
+      "baseUrl": "http://localhost:0",
+      "reasoning": false,
+      "input": [
+        "text",
+        "image"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 128000,
+      "maxTokens": 16384
+    },
+    "thinkingLevel": "off",
+    "tools": [],
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are a helpful assistant.",
+        "timestamp": 0
+      },
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "seed"
+          }
+        ],
+        "timestamp": 1767225600000
+      },
+      {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "text",
+            "text": "seed"
+          }
+        ],
+        "api": "faux",
+        "provider": "faux",
+        "model": "faux-1",
+        "usage": {
+          "input": 12,
+          "output": 1,
+          "cacheRead": 0,
+          "cacheWrite": 0,
+          "totalTokens": 13,
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "total": 0
+          }
+        },
+        "stopReason": "stop",
+        "timestamp": 1767225600000,
+        "thinkingLevel": "off"
+      },
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "S1"
+          }
+        ],
+        "timestamp": 1767225600000
+      },
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "S2"
+          }
+        ],
+        "timestamp": 1767225600000
+      },
+      {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "text",
+            "text": "continuation 1"
+          }
+        ],
+        "api": "faux",
+        "provider": "faux",
+        "model": "faux-1",
+        "usage": {
+          "input": 20,
+          "output": 4,
+          "cacheRead": 0,
+          "cacheWrite": 0,
+          "totalTokens": 24,
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "total": 0
+          }
+        },
+        "stopReason": "stop",
+        "timestamp": 1767225600000,
+        "thinkingLevel": "off"
+      },
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "F1"
+          }
+        ],
+        "timestamp": 1767225600000
+      },
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "F2"
+          }
+        ],
+        "timestamp": 1767225600000
+      },
+      {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "text",
+            "text": "continuation 2"
+          }
+        ],
+        "api": "faux",
+        "provider": "faux",
+        "model": "faux-1",
+        "usage": {
+          "input": 31,
+          "output": 4,
+          "cacheRead": 0,
+          "cacheWrite": 0,
+          "totalTokens": 35,
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "total": 0
+          }
+        },
+        "stopReason": "stop",
+        "timestamp": 1767225600000,
+        "thinkingLevel": "off"
+      }
+    ],
+    "isStreaming": false,
+    "pendingToolCalls": []
+  },
+  "queues": {
+    "hasQueuedMessages": false,
+    "next": []
+  },
+  "errors": [
+    {
+      "message": "Cannot continue from message role: assistant"
+    }
+  ]
+}

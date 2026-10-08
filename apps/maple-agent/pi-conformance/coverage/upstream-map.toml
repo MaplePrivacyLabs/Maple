@@ -1927,523 +1927,626 @@ sha256 = "2dd5e1f2859389f07604d1d51ee2d0f9c7dac6e0a8a171c50a151a13573264fd"
 id = "packages/agent/test/agent-loop.test.ts > agentLoop with AgentMessage > action:end receives finalized turn context and stops before queue polling"
 file = "packages/agent/test/agent-loop.test.ts"
 line = 1592
-status = "pending"
+status = "ported"
+rust = "pi-agent-core::upstream::agent_loop::action_end_receives_finalized_turn_context_and_stops_before_queue_polling"
 
 [[test]]
 id = "packages/agent/test/agent-loop.test.ts > agentLoop with AgentMessage > action:end skips queue polling and next-turn preparation"
 file = "packages/agent/test/agent-loop.test.ts"
 line = 1176
-status = "pending"
+status = "ported"
+rust = "pi-agent-core::upstream::agent_loop::action_end_skips_queue_polling_and_next_turn_preparation"
 
 [[test]]
 id = "packages/agent/test/agent-loop.test.ts > agentLoop with AgentMessage > does not poll steering after prepareRequest"
 file = "packages/agent/test/agent-loop.test.ts"
 line = 1417
-status = "pending"
+status = "ported"
+rust = "pi-agent-core::upstream::agent_loop::does_not_poll_steering_after_prepare_request"
 
 [[test]]
 id = "packages/agent/test/agent-loop.test.ts > agentLoop with AgentMessage > lets a natural follow-up request satisfy continuation"
 file = "packages/agent/test/agent-loop.test.ts"
 line = 1306
-status = "pending"
+status = "ported"
+rust = "pi-agent-core::upstream::agent_loop::lets_a_natural_follow_up_request_satisfy_continuation"
 
 [[test]]
 id = "packages/agent/test/agent-loop.test.ts > agentLoop with AgentMessage > lets a natural steering request satisfy continuation"
 file = "packages/agent/test/agent-loop.test.ts"
 line = 1306
-status = "pending"
+status = "ported"
+rust = "pi-agent-core::upstream::agent_loop::lets_a_natural_steering_request_satisfy_continuation"
 
 [[test]]
 id = "packages/agent/test/agent-loop.test.ts > agentLoop with AgentMessage > lets a natural tool-result request satisfy continuation"
 file = "packages/agent/test/agent-loop.test.ts"
 line = 1266
-status = "pending"
+status = "ported"
+rust = "pi-agent-core::upstream::agent_loop::lets_a_natural_tool_result_request_satisfy_continuation"
 
 [[test]]
 id = "packages/agent/test/agent-loop.test.ts > agentLoop with AgentMessage > makes exactly one context-only request when no natural request satisfies continuation"
 file = "packages/agent/test/agent-loop.test.ts"
 line = 1232
-status = "pending"
+status = "ported"
+rust = "pi-agent-core::upstream::agent_loop::makes_exactly_one_context_only_request_when_no_natural_request_satisfies_continuation"
 
 [[test]]
 id = "packages/agent/test/agent-loop.test.ts > agentLoop with AgentMessage > picks up steering queued during prepareNextTurn before the next request"
 file = "packages/agent/test/agent-loop.test.ts"
 line = 1539
-status = "pending"
+status = "ported"
+rust = "pi-agent-core::upstream::agent_loop::picks_up_steering_queued_during_prepare_next_turn_before_the_next_request"
 
 [[test]]
 id = "packages/agent/test/agent-loop.test.ts > agentLoop with AgentMessage > prepares the initial request after pending messages and can replace request state"
 file = "packages/agent/test/agent-loop.test.ts"
 line = 1363
-status = "pending"
+status = "ported"
+rust = "pi-agent-core::upstream::agent_loop::prepares_the_initial_request_after_pending_messages_and_can_replace_request_state"
 
 [[test]]
 id = "packages/agent/test/agent-loop.test.ts > agentLoop with AgentMessage > runs finishTurn after tool-result messages and before turn_end"
 file = "packages/agent/test/agent-loop.test.ts"
 line = 1067
-status = "pending"
+status = "ported"
+rust = "pi-agent-core::upstream::agent_loop::runs_finish_turn_after_tool_result_messages_and_before_turn_end"
 
 [[test]]
 id = "packages/agent/test/agent-loop.test.ts > agentLoop with AgentMessage > runs finishTurn for a aborted assistant before turn_end without changing the hard exit"
 file = "packages/agent/test/agent-loop.test.ts"
 line = 1121
-status = "pending"
+status = "ported"
+rust = "pi-agent-core::upstream::agent_loop::runs_finish_turn_for_an_aborted_assistant_before_turn_end_without_changing_the_hard_exit"
 
 [[test]]
 id = "packages/agent/test/agent-loop.test.ts > agentLoop with AgentMessage > runs finishTurn for a error assistant before turn_end without changing the hard exit"
 file = "packages/agent/test/agent-loop.test.ts"
 line = 1121
-status = "pending"
+status = "ported"
+rust = "pi-agent-core::upstream::agent_loop::runs_finish_turn_for_an_error_assistant_before_turn_end_without_changing_the_hard_exit"
 
 [[test]]
 id = "packages/agent/test/agent-loop.test.ts > agentLoop with AgentMessage > should allow afterToolCall to mark a tool batch as terminating"
 file = "packages/agent/test/agent-loop.test.ts"
 line = 1923
-status = "pending"
+status = "ported"
+rust = "pi-agent-core::upstream::agent_loop::should_allow_after_tool_call_to_mark_a_tool_batch_as_terminating"
 
 [[test]]
 id = "packages/agent/test/agent-loop.test.ts > agentLoop with AgentMessage > should allow parallel execution when all tools have executionMode=parallel"
 file = "packages/agent/test/agent-loop.test.ts"
 line = 994
-status = "pending"
+status = "adapted"
+rust = "pi-agent-core::upstream::agent_loop::should_allow_parallel_execution_when_all_tools_have_execution_mode_parallel"
+adaptation = "A deterministic executor yield replaces the upstream short timer while preserving which execution completes first and the source-order artifacts."
 
 [[test]]
 id = "packages/agent/test/agent-loop.test.ts > agentLoop with AgentMessage > should apply transformContext before convertToLlm"
 file = "packages/agent/test/agent-loop.test.ts"
 line = 267
-status = "pending"
+status = "ported"
+rust = "pi-agent-core::upstream::agent_loop::should_apply_transform_context_before_convert_to_llm"
 
 [[test]]
 id = "packages/agent/test/agent-loop.test.ts > agentLoop with AgentMessage > should build provider context exclusively from transcript messages"
 file = "packages/agent/test/agent-loop.test.ts"
 line = 174
-status = "pending"
+status = "ported"
+rust = "pi-agent-core::upstream::agent_loop::should_build_provider_context_exclusively_from_transcript_messages"
 
 [[test]]
 id = "packages/agent/test/agent-loop.test.ts > agentLoop with AgentMessage > should continue after a mixed batch with one terminating blocked call"
 file = "packages/agent/test/agent-loop.test.ts"
 line = 1800
-status = "pending"
+status = "ported"
+rust = "pi-agent-core::upstream::agent_loop::should_continue_after_a_mixed_batch_with_one_terminating_blocked_call"
 
 [[test]]
 id = "packages/agent/test/agent-loop.test.ts > agentLoop with AgentMessage > should continue after parallel tool calls when not all tool results terminate"
 file = "packages/agent/test/agent-loop.test.ts"
 line = 1858
-status = "pending"
+status = "ported"
+rust = "pi-agent-core::upstream::agent_loop::should_continue_after_parallel_tool_calls_when_not_all_tool_results_terminate"
 
 [[test]]
 id = "packages/agent/test/agent-loop.test.ts > agentLoop with AgentMessage > should emit events with AgentMessage types"
 file = "packages/agent/test/agent-loop.test.ts"
 line = 128
-status = "pending"
+status = "ported"
+rust = "pi-agent-core::upstream::agent_loop::should_emit_events_with_agent_message_types"
 
 [[test]]
 id = "packages/agent/test/agent-loop.test.ts > agentLoop with AgentMessage > should emit tool_execution_end in completion order but persist tool results in source order"
 file = "packages/agent/test/agent-loop.test.ts"
 line = 627
-status = "pending"
+status = "adapted"
+rust = "pi-agent-core::upstream::agent_loop::should_emit_tool_execution_end_in_completion_order_but_persist_tool_results_in_source_order"
+adaptation = "A deterministic executor yield replaces the upstream short timer while preserving which execution completes first and the source-order artifacts."
 
 [[test]]
 id = "packages/agent/test/agent-loop.test.ts > agentLoop with AgentMessage > should execute mutated beforeToolCall args without revalidation"
 file = "packages/agent/test/agent-loop.test.ts"
 line = 487
-status = "pending"
+status = "ported"
+rust = "pi-agent-core::upstream::agent_loop::should_execute_mutated_before_tool_call_args_without_revalidation"
 
 [[test]]
 id = "packages/agent/test/agent-loop.test.ts > agentLoop with AgentMessage > should force sequential execution when a tool has executionMode=sequential even with default parallel config"
 file = "packages/agent/test/agent-loop.test.ts"
 line = 826
-status = "pending"
+status = "adapted"
+rust = "pi-agent-core::upstream::agent_loop::should_force_sequential_execution_when_a_tool_has_execution_mode_sequential_even_with_default_parallel_config"
+adaptation = "A deterministic executor yield replaces the upstream short timer while preserving which execution completes first and the source-order artifacts."
 
 [[test]]
 id = "packages/agent/test/agent-loop.test.ts > agentLoop with AgentMessage > should force sequential execution when one of multiple tools has executionMode=sequential"
 file = "packages/agent/test/agent-loop.test.ts"
 line = 908
-status = "pending"
+status = "adapted"
+rust = "pi-agent-core::upstream::agent_loop::should_force_sequential_execution_when_one_of_multiple_tools_has_execution_mode_sequential"
+adaptation = "A deterministic executor yield replaces the upstream short timer while preserving which execution completes first and the source-order artifacts."
 
 [[test]]
 id = "packages/agent/test/agent-loop.test.ts > agentLoop with AgentMessage > should handle custom message types via convertToLlm"
 file = "packages/agent/test/agent-loop.test.ts"
 line = 213
-status = "pending"
+status = "ported"
+rust = "pi-agent-core::upstream::agent_loop::should_handle_custom_message_types_via_convert_to_llm"
 
 [[test]]
 id = "packages/agent/test/agent-loop.test.ts > agentLoop with AgentMessage > should handle tool calls and results"
 file = "packages/agent/test/agent-loop.test.ts"
 line = 319
-status = "pending"
+status = "ported"
+rust = "pi-agent-core::upstream::agent_loop::should_handle_tool_calls_and_results"
 
 [[test]]
 id = "packages/agent/test/agent-loop.test.ts > agentLoop with AgentMessage > should inject queued messages after all tool calls complete"
 file = "packages/agent/test/agent-loop.test.ts"
 line = 721
-status = "pending"
+status = "ported"
+rust = "pi-agent-core::upstream::agent_loop::should_inject_queued_messages_after_all_tool_calls_complete"
 
 [[test]]
 id = "packages/agent/test/agent-loop.test.ts > agentLoop with AgentMessage > should not execute tool calls from a length-truncated assistant message"
 file = "packages/agent/test/agent-loop.test.ts"
 line = 415
-status = "pending"
+status = "ported"
+rust = "pi-agent-core::upstream::agent_loop::should_not_execute_tool_calls_from_a_length_truncated_assistant_message"
 
 [[test]]
 id = "packages/agent/test/agent-loop.test.ts > agentLoop with AgentMessage > should prepare tool arguments for validation"
 file = "packages/agent/test/agent-loop.test.ts"
 line = 548
-status = "pending"
+status = "ported"
+rust = "pi-agent-core::upstream::agent_loop::should_prepare_tool_arguments_for_validation"
 
 [[test]]
 id = "packages/agent/test/agent-loop.test.ts > agentLoop with AgentMessage > should stop after a blocked tool call when beforeToolCall sets terminate=true"
 file = "packages/agent/test/agent-loop.test.ts"
 line = 1742
-status = "pending"
+status = "ported"
+rust = "pi-agent-core::upstream::agent_loop::should_stop_after_a_blocked_tool_call_when_before_tool_call_sets_terminate_true"
 
 [[test]]
 id = "packages/agent/test/agent-loop.test.ts > agentLoop with AgentMessage > should stop after a tool batch when every tool result sets terminate=true"
 file = "packages/agent/test/agent-loop.test.ts"
 line = 1691
-status = "pending"
+status = "ported"
+rust = "pi-agent-core::upstream::agent_loop::should_stop_after_a_tool_batch_when_every_tool_result_sets_terminate_true"
 
 [[test]]
 id = "packages/agent/test/agent-loop.test.ts > agentLoop with AgentMessage > should use prepareNextTurn snapshot before continuing"
 file = "packages/agent/test/agent-loop.test.ts"
 line = 1462
-status = "pending"
+status = "ported"
+rust = "pi-agent-core::upstream::agent_loop::should_use_prepare_next_turn_snapshot_before_continuing"
 
 [[test]]
 id = "packages/agent/test/agent-loop.test.ts > agentLoopContinue with AgentMessage > should allow custom message types as last message (caller responsibility)"
 file = "packages/agent/test/agent-loop.test.ts"
 line = 2031
-status = "pending"
+status = "ported"
+rust = "pi-agent-core::upstream::agent_loop::should_allow_custom_message_types_as_last_message_caller_responsibility"
 
 [[test]]
 id = "packages/agent/test/agent-loop.test.ts > agentLoopContinue with AgentMessage > should continue from existing context without emitting user message events"
 file = "packages/agent/test/agent-loop.test.ts"
 line = 1990
-status = "pending"
+status = "ported"
+rust = "pi-agent-core::upstream::agent_loop::should_continue_from_existing_context_without_emitting_user_message_events"
 
 [[test]]
 id = "packages/agent/test/agent-loop.test.ts > agentLoopContinue with AgentMessage > should throw when context has no messages"
 file = "packages/agent/test/agent-loop.test.ts"
 line = 1972
-status = "pending"
+status = "ported"
+rust = "pi-agent-core::upstream::agent_loop::should_throw_when_context_has_no_messages"
 
 [[test]]
 id = "packages/agent/test/agent-loop.test.ts > default stream function compatibility > uses the configured default when a legacy caller omits streamFn"
 file = "packages/agent/test/agent-loop.test.ts"
 line = 94
-status = "pending"
+status = "ported"
+rust = "pi-agent-core::upstream::agent_loop::uses_the_configured_default_when_a_legacy_caller_omits_stream_fn"
 
 [[test]]
 id = "packages/agent/test/agent-loop.test.ts > runToolCall > lets afterToolCall replace structured content and drops it when only content is replaced"
 file = "packages/agent/test/agent-loop.test.ts"
 line = 2173
-status = "pending"
+status = "ported"
+rust = "pi-agent-core::upstream::agent_loop::lets_after_tool_call_replace_structured_content_and_drops_it_when_only_content_is_replaced"
 
 [[test]]
 id = "packages/agent/test/agent-loop.test.ts > runToolCall > validates, runs the hooks, and reports failures as error outcomes"
 file = "packages/agent/test/agent-loop.test.ts"
 line = 2126
-status = "pending"
+status = "ported"
+rust = "pi-agent-core::upstream::agent_loop::validates_runs_the_hooks_and_reports_failures_as_error_outcomes"
 
 [[test]]
 id = "packages/agent/test/agent.test.ts > Agent > continue() keeps 'all' steering semantics for assistant-tail fallback"
 file = "packages/agent/test/agent.test.ts"
 line = 841
-status = "pending"
+status = "ported"
+rust = "pi-agent-core::upstream::agent::agent::continue_keeps_mode_steering_semantics_for_assistant_tail_fallback__all"
 
 [[test]]
 id = "packages/agent/test/agent.test.ts > Agent > continue() keeps 'one-at-a-time' steering semantics for assistant-tail fallback"
 file = "packages/agent/test/agent.test.ts"
 line = 841
-status = "pending"
+status = "ported"
+rust = "pi-agent-core::upstream::agent::agent::continue_keeps_mode_steering_semantics_for_assistant_tail_fallback__one_at_a_time"
 
 [[test]]
 id = "packages/agent/test/agent.test.ts > Agent > continue() should process queued follow-up messages after an assistant turn"
 file = "packages/agent/test/agent.test.ts"
 line = 800
-status = "pending"
+status = "ported"
+rust = "pi-agent-core::upstream::agent::agent::continue_should_process_queued_follow_up_messages_after_an_assistant_turn"
 
 [[test]]
 id = "packages/agent/test/agent.test.ts > Agent > converts initial prompt and tools into transcript state"
 file = "packages/agent/test/agent.test.ts"
 line = 158
-status = "pending"
+status = "ported"
+rust = "pi-agent-core::upstream::agent::agent::converts_initial_prompt_and_tools_into_transcript_state"
 
 [[test]]
 id = "packages/agent/test/agent.test.ts > Agent > declares tool loadout changes to the model before the next request"
 file = "packages/agent/test/agent.test.ts"
 line = 178
-status = "pending"
+status = "ported"
+rust = "pi-agent-core::upstream::agent::agent::declares_tool_loadout_changes_to_the_model_before_the_next_request"
 
 [[test]]
 id = "packages/agent/test/agent.test.ts > Agent > defers follow-up input on the first continuation request from a 'toolResult' tail"
 file = "packages/agent/test/agent.test.ts"
 line = 995
-status = "pending"
+status = "ported"
+rust = "pi-agent-core::upstream::agent::agent::defers_follow_up_input_on_the_first_continuation_request_from_a_name_tail__toolresult"
 
 [[test]]
 id = "packages/agent/test/agent.test.ts > Agent > defers follow-up input on the first continuation request from a 'user' tail"
 file = "packages/agent/test/agent.test.ts"
 line = 995
-status = "pending"
+status = "ported"
+rust = "pi-agent-core::upstream::agent::agent::defers_follow_up_input_on_the_first_continuation_request_from_a_name_tail__user"
 
 [[test]]
 id = "packages/agent/test/agent.test.ts > Agent > emits full lifecycle events for thrown run failures"
 file = "packages/agent/test/agent.test.ts"
 line = 345
-status = "pending"
+status = "adapted"
+rust = "pi-agent-core::upstream::agent::agent::emits_full_lifecycle_events_for_thrown_run_failures"
+adaptation = "Represent a thrown provider error as StreamFn's AgentResult::Err; retain the exact lifecycle sequence, stop reason and error text."
 
 [[test]]
 id = "packages/agent/test/agent.test.ts > Agent > forwards finishTurn through AgentOptions with the active abort signal"
 file = "packages/agent/test/agent.test.ts"
 line = 915
-status = "pending"
+status = "ported"
+rust = "pi-agent-core::upstream::agent::agent::forwards_finishturn_through_agentoptions_with_the_active_abort_signal"
 
 [[test]]
 id = "packages/agent/test/agent.test.ts > Agent > forwards provider stream event observers through AgentOptions"
 file = "packages/agent/test/agent.test.ts"
 line = 1169
-status = "pending"
+status = "ported"
+rust = "pi-agent-core::upstream::agent::agent::forwards_provider_stream_event_observers_through_agentoptions"
 
 [[test]]
 id = "packages/agent/test/agent.test.ts > Agent > forwards sessionId to streamFunction options"
 file = "packages/agent/test/agent.test.ts"
 line = 1191
-status = "pending"
+status = "ported"
+rust = "pi-agent-core::upstream::agent::agent::forwards_sessionid_to_streamfunction_options"
 
 [[test]]
 id = "packages/agent/test/agent.test.ts > Agent > keeps legacy prepareNextTurn signal callback behavior"
 file = "packages/agent/test/agent.test.ts"
 line = 874
-status = "pending"
+status = "ported"
+rust = "pi-agent-core::upstream::agent::agent::keeps_legacy_preparenextturn_signal_callback_behavior"
 
 [[test]]
 id = "packages/agent/test/agent.test.ts > Agent > keeps queues on a aborted response even when finishTurn requests continuation"
 file = "packages/agent/test/agent.test.ts"
 line = 1085
-status = "pending"
+status = "ported"
+rust = "pi-agent-core::upstream::agent::agent::keeps_queues_on_a_s_response_even_when_finishturn_requests_continuation__aborted"
 
 [[test]]
 id = "packages/agent/test/agent.test.ts > Agent > keeps queues on a error response even when finishTurn requests continuation"
 file = "packages/agent/test/agent.test.ts"
 line = 1085
-status = "pending"
+status = "ported"
+rust = "pi-agent-core::upstream::agent::agent::keeps_queues_on_a_s_response_even_when_finishturn_requests_continuation__error"
 
 [[test]]
 id = "packages/agent/test/agent.test.ts > Agent > keeps queues when finishTurn ends the run"
 file = "packages/agent/test/agent.test.ts"
 line = 1123
-status = "pending"
+status = "ported"
+rust = "pi-agent-core::upstream::agent::agent::keeps_queues_when_finishturn_ends_the_run"
 
 [[test]]
 id = "packages/agent/test/agent.test.ts > Agent > keeps steering ahead of follow-up from a non-assistant continuation tail"
 file = "packages/agent/test/agent.test.ts"
 line = 1057
-status = "pending"
+status = "ported"
+rust = "pi-agent-core::upstream::agent::agent::keeps_steering_ahead_of_follow_up_from_a_non_assistant_continuation_tail"
 
 [[test]]
 id = "packages/agent/test/agent.test.ts > Agent > merges tool changes into a pending system message"
 file = "packages/agent/test/agent.test.ts"
 line = 226
-status = "pending"
+status = "ported"
+rust = "pi-agent-core::upstream::agent::agent::merges_tool_changes_into_a_pending_system_message"
 
 [[test]]
 id = "packages/agent/test/agent.test.ts > Agent > polls 'all' steering at continuation startup"
 file = "packages/agent/test/agent.test.ts"
 line = 1024
-status = "pending"
+status = "ported"
+rust = "pi-agent-core::upstream::agent::agent::polls_mode_steering_at_continuation_startup__all"
 
 [[test]]
 id = "packages/agent/test/agent.test.ts > Agent > polls 'one-at-a-time' steering at continuation startup"
 file = "packages/agent/test/agent.test.ts"
 line = 1024
-status = "pending"
+status = "ported"
+rust = "pi-agent-core::upstream::agent::agent::polls_mode_steering_at_continuation_startup__one_at_a_time"
 
 [[test]]
 id = "packages/agent/test/agent.test.ts > Agent > previews the next selected queued messages without consuming them"
 file = "packages/agent/test/agent.test.ts"
 line = 1150
-status = "pending"
+status = "ported"
+rust = "pi-agent-core::upstream::agent::agent::previews_the_next_selected_queued_messages_without_consuming_them"
 
 [[test]]
 id = "packages/agent/test/agent.test.ts > Agent > rejects a queued continuation from 'empty' context without draining queues"
 file = "packages/agent/test/agent.test.ts"
 line = 962
-status = "pending"
+status = "ported"
+rust = "pi-agent-core::upstream::agent::agent::rejects_a_queued_continuation_from_name_context_without_draining_queues__empty"
 
 [[test]]
 id = "packages/agent/test/agent.test.ts > Agent > rejects a queued continuation from 'system-only' context without draining queues"
 file = "packages/agent/test/agent.test.ts"
 line = 962
-status = "pending"
+status = "ported"
+rust = "pi-agent-core::upstream::agent::agent::rejects_a_queued_continuation_from_name_context_without_draining_queues__system_only"
 
 [[test]]
 id = "packages/agent/test/agent.test.ts > Agent > restores the transcript baseline when reset"
 file = "packages/agent/test/agent.test.ts"
 line = 296
-status = "pending"
+status = "ported"
+rust = "pi-agent-core::upstream::agent::agent::restores_the_transcript_baseline_when_reset"
 
 [[test]]
 id = "packages/agent/test/agent.test.ts > Agent > rewrites pending tool declarations to match the executable set"
 file = "packages/agent/test/agent.test.ts"
 line = 261
-status = "pending"
+status = "ported"
+rust = "pi-agent-core::upstream::agent::agent::rewrites_pending_tool_declarations_to_match_the_executable_set"
 
 [[test]]
 id = "packages/agent/test/agent.test.ts > Agent > should await async subscribers before prompt resolves"
 file = "packages/agent/test/agent.test.ts"
 line = 376
-status = "pending"
+status = "adapted"
+rust = "pi-agent-core::upstream::agent::agent::should_await_async_subscribers_before_prompt_resolves"
+adaptation = "Replace the wall-clock wait with an explicit agent_end subscriber gate, an owned observer future and deterministic current-thread checkpoints."
 
 [[test]]
 id = "packages/agent/test/agent.test.ts > Agent > should create an agent instance with custom initial state"
 file = "packages/agent/test/agent.test.ts"
 line = 142
-status = "pending"
+status = "adapted"
+rust = "pi-agent-core::upstream::agent::agent::should_create_an_agent_instance_with_custom_initial_state"
+adaptation = "Replace live catalog lookup with a local model fixture; preserve the same supplied model handle using Shared::ptr_eq."
 
 [[test]]
 id = "packages/agent/test/agent.test.ts > Agent > should create an agent instance with default state"
 file = "packages/agent/test/agent.test.ts"
 line = 128
-status = "pending"
+status = "ported"
+rust = "pi-agent-core::upstream::agent::agent::should_create_an_agent_instance_with_default_state"
 
 [[test]]
 id = "packages/agent/test/agent.test.ts > Agent > should handle abort controller"
 file = "packages/agent/test/agent.test.ts"
 line = 683
-status = "pending"
+status = "ported"
+rust = "pi-agent-core::upstream::agent::agent::should_handle_abort_controller"
 
 [[test]]
 id = "packages/agent/test/agent.test.ts > Agent > should ignore a settled parallel tool update while another tool is still running"
 file = "packages/agent/test/agent.test.ts"
 line = 552
-status = "pending"
+status = "adapted"
+rust = "pi-agent-core::upstream::agent::agent::should_ignore_a_settled_parallel_tool_update_while_another_tool_is_still_running"
+adaptation = "Replace deferred promises and timer ticks with explicit settled-tool, slow-tool and release gates; preserve the zero-late-update assertions."
 
 [[test]]
 id = "packages/agent/test/agent.test.ts > Agent > should ignore tool updates after the tool execution settles"
 file = "packages/agent/test/agent.test.ts"
 line = 487
-status = "pending"
+status = "adapted"
+rust = "pi-agent-core::upstream::agent::agent::should_ignore_tool_updates_after_the_tool_execution_settles"
+adaptation = "The unit-returning Rust progress callback cannot reject a JavaScript Promise; assert no panic, no added lifecycle events, one legitimate update and no agent state error."
 
 [[test]]
 id = "packages/agent/test/agent.test.ts > Agent > should pass the active abort signal to subscribers"
 file = "packages/agent/test/agent.test.ts"
 line = 449
-status = "pending"
+status = "adapted"
+rust = "pi-agent-core::upstream::agent::agent::should_pass_the_active_abort_signal_to_subscribers"
+adaptation = "Replace repeated abort polling timers with an explicit provider-start gate and response injection after observing cancellation of the active signal."
 
 [[test]]
 id = "packages/agent/test/agent.test.ts > Agent > should reject reset while processing without corrupting the transcript"
 file = "packages/agent/test/agent.test.ts"
 line = 690
-status = "pending"
+status = "adapted"
+rust = "pi-agent-core::upstream::agent::agent::should_reject_reset_while_processing_without_corrupting_the_transcript"
+adaptation = "Replace stream-start and release promises with an explicit provider-start gate and injected final response; retain both pre/post rejection transcript checks."
 
 [[test]]
 id = "packages/agent/test/agent.test.ts > Agent > should subscribe to events"
 file = "packages/agent/test/agent.test.ts"
 line = 323
-status = "pending"
+status = "ported"
+rust = "pi-agent-core::upstream::agent::agent::should_subscribe_to_events"
 
 [[test]]
 id = "packages/agent/test/agent.test.ts > Agent > should support follow-up message queue"
 file = "packages/agent/test/agent.test.ts"
 line = 673
-status = "pending"
+status = "ported"
+rust = "pi-agent-core::upstream::agent::agent::should_support_follow_up_message_queue"
 
 [[test]]
 id = "packages/agent/test/agent.test.ts > Agent > should support steering message queue"
 file = "packages/agent/test/agent.test.ts"
 line = 663
-status = "pending"
+status = "ported"
+rust = "pi-agent-core::upstream::agent::agent::should_support_steering_message_queue"
 
 [[test]]
 id = "packages/agent/test/agent.test.ts > Agent > should throw when continue() called while streaming"
 file = "packages/agent/test/agent.test.ts"
 line = 764
-status = "pending"
+status = "adapted"
+rust = "pi-agent-core::upstream::agent::agent::should_throw_when_continue_called_while_streaming"
+adaptation = "Replace periodic abort timers with explicit provider-start and cancellation observations; retain the exact concurrent-continuation error."
 
 [[test]]
 id = "packages/agent/test/agent.test.ts > Agent > should throw when prompt() called while streaming"
 file = "packages/agent/test/agent.test.ts"
 line = 724
-status = "pending"
+status = "adapted"
+rust = "pi-agent-core::upstream::agent::agent::should_throw_when_prompt_called_while_streaming"
+adaptation = "Replace periodic abort timers with explicit provider-start and cancellation observations; retain the exact concurrent-prompt error."
 
 [[test]]
 id = "packages/agent/test/agent.test.ts > Agent > should update state with mutators"
 file = "packages/agent/test/agent.test.ts"
 line = 628
-status = "pending"
+status = "adapted"
+rust = "pi-agent-core::upstream::agent::agent::should_update_state_with_mutators"
+adaptation = "Use Shared<Model> and AgentMessage identity checks; complete the source's abbreviated any-cast fixtures with required Rust fields while retaining top-level array-copy assertions."
 
 [[test]]
 id = "packages/agent/test/agent.test.ts > Agent > uses the configured default when a legacy caller omits streamFn"
 file = "packages/agent/test/agent.test.ts"
 line = 107
-status = "pending"
+status = "adapted"
+rust = "pi-agent-core::upstream::agent::agent::uses_the_configured_default_when_a_legacy_caller_omits_streamfn"
+adaptation = "Use AgentOptions::default() to represent a legacy caller omitting streamFn; restore the process default slot with a drop guard."
 
 [[test]]
 id = "packages/agent/test/agent.test.ts > Agent > waitForIdle should wait for async subscribers"
 file = "packages/agent/test/agent.test.ts"
 line = 414
-status = "pending"
+status = "adapted"
+rust = "pi-agent-core::upstream::agent::agent::waitforidle_should_wait_for_async_subscribers"
+adaptation = "Replace the wall-clock wait with an explicit assistant message_end subscriber gate; verify wait_for_idle remains pending until release."
 
 [[test]]
 id = "packages/agent/test/e2e.test.ts > Agent integration with faux provider > emits lifecycle updates while streaming"
 file = "packages/agent/test/e2e.test.ts"
 line = 221
-status = "pending"
+status = "ported"
+rust = "pi-agent-core::upstream::e2e::agent_integration_with_faux_provider::emits_lifecycle_updates_while_streaming"
 
 [[test]]
 id = "packages/agent/test/e2e.test.ts > Agent integration with faux provider > executes tools and tracks pending tool calls"
 file = "packages/agent/test/e2e.test.ts"
 line = 193
-status = "pending"
+status = "ported"
+rust = "pi-agent-core::upstream::e2e::agent_integration_with_faux_provider::executes_tools_and_tracks_pending_tool_calls"
 
 [[test]]
 id = "packages/agent/test/e2e.test.ts > Agent integration with faux provider > handles a basic text prompt"
 file = "packages/agent/test/e2e.test.ts"
 line = 187
-status = "pending"
+status = "ported"
+rust = "pi-agent-core::upstream::e2e::agent_integration_with_faux_provider::handles_a_basic_text_prompt"
 
 [[test]]
 id = "packages/agent/test/e2e.test.ts > Agent integration with faux provider > handles abort during streaming"
 file = "packages/agent/test/e2e.test.ts"
 line = 208
-status = "pending"
+status = "ported"
+rust = "pi-agent-core::upstream::e2e::agent_integration_with_faux_provider::handles_abort_during_streaming"
 
 [[test]]
 id = "packages/agent/test/e2e.test.ts > Agent integration with faux provider > maintains context across multiple turns"
 file = "packages/agent/test/e2e.test.ts"
 line = 227
-status = "pending"
+status = "ported"
+rust = "pi-agent-core::upstream::e2e::agent_integration_with_faux_provider::maintains_context_across_multiple_turns"
 
 [[test]]
 id = "packages/agent/test/e2e.test.ts > Agent integration with faux provider > preserves thinking content blocks"
 file = "packages/agent/test/e2e.test.ts"
 line = 243
-status = "pending"
+status = "ported"
+rust = "pi-agent-core::upstream::e2e::agent_integration_with_faux_provider::preserves_thinking_content_blocks"
 
 [[test]]
 id = "packages/agent/test/e2e.test.ts > Agent.continue() with faux provider > continue from tool result > continues and processes tool results"
 file = "packages/agent/test/e2e.test.ts"
 line = 352
-status = "pending"
+status = "ported"
+rust = "pi-agent-core::upstream::e2e::agent_continue_with_faux_provider::continue_from_tool_result::continues_and_processes_tool_results"
 
 [[test]]
 id = "packages/agent/test/e2e.test.ts > Agent.continue() with faux provider > continue from user message > continues and gets a response when last message is user"
 file = "packages/agent/test/e2e.test.ts"
 line = 318
-status = "pending"
+status = "ported"
+rust = "pi-agent-core::upstream::e2e::agent_continue_with_faux_provider::continue_from_user_message::continues_and_gets_a_response_when_last_message_is_user"
 
 [[test]]
 id = "packages/agent/test/e2e.test.ts > Agent.continue() with faux provider > validation > throws when last message is assistant"
 file = "packages/agent/test/e2e.test.ts"
 line = 283
-status = "pending"
+status = "ported"
+rust = "pi-agent-core::upstream::e2e::agent_continue_with_faux_provider::validation::throws_when_last_message_is_assistant"
 
 [[test]]
 id = "packages/agent/test/e2e.test.ts > Agent.continue() with faux provider > validation > throws when no messages in context"
 file = "packages/agent/test/e2e.test.ts"
 line = 270
-status = "pending"
+status = "ported"
+rust = "pi-agent-core::upstream::e2e::agent_continue_with_faux_provider::validation::throws_when_no_messages_in_context"
 
 [[test]]
 id = "packages/agent/test/proxy.test.ts > streamProxy > emits an error instead of hanging when the stream ends without a terminal event"

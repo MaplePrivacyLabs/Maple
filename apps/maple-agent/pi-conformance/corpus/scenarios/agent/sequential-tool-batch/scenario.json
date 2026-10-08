@@ -1,0 +1,111 @@
+{
+  "dsl": 1,
+  "id": "agent/sequential-tool-batch",
+  "layer": "agent",
+  "covers": [
+    "packages/agent/src/agent.ts",
+    "packages/agent/src/agent-loop.ts"
+  ],
+  "model": {
+    "ref": "faux-default"
+  },
+  "clock": {
+    "epochMs": 1767225600000
+  },
+  "systemPrompt": "You are a helpful assistant.",
+  "thinkingLevel": "off",
+  "provider": {
+    "kind": "faux",
+    "tokenSize": 1000,
+    "responses": [
+      {
+        "content": [
+          {
+            "type": "toolCall",
+            "id": "call_1",
+            "name": "parallel",
+            "arguments": {}
+          },
+          {
+            "type": "toolCall",
+            "id": "call_2",
+            "name": "serial",
+            "arguments": {}
+          },
+          {
+            "type": "toolCall",
+            "id": "call_3",
+            "name": "parallel",
+            "arguments": {}
+          }
+        ],
+        "stopReason": "toolUse"
+      },
+      {
+        "content": "done",
+        "stopReason": "stop"
+      }
+    ]
+  },
+  "steps": [
+    {
+      "prompt": "Run the batch"
+    },
+    {
+      "awaitIdle": {}
+    }
+  ],
+  "tools": [
+    {
+      "name": "parallel",
+      "parameters": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      },
+      "behavior": [
+        {
+          "update": {
+            "content": [
+              {
+                "type": "text",
+                "text": "working"
+              }
+            ]
+          }
+        },
+        {
+          "result": {
+            "content": [
+              {
+                "type": "text",
+                "text": "parallel done"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "serial",
+      "parameters": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      },
+      "behavior": [
+        {
+          "result": {
+            "content": [
+              {
+                "type": "text",
+                "text": "ok"
+              }
+            ]
+          }
+        }
+      ],
+      "executionMode": "sequential"
+    }
+  ]
+}

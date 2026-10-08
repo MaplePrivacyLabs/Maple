@@ -73,6 +73,11 @@ pub struct Scenario {
     #[serde(default)]
     pub initial_messages: Vec<JsValue>,
     pub options: Option<JsValue>,
+    pub active_tools: Option<Vec<pi_ai::types::JsString>>,
+    pub tool_execution: Option<String>,
+    pub hooks: Option<JsValue>,
+    #[serde(default)]
+    pub subscribers: Vec<JsValue>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -595,6 +600,36 @@ pub async fn replay_scenario(root: &Path, id: &str) -> CheckResult {
     if scenario.layer == "wire" {
         return crate::wire_replay::replay(root, id).await;
     }
+    if scenario.layer == "agent" {
+        let directory = root.join("corpus/scenarios").join(id);
+        let input = read_js_json(&directory.join("scenario.json"))?;
+        let actual = crate::agent_replay::replay(&input).await?;
+        let options = crate::compare::CompareOptions::default();
+        let concurrency = if scenario.concurrency.as_deref() == Some("free") {
+            crate::compare::Concurrency::Free
+        } else {
+            crate::compare::Concurrency::Gated
+        };
+        crate::compare::compare_events(
+            &read_js_jsonl(&directory.join("events.jsonl"))?,
+            &actual.events,
+            &options,
+            concurrency,
+        )
+        .map_err(|error| format!("{id}/events.jsonl: {error}"))?;
+        crate::compare::compare(
+            &read_js_jsonl(&directory.join("requests.jsonl"))?.into(),
+            &actual.requests.into(),
+            &options,
+        )
+        .map_err(|error| format!("{id}/requests.jsonl: {error}"))?;
+        return crate::compare::compare(
+            &read_js_json(&directory.join("final.json"))?,
+            &actual.final_record,
+            &options,
+        )
+        .map_err(|error| format!("{id}/final.json: {error}"));
+    }
     Err(format!(
         "Rust {} scenario interpreter is not implemented yet",
         scenario.layer
@@ -610,6 +645,9 @@ pub async fn replay_function(root: &Path, id: &str) -> CheckResult {
         return Err(
             "TypeScript function recording and Rust function dispatcher are pending".into(),
         );
+    }
+    if id == "agent.clearedModel" {
+        return crate::cleared_model::replay_recorded(root).await;
     }
     if id == "env.virtualTimers" {
         let matrix: FunctionMatrix =

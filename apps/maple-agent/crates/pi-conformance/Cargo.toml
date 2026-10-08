@@ -15,6 +15,7 @@ syn = { version = "2", features = ["full"] }
 toml = "0.8"
 jsonschema = { version = "=0.55.1", default-features = false }
 pi-ai = { path = "../pi-ai" }
+pi-agent-core = { path = "../pi-agent-core" }
 pi-testkit = { path = "../pi-testkit" }
 tokio = { workspace = true }
 

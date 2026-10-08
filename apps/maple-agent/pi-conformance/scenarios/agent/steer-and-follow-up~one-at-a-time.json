@@ -1,0 +1,115 @@
+{
+  "dsl": 1,
+  "id": "agent/steer-and-follow-up~one-at-a-time",
+  "layer": "agent",
+  "covers": [
+    "packages/agent/src/agent.ts",
+    "packages/agent/src/agent-loop.ts"
+  ],
+  "model": {
+    "ref": "faux-default"
+  },
+  "clock": {
+    "epochMs": 1767225600000
+  },
+  "systemPrompt": "You are a helpful assistant.",
+  "thinkingLevel": "off",
+  "provider": {
+    "kind": "faux",
+    "tokenSize": 1000,
+    "responses": [
+      {
+        "content": "seed",
+        "stopReason": "stop"
+      },
+      {
+        "content": "continuation 1",
+        "stopReason": "stop"
+      },
+      {
+        "content": "continuation 2",
+        "stopReason": "stop"
+      },
+      {
+        "content": "continuation 3",
+        "stopReason": "stop"
+      },
+      {
+        "content": "continuation 4",
+        "stopReason": "stop"
+      }
+    ]
+  },
+  "steps": [
+    {
+      "prompt": "seed"
+    },
+    {
+      "awaitIdle": {}
+    },
+    {
+      "steer": {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "S1"
+          }
+        ],
+        "timestamp": 1767225600000
+      }
+    },
+    {
+      "steer": {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "S2"
+          }
+        ],
+        "timestamp": 1767225600000
+      }
+    },
+    {
+      "followUp": {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "F1"
+          }
+        ],
+        "timestamp": 1767225600000
+      }
+    },
+    {
+      "followUp": {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "F2"
+          }
+        ],
+        "timestamp": 1767225600000
+      }
+    },
+    {
+      "continue": {}
+    },
+    {
+      "awaitIdle": {}
+    },
+    {
+      "expectError": {
+        "message": "Cannot continue from message role: assistant",
+        "step": {
+          "continue": {}
+        }
+      }
+    }
+  ],
+  "steeringMode": "one-at-a-time",
+  "followUpMode": "one-at-a-time"
+}

@@ -1,0 +1,152 @@
+{
+  "dsl": 1,
+  "id": "agent/parallel-completion-order~barrier",
+  "layer": "agent",
+  "covers": [
+    "packages/agent/src/agent.ts",
+    "packages/agent/src/agent-loop.ts"
+  ],
+  "model": {
+    "ref": "faux-default"
+  },
+  "clock": {
+    "epochMs": 1767225600000
+  },
+  "systemPrompt": "You are a helpful assistant.",
+  "thinkingLevel": "off",
+  "provider": {
+    "kind": "faux",
+    "tokenSize": 1000,
+    "responses": [
+      {
+        "content": [
+          {
+            "type": "toolCall",
+            "id": "call_1",
+            "name": "slow",
+            "arguments": {
+              "n": 1
+            }
+          },
+          {
+            "type": "toolCall",
+            "id": "call_2",
+            "name": "slow",
+            "arguments": {
+              "n": 2
+            }
+          },
+          {
+            "type": "toolCall",
+            "id": "call_3",
+            "name": "slow",
+            "arguments": {
+              "n": 3
+            }
+          }
+        ],
+        "stopReason": "toolUse"
+      },
+      {
+        "content": "done",
+        "stopReason": "stop"
+      }
+    ]
+  },
+  "steps": [
+    {
+      "prompt": "Run three calls"
+    },
+    {
+      "waitFor": {
+        "type": "$hook",
+        "name": "subscriber"
+      }
+    },
+    {
+      "open": "persist-assistant"
+    },
+    {
+      "waitFor": {
+        "type": "$tool_call",
+        "toolCallId": "call_3"
+      }
+    },
+    {
+      "open": "gate-3"
+    },
+    {
+      "waitFor": {
+        "type": "tool_execution_end",
+        "toolCallId": "call_3"
+      }
+    },
+    {
+      "open": "gate-1"
+    },
+    {
+      "waitFor": {
+        "type": "tool_execution_end",
+        "toolCallId": "call_1"
+      }
+    },
+    {
+      "open": "gate-2"
+    },
+    {
+      "awaitIdle": {}
+    }
+  ],
+  "tools": [
+    {
+      "name": "slow",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "n": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "n"
+        ],
+        "additionalProperties": false
+      },
+      "behavior": [
+        {
+          "wait": "gate-${n}"
+        },
+        {
+          "update": {
+            "content": [
+              {
+                "type": "text",
+                "text": "half ${n}"
+              }
+            ]
+          }
+        },
+        {
+          "result": {
+            "content": [
+              {
+                "type": "text",
+                "text": "ok ${n}"
+              }
+            ]
+          }
+        }
+      ]
+    }
+  ],
+  "subscribers": [
+    {
+      "when": {
+        "type": "message_end",
+        "role": "assistant",
+        "count": 1
+      },
+      "wait": "persist-assistant"
+    }
+  ]
+}

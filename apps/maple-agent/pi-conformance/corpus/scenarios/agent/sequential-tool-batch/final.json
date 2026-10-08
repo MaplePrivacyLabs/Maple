@@ -1,0 +1,204 @@
+{
+  "state": {
+    "systemPrompt": "You are a helpful assistant.",
+    "model": {
+      "id": "faux-1",
+      "name": "Faux Model",
+      "api": "faux",
+      "provider": "faux",
+      "baseUrl": "http://localhost:0",
+      "reasoning": false,
+      "input": [
+        "text",
+        "image"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 128000,
+      "maxTokens": 16384
+    },
+    "thinkingLevel": "off",
+    "tools": [
+      {
+        "name": "parallel",
+        "label": "parallel",
+        "description": "",
+        "parameters": {
+          "type": "object",
+          "properties": {},
+          "additionalProperties": false
+        }
+      },
+      {
+        "name": "serial",
+        "label": "serial",
+        "description": "",
+        "parameters": {
+          "type": "object",
+          "properties": {},
+          "additionalProperties": false
+        },
+        "executionMode": "sequential"
+      }
+    ],
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are a helpful assistant.",
+        "toolsAdded": [
+          {
+            "name": "parallel",
+            "description": "",
+            "parameters": {
+              "type": "object",
+              "properties": {},
+              "additionalProperties": false
+            }
+          },
+          {
+            "name": "serial",
+            "description": "",
+            "parameters": {
+              "type": "object",
+              "properties": {},
+              "additionalProperties": false
+            }
+          }
+        ],
+        "timestamp": 0
+      },
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "Run the batch"
+          }
+        ],
+        "timestamp": 1767225600000
+      },
+      {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "toolCall",
+            "id": "call_1",
+            "name": "parallel",
+            "arguments": {}
+          },
+          {
+            "type": "toolCall",
+            "id": "call_2",
+            "name": "serial",
+            "arguments": {}
+          },
+          {
+            "type": "toolCall",
+            "id": "call_3",
+            "name": "parallel",
+            "arguments": {}
+          }
+        ],
+        "api": "faux",
+        "provider": "faux",
+        "model": "faux-1",
+        "usage": {
+          "input": 73,
+          "output": 9,
+          "cacheRead": 0,
+          "cacheWrite": 0,
+          "totalTokens": 82,
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "total": 0
+          }
+        },
+        "stopReason": "toolUse",
+        "timestamp": 1767225600000,
+        "thinkingLevel": "off"
+      },
+      {
+        "role": "toolResult",
+        "toolCallId": "call_1",
+        "toolName": "parallel",
+        "content": [
+          {
+            "type": "text",
+            "text": "parallel done"
+          }
+        ],
+        "isError": false,
+        "timestamp": 1767225600000
+      },
+      {
+        "role": "toolResult",
+        "toolCallId": "call_2",
+        "toolName": "serial",
+        "content": [
+          {
+            "type": "text",
+            "text": "ok"
+          }
+        ],
+        "isError": false,
+        "timestamp": 1767225600000
+      },
+      {
+        "role": "toolResult",
+        "toolCallId": "call_3",
+        "toolName": "parallel",
+        "content": [
+          {
+            "type": "text",
+            "text": "parallel done"
+          }
+        ],
+        "isError": false,
+        "timestamp": 1767225600000
+      },
+      {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "text",
+            "text": "done"
+          }
+        ],
+        "api": "faux",
+        "provider": "faux",
+        "model": "faux-1",
+        "usage": {
+          "input": 107,
+          "output": 1,
+          "cacheRead": 0,
+          "cacheWrite": 0,
+          "totalTokens": 108,
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "total": 0
+          }
+        },
+        "stopReason": "stop",
+        "timestamp": 1767225600000,
+        "thinkingLevel": "off"
+      }
+    ],
+    "isStreaming": false,
+    "pendingToolCalls": []
+  },
+  "queues": {
+    "hasQueuedMessages": false,
+    "next": []
+  },
+  "errors": []
+}

@@ -1,0 +1,385 @@
+{
+  "dsl": 1,
+  "id": "agent/tool-hooks-and-terminate",
+  "layer": "agent",
+  "covers": [
+    "packages/agent/src/agent.ts",
+    "packages/agent/src/agent-loop.ts"
+  ],
+  "model": {
+    "ref": "faux-default"
+  },
+  "clock": {
+    "epochMs": 1767225600000
+  },
+  "systemPrompt": "You are a helpful assistant.",
+  "thinkingLevel": "off",
+  "provider": {
+    "kind": "faux",
+    "tokenSize": 1000,
+    "responses": [
+      {
+        "content": [
+          {
+            "type": "toolCall",
+            "id": "mutated",
+            "name": "echo",
+            "arguments": {
+              "value": "hello"
+            }
+          },
+          {
+            "type": "toolCall",
+            "id": "blocked",
+            "name": "echo",
+            "arguments": {
+              "value": "blocked"
+            }
+          },
+          {
+            "type": "toolCall",
+            "id": "before_throw",
+            "name": "echo",
+            "arguments": {
+              "value": "before"
+            }
+          },
+          {
+            "type": "toolCall",
+            "id": "redacted",
+            "name": "structured",
+            "arguments": {}
+          },
+          {
+            "type": "toolCall",
+            "id": "after_throw",
+            "name": "echo",
+            "arguments": {
+              "value": "after"
+            }
+          }
+        ],
+        "stopReason": "toolUse"
+      },
+      {
+        "content": "behavior done",
+        "stopReason": "stop"
+      },
+      {
+        "content": [
+          {
+            "type": "toolCall",
+            "id": "mixed_true",
+            "name": "terminate_true",
+            "arguments": {}
+          },
+          {
+            "type": "toolCall",
+            "id": "mixed_false",
+            "name": "terminate_false",
+            "arguments": {}
+          }
+        ],
+        "stopReason": "toolUse"
+      },
+      {
+        "content": "mixed done",
+        "stopReason": "stop"
+      },
+      {
+        "content": [
+          {
+            "type": "toolCall",
+            "id": "all_direct",
+            "name": "terminate_true",
+            "arguments": {}
+          },
+          {
+            "type": "toolCall",
+            "id": "all_after",
+            "name": "terminate_false",
+            "arguments": {}
+          }
+        ],
+        "stopReason": "toolUse"
+      },
+      {
+        "content": [
+          {
+            "type": "toolCall",
+            "id": "blocked_stop",
+            "name": "terminate_false",
+            "arguments": {}
+          },
+          {
+            "type": "toolCall",
+            "id": "executed_stop",
+            "name": "terminate_true",
+            "arguments": {}
+          }
+        ],
+        "stopReason": "toolUse"
+      },
+      {
+        "content": [
+          {
+            "type": "toolCall",
+            "id": "blocked_mixed",
+            "name": "terminate_false",
+            "arguments": {}
+          },
+          {
+            "type": "toolCall",
+            "id": "executed_continue",
+            "name": "terminate_false",
+            "arguments": {}
+          }
+        ],
+        "stopReason": "toolUse"
+      },
+      {
+        "content": "blocked mixed done",
+        "stopReason": "stop"
+      }
+    ]
+  },
+  "steps": [
+    {
+      "prompt": "behavior"
+    },
+    {
+      "awaitIdle": {}
+    },
+    {
+      "prompt": "mixed"
+    },
+    {
+      "awaitIdle": {}
+    },
+    {
+      "prompt": "all terminate"
+    },
+    {
+      "awaitIdle": {}
+    },
+    {
+      "prompt": "blocked and terminate"
+    },
+    {
+      "awaitIdle": {}
+    },
+    {
+      "prompt": "blocked mixed"
+    },
+    {
+      "awaitIdle": {}
+    }
+  ],
+  "toolExecution": "sequential",
+  "tools": [
+    {
+      "name": "echo",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "value"
+        ],
+        "additionalProperties": false
+      },
+      "behavior": [
+        {
+          "result": {
+            "content": [
+              {
+                "type": "text",
+                "text": "echo"
+              }
+            ],
+            "details": "${args}"
+          }
+        }
+      ]
+    },
+    {
+      "name": "structured",
+      "parameters": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      },
+      "behavior": [
+        {
+          "result": {
+            "content": [
+              {
+                "type": "text",
+                "text": "secret"
+              }
+            ],
+            "details": {
+              "kept": true
+            },
+            "structuredContent": {
+              "secret": true
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "terminate_true",
+      "parameters": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      },
+      "behavior": [
+        {
+          "result": {
+            "content": [
+              {
+                "type": "text",
+                "text": "termination result"
+              }
+            ],
+            "terminate": true
+          }
+        }
+      ]
+    },
+    {
+      "name": "terminate_false",
+      "parameters": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      },
+      "behavior": [
+        {
+          "result": {
+            "content": [
+              {
+                "type": "text",
+                "text": "termination result"
+              }
+            ],
+            "terminate": false
+          }
+        }
+      ]
+    }
+  ],
+  "hooks": {
+    "beforeToolCall": [
+      {
+        "when": {
+          "toolCallId": "mutated"
+        },
+        "behavior": [
+          {
+            "mutateArgs": {
+              "value": 123
+            }
+          }
+        ]
+      },
+      {
+        "when": {
+          "toolCallId": "blocked"
+        },
+        "behavior": [
+          {
+            "return": {
+              "block": true,
+              "reason": "Blocked by policy"
+            }
+          }
+        ]
+      },
+      {
+        "when": {
+          "toolCallId": "before_throw"
+        },
+        "behavior": [
+          {
+            "throw": "before hook failed"
+          }
+        ]
+      },
+      {
+        "when": {
+          "toolCallId": "blocked_stop"
+        },
+        "behavior": [
+          {
+            "return": {
+              "block": true,
+              "reason": "Blocked first",
+              "terminate": true
+            }
+          }
+        ]
+      },
+      {
+        "when": {
+          "toolCallId": "blocked_mixed"
+        },
+        "behavior": [
+          {
+            "return": {
+              "block": true,
+              "reason": "Blocked mixed",
+              "terminate": true
+            }
+          }
+        ]
+      }
+    ],
+    "afterToolCall": [
+      {
+        "when": {
+          "toolCallId": "redacted"
+        },
+        "behavior": [
+          {
+            "return": {
+              "content": [
+                {
+                  "type": "text",
+                  "text": "redacted"
+                }
+              ]
+            }
+          }
+        ]
+      },
+      {
+        "when": {
+          "toolCallId": "after_throw"
+        },
+        "behavior": [
+          {
+            "throw": "after hook failed"
+          }
+        ]
+      },
+      {
+        "when": {
+          "toolCallId": "all_after"
+        },
+        "behavior": [
+          {
+            "return": {
+              "terminate": true
+            }
+          }
+        ]
+      }
+    ]
+  }
+}

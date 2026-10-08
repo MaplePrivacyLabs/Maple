@@ -3,6 +3,8 @@
 //! Expected data is produced exclusively by the TypeScript recorder. This
 //! crate deliberately has no command that accepts Rust output as a baseline.
 
+mod agent_replay;
+mod cleared_model;
 pub mod compare;
 pub mod coverage;
 pub mod dependencies;

@@ -1,0 +1,154 @@
+{
+  "dsl": 1,
+  "id": "agent/preflight-validation",
+  "layer": "agent",
+  "covers": [
+    "packages/agent/src/agent.ts",
+    "packages/agent/src/agent-loop.ts"
+  ],
+  "model": {
+    "ref": "faux-default"
+  },
+  "clock": {
+    "epochMs": 1767225600000
+  },
+  "systemPrompt": "You are a helpful assistant.",
+  "thinkingLevel": "off",
+  "provider": {
+    "kind": "faux",
+    "tokenSize": 1000,
+    "responses": [
+      {
+        "content": [
+          {
+            "type": "toolCall",
+            "id": "missing",
+            "name": "missing",
+            "arguments": {}
+          },
+          {
+            "type": "toolCall",
+            "id": "invalid",
+            "name": "number_tool",
+            "arguments": {
+              "count": "nope",
+              "optional": null
+            }
+          },
+          {
+            "type": "toolCall",
+            "id": "coerced",
+            "name": "number_tool",
+            "arguments": {
+              "count": "2",
+              "optional": null
+            }
+          },
+          {
+            "type": "toolCall",
+            "id": "prepared",
+            "name": "prepared_tool",
+            "arguments": {
+              "legacy": "2"
+            }
+          }
+        ],
+        "stopReason": "toolUse"
+      },
+      {
+        "content": "done",
+        "stopReason": "stop"
+      }
+    ]
+  },
+  "steps": [
+    {
+      "prompt": "Validate the calls"
+    },
+    {
+      "awaitIdle": {}
+    }
+  ],
+  "toolExecution": "sequential",
+  "tools": [
+    {
+      "name": "number_tool",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "count": {
+            "type": "number"
+          },
+          "optional": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "count"
+        ],
+        "additionalProperties": false
+      },
+      "behavior": [
+        {
+          "result": {
+            "content": [
+              {
+                "type": "text",
+                "text": "ok"
+              }
+            ],
+            "details": "${args}"
+          }
+        }
+      ]
+    },
+    {
+      "name": "prepared_tool",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "count": {
+            "type": "number"
+          },
+          "optional": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "count"
+        ],
+        "additionalProperties": false
+      },
+      "behavior": [
+        {
+          "result": {
+            "content": [
+              {
+                "type": "text",
+                "text": "prepared"
+              }
+            ],
+            "details": "${args}"
+          }
+        }
+      ],
+      "prepareArguments": {
+        "return": {
+          "count": "${args.legacy}"
+        }
+      }
+    }
+  ],
+  "hooks": {
+    "beforeToolCall": [
+      {
+        "behavior": []
+      }
+    ],
+    "afterToolCall": [
+      {
+        "behavior": []
+      }
+    ]
+  }
+}

@@ -1,0 +1,662 @@
+{
+  "state": {
+    "systemPrompt": "You are a helpful assistant.",
+    "model": {
+      "id": "faux-1",
+      "name": "Faux Model",
+      "api": "faux",
+      "provider": "faux",
+      "baseUrl": "http://localhost:0",
+      "reasoning": false,
+      "input": [
+        "text",
+        "image"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 128000,
+      "maxTokens": 16384
+    },
+    "thinkingLevel": "off",
+    "tools": [
+      {
+        "name": "echo",
+        "label": "echo",
+        "description": "",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "value": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "value"
+          ],
+          "additionalProperties": false
+        }
+      },
+      {
+        "name": "structured",
+        "label": "structured",
+        "description": "",
+        "parameters": {
+          "type": "object",
+          "properties": {},
+          "additionalProperties": false
+        }
+      },
+      {
+        "name": "terminate_true",
+        "label": "terminate_true",
+        "description": "",
+        "parameters": {
+          "type": "object",
+          "properties": {},
+          "additionalProperties": false
+        }
+      },
+      {
+        "name": "terminate_false",
+        "label": "terminate_false",
+        "description": "",
+        "parameters": {
+          "type": "object",
+          "properties": {},
+          "additionalProperties": false
+        }
+      }
+    ],
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are a helpful assistant.",
+        "toolsAdded": [
+          {
+            "name": "echo",
+            "description": "",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "value": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "value"
+              ],
+              "additionalProperties": false
+            }
+          },
+          {
+            "name": "structured",
+            "description": "",
+            "parameters": {
+              "type": "object",
+              "properties": {},
+              "additionalProperties": false
+            }
+          },
+          {
+            "name": "terminate_true",
+            "description": "",
+            "parameters": {
+              "type": "object",
+              "properties": {},
+              "additionalProperties": false
+            }
+          },
+          {
+            "name": "terminate_false",
+            "description": "",
+            "parameters": {
+              "type": "object",
+              "properties": {},
+              "additionalProperties": false
+            }
+          }
+        ],
+        "timestamp": 0
+      },
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "behavior"
+          }
+        ],
+        "timestamp": 1767225600000
+      },
+      {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "toolCall",
+            "id": "mutated",
+            "name": "echo",
+            "arguments": {
+              "value": "hello"
+            }
+          },
+          {
+            "type": "toolCall",
+            "id": "blocked",
+            "name": "echo",
+            "arguments": {
+              "value": "blocked"
+            }
+          },
+          {
+            "type": "toolCall",
+            "id": "before_throw",
+            "name": "echo",
+            "arguments": {
+              "value": "before"
+            }
+          },
+          {
+            "type": "toolCall",
+            "id": "redacted",
+            "name": "structured",
+            "arguments": {}
+          },
+          {
+            "type": "toolCall",
+            "id": "after_throw",
+            "name": "echo",
+            "arguments": {
+              "value": "after"
+            }
+          }
+        ],
+        "api": "faux",
+        "provider": "faux",
+        "model": "faux-1",
+        "usage": {
+          "input": 146,
+          "output": 27,
+          "cacheRead": 0,
+          "cacheWrite": 0,
+          "totalTokens": 173,
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "total": 0
+          }
+        },
+        "stopReason": "toolUse",
+        "timestamp": 1767225600000,
+        "thinkingLevel": "off"
+      },
+      {
+        "role": "toolResult",
+        "toolCallId": "mutated",
+        "toolName": "echo",
+        "content": [
+          {
+            "type": "text",
+            "text": "echo"
+          }
+        ],
+        "details": {
+          "value": 123
+        },
+        "isError": false,
+        "timestamp": 1767225600000
+      },
+      {
+        "role": "toolResult",
+        "toolCallId": "blocked",
+        "toolName": "echo",
+        "content": [
+          {
+            "type": "text",
+            "text": "Blocked by policy"
+          }
+        ],
+        "details": {},
+        "isError": true,
+        "timestamp": 1767225600000
+      },
+      {
+        "role": "toolResult",
+        "toolCallId": "before_throw",
+        "toolName": "echo",
+        "content": [
+          {
+            "type": "text",
+            "text": "before hook failed"
+          }
+        ],
+        "details": {},
+        "isError": true,
+        "timestamp": 1767225600000
+      },
+      {
+        "role": "toolResult",
+        "toolCallId": "redacted",
+        "toolName": "structured",
+        "content": [
+          {
+            "type": "text",
+            "text": "redacted"
+          }
+        ],
+        "details": {
+          "kept": true
+        },
+        "isError": false,
+        "timestamp": 1767225600000
+      },
+      {
+        "role": "toolResult",
+        "toolCallId": "after_throw",
+        "toolName": "echo",
+        "content": [
+          {
+            "type": "text",
+            "text": "after hook failed"
+          }
+        ],
+        "details": {},
+        "isError": true,
+        "timestamp": 1767225600000
+      },
+      {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "text",
+            "text": "behavior done"
+          }
+        ],
+        "api": "faux",
+        "provider": "faux",
+        "model": "faux-1",
+        "usage": {
+          "input": 216,
+          "output": 4,
+          "cacheRead": 0,
+          "cacheWrite": 0,
+          "totalTokens": 220,
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "total": 0
+          }
+        },
+        "stopReason": "stop",
+        "timestamp": 1767225600000,
+        "thinkingLevel": "off"
+      },
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "mixed"
+          }
+        ],
+        "timestamp": 1767225600000
+      },
+      {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "toolCall",
+            "id": "mixed_true",
+            "name": "terminate_true",
+            "arguments": {}
+          },
+          {
+            "type": "toolCall",
+            "id": "mixed_false",
+            "name": "terminate_false",
+            "arguments": {}
+          }
+        ],
+        "api": "faux",
+        "provider": "faux",
+        "model": "faux-1",
+        "usage": {
+          "input": 225,
+          "output": 9,
+          "cacheRead": 0,
+          "cacheWrite": 0,
+          "totalTokens": 234,
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "total": 0
+          }
+        },
+        "stopReason": "toolUse",
+        "timestamp": 1767225600000,
+        "thinkingLevel": "off"
+      },
+      {
+        "role": "toolResult",
+        "toolCallId": "mixed_true",
+        "toolName": "terminate_true",
+        "content": [
+          {
+            "type": "text",
+            "text": "termination result"
+          }
+        ],
+        "isError": false,
+        "timestamp": 1767225600000
+      },
+      {
+        "role": "toolResult",
+        "toolCallId": "mixed_false",
+        "toolName": "terminate_false",
+        "content": [
+          {
+            "type": "text",
+            "text": "termination result"
+          }
+        ],
+        "isError": false,
+        "timestamp": 1767225600000
+      },
+      {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "text",
+            "text": "mixed done"
+          }
+        ],
+        "api": "faux",
+        "provider": "faux",
+        "model": "faux-1",
+        "usage": {
+          "input": 261,
+          "output": 3,
+          "cacheRead": 0,
+          "cacheWrite": 0,
+          "totalTokens": 264,
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "total": 0
+          }
+        },
+        "stopReason": "stop",
+        "timestamp": 1767225600000,
+        "thinkingLevel": "off"
+      },
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "all terminate"
+          }
+        ],
+        "timestamp": 1767225600000
+      },
+      {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "toolCall",
+            "id": "all_direct",
+            "name": "terminate_true",
+            "arguments": {}
+          },
+          {
+            "type": "toolCall",
+            "id": "all_after",
+            "name": "terminate_false",
+            "arguments": {}
+          }
+        ],
+        "api": "faux",
+        "provider": "faux",
+        "model": "faux-1",
+        "usage": {
+          "input": 271,
+          "output": 9,
+          "cacheRead": 0,
+          "cacheWrite": 0,
+          "totalTokens": 280,
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "total": 0
+          }
+        },
+        "stopReason": "toolUse",
+        "timestamp": 1767225600000,
+        "thinkingLevel": "off"
+      },
+      {
+        "role": "toolResult",
+        "toolCallId": "all_direct",
+        "toolName": "terminate_true",
+        "content": [
+          {
+            "type": "text",
+            "text": "termination result"
+          }
+        ],
+        "isError": false,
+        "timestamp": 1767225600000
+      },
+      {
+        "role": "toolResult",
+        "toolCallId": "all_after",
+        "toolName": "terminate_false",
+        "content": [
+          {
+            "type": "text",
+            "text": "termination result"
+          }
+        ],
+        "isError": false,
+        "timestamp": 1767225600000
+      },
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "blocked and terminate"
+          }
+        ],
+        "timestamp": 1767225600000
+      },
+      {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "toolCall",
+            "id": "blocked_stop",
+            "name": "terminate_false",
+            "arguments": {}
+          },
+          {
+            "type": "toolCall",
+            "id": "executed_stop",
+            "name": "terminate_true",
+            "arguments": {}
+          }
+        ],
+        "api": "faux",
+        "provider": "faux",
+        "model": "faux-1",
+        "usage": {
+          "input": 313,
+          "output": 9,
+          "cacheRead": 0,
+          "cacheWrite": 0,
+          "totalTokens": 322,
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "total": 0
+          }
+        },
+        "stopReason": "toolUse",
+        "timestamp": 1767225600000,
+        "thinkingLevel": "off"
+      },
+      {
+        "role": "toolResult",
+        "toolCallId": "blocked_stop",
+        "toolName": "terminate_false",
+        "content": [
+          {
+            "type": "text",
+            "text": "Blocked first"
+          }
+        ],
+        "details": {},
+        "isError": true,
+        "timestamp": 1767225600000
+      },
+      {
+        "role": "toolResult",
+        "toolCallId": "executed_stop",
+        "toolName": "terminate_true",
+        "content": [
+          {
+            "type": "text",
+            "text": "termination result"
+          }
+        ],
+        "isError": false,
+        "timestamp": 1767225600000
+      },
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "blocked mixed"
+          }
+        ],
+        "timestamp": 1767225600000
+      },
+      {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "toolCall",
+            "id": "blocked_mixed",
+            "name": "terminate_false",
+            "arguments": {}
+          },
+          {
+            "type": "toolCall",
+            "id": "executed_continue",
+            "name": "terminate_false",
+            "arguments": {}
+          }
+        ],
+        "api": "faux",
+        "provider": "faux",
+        "model": "faux-1",
+        "usage": {
+          "input": 352,
+          "output": 10,
+          "cacheRead": 0,
+          "cacheWrite": 0,
+          "totalTokens": 362,
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "total": 0
+          }
+        },
+        "stopReason": "toolUse",
+        "timestamp": 1767225600000,
+        "thinkingLevel": "off"
+      },
+      {
+        "role": "toolResult",
+        "toolCallId": "blocked_mixed",
+        "toolName": "terminate_false",
+        "content": [
+          {
+            "type": "text",
+            "text": "Blocked mixed"
+          }
+        ],
+        "details": {},
+        "isError": true,
+        "timestamp": 1767225600000
+      },
+      {
+        "role": "toolResult",
+        "toolCallId": "executed_continue",
+        "toolName": "terminate_false",
+        "content": [
+          {
+            "type": "text",
+            "text": "termination result"
+          }
+        ],
+        "isError": false,
+        "timestamp": 1767225600000
+      },
+      {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "text",
+            "text": "blocked mixed done"
+          }
+        ],
+        "api": "faux",
+        "provider": "faux",
+        "model": "faux-1",
+        "usage": {
+          "input": 387,
+          "output": 5,
+          "cacheRead": 0,
+          "cacheWrite": 0,
+          "totalTokens": 392,
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "total": 0
+          }
+        },
+        "stopReason": "stop",
+        "timestamp": 1767225600000,
+        "thinkingLevel": "off"
+      }
+    ],
+    "isStreaming": false,
+    "pendingToolCalls": []
+  },
+  "queues": {
+    "hasQueuedMessages": false,
+    "next": []
+  },
+  "errors": []
+}

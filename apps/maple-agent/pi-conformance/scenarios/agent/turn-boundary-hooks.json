@@ -1,0 +1,333 @@
+{
+  "dsl": 1,
+  "id": "agent/turn-boundary-hooks",
+  "layer": "agent",
+  "covers": [
+    "packages/agent/src/agent.ts",
+    "packages/agent/src/agent-loop.ts"
+  ],
+  "model": {
+    "ref": "faux-default"
+  },
+  "clock": {
+    "epochMs": 1767225600000
+  },
+  "systemPrompt": "You are a helpful assistant.",
+  "thinkingLevel": "off",
+  "provider": {
+    "kind": "faux",
+    "tokenSize": 1000,
+    "responses": [
+      {
+        "content": "canonical one",
+        "stopReason": "stop"
+      },
+      {
+        "content": "canonical two",
+        "stopReason": "stop"
+      },
+      {
+        "content": [
+          {
+            "type": "toolCall",
+            "id": "end_tool",
+            "name": "old",
+            "arguments": {}
+          }
+        ],
+        "stopReason": "toolUse"
+      },
+      {
+        "content": "resume steering",
+        "stopReason": "stop"
+      },
+      {
+        "content": "resume follow-up",
+        "stopReason": "stop"
+      },
+      {
+        "content": [
+          {
+            "type": "toolCall",
+            "id": "old_call",
+            "name": "old",
+            "arguments": {}
+          }
+        ],
+        "stopReason": "toolUse"
+      },
+      {
+        "content": [
+          {
+            "type": "toolCall",
+            "id": "new_call",
+            "name": "new",
+            "arguments": {}
+          }
+        ],
+        "stopReason": "toolUse"
+      }
+    ]
+  },
+  "steps": [
+    {
+      "steer": {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "initial steering"
+          }
+        ],
+        "timestamp": 1767225600000
+      }
+    },
+    {
+      "prompt": "original prompt"
+    },
+    {
+      "awaitIdle": {}
+    },
+    {
+      "prompt": "end with queues"
+    },
+    {
+      "waitFor": {
+        "type": "$hook",
+        "name": "beforeToolCall",
+        "count": 1
+      }
+    },
+    {
+      "steer": {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "surviving steering"
+          }
+        ],
+        "timestamp": 1767225600000
+      }
+    },
+    {
+      "followUp": {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "surviving follow-up"
+          }
+        ],
+        "timestamp": 1767225600000
+      }
+    },
+    {
+      "open": "end-tool"
+    },
+    {
+      "awaitIdle": {}
+    },
+    {
+      "prompt": "resume after end"
+    },
+    {
+      "awaitIdle": {}
+    },
+    {
+      "setThinkingLevel": "high"
+    },
+    {
+      "prompt": "prepare next turn"
+    },
+    {
+      "waitFor": {
+        "type": "$hook",
+        "name": "prepareNextTurn",
+        "count": 3
+      }
+    },
+    {
+      "steer": {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "late steering"
+          }
+        ],
+        "timestamp": 1767225600000
+      }
+    },
+    {
+      "open": "prepare-next"
+    },
+    {
+      "awaitIdle": {}
+    }
+  ],
+  "tools": [
+    {
+      "name": "old",
+      "parameters": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      },
+      "behavior": [
+        {
+          "result": {
+            "content": [
+              {
+                "type": "text",
+                "text": "ok"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "new",
+      "parameters": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      },
+      "behavior": [
+        {
+          "result": {
+            "content": [
+              {
+                "type": "text",
+                "text": "ok"
+              }
+            ]
+          }
+        }
+      ]
+    }
+  ],
+  "activeTools": [
+    "old"
+  ],
+  "hooks": {
+    "prepareRequest": [
+      {
+        "when": {
+          "call": 1
+        },
+        "behavior": [
+          {
+            "return": {
+              "context": {
+                "messages": [
+                  {
+                    "role": "user",
+                    "content": [
+                      {
+                        "type": "text",
+                        "text": "canonical user"
+                      }
+                    ],
+                    "timestamp": 1767225600000
+                  }
+                ],
+                "tools": []
+              },
+              "model": {
+                "ref": "faux-default",
+                "id": "replacement"
+              },
+              "thinkingLevel": "high"
+            }
+          }
+        ]
+      }
+    ],
+    "finishTurn": [
+      {
+        "when": {
+          "call": 1
+        },
+        "behavior": [
+          {
+            "return": {
+              "action": "continue"
+            }
+          }
+        ]
+      },
+      {
+        "when": {
+          "call": 3
+        },
+        "behavior": [
+          {
+            "return": {
+              "action": "end"
+            }
+          }
+        ]
+      },
+      {
+        "when": {
+          "call": 7
+        },
+        "behavior": [
+          {
+            "return": {
+              "action": "end"
+            }
+          }
+        ]
+      }
+    ],
+    "prepareNextTurn": [
+      {
+        "when": {
+          "call": 3
+        },
+        "behavior": [
+          {
+            "wait": "prepare-next"
+          },
+          {
+            "return": {
+              "context": {
+                "messages": "${context.messages}",
+                "tools": [
+                  "new"
+                ]
+              },
+              "messages": [
+                {
+                  "role": "system",
+                  "content": "prepared guidance",
+                  "timestamp": 1767225600000
+                }
+              ],
+              "model": {
+                "ref": "faux-default",
+                "id": "next-model"
+              },
+              "thinkingLevel": "off"
+            }
+          }
+        ]
+      }
+    ],
+    "beforeToolCall": [
+      {
+        "when": {
+          "toolCallId": "end_tool"
+        },
+        "behavior": [
+          {
+            "wait": "end-tool"
+          }
+        ]
+      }
+    ]
+  }
+}

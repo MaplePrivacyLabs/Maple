@@ -1,4 +1,6 @@
 import { assertNoNetworkAttempts } from "./network-guard.ts";
+import { recordClearedModel } from "./cleared-model.ts";
+import { recordAgentScenario } from "./agent-recorder.ts";
 import { recordWireScenario } from "./wire-recorder.ts";
 import { prepareCompletionsFunction } from "./completions-functions.ts";
 import { mkdir, writeFile } from "node:fs/promises";
@@ -57,130 +59,11 @@ test("rejects malformed DSL before starting Pi", () => {
   }
 });
 
-function assertSupportedScenario(scenario: Scenario) {
-  if (scenario.layer !== "agent" || scenario.provider.kind !== "faux" || scenario.model.ref !== "faux-default") {
-    throw new Error(`Recorder does not yet implement scenario capabilities: ${scenario.id}`);
-  }
-  if (scenario.tools?.length || scenario.variants?.length || scenario.provider.tokensPerSecond !== undefined) {
-    throw new Error(`Recorder does not yet implement tools, subscriber variants or paced faux responses: ${scenario.id}`);
-  }
-  for (const step of scenario.steps) {
-    const operation = Object.keys(step)[0];
-    if (!["prompt", "advanceClock", "awaitIdle"].includes(operation)) {
-      throw new Error(`Recorder does not yet implement ${operation}: ${scenario.id}`);
-    }
-    if (operation === "prompt" && typeof step.prompt !== "string") {
-      throw new Error(`Recorder does not yet implement message-valued prompts: ${scenario.id}`);
-    }
-    if (operation === "awaitIdle" && (step.awaitIdle as Record<string, Json>).autoAdvance === true) {
-      throw new Error(`Recorder does not yet implement awaitIdle autoAdvance: ${scenario.id}`);
-    }
-  }
-}
-
 for (const input of inputs.scenarios) {
   test(`records ${input.value.id} from pinned source`, async () => {
-    const { value: scenario, source } = input;
-    if (scenario.layer === "wire") {
-      await recordWireScenario(input, outputRoot);
-      return;
-    }
-    assertSupportedScenario(scenario);
-    if (scenario.provider.kind !== "faux") throw new Error("Expected faux provider");
-    const clock = deterministicEnvironment(scenario.clock.epochMs);
-    try {
-      const { Agent } = await import("@earendil-works/pi-agent-core");
-      const { createFauxCore, fauxAssistantMessage } = await import("@earendil-works/pi-ai/providers/faux");
-      const events: { seq: number; type: string; entries: number; data: unknown }[] = [];
-      const requests: unknown[] = [];
-      const emit = (type: string, data: unknown) => events.push({
-        seq: events.length, type, entries: 0, data: snapshot(data),
-      });
-      const faux = createFauxCore({
-        api: "faux", provider: "faux",
-        tokenSize: { min: scenario.provider.tokenSize, max: scenario.provider.tokenSize },
-      });
-      faux.setResponses(scenario.provider.responses.map((response) =>
-        (context, options, _state, model) => {
-          requests.push(requestSnapshot(requests.length, model, context, options));
-          return fauxAssistantMessage(response.content as AssistantMessage["content"] | string, {
-            stopReason: response.stopReason,
-            ...(response.errorMessage === undefined ? {} : { errorMessage: response.errorMessage }),
-            ...(response.responseId === undefined ? {} : { responseId: response.responseId }),
-            ...(response.timestamp === undefined ? {} : { timestamp: response.timestamp }),
-          });
-        }));
-      const agent = new Agent({
-        initialState: {
-          model: faux.getModel(), systemPrompt: scenario.systemPrompt,
-          thinkingLevel: scenario.thinkingLevel,
-        },
-        streamFn: faux.streamSimple,
-        steeringMode: scenario.steeringMode,
-        followUpMode: scenario.followUpMode,
-        transformContext: async (messages) => {
-          emit("$hook", { name: "transformContext", messages });
-          return messages;
-        },
-        convertToLlm: (messages) => {
-          emit("$hook", { name: "convertToLlm", messages });
-          return messages;
-        },
-      });
-      agent.subscribe((event) => {
-        if (event.type === "message_update") {
-          const { partial, ...delta } = event.assistantMessageEvent as
-            typeof event.assistantMessageEvent & { partial?: AssistantMessage };
-          emit(event.type, {
-            message: event.message,
-            assistantMessageEvent: delta,
-            ...(partial && "contentIndex" in delta
-              ? { block: partial.content[delta.contentIndex] } : {}),
-          });
-        } else {
-          const { type, ...data } = event;
-          emit(type, data);
-        }
-      });
-      let pending: Promise<void> | undefined;
-      for (const step of scenario.steps) {
-        emit("$step", step);
-        if ("prompt" in step) {
-          if (agent.state.isStreaming) throw new Error(`Prompt while already active in ${scenario.id}`);
-          pending = agent.prompt(step.prompt as string);
-        } else if ("advanceClock" in step) {
-          await clock.advance(step.advanceClock as number);
-        } else if ("awaitIdle" in step) {
-          await pending;
-          await agent.waitForIdle();
-        }
-      }
-      await pending;
-      await agent.waitForIdle();
-      expect(agent.state.isStreaming).toBe(false);
-      expect(faux.getPendingResponseCount()).toBe(0);
-      if (scenario.id === "agent/basic-text-turn") {
-        expect(requests).toHaveLength(1);
-        expect(agent.state.messages.at(-1)).toMatchObject({
-          role: "assistant", content: [{ type: "text", text: "Hello, world!" }],
-          stopReason: "stop", thinkingLevel: "off",
-        });
-        const hookNames = events.filter((event) => event.type === "$hook")
-          .map((event) => (event.data as { name: string }).name);
-        expect(hookNames).toEqual(["transformContext", "convertToLlm"]);
-      }
-      const out = path.join(outputRoot, "scenarios", scenario.id);
-      await mkdir(out, { recursive: true });
-      await writeFile(path.join(out, "scenario.json"), source);
-      await writeFile(path.join(out, "events.jsonl"), jsonl(events));
-      await writeFile(path.join(out, "requests.jsonl"), jsonl(requests));
-      await writeFile(path.join(out, "final.json"), JSON.stringify(snapshot({
-        state: agent.state, queues: { hasQueuedMessages: agent.hasQueuedMessages(), next: agent.peekQueuedMessages() },
-        errors: [],
-      }), null, 2) + "\n");
-    } finally {
-      clock.restore();
-    }
+    if (input.value.layer === "wire") return recordWireScenario(input, outputRoot);
+    if (input.value.layer === "agent") return recordAgentScenario(input, outputRoot);
+    throw new Error(`Recorder does not yet implement scenario capabilities: ${input.value.id}`);
   });
 }
 
@@ -257,6 +140,10 @@ async function recordFunction(input: Input<FunctionMatrix>, destination: string)
     try {
       const value = item.input;
       switch (input.value.id) {
+        case "agent.clearedModel": {
+          output = await recordClearedModel(value);
+          break;
+        }
         case "api.transformMessages":
         case "api.buildParams":
         case "api.convertMessages": {

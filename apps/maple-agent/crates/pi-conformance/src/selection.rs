@@ -216,7 +216,7 @@ pub fn check_deviations(reference: &Path) -> CheckResult {
 }
 
 fn supported_deviation(deviation: &Deviation) -> bool {
-    owned_tool_definitions(deviation) || gated_live_partials(deviation)
+    owned_tool_definitions(deviation) || gated_live_partials(deviation) || cleared_model(deviation)
 }
 
 fn owned_tool_definitions(deviation: &Deviation) -> bool {
@@ -259,6 +259,19 @@ pub(crate) fn permits_gated_live_partials(reference: &Path, id: &str) -> CheckRe
         .deviation
         .iter()
         .any(|deviation| deviation.scenario == id && gated_live_partials(deviation)))
+}
+
+fn cleared_model(deviation: &Deviation) -> bool {
+    deviation.scenario == "functions/agent.clearedModel"
+        && deviation.json_path == "$.providerInvocations"
+        && deviation.kind == "language"
+        && deviation.rule == "agent-cleared-model-typed-provider-boundary"
+}
+
+pub(crate) fn permits_cleared_model(reference: &Path) -> CheckResult<bool> {
+    check_deviations(reference)?;
+    let deviations: Deviations = toml(&reference.join("coverage/deviations.toml"))?;
+    Ok(deviations.deviation.iter().any(cleared_model))
 }
 
 #[cfg(test)]

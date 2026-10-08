@@ -176,6 +176,19 @@ impl VirtualEnv {
         }
     }
 
+    /// Milliseconds until the next live timer, without moving either clock.
+    /// This lets a replay driver match advance-to-next-timer operations.
+    pub fn next_timer_delay_ms(&self) -> Option<u64> {
+        let state = self.state.lock().unwrap();
+        state.timers.iter().find_map(|((deadline, _), timer)| {
+            (!timer
+                .signal
+                .as_ref()
+                .is_some_and(CancellationToken::is_cancelled))
+            .then(|| deadline.saturating_sub(state.monotonic_ms))
+        })
+    }
+
     pub fn pending_timers(&self) -> usize {
         self.state
             .lock()

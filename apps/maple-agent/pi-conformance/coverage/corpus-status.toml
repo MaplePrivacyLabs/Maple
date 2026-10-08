@@ -6,68 +6,55 @@ revision = "7c10bd4337495ee613f2224843ecdf349b80d1df"
 
 [[scenario]]
 id = "agent/basic-text-turn"
-status = "pending"
-reason = "Recording and Rust replay are completed in port step 3."
+status = "passing"
 
 [[scenario]]
 id = "agent/sequential-tool-batch"
-status = "pending"
-reason = "Recording and Rust replay are completed in port step 3."
+status = "passing"
 
 [[scenario]]
 id = "agent/parallel-completion-order"
-status = "pending"
-reason = "Recording and Rust replay are completed in port step 3."
+status = "passing"
 
 [[scenario]]
 id = "agent/parallel-completion-order~barrier"
-status = "pending"
-reason = "Recording and Rust replay are completed in port step 3."
+status = "passing"
 
 [[scenario]]
 id = "agent/preflight-validation"
-status = "pending"
-reason = "Recording and Rust replay are completed in port step 3."
+status = "passing"
 
 [[scenario]]
 id = "agent/tool-hooks-and-terminate"
-status = "pending"
-reason = "Recording and Rust replay are completed in port step 3."
+status = "passing"
 
 [[scenario]]
 id = "agent/steer-and-follow-up"
-status = "pending"
-reason = "Recording and Rust replay are completed in port step 3."
+status = "passing"
 
 [[scenario]]
 id = "agent/steer-and-follow-up~one-at-a-time"
-status = "pending"
-reason = "Recording and Rust replay are completed in port step 3."
+status = "passing"
 
 [[scenario]]
 id = "agent/steer-and-follow-up~all"
-status = "pending"
-reason = "Recording and Rust replay are completed in port step 3."
+status = "passing"
 
 [[scenario]]
 id = "agent/length-stop-tool-calls"
-status = "pending"
-reason = "Recording and Rust replay are completed in port step 3."
+status = "passing"
 
 [[scenario]]
 id = "agent/abort-mid-stream"
-status = "pending"
-reason = "Recording and Rust replay are completed in port step 3."
+status = "passing"
 
 [[scenario]]
 id = "agent/abort-parallel-preflight"
-status = "pending"
-reason = "Recording and Rust replay are completed in port step 3."
+status = "passing"
 
 [[scenario]]
 id = "agent/turn-boundary-hooks"
-status = "pending"
-reason = "Recording and Rust replay are completed in port step 3."
+status = "passing"
 
 [[scenario]]
 id = "session/persist-and-project"
@@ -296,4 +283,8 @@ reason = "Function golden recording and Rust dispatch are completed in port step
 
 [[function]]
 id = "transcript.toolOwnership"
+status = "passing"
+
+[[function]]
+id = "agent.clearedModel"
 status = "passing"

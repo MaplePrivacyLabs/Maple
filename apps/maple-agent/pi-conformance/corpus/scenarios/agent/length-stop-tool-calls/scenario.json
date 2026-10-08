@@ -1,0 +1,88 @@
+{
+  "dsl": 1,
+  "id": "agent/length-stop-tool-calls",
+  "layer": "agent",
+  "covers": [
+    "packages/agent/src/agent.ts",
+    "packages/agent/src/agent-loop.ts"
+  ],
+  "model": {
+    "ref": "faux-default"
+  },
+  "clock": {
+    "epochMs": 1767225600000
+  },
+  "systemPrompt": "You are a helpful assistant.",
+  "thinkingLevel": "off",
+  "provider": {
+    "kind": "faux",
+    "tokenSize": 1000,
+    "responses": [
+      {
+        "content": [
+          {
+            "type": "toolCall",
+            "id": "truncated",
+            "name": "echo",
+            "arguments": {
+              "value": "apparently complete"
+            }
+          }
+        ],
+        "stopReason": "length"
+      },
+      {
+        "content": "recovered",
+        "stopReason": "stop"
+      }
+    ]
+  },
+  "steps": [
+    {
+      "prompt": "Truncate a tool call"
+    },
+    {
+      "awaitIdle": {}
+    }
+  ],
+  "tools": [
+    {
+      "name": "echo",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "value"
+        ]
+      },
+      "behavior": [
+        {
+          "result": {
+            "content": [
+              {
+                "type": "text",
+                "text": "ok"
+              }
+            ]
+          }
+        }
+      ]
+    }
+  ],
+  "hooks": {
+    "beforeToolCall": [
+      {
+        "behavior": []
+      }
+    ],
+    "afterToolCall": [
+      {
+        "behavior": []
+      }
+    ]
+  }
+}

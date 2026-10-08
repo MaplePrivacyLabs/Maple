@@ -7,11 +7,13 @@
       "class": "Port",
       "crate": "pi-agent-core",
       "rust_module": "crates/pi-agent-core/src/agent_loop.rs",
-      "adaptations": [],
+      "adaptations": [
+        "Shared handles preserve message, tool, model, mutable argument and result identity; explicit shallow copies follow source copy points. Boxed futures and typed Result callbacks replace promises/throws; deterministic PiEnv time and cancellation are injected. Tool batch completion events retain settlement order and source-order result artifacts. Observer rejection settles the failure path promptly while an owned driver lets already-started sibling work continue; successful tool outcomes stay in source order."
+      ],
       "cut": [],
       "ranges": [],
       "keep": [],
-      "status": "pending",
+      "status": "adapted",
       "reason": "Turn loop, tool batches, steering/follow-up drain points, length stops; the loop Maple owns"
     },
     {
@@ -20,11 +22,13 @@
       "class": "Port",
       "crate": "pi-agent-core",
       "rust_module": "crates/pi-agent-core/src/agent.rs",
-      "adaptations": [],
+      "adaptations": [
+        "State and queues use shared native handles. Prompt/continue drive the synchronous prefix eagerly, then one owned Tokio task progresses independently of consumer polling; abort and awaited subscribers retain lifecycle barriers. Models are optional when cleared; invoking a typed provider without a model reports the source missing-api error after the same user-message prefix. No fake model is substituted."
+      ],
       "cut": [],
       "ranges": [],
       "keep": [],
-      "status": "pending",
+      "status": "adapted",
       "reason": "`Agent` state, queues, abort, awaited subscribers (persistence barrier)"
     },
     {
@@ -33,11 +37,13 @@
       "class": "Port",
       "crate": "pi-agent-core",
       "rust_module": "crates/pi-agent-core/src/stream_fn.rs",
-      "adaptations": [],
+      "adaptations": [
+        "The process-local default stream slot is synchronized and starts unset. Explicit Result errors preserve the source text when the slot is absent; test fixtures serialize temporary default-slot mutations."
+      ],
       "cut": [],
       "ranges": [],
       "keep": [],
-      "status": "pending",
+      "status": "adapted",
       "reason": "Default stream-function slot; stays unset because Maple always passes `streamFn`"
     },
     {
@@ -46,11 +52,13 @@
       "class": "Port",
       "crate": "pi-agent-core",
       "rust_module": "crates/pi-agent-core/src/types.rs",
-      "adaptations": [],
+      "adaptations": [
+        "Rust enums, boxed callbacks and explicit shared/weak handles represent the selected contracts. Internal ownership backreferences can be weak while caller-retained contexts remain strong. Owned tool-definition/provider configuration values follow the separately authorized boundary; explicit mutable hooks and streaming messages preserve shared identity."
+      ],
       "cut": [],
       "ranges": [],
       "keep": [],
-      "status": "pending",
+      "status": "adapted",
       "reason": "`AgentMessage`, `AgentTool`, events, `StreamFn` contract and the hook types (`beforeToolCall`, `afterToolCall`, ...)"
     },
     {

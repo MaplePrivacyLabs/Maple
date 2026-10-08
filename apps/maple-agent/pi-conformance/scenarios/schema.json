@@ -219,6 +219,9 @@
         "structuredContent": {},
         "isError": {
           "type": "boolean"
+        },
+        "terminate": {
+          "type": "boolean"
         }
       },
       "required": [
@@ -350,9 +353,35 @@
         "behavior": {
           "type": "array",
           "items": {
-            "$ref": "#/$defs/toolAction"
+            "$ref": "#/$defs/scriptAction"
           },
           "minItems": 1
+        },
+        "prepareArguments": {
+          "oneOf": [
+            {
+              "type": "object",
+              "properties": {
+                "return": {}
+              },
+              "required": [
+                "return"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "set": {
+                  "type": "object"
+                }
+              },
+              "required": [
+                "set"
+              ],
+              "additionalProperties": false
+            }
+          ]
         }
       },
       "required": [
@@ -732,27 +761,7 @@
           "type": "object",
           "properties": {
             "waitFor": {
-              "type": "object",
-              "properties": {
-                "type": {
-                  "type": "string",
-                  "minLength": 1
-                },
-                "toolCallId": {
-                  "type": "string"
-                },
-                "role": {
-                  "type": "string"
-                },
-                "count": {
-                  "type": "integer",
-                  "minimum": 1
-                }
-              },
-              "required": [
-                "type"
-              ],
-              "additionalProperties": false
+              "$ref": "#/$defs/eventSelector"
             }
           },
           "required": [
@@ -1133,6 +1142,76 @@
           },
           "required": [],
           "additionalProperties": false
+        },
+        "hooks": {
+          "type": "object",
+          "properties": {
+            "beforeToolCall": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/hookRule"
+              }
+            },
+            "afterToolCall": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/hookRule"
+              }
+            },
+            "prepareRequest": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/hookRule"
+              }
+            },
+            "prepareNextTurn": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/hookRule"
+              }
+            },
+            "finishTurn": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/hookRule"
+              }
+            }
+          },
+          "required": [],
+          "additionalProperties": false
+        },
+        "subscribers": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "when": {
+                "$ref": "#/$defs/eventSelector"
+              },
+              "wait": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "required": [
+              "when",
+              "wait"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "activeTools": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "toolExecution": {
+          "enum": [
+            "sequential",
+            "parallel"
+          ]
         }
       },
       "required": [
@@ -2366,6 +2445,72 @@
             "cases"
           ],
           "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "dsl": {
+              "const": 1
+            },
+            "id": {
+              "const": "agent.clearedModel"
+            },
+            "clock": {
+              "$ref": "#/$defs/clock"
+            },
+            "cases": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "case": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "input": {
+                    "type": "object",
+                    "properties": {
+                      "id": {
+                        "enum": [
+                          "without-api-key",
+                          "with-api-key"
+                        ]
+                      },
+                      "getApiKey": {
+                        "type": "boolean"
+                      },
+                      "prompt": {
+                        "const": {
+                          "role": "user",
+                          "content": "hello",
+                          "timestamp": 1700000000000
+                        }
+                      }
+                    },
+                    "required": [
+                      "id",
+                      "getApiKey",
+                      "prompt"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "required": [
+                  "case",
+                  "input"
+                ],
+                "additionalProperties": false
+              },
+              "minItems": 1
+            }
+          },
+          "required": [
+            "dsl",
+            "id",
+            "clock",
+            "cases"
+          ],
+          "additionalProperties": false
         }
       ]
     },
@@ -3002,6 +3147,157 @@
         "cost",
         "contextWindow",
         "maxTokens"
+      ],
+      "additionalProperties": false
+    },
+    "scriptAction": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "wait": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "required": [
+            "wait"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "update": {
+              "$ref": "#/$defs/toolResult"
+            }
+          },
+          "required": [
+            "update"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "result": {
+              "$ref": "#/$defs/toolResult"
+            }
+          },
+          "required": [
+            "result"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "throw": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "throw"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "return": {}
+          },
+          "required": [
+            "return"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "mutateArgs": {
+              "type": "object"
+            }
+          },
+          "required": [
+            "mutateArgs"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "abort": {
+              "type": "object",
+              "properties": {},
+              "required": [],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "abort"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "eventSelector": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "minLength": 1
+        },
+        "toolCallId": {
+          "type": "string"
+        },
+        "role": {
+          "type": "string"
+        },
+        "count": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "assistantMessageEventType": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "type"
+      ],
+      "additionalProperties": false
+    },
+    "hookRule": {
+      "type": "object",
+      "properties": {
+        "when": {
+          "type": "object",
+          "properties": {
+            "call": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "toolCallId": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "required": [],
+          "additionalProperties": false
+        },
+        "behavior": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/scriptAction"
+          }
+        }
+      },
+      "required": [
+        "behavior"
       ],
       "additionalProperties": false
     }

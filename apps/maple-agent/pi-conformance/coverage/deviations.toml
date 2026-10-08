@@ -58,3 +58,11 @@ kind = "language"
 rule = "gated-live-partial-observation"
 reason = "Intermediate reads of a live shared partial can differ with JavaScript promise scheduling versus Rust task polling. In the paired parsed-transport diagnostic, 12 of 58 immediate-consumer cases differed only in those snapshots; all 58 result-first cases, event order, deltas, final values and retained-object observations matched. Compare every field at explicit input gates for these six wire fixtures, retain shared streaming identity, and document ungated scheduling as a limitation for planning review. The executable rule requires gated SSE inputs and does not ignore any compared field."
 approvedIn = "Owner explicitly approved gated comparisons and documenting the limitation in the task conversation on 2026-10-08; recorded in https://github.com/MaplePrivacyLabs/Maple/pull/1102."
+
+[[deviation]]
+scenario = "functions/agent.clearedModel"
+jsonPath = "$.providerInvocations"
+kind = "language"
+rule = "agent-cleared-model-typed-provider-boundary"
+reason = "After explicitly clearing a low-level Agent model, Pi invokes streamFn with undefined when no getApiKey callback exists. The Rust provider contract requires a Model and omits this invalid call. The paired predicate requires exactly one source invocation and zero Rust invocations only for without-api-key; all other events, history, final TypeError, cleanup, API-key callback count and missing errorMessage compare unchanged. With getApiKey the complete record is identical. The normal session no-model guard remains exact."
+approvedIn = "Owner explicitly answered Approve and document boundary in the task conversation on 2026-10-08; recorded in https://github.com/MaplePrivacyLabs/Maple/pull/1102."

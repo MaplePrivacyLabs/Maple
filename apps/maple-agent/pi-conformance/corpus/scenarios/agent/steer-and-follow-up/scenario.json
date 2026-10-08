@@ -1,0 +1,147 @@
+{
+  "dsl": 1,
+  "id": "agent/steer-and-follow-up",
+  "layer": "agent",
+  "covers": [
+    "packages/agent/src/agent.ts",
+    "packages/agent/src/agent-loop.ts"
+  ],
+  "model": {
+    "ref": "faux-default"
+  },
+  "clock": {
+    "epochMs": 1767225600000
+  },
+  "systemPrompt": "You are a helpful assistant.",
+  "thinkingLevel": "off",
+  "provider": {
+    "kind": "faux",
+    "tokenSize": 1000,
+    "responses": [
+      {
+        "content": [
+          {
+            "type": "toolCall",
+            "id": "call_1",
+            "name": "slow",
+            "arguments": {
+              "n": 1
+            }
+          },
+          {
+            "type": "toolCall",
+            "id": "call_2",
+            "name": "slow",
+            "arguments": {
+              "n": 2
+            }
+          }
+        ],
+        "stopReason": "toolUse"
+      },
+      {
+        "content": "steering response",
+        "stopReason": "stop"
+      },
+      {
+        "content": "follow-up response",
+        "stopReason": "stop"
+      }
+    ]
+  },
+  "steps": [
+    {
+      "steer": {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "S0"
+          }
+        ],
+        "timestamp": 1767225600000
+      }
+    },
+    {
+      "followUp": {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "F0"
+          }
+        ],
+        "timestamp": 1767225600000
+      }
+    },
+    {
+      "prompt": "P"
+    },
+    {
+      "waitFor": {
+        "type": "$tool_call",
+        "toolCallId": "call_1"
+      }
+    },
+    {
+      "steer": {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "S1"
+          }
+        ],
+        "timestamp": 1767225600000
+      }
+    },
+    {
+      "open": "gate-1"
+    },
+    {
+      "waitFor": {
+        "type": "$tool_call",
+        "toolCallId": "call_2"
+      }
+    },
+    {
+      "open": "gate-2"
+    },
+    {
+      "awaitIdle": {}
+    }
+  ],
+  "tools": [
+    {
+      "name": "slow",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "n": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "n"
+        ],
+        "additionalProperties": false
+      },
+      "behavior": [
+        {
+          "wait": "gate-${n}"
+        },
+        {
+          "result": {
+            "content": [
+              {
+                "type": "text",
+                "text": "ok ${n}"
+              }
+            ]
+          }
+        }
+      ],
+      "executionMode": "sequential"
+    }
+  ]
+}

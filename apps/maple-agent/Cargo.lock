@@ -7232,7 +7232,13 @@ dependencies = [
 name = "pi-agent-core"
 version = "0.1.0"
 dependencies = [
+ "futures-util",
+ "indexmap 2.14.0",
  "pi-ai",
+ "pi-testkit",
+ "serde",
+ "serde_json",
+ "tokio",
 ]
 
 [[package]]
@@ -7272,6 +7278,7 @@ dependencies = [
  "futures-util",
  "jsonschema 0.55.1",
  "libtest-mimic",
+ "pi-agent-core",
  "pi-ai",
  "pi-testkit",
  "serde",

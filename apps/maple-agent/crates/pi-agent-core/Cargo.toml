@@ -4,6 +4,7 @@ description = "Portable agent loop ported from Pi"
 edition.workspace = true
 version.workspace = true
 license.workspace = true
+autotests = false
 
 [features]
 default = []
@@ -11,3 +12,16 @@ test-internals = []
 
 [dependencies]
 pi-ai = { path = "../pi-ai" }
+futures-util = "0.3"
+indexmap = "2"
+serde = { workspace = true }
+serde_json = { workspace = true, features = ["preserve_order", "raw_value"] }
+tokio = { version = "1", features = ["time", "sync", "rt", "macros"] }
+
+[dev-dependencies]
+pi-ai = { path = "../pi-ai", features = ["faux", "test-internals"] }
+pi-testkit = { path = "../pi-testkit" }
+
+[[test]]
+name = "upstream"
+path = "tests/main.rs"

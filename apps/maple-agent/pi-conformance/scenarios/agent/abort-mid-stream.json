@@ -1,0 +1,108 @@
+{
+  "dsl": 1,
+  "id": "agent/abort-mid-stream",
+  "layer": "agent",
+  "covers": [
+    "packages/agent/src/agent.ts",
+    "packages/agent/src/agent-loop.ts"
+  ],
+  "model": {
+    "ref": "faux-default"
+  },
+  "clock": {
+    "epochMs": 1767225600000
+  },
+  "systemPrompt": "You are a helpful assistant.",
+  "thinkingLevel": "off",
+  "provider": {
+    "kind": "faux",
+    "tokenSize": 1,
+    "responses": [
+      {
+        "content": "keptDROP",
+        "stopReason": "stop"
+      },
+      {
+        "content": "resumed",
+        "stopReason": "stop"
+      },
+      {
+        "content": "follow-up",
+        "stopReason": "stop"
+      }
+    ],
+    "tokensPerSecond": 1
+  },
+  "steps": [
+    {
+      "prompt": "Start"
+    },
+    {
+      "advanceClock": 1000
+    },
+    {
+      "waitFor": {
+        "type": "message_update",
+        "assistantMessageEventType": "text_delta",
+        "count": 1
+      }
+    },
+    {
+      "steer": {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "S"
+          }
+        ],
+        "timestamp": 1767225600000
+      }
+    },
+    {
+      "followUp": {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "F"
+          }
+        ],
+        "timestamp": 1767225600000
+      }
+    },
+    {
+      "abort": {}
+    },
+    {
+      "advanceClock": 1000
+    },
+    {
+      "awaitIdle": {}
+    },
+    {
+      "prompt": "resume"
+    },
+    {
+      "awaitIdle": {
+        "autoAdvance": true
+      }
+    }
+  ],
+  "hooks": {
+    "finishTurn": [
+      {
+        "when": {
+          "call": 1
+        },
+        "behavior": [
+          {
+            "return": {
+              "action": "continue"
+            }
+          }
+        ]
+      }
+    ]
+  }
+}

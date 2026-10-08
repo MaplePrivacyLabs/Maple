@@ -1,0 +1,33 @@
+{
+  "dsl": 1,
+  "id": "agent.clearedModel",
+  "clock": {
+    "epochMs": 1700000000000
+  },
+  "cases": [
+    {
+      "case": "without-api-key",
+      "input": {
+        "id": "without-api-key",
+        "getApiKey": false,
+        "prompt": {
+          "role": "user",
+          "content": "hello",
+          "timestamp": 1700000000000
+        }
+      }
+    },
+    {
+      "case": "with-api-key",
+      "input": {
+        "id": "with-api-key",
+        "getApiKey": true,
+        "prompt": {
+          "role": "user",
+          "content": "hello",
+          "timestamp": 1700000000000
+        }
+      }
+    }
+  ]
+}

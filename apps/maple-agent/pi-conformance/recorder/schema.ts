@@ -33,6 +33,10 @@ export interface Scenario {
   normalize?: "timestamps"[];
   variants?: { id: string; subscriberDelayOn: string }[];
   steps: Record<string, Json>[];
+  activeTools?: string[];
+  toolExecution?: "sequential" | "parallel";
+  hooks?: Record<string, Json>;
+  subscribers?: Record<string, Json>[];
 }
 export interface FunctionMatrix {
   dsl: 1;

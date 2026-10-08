@@ -1,0 +1,99 @@
+{
+  "dsl": 1,
+  "id": "agent/abort-parallel-preflight",
+  "layer": "agent",
+  "covers": [
+    "packages/agent/src/agent.ts",
+    "packages/agent/src/agent-loop.ts"
+  ],
+  "model": {
+    "ref": "faux-default"
+  },
+  "clock": {
+    "epochMs": 1767225600000
+  },
+  "systemPrompt": "You are a helpful assistant.",
+  "thinkingLevel": "off",
+  "provider": {
+    "kind": "faux",
+    "tokenSize": 1000,
+    "responses": [
+      {
+        "content": [
+          {
+            "type": "toolCall",
+            "id": "call_1",
+            "name": "noop",
+            "arguments": {}
+          },
+          {
+            "type": "toolCall",
+            "id": "call_2",
+            "name": "noop",
+            "arguments": {}
+          },
+          {
+            "type": "toolCall",
+            "id": "call_3",
+            "name": "noop",
+            "arguments": {}
+          }
+        ],
+        "stopReason": "toolUse"
+      },
+      {
+        "content": "unreachable",
+        "stopReason": "stop"
+      }
+    ]
+  },
+  "steps": [
+    {
+      "prompt": "Abort during preflight"
+    },
+    {
+      "awaitIdle": {}
+    }
+  ],
+  "tools": [
+    {
+      "name": "noop",
+      "parameters": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      },
+      "behavior": [
+        {
+          "result": {
+            "content": [
+              {
+                "type": "text",
+                "text": "ok"
+              }
+            ]
+          }
+        }
+      ]
+    }
+  ],
+  "hooks": {
+    "beforeToolCall": [
+      {
+        "when": {
+          "toolCallId": "call_2"
+        },
+        "behavior": [
+          {
+            "abort": {}
+          }
+        ]
+      }
+    ],
+    "afterToolCall": [
+      {
+        "behavior": []
+      }
+    ]
+  }
+}
