@@ -35,9 +35,9 @@ def check_sdk_pin(frontend: Path, *, installed: bool = False) -> str:
     return version
 
 
-def check_archive(archive: Path) -> None:
+def check_archive(archive: Path, profile: str = "auth-release") -> None:
     # Reuse the exact extraction boundary used by the credential-bearing publisher.
-    digest = pack_manifest(archive, "auth-release", "0" * 40, 1, 1)["archive_sha256"]
+    digest = pack_manifest(archive, profile, "0" * 40, 1, 1)["archive_sha256"]
     with tempfile.TemporaryDirectory(prefix="maple-auth-static-check-") as directory:
         files = extract_static(archive, Path(directory) / "assets", digest)
     print(f"Auth artifact contains {len(files)} validated static files.")
@@ -51,12 +51,13 @@ def main():
     sdk.add_argument("--installed", action="store_true")
     artifact = commands.add_parser("artifact")
     artifact.add_argument("--archive", type=Path, required=True)
+    artifact.add_argument("--profile", choices=("auth-release", "auth-dev"), default="auth-release")
     args = parser.parse_args()
     try:
         if args.command == "sdk-pin":
             check_sdk_pin(args.frontend, installed=args.installed)
         else:
-            check_archive(args.archive)
+            check_archive(args.archive, args.profile)
     except (ArtifactError, ValueError, KeyError, TypeError, OSError):
         print("Auth build validation failed: require static assets and an exact published SDK pin for production.",
               file=sys.stderr)

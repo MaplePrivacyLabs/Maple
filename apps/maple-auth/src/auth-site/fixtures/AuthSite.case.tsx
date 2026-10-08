@@ -1,3 +1,4 @@
+import { authEnvironment } from "@/config/authEnvironment";
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import { StrictMode, type Provider } from "react";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
@@ -48,6 +49,10 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 
+const nativeVariant =
+  authEnvironment() === "development" ? { nativeAppVariant: "dev" as const } : {};
+const nativeVariantQuery: Record<string, string> =
+  authEnvironment() === "development" ? { native_app_variant: "dev" } : {};
 const nativeSessionId = "00112233445566778899aabbccddeeff";
 const nativeRequestId = "ffeeddccbbaa99887766554433221100";
 const authOrigin = "https://auth.example.com";
@@ -78,7 +83,8 @@ function startUrl(provider: DesktopOAuthProvider): string {
     transport: "v2",
     provider,
     native_session_id: nativeSessionId,
-    native_request_id: nativeRequestId
+    native_request_id: nativeRequestId,
+    ...nativeVariantQuery
   });
   return `${authOrigin}/start?${params.toString()}`;
 }
@@ -188,6 +194,35 @@ describe("hosted authentication entry", () => {
     });
   }
 
+  test("rejects the other native profile without starting authentication", async () => {
+    const url = new URL(startUrl("github"));
+    if (authEnvironment() === "development") url.searchParams.delete("native_app_variant");
+    else url.searchParams.set("native_app_variant", "dev");
+    await renderAt(url.toString());
+    expectNoSdkCalls();
+    expectFailureWithoutNavigation(url.toString());
+    expect(readTransportV2DesktopOAuth()).toBeNull();
+  });
+
+  test("rejects a callback whose stored target belongs to the other profile", async () => {
+    markTransportV2DesktopOAuth({
+      ...nativeVariant,
+      provider: "github",
+      nativeSessionId,
+      nativeRequestId
+    });
+    const target = readTransportV2DesktopOAuth("github")!;
+    const wrongTarget = {
+      ...target,
+      nativeAppVariant: authEnvironment() === "development" ? undefined : "dev"
+    };
+    sessionStorage.setItem("maple_desktop_oauth_pending_v2", JSON.stringify(wrongTarget));
+    const originalUrl = callbackUrl();
+    await renderAt(originalUrl);
+    expectNoSdkCalls();
+    expectFailureWithoutNavigation(originalUrl);
+  });
+
   test("leaves a complete page inert", async () => {
     const originalUrl = `${authOrigin}/complete`;
     await renderAt(originalUrl);
@@ -212,7 +247,8 @@ describe("hosted authentication entry", () => {
       expect(readTransportV2DesktopOAuth(provider)).toMatchObject({
         provider,
         nativeSessionId,
-        nativeRequestId
+        nativeRequestId,
+        ...nativeVariant
       });
     });
   }
@@ -237,6 +273,7 @@ describe("hosted authentication entry", () => {
     const originalUrl = startUrl("google");
     await renderAt(originalUrl);
     markTransportV2DesktopOAuth({
+      ...nativeVariant,
       provider: "google",
       nativeSessionId,
       nativeRequestId: "11112222333344445555666677778888"
@@ -274,7 +311,12 @@ describe("hosted authentication entry", () => {
       throw new Error("Fixture clipboard permission denial");
     });
     setGlobal("navigator", { clipboard: { writeText } });
-    markTransportV2DesktopOAuth({ provider: "google", nativeSessionId, nativeRequestId });
+    markTransportV2DesktopOAuth({
+      ...nativeVariant,
+      provider: "google",
+      nativeSessionId,
+      nativeRequestId
+    });
     handleGoogleCallback.mockImplementation(async () => {
       throw new Error("Fixture callback rejection");
     });
@@ -292,7 +334,12 @@ describe("hosted authentication entry", () => {
   });
 
   test("does not consume another provider's pending target", async () => {
-    markTransportV2DesktopOAuth({ provider: "apple", nativeSessionId, nativeRequestId });
+    markTransportV2DesktopOAuth({
+      ...nativeVariant,
+      provider: "apple",
+      nativeSessionId,
+      nativeRequestId
+    });
     const pending = readTransportV2DesktopOAuth("apple");
     const originalUrl = callbackUrl("google");
     await renderAt(originalUrl);
@@ -303,7 +350,7 @@ describe("hosted authentication entry", () => {
 
   for (const provider of ["github", "google"] as const) {
     test(`requires native confirmation after a successful ${provider} callback`, async () => {
-      markTransportV2DesktopOAuth({ provider, nativeSessionId, nativeRequestId });
+      markTransportV2DesktopOAuth({ ...nativeVariant, provider, nativeSessionId, nativeRequestId });
       const target = readTransportV2DesktopOAuth(provider);
       const originalUrl = callbackUrl(provider);
       await renderAt(originalUrl);
@@ -323,7 +370,12 @@ describe("hosted authentication entry", () => {
 
   for (const url of [callbackUrl("apple"), `${authOrigin}/auth/apple/callback`]) {
     test(`keeps the Apple callback passive with popup retry guidance: ${new URL(url).search || "no query"}`, async () => {
-      markTransportV2DesktopOAuth({ provider: "apple", nativeSessionId, nativeRequestId });
+      markTransportV2DesktopOAuth({
+        ...nativeVariant,
+        provider: "apple",
+        nativeSessionId,
+        nativeRequestId
+      });
       const target = readTransportV2DesktopOAuth("apple");
       await renderAt(url);
       expectNoSdkCalls();
@@ -337,7 +389,12 @@ describe("hosted authentication entry", () => {
   }
 
   test("preserves the full callback address on an SDK error", async () => {
-    markTransportV2DesktopOAuth({ provider: "github", nativeSessionId, nativeRequestId });
+    markTransportV2DesktopOAuth({
+      ...nativeVariant,
+      provider: "github",
+      nativeSessionId,
+      nativeRequestId
+    });
     handleGitHubCallback.mockImplementation(async () => {
       throw new Error("Fixture callback rejection");
     });
@@ -351,10 +408,16 @@ describe("hosted authentication entry", () => {
     test(`preserves a newer pending flow when an old callback ${outcome}s`, async () => {
       const pending = deferred<void>();
       handleGitHubCallback.mockImplementation(() => pending.promise);
-      markTransportV2DesktopOAuth({ provider: "github", nativeSessionId, nativeRequestId });
+      markTransportV2DesktopOAuth({
+        ...nativeVariant,
+        provider: "github",
+        nativeSessionId,
+        nativeRequestId
+      });
       const originalUrl = callbackUrl();
       await renderAt(originalUrl);
       markTransportV2DesktopOAuth({
+        ...nativeVariant,
         provider: "github",
         nativeSessionId,
         nativeRequestId: "11112222333344445555666677778888"

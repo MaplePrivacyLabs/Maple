@@ -27,7 +27,8 @@ export function HostedStart({ route }: { route: Extract<AuthSiteRoute, { kind: "
           const handoffInput = {
             provider: route.provider,
             nativeSessionId: route.nativeSessionId,
-            nativeRequestId: route.nativeRequestId
+            nativeRequestId: route.nativeRequestId,
+            ...(route.nativeAppVariant ? { nativeAppVariant: route.nativeAppVariant } : {})
           };
           markTransportV2DesktopOAuth(handoffInput);
           const pending = readTransportV2DesktopOAuth(route.provider);

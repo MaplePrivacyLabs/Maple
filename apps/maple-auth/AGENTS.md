@@ -8,11 +8,18 @@ An auth-only change must not alter Research web authentication or client entry
 URLs.
 
 Use the root `.#ci` Nix shell (Bun and Node match CI). See [README.md](README.md)
-for development, component checks and the two fixed build profiles. Run
+for development, component checks and the fixed Dev/Prod build profiles. Run
 `scripts/ci/auth-ci.sh` for format, lint, type checking, and tests. The root hook
 routes this app to `.githooks/pre-commit`. Run the auth build when source,
 configuration or dependencies change, and root `nix flake check` for workflow
 or shared CI changes. Do not overwrite ignored environment files.
+
+The required `VITE_AUTH_ENVIRONMENT` selector fixes the backend, project and PCR
+trust. Dev requires `native_app_variant=dev` and returns only through
+`cloud.opensecret.maple.dev`; Prod retains the four-parameter request and
+`cloud.opensecret.maple` return. Bind that identity to pending state and recheck
+it before mint/open. Do not accept arbitrary URLs, schemes, or query-selected
+backend configuration. Client adoption and Agent return paths are separate.
 
 Preserve V2-only route parsing, same-origin OAuth callbacks, popup-only Apple,
 SDK bootstrap ordering, pending target and account ownership checks, one mint
@@ -23,5 +30,9 @@ crypto and backend authority in the SDK and OpenSecret.
 
 The build boundary must reject sibling app code, linked SDK source and the
 legacy SDK. Preserve the unprivileged build and trusted independent publisher.
-A merge or successful build does not authorize publication or redirects.
+Once configured, relevant master builds and internal PR builds automatically
+publish Dev and previews through trusted master tooling. Production publication
+remains manually dispatched and independent of client releases; no workflow here
+authorizes a production redirect change. Preview hosting does not configure OAuth
+callbacks; use the stable Dev origin for provider rehearsal.
 Report automated checks separately from real provider/native/browser testing.

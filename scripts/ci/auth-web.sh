@@ -25,7 +25,11 @@ auth_archive="$repro_dir/maple-auth-dist.tar.gz"
     | "${MAPLE_NIX_GNUTAR:-tar}" --null --no-recursion \
         --mtime="@${SOURCE_DATE_EPOCH}" --owner=0 --group=0 --numeric-owner -cf - -T -
 ) | "${MAPLE_NIX_GZIP:-gzip}" -n > "$auth_archive"
-python3 -I "${AUTH_SCRIPT_DIR}/pages_auth_build.py" artifact --archive "$auth_archive"
+auth_artifact_profile=auth-dev
+if [ "${MAPLE_AUTH_ENVIRONMENT:-pr}" = release ]; then
+  auth_artifact_profile=auth-release
+fi
+python3 -I "${AUTH_SCRIPT_DIR}/pages_auth_build.py" artifact --archive "$auth_archive" --profile "$auth_artifact_profile"
 python3 -I - "$auth_archive" "$repro_dir/auth-final.sha256" "$AUTH_REPO_ROOT" <<'PY'
 from hashlib import sha256
 from pathlib import Path

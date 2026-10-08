@@ -75,7 +75,7 @@ def validate_manifest(value: object) -> dict:
         raise ArtifactError("Invalid artifact manifest fields")
     if type(value["schema_version"]) is not int or value["schema_version"] != 1:
         raise ArtifactError("Unsupported artifact manifest version")
-    if value["profile"] not in ("pr", "release", "auth-release"):
+    if value["profile"] not in ("pr", "release", "auth-release", "auth-dev"):
         raise ArtifactError("Invalid artifact build profile")
     if not _hex(value["source_sha"], 40) or not _hex(value["archive_sha256"], 64):
         raise ArtifactError("Invalid artifact digest or source identity")
@@ -158,6 +158,7 @@ def read_preview_zip(
     """Unwrap precisely the two expected GitHub artifact files, without extraction."""
     if (expected_profile, archive_name) not in {
         ("pr", ARCHIVE_NAME), ("auth-release", AUTH_ARCHIVE_NAME),
+        ("auth-dev", AUTH_ARCHIVE_NAME),
     }:
         raise ArtifactError("Unsupported artifact archive/profile pair")
     if not _hex(expected_sha, 40) or not all(
@@ -396,7 +397,7 @@ def main() -> int:
     commands = parser.add_subparsers(dest="command", required=True)
     manifest = commands.add_parser("manifest", help="Write metadata for a built web archive")
     manifest.add_argument("--archive", required=True, type=Path)
-    manifest.add_argument("--profile", required=True, choices=("pr", "release", "auth-release"))
+    manifest.add_argument("--profile", required=True, choices=("pr", "release", "auth-release", "auth-dev"))
     manifest.add_argument("--sha", required=True)
     manifest.add_argument("--run-id", required=True, type=int)
     manifest.add_argument("--run-attempt", required=True, type=int)

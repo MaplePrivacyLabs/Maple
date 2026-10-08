@@ -9,8 +9,8 @@ AUTH_APP_DIR="${AUTH_REPO_ROOT}/apps/maple-auth"
 use_auth_environment() {
   local profile="$1" name
   case "$profile" in
-    pr | release) ;;
-    *) printf 'Unsupported auth build profile; expected pr or release.\n' >&2; return 1 ;;
+    pr | dev | release) ;;
+    *) printf 'Unsupported auth build profile; expected pr, dev or release.\n' >&2; return 1 ;;
   esac
   while IFS='=' read -r name _; do
     case "$name" in VITE_*) unset "$name" ;; esac
@@ -19,9 +19,11 @@ use_auth_environment() {
   if [ "$profile" = release ]; then
     export VITE_OPEN_SECRET_API_URL="https://enclave.trymaple.ai"
     export VITE_OPEN_SECRET_PCR_ENVIRONMENT="production"
+    export VITE_AUTH_ENVIRONMENT="production"
   else
     export VITE_OPEN_SECRET_API_URL="https://enclave.secretgpt.ai"
     export VITE_OPEN_SECRET_PCR_ENVIRONMENT="development"
+    export VITE_AUTH_ENVIRONMENT="development"
   fi
 }
 
@@ -42,7 +44,7 @@ prepare_auth_tooling() {
 }
 
 install_auth_deps() {
-  # Both profiles use the independent published dependency graph. No source SDK
+  # All fixed profiles use the independent published dependency graph. No source SDK
   # preparation, Research node_modules, native toolchain or app dotenv is read.
   python3 -I "${AUTH_SCRIPT_DIR}/pages_auth_build.py" sdk-pin --frontend "$AUTH_APP_DIR"
   (cd "$AUTH_APP_DIR" && bun --no-env-file install --frozen-lockfile --ignore-scripts)
