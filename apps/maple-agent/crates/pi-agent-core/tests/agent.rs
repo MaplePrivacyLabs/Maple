@@ -228,6 +228,63 @@ async fn continue_run_resumes_from_tool_results_or_queued_messages() {
 }
 
 #[tokio::test]
+async fn a_refused_continue_leaves_the_queues_alone() {
+    let faux = FauxProvider::new();
+    faux.push_tool_call("wait", json!({}));
+    faux.push_text("done");
+    faux.push_text("answered the follow-up");
+    let started = Arc::new(tokio::sync::Notify::new());
+    let release = Arc::new(tokio::sync::Notify::new());
+    let tool = FnTool::new(Tool::new("wait", "Waits", json!({ "type": "object" })), {
+        let (started, release) = (started.clone(), release.clone());
+        move |_| {
+            let (started, release) = (started.clone(), release.clone());
+            async move {
+                started.notify_one();
+                release.notified().await;
+                Ok(AgentToolResult::text("waited"))
+            }
+        }
+    })
+    .shared();
+    let mut options = AgentOptions::new(faux.model(), Arc::new(faux.clone()));
+    options.tools = vec![tool];
+    let agent = Agent::new(options);
+    let running = tokio::spawn({
+        let agent = agent.clone();
+        async move { agent.prompt_text("go").await }
+    });
+    started.notified().await;
+
+    // While the tool runs, the transcript ends with the assistant's call.
+    agent.follow_up(user("one more thing"));
+    assert_eq!(
+        agent.continue_run().await.unwrap_err(),
+        AgentError::AlreadyRunning
+    );
+    assert!(agent.has_queued_messages());
+
+    release.notify_one();
+    running.await.unwrap().unwrap();
+    assert_eq!(faux.requests().len(), 3);
+    assert!(!agent.has_queued_messages());
+}
+
+#[tokio::test]
+async fn dropping_a_run_cancels_its_request() {
+    let faux = FauxProvider::new();
+    faux.push_hang();
+    let agent = agent(&faux);
+    let timed_out = tokio::time::timeout(Duration::from_millis(20), agent.prompt_text("go")).await;
+    assert!(timed_out.is_err());
+    assert!(faux.requests()[0].options.cancel.is_cancelled());
+    assert!(!agent.is_streaming());
+
+    faux.push_text("hello");
+    agent.prompt_text("again").await.unwrap();
+}
+
+#[tokio::test]
 async fn reset_keeps_the_prompt_and_tools_and_clears_the_rest() {
     let faux = FauxProvider::new();
     faux.push_text("hello");

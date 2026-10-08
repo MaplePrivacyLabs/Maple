@@ -377,13 +377,19 @@ impl<M: AgentMessage> Agent<M> {
         if !last_is_assistant {
             return self.run(RunKind::Continue, false).await;
         }
+        // Take the run before draining, so a refused continue leaves the queues alone.
+        let (cancel, guard) = self.begin_run()?;
         let steering = lock(&self.inner.steering).drain();
         if !steering.is_empty() {
-            return self.run(RunKind::Prompt(steering), true).await;
+            return self
+                .run_started(cancel, guard, RunKind::Prompt(steering), true)
+                .await;
         }
         let follow_ups = lock(&self.inner.follow_up).drain();
         if !follow_ups.is_empty() {
-            return self.run(RunKind::Prompt(follow_ups), false).await;
+            return self
+                .run_started(cancel, guard, RunKind::Prompt(follow_ups), false)
+                .await;
         }
         Err(AgentError::CannotContinueFromAssistant)
     }
@@ -422,19 +428,37 @@ impl<M: AgentMessage> Agent<M> {
     }
 
     async fn run(&self, kind: RunKind<M>, skip_initial_steering: bool) -> Result<(), AgentError> {
-        let cancel = {
-            let mut run = lock(&self.inner.run);
-            if run.is_some() {
-                return Err(AgentError::AlreadyRunning);
-            }
-            let cancel = CancellationToken::new();
-            *run = Some(cancel.clone());
-            cancel
-        };
-        // Clears the run even if a hook or listener panics.
-        let _guard = RunGuard { inner: &self.inner };
-        self.inner.running.send_replace(true);
+        let (cancel, guard) = self.begin_run()?;
+        self.run_started(cancel, guard, kind, skip_initial_steering)
+            .await
+    }
 
+    /// Take the run slot, or fail when a run is active.
+    fn begin_run(&self) -> Result<(CancellationToken, RunGuard<'_, M>), AgentError> {
+        let mut run = lock(&self.inner.run);
+        if run.is_some() {
+            return Err(AgentError::AlreadyRunning);
+        }
+        let cancel = CancellationToken::new();
+        *run = Some(cancel.clone());
+        // Under the run lock, so a run that is ending cannot mark this one idle.
+        self.inner.running.send_replace(true);
+        Ok((
+            cancel,
+            RunGuard {
+                inner: &self.inner,
+                finished: false,
+            },
+        ))
+    }
+
+    async fn run_started(
+        &self,
+        cancel: CancellationToken,
+        mut guard: RunGuard<'_, M>,
+        kind: RunKind<M>,
+        skip_initial_steering: bool,
+    ) -> Result<(), AgentError> {
         let (context, config) = {
             let mut state = lock(&self.inner.state);
             state.streaming_message = None;
@@ -458,7 +482,7 @@ impl<M: AgentMessage> Agent<M> {
             inner: self.inner.clone(),
             cancel: cancel.clone(),
         };
-        match kind {
+        let result = match kind {
             RunKind::Prompt(messages) => {
                 run_agent_loop(messages, context, config, &sink, &cancel).await;
                 Ok(())
@@ -466,12 +490,16 @@ impl<M: AgentMessage> Agent<M> {
             RunKind::Continue => run_agent_loop_continue(context, config, &sink, &cancel)
                 .await
                 .map(drop),
-        }
+        };
+        guard.finished = true;
+        result
     }
 }
 
+/// Ends the run when it finishes, panics or its future is dropped.
 struct RunGuard<'a, M: AgentMessage> {
     inner: &'a Inner<M>,
+    finished: bool,
 }
 
 impl<M: AgentMessage> Drop for RunGuard<'_, M> {
@@ -481,7 +509,14 @@ impl<M: AgentMessage> Drop for RunGuard<'_, M> {
             state.streaming_message = None;
             state.pending_tool_calls.clear();
         }
-        *lock(&self.inner.run) = None;
+        let mut run = lock(&self.inner.run);
+        if let Some(cancel) = run.take()
+            && !self.finished
+        {
+            // A run that did not finish stops the provider and tool work it started.
+            cancel.cancel();
+        }
+        // Under the run lock, so the next run's start is not overwritten.
         self.inner.running.send_replace(false);
     }
 }
