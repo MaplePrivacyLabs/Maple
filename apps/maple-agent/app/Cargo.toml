@@ -33,7 +33,8 @@ proxy = ["dep:maple-proxy", "dep:axum", "dep:tower-http"]
 
 [dependencies]
 dirs = "6"
-maple-agent = { path = "../crates/maple-agent", default-features = false }
+# The app runs on the Goose runtime until the Pi runtime replaces it.
+maple-agent = { package = "maple-agent-goose", path = "../crates/maple-agent-goose", default-features = false }
 maple-billing = { path = "../crates/maple-billing" }
 # gpui is pinned to the Zed commit that gpui-libghostty (the embedded
 # terminal Ben is preparing) builds against, so the two agree on one gpui

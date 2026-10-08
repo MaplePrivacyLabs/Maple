@@ -1,13 +1,14 @@
 [package]
-name = "maple-agent"
-description = "Transport-neutral Maple agent runtime: Goose-backed sessions, provider, tools, permissions"
+name = "maple-agent-goose"
+description = "The Goose-backed Maple agent runtime, kept as a reference until the Pi runtime replaces it"
+publish = false
 edition.workspace = true
 version.workspace = true
 license.workspace = true
 
 [features]
 default = ["acp"]
-# The Agent Client Protocol server (`maple_agent::acp`).
+# The Agent Client Protocol server (`maple_agent_goose::acp`).
 acp = ["dep:agent-client-protocol"]
 
 [dependencies]

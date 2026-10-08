@@ -3,7 +3,7 @@
 //! Run it inside a real graphical session:
 //!
 //! ```sh
-//! cargo run -p maple-agent --example cua_probe
+//! cargo run -p maple-agent-goose --example cua_probe
 //! ```
 //!
 //! It reports which backend the SDK selected, then exercises window
@@ -19,7 +19,7 @@ fn main() {
 fn main() {
     // Exactly what the application does as the first statement of `main`.
     // SAFETY: no other thread has started yet.
-    unsafe { maple_agent::prepare_process_environment() };
+    unsafe { maple_agent_goose::prepare_process_environment() };
 
     run();
 }
@@ -41,8 +41,8 @@ async fn run() {
         println!("{name}={:?}", std::env::var(name).ok());
     }
 
-    match maple_agent::agent::begin_integration_setup(
-        &maple_agent::agent::AgentSetupIntegrationRequest {
+    match maple_agent_goose::agent::begin_integration_setup(
+        &maple_agent_goose::agent::AgentSetupIntegrationRequest {
             id: "cua-driver".to_string(),
         },
     ) {

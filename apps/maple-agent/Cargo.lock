@@ -5722,7 +5722,49 @@ dependencies = [
 ]
 
 [[package]]
-name = "maple-agent"
+name = "maple-agent-app"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "base64 0.22.1",
+ "chrono",
+ "clap",
+ "cpal",
+ "dirs 6.0.0",
+ "env_logger",
+ "gpui",
+ "gpui_platform",
+ "httparse",
+ "image 0.25.10",
+ "log",
+ "maple-agent-goose",
+ "maple-billing",
+ "maple-proxy",
+ "maple-sdk",
+ "notify",
+ "parking_lot",
+ "percent-encoding",
+ "pulldown-cmark",
+ "rand 0.8.7",
+ "reqwest 0.13.4",
+ "rodio",
+ "rpassword",
+ "rusqlite",
+ "semver",
+ "serde",
+ "serde_json",
+ "spellbook",
+ "tokio",
+ "tower-http 0.6.11",
+ "unicode-segmentation",
+ "uuid",
+ "wayland-client",
+ "webbrowser",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "maple-agent-goose"
 version = "0.1.0"
 dependencies = [
  "agent-client-protocol",
@@ -5761,48 +5803,6 @@ dependencies = [
  "tokio-util",
  "windows 0.62.2",
  "zbus",
-]
-
-[[package]]
-name = "maple-agent-app"
-version = "0.1.0"
-dependencies = [
- "axum",
- "base64 0.22.1",
- "chrono",
- "clap",
- "cpal",
- "dirs 6.0.0",
- "env_logger",
- "gpui",
- "gpui_platform",
- "httparse",
- "image 0.25.10",
- "log",
- "maple-agent",
- "maple-billing",
- "maple-proxy",
- "maple-sdk",
- "notify",
- "parking_lot",
- "percent-encoding",
- "pulldown-cmark",
- "rand 0.8.7",
- "reqwest 0.13.4",
- "rodio",
- "rpassword",
- "rusqlite",
- "semver",
- "serde",
- "serde_json",
- "spellbook",
- "tokio",
- "tower-http 0.6.11",
- "unicode-segmentation",
- "uuid",
- "wayland-client",
- "webbrowser",
- "windows-sys 0.61.2",
 ]
 
 [[package]]
