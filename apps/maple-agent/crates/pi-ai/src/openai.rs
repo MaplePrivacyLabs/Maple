@@ -20,11 +20,15 @@ use crate::transcript::{
     collapse_system_messages, current_tools, render_system_message_update, system_message_text,
 };
 use crate::types::{
-    AssistantContent, Content, Context, MaxTokensField, Message, Model, StopReason, ThinkingLevel,
-    ToolResultMessage, Usage,
+    AssistantContent, AssistantMessage, Content, Context, MaxTokensField, Message, Model,
+    StopReason, ThinkingLevel, ToolResultMessage, Usage,
 };
 
 pub const API: &str = "openai-completions";
+
+/// The fields servers stream reasoning in. The one a response used becomes its thinking
+/// signature, and the reasoning goes back to the model in that field.
+const REASONING_FIELDS: [&str; 3] = ["reasoning_content", "reasoning", "reasoning_text"];
 
 /// An HTTP request the provider wants sent.
 #[derive(Clone, Debug)]
@@ -325,7 +329,32 @@ fn convert_messages(model: &Model, context: &Context) -> Vec<Value> {
                 "content": user_content(model, &user.content),
             })),
             Message::Assistant(assistant) => {
-                let text = assistant.text();
+                // A model gets its own reasoning back, in the field it came in. Another
+                // model's reasoning goes back as plain text.
+                let same_model = assistant.provider == model.provider
+                    && assistant.api == model.api
+                    && assistant.model == model.id;
+                let mut text_parts = Vec::new();
+                let mut reasoning = Vec::new();
+                let mut reasoning_field = None;
+                for block in &assistant.content {
+                    match block {
+                        AssistantContent::Text(text) => text_parts.push(text.text.as_str()),
+                        AssistantContent::Thinking(thinking)
+                            if !thinking.redacted && !thinking.thinking.trim().is_empty() =>
+                        {
+                            if same_model {
+                                reasoning.push(thinking.thinking.as_str());
+                                reasoning_field =
+                                    reasoning_field.or(thinking.thinking_signature.as_deref());
+                            } else {
+                                text_parts.push(thinking.thinking.as_str());
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                let text = text_parts.join("\n");
                 let calls: Vec<Value> = assistant
                     .tool_calls()
                     .map(|call| {
@@ -343,6 +372,11 @@ fn convert_messages(model: &Model, context: &Context) -> Vec<Value> {
                     continue;
                 }
                 let mut entry = json!({ "role": "assistant", "content": if text.is_empty() { Value::Null } else { json!(text) } });
+                if let Some(field) =
+                    reasoning_field.filter(|field| REASONING_FIELDS.contains(field))
+                {
+                    entry[field] = json!(reasoning.join("\n"));
+                }
                 if !calls.is_empty() {
                     entry["tool_calls"] = Value::Array(calls);
                 }
@@ -539,16 +573,17 @@ fn apply_chunk(event: &Value, builder: &mut AssistantMessageBuilder, state: &mut
     };
     if let Some(delta) = choice.get("delta") {
         // Servers name the reasoning field differently, and some fill in two of them.
-        if let Some(text) = ["reasoning_content", "reasoning", "reasoning_text"]
-            .iter()
-            .find_map(|field| {
-                delta
-                    .get(*field)
-                    .and_then(Value::as_str)
-                    .filter(|text| !text.is_empty())
-            })
-        {
+        if let Some((field, text)) = REASONING_FIELDS.iter().find_map(|field| {
+            delta
+                .get(*field)
+                .and_then(Value::as_str)
+                .filter(|text| !text.is_empty())
+                .map(|text| (*field, text))
+        }) {
             builder.thinking_delta(text);
+            if newest_thinking_unsigned(builder.partial()) {
+                builder.set_thinking_signature(field);
+            }
         }
         if let Some(text) = delta.get("content").and_then(Value::as_str) {
             builder.text_delta(text);
@@ -565,6 +600,19 @@ fn apply_chunk(event: &Value, builder: &mut AssistantMessageBuilder, state: &mut
     if let Some(reason) = choice.get("finish_reason").and_then(Value::as_str) {
         state.finish_reason = Some(reason.to_string());
     }
+}
+
+/// Whether the newest thinking block has no signature yet.
+fn newest_thinking_unsigned(message: &AssistantMessage) -> bool {
+    message
+        .content
+        .iter()
+        .rev()
+        .find_map(|block| match block {
+            AssistantContent::Thinking(thinking) => Some(thinking.thinking_signature.is_none()),
+            _ => None,
+        })
+        .unwrap_or(false)
 }
 
 /// Add a tool-call fragment to its call. Fragments are matched by `index`. Servers that
@@ -723,7 +771,7 @@ impl HttpTransport for ReqwestTransport {
 mod tests {
     use super::*;
     use crate::overflow::is_retryable_error;
-    use crate::types::{AssistantMessage, SystemMessage, Tool, UserMessage};
+    use crate::types::{SystemMessage, ThinkingContent, Tool, UserMessage};
     use std::sync::Mutex;
 
     /// Replies with canned SSE chunks and records each request.
@@ -1048,6 +1096,101 @@ mod tests {
             messages[3]["content"][1]["image_url"]["url"],
             "data:image/png;base64,AAAA"
         );
+    }
+
+    #[tokio::test]
+    async fn reasoning_keeps_the_field_it_came_in() {
+        for (field, chunk) in [
+            (
+                "reasoning_content",
+                "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"think\"}}]}\n\n",
+            ),
+            (
+                "reasoning",
+                "data: {\"choices\":[{\"delta\":{\"reasoning\":\"think\"}}]}\n\n",
+            ),
+        ] {
+            let transport = transport(
+                200,
+                vec![
+                    chunk,
+                    "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\n",
+                    "data: [DONE]\n\n",
+                ],
+            );
+            let provider = OpenAiCompletions::new(transport);
+            let context = Context::new("sys", vec![], vec![Message::User(UserMessage::text("hi"))]);
+            let options = StreamOptions {
+                api_key: Some("key".into()),
+                ..StreamOptions::default()
+            };
+            let message = provider.stream(&model(), context, options).result().await;
+            assert!(
+                matches!(
+                    &message.content[0],
+                    AssistantContent::Thinking(t) if t.thinking_signature.as_deref() == Some(field)
+                ),
+                "{field}: {:?}",
+                message.content
+            );
+        }
+    }
+
+    fn thinking(text: &str, field: Option<&str>) -> AssistantContent {
+        AssistantContent::Thinking(ThinkingContent {
+            thinking: text.into(),
+            thinking_signature: field.map(Into::into),
+            redacted: false,
+        })
+    }
+
+    #[test]
+    fn a_model_gets_its_own_reasoning_back_in_its_field() {
+        let model = model();
+        let mut answer = AssistantMessage::empty(&model);
+        answer.content = vec![
+            thinking("plan", Some("reasoning")),
+            AssistantContent::text("answer"),
+            AssistantContent::tool_call("c1", "read", json!({})),
+        ];
+        let mut unsigned = AssistantMessage::empty(&model);
+        unsigned.content = vec![thinking("old", None), AssistantContent::text("done")];
+        let context = Context::from_messages(vec![
+            Message::User(UserMessage::text("a")),
+            Message::Assistant(answer),
+            Message::User(UserMessage::text("b")),
+            Message::Assistant(unsigned),
+        ]);
+        let messages = convert_messages(&model, &context);
+        assert_eq!(messages[1]["reasoning"], "plan");
+        assert_eq!(messages[1]["content"], "answer");
+        assert!(messages[1].get("reasoning_content").is_none());
+        // Reasoning whose field is unknown is not sent, and its text stays out of the answer.
+        let last = messages.last().unwrap();
+        assert_eq!(last["content"], "done");
+        assert!(
+            REASONING_FIELDS
+                .iter()
+                .all(|field| last.get(*field).is_none())
+        );
+    }
+
+    #[test]
+    fn another_models_reasoning_goes_back_as_text() {
+        let model = model();
+        let mut earlier = AssistantMessage::empty(&model);
+        earlier.model = "other-model".into();
+        earlier.content = vec![
+            thinking("plan", Some("reasoning_content")),
+            AssistantContent::text("answer"),
+        ];
+        let context = Context::from_messages(vec![
+            Message::User(UserMessage::text("a")),
+            Message::Assistant(earlier),
+        ]);
+        let messages = convert_messages(&model, &context);
+        assert_eq!(messages[1]["content"], "plan\nanswer");
+        assert!(messages[1].get("reasoning_content").is_none());
     }
 
     #[test]
