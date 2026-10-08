@@ -1,0 +1,117 @@
+{
+  "dsl": 1,
+  "id": "wire/basic-text-usage",
+  "layer": "wire",
+  "covers": [
+    "packages/ai/src/api/openai-completions.ts"
+  ],
+  "model": {
+    "ref": "wire-fixture",
+    "value": {
+      "id": "fixture",
+      "name": "Fixture",
+      "api": "openai-completions",
+      "provider": "openai",
+      "baseUrl": "https://fixture.invalid/v1",
+      "reasoning": true,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 1,
+        "output": 2,
+        "cacheRead": 3,
+        "cacheWrite": 4
+      },
+      "contextWindow": 32000,
+      "maxTokens": 4096,
+      "compat": {
+        "supportsMidConvoSystemMessages": false
+      }
+    }
+  },
+  "clock": {
+    "epochMs": 1767225600000
+  },
+  "options": {
+    "maxTokens": 128,
+    "sessionId": "fixture-session"
+  },
+  "provider": {
+    "kind": "wire",
+    "responses": [
+      {
+        "status": 200,
+        "sse": [
+          {
+            "gate": "first"
+          },
+          {
+            "comment": "keepalive"
+          },
+          {
+            "data": {
+              "choices": [
+                {
+                  "index": 0,
+                  "delta": {
+                    "content": "Hello, "
+                  },
+                  "finish_reason": null
+                }
+              ]
+            }
+          },
+          {
+            "gate": "second"
+          },
+          {
+            "raw": "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"world!\"},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":100,\"completion_tokens\":9,\"prompt_tokens_details\":{\"cached_tokens\":25,\"cache_write_tokens\":5},\"completion_tokens_details\":{\"reasoning_tokens\":2}}}\r\n\r\n"
+          },
+          {
+            "gate": "eof"
+          },
+          {
+            "data": "[DONE]"
+          }
+        ]
+      }
+    ]
+  },
+  "concurrency": "gated",
+  "steps": [
+    {
+      "prompt": "hello"
+    },
+    {
+      "waitFor": {
+        "type": "start",
+        "count": 1
+      }
+    },
+    {
+      "open": "first"
+    },
+    {
+      "waitFor": {
+        "type": "text_delta",
+        "count": 1
+      }
+    },
+    {
+      "open": "second"
+    },
+    {
+      "waitFor": {
+        "type": "text_delta",
+        "count": 2
+      }
+    },
+    {
+      "open": "eof"
+    },
+    {
+      "awaitIdle": {}
+    }
+  ]
+}

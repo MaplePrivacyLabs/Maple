@@ -1,0 +1,2276 @@
+{
+  "dsl": 1,
+  "id": "api.buildParams",
+  "clock": {
+    "epochMs": 1767225600000
+  },
+  "cases": [
+    {
+      "case": "basic",
+      "input": {
+        "model": {
+          "id": "fixture",
+          "name": "Fixture",
+          "api": "openai-completions",
+          "provider": "openai",
+          "baseUrl": "https://api.openai.com/v1",
+          "reasoning": false,
+          "input": [
+            "text"
+          ],
+          "cost": {
+            "input": 1,
+            "output": 2,
+            "cacheRead": 3,
+            "cacheWrite": 4
+          },
+          "contextWindow": 32000,
+          "maxTokens": 4096
+        },
+        "context": {
+          "systemPrompt": "sys",
+          "messages": [
+            {
+              "role": "user",
+              "content": "hello",
+              "timestamp": 0
+            }
+          ]
+        },
+        "options": {
+          "temperature": 0,
+          "maxTokens": 40,
+          "sessionId": "s"
+        }
+      }
+    },
+    {
+      "case": "format/openai/undefined",
+      "input": {
+        "model": {
+          "id": "fixture",
+          "name": "Fixture",
+          "api": "openai-completions",
+          "provider": "openai",
+          "baseUrl": "https://api.openai.com/v1",
+          "reasoning": true,
+          "input": [
+            "text"
+          ],
+          "cost": {
+            "input": 1,
+            "output": 2,
+            "cacheRead": 3,
+            "cacheWrite": 4
+          },
+          "contextWindow": 32000,
+          "maxTokens": 4096,
+          "thinkingLevelMap": {
+            "off": "none",
+            "high": "max"
+          },
+          "compat": {
+            "thinkingFormat": "openai",
+            "supportsReasoningEffort": true,
+            "supportsThinkingTokenBudget": true,
+            "chatTemplateKwargs": {
+              "enable": {
+                "$var": "thinking.enabled"
+              },
+              "effort": {
+                "$var": "thinking.effort"
+              },
+              "budget": {
+                "$var": "thinking.budget"
+              },
+              "constant": 2
+            },
+            "chatTemplateArgs": {
+              "effort": {
+                "$var": "thinking.effort"
+              }
+            }
+          }
+        },
+        "context": {
+          "systemPrompt": "sys",
+          "messages": [
+            {
+              "role": "user",
+              "content": "hello",
+              "timestamp": 0
+            }
+          ]
+        },
+        "options": {
+          "maxTokens": 1200
+        }
+      }
+    },
+    {
+      "case": "format/openai/high",
+      "input": {
+        "model": {
+          "id": "fixture",
+          "name": "Fixture",
+          "api": "openai-completions",
+          "provider": "openai",
+          "baseUrl": "https://api.openai.com/v1",
+          "reasoning": true,
+          "input": [
+            "text"
+          ],
+          "cost": {
+            "input": 1,
+            "output": 2,
+            "cacheRead": 3,
+            "cacheWrite": 4
+          },
+          "contextWindow": 32000,
+          "maxTokens": 4096,
+          "thinkingLevelMap": {
+            "off": "none",
+            "high": "max"
+          },
+          "compat": {
+            "thinkingFormat": "openai",
+            "supportsReasoningEffort": true,
+            "supportsThinkingTokenBudget": true,
+            "chatTemplateKwargs": {
+              "enable": {
+                "$var": "thinking.enabled"
+              },
+              "effort": {
+                "$var": "thinking.effort"
+              },
+              "budget": {
+                "$var": "thinking.budget"
+              },
+              "constant": 2
+            },
+            "chatTemplateArgs": {
+              "effort": {
+                "$var": "thinking.effort"
+              }
+            }
+          }
+        },
+        "context": {
+          "systemPrompt": "sys",
+          "messages": [
+            {
+              "role": "user",
+              "content": "hello",
+              "timestamp": 0
+            }
+          ]
+        },
+        "options": {
+          "reasoningEffort": "high",
+          "maxTokens": 1200
+        }
+      }
+    },
+    {
+      "case": "format/zai/undefined",
+      "input": {
+        "model": {
+          "id": "fixture",
+          "name": "Fixture",
+          "api": "openai-completions",
+          "provider": "openai",
+          "baseUrl": "https://api.openai.com/v1",
+          "reasoning": true,
+          "input": [
+            "text"
+          ],
+          "cost": {
+            "input": 1,
+            "output": 2,
+            "cacheRead": 3,
+            "cacheWrite": 4
+          },
+          "contextWindow": 32000,
+          "maxTokens": 4096,
+          "thinkingLevelMap": {
+            "off": "none",
+            "high": "max"
+          },
+          "compat": {
+            "thinkingFormat": "zai",
+            "supportsReasoningEffort": true,
+            "supportsThinkingTokenBudget": true,
+            "chatTemplateKwargs": {
+              "enable": {
+                "$var": "thinking.enabled"
+              },
+              "effort": {
+                "$var": "thinking.effort"
+              },
+              "budget": {
+                "$var": "thinking.budget"
+              },
+              "constant": 2
+            },
+            "chatTemplateArgs": {
+              "effort": {
+                "$var": "thinking.effort"
+              }
+            }
+          }
+        },
+        "context": {
+          "systemPrompt": "sys",
+          "messages": [
+            {
+              "role": "user",
+              "content": "hello",
+              "timestamp": 0
+            }
+          ]
+        },
+        "options": {
+          "maxTokens": 1200
+        }
+      }
+    },
+    {
+      "case": "format/zai/high",
+      "input": {
+        "model": {
+          "id": "fixture",
+          "name": "Fixture",
+          "api": "openai-completions",
+          "provider": "openai",
+          "baseUrl": "https://api.openai.com/v1",
+          "reasoning": true,
+          "input": [
+            "text"
+          ],
+          "cost": {
+            "input": 1,
+            "output": 2,
+            "cacheRead": 3,
+            "cacheWrite": 4
+          },
+          "contextWindow": 32000,
+          "maxTokens": 4096,
+          "thinkingLevelMap": {
+            "off": "none",
+            "high": "max"
+          },
+          "compat": {
+            "thinkingFormat": "zai",
+            "supportsReasoningEffort": true,
+            "supportsThinkingTokenBudget": true,
+            "chatTemplateKwargs": {
+              "enable": {
+                "$var": "thinking.enabled"
+              },
+              "effort": {
+                "$var": "thinking.effort"
+              },
+              "budget": {
+                "$var": "thinking.budget"
+              },
+              "constant": 2
+            },
+            "chatTemplateArgs": {
+              "effort": {
+                "$var": "thinking.effort"
+              }
+            }
+          }
+        },
+        "context": {
+          "systemPrompt": "sys",
+          "messages": [
+            {
+              "role": "user",
+              "content": "hello",
+              "timestamp": 0
+            }
+          ]
+        },
+        "options": {
+          "reasoningEffort": "high",
+          "maxTokens": 1200
+        }
+      }
+    },
+    {
+      "case": "format/qwen/undefined",
+      "input": {
+        "model": {
+          "id": "fixture",
+          "name": "Fixture",
+          "api": "openai-completions",
+          "provider": "openai",
+          "baseUrl": "https://api.openai.com/v1",
+          "reasoning": true,
+          "input": [
+            "text"
+          ],
+          "cost": {
+            "input": 1,
+            "output": 2,
+            "cacheRead": 3,
+            "cacheWrite": 4
+          },
+          "contextWindow": 32000,
+          "maxTokens": 4096,
+          "thinkingLevelMap": {
+            "off": "none",
+            "high": "max"
+          },
+          "compat": {
+            "thinkingFormat": "qwen",
+            "supportsReasoningEffort": true,
+            "supportsThinkingTokenBudget": true,
+            "chatTemplateKwargs": {
+              "enable": {
+                "$var": "thinking.enabled"
+              },
+              "effort": {
+                "$var": "thinking.effort"
+              },
+              "budget": {
+                "$var": "thinking.budget"
+              },
+              "constant": 2
+            },
+            "chatTemplateArgs": {
+              "effort": {
+                "$var": "thinking.effort"
+              }
+            }
+          }
+        },
+        "context": {
+          "systemPrompt": "sys",
+          "messages": [
+            {
+              "role": "user",
+              "content": "hello",
+              "timestamp": 0
+            }
+          ]
+        },
+        "options": {
+          "maxTokens": 1200
+        }
+      }
+    },
+    {
+      "case": "format/qwen/high",
+      "input": {
+        "model": {
+          "id": "fixture",
+          "name": "Fixture",
+          "api": "openai-completions",
+          "provider": "openai",
+          "baseUrl": "https://api.openai.com/v1",
+          "reasoning": true,
+          "input": [
+            "text"
+          ],
+          "cost": {
+            "input": 1,
+            "output": 2,
+            "cacheRead": 3,
+            "cacheWrite": 4
+          },
+          "contextWindow": 32000,
+          "maxTokens": 4096,
+          "thinkingLevelMap": {
+            "off": "none",
+            "high": "max"
+          },
+          "compat": {
+            "thinkingFormat": "qwen",
+            "supportsReasoningEffort": true,
+            "supportsThinkingTokenBudget": true,
+            "chatTemplateKwargs": {
+              "enable": {
+                "$var": "thinking.enabled"
+              },
+              "effort": {
+                "$var": "thinking.effort"
+              },
+              "budget": {
+                "$var": "thinking.budget"
+              },
+              "constant": 2
+            },
+            "chatTemplateArgs": {
+              "effort": {
+                "$var": "thinking.effort"
+              }
+            }
+          }
+        },
+        "context": {
+          "systemPrompt": "sys",
+          "messages": [
+            {
+              "role": "user",
+              "content": "hello",
+              "timestamp": 0
+            }
+          ]
+        },
+        "options": {
+          "reasoningEffort": "high",
+          "maxTokens": 1200
+        }
+      }
+    },
+    {
+      "case": "format/qwen-chat-template/undefined",
+      "input": {
+        "model": {
+          "id": "fixture",
+          "name": "Fixture",
+          "api": "openai-completions",
+          "provider": "openai",
+          "baseUrl": "https://api.openai.com/v1",
+          "reasoning": true,
+          "input": [
+            "text"
+          ],
+          "cost": {
+            "input": 1,
+            "output": 2,
+            "cacheRead": 3,
+            "cacheWrite": 4
+          },
+          "contextWindow": 32000,
+          "maxTokens": 4096,
+          "thinkingLevelMap": {
+            "off": "none",
+            "high": "max"
+          },
+          "compat": {
+            "thinkingFormat": "qwen-chat-template",
+            "supportsReasoningEffort": true,
+            "supportsThinkingTokenBudget": true,
+            "chatTemplateKwargs": {
+              "enable": {
+                "$var": "thinking.enabled"
+              },
+              "effort": {
+                "$var": "thinking.effort"
+              },
+              "budget": {
+                "$var": "thinking.budget"
+              },
+              "constant": 2
+            },
+            "chatTemplateArgs": {
+              "effort": {
+                "$var": "thinking.effort"
+              }
+            }
+          }
+        },
+        "context": {
+          "systemPrompt": "sys",
+          "messages": [
+            {
+              "role": "user",
+              "content": "hello",
+              "timestamp": 0
+            }
+          ]
+        },
+        "options": {
+          "maxTokens": 1200
+        }
+      }
+    },
+    {
+      "case": "format/qwen-chat-template/high",
+      "input": {
+        "model": {
+          "id": "fixture",
+          "name": "Fixture",
+          "api": "openai-completions",
+          "provider": "openai",
+          "baseUrl": "https://api.openai.com/v1",
+          "reasoning": true,
+          "input": [
+            "text"
+          ],
+          "cost": {
+            "input": 1,
+            "output": 2,
+            "cacheRead": 3,
+            "cacheWrite": 4
+          },
+          "contextWindow": 32000,
+          "maxTokens": 4096,
+          "thinkingLevelMap": {
+            "off": "none",
+            "high": "max"
+          },
+          "compat": {
+            "thinkingFormat": "qwen-chat-template",
+            "supportsReasoningEffort": true,
+            "supportsThinkingTokenBudget": true,
+            "chatTemplateKwargs": {
+              "enable": {
+                "$var": "thinking.enabled"
+              },
+              "effort": {
+                "$var": "thinking.effort"
+              },
+              "budget": {
+                "$var": "thinking.budget"
+              },
+              "constant": 2
+            },
+            "chatTemplateArgs": {
+              "effort": {
+                "$var": "thinking.effort"
+              }
+            }
+          }
+        },
+        "context": {
+          "systemPrompt": "sys",
+          "messages": [
+            {
+              "role": "user",
+              "content": "hello",
+              "timestamp": 0
+            }
+          ]
+        },
+        "options": {
+          "reasoningEffort": "high",
+          "maxTokens": 1200
+        }
+      }
+    },
+    {
+      "case": "format/chat-template/undefined",
+      "input": {
+        "model": {
+          "id": "fixture",
+          "name": "Fixture",
+          "api": "openai-completions",
+          "provider": "openai",
+          "baseUrl": "https://api.openai.com/v1",
+          "reasoning": true,
+          "input": [
+            "text"
+          ],
+          "cost": {
+            "input": 1,
+            "output": 2,
+            "cacheRead": 3,
+            "cacheWrite": 4
+          },
+          "contextWindow": 32000,
+          "maxTokens": 4096,
+          "thinkingLevelMap": {
+            "off": "none",
+            "high": "max"
+          },
+          "compat": {
+            "thinkingFormat": "chat-template",
+            "supportsReasoningEffort": true,
+            "supportsThinkingTokenBudget": true,
+            "chatTemplateKwargs": {
+              "enable": {
+                "$var": "thinking.enabled"
+              },
+              "effort": {
+                "$var": "thinking.effort"
+              },
+              "budget": {
+                "$var": "thinking.budget"
+              },
+              "constant": 2
+            },
+            "chatTemplateArgs": {
+              "effort": {
+                "$var": "thinking.effort"
+              }
+            }
+          }
+        },
+        "context": {
+          "systemPrompt": "sys",
+          "messages": [
+            {
+              "role": "user",
+              "content": "hello",
+              "timestamp": 0
+            }
+          ]
+        },
+        "options": {
+          "maxTokens": 1200
+        }
+      }
+    },
+    {
+      "case": "format/chat-template/high",
+      "input": {
+        "model": {
+          "id": "fixture",
+          "name": "Fixture",
+          "api": "openai-completions",
+          "provider": "openai",
+          "baseUrl": "https://api.openai.com/v1",
+          "reasoning": true,
+          "input": [
+            "text"
+          ],
+          "cost": {
+            "input": 1,
+            "output": 2,
+            "cacheRead": 3,
+            "cacheWrite": 4
+          },
+          "contextWindow": 32000,
+          "maxTokens": 4096,
+          "thinkingLevelMap": {
+            "off": "none",
+            "high": "max"
+          },
+          "compat": {
+            "thinkingFormat": "chat-template",
+            "supportsReasoningEffort": true,
+            "supportsThinkingTokenBudget": true,
+            "chatTemplateKwargs": {
+              "enable": {
+                "$var": "thinking.enabled"
+              },
+              "effort": {
+                "$var": "thinking.effort"
+              },
+              "budget": {
+                "$var": "thinking.budget"
+              },
+              "constant": 2
+            },
+            "chatTemplateArgs": {
+              "effort": {
+                "$var": "thinking.effort"
+              }
+            }
+          }
+        },
+        "context": {
+          "systemPrompt": "sys",
+          "messages": [
+            {
+              "role": "user",
+              "content": "hello",
+              "timestamp": 0
+            }
+          ]
+        },
+        "options": {
+          "reasoningEffort": "high",
+          "maxTokens": 1200
+        }
+      }
+    },
+    {
+      "case": "format/baseten/undefined",
+      "input": {
+        "model": {
+          "id": "fixture",
+          "name": "Fixture",
+          "api": "openai-completions",
+          "provider": "openai",
+          "baseUrl": "https://api.openai.com/v1",
+          "reasoning": true,
+          "input": [
+            "text"
+          ],
+          "cost": {
+            "input": 1,
+            "output": 2,
+            "cacheRead": 3,
+            "cacheWrite": 4
+          },
+          "contextWindow": 32000,
+          "maxTokens": 4096,
+          "thinkingLevelMap": {
+            "off": "none",
+            "high": "max"
+          },
+          "compat": {
+            "thinkingFormat": "baseten",
+            "supportsReasoningEffort": true,
+            "supportsThinkingTokenBudget": true,
+            "chatTemplateKwargs": {
+              "enable": {
+                "$var": "thinking.enabled"
+              },
+              "effort": {
+                "$var": "thinking.effort"
+              },
+              "budget": {
+                "$var": "thinking.budget"
+              },
+              "constant": 2
+            },
+            "chatTemplateArgs": {
+              "effort": {
+                "$var": "thinking.effort"
+              }
+            }
+          }
+        },
+        "context": {
+          "systemPrompt": "sys",
+          "messages": [
+            {
+              "role": "user",
+              "content": "hello",
+              "timestamp": 0
+            }
+          ]
+        },
+        "options": {
+          "maxTokens": 1200
+        }
+      }
+    },
+    {
+      "case": "format/baseten/high",
+      "input": {
+        "model": {
+          "id": "fixture",
+          "name": "Fixture",
+          "api": "openai-completions",
+          "provider": "openai",
+          "baseUrl": "https://api.openai.com/v1",
+          "reasoning": true,
+          "input": [
+            "text"
+          ],
+          "cost": {
+            "input": 1,
+            "output": 2,
+            "cacheRead": 3,
+            "cacheWrite": 4
+          },
+          "contextWindow": 32000,
+          "maxTokens": 4096,
+          "thinkingLevelMap": {
+            "off": "none",
+            "high": "max"
+          },
+          "compat": {
+            "thinkingFormat": "baseten",
+            "supportsReasoningEffort": true,
+            "supportsThinkingTokenBudget": true,
+            "chatTemplateKwargs": {
+              "enable": {
+                "$var": "thinking.enabled"
+              },
+              "effort": {
+                "$var": "thinking.effort"
+              },
+              "budget": {
+                "$var": "thinking.budget"
+              },
+              "constant": 2
+            },
+            "chatTemplateArgs": {
+              "effort": {
+                "$var": "thinking.effort"
+              }
+            }
+          }
+        },
+        "context": {
+          "systemPrompt": "sys",
+          "messages": [
+            {
+              "role": "user",
+              "content": "hello",
+              "timestamp": 0
+            }
+          ]
+        },
+        "options": {
+          "reasoningEffort": "high",
+          "maxTokens": 1200
+        }
+      }
+    },
+    {
+      "case": "format/deepseek/undefined",
+      "input": {
+        "model": {
+          "id": "fixture",
+          "name": "Fixture",
+          "api": "openai-completions",
+          "provider": "openai",
+          "baseUrl": "https://api.openai.com/v1",
+          "reasoning": true,
+          "input": [
+            "text"
+          ],
+          "cost": {
+            "input": 1,
+            "output": 2,
+            "cacheRead": 3,
+            "cacheWrite": 4
+          },
+          "contextWindow": 32000,
+          "maxTokens": 4096,
+          "thinkingLevelMap": {
+            "off": "none",
+            "high": "max"
+          },
+          "compat": {
+            "thinkingFormat": "deepseek",
+            "supportsReasoningEffort": true,
+            "supportsThinkingTokenBudget": true,
+            "chatTemplateKwargs": {
+              "enable": {
+                "$var": "thinking.enabled"
+              },
+              "effort": {
+                "$var": "thinking.effort"
+              },
+              "budget": {
+                "$var": "thinking.budget"
+              },
+              "constant": 2
+            },
+            "chatTemplateArgs": {
+              "effort": {
+                "$var": "thinking.effort"
+              }
+            }
+          }
+        },
+        "context": {
+          "systemPrompt": "sys",
+          "messages": [
+            {
+              "role": "user",
+              "content": "hello",
+              "timestamp": 0
+            }
+          ]
+        },
+        "options": {
+          "maxTokens": 1200
+        }
+      }
+    },
+    {
+      "case": "format/deepseek/high",
+      "input": {
+        "model": {
+          "id": "fixture",
+          "name": "Fixture",
+          "api": "openai-completions",
+          "provider": "openai",
+          "baseUrl": "https://api.openai.com/v1",
+          "reasoning": true,
+          "input": [
+            "text"
+          ],
+          "cost": {
+            "input": 1,
+            "output": 2,
+            "cacheRead": 3,
+            "cacheWrite": 4
+          },
+          "contextWindow": 32000,
+          "maxTokens": 4096,
+          "thinkingLevelMap": {
+            "off": "none",
+            "high": "max"
+          },
+          "compat": {
+            "thinkingFormat": "deepseek",
+            "supportsReasoningEffort": true,
+            "supportsThinkingTokenBudget": true,
+            "chatTemplateKwargs": {
+              "enable": {
+                "$var": "thinking.enabled"
+              },
+              "effort": {
+                "$var": "thinking.effort"
+              },
+              "budget": {
+                "$var": "thinking.budget"
+              },
+              "constant": 2
+            },
+            "chatTemplateArgs": {
+              "effort": {
+                "$var": "thinking.effort"
+              }
+            }
+          }
+        },
+        "context": {
+          "systemPrompt": "sys",
+          "messages": [
+            {
+              "role": "user",
+              "content": "hello",
+              "timestamp": 0
+            }
+          ]
+        },
+        "options": {
+          "reasoningEffort": "high",
+          "maxTokens": 1200
+        }
+      }
+    },
+    {
+      "case": "format/openrouter/undefined",
+      "input": {
+        "model": {
+          "id": "fixture",
+          "name": "Fixture",
+          "api": "openai-completions",
+          "provider": "openai",
+          "baseUrl": "https://api.openai.com/v1",
+          "reasoning": true,
+          "input": [
+            "text"
+          ],
+          "cost": {
+            "input": 1,
+            "output": 2,
+            "cacheRead": 3,
+            "cacheWrite": 4
+          },
+          "contextWindow": 32000,
+          "maxTokens": 4096,
+          "thinkingLevelMap": {
+            "off": "none",
+            "high": "max"
+          },
+          "compat": {
+            "thinkingFormat": "openrouter",
+            "supportsReasoningEffort": true,
+            "supportsThinkingTokenBudget": true,
+            "chatTemplateKwargs": {
+              "enable": {
+                "$var": "thinking.enabled"
+              },
+              "effort": {
+                "$var": "thinking.effort"
+              },
+              "budget": {
+                "$var": "thinking.budget"
+              },
+              "constant": 2
+            },
+            "chatTemplateArgs": {
+              "effort": {
+                "$var": "thinking.effort"
+              }
+            }
+          }
+        },
+        "context": {
+          "systemPrompt": "sys",
+          "messages": [
+            {
+              "role": "user",
+              "content": "hello",
+              "timestamp": 0
+            }
+          ]
+        },
+        "options": {
+          "maxTokens": 1200
+        }
+      }
+    },
+    {
+      "case": "format/openrouter/high",
+      "input": {
+        "model": {
+          "id": "fixture",
+          "name": "Fixture",
+          "api": "openai-completions",
+          "provider": "openai",
+          "baseUrl": "https://api.openai.com/v1",
+          "reasoning": true,
+          "input": [
+            "text"
+          ],
+          "cost": {
+            "input": 1,
+            "output": 2,
+            "cacheRead": 3,
+            "cacheWrite": 4
+          },
+          "contextWindow": 32000,
+          "maxTokens": 4096,
+          "thinkingLevelMap": {
+            "off": "none",
+            "high": "max"
+          },
+          "compat": {
+            "thinkingFormat": "openrouter",
+            "supportsReasoningEffort": true,
+            "supportsThinkingTokenBudget": true,
+            "chatTemplateKwargs": {
+              "enable": {
+                "$var": "thinking.enabled"
+              },
+              "effort": {
+                "$var": "thinking.effort"
+              },
+              "budget": {
+                "$var": "thinking.budget"
+              },
+              "constant": 2
+            },
+            "chatTemplateArgs": {
+              "effort": {
+                "$var": "thinking.effort"
+              }
+            }
+          }
+        },
+        "context": {
+          "systemPrompt": "sys",
+          "messages": [
+            {
+              "role": "user",
+              "content": "hello",
+              "timestamp": 0
+            }
+          ]
+        },
+        "options": {
+          "reasoningEffort": "high",
+          "maxTokens": 1200
+        }
+      }
+    },
+    {
+      "case": "format/ant-ling/undefined",
+      "input": {
+        "model": {
+          "id": "fixture",
+          "name": "Fixture",
+          "api": "openai-completions",
+          "provider": "openai",
+          "baseUrl": "https://api.openai.com/v1",
+          "reasoning": true,
+          "input": [
+            "text"
+          ],
+          "cost": {
+            "input": 1,
+            "output": 2,
+            "cacheRead": 3,
+            "cacheWrite": 4
+          },
+          "contextWindow": 32000,
+          "maxTokens": 4096,
+          "thinkingLevelMap": {
+            "off": "none",
+            "high": "max"
+          },
+          "compat": {
+            "thinkingFormat": "ant-ling",
+            "supportsReasoningEffort": true,
+            "supportsThinkingTokenBudget": true,
+            "chatTemplateKwargs": {
+              "enable": {
+                "$var": "thinking.enabled"
+              },
+              "effort": {
+                "$var": "thinking.effort"
+              },
+              "budget": {
+                "$var": "thinking.budget"
+              },
+              "constant": 2
+            },
+            "chatTemplateArgs": {
+              "effort": {
+                "$var": "thinking.effort"
+              }
+            }
+          }
+        },
+        "context": {
+          "systemPrompt": "sys",
+          "messages": [
+            {
+              "role": "user",
+              "content": "hello",
+              "timestamp": 0
+            }
+          ]
+        },
+        "options": {
+          "maxTokens": 1200
+        }
+      }
+    },
+    {
+      "case": "format/ant-ling/high",
+      "input": {
+        "model": {
+          "id": "fixture",
+          "name": "Fixture",
+          "api": "openai-completions",
+          "provider": "openai",
+          "baseUrl": "https://api.openai.com/v1",
+          "reasoning": true,
+          "input": [
+            "text"
+          ],
+          "cost": {
+            "input": 1,
+            "output": 2,
+            "cacheRead": 3,
+            "cacheWrite": 4
+          },
+          "contextWindow": 32000,
+          "maxTokens": 4096,
+          "thinkingLevelMap": {
+            "off": "none",
+            "high": "max"
+          },
+          "compat": {
+            "thinkingFormat": "ant-ling",
+            "supportsReasoningEffort": true,
+            "supportsThinkingTokenBudget": true,
+            "chatTemplateKwargs": {
+              "enable": {
+                "$var": "thinking.enabled"
+              },
+              "effort": {
+                "$var": "thinking.effort"
+              },
+              "budget": {
+                "$var": "thinking.budget"
+              },
+              "constant": 2
+            },
+            "chatTemplateArgs": {
+              "effort": {
+                "$var": "thinking.effort"
+              }
+            }
+          }
+        },
+        "context": {
+          "systemPrompt": "sys",
+          "messages": [
+            {
+              "role": "user",
+              "content": "hello",
+              "timestamp": 0
+            }
+          ]
+        },
+        "options": {
+          "reasoningEffort": "high",
+          "maxTokens": 1200
+        }
+      }
+    },
+    {
+      "case": "format/together/undefined",
+      "input": {
+        "model": {
+          "id": "fixture",
+          "name": "Fixture",
+          "api": "openai-completions",
+          "provider": "openai",
+          "baseUrl": "https://api.openai.com/v1",
+          "reasoning": true,
+          "input": [
+            "text"
+          ],
+          "cost": {
+            "input": 1,
+            "output": 2,
+            "cacheRead": 3,
+            "cacheWrite": 4
+          },
+          "contextWindow": 32000,
+          "maxTokens": 4096,
+          "thinkingLevelMap": {
+            "off": "none",
+            "high": "max"
+          },
+          "compat": {
+            "thinkingFormat": "together",
+            "supportsReasoningEffort": true,
+            "supportsThinkingTokenBudget": true,
+            "chatTemplateKwargs": {
+              "enable": {
+                "$var": "thinking.enabled"
+              },
+              "effort": {
+                "$var": "thinking.effort"
+              },
+              "budget": {
+                "$var": "thinking.budget"
+              },
+              "constant": 2
+            },
+            "chatTemplateArgs": {
+              "effort": {
+                "$var": "thinking.effort"
+              }
+            }
+          }
+        },
+        "context": {
+          "systemPrompt": "sys",
+          "messages": [
+            {
+              "role": "user",
+              "content": "hello",
+              "timestamp": 0
+            }
+          ]
+        },
+        "options": {
+          "maxTokens": 1200
+        }
+      }
+    },
+    {
+      "case": "format/together/high",
+      "input": {
+        "model": {
+          "id": "fixture",
+          "name": "Fixture",
+          "api": "openai-completions",
+          "provider": "openai",
+          "baseUrl": "https://api.openai.com/v1",
+          "reasoning": true,
+          "input": [
+            "text"
+          ],
+          "cost": {
+            "input": 1,
+            "output": 2,
+            "cacheRead": 3,
+            "cacheWrite": 4
+          },
+          "contextWindow": 32000,
+          "maxTokens": 4096,
+          "thinkingLevelMap": {
+            "off": "none",
+            "high": "max"
+          },
+          "compat": {
+            "thinkingFormat": "together",
+            "supportsReasoningEffort": true,
+            "supportsThinkingTokenBudget": true,
+            "chatTemplateKwargs": {
+              "enable": {
+                "$var": "thinking.enabled"
+              },
+              "effort": {
+                "$var": "thinking.effort"
+              },
+              "budget": {
+                "$var": "thinking.budget"
+              },
+              "constant": 2
+            },
+            "chatTemplateArgs": {
+              "effort": {
+                "$var": "thinking.effort"
+              }
+            }
+          }
+        },
+        "context": {
+          "systemPrompt": "sys",
+          "messages": [
+            {
+              "role": "user",
+              "content": "hello",
+              "timestamp": 0
+            }
+          ]
+        },
+        "options": {
+          "reasoningEffort": "high",
+          "maxTokens": 1200
+        }
+      }
+    },
+    {
+      "case": "format/string-thinking/undefined",
+      "input": {
+        "model": {
+          "id": "fixture",
+          "name": "Fixture",
+          "api": "openai-completions",
+          "provider": "openai",
+          "baseUrl": "https://api.openai.com/v1",
+          "reasoning": true,
+          "input": [
+            "text"
+          ],
+          "cost": {
+            "input": 1,
+            "output": 2,
+            "cacheRead": 3,
+            "cacheWrite": 4
+          },
+          "contextWindow": 32000,
+          "maxTokens": 4096,
+          "thinkingLevelMap": {
+            "off": "none",
+            "high": "max"
+          },
+          "compat": {
+            "thinkingFormat": "string-thinking",
+            "supportsReasoningEffort": true,
+            "supportsThinkingTokenBudget": true,
+            "chatTemplateKwargs": {
+              "enable": {
+                "$var": "thinking.enabled"
+              },
+              "effort": {
+                "$var": "thinking.effort"
+              },
+              "budget": {
+                "$var": "thinking.budget"
+              },
+              "constant": 2
+            },
+            "chatTemplateArgs": {
+              "effort": {
+                "$var": "thinking.effort"
+              }
+            }
+          }
+        },
+        "context": {
+          "systemPrompt": "sys",
+          "messages": [
+            {
+              "role": "user",
+              "content": "hello",
+              "timestamp": 0
+            }
+          ]
+        },
+        "options": {
+          "maxTokens": 1200
+        }
+      }
+    },
+    {
+      "case": "format/string-thinking/high",
+      "input": {
+        "model": {
+          "id": "fixture",
+          "name": "Fixture",
+          "api": "openai-completions",
+          "provider": "openai",
+          "baseUrl": "https://api.openai.com/v1",
+          "reasoning": true,
+          "input": [
+            "text"
+          ],
+          "cost": {
+            "input": 1,
+            "output": 2,
+            "cacheRead": 3,
+            "cacheWrite": 4
+          },
+          "contextWindow": 32000,
+          "maxTokens": 4096,
+          "thinkingLevelMap": {
+            "off": "none",
+            "high": "max"
+          },
+          "compat": {
+            "thinkingFormat": "string-thinking",
+            "supportsReasoningEffort": true,
+            "supportsThinkingTokenBudget": true,
+            "chatTemplateKwargs": {
+              "enable": {
+                "$var": "thinking.enabled"
+              },
+              "effort": {
+                "$var": "thinking.effort"
+              },
+              "budget": {
+                "$var": "thinking.budget"
+              },
+              "constant": 2
+            },
+            "chatTemplateArgs": {
+              "effort": {
+                "$var": "thinking.effort"
+              }
+            }
+          }
+        },
+        "context": {
+          "systemPrompt": "sys",
+          "messages": [
+            {
+              "role": "user",
+              "content": "hello",
+              "timestamp": 0
+            }
+          ]
+        },
+        "options": {
+          "reasoningEffort": "high",
+          "maxTokens": 1200
+        }
+      }
+    },
+    {
+      "case": "provider/zai",
+      "input": {
+        "model": {
+          "id": "fixture",
+          "name": "Fixture",
+          "api": "openai-completions",
+          "provider": "zai",
+          "baseUrl": "https://api.openai.com/v1",
+          "reasoning": false,
+          "input": [
+            "text"
+          ],
+          "cost": {
+            "input": 1,
+            "output": 2,
+            "cacheRead": 3,
+            "cacheWrite": 4
+          },
+          "contextWindow": 32000,
+          "maxTokens": 4096
+        },
+        "context": {
+          "systemPrompt": "sys",
+          "messages": [
+            {
+              "role": "user",
+              "content": "hello",
+              "timestamp": 0
+            }
+          ]
+        },
+        "options": {
+          "sessionId": "s",
+          "cacheRetention": "long"
+        }
+      }
+    },
+    {
+      "case": "provider/zai-coding-cn",
+      "input": {
+        "model": {
+          "id": "fixture",
+          "name": "Fixture",
+          "api": "openai-completions",
+          "provider": "zai-coding-cn",
+          "baseUrl": "https://api.openai.com/v1",
+          "reasoning": false,
+          "input": [
+            "text"
+          ],
+          "cost": {
+            "input": 1,
+            "output": 2,
+            "cacheRead": 3,
+            "cacheWrite": 4
+          },
+          "contextWindow": 32000,
+          "maxTokens": 4096
+        },
+        "context": {
+          "systemPrompt": "sys",
+          "messages": [
+            {
+              "role": "user",
+              "content": "hello",
+              "timestamp": 0
+            }
+          ]
+        },
+        "options": {
+          "sessionId": "s",
+          "cacheRetention": "long"
+        }
+      }
+    },
+    {
+      "case": "provider/together",
+      "input": {
+        "model": {
+          "id": "fixture",
+          "name": "Fixture",
+          "api": "openai-completions",
+          "provider": "together",
+          "baseUrl": "https://api.openai.com/v1",
+          "reasoning": false,
+          "input": [
+            "text"
+          ],
+          "cost": {
+            "input": 1,
+            "output": 2,
+            "cacheRead": 3,
+            "cacheWrite": 4
+          },
+          "contextWindow": 32000,
+          "maxTokens": 4096
+        },
+        "context": {
+          "systemPrompt": "sys",
+          "messages": [
+            {
+              "role": "user",
+              "content": "hello",
+              "timestamp": 0
+            }
+          ]
+        },
+        "options": {
+          "sessionId": "s",
+          "cacheRetention": "long"
+        }
+      }
+    },
+    {
+      "case": "provider/moonshotai",
+      "input": {
+        "model": {
+          "id": "fixture",
+          "name": "Fixture",
+          "api": "openai-completions",
+          "provider": "moonshotai",
+          "baseUrl": "https://api.openai.com/v1",
+          "reasoning": false,
+          "input": [
+            "text"
+          ],
+          "cost": {
+            "input": 1,
+            "output": 2,
+            "cacheRead": 3,
+            "cacheWrite": 4
+          },
+          "contextWindow": 32000,
+          "maxTokens": 4096
+        },
+        "context": {
+          "systemPrompt": "sys",
+          "messages": [
+            {
+              "role": "user",
+              "content": "hello",
+              "timestamp": 0
+            }
+          ]
+        },
+        "options": {
+          "sessionId": "s",
+          "cacheRetention": "long"
+        }
+      }
+    },
+    {
+      "case": "provider/moonshotai-cn",
+      "input": {
+        "model": {
+          "id": "fixture",
+          "name": "Fixture",
+          "api": "openai-completions",
+          "provider": "moonshotai-cn",
+          "baseUrl": "https://api.openai.com/v1",
+          "reasoning": false,
+          "input": [
+            "text"
+          ],
+          "cost": {
+            "input": 1,
+            "output": 2,
+            "cacheRead": 3,
+            "cacheWrite": 4
+          },
+          "contextWindow": 32000,
+          "maxTokens": 4096
+        },
+        "context": {
+          "systemPrompt": "sys",
+          "messages": [
+            {
+              "role": "user",
+              "content": "hello",
+              "timestamp": 0
+            }
+          ]
+        },
+        "options": {
+          "sessionId": "s",
+          "cacheRetention": "long"
+        }
+      }
+    },
+    {
+      "case": "provider/openrouter",
+      "input": {
+        "model": {
+          "id": "fixture",
+          "name": "Fixture",
+          "api": "openai-completions",
+          "provider": "openrouter",
+          "baseUrl": "https://api.openai.com/v1",
+          "reasoning": false,
+          "input": [
+            "text"
+          ],
+          "cost": {
+            "input": 1,
+            "output": 2,
+            "cacheRead": 3,
+            "cacheWrite": 4
+          },
+          "contextWindow": 32000,
+          "maxTokens": 4096
+        },
+        "context": {
+          "systemPrompt": "sys",
+          "messages": [
+            {
+              "role": "user",
+              "content": "hello",
+              "timestamp": 0
+            }
+          ]
+        },
+        "options": {
+          "sessionId": "s",
+          "cacheRetention": "long"
+        }
+      }
+    },
+    {
+      "case": "provider/cloudflare-workers-ai",
+      "input": {
+        "model": {
+          "id": "fixture",
+          "name": "Fixture",
+          "api": "openai-completions",
+          "provider": "cloudflare-workers-ai",
+          "baseUrl": "https://api.openai.com/v1",
+          "reasoning": false,
+          "input": [
+            "text"
+          ],
+          "cost": {
+            "input": 1,
+            "output": 2,
+            "cacheRead": 3,
+            "cacheWrite": 4
+          },
+          "contextWindow": 32000,
+          "maxTokens": 4096
+        },
+        "context": {
+          "systemPrompt": "sys",
+          "messages": [
+            {
+              "role": "user",
+              "content": "hello",
+              "timestamp": 0
+            }
+          ]
+        },
+        "options": {
+          "sessionId": "s",
+          "cacheRetention": "long"
+        }
+      }
+    },
+    {
+      "case": "provider/cloudflare-ai-gateway",
+      "input": {
+        "model": {
+          "id": "fixture",
+          "name": "Fixture",
+          "api": "openai-completions",
+          "provider": "cloudflare-ai-gateway",
+          "baseUrl": "https://api.openai.com/v1",
+          "reasoning": false,
+          "input": [
+            "text"
+          ],
+          "cost": {
+            "input": 1,
+            "output": 2,
+            "cacheRead": 3,
+            "cacheWrite": 4
+          },
+          "contextWindow": 32000,
+          "maxTokens": 4096
+        },
+        "context": {
+          "systemPrompt": "sys",
+          "messages": [
+            {
+              "role": "user",
+              "content": "hello",
+              "timestamp": 0
+            }
+          ]
+        },
+        "options": {
+          "sessionId": "s",
+          "cacheRetention": "long"
+        }
+      }
+    },
+    {
+      "case": "provider/nvidia",
+      "input": {
+        "model": {
+          "id": "fixture",
+          "name": "Fixture",
+          "api": "openai-completions",
+          "provider": "nvidia",
+          "baseUrl": "https://api.openai.com/v1",
+          "reasoning": false,
+          "input": [
+            "text"
+          ],
+          "cost": {
+            "input": 1,
+            "output": 2,
+            "cacheRead": 3,
+            "cacheWrite": 4
+          },
+          "contextWindow": 32000,
+          "maxTokens": 4096
+        },
+        "context": {
+          "systemPrompt": "sys",
+          "messages": [
+            {
+              "role": "user",
+              "content": "hello",
+              "timestamp": 0
+            }
+          ]
+        },
+        "options": {
+          "sessionId": "s",
+          "cacheRetention": "long"
+        }
+      }
+    },
+    {
+      "case": "provider/ant-ling",
+      "input": {
+        "model": {
+          "id": "fixture",
+          "name": "Fixture",
+          "api": "openai-completions",
+          "provider": "ant-ling",
+          "baseUrl": "https://api.openai.com/v1",
+          "reasoning": false,
+          "input": [
+            "text"
+          ],
+          "cost": {
+            "input": 1,
+            "output": 2,
+            "cacheRead": 3,
+            "cacheWrite": 4
+          },
+          "contextWindow": 32000,
+          "maxTokens": 4096
+        },
+        "context": {
+          "systemPrompt": "sys",
+          "messages": [
+            {
+              "role": "user",
+              "content": "hello",
+              "timestamp": 0
+            }
+          ]
+        },
+        "options": {
+          "sessionId": "s",
+          "cacheRetention": "long"
+        }
+      }
+    },
+    {
+      "case": "provider/cerebras",
+      "input": {
+        "model": {
+          "id": "fixture",
+          "name": "Fixture",
+          "api": "openai-completions",
+          "provider": "cerebras",
+          "baseUrl": "https://api.openai.com/v1",
+          "reasoning": false,
+          "input": [
+            "text"
+          ],
+          "cost": {
+            "input": 1,
+            "output": 2,
+            "cacheRead": 3,
+            "cacheWrite": 4
+          },
+          "contextWindow": 32000,
+          "maxTokens": 4096
+        },
+        "context": {
+          "systemPrompt": "sys",
+          "messages": [
+            {
+              "role": "user",
+              "content": "hello",
+              "timestamp": 0
+            }
+          ]
+        },
+        "options": {
+          "sessionId": "s",
+          "cacheRetention": "long"
+        }
+      }
+    },
+    {
+      "case": "provider/deepseek",
+      "input": {
+        "model": {
+          "id": "fixture",
+          "name": "Fixture",
+          "api": "openai-completions",
+          "provider": "deepseek",
+          "baseUrl": "https://api.openai.com/v1",
+          "reasoning": false,
+          "input": [
+            "text"
+          ],
+          "cost": {
+            "input": 1,
+            "output": 2,
+            "cacheRead": 3,
+            "cacheWrite": 4
+          },
+          "contextWindow": 32000,
+          "maxTokens": 4096
+        },
+        "context": {
+          "systemPrompt": "sys",
+          "messages": [
+            {
+              "role": "user",
+              "content": "hello",
+              "timestamp": 0
+            }
+          ]
+        },
+        "options": {
+          "sessionId": "s",
+          "cacheRetention": "long"
+        }
+      }
+    },
+    {
+      "case": "provider/xai",
+      "input": {
+        "model": {
+          "id": "fixture",
+          "name": "Fixture",
+          "api": "openai-completions",
+          "provider": "xai",
+          "baseUrl": "https://api.openai.com/v1",
+          "reasoning": false,
+          "input": [
+            "text"
+          ],
+          "cost": {
+            "input": 1,
+            "output": 2,
+            "cacheRead": 3,
+            "cacheWrite": 4
+          },
+          "contextWindow": 32000,
+          "maxTokens": 4096
+        },
+        "context": {
+          "systemPrompt": "sys",
+          "messages": [
+            {
+              "role": "user",
+              "content": "hello",
+              "timestamp": 0
+            }
+          ]
+        },
+        "options": {
+          "sessionId": "s",
+          "cacheRetention": "long"
+        }
+      }
+    },
+    {
+      "case": "provider/opencode",
+      "input": {
+        "model": {
+          "id": "fixture",
+          "name": "Fixture",
+          "api": "openai-completions",
+          "provider": "opencode",
+          "baseUrl": "https://api.openai.com/v1",
+          "reasoning": false,
+          "input": [
+            "text"
+          ],
+          "cost": {
+            "input": 1,
+            "output": 2,
+            "cacheRead": 3,
+            "cacheWrite": 4
+          },
+          "contextWindow": 32000,
+          "maxTokens": 4096
+        },
+        "context": {
+          "systemPrompt": "sys",
+          "messages": [
+            {
+              "role": "user",
+              "content": "hello",
+              "timestamp": 0
+            }
+          ]
+        },
+        "options": {
+          "sessionId": "s",
+          "cacheRetention": "long"
+        }
+      }
+    },
+    {
+      "case": "provider/opencode-go",
+      "input": {
+        "model": {
+          "id": "fixture",
+          "name": "Fixture",
+          "api": "openai-completions",
+          "provider": "opencode-go",
+          "baseUrl": "https://api.openai.com/v1",
+          "reasoning": false,
+          "input": [
+            "text"
+          ],
+          "cost": {
+            "input": 1,
+            "output": 2,
+            "cacheRead": 3,
+            "cacheWrite": 4
+          },
+          "contextWindow": 32000,
+          "maxTokens": 4096
+        },
+        "context": {
+          "systemPrompt": "sys",
+          "messages": [
+            {
+              "role": "user",
+              "content": "hello",
+              "timestamp": 0
+            }
+          ]
+        },
+        "options": {
+          "sessionId": "s",
+          "cacheRetention": "long"
+        }
+      }
+    },
+    {
+      "case": "provider/github-copilot",
+      "input": {
+        "model": {
+          "id": "fixture",
+          "name": "Fixture",
+          "api": "openai-completions",
+          "provider": "github-copilot",
+          "baseUrl": "https://api.openai.com/v1",
+          "reasoning": false,
+          "input": [
+            "text"
+          ],
+          "cost": {
+            "input": 1,
+            "output": 2,
+            "cacheRead": 3,
+            "cacheWrite": 4
+          },
+          "contextWindow": 32000,
+          "maxTokens": 4096
+        },
+        "context": {
+          "systemPrompt": "sys",
+          "messages": [
+            {
+              "role": "user",
+              "content": "hello",
+              "timestamp": 0
+            }
+          ]
+        },
+        "options": {
+          "sessionId": "s",
+          "cacheRetention": "long"
+        }
+      }
+    },
+    {
+      "case": "grammar",
+      "input": {
+        "model": {
+          "id": "fixture",
+          "name": "Fixture",
+          "api": "openai-completions",
+          "provider": "openai",
+          "baseUrl": "https://api.openai.com/v1",
+          "reasoning": false,
+          "input": [
+            "text"
+          ],
+          "cost": {
+            "input": 1,
+            "output": 2,
+            "cacheRead": 3,
+            "cacheWrite": 4
+          },
+          "contextWindow": 32000,
+          "maxTokens": 4096,
+          "compat": {
+            "supportsOpenAIGrammarTools": true
+          }
+        },
+        "context": {
+          "systemPrompt": "sys",
+          "messages": [
+            {
+              "role": "user",
+              "content": "hello",
+              "timestamp": 0
+            }
+          ],
+          "tools": [
+            {
+              "name": "echo",
+              "description": "d",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "input": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "input"
+                ]
+              },
+              "constrainedSampling": {
+                "type": "grammar",
+                "variants": {
+                  "openai_lark": "start: /.+/"
+                }
+              }
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "case": "none",
+      "input": {
+        "model": {
+          "id": "fixture",
+          "name": "Fixture",
+          "api": "openai-completions",
+          "provider": "openai",
+          "baseUrl": "https://api.openai.com/v1",
+          "reasoning": false,
+          "input": [
+            "text"
+          ],
+          "cost": {
+            "input": 1,
+            "output": 2,
+            "cacheRead": 3,
+            "cacheWrite": 4
+          },
+          "contextWindow": 32000,
+          "maxTokens": 4096
+        },
+        "context": {
+          "systemPrompt": "sys",
+          "messages": [
+            {
+              "role": "user",
+              "content": "hello",
+              "timestamp": 0
+            }
+          ]
+        },
+        "options": {
+          "temperature": 0,
+          "maxTokens": 40,
+          "sessionId": "s",
+          "cacheRetention": "none"
+        }
+      }
+    },
+    {
+      "case": "empty-session",
+      "input": {
+        "model": {
+          "id": "fixture",
+          "name": "Fixture",
+          "api": "openai-completions",
+          "provider": "openai",
+          "baseUrl": "https://api.openai.com/v1",
+          "reasoning": false,
+          "input": [
+            "text"
+          ],
+          "cost": {
+            "input": 1,
+            "output": 2,
+            "cacheRead": 3,
+            "cacheWrite": 4
+          },
+          "contextWindow": 32000,
+          "maxTokens": 4096
+        },
+        "context": {
+          "systemPrompt": "sys",
+          "messages": [
+            {
+              "role": "user",
+              "content": "hello",
+              "timestamp": 0
+            }
+          ]
+        },
+        "options": {
+          "temperature": 0,
+          "maxTokens": 40,
+          "sessionId": ""
+        }
+      }
+    },
+    {
+      "case": "unicode-session",
+      "input": {
+        "model": {
+          "id": "fixture",
+          "name": "Fixture",
+          "api": "openai-completions",
+          "provider": "openai",
+          "baseUrl": "https://api.openai.com/v1",
+          "reasoning": false,
+          "input": [
+            "text"
+          ],
+          "cost": {
+            "input": 1,
+            "output": 2,
+            "cacheRead": 3,
+            "cacheWrite": 4
+          },
+          "contextWindow": 32000,
+          "maxTokens": 4096
+        },
+        "context": {
+          "systemPrompt": "sys",
+          "messages": [
+            {
+              "role": "user",
+              "content": "hello",
+              "timestamp": 0
+            }
+          ]
+        },
+        "options": {
+          "temperature": 0,
+          "maxTokens": 40,
+          "sessionId": "\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00"
+        }
+      }
+    },
+    {
+      "case": "sampling-overrides",
+      "input": {
+        "model": {
+          "id": "fixture",
+          "name": "Fixture",
+          "api": "openai-completions",
+          "provider": "openai",
+          "baseUrl": "https://api.openai.com/v1",
+          "reasoning": false,
+          "input": [
+            "text"
+          ],
+          "cost": {
+            "input": 1,
+            "output": 2,
+            "cacheRead": 3,
+            "cacheWrite": 4
+          },
+          "contextWindow": 32000,
+          "maxTokens": 4096
+        },
+        "context": {
+          "systemPrompt": "sys",
+          "messages": [
+            {
+              "role": "user",
+              "content": "hello",
+              "timestamp": 0
+            }
+          ]
+        },
+        "options": {
+          "temperature": 0.1,
+          "maxTokens": 12,
+          "sessionId": "s",
+          "samplingParams": {
+            "model": "override",
+            "temperature": 0.7,
+            "max_completion_tokens": 99
+          }
+        }
+      }
+    }
+  ]
+}

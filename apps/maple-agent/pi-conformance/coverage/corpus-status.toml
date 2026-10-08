@@ -141,33 +141,27 @@ reason = "Recording and Rust replay are completed in port step 4."
 
 [[scenario]]
 id = "wire/basic-text-usage"
-status = "pending"
-reason = "Recording and Rust replay are completed in port step 2."
+status = "passing"
 
 [[scenario]]
 id = "wire/streamed-tool-calls"
-status = "pending"
-reason = "Recording and Rust replay are completed in port step 2."
+status = "passing"
 
 [[scenario]]
 id = "wire/reasoning-fields"
-status = "pending"
-reason = "Recording and Rust replay are completed in port step 2."
+status = "passing"
 
 [[scenario]]
 id = "wire/request-repair"
-status = "pending"
-reason = "Recording and Rust replay are completed in port step 2."
+status = "passing"
 
 [[scenario]]
 id = "wire/system-collapse-and-tools"
-status = "pending"
-reason = "Recording and Rust replay are completed in port step 2."
+status = "passing"
 
 [[scenario]]
 id = "wire/stream-failures"
-status = "pending"
-reason = "Recording and Rust replay are completed in port step 2."
+status = "passing"
 
 [[scenario]]
 id = "wire/full-session-two-turns"
@@ -245,18 +239,15 @@ status = "passing"
 
 [[function]]
 id = "api.transformMessages"
-status = "pending"
-reason = "Function golden recording and Rust dispatch are completed in port step 2."
+status = "passing"
 
 [[function]]
 id = "api.buildParams"
-status = "pending"
-reason = "Function golden recording and Rust dispatch are completed in port step 2."
+status = "passing"
 
 [[function]]
 id = "api.convertMessages"
-status = "pending"
-reason = "Function golden recording and Rust dispatch are completed in port step 2."
+status = "passing"
 
 [[function]]
 id = "compaction.findCutPoint"

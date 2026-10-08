@@ -1,4 +1,6 @@
 import { assertNoNetworkAttempts } from "./network-guard.ts";
+import { recordWireScenario } from "./wire-recorder.ts";
+import { prepareCompletionsFunction } from "./completions-functions.ts";
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { afterAll, expect, test } from "vitest";
@@ -79,6 +81,10 @@ function assertSupportedScenario(scenario: Scenario) {
 for (const input of inputs.scenarios) {
   test(`records ${input.value.id} from pinned source`, async () => {
     const { value: scenario, source } = input;
+    if (scenario.layer === "wire") {
+      await recordWireScenario(input, outputRoot);
+      return;
+    }
     assertSupportedScenario(scenario);
     if (scenario.provider.kind !== "faux") throw new Error("Expected faux provider");
     const clock = deterministicEnvironment(scenario.clock.epochMs);
@@ -251,6 +257,14 @@ async function recordFunction(input: Input<FunctionMatrix>, destination: string)
     try {
       const value = item.input;
       switch (input.value.id) {
+        case "api.transformMessages":
+        case "api.buildParams":
+        case "api.convertMessages": {
+          const invoke = await prepareCompletionsFunction(input.value.id, value);
+          try { output = await invoke(); }
+          catch (thrown) { error = thrown instanceof Error ? thrown.message : String(thrown); }
+          break;
+        }
         case "json-parse.parseStreamingJson": {
           const { parseStreamingJson } = await import("@earendil-works/pi-ai/utils/json-parse");
           output = parseStreamingJson("utf16" in value

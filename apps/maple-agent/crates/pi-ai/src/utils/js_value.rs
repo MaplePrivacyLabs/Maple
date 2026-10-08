@@ -653,7 +653,7 @@ impl<'de> Deserialize<'de> for JsObject {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         match deserializer.deserialize_map(JsValueVisitor)? {
             JsValue::Object(value) => Ok(value),
-            _ => unreachable!("map visitor returns an object"),
+            _ => Err(serde::de::Error::custom("expected a JavaScript object")),
         }
     }
 }
@@ -700,6 +700,24 @@ impl serde::ser::Error for JsonConversionError {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn object_deserialization_rejects_non_objects_without_panicking() {
+        for value in [
+            JsValue::Null,
+            JsValue::Bool(true),
+            JsValue::Number(1.0),
+            JsValue::String("x".into()),
+            JsValue::Array(Vec::new()),
+        ] {
+            assert!(from_js_value::<JsObject>(value).is_err());
+        }
+        let object = JsObject::from([(JsString::from_utf16(vec![0xd800]), JsValue::Number(1.0))]);
+        assert_eq!(
+            from_js_value::<JsObject>(JsValue::Object(object.clone())).unwrap(),
+            object
+        );
+    }
 
     #[test]
     fn lossless_json_conversion_rejects_nonfinite_numbers_and_lone_surrogates() {

@@ -1060,6 +1060,10 @@ pub struct StreamOptions {
     pub transport: Option<Transport>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cache_retention: Option<CacheRetention>,
+    /// Host-selected environment key for the source cache-retention fallback.
+    /// No ambient application-specific variable is read unless a key is supplied.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache_retention_env: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1103,6 +1107,7 @@ where
         "maxTokens",
         "transport",
         "cacheRetention",
+        "cacheRetentionEnv",
         "sessionId",
         "websocketConnectTimeoutMs",
         "metadata",

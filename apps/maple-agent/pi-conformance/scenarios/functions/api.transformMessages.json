@@ -1,0 +1,1775 @@
+{
+  "dsl": 1,
+  "id": "api.transformMessages",
+  "clock": {
+    "epochMs": 1767225600000
+  },
+  "cases": [
+    {
+      "case": "empty",
+      "input": {
+        "model": {
+          "id": "fixture",
+          "name": "Fixture",
+          "api": "openai-completions",
+          "provider": "openai",
+          "baseUrl": "https://example.invalid/v1",
+          "reasoning": true,
+          "input": [
+            "text"
+          ],
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0
+          },
+          "contextWindow": 32000,
+          "maxTokens": 4096
+        },
+        "messages": []
+      }
+    },
+    {
+      "case": "null-and-absent-content",
+      "input": {
+        "model": {
+          "id": "fixture",
+          "name": "Fixture",
+          "api": "openai-completions",
+          "provider": "openai",
+          "baseUrl": "https://example.invalid/v1",
+          "reasoning": true,
+          "input": [
+            "text"
+          ],
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0
+          },
+          "contextWindow": 32000,
+          "maxTokens": 4096
+        },
+        "messages": [
+          {
+            "role": "user",
+            "content": null,
+            "timestamp": 1
+          },
+          {
+            "role": "assistant",
+            "content": null,
+            "api": "openai-completions",
+            "provider": "openai",
+            "model": "fixture",
+            "usage": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "totalTokens": 0,
+              "cost": {
+                "input": 0,
+                "output": 0,
+                "cacheRead": 0,
+                "cacheWrite": 0,
+                "total": 0
+              }
+            },
+            "stopReason": "stop",
+            "timestamp": 2
+          },
+          {
+            "role": "toolResult",
+            "toolCallId": "one",
+            "toolName": "echo",
+            "isError": false,
+            "timestamp": 3
+          }
+        ]
+      }
+    },
+    {
+      "case": "same-model-text-signatures",
+      "input": {
+        "model": {
+          "id": "fixture",
+          "name": "Fixture",
+          "api": "openai-completions",
+          "provider": "openai",
+          "baseUrl": "https://example.invalid/v1",
+          "reasoning": true,
+          "input": [
+            "text"
+          ],
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0
+          },
+          "contextWindow": 32000,
+          "maxTokens": 4096
+        },
+        "messages": [
+          {
+            "role": "assistant",
+            "content": [
+              {
+                "type": "text",
+                "text": "x",
+                "textSignature": "signed"
+              }
+            ],
+            "api": "openai-completions",
+            "provider": "openai",
+            "model": "fixture",
+            "usage": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "totalTokens": 0,
+              "cost": {
+                "input": 0,
+                "output": 0,
+                "cacheRead": 0,
+                "cacheWrite": 0,
+                "total": 0
+              }
+            },
+            "stopReason": "stop",
+            "timestamp": 2
+          }
+        ]
+      }
+    },
+    {
+      "case": "cross-model-text-signatures",
+      "input": {
+        "model": {
+          "id": "other",
+          "name": "Fixture",
+          "api": "openai-completions",
+          "provider": "openai",
+          "baseUrl": "https://example.invalid/v1",
+          "reasoning": true,
+          "input": [
+            "text"
+          ],
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0
+          },
+          "contextWindow": 32000,
+          "maxTokens": 4096
+        },
+        "messages": [
+          {
+            "role": "assistant",
+            "content": [
+              {
+                "type": "text",
+                "text": "x",
+                "textSignature": "signed"
+              }
+            ],
+            "api": "openai-completions",
+            "provider": "openai",
+            "model": "fixture",
+            "usage": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "totalTokens": 0,
+              "cost": {
+                "input": 0,
+                "output": 0,
+                "cacheRead": 0,
+                "cacheWrite": 0,
+                "total": 0
+              }
+            },
+            "stopReason": "stop",
+            "timestamp": 2
+          }
+        ]
+      }
+    },
+    {
+      "case": "same-model-thinking",
+      "input": {
+        "model": {
+          "id": "fixture",
+          "name": "Fixture",
+          "api": "openai-completions",
+          "provider": "openai",
+          "baseUrl": "https://example.invalid/v1",
+          "reasoning": true,
+          "input": [
+            "text"
+          ],
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0
+          },
+          "contextWindow": 32000,
+          "maxTokens": 4096
+        },
+        "messages": [
+          {
+            "role": "assistant",
+            "content": [
+              {
+                "type": "thinking",
+                "thinking": ""
+              },
+              {
+                "type": "thinking",
+                "thinking": " \n\t"
+              },
+              {
+                "type": "thinking",
+                "thinking": "secret",
+                "redacted": true
+              },
+              {
+                "type": "thinking",
+                "thinking": "",
+                "thinkingSignature": "encrypted"
+              },
+              {
+                "type": "thinking",
+                "thinking": "plan",
+                "thinkingSignature": "sig"
+              }
+            ],
+            "api": "openai-completions",
+            "provider": "openai",
+            "model": "fixture",
+            "usage": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "totalTokens": 0,
+              "cost": {
+                "input": 0,
+                "output": 0,
+                "cacheRead": 0,
+                "cacheWrite": 0,
+                "total": 0
+              }
+            },
+            "stopReason": "stop",
+            "timestamp": 2
+          }
+        ]
+      }
+    },
+    {
+      "case": "cross-model-thinking",
+      "input": {
+        "model": {
+          "id": "other",
+          "name": "Fixture",
+          "api": "openai-completions",
+          "provider": "openai",
+          "baseUrl": "https://example.invalid/v1",
+          "reasoning": true,
+          "input": [
+            "text"
+          ],
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0
+          },
+          "contextWindow": 32000,
+          "maxTokens": 4096
+        },
+        "messages": [
+          {
+            "role": "assistant",
+            "content": [
+              {
+                "type": "thinking",
+                "thinking": ""
+              },
+              {
+                "type": "thinking",
+                "thinking": " \n\t"
+              },
+              {
+                "type": "thinking",
+                "thinking": "secret",
+                "redacted": true
+              },
+              {
+                "type": "thinking",
+                "thinking": "",
+                "thinkingSignature": "encrypted"
+              },
+              {
+                "type": "thinking",
+                "thinking": "plan",
+                "thinkingSignature": "sig"
+              }
+            ],
+            "api": "openai-completions",
+            "provider": "openai",
+            "model": "fixture",
+            "usage": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "totalTokens": 0,
+              "cost": {
+                "input": 0,
+                "output": 0,
+                "cacheRead": 0,
+                "cacheWrite": 0,
+                "total": 0
+              }
+            },
+            "stopReason": "stop",
+            "timestamp": 2
+          }
+        ]
+      }
+    },
+    {
+      "case": "text-only-image-runs",
+      "input": {
+        "model": {
+          "id": "fixture",
+          "name": "Fixture",
+          "api": "openai-completions",
+          "provider": "openai",
+          "baseUrl": "https://example.invalid/v1",
+          "reasoning": true,
+          "input": [
+            "text"
+          ],
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0
+          },
+          "contextWindow": 32000,
+          "maxTokens": 4096
+        },
+        "messages": [
+          {
+            "role": "user",
+            "content": [
+              {
+                "type": "image",
+                "data": "AA==",
+                "mimeType": "image/png"
+              },
+              {
+                "type": "image",
+                "data": "AA==",
+                "mimeType": "image/png"
+              },
+              {
+                "type": "text",
+                "text": "x"
+              },
+              {
+                "type": "image",
+                "data": "AA==",
+                "mimeType": "image/png"
+              }
+            ],
+            "timestamp": 1
+          },
+          {
+            "role": "toolResult",
+            "toolCallId": "one",
+            "toolName": "echo",
+            "content": [
+              {
+                "type": "image",
+                "data": "AA==",
+                "mimeType": "image/png"
+              },
+              {
+                "type": "image",
+                "data": "AA==",
+                "mimeType": "image/png"
+              },
+              {
+                "type": "text",
+                "text": "(tool image omitted: model does not support images)"
+              },
+              {
+                "type": "image",
+                "data": "AA==",
+                "mimeType": "image/png"
+              }
+            ],
+            "isError": false,
+            "timestamp": 3
+          }
+        ]
+      }
+    },
+    {
+      "case": "vision-images",
+      "input": {
+        "model": {
+          "id": "fixture",
+          "name": "Fixture",
+          "api": "openai-completions",
+          "provider": "openai",
+          "baseUrl": "https://example.invalid/v1",
+          "reasoning": true,
+          "input": [
+            "text",
+            "image"
+          ],
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0
+          },
+          "contextWindow": 32000,
+          "maxTokens": 4096
+        },
+        "messages": [
+          {
+            "role": "user",
+            "content": [
+              {
+                "type": "image",
+                "data": "AA==",
+                "mimeType": "image/png"
+              },
+              {
+                "type": "image",
+                "data": "AA==",
+                "mimeType": "image/png"
+              },
+              {
+                "type": "text",
+                "text": "x"
+              }
+            ],
+            "timestamp": 1
+          }
+        ]
+      }
+    },
+    {
+      "case": "orphan-at-end",
+      "input": {
+        "model": {
+          "id": "fixture",
+          "name": "Fixture",
+          "api": "openai-completions",
+          "provider": "openai",
+          "baseUrl": "https://example.invalid/v1",
+          "reasoning": true,
+          "input": [
+            "text"
+          ],
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0
+          },
+          "contextWindow": 32000,
+          "maxTokens": 4096
+        },
+        "messages": [
+          {
+            "role": "assistant",
+            "content": [
+              {
+                "type": "toolCall",
+                "id": "one",
+                "name": "echo",
+                "arguments": {}
+              }
+            ],
+            "api": "openai-completions",
+            "provider": "openai",
+            "model": "fixture",
+            "usage": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "totalTokens": 0,
+              "cost": {
+                "input": 0,
+                "output": 0,
+                "cacheRead": 0,
+                "cacheWrite": 0,
+                "total": 0
+              }
+            },
+            "stopReason": "stop",
+            "timestamp": 2
+          }
+        ]
+      }
+    },
+    {
+      "case": "orphan-before-user",
+      "input": {
+        "model": {
+          "id": "fixture",
+          "name": "Fixture",
+          "api": "openai-completions",
+          "provider": "openai",
+          "baseUrl": "https://example.invalid/v1",
+          "reasoning": true,
+          "input": [
+            "text"
+          ],
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0
+          },
+          "contextWindow": 32000,
+          "maxTokens": 4096
+        },
+        "messages": [
+          {
+            "role": "assistant",
+            "content": [
+              {
+                "type": "toolCall",
+                "id": "one",
+                "name": "echo",
+                "arguments": {}
+              }
+            ],
+            "api": "openai-completions",
+            "provider": "openai",
+            "model": "fixture",
+            "usage": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "totalTokens": 0,
+              "cost": {
+                "input": 0,
+                "output": 0,
+                "cacheRead": 0,
+                "cacheWrite": 0,
+                "total": 0
+              }
+            },
+            "stopReason": "stop",
+            "timestamp": 2
+          },
+          {
+            "role": "user",
+            "content": "next",
+            "timestamp": 1
+          }
+        ]
+      }
+    },
+    {
+      "case": "orphan-before-assistant",
+      "input": {
+        "model": {
+          "id": "fixture",
+          "name": "Fixture",
+          "api": "openai-completions",
+          "provider": "openai",
+          "baseUrl": "https://example.invalid/v1",
+          "reasoning": true,
+          "input": [
+            "text"
+          ],
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0
+          },
+          "contextWindow": 32000,
+          "maxTokens": 4096
+        },
+        "messages": [
+          {
+            "role": "assistant",
+            "content": [
+              {
+                "type": "toolCall",
+                "id": "one",
+                "name": "echo",
+                "arguments": {}
+              }
+            ],
+            "api": "openai-completions",
+            "provider": "openai",
+            "model": "fixture",
+            "usage": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "totalTokens": 0,
+              "cost": {
+                "input": 0,
+                "output": 0,
+                "cacheRead": 0,
+                "cacheWrite": 0,
+                "total": 0
+              }
+            },
+            "stopReason": "stop",
+            "timestamp": 2
+          },
+          {
+            "role": "assistant",
+            "content": [
+              {
+                "type": "text",
+                "text": "next"
+              }
+            ],
+            "api": "openai-completions",
+            "provider": "openai",
+            "model": "fixture",
+            "usage": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "totalTokens": 0,
+              "cost": {
+                "input": 0,
+                "output": 0,
+                "cacheRead": 0,
+                "cacheWrite": 0,
+                "total": 0
+              }
+            },
+            "stopReason": "stop",
+            "timestamp": 2
+          }
+        ]
+      }
+    },
+    {
+      "case": "held-system-after-real-result",
+      "input": {
+        "model": {
+          "id": "fixture",
+          "name": "Fixture",
+          "api": "openai-completions",
+          "provider": "openai",
+          "baseUrl": "https://example.invalid/v1",
+          "reasoning": true,
+          "input": [
+            "text"
+          ],
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0
+          },
+          "contextWindow": 32000,
+          "maxTokens": 4096
+        },
+        "messages": [
+          {
+            "role": "assistant",
+            "content": [
+              {
+                "type": "toolCall",
+                "id": "one",
+                "name": "echo",
+                "arguments": {}
+              }
+            ],
+            "api": "openai-completions",
+            "provider": "openai",
+            "model": "fixture",
+            "usage": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "totalTokens": 0,
+              "cost": {
+                "input": 0,
+                "output": 0,
+                "cacheRead": 0,
+                "cacheWrite": 0,
+                "total": 0
+              }
+            },
+            "stopReason": "stop",
+            "timestamp": 2
+          },
+          {
+            "role": "system",
+            "content": "update",
+            "timestamp": 4
+          },
+          {
+            "role": "toolResult",
+            "toolCallId": "one",
+            "toolName": "echo",
+            "content": [
+              {
+                "type": "text",
+                "text": "ok"
+              }
+            ],
+            "isError": false,
+            "timestamp": 3
+          }
+        ]
+      }
+    },
+    {
+      "case": "held-system-after-synthetic-result",
+      "input": {
+        "model": {
+          "id": "fixture",
+          "name": "Fixture",
+          "api": "openai-completions",
+          "provider": "openai",
+          "baseUrl": "https://example.invalid/v1",
+          "reasoning": true,
+          "input": [
+            "text"
+          ],
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0
+          },
+          "contextWindow": 32000,
+          "maxTokens": 4096
+        },
+        "messages": [
+          {
+            "role": "assistant",
+            "content": [
+              {
+                "type": "toolCall",
+                "id": "one",
+                "name": "echo",
+                "arguments": {}
+              }
+            ],
+            "api": "openai-completions",
+            "provider": "openai",
+            "model": "fixture",
+            "usage": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "totalTokens": 0,
+              "cost": {
+                "input": 0,
+                "output": 0,
+                "cacheRead": 0,
+                "cacheWrite": 0,
+                "total": 0
+              }
+            },
+            "stopReason": "stop",
+            "timestamp": 2
+          },
+          {
+            "role": "system",
+            "content": "update",
+            "timestamp": 4
+          },
+          {
+            "role": "user",
+            "content": "next",
+            "timestamp": 1
+          }
+        ]
+      }
+    },
+    {
+      "case": "multiple-calls-partially-answered",
+      "input": {
+        "model": {
+          "id": "fixture",
+          "name": "Fixture",
+          "api": "openai-completions",
+          "provider": "openai",
+          "baseUrl": "https://example.invalid/v1",
+          "reasoning": true,
+          "input": [
+            "text"
+          ],
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0
+          },
+          "contextWindow": 32000,
+          "maxTokens": 4096
+        },
+        "messages": [
+          {
+            "role": "assistant",
+            "content": [
+              {
+                "type": "toolCall",
+                "id": "one",
+                "name": "echo",
+                "arguments": {}
+              },
+              {
+                "type": "toolCall",
+                "id": "two",
+                "name": "echo",
+                "arguments": {}
+              }
+            ],
+            "api": "openai-completions",
+            "provider": "openai",
+            "model": "fixture",
+            "usage": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "totalTokens": 0,
+              "cost": {
+                "input": 0,
+                "output": 0,
+                "cacheRead": 0,
+                "cacheWrite": 0,
+                "total": 0
+              }
+            },
+            "stopReason": "stop",
+            "timestamp": 2
+          },
+          {
+            "role": "toolResult",
+            "toolCallId": "two",
+            "toolName": "echo",
+            "content": [
+              {
+                "type": "text",
+                "text": "ok"
+              }
+            ],
+            "isError": false,
+            "timestamp": 3
+          }
+        ]
+      }
+    },
+    {
+      "case": "error-closes-previous-call",
+      "input": {
+        "model": {
+          "id": "fixture",
+          "name": "Fixture",
+          "api": "openai-completions",
+          "provider": "openai",
+          "baseUrl": "https://example.invalid/v1",
+          "reasoning": true,
+          "input": [
+            "text"
+          ],
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0
+          },
+          "contextWindow": 32000,
+          "maxTokens": 4096
+        },
+        "messages": [
+          {
+            "role": "assistant",
+            "content": [
+              {
+                "type": "toolCall",
+                "id": "one",
+                "name": "echo",
+                "arguments": {}
+              }
+            ],
+            "api": "openai-completions",
+            "provider": "openai",
+            "model": "fixture",
+            "usage": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "totalTokens": 0,
+              "cost": {
+                "input": 0,
+                "output": 0,
+                "cacheRead": 0,
+                "cacheWrite": 0,
+                "total": 0
+              }
+            },
+            "stopReason": "stop",
+            "timestamp": 2
+          },
+          {
+            "role": "assistant",
+            "content": [
+              {
+                "type": "text",
+                "text": "bad"
+              }
+            ],
+            "api": "openai-completions",
+            "provider": "openai",
+            "model": "fixture",
+            "usage": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "totalTokens": 0,
+              "cost": {
+                "input": 0,
+                "output": 0,
+                "cacheRead": 0,
+                "cacheWrite": 0,
+                "total": 0
+              }
+            },
+            "stopReason": "error",
+            "timestamp": 2
+          },
+          {
+            "role": "toolResult",
+            "toolCallId": "one",
+            "toolName": "echo",
+            "content": [
+              {
+                "type": "text",
+                "text": "ok"
+              }
+            ],
+            "isError": false,
+            "timestamp": 3
+          }
+        ]
+      }
+    },
+    {
+      "case": "aborted-turn-is-dropped",
+      "input": {
+        "model": {
+          "id": "fixture",
+          "name": "Fixture",
+          "api": "openai-completions",
+          "provider": "openai",
+          "baseUrl": "https://example.invalid/v1",
+          "reasoning": true,
+          "input": [
+            "text"
+          ],
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0
+          },
+          "contextWindow": 32000,
+          "maxTokens": 4096
+        },
+        "messages": [
+          {
+            "role": "assistant",
+            "content": [
+              {
+                "type": "toolCall",
+                "id": "one",
+                "name": "echo",
+                "arguments": {}
+              }
+            ],
+            "api": "openai-completions",
+            "provider": "openai",
+            "model": "fixture",
+            "usage": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "totalTokens": 0,
+              "cost": {
+                "input": 0,
+                "output": 0,
+                "cacheRead": 0,
+                "cacheWrite": 0,
+                "total": 0
+              }
+            },
+            "stopReason": "aborted",
+            "timestamp": 2
+          },
+          {
+            "role": "user",
+            "content": "retry",
+            "timestamp": 1
+          }
+        ]
+      }
+    },
+    {
+      "case": "cross-model-id-normalization",
+      "input": {
+        "model": {
+          "id": "other",
+          "name": "Fixture",
+          "api": "openai-completions",
+          "provider": "openai",
+          "baseUrl": "https://example.invalid/v1",
+          "reasoning": true,
+          "input": [
+            "text"
+          ],
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0
+          },
+          "contextWindow": 32000,
+          "maxTokens": 4096
+        },
+        "messages": [
+          {
+            "role": "assistant",
+            "content": [
+              {
+                "type": "toolCall",
+                "id": "source|item",
+                "name": "echo",
+                "arguments": {},
+                "thoughtSignature": "opaque"
+              }
+            ],
+            "api": "openai-completions",
+            "provider": "openai",
+            "model": "fixture",
+            "usage": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "totalTokens": 0,
+              "cost": {
+                "input": 0,
+                "output": 0,
+                "cacheRead": 0,
+                "cacheWrite": 0,
+                "total": 0
+              }
+            },
+            "stopReason": "stop",
+            "timestamp": 2
+          },
+          {
+            "role": "toolResult",
+            "toolCallId": "source|item",
+            "toolName": "echo",
+            "content": [
+              {
+                "type": "text",
+                "text": "ok"
+              }
+            ],
+            "isError": false,
+            "timestamp": 3
+          }
+        ],
+        "normalizeToolCallId": "prefix"
+      }
+    },
+    {
+      "case": "same-model-id-is-unchanged",
+      "input": {
+        "model": {
+          "id": "fixture",
+          "name": "Fixture",
+          "api": "openai-completions",
+          "provider": "openai",
+          "baseUrl": "https://example.invalid/v1",
+          "reasoning": true,
+          "input": [
+            "text"
+          ],
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0
+          },
+          "contextWindow": 32000,
+          "maxTokens": 4096
+        },
+        "messages": [
+          {
+            "role": "assistant",
+            "content": [
+              {
+                "type": "toolCall",
+                "id": "source|item",
+                "name": "echo",
+                "arguments": {}
+              }
+            ],
+            "api": "openai-completions",
+            "provider": "openai",
+            "model": "fixture",
+            "usage": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "totalTokens": 0,
+              "cost": {
+                "input": 0,
+                "output": 0,
+                "cacheRead": 0,
+                "cacheWrite": 0,
+                "total": 0
+              }
+            },
+            "stopReason": "stop",
+            "timestamp": 2
+          },
+          {
+            "role": "toolResult",
+            "toolCallId": "source|item",
+            "toolName": "echo",
+            "content": [
+              {
+                "type": "text",
+                "text": "ok"
+              }
+            ],
+            "isError": false,
+            "timestamp": 3
+          }
+        ],
+        "normalizeToolCallId": "prefix"
+      }
+    },
+    {
+      "case": "raw-unknown-message-and-block-properties",
+      "input": {
+        "model": {
+          "id": "fixture",
+          "name": "Fixture",
+          "api": "openai-completions",
+          "provider": "openai",
+          "baseUrl": "https://example.invalid/v1",
+          "reasoning": true,
+          "input": [
+            "text"
+          ],
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0
+          },
+          "contextWindow": 32000,
+          "maxTokens": 4096
+        },
+        "messages": [
+          {
+            "role": "user",
+            "timestamp": 1,
+            "content": null,
+            "legacy": {
+              "lone": "\ud800"
+            }
+          },
+          {
+            "role": "assistant",
+            "api": "openai-completions",
+            "provider": "openai",
+            "model": "fixture",
+            "content": [
+              {
+                "type": "text",
+                "text": "answer",
+                "extra": {
+                  "retained": true
+                }
+              },
+              {
+                "type": "extension",
+                "payload": [
+                  1,
+                  2
+                ]
+              },
+              {
+                "type": "thinking",
+                "thinking": "signed",
+                "thinkingSignature": "signature",
+                "extra": "retained"
+              }
+            ],
+            "stopReason": "stop",
+            "legacyField": null
+          }
+        ]
+      }
+    },
+    {
+      "case": "raw-source-rewrites-only-specific-properties",
+      "input": {
+        "model": {
+          "id": "fixture",
+          "name": "Fixture",
+          "api": "openai-completions",
+          "provider": "openai",
+          "baseUrl": "https://example.invalid/v1",
+          "reasoning": true,
+          "input": [
+            "text"
+          ],
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0
+          },
+          "contextWindow": 32000,
+          "maxTokens": 4096
+        },
+        "messages": [
+          {
+            "role": "user",
+            "timestamp": 1,
+            "content": [
+              {
+                "type": "text",
+                "text": "input",
+                "extra": "retained"
+              },
+              {
+                "type": "image",
+                "data": "AA==",
+                "mimeType": "image/png",
+                "extra": "removed-with-image"
+              }
+            ],
+            "legacy": "retained"
+          },
+          {
+            "role": "assistant",
+            "api": "old",
+            "provider": "old",
+            "model": "old",
+            "content": [
+              {
+                "type": "text",
+                "text": "answer",
+                "extra": "removed-by-cross-model-text-conversion"
+              },
+              {
+                "type": "thinking",
+                "thinking": "plan",
+                "extra": "removed-by-cross-model-thinking-conversion"
+              }
+            ],
+            "stopReason": "stop",
+            "legacyField": "retained"
+          }
+        ]
+      }
+    },
+    {
+      "case": "raw-null-assistant-block",
+      "input": {
+        "model": {
+          "id": "fixture",
+          "name": "Fixture",
+          "api": "openai-completions",
+          "provider": "openai",
+          "baseUrl": "https://example.invalid/v1",
+          "reasoning": true,
+          "input": [
+            "text"
+          ],
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0
+          },
+          "contextWindow": 32000,
+          "maxTokens": 4096
+        },
+        "messages": [
+          {
+            "role": "assistant",
+            "api": "openai-completions",
+            "provider": "openai",
+            "model": "fixture",
+            "content": [
+              null
+            ],
+            "stopReason": "stop"
+          }
+        ]
+      }
+    },
+    {
+      "case": "raw-nonstring-thinking",
+      "input": {
+        "model": {
+          "id": "fixture",
+          "name": "Fixture",
+          "api": "openai-completions",
+          "provider": "openai",
+          "baseUrl": "https://example.invalid/v1",
+          "reasoning": true,
+          "input": [
+            "text"
+          ],
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0
+          },
+          "contextWindow": 32000,
+          "maxTokens": 4096
+        },
+        "messages": [
+          {
+            "role": "assistant",
+            "api": "openai-completions",
+            "provider": "openai",
+            "model": "fixture",
+            "content": [
+              {
+                "type": "thinking",
+                "thinking": 42
+              }
+            ],
+            "stopReason": "stop"
+          }
+        ]
+      }
+    },
+    {
+      "case": "raw-normalizer-source-retains-incomplete-metadata",
+      "input": {
+        "model": {
+          "id": "fixture",
+          "name": "Fixture",
+          "api": "openai-completions",
+          "provider": "openai",
+          "baseUrl": "https://example.invalid/v1",
+          "reasoning": true,
+          "input": [
+            "text"
+          ],
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0
+          },
+          "contextWindow": 32000,
+          "maxTokens": 4096
+        },
+        "normalizeToolCallId": "prefix",
+        "messages": [
+          {
+            "role": "assistant",
+            "api": "old",
+            "provider": "old",
+            "model": "old",
+            "content": [
+              {
+                "type": "extension",
+                "payload": true
+              },
+              {
+                "type": "toolCall",
+                "id": "original",
+                "name": "fixture",
+                "arguments": {},
+                "unknown": "retained"
+              }
+            ],
+            "stopReason": "toolUse",
+            "legacy": "retained"
+          }
+        ]
+      }
+    },
+    {
+      "case": "unknown-array-block-flattened-once",
+      "input": {
+        "model": {
+          "id": "fixture",
+          "name": "Fixture",
+          "api": "openai-completions",
+          "provider": "openai",
+          "baseUrl": "https://example.invalid/v1",
+          "reasoning": true,
+          "input": [
+            "text"
+          ],
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0
+          },
+          "contextWindow": 32000,
+          "maxTokens": 4096
+        },
+        "messages": [
+          {
+            "role": "assistant",
+            "content": [
+              [
+                {
+                  "type": "text",
+                  "text": "nested"
+                }
+              ]
+            ],
+            "provider": "old",
+            "api": "old",
+            "model": "old"
+          }
+        ]
+      }
+    },
+    {
+      "case": "flattened-null-block-property-error",
+      "input": {
+        "model": {
+          "id": "fixture",
+          "name": "Fixture",
+          "api": "openai-completions",
+          "provider": "openai",
+          "baseUrl": "https://example.invalid/v1",
+          "reasoning": true,
+          "input": [
+            "text"
+          ],
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0
+          },
+          "contextWindow": 32000,
+          "maxTokens": 4096
+        },
+        "messages": [
+          {
+            "role": "assistant",
+            "content": [
+              [
+                null
+              ]
+            ],
+            "provider": "old",
+            "api": "old",
+            "model": "old"
+          }
+        ]
+      }
+    },
+    {
+      "case": "string-tool-result-code-point-iteration",
+      "input": {
+        "model": {
+          "id": "fixture",
+          "name": "Fixture",
+          "api": "openai-completions",
+          "provider": "openai",
+          "baseUrl": "https://example.invalid/v1",
+          "reasoning": true,
+          "input": [
+            "text"
+          ],
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0
+          },
+          "contextWindow": 32000,
+          "maxTokens": 4096
+        },
+        "messages": [
+          {
+            "role": "toolResult",
+            "content": "a\ud83d\ude00\ud800b",
+            "toolCallId": "one"
+          }
+        ]
+      }
+    },
+    {
+      "case": "numeric-tool-result-id",
+      "input": {
+        "model": {
+          "id": "fixture",
+          "name": "Fixture",
+          "api": "openai-completions",
+          "provider": "openai",
+          "baseUrl": "https://example.invalid/v1",
+          "reasoning": true,
+          "input": [
+            "text"
+          ],
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0
+          },
+          "contextWindow": 32000,
+          "maxTokens": 4096
+        },
+        "messages": [
+          {
+            "role": "assistant",
+            "content": [
+              {
+                "type": "toolCall",
+                "name": "read",
+                "arguments": {},
+                "id": 1
+              }
+            ],
+            "provider": "old",
+            "api": "old",
+            "model": "old"
+          },
+          {
+            "role": "toolResult",
+            "toolCallId": 1,
+            "content": []
+          }
+        ]
+      }
+    },
+    {
+      "case": "null-tool-result-id",
+      "input": {
+        "model": {
+          "id": "fixture",
+          "name": "Fixture",
+          "api": "openai-completions",
+          "provider": "openai",
+          "baseUrl": "https://example.invalid/v1",
+          "reasoning": true,
+          "input": [
+            "text"
+          ],
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0
+          },
+          "contextWindow": 32000,
+          "maxTokens": 4096
+        },
+        "messages": [
+          {
+            "role": "assistant",
+            "content": [
+              {
+                "type": "toolCall",
+                "name": "read",
+                "arguments": {},
+                "id": null
+              }
+            ],
+            "provider": "old",
+            "api": "old",
+            "model": "old"
+          },
+          {
+            "role": "toolResult",
+            "toolCallId": null,
+            "content": []
+          }
+        ]
+      }
+    },
+    {
+      "case": "absent-tool-result-id",
+      "input": {
+        "model": {
+          "id": "fixture",
+          "name": "Fixture",
+          "api": "openai-completions",
+          "provider": "openai",
+          "baseUrl": "https://example.invalid/v1",
+          "reasoning": true,
+          "input": [
+            "text"
+          ],
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0
+          },
+          "contextWindow": 32000,
+          "maxTokens": 4096
+        },
+        "messages": [
+          {
+            "role": "assistant",
+            "content": [
+              {
+                "type": "toolCall",
+                "name": "read",
+                "arguments": {}
+              }
+            ],
+            "provider": "old",
+            "api": "old",
+            "model": "old"
+          },
+          {
+            "role": "toolResult",
+            "content": []
+          }
+        ]
+      }
+    },
+    {
+      "case": "object-tool-result-ids-are-distinct",
+      "input": {
+        "model": {
+          "id": "fixture",
+          "name": "Fixture",
+          "api": "openai-completions",
+          "provider": "openai",
+          "baseUrl": "https://example.invalid/v1",
+          "reasoning": true,
+          "input": [
+            "text"
+          ],
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0
+          },
+          "contextWindow": 32000,
+          "maxTokens": 4096
+        },
+        "messages": [
+          {
+            "role": "assistant",
+            "content": [
+              {
+                "type": "toolCall",
+                "name": "read",
+                "arguments": {},
+                "id": {}
+              }
+            ],
+            "provider": "old",
+            "api": "old",
+            "model": "old"
+          },
+          {
+            "role": "toolResult",
+            "toolCallId": {},
+            "content": []
+          }
+        ]
+      }
+    },
+    {
+      "case": "late-image-downgrade-error",
+      "input": {
+        "model": {
+          "id": "fixture",
+          "name": "Fixture",
+          "api": "openai-completions",
+          "provider": "openai",
+          "baseUrl": "https://example.invalid/v1",
+          "reasoning": true,
+          "input": [
+            "text"
+          ],
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0
+          },
+          "contextWindow": 32000,
+          "maxTokens": 4096
+        },
+        "messages": [
+          {
+            "role": "assistant",
+            "content": [
+              {
+                "type": "toolCall",
+                "name": "read",
+                "arguments": {},
+                "id": "one"
+              }
+            ],
+            "provider": "old",
+            "api": "old",
+            "model": "old"
+          },
+          {
+            "role": "user",
+            "content": [
+              null
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}

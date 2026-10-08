@@ -1,0 +1,283 @@
+{
+  "state": {
+    "messages": [
+      {
+        "role": "user",
+        "content": "hello",
+        "timestamp": 1767225600000
+      },
+      {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "text",
+            "text": "Hello, world!"
+          }
+        ],
+        "api": "openai-completions",
+        "provider": "openai",
+        "model": "fixture",
+        "usage": {
+          "input": 70,
+          "output": 9,
+          "cacheRead": 25,
+          "cacheWrite": 5,
+          "reasoning": 2,
+          "totalTokens": 109,
+          "cost": {
+            "input": 0.00007,
+            "output": 0.000018,
+            "cacheRead": 0.00007500000000000001,
+            "cacheWrite": 0.00002,
+            "total": 0.000183
+          }
+        },
+        "stopReason": "stop",
+        "timestamp": 1767225600000,
+        "rawStopReason": "stop"
+      }
+    ],
+    "results": [
+      {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "text",
+            "text": "Hello, world!"
+          }
+        ],
+        "api": "openai-completions",
+        "provider": "openai",
+        "model": "fixture",
+        "usage": {
+          "input": 70,
+          "output": 9,
+          "cacheRead": 25,
+          "cacheWrite": 5,
+          "reasoning": 2,
+          "totalTokens": 109,
+          "cost": {
+            "input": 0.00007,
+            "output": 0.000018,
+            "cacheRead": 0.00007500000000000001,
+            "cacheWrite": 0.00002,
+            "total": 0.000183
+          }
+        },
+        "stopReason": "stop",
+        "timestamp": 1767225600000,
+        "rawStopReason": "stop"
+      }
+    ],
+    "retainedEvents": [
+      {
+        "type": "start",
+        "partial": {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "Hello, world!"
+            }
+          ],
+          "api": "openai-completions",
+          "provider": "openai",
+          "model": "fixture",
+          "usage": {
+            "input": 70,
+            "output": 9,
+            "cacheRead": 25,
+            "cacheWrite": 5,
+            "reasoning": 2,
+            "totalTokens": 109,
+            "cost": {
+              "input": 0.00007,
+              "output": 0.000018,
+              "cacheRead": 0.00007500000000000001,
+              "cacheWrite": 0.00002,
+              "total": 0.000183
+            }
+          },
+          "stopReason": "stop",
+          "timestamp": 1767225600000,
+          "rawStopReason": "stop"
+        }
+      },
+      {
+        "type": "text_start",
+        "contentIndex": 0,
+        "partial": {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "Hello, world!"
+            }
+          ],
+          "api": "openai-completions",
+          "provider": "openai",
+          "model": "fixture",
+          "usage": {
+            "input": 70,
+            "output": 9,
+            "cacheRead": 25,
+            "cacheWrite": 5,
+            "reasoning": 2,
+            "totalTokens": 109,
+            "cost": {
+              "input": 0.00007,
+              "output": 0.000018,
+              "cacheRead": 0.00007500000000000001,
+              "cacheWrite": 0.00002,
+              "total": 0.000183
+            }
+          },
+          "stopReason": "stop",
+          "timestamp": 1767225600000,
+          "rawStopReason": "stop"
+        }
+      },
+      {
+        "type": "text_delta",
+        "contentIndex": 0,
+        "delta": "Hello, ",
+        "partial": {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "Hello, world!"
+            }
+          ],
+          "api": "openai-completions",
+          "provider": "openai",
+          "model": "fixture",
+          "usage": {
+            "input": 70,
+            "output": 9,
+            "cacheRead": 25,
+            "cacheWrite": 5,
+            "reasoning": 2,
+            "totalTokens": 109,
+            "cost": {
+              "input": 0.00007,
+              "output": 0.000018,
+              "cacheRead": 0.00007500000000000001,
+              "cacheWrite": 0.00002,
+              "total": 0.000183
+            }
+          },
+          "stopReason": "stop",
+          "timestamp": 1767225600000,
+          "rawStopReason": "stop"
+        }
+      },
+      {
+        "type": "text_delta",
+        "contentIndex": 0,
+        "delta": "world!",
+        "partial": {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "Hello, world!"
+            }
+          ],
+          "api": "openai-completions",
+          "provider": "openai",
+          "model": "fixture",
+          "usage": {
+            "input": 70,
+            "output": 9,
+            "cacheRead": 25,
+            "cacheWrite": 5,
+            "reasoning": 2,
+            "totalTokens": 109,
+            "cost": {
+              "input": 0.00007,
+              "output": 0.000018,
+              "cacheRead": 0.00007500000000000001,
+              "cacheWrite": 0.00002,
+              "total": 0.000183
+            }
+          },
+          "stopReason": "stop",
+          "timestamp": 1767225600000,
+          "rawStopReason": "stop"
+        }
+      },
+      {
+        "type": "text_end",
+        "contentIndex": 0,
+        "content": "Hello, world!",
+        "partial": {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "Hello, world!"
+            }
+          ],
+          "api": "openai-completions",
+          "provider": "openai",
+          "model": "fixture",
+          "usage": {
+            "input": 70,
+            "output": 9,
+            "cacheRead": 25,
+            "cacheWrite": 5,
+            "reasoning": 2,
+            "totalTokens": 109,
+            "cost": {
+              "input": 0.00007,
+              "output": 0.000018,
+              "cacheRead": 0.00007500000000000001,
+              "cacheWrite": 0.00002,
+              "total": 0.000183
+            }
+          },
+          "stopReason": "stop",
+          "timestamp": 1767225600000,
+          "rawStopReason": "stop"
+        }
+      },
+      {
+        "type": "done",
+        "reason": "stop",
+        "message": {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "Hello, world!"
+            }
+          ],
+          "api": "openai-completions",
+          "provider": "openai",
+          "model": "fixture",
+          "usage": {
+            "input": 70,
+            "output": 9,
+            "cacheRead": 25,
+            "cacheWrite": 5,
+            "reasoning": 2,
+            "totalTokens": 109,
+            "cost": {
+              "input": 0.00007,
+              "output": 0.000018,
+              "cacheRead": 0.00007500000000000001,
+              "cacheWrite": 0.00002,
+              "total": 0.000183
+            }
+          },
+          "stopReason": "stop",
+          "timestamp": 1767225600000,
+          "rawStopReason": "stop"
+        }
+      }
+    ]
+  },
+  "queues": {},
+  "errors": []
+}

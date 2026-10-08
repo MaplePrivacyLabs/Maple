@@ -1,0 +1,194 @@
+{
+  "dsl": 1,
+  "id": "chat-completions",
+  "clock": {
+    "epochMs": 1767225600000
+  },
+  "covers": [
+    "packages/ai/test/cache-retention.test.ts",
+    "packages/ai/test/openai-completions-cache-control-format.test.ts",
+    "packages/ai/test/openai-completions-empty-tools.test.ts",
+    "packages/ai/test/openai-completions-prompt-cache.test.ts",
+    "packages/ai/test/openai-completions-tool-choice.test.ts",
+    "packages/ai/test/openai-completions-tool-result-images.test.ts",
+    "packages/ai/test/openai-completions-vllm-priority.test.ts"
+  ],
+  "models": [
+    {
+      "provider": "ant-ling",
+      "id": "Ling-2.6-flash"
+    },
+    {
+      "provider": "ant-ling",
+      "id": "Ring-2.6-1T"
+    },
+    {
+      "provider": "baseten",
+      "id": "zai-org/GLM-5.2"
+    },
+    {
+      "provider": "cerebras",
+      "id": "gpt-oss-120b"
+    },
+    {
+      "provider": "cerebras",
+      "id": "qwen-3.8-27b"
+    },
+    {
+      "provider": "cloudflare-ai-gateway",
+      "id": "gpt-5.1"
+    },
+    {
+      "provider": "cloudflare-ai-gateway",
+      "id": "workers-ai/@cf/moonshotai/kimi-k2.6"
+    },
+    {
+      "provider": "deepseek",
+      "id": "deepseek-flash"
+    },
+    {
+      "provider": "deepseek",
+      "id": "deepseek-v4-pro"
+    },
+    {
+      "provider": "fireworks",
+      "id": "accounts/fireworks/models/glm-5p3"
+    },
+    {
+      "provider": "fireworks",
+      "id": "accounts/fireworks/routers/glm-5p3-fast"
+    },
+    {
+      "provider": "groq",
+      "id": "openai/gpt-oss-20b"
+    },
+    {
+      "provider": "groq",
+      "id": "qwen/qwen3.6-27b"
+    },
+    {
+      "provider": "moonshotai-cn",
+      "id": "kimi-k2.6"
+    },
+    {
+      "provider": "moonshotai-cn",
+      "id": "kimi-k2.7-code"
+    },
+    {
+      "provider": "moonshotai",
+      "id": "kimi-k2.7-code"
+    },
+    {
+      "provider": "openai",
+      "id": "gpt-4o-mini"
+    },
+    {
+      "provider": "openai",
+      "id": "gpt-5.5"
+    },
+    {
+      "provider": "opencode-go",
+      "id": "kimi-k3"
+    },
+    {
+      "provider": "opencode",
+      "id": "deepseek-v4-flash"
+    },
+    {
+      "provider": "opencode",
+      "id": "deepseek-v4-pro"
+    },
+    {
+      "provider": "opencode",
+      "id": "grok-build-0.1"
+    },
+    {
+      "provider": "opencode",
+      "id": "kimi-k2.5"
+    },
+    {
+      "provider": "opencode",
+      "id": "kimi-k2.6"
+    },
+    {
+      "provider": "opencode",
+      "id": "minimax-m2.7"
+    },
+    {
+      "provider": "openrouter",
+      "id": "anthropic/claude-fable-5.1:batch"
+    },
+    {
+      "provider": "openrouter",
+      "id": "auto"
+    },
+    {
+      "provider": "openrouter",
+      "id": "deepseek/deepseek-r1"
+    },
+    {
+      "provider": "openrouter",
+      "id": "deepseek/deepseek-v4-pro"
+    },
+    {
+      "provider": "openrouter",
+      "id": "moonshotai/kimi-k2.6"
+    },
+    {
+      "provider": "openrouter",
+      "id": "openai/gpt-5.2-codex"
+    },
+    {
+      "provider": "qwen-token-plan-cn",
+      "id": "qwen3.7-max"
+    },
+    {
+      "provider": "qwen-token-plan-individual",
+      "id": "qwen3.7-max"
+    },
+    {
+      "provider": "qwen-token-plan",
+      "id": "qwen3.7-max"
+    },
+    {
+      "provider": "xiaomi-token-plan-ams",
+      "id": "mimo-v2.5-pro"
+    },
+    {
+      "provider": "xiaomi-token-plan-cn",
+      "id": "mimo-v2.5-pro"
+    },
+    {
+      "provider": "xiaomi-token-plan-sgp",
+      "id": "mimo-v2.5-pro"
+    },
+    {
+      "provider": "xiaomi",
+      "id": "mimo-v2.5-pro"
+    },
+    {
+      "provider": "zai-coding-cn",
+      "id": "glm-5.3"
+    },
+    {
+      "provider": "zai",
+      "id": "glm-4.7"
+    },
+    {
+      "provider": "zai",
+      "id": "glm-5-turbo"
+    },
+    {
+      "provider": "zai",
+      "id": "glm-5.2"
+    },
+    {
+      "provider": "zai",
+      "id": "glm-5.2-highspeed"
+    },
+    {
+      "provider": "zai",
+      "id": "glm-5.3"
+    }
+  ]
+}

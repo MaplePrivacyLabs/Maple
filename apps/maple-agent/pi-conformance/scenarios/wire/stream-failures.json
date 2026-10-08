@@ -1,0 +1,287 @@
+{
+  "dsl": 1,
+  "id": "wire/stream-failures",
+  "layer": "wire",
+  "covers": [
+    "packages/ai/src/api/openai-completions.ts"
+  ],
+  "model": {
+    "ref": "wire-fixture",
+    "value": {
+      "id": "fixture",
+      "name": "Fixture",
+      "api": "openai-completions",
+      "provider": "openai",
+      "baseUrl": "https://fixture.invalid/v1",
+      "reasoning": true,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 1,
+        "output": 2,
+        "cacheRead": 3,
+        "cacheWrite": 4
+      },
+      "contextWindow": 32000,
+      "maxTokens": 4096,
+      "compat": {
+        "supportsMidConvoSystemMessages": false
+      }
+    }
+  },
+  "clock": {
+    "epochMs": 1767225600000
+  },
+  "options": {
+    "maxTokens": 128,
+    "sessionId": "fixture-session"
+  },
+  "provider": {
+    "kind": "wire",
+    "responses": [
+      {
+        "status": 429,
+        "body": {
+          "error": {
+            "message": "fixture rate limit"
+          }
+        },
+        "transportError": "429: {\"message\":\"fixture rate limit\"}"
+      },
+      {
+        "status": 500,
+        "body": {
+          "error": {
+            "message": "fixture internal error"
+          }
+        },
+        "transportError": "500: {\"message\":\"fixture internal error\"}"
+      },
+      {
+        "status": 200,
+        "sse": [
+          {
+            "gate": "missing-start"
+          },
+          {
+            "data": {
+              "choices": [
+                {
+                  "index": 0,
+                  "delta": {
+                    "content": "partial"
+                  },
+                  "finish_reason": null
+                }
+              ]
+            }
+          },
+          {
+            "gate": "missing-end"
+          },
+          {
+            "data": "[DONE]"
+          }
+        ]
+      },
+      {
+        "status": 200,
+        "sse": [
+          {
+            "gate": "filter-start"
+          },
+          {
+            "data": {
+              "choices": [
+                {
+                  "index": 0,
+                  "delta": {
+                    "content": "filtered"
+                  },
+                  "finish_reason": "content_filter"
+                }
+              ]
+            }
+          },
+          {
+            "gate": "filter-end"
+          },
+          {
+            "data": "[DONE]"
+          }
+        ]
+      },
+      {
+        "status": 200,
+        "sse": [
+          {
+            "gate": "error-start"
+          },
+          {
+            "data": {
+              "choices": [
+                {
+                  "index": 0,
+                  "delta": {
+                    "content": "before error"
+                  },
+                  "finish_reason": null
+                }
+              ]
+            }
+          },
+          {
+            "gate": "error-next"
+          },
+          {
+            "data": {
+              "error": {
+                "message": "fixture stream error"
+              }
+            }
+          }
+        ],
+        "transportError": "fixture stream error"
+      },
+      {
+        "status": 200,
+        "sse": [
+          {
+            "gate": "abort-start"
+          },
+          {
+            "data": {
+              "choices": [
+                {
+                  "index": 0,
+                  "delta": {
+                    "content": "before abort"
+                  },
+                  "finish_reason": null
+                }
+              ]
+            }
+          },
+          {
+            "gate": "abort-end"
+          },
+          {
+            "data": "[DONE]"
+          }
+        ]
+      }
+    ]
+  },
+  "concurrency": "gated",
+  "steps": [
+    {
+      "prompt": "status failure 0"
+    },
+    {
+      "awaitIdle": {}
+    },
+    {
+      "prompt": "status failure 1"
+    },
+    {
+      "awaitIdle": {}
+    },
+    {
+      "prompt": "missing"
+    },
+    {
+      "waitFor": {
+        "type": "start",
+        "count": 1
+      }
+    },
+    {
+      "open": "missing-start"
+    },
+    {
+      "waitFor": {
+        "type": "text_delta",
+        "count": 1
+      }
+    },
+    {
+      "open": "missing-end"
+    },
+    {
+      "awaitIdle": {}
+    },
+    {
+      "prompt": "filter"
+    },
+    {
+      "waitFor": {
+        "type": "start",
+        "count": 2
+      }
+    },
+    {
+      "open": "filter-start"
+    },
+    {
+      "waitFor": {
+        "type": "text_delta",
+        "count": 2
+      }
+    },
+    {
+      "open": "filter-end"
+    },
+    {
+      "awaitIdle": {}
+    },
+    {
+      "prompt": "error"
+    },
+    {
+      "waitFor": {
+        "type": "start",
+        "count": 3
+      }
+    },
+    {
+      "open": "error-start"
+    },
+    {
+      "waitFor": {
+        "type": "text_delta",
+        "count": 3
+      }
+    },
+    {
+      "open": "error-next"
+    },
+    {
+      "awaitIdle": {}
+    },
+    {
+      "prompt": "abort"
+    },
+    {
+      "waitFor": {
+        "type": "start",
+        "count": 4
+      }
+    },
+    {
+      "open": "abort-start"
+    },
+    {
+      "waitFor": {
+        "type": "text_delta",
+        "count": 4
+      }
+    },
+    {
+      "abort": {}
+    },
+    {
+      "awaitIdle": {}
+    }
+  ]
+}

@@ -1,0 +1,278 @@
+{
+  "dsl": 1,
+  "id": "wire/system-collapse-and-tools",
+  "layer": "wire",
+  "covers": [
+    "packages/ai/src/api/openai-completions.ts"
+  ],
+  "model": {
+    "ref": "wire-fixture",
+    "value": {
+      "id": "fixture",
+      "name": "Fixture",
+      "api": "openai-completions",
+      "provider": "openai",
+      "baseUrl": "https://fixture.invalid/v1",
+      "reasoning": true,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 1,
+        "output": 2,
+        "cacheRead": 3,
+        "cacheWrite": 4
+      },
+      "contextWindow": 32000,
+      "maxTokens": 4096,
+      "compat": {
+        "supportsMidConvoSystemMessages": false
+      }
+    }
+  },
+  "clock": {
+    "epochMs": 1767225600000
+  },
+  "options": {
+    "maxTokens": 128,
+    "sessionId": "fixture-session"
+  },
+  "provider": {
+    "kind": "wire",
+    "responses": [
+      {
+        "status": 200,
+        "sse": [
+          {
+            "gate": "collapsed-start"
+          },
+          {
+            "data": {
+              "choices": [
+                {
+                  "index": 0,
+                  "delta": {
+                    "content": "answer"
+                  },
+                  "finish_reason": "stop"
+                }
+              ],
+              "usage": {
+                "prompt_tokens": 20,
+                "completion_tokens": 3,
+                "prompt_tokens_details": {
+                  "cached_tokens": 4
+                },
+                "completion_tokens_details": {
+                  "reasoning_tokens": 1
+                }
+              }
+            }
+          },
+          {
+            "gate": "collapsed-eof"
+          },
+          {
+            "data": "[DONE]"
+          }
+        ]
+      },
+      {
+        "status": 200,
+        "sse": [
+          {
+            "gate": "retained-start"
+          },
+          {
+            "data": {
+              "choices": [
+                {
+                  "index": 0,
+                  "delta": {
+                    "content": "answer"
+                  },
+                  "finish_reason": "stop"
+                }
+              ],
+              "usage": {
+                "prompt_tokens": 20,
+                "completion_tokens": 3,
+                "prompt_tokens_details": {
+                  "cached_tokens": 4
+                },
+                "completion_tokens_details": {
+                  "reasoning_tokens": 1
+                }
+              }
+            }
+          },
+          {
+            "gate": "retained-eof"
+          },
+          {
+            "data": "[DONE]"
+          }
+        ]
+      }
+    ]
+  },
+  "concurrency": "gated",
+  "steps": [
+    {
+      "prompt": [
+        {
+          "role": "system",
+          "content": "new instruction",
+          "timestamp": 1,
+          "toolsAdded": [
+            {
+              "name": "second",
+              "description": "Fixture second",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "x": {
+                    "type": "number"
+                  }
+                },
+                "required": [
+                  "x"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "content": "first turn",
+          "timestamp": 2
+        }
+      ]
+    },
+    {
+      "waitFor": {
+        "type": "start",
+        "count": 1
+      }
+    },
+    {
+      "open": "collapsed-start"
+    },
+    {
+      "waitFor": {
+        "type": "text_delta",
+        "count": 1
+      }
+    },
+    {
+      "open": "collapsed-eof"
+    },
+    {
+      "awaitIdle": {}
+    },
+    {
+      "setModel": {
+        "ref": "wire-mid-system",
+        "value": {
+          "id": "fixture",
+          "name": "Fixture",
+          "api": "openai-completions",
+          "provider": "openai",
+          "baseUrl": "https://fixture.invalid/v1",
+          "reasoning": true,
+          "input": [
+            "text"
+          ],
+          "cost": {
+            "input": 1,
+            "output": 2,
+            "cacheRead": 3,
+            "cacheWrite": 4
+          },
+          "contextWindow": 32000,
+          "maxTokens": 4096,
+          "compat": {
+            "supportsMidConvoSystemMessages": true,
+            "supportsMidConvoToolAdditions": true
+          }
+        }
+      }
+    },
+    {
+      "prompt": [
+        {
+          "role": "system",
+          "content": "another instruction",
+          "timestamp": 3,
+          "toolsAdded": [
+            {
+              "name": "third",
+              "description": "Fixture third",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "x": {
+                    "type": "number"
+                  }
+                },
+                "required": [
+                  "x"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "content": "second turn",
+          "timestamp": 4
+        }
+      ]
+    },
+    {
+      "waitFor": {
+        "type": "start",
+        "count": 2
+      }
+    },
+    {
+      "open": "retained-start"
+    },
+    {
+      "waitFor": {
+        "type": "text_delta",
+        "count": 2
+      }
+    },
+    {
+      "open": "retained-eof"
+    },
+    {
+      "awaitIdle": {}
+    }
+  ],
+  "initialMessages": [
+    {
+      "role": "system",
+      "content": "Use fixtures.",
+      "timestamp": 0,
+      "toolsAdded": [
+        {
+          "name": "first",
+          "description": "Fixture first",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "x": {
+                "type": "number"
+              }
+            },
+            "required": [
+              "x"
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

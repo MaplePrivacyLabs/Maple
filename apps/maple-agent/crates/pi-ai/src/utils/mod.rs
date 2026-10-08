@@ -11,6 +11,7 @@ pub mod js_value;
 pub mod json_parse;
 pub mod model_operations;
 pub mod overflow;
+pub mod provider_env;
 pub mod raw_message;
 pub mod retry;
 pub mod sanitize_unicode;

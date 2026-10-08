@@ -1,0 +1,550 @@
+{
+  "state": {
+    "messages": [
+      {
+        "role": "system",
+        "content": "Use fixtures.",
+        "timestamp": 0,
+        "toolsAdded": [
+          {
+            "name": "first",
+            "description": "Fixture first",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "x": {
+                  "type": "number"
+                }
+              },
+              "required": [
+                "x"
+              ]
+            }
+          }
+        ]
+      },
+      {
+        "role": "system",
+        "content": "new instruction",
+        "timestamp": 1,
+        "toolsAdded": [
+          {
+            "name": "second",
+            "description": "Fixture second",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "x": {
+                  "type": "number"
+                }
+              },
+              "required": [
+                "x"
+              ]
+            }
+          }
+        ]
+      },
+      {
+        "role": "user",
+        "content": "first turn",
+        "timestamp": 2
+      },
+      {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "text",
+            "text": "answer"
+          }
+        ],
+        "api": "openai-completions",
+        "provider": "openai",
+        "model": "fixture",
+        "usage": {
+          "input": 16,
+          "output": 3,
+          "cacheRead": 4,
+          "cacheWrite": 0,
+          "reasoning": 1,
+          "totalTokens": 23,
+          "cost": {
+            "input": 0.000016,
+            "output": 0.000006,
+            "cacheRead": 0.000012,
+            "cacheWrite": 0,
+            "total": 0.000034
+          }
+        },
+        "stopReason": "stop",
+        "timestamp": 1767225600000,
+        "rawStopReason": "stop"
+      },
+      {
+        "role": "system",
+        "content": "another instruction",
+        "timestamp": 3,
+        "toolsAdded": [
+          {
+            "name": "third",
+            "description": "Fixture third",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "x": {
+                  "type": "number"
+                }
+              },
+              "required": [
+                "x"
+              ]
+            }
+          }
+        ]
+      },
+      {
+        "role": "user",
+        "content": "second turn",
+        "timestamp": 4
+      },
+      {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "text",
+            "text": "answer"
+          }
+        ],
+        "api": "openai-completions",
+        "provider": "openai",
+        "model": "fixture",
+        "usage": {
+          "input": 16,
+          "output": 3,
+          "cacheRead": 4,
+          "cacheWrite": 0,
+          "reasoning": 1,
+          "totalTokens": 23,
+          "cost": {
+            "input": 0.000016,
+            "output": 0.000006,
+            "cacheRead": 0.000012,
+            "cacheWrite": 0,
+            "total": 0.000034
+          }
+        },
+        "stopReason": "stop",
+        "timestamp": 1767225600000,
+        "rawStopReason": "stop"
+      }
+    ],
+    "results": [
+      {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "text",
+            "text": "answer"
+          }
+        ],
+        "api": "openai-completions",
+        "provider": "openai",
+        "model": "fixture",
+        "usage": {
+          "input": 16,
+          "output": 3,
+          "cacheRead": 4,
+          "cacheWrite": 0,
+          "reasoning": 1,
+          "totalTokens": 23,
+          "cost": {
+            "input": 0.000016,
+            "output": 0.000006,
+            "cacheRead": 0.000012,
+            "cacheWrite": 0,
+            "total": 0.000034
+          }
+        },
+        "stopReason": "stop",
+        "timestamp": 1767225600000,
+        "rawStopReason": "stop"
+      },
+      {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "text",
+            "text": "answer"
+          }
+        ],
+        "api": "openai-completions",
+        "provider": "openai",
+        "model": "fixture",
+        "usage": {
+          "input": 16,
+          "output": 3,
+          "cacheRead": 4,
+          "cacheWrite": 0,
+          "reasoning": 1,
+          "totalTokens": 23,
+          "cost": {
+            "input": 0.000016,
+            "output": 0.000006,
+            "cacheRead": 0.000012,
+            "cacheWrite": 0,
+            "total": 0.000034
+          }
+        },
+        "stopReason": "stop",
+        "timestamp": 1767225600000,
+        "rawStopReason": "stop"
+      }
+    ],
+    "retainedEvents": [
+      {
+        "type": "start",
+        "partial": {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "answer"
+            }
+          ],
+          "api": "openai-completions",
+          "provider": "openai",
+          "model": "fixture",
+          "usage": {
+            "input": 16,
+            "output": 3,
+            "cacheRead": 4,
+            "cacheWrite": 0,
+            "reasoning": 1,
+            "totalTokens": 23,
+            "cost": {
+              "input": 0.000016,
+              "output": 0.000006,
+              "cacheRead": 0.000012,
+              "cacheWrite": 0,
+              "total": 0.000034
+            }
+          },
+          "stopReason": "stop",
+          "timestamp": 1767225600000,
+          "rawStopReason": "stop"
+        }
+      },
+      {
+        "type": "text_start",
+        "contentIndex": 0,
+        "partial": {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "answer"
+            }
+          ],
+          "api": "openai-completions",
+          "provider": "openai",
+          "model": "fixture",
+          "usage": {
+            "input": 16,
+            "output": 3,
+            "cacheRead": 4,
+            "cacheWrite": 0,
+            "reasoning": 1,
+            "totalTokens": 23,
+            "cost": {
+              "input": 0.000016,
+              "output": 0.000006,
+              "cacheRead": 0.000012,
+              "cacheWrite": 0,
+              "total": 0.000034
+            }
+          },
+          "stopReason": "stop",
+          "timestamp": 1767225600000,
+          "rawStopReason": "stop"
+        }
+      },
+      {
+        "type": "text_delta",
+        "contentIndex": 0,
+        "delta": "answer",
+        "partial": {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "answer"
+            }
+          ],
+          "api": "openai-completions",
+          "provider": "openai",
+          "model": "fixture",
+          "usage": {
+            "input": 16,
+            "output": 3,
+            "cacheRead": 4,
+            "cacheWrite": 0,
+            "reasoning": 1,
+            "totalTokens": 23,
+            "cost": {
+              "input": 0.000016,
+              "output": 0.000006,
+              "cacheRead": 0.000012,
+              "cacheWrite": 0,
+              "total": 0.000034
+            }
+          },
+          "stopReason": "stop",
+          "timestamp": 1767225600000,
+          "rawStopReason": "stop"
+        }
+      },
+      {
+        "type": "text_end",
+        "contentIndex": 0,
+        "content": "answer",
+        "partial": {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "answer"
+            }
+          ],
+          "api": "openai-completions",
+          "provider": "openai",
+          "model": "fixture",
+          "usage": {
+            "input": 16,
+            "output": 3,
+            "cacheRead": 4,
+            "cacheWrite": 0,
+            "reasoning": 1,
+            "totalTokens": 23,
+            "cost": {
+              "input": 0.000016,
+              "output": 0.000006,
+              "cacheRead": 0.000012,
+              "cacheWrite": 0,
+              "total": 0.000034
+            }
+          },
+          "stopReason": "stop",
+          "timestamp": 1767225600000,
+          "rawStopReason": "stop"
+        }
+      },
+      {
+        "type": "done",
+        "reason": "stop",
+        "message": {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "answer"
+            }
+          ],
+          "api": "openai-completions",
+          "provider": "openai",
+          "model": "fixture",
+          "usage": {
+            "input": 16,
+            "output": 3,
+            "cacheRead": 4,
+            "cacheWrite": 0,
+            "reasoning": 1,
+            "totalTokens": 23,
+            "cost": {
+              "input": 0.000016,
+              "output": 0.000006,
+              "cacheRead": 0.000012,
+              "cacheWrite": 0,
+              "total": 0.000034
+            }
+          },
+          "stopReason": "stop",
+          "timestamp": 1767225600000,
+          "rawStopReason": "stop"
+        }
+      },
+      {
+        "type": "start",
+        "partial": {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "answer"
+            }
+          ],
+          "api": "openai-completions",
+          "provider": "openai",
+          "model": "fixture",
+          "usage": {
+            "input": 16,
+            "output": 3,
+            "cacheRead": 4,
+            "cacheWrite": 0,
+            "reasoning": 1,
+            "totalTokens": 23,
+            "cost": {
+              "input": 0.000016,
+              "output": 0.000006,
+              "cacheRead": 0.000012,
+              "cacheWrite": 0,
+              "total": 0.000034
+            }
+          },
+          "stopReason": "stop",
+          "timestamp": 1767225600000,
+          "rawStopReason": "stop"
+        }
+      },
+      {
+        "type": "text_start",
+        "contentIndex": 0,
+        "partial": {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "answer"
+            }
+          ],
+          "api": "openai-completions",
+          "provider": "openai",
+          "model": "fixture",
+          "usage": {
+            "input": 16,
+            "output": 3,
+            "cacheRead": 4,
+            "cacheWrite": 0,
+            "reasoning": 1,
+            "totalTokens": 23,
+            "cost": {
+              "input": 0.000016,
+              "output": 0.000006,
+              "cacheRead": 0.000012,
+              "cacheWrite": 0,
+              "total": 0.000034
+            }
+          },
+          "stopReason": "stop",
+          "timestamp": 1767225600000,
+          "rawStopReason": "stop"
+        }
+      },
+      {
+        "type": "text_delta",
+        "contentIndex": 0,
+        "delta": "answer",
+        "partial": {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "answer"
+            }
+          ],
+          "api": "openai-completions",
+          "provider": "openai",
+          "model": "fixture",
+          "usage": {
+            "input": 16,
+            "output": 3,
+            "cacheRead": 4,
+            "cacheWrite": 0,
+            "reasoning": 1,
+            "totalTokens": 23,
+            "cost": {
+              "input": 0.000016,
+              "output": 0.000006,
+              "cacheRead": 0.000012,
+              "cacheWrite": 0,
+              "total": 0.000034
+            }
+          },
+          "stopReason": "stop",
+          "timestamp": 1767225600000,
+          "rawStopReason": "stop"
+        }
+      },
+      {
+        "type": "text_end",
+        "contentIndex": 0,
+        "content": "answer",
+        "partial": {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "answer"
+            }
+          ],
+          "api": "openai-completions",
+          "provider": "openai",
+          "model": "fixture",
+          "usage": {
+            "input": 16,
+            "output": 3,
+            "cacheRead": 4,
+            "cacheWrite": 0,
+            "reasoning": 1,
+            "totalTokens": 23,
+            "cost": {
+              "input": 0.000016,
+              "output": 0.000006,
+              "cacheRead": 0.000012,
+              "cacheWrite": 0,
+              "total": 0.000034
+            }
+          },
+          "stopReason": "stop",
+          "timestamp": 1767225600000,
+          "rawStopReason": "stop"
+        }
+      },
+      {
+        "type": "done",
+        "reason": "stop",
+        "message": {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "answer"
+            }
+          ],
+          "api": "openai-completions",
+          "provider": "openai",
+          "model": "fixture",
+          "usage": {
+            "input": 16,
+            "output": 3,
+            "cacheRead": 4,
+            "cacheWrite": 0,
+            "reasoning": 1,
+            "totalTokens": 23,
+            "cost": {
+              "input": 0.000016,
+              "output": 0.000006,
+              "cacheRead": 0.000012,
+              "cacheWrite": 0,
+              "total": 0.000034
+            }
+          },
+          "stopReason": "stop",
+          "timestamp": 1767225600000,
+          "rawStopReason": "stop"
+        }
+      }
+    ]
+  },
+  "queues": {},
+  "errors": []
+}

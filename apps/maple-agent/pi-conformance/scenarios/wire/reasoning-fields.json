@@ -1,0 +1,194 @@
+{
+  "dsl": 1,
+  "id": "wire/reasoning-fields",
+  "layer": "wire",
+  "covers": [
+    "packages/ai/src/api/openai-completions.ts"
+  ],
+  "model": {
+    "ref": "wire-fixture",
+    "value": {
+      "id": "fixture",
+      "name": "Fixture",
+      "api": "openai-completions",
+      "provider": "openai",
+      "baseUrl": "https://fixture.invalid/v1",
+      "reasoning": true,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 1,
+        "output": 2,
+        "cacheRead": 3,
+        "cacheWrite": 4
+      },
+      "contextWindow": 32000,
+      "maxTokens": 4096,
+      "compat": {
+        "supportsMidConvoSystemMessages": false
+      }
+    }
+  },
+  "clock": {
+    "epochMs": 1767225600000
+  },
+  "options": {
+    "maxTokens": 128,
+    "sessionId": "fixture-session"
+  },
+  "provider": {
+    "kind": "wire",
+    "responses": [
+      {
+        "status": 200,
+        "sse": [
+          {
+            "gate": "reason-start"
+          },
+          {
+            "data": {
+              "choices": [
+                {
+                  "index": 0,
+                  "delta": {
+                    "reasoning_content": "plan"
+                  },
+                  "finish_reason": null
+                }
+              ]
+            }
+          },
+          {
+            "gate": "reason-answer"
+          },
+          {
+            "data": {
+              "choices": [
+                {
+                  "index": 0,
+                  "delta": {
+                    "content": "answer",
+                    "reasoning_details": [
+                      {
+                        "type": "reasoning.text",
+                        "text": "plan",
+                        "signature": "signature",
+                        "id": "reason-one",
+                        "index": 0
+                      }
+                    ]
+                  },
+                  "finish_reason": "stop"
+                }
+              ]
+            }
+          },
+          {
+            "gate": "reason-eof"
+          },
+          {
+            "data": "[DONE]"
+          }
+        ]
+      },
+      {
+        "status": 200,
+        "sse": [
+          {
+            "gate": "replay-start"
+          },
+          {
+            "data": {
+              "choices": [
+                {
+                  "index": 0,
+                  "delta": {
+                    "content": "answer"
+                  },
+                  "finish_reason": "stop"
+                }
+              ],
+              "usage": {
+                "prompt_tokens": 20,
+                "completion_tokens": 3,
+                "prompt_tokens_details": {
+                  "cached_tokens": 4
+                },
+                "completion_tokens_details": {
+                  "reasoning_tokens": 1
+                }
+              }
+            }
+          },
+          {
+            "gate": "replay-eof"
+          },
+          {
+            "data": "[DONE]"
+          }
+        ]
+      }
+    ]
+  },
+  "concurrency": "gated",
+  "steps": [
+    {
+      "prompt": "think"
+    },
+    {
+      "waitFor": {
+        "type": "start",
+        "count": 1
+      }
+    },
+    {
+      "open": "reason-start"
+    },
+    {
+      "waitFor": {
+        "type": "thinking_delta",
+        "count": 1
+      }
+    },
+    {
+      "open": "reason-answer"
+    },
+    {
+      "waitFor": {
+        "type": "text_delta",
+        "count": 1
+      }
+    },
+    {
+      "open": "reason-eof"
+    },
+    {
+      "awaitIdle": {}
+    },
+    {
+      "prompt": "continue"
+    },
+    {
+      "waitFor": {
+        "type": "start",
+        "count": 2
+      }
+    },
+    {
+      "open": "replay-start"
+    },
+    {
+      "waitFor": {
+        "type": "text_delta",
+        "count": 2
+      }
+    },
+    {
+      "open": "replay-eof"
+    },
+    {
+      "awaitIdle": {}
+    }
+  ]
+}

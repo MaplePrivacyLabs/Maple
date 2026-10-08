@@ -59,11 +59,13 @@
       "class": "Port",
       "crate": "pi-ai",
       "rust_module": "crates/pi-ai/src/api/constrained_sampling.rs",
-      "adaptations": [],
+      "adaptations": [
+        "Schema/grammar helpers use ordered JsValue and raw UTF-16 strings, retaining JavaScript truthiness, nullable strict-schema transformation and exact source errors."
+      ],
       "cut": [],
       "ranges": [],
       "keep": [],
-      "status": "pending",
+      "status": "adapted",
       "reason": "`getJsonSchemaToolParameters` runs for every tool in `convertTools`; strict/grammar paths stay inert unless a tool and the model's compat ask for them"
     },
     {
@@ -72,7 +74,10 @@
       "class": "Adapt",
       "crate": "pi-ai",
       "rust_module": "crates/pi-ai/src/api/openai_completions.rs",
-      "adaptations": [],
+      "adaptations": [
+        "The request builder and live shared chunk parser use an injected parsed-chunk transport; HTTP/SSE framing, credentials, SDK headers, network retries and SDK error formatting are host responsibilities. Callback futures preserve request/response/chunk ordering and return explicit Result failures.",
+        "Cache-retention environment lookup uses an optional host-supplied variable name (cache_retention_env); without a key the explicit option or source short default applies. No application-specific environment name is hard-coded. Owner-approved gated comparisons preserve every field and live shared identity; ungated immediate-consumer partial snapshots can differ with JavaScript promise scheduling versus Rust task polling. The scoped observation rule and limitation are recorded in deviations.toml."
+      ],
       "cut": [
         "hasHeader",
         "getClientApiKey",
@@ -85,7 +90,7 @@
         "63-63"
       ],
       "keep": [],
-      "status": "pending",
+      "status": "adapted",
       "reason": "Chat-completions request builder and SSE chunk parser; the OpenAI SDK client, API-key check, Copilot/User-Agent headers, provider retry and SDK error formatting move to Maple's transport seam"
     },
     {
@@ -94,11 +99,13 @@
       "class": "Port",
       "crate": "pi-ai",
       "rust_module": "crates/pi-ai/src/api/openai_prompt_cache.rs",
-      "adaptations": [],
+      "adaptations": [
+        "Prompt-cache keys count JavaScript string-iterator elements, preserving astral pairs and unpaired UTF-16 units across the 64-element limit."
+      ],
       "cut": [],
       "ranges": [],
       "keep": [],
-      "status": "pending",
+      "status": "adapted",
       "reason": "`clampOpenAIPromptCacheKey`, called by `buildParams`"
     },
     {
@@ -107,11 +114,13 @@
       "class": "Adapt",
       "crate": "pi-ai",
       "rust_module": "crates/pi-ai/src/api/simple_options.rs",
-      "adaptations": [],
+      "adaptations": [
+        "Rust typed options preserve source spread values and thinking/token clamping; explicit Result values propagate synchronous transcript errors. Telemetry forwarding is excluded."
+      ],
       "cut": [],
       "ranges": [],
       "keep": [],
-      "status": "pending",
+      "status": "adapted",
       "reason": "Thinking budgets, max-token clamping, sampling params per level; only the `telemetryContext` forwarding line goes"
     },
     {
@@ -120,11 +129,13 @@
       "class": "Port",
       "crate": "pi-ai",
       "rust_module": "crates/pi-ai/src/api/transform_messages.rs",
-      "adaptations": [],
+      "adaptations": [
+        "Synthetic timestamps use PiEnv. Three raw-aware passes preserve unknown fields, content iteration, dropped turns and tool-result repair. Typed shared argument handles survive mixed raw/typed histories and normalizer callbacks retain their original source message."
+      ],
       "cut": [],
       "ranges": [],
       "keep": [],
-      "status": "pending",
+      "status": "adapted",
       "reason": "Request repair: drop error/aborted turns, synthesize missing tool results, image placeholders, thinking/ID normalization"
     },
     {
@@ -398,14 +409,16 @@
       "class": "Adapt",
       "crate": "pi-ai",
       "rust_module": "crates/pi-ai/src/utils/provider_env.rs",
-      "adaptations": [],
+      "adaptations": [
+        "A supplied provider environment precedes the process lookup; an injectable lookup closure supports isolated tests. The Bun process-environment fallback is excluded and callers supply host identity-derived variable names."
+      ],
       "cut": [
         "procEnvCache",
         "getBunSandboxEnvValue"
       ],
       "ranges": [],
       "keep": [],
-      "status": "pending",
+      "status": "adapted",
       "reason": "`getProviderEnvValue` for `PI_CACHE_RETENTION`; the Bun `/proc/self/environ` fallback goes"
     },
     {

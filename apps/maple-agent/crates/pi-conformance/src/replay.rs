@@ -10,6 +10,10 @@ use crate::{
     integrity::{files, safe_relative},
     json, read, toml,
 };
+use pi_ai::utils::{
+    js_value::{JsObject, JsValue, from_js_value},
+    json_parse::parse_json,
+};
 use serde::Deserialize;
 use serde_json::Value;
 use std::{
@@ -51,11 +55,11 @@ pub struct Scenario {
     pub covers: Vec<String>,
     pub model: ModelRef,
     pub clock: Clock,
-    pub system_prompt: Option<String>,
+    pub system_prompt: Option<pi_ai::types::JsString>,
     pub thinking_level: Option<String>,
-    pub provider: Value,
+    pub provider: JsValue,
     #[serde(default)]
-    pub tools: Vec<Value>,
+    pub tools: Vec<JsValue>,
     pub steering_mode: Option<String>,
     pub follow_up_mode: Option<String>,
     pub concurrency: Option<String>,
@@ -64,8 +68,11 @@ pub struct Scenario {
     #[serde(default)]
     pub normalize: Vec<String>,
     #[serde(default)]
-    pub variants: Vec<Value>,
-    pub steps: Vec<Value>,
+    pub variants: Vec<JsValue>,
+    pub steps: Vec<JsValue>,
+    #[serde(default)]
+    pub initial_messages: Vec<JsValue>,
+    pub options: Option<JsValue>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -73,6 +80,7 @@ pub struct Scenario {
 pub struct ModelRef {
     #[serde(rename = "ref")]
     pub reference: String,
+    pub value: Option<JsValue>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -94,7 +102,7 @@ pub struct FunctionMatrix {
 #[serde(deny_unknown_fields)]
 pub struct FunctionCase {
     pub case: String,
-    pub input: Value,
+    pub input: JsValue,
 }
 
 #[derive(Debug, Deserialize)]
@@ -146,16 +154,16 @@ struct EventEnvelope {
     kind: String,
     #[allow(dead_code)]
     entries: u64,
-    data: serde_json::Map<String, Value>,
+    data: JsObject,
 }
 
-fn check_events(rows: Vec<Value>) -> CheckResult {
+fn check_events(rows: Vec<JsValue>) -> CheckResult {
     if rows.is_empty() {
         return Err("recorded scenario has no events".into());
     }
     for (index, row) in rows.into_iter().enumerate() {
         let event: EventEnvelope =
-            serde_json::from_value(row).map_err(|error| format!("event {index}: {error}"))?;
+            from_js_value(row).map_err(|error| format!("event {index}: {error}"))?;
         if event.seq != index as u64 || event.kind.trim().is_empty() {
             return Err(format!(
                 "event {index}: invalid sequence index or event type"
@@ -175,17 +183,17 @@ fn check_events(rows: Vec<Value>) -> CheckResult {
 struct RequestRecord {
     call: u64,
     #[allow(dead_code)]
-    model: serde_json::Map<String, Value>,
+    model: JsObject,
     #[allow(dead_code)]
-    context: serde_json::Map<String, Value>,
+    context: JsObject,
     #[allow(dead_code)]
-    options: serde_json::Map<String, Value>,
+    options: JsObject,
 }
 
-fn check_requests(rows: Vec<Value>) -> CheckResult {
+fn check_requests(rows: Vec<JsValue>) -> CheckResult {
     for (index, row) in rows.into_iter().enumerate() {
         let request: RequestRecord =
-            serde_json::from_value(row).map_err(|error| format!("request {index}: {error}"))?;
+            from_js_value(row).map_err(|error| format!("request {index}: {error}"))?;
         if request.call != index as u64 {
             return Err(format!("request {index}: invalid call index"));
         }
@@ -197,15 +205,15 @@ fn check_requests(rows: Vec<Value>) -> CheckResult {
 #[serde(deny_unknown_fields)]
 struct FinalRecord {
     #[allow(dead_code)]
-    state: serde_json::Map<String, Value>,
+    state: JsObject,
     #[allow(dead_code)]
-    queues: serde_json::Map<String, Value>,
+    queues: JsObject,
     #[allow(dead_code)]
-    errors: Vec<Value>,
+    errors: Vec<JsValue>,
 }
 
-fn check_final(value: Value) -> CheckResult {
-    serde_json::from_value::<FinalRecord>(value)
+fn check_final(value: JsValue) -> CheckResult {
+    from_js_value::<FinalRecord>(value)
         .map(|_| ())
         .map_err(|error| format!("invalid final record: {error}"))
 }
@@ -289,10 +297,10 @@ pub fn status(root: &Path) -> CheckResult<CorpusStatus> {
 pub fn load_scenario(root: &Path, id: &str) -> CheckResult<Scenario> {
     safe_relative(id)?;
     let path = root.join("corpus/scenarios").join(id).join("scenario.json");
-    let value: Value = json(&path)?;
-    validate_dsl(root, &value)?;
+    let value = read_js_json(&path)?;
+    validate_js_dsl(root, &value)?;
     let scenario: Scenario =
-        serde_json::from_value(value).map_err(|error| format!("{}: {error}", path.display()))?;
+        from_js_value(value).map_err(|error| format!("{}: {error}", path.display()))?;
     if scenario.id != id {
         return Err(format!(
             "recorded scenario ID {} differs from directory {id}",
@@ -311,6 +319,70 @@ pub fn validate_dsl(root: &Path, value: &Value) -> CheckResult {
     validator
         .validate(value)
         .map_err(|error| format!("invalid DSL at {}: {error}", error.instance_path()))
+}
+
+/// Read runtime data without passing lone UTF-16 units through Rust String.
+pub fn read_js_json(path: &Path) -> CheckResult<JsValue> {
+    parse_json(&read(path)?).map_err(|error| format!("{}: {error}", path.display()))
+}
+
+pub fn read_js_jsonl(path: &Path) -> CheckResult<Vec<JsValue>> {
+    read(path)?
+        .lines()
+        .enumerate()
+        .map(|(line, text)| {
+            if text.trim().is_empty() {
+                return Err(format!(
+                    "{}:{}: blank JSONL record",
+                    path.display(),
+                    line + 1
+                ));
+            }
+            parse_json(text).map_err(|error| format!("{}:{}: {error}", path.display(), line + 1))
+        })
+        .collect()
+}
+
+// The DSL schema checks structure and fixed ASCII discriminants. Its JSON
+// Schema library requires Unicode scalar strings; project only for that check.
+// Execution, copied-input equality, and all expected/actual comparisons retain
+// the original JsValue. Unknown UTF-16 object keys receive unique placeholders
+// so even this structural projection cannot collapse two properties.
+fn schema_projection(value: &JsValue) -> CheckResult<Value> {
+    Ok(match value {
+        JsValue::String(text) => Value::String(text.to_string_lossy()),
+        JsValue::Array(items) => Value::Array(
+            items
+                .iter()
+                .map(schema_projection)
+                .collect::<CheckResult<_>>()?,
+        ),
+        JsValue::Object(object) => {
+            let mut result = serde_json::Map::new();
+            let mut used: BTreeSet<String> = object
+                .keys()
+                .filter_map(|key| key.as_str().map(str::to_owned))
+                .collect();
+            for (key, value) in object.iter() {
+                let key = match key.as_str() {
+                    Some(key) => key.to_owned(),
+                    None => {
+                        let mut key = format!("\0utf16:{}", pi_ai::utils::js_json::quote(key));
+                        while !used.insert(key.clone()) {
+                            key.push('\0');
+                        }
+                        key
+                    }
+                };
+                result.insert(key, schema_projection(value)?);
+            }
+            Value::Object(result)
+        }
+        _ => value.to_json().map_err(|error| error.to_string())?,
+    })
+}
+fn validate_js_dsl(root: &Path, value: &JsValue) -> CheckResult {
+    validate_dsl(root, &schema_projection(value)?)
 }
 
 pub fn read_jsonl(path: &Path) -> CheckResult<Vec<Value>> {
@@ -350,11 +422,11 @@ pub fn check_structure(root: &Path) -> CheckResult {
         if path == "schema.json" || !path.ends_with(".json") {
             continue;
         }
-        let value: Value = json(&root.join("scenarios").join(path))?;
-        validate_dsl(root, &value)?;
+        let value = read_js_json(&root.join("scenarios").join(path))?;
+        validate_js_dsl(root, &value)?;
         if path.starts_with("models/") {
             let matrix: ModelMatrix =
-                serde_json::from_value(value).map_err(|error| format!("{path}: {error}"))?;
+                from_js_value(value).map_err(|error| format!("{path}: {error}"))?;
             if matrix.dsl != 1
                 || matrix.covers.is_empty()
                 || matrix.clock.epoch_ms > 9_007_199_254_740_991
@@ -363,7 +435,14 @@ pub fn check_structure(root: &Path) -> CheckResult {
             }
             let mut models = BTreeSet::new();
             for model in matrix.models {
-                safe_relative(&format!("{}/{}", model.provider, model.id))?;
+                // Provider/model identifiers are catalog data, never file paths.
+                // A model ID may legitimately contain slashes or a :batch suffix.
+                if model.provider.is_empty() || model.id.is_empty() {
+                    return Err(format!(
+                        "model matrix {} has an empty identifier",
+                        matrix.id
+                    ));
+                }
                 if !models.insert((model.provider, model.id)) {
                     return Err(format!(
                         "model matrix {} contains duplicate models",
@@ -373,7 +452,7 @@ pub fn check_structure(root: &Path) -> CheckResult {
             }
         } else if path.starts_with("functions/") {
             let matrix: FunctionMatrix =
-                serde_json::from_value(value).map_err(|error| format!("{path}: {error}"))?;
+                from_js_value(value).map_err(|error| format!("{path}: {error}"))?;
             if !functions.contains(matrix.id.as_str()) {
                 return Err(format!("function input {} has no corpus status", matrix.id));
             }
@@ -389,7 +468,7 @@ pub fn check_structure(root: &Path) -> CheckResult {
             }
         } else {
             let scenario: Scenario =
-                serde_json::from_value(value).map_err(|error| format!("{path}: {error}"))?;
+                from_js_value(value).map_err(|error| format!("{path}: {error}"))?;
             if !scenarios.contains(scenario.id.as_str()) {
                 return Err(format!(
                     "scenario input {} has no corpus status",
@@ -415,11 +494,13 @@ pub fn check_structure(root: &Path) -> CheckResult {
             if read(&input)? != read(&scenario_root.join(path))? {
                 return Err(format!("recorded scenario {id} is not an exact input copy"));
             }
-            check_events(read_jsonl(&scenario_root.join(id).join("events.jsonl"))?)
+            check_events(read_js_jsonl(&scenario_root.join(id).join("events.jsonl"))?)
                 .map_err(|error| format!("scenario {id}: {error}"))?;
-            check_requests(read_jsonl(&scenario_root.join(id).join("requests.jsonl"))?)
-                .map_err(|error| format!("scenario {id}: {error}"))?;
-            check_final(json(&scenario_root.join(id).join("final.json"))?)
+            check_requests(read_js_jsonl(
+                &scenario_root.join(id).join("requests.jsonl"),
+            )?)
+            .map_err(|error| format!("scenario {id}: {error}"))?;
+            check_final(read_js_json(&scenario_root.join(id).join("final.json"))?)
                 .map_err(|error| format!("scenario {id}: {error}"))?;
         }
     }
@@ -451,11 +532,11 @@ pub fn check_structure(root: &Path) -> CheckResult {
                         golden.case
                     ));
                 }
-                let copied = golden
-                    .input
-                    .to_json()
-                    .map_err(|error| format!("{path}: invalid copied input: {error}"))?;
-                if golden.case != input.case || !copied_input_equal(&input.input, &copied) {
+                let preserved = match (input.input.to_json(), golden.input.to_json()) {
+                    (Ok(input), Ok(copied)) => copied_input_equal(&input, &copied),
+                    _ => input.input == golden.input,
+                };
+                if golden.case != input.case || !preserved {
                     return Err(format!(
                         "recorded function {id} does not preserve input case {:?}",
                         input.case
@@ -511,6 +592,9 @@ pub async fn replay_scenario(root: &Path, id: &str) -> CheckResult {
         return Err("TypeScript scenario recording and Rust interpreter are pending".into());
     }
     let scenario = load_scenario(root, id)?;
+    if scenario.layer == "wire" {
+        return crate::wire_replay::replay(root, id).await;
+    }
     Err(format!(
         "Rust {} scenario interpreter is not implemented yet",
         scenario.layer
@@ -565,6 +649,12 @@ pub async fn replay_function(root: &Path, id: &str) -> CheckResult {
             Err(failures.join("\n"))
         };
     }
+    if matches!(
+        id,
+        "api.transformMessages" | "api.buildParams" | "api.convertMessages"
+    ) {
+        return crate::functions_step2::replay(root, id);
+    }
     crate::functions::replay(root, id)
 }
 
@@ -572,6 +662,43 @@ pub async fn replay_function(root: &Path, id: &str) -> CheckResult {
 mod tests {
     use super::*;
     use serde_json::json;
+    fn check_events(rows: Vec<Value>) -> CheckResult {
+        super::check_events(
+            rows.into_iter()
+                .map(JsValue::from_json_with_js_numbers)
+                .collect(),
+        )
+    }
+    fn check_requests(rows: Vec<Value>) -> CheckResult {
+        super::check_requests(
+            rows.into_iter()
+                .map(JsValue::from_json_with_js_numbers)
+                .collect(),
+        )
+    }
+    fn check_final(value: Value) -> CheckResult {
+        super::check_final(JsValue::from_json_with_js_numbers(value))
+    }
+
+    #[test]
+    fn opaque_records_retain_lone_utf16_strings_and_distinct_keys() {
+        let source = r#"{"seq":0,"type":"message_start","entries":0,"data":{"text":"\ud800","\ud800":1,"\ufffd":2}}"#;
+        let event = parse_json(source).unwrap();
+        super::check_events(vec![event.clone()]).unwrap();
+        let projected = schema_projection(&event).unwrap();
+        assert_eq!(projected["data"].as_object().unwrap().len(), 3);
+        assert_eq!(
+            event["data"]["text"]
+                .as_js_str()
+                .unwrap()
+                .units()
+                .collect::<Vec<_>>(),
+            vec![0xd800]
+        );
+        let replacement = parse_json(&source.replace("\\ud800", "\\ufffd")).unwrap();
+        assert_ne!(event, replacement);
+        assert!(crate::compare::compare_unmodified(&event, &replacement).is_err());
+    }
 
     #[test]
     fn event_artifacts_require_complete_zero_based_envelopes() {

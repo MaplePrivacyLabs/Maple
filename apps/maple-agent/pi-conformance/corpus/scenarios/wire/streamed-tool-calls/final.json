@@ -1,0 +1,867 @@
+{
+  "state": {
+    "messages": [
+      {
+        "role": "system",
+        "content": "Use fixtures.",
+        "timestamp": 0,
+        "toolsAdded": [
+          {
+            "name": "first",
+            "description": "Fixture first",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "x": {
+                  "type": "number"
+                }
+              },
+              "required": [
+                "x"
+              ]
+            }
+          },
+          {
+            "name": "second",
+            "description": "Fixture second",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "x": {
+                  "type": "number"
+                }
+              },
+              "required": [
+                "x"
+              ]
+            }
+          }
+        ]
+      },
+      {
+        "role": "user",
+        "content": "use both",
+        "timestamp": 1767225600000
+      },
+      {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "toolCall",
+            "id": "call-one",
+            "name": "first",
+            "arguments": {
+              "x": 1
+            }
+          },
+          {
+            "type": "toolCall",
+            "id": "call-two",
+            "name": "second",
+            "arguments": {
+              "x": 2
+            }
+          }
+        ],
+        "api": "openai-completions",
+        "provider": "openai",
+        "model": "fixture",
+        "usage": {
+          "input": 0,
+          "output": 0,
+          "cacheRead": 0,
+          "cacheWrite": 0,
+          "totalTokens": 0,
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "total": 0
+          }
+        },
+        "stopReason": "toolUse",
+        "timestamp": 1767225600000,
+        "rawStopReason": "tool_calls"
+      },
+      {
+        "role": "toolResult",
+        "toolCallId": "call-one",
+        "toolName": "first",
+        "content": [
+          {
+            "type": "text",
+            "text": "one"
+          }
+        ],
+        "isError": false,
+        "timestamp": 2
+      },
+      {
+        "role": "toolResult",
+        "toolCallId": "call-two",
+        "toolName": "second",
+        "content": [
+          {
+            "type": "text",
+            "text": "two"
+          }
+        ],
+        "isError": false,
+        "timestamp": 2
+      },
+      {
+        "role": "user",
+        "content": "summarize",
+        "timestamp": 3
+      },
+      {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "text",
+            "text": "answer"
+          }
+        ],
+        "api": "openai-completions",
+        "provider": "openai",
+        "model": "fixture",
+        "usage": {
+          "input": 16,
+          "output": 3,
+          "cacheRead": 4,
+          "cacheWrite": 0,
+          "reasoning": 1,
+          "totalTokens": 23,
+          "cost": {
+            "input": 0.000016,
+            "output": 0.000006,
+            "cacheRead": 0.000012,
+            "cacheWrite": 0,
+            "total": 0.000034
+          }
+        },
+        "stopReason": "stop",
+        "timestamp": 1767225600000,
+        "rawStopReason": "stop"
+      }
+    ],
+    "results": [
+      {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "toolCall",
+            "id": "call-one",
+            "name": "first",
+            "arguments": {
+              "x": 1
+            }
+          },
+          {
+            "type": "toolCall",
+            "id": "call-two",
+            "name": "second",
+            "arguments": {
+              "x": 2
+            }
+          }
+        ],
+        "api": "openai-completions",
+        "provider": "openai",
+        "model": "fixture",
+        "usage": {
+          "input": 0,
+          "output": 0,
+          "cacheRead": 0,
+          "cacheWrite": 0,
+          "totalTokens": 0,
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "total": 0
+          }
+        },
+        "stopReason": "toolUse",
+        "timestamp": 1767225600000,
+        "rawStopReason": "tool_calls"
+      },
+      {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "text",
+            "text": "answer"
+          }
+        ],
+        "api": "openai-completions",
+        "provider": "openai",
+        "model": "fixture",
+        "usage": {
+          "input": 16,
+          "output": 3,
+          "cacheRead": 4,
+          "cacheWrite": 0,
+          "reasoning": 1,
+          "totalTokens": 23,
+          "cost": {
+            "input": 0.000016,
+            "output": 0.000006,
+            "cacheRead": 0.000012,
+            "cacheWrite": 0,
+            "total": 0.000034
+          }
+        },
+        "stopReason": "stop",
+        "timestamp": 1767225600000,
+        "rawStopReason": "stop"
+      }
+    ],
+    "retainedEvents": [
+      {
+        "type": "start",
+        "partial": {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "toolCall",
+              "id": "call-one",
+              "name": "first",
+              "arguments": {
+                "x": 1
+              }
+            },
+            {
+              "type": "toolCall",
+              "id": "call-two",
+              "name": "second",
+              "arguments": {
+                "x": 2
+              }
+            }
+          ],
+          "api": "openai-completions",
+          "provider": "openai",
+          "model": "fixture",
+          "usage": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "totalTokens": 0,
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0
+            }
+          },
+          "stopReason": "toolUse",
+          "timestamp": 1767225600000,
+          "rawStopReason": "tool_calls"
+        }
+      },
+      {
+        "type": "toolcall_start",
+        "contentIndex": 0,
+        "partial": {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "toolCall",
+              "id": "call-one",
+              "name": "first",
+              "arguments": {
+                "x": 1
+              }
+            },
+            {
+              "type": "toolCall",
+              "id": "call-two",
+              "name": "second",
+              "arguments": {
+                "x": 2
+              }
+            }
+          ],
+          "api": "openai-completions",
+          "provider": "openai",
+          "model": "fixture",
+          "usage": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "totalTokens": 0,
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0
+            }
+          },
+          "stopReason": "toolUse",
+          "timestamp": 1767225600000,
+          "rawStopReason": "tool_calls"
+        }
+      },
+      {
+        "type": "toolcall_delta",
+        "contentIndex": 0,
+        "delta": "{\"x\":",
+        "partial": {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "toolCall",
+              "id": "call-one",
+              "name": "first",
+              "arguments": {
+                "x": 1
+              }
+            },
+            {
+              "type": "toolCall",
+              "id": "call-two",
+              "name": "second",
+              "arguments": {
+                "x": 2
+              }
+            }
+          ],
+          "api": "openai-completions",
+          "provider": "openai",
+          "model": "fixture",
+          "usage": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "totalTokens": 0,
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0
+            }
+          },
+          "stopReason": "toolUse",
+          "timestamp": 1767225600000,
+          "rawStopReason": "tool_calls"
+        }
+      },
+      {
+        "type": "toolcall_start",
+        "contentIndex": 1,
+        "partial": {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "toolCall",
+              "id": "call-one",
+              "name": "first",
+              "arguments": {
+                "x": 1
+              }
+            },
+            {
+              "type": "toolCall",
+              "id": "call-two",
+              "name": "second",
+              "arguments": {
+                "x": 2
+              }
+            }
+          ],
+          "api": "openai-completions",
+          "provider": "openai",
+          "model": "fixture",
+          "usage": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "totalTokens": 0,
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0
+            }
+          },
+          "stopReason": "toolUse",
+          "timestamp": 1767225600000,
+          "rawStopReason": "tool_calls"
+        }
+      },
+      {
+        "type": "toolcall_delta",
+        "contentIndex": 1,
+        "delta": "{\"x\":",
+        "partial": {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "toolCall",
+              "id": "call-one",
+              "name": "first",
+              "arguments": {
+                "x": 1
+              }
+            },
+            {
+              "type": "toolCall",
+              "id": "call-two",
+              "name": "second",
+              "arguments": {
+                "x": 2
+              }
+            }
+          ],
+          "api": "openai-completions",
+          "provider": "openai",
+          "model": "fixture",
+          "usage": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "totalTokens": 0,
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0
+            }
+          },
+          "stopReason": "toolUse",
+          "timestamp": 1767225600000,
+          "rawStopReason": "tool_calls"
+        }
+      },
+      {
+        "type": "toolcall_delta",
+        "contentIndex": 1,
+        "delta": "2}",
+        "partial": {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "toolCall",
+              "id": "call-one",
+              "name": "first",
+              "arguments": {
+                "x": 1
+              }
+            },
+            {
+              "type": "toolCall",
+              "id": "call-two",
+              "name": "second",
+              "arguments": {
+                "x": 2
+              }
+            }
+          ],
+          "api": "openai-completions",
+          "provider": "openai",
+          "model": "fixture",
+          "usage": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "totalTokens": 0,
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0
+            }
+          },
+          "stopReason": "toolUse",
+          "timestamp": 1767225600000,
+          "rawStopReason": "tool_calls"
+        }
+      },
+      {
+        "type": "toolcall_delta",
+        "contentIndex": 0,
+        "delta": "1}",
+        "partial": {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "toolCall",
+              "id": "call-one",
+              "name": "first",
+              "arguments": {
+                "x": 1
+              }
+            },
+            {
+              "type": "toolCall",
+              "id": "call-two",
+              "name": "second",
+              "arguments": {
+                "x": 2
+              }
+            }
+          ],
+          "api": "openai-completions",
+          "provider": "openai",
+          "model": "fixture",
+          "usage": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "totalTokens": 0,
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0
+            }
+          },
+          "stopReason": "toolUse",
+          "timestamp": 1767225600000,
+          "rawStopReason": "tool_calls"
+        }
+      },
+      {
+        "type": "toolcall_end",
+        "contentIndex": 0,
+        "toolCall": {
+          "type": "toolCall",
+          "id": "call-one",
+          "name": "first",
+          "arguments": {
+            "x": 1
+          }
+        },
+        "partial": {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "toolCall",
+              "id": "call-one",
+              "name": "first",
+              "arguments": {
+                "x": 1
+              }
+            },
+            {
+              "type": "toolCall",
+              "id": "call-two",
+              "name": "second",
+              "arguments": {
+                "x": 2
+              }
+            }
+          ],
+          "api": "openai-completions",
+          "provider": "openai",
+          "model": "fixture",
+          "usage": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "totalTokens": 0,
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0
+            }
+          },
+          "stopReason": "toolUse",
+          "timestamp": 1767225600000,
+          "rawStopReason": "tool_calls"
+        }
+      },
+      {
+        "type": "toolcall_end",
+        "contentIndex": 1,
+        "toolCall": {
+          "type": "toolCall",
+          "id": "call-two",
+          "name": "second",
+          "arguments": {
+            "x": 2
+          }
+        },
+        "partial": {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "toolCall",
+              "id": "call-one",
+              "name": "first",
+              "arguments": {
+                "x": 1
+              }
+            },
+            {
+              "type": "toolCall",
+              "id": "call-two",
+              "name": "second",
+              "arguments": {
+                "x": 2
+              }
+            }
+          ],
+          "api": "openai-completions",
+          "provider": "openai",
+          "model": "fixture",
+          "usage": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "totalTokens": 0,
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0
+            }
+          },
+          "stopReason": "toolUse",
+          "timestamp": 1767225600000,
+          "rawStopReason": "tool_calls"
+        }
+      },
+      {
+        "type": "done",
+        "reason": "toolUse",
+        "message": {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "toolCall",
+              "id": "call-one",
+              "name": "first",
+              "arguments": {
+                "x": 1
+              }
+            },
+            {
+              "type": "toolCall",
+              "id": "call-two",
+              "name": "second",
+              "arguments": {
+                "x": 2
+              }
+            }
+          ],
+          "api": "openai-completions",
+          "provider": "openai",
+          "model": "fixture",
+          "usage": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "totalTokens": 0,
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0
+            }
+          },
+          "stopReason": "toolUse",
+          "timestamp": 1767225600000,
+          "rawStopReason": "tool_calls"
+        }
+      },
+      {
+        "type": "start",
+        "partial": {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "answer"
+            }
+          ],
+          "api": "openai-completions",
+          "provider": "openai",
+          "model": "fixture",
+          "usage": {
+            "input": 16,
+            "output": 3,
+            "cacheRead": 4,
+            "cacheWrite": 0,
+            "reasoning": 1,
+            "totalTokens": 23,
+            "cost": {
+              "input": 0.000016,
+              "output": 0.000006,
+              "cacheRead": 0.000012,
+              "cacheWrite": 0,
+              "total": 0.000034
+            }
+          },
+          "stopReason": "stop",
+          "timestamp": 1767225600000,
+          "rawStopReason": "stop"
+        }
+      },
+      {
+        "type": "text_start",
+        "contentIndex": 0,
+        "partial": {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "answer"
+            }
+          ],
+          "api": "openai-completions",
+          "provider": "openai",
+          "model": "fixture",
+          "usage": {
+            "input": 16,
+            "output": 3,
+            "cacheRead": 4,
+            "cacheWrite": 0,
+            "reasoning": 1,
+            "totalTokens": 23,
+            "cost": {
+              "input": 0.000016,
+              "output": 0.000006,
+              "cacheRead": 0.000012,
+              "cacheWrite": 0,
+              "total": 0.000034
+            }
+          },
+          "stopReason": "stop",
+          "timestamp": 1767225600000,
+          "rawStopReason": "stop"
+        }
+      },
+      {
+        "type": "text_delta",
+        "contentIndex": 0,
+        "delta": "answer",
+        "partial": {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "answer"
+            }
+          ],
+          "api": "openai-completions",
+          "provider": "openai",
+          "model": "fixture",
+          "usage": {
+            "input": 16,
+            "output": 3,
+            "cacheRead": 4,
+            "cacheWrite": 0,
+            "reasoning": 1,
+            "totalTokens": 23,
+            "cost": {
+              "input": 0.000016,
+              "output": 0.000006,
+              "cacheRead": 0.000012,
+              "cacheWrite": 0,
+              "total": 0.000034
+            }
+          },
+          "stopReason": "stop",
+          "timestamp": 1767225600000,
+          "rawStopReason": "stop"
+        }
+      },
+      {
+        "type": "text_end",
+        "contentIndex": 0,
+        "content": "answer",
+        "partial": {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "answer"
+            }
+          ],
+          "api": "openai-completions",
+          "provider": "openai",
+          "model": "fixture",
+          "usage": {
+            "input": 16,
+            "output": 3,
+            "cacheRead": 4,
+            "cacheWrite": 0,
+            "reasoning": 1,
+            "totalTokens": 23,
+            "cost": {
+              "input": 0.000016,
+              "output": 0.000006,
+              "cacheRead": 0.000012,
+              "cacheWrite": 0,
+              "total": 0.000034
+            }
+          },
+          "stopReason": "stop",
+          "timestamp": 1767225600000,
+          "rawStopReason": "stop"
+        }
+      },
+      {
+        "type": "done",
+        "reason": "stop",
+        "message": {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "answer"
+            }
+          ],
+          "api": "openai-completions",
+          "provider": "openai",
+          "model": "fixture",
+          "usage": {
+            "input": 16,
+            "output": 3,
+            "cacheRead": 4,
+            "cacheWrite": 0,
+            "reasoning": 1,
+            "totalTokens": 23,
+            "cost": {
+              "input": 0.000016,
+              "output": 0.000006,
+              "cacheRead": 0.000012,
+              "cacheWrite": 0,
+              "total": 0.000034
+            }
+          },
+          "stopReason": "stop",
+          "timestamp": 1767225600000,
+          "rawStopReason": "stop"
+        }
+      }
+    ]
+  },
+  "queues": {},
+  "errors": []
+}

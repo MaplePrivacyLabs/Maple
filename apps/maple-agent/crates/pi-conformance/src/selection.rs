@@ -216,6 +216,10 @@ pub fn check_deviations(reference: &Path) -> CheckResult {
 }
 
 fn supported_deviation(deviation: &Deviation) -> bool {
+    owned_tool_definitions(deviation) || gated_live_partials(deviation)
+}
+
+fn owned_tool_definitions(deviation: &Deviation) -> bool {
     deviation.scenario == "functions/transcript.toolOwnership"
         && deviation.json_path == "$.after"
         && deviation.kind == "language"
@@ -227,5 +231,56 @@ fn supported_deviation(deviation: &Deviation) -> bool {
 pub(crate) fn permits_owned_tool_definitions(reference: &Path) -> CheckResult<bool> {
     check_deviations(reference)?;
     let deviations: Deviations = toml(&reference.join("coverage/deviations.toml"))?;
-    Ok(deviations.deviation.iter().any(supported_deviation))
+    Ok(deviations.deviation.iter().any(owned_tool_definitions))
+}
+
+const GATED_WIRE_SCENARIOS: &[&str] = &[
+    "wire/basic-text-usage",
+    "wire/streamed-tool-calls",
+    "wire/reasoning-fields",
+    "wire/system-collapse-and-tools",
+    "wire/stream-failures",
+    "wire/request-repair",
+];
+
+fn gated_live_partials(deviation: &Deviation) -> bool {
+    GATED_WIRE_SCENARIOS.contains(&deviation.scenario.as_str())
+        && deviation.json_path == "$.events[*].data.partial"
+        && deviation.kind == "language"
+        && deviation.rule == "gated-live-partial-observation"
+}
+
+/// Authorizes an observation schedule, never a field exclusion. Wire replay
+/// validates explicit input gates and compares every recorded value normally.
+pub(crate) fn permits_gated_live_partials(reference: &Path, id: &str) -> CheckResult<bool> {
+    check_deviations(reference)?;
+    let deviations: Deviations = toml(&reference.join("coverage/deviations.toml"))?;
+    Ok(deviations
+        .deviation
+        .iter()
+        .any(|deviation| deviation.scenario == id && gated_live_partials(deviation)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn scheduling_authorization_cannot_be_relocated_or_used_for_owned_inputs() {
+        let mut deviation = Deviation {
+            scenario: GATED_WIRE_SCENARIOS[0].into(),
+            json_path: "$.events[*].data.partial".into(),
+            kind: "language".into(),
+            rule: "gated-live-partial-observation".into(),
+            reason: "test".into(),
+            approved_in: "owner".into(),
+        };
+        assert!(supported_deviation(&deviation));
+        assert!(!owned_tool_definitions(&deviation));
+        deviation.scenario = "wire/unregistered".into();
+        assert!(!supported_deviation(&deviation));
+        deviation.scenario = GATED_WIRE_SCENARIOS[0].into();
+        deviation.json_path = "$.events".into();
+        assert!(!supported_deviation(&deviation));
+    }
 }

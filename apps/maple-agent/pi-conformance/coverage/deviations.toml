@@ -10,3 +10,51 @@ kind = "language"
 rule = "owned-tool-definitions"
 reason = "Tool definitions and provider request/configuration inputs use owned Rust values. Mutating a definition after inserting or replaying it does not mutate the stored message. This bounds shared mutable state in the Rust API; streaming messages and explicit mutable hook arguments/results retain shared identity. The paired fixture verifies Pi's alias mutation and Rust's unchanged copy separately, without ignoring other fields. This implementation decision is provisional and may be revisited after planning review."
 approvedIn = "Owner authorized continuing this boundary in the task conversation on 2026-10-08; decision and engineering rationale recorded in https://github.com/MaplePrivacyLabs/Maple/pull/1102."
+
+[[deviation]]
+scenario = "wire/basic-text-usage"
+jsonPath = "$.events[*].data.partial"
+kind = "language"
+rule = "gated-live-partial-observation"
+reason = "Intermediate reads of a live shared partial can differ with JavaScript promise scheduling versus Rust task polling. In the paired parsed-transport diagnostic, 12 of 58 immediate-consumer cases differed only in those snapshots; all 58 result-first cases, event order, deltas, final values and retained-object observations matched. Compare every field at explicit input gates for these six wire fixtures, retain shared streaming identity, and document ungated scheduling as a limitation for planning review. The executable rule requires gated SSE inputs and does not ignore any compared field."
+approvedIn = "Owner explicitly approved gated comparisons and documenting the limitation in the task conversation on 2026-10-08; recorded in https://github.com/MaplePrivacyLabs/Maple/pull/1102."
+
+[[deviation]]
+scenario = "wire/streamed-tool-calls"
+jsonPath = "$.events[*].data.partial"
+kind = "language"
+rule = "gated-live-partial-observation"
+reason = "Intermediate reads of a live shared partial can differ with JavaScript promise scheduling versus Rust task polling. In the paired parsed-transport diagnostic, 12 of 58 immediate-consumer cases differed only in those snapshots; all 58 result-first cases, event order, deltas, final values and retained-object observations matched. Compare every field at explicit input gates for these six wire fixtures, retain shared streaming identity, and document ungated scheduling as a limitation for planning review. The executable rule requires gated SSE inputs and does not ignore any compared field."
+approvedIn = "Owner explicitly approved gated comparisons and documenting the limitation in the task conversation on 2026-10-08; recorded in https://github.com/MaplePrivacyLabs/Maple/pull/1102."
+
+[[deviation]]
+scenario = "wire/reasoning-fields"
+jsonPath = "$.events[*].data.partial"
+kind = "language"
+rule = "gated-live-partial-observation"
+reason = "Intermediate reads of a live shared partial can differ with JavaScript promise scheduling versus Rust task polling. In the paired parsed-transport diagnostic, 12 of 58 immediate-consumer cases differed only in those snapshots; all 58 result-first cases, event order, deltas, final values and retained-object observations matched. Compare every field at explicit input gates for these six wire fixtures, retain shared streaming identity, and document ungated scheduling as a limitation for planning review. The executable rule requires gated SSE inputs and does not ignore any compared field."
+approvedIn = "Owner explicitly approved gated comparisons and documenting the limitation in the task conversation on 2026-10-08; recorded in https://github.com/MaplePrivacyLabs/Maple/pull/1102."
+
+[[deviation]]
+scenario = "wire/system-collapse-and-tools"
+jsonPath = "$.events[*].data.partial"
+kind = "language"
+rule = "gated-live-partial-observation"
+reason = "Intermediate reads of a live shared partial can differ with JavaScript promise scheduling versus Rust task polling. In the paired parsed-transport diagnostic, 12 of 58 immediate-consumer cases differed only in those snapshots; all 58 result-first cases, event order, deltas, final values and retained-object observations matched. Compare every field at explicit input gates for these six wire fixtures, retain shared streaming identity, and document ungated scheduling as a limitation for planning review. The executable rule requires gated SSE inputs and does not ignore any compared field."
+approvedIn = "Owner explicitly approved gated comparisons and documenting the limitation in the task conversation on 2026-10-08; recorded in https://github.com/MaplePrivacyLabs/Maple/pull/1102."
+
+[[deviation]]
+scenario = "wire/stream-failures"
+jsonPath = "$.events[*].data.partial"
+kind = "language"
+rule = "gated-live-partial-observation"
+reason = "Intermediate reads of a live shared partial can differ with JavaScript promise scheduling versus Rust task polling. In the paired parsed-transport diagnostic, 12 of 58 immediate-consumer cases differed only in those snapshots; all 58 result-first cases, event order, deltas, final values and retained-object observations matched. Compare every field at explicit input gates for these six wire fixtures, retain shared streaming identity, and document ungated scheduling as a limitation for planning review. The executable rule requires gated SSE inputs and does not ignore any compared field."
+approvedIn = "Owner explicitly approved gated comparisons and documenting the limitation in the task conversation on 2026-10-08; recorded in https://github.com/MaplePrivacyLabs/Maple/pull/1102."
+
+[[deviation]]
+scenario = "wire/request-repair"
+jsonPath = "$.events[*].data.partial"
+kind = "language"
+rule = "gated-live-partial-observation"
+reason = "Intermediate reads of a live shared partial can differ with JavaScript promise scheduling versus Rust task polling. In the paired parsed-transport diagnostic, 12 of 58 immediate-consumer cases differed only in those snapshots; all 58 result-first cases, event order, deltas, final values and retained-object observations matched. Compare every field at explicit input gates for these six wire fixtures, retain shared streaming identity, and document ungated scheduling as a limitation for planning review. The executable rule requires gated SSE inputs and does not ignore any compared field."
+approvedIn = "Owner explicitly approved gated comparisons and documenting the limitation in the task conversation on 2026-10-08; recorded in https://github.com/MaplePrivacyLabs/Maple/pull/1102."

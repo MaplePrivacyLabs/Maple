@@ -1,5 +1,6 @@
 //! Model contracts, stream primitives, and utilities ported from Pi v1.0.4.
 
+pub mod api;
 pub mod auth;
 pub mod env;
 pub mod models;

@@ -7,10 +7,12 @@ pub mod compare;
 pub mod coverage;
 pub mod dependencies;
 mod functions;
+mod functions_step2;
 pub mod integrity;
 pub mod replay;
 pub mod selection;
 mod timers;
+mod wire_replay;
 
 use std::path::{Path, PathBuf};
 

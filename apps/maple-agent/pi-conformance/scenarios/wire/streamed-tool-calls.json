@@ -1,0 +1,297 @@
+{
+  "dsl": 1,
+  "id": "wire/streamed-tool-calls",
+  "layer": "wire",
+  "covers": [
+    "packages/ai/src/api/openai-completions.ts"
+  ],
+  "model": {
+    "ref": "wire-fixture",
+    "value": {
+      "id": "fixture",
+      "name": "Fixture",
+      "api": "openai-completions",
+      "provider": "openai",
+      "baseUrl": "https://fixture.invalid/v1",
+      "reasoning": true,
+      "input": [
+        "text"
+      ],
+      "cost": {
+        "input": 1,
+        "output": 2,
+        "cacheRead": 3,
+        "cacheWrite": 4
+      },
+      "contextWindow": 32000,
+      "maxTokens": 4096,
+      "compat": {
+        "supportsMidConvoSystemMessages": false
+      }
+    }
+  },
+  "clock": {
+    "epochMs": 1767225600000
+  },
+  "options": {
+    "maxTokens": 128,
+    "sessionId": "fixture-session"
+  },
+  "provider": {
+    "kind": "wire",
+    "responses": [
+      {
+        "status": 200,
+        "sse": [
+          {
+            "gate": "tools-start"
+          },
+          {
+            "data": {
+              "choices": [
+                {
+                  "index": 0,
+                  "delta": {
+                    "tool_calls": [
+                      {
+                        "index": 0,
+                        "id": "call-one",
+                        "function": {
+                          "name": "first",
+                          "arguments": "{\"x\":"
+                        }
+                      },
+                      {
+                        "index": 1,
+                        "id": "call-two",
+                        "function": {
+                          "name": "second",
+                          "arguments": "{\"x\":"
+                        }
+                      }
+                    ]
+                  },
+                  "finish_reason": null
+                }
+              ]
+            }
+          },
+          {
+            "gate": "tools-rest"
+          },
+          {
+            "data": {
+              "choices": [
+                {
+                  "index": 0,
+                  "delta": {
+                    "tool_calls": [
+                      {
+                        "index": 1,
+                        "function": {
+                          "arguments": "2}"
+                        }
+                      },
+                      {
+                        "index": 0,
+                        "function": {
+                          "arguments": "1}"
+                        }
+                      }
+                    ]
+                  },
+                  "finish_reason": null
+                }
+              ]
+            }
+          },
+          {
+            "gate": "tools-finish"
+          },
+          {
+            "data": {
+              "choices": [
+                {
+                  "index": 0,
+                  "delta": {},
+                  "finish_reason": "tool_calls"
+                }
+              ]
+            }
+          },
+          {
+            "data": "[DONE]"
+          }
+        ]
+      },
+      {
+        "status": 200,
+        "sse": [
+          {
+            "gate": "answer-start"
+          },
+          {
+            "data": {
+              "choices": [
+                {
+                  "index": 0,
+                  "delta": {
+                    "content": "answer"
+                  },
+                  "finish_reason": "stop"
+                }
+              ],
+              "usage": {
+                "prompt_tokens": 20,
+                "completion_tokens": 3,
+                "prompt_tokens_details": {
+                  "cached_tokens": 4
+                },
+                "completion_tokens_details": {
+                  "reasoning_tokens": 1
+                }
+              }
+            }
+          },
+          {
+            "gate": "answer-eof"
+          },
+          {
+            "data": "[DONE]"
+          }
+        ]
+      }
+    ]
+  },
+  "concurrency": "gated",
+  "steps": [
+    {
+      "prompt": "use both"
+    },
+    {
+      "waitFor": {
+        "type": "start",
+        "count": 1
+      }
+    },
+    {
+      "open": "tools-start"
+    },
+    {
+      "waitFor": {
+        "type": "toolcall_delta",
+        "count": 2
+      }
+    },
+    {
+      "open": "tools-rest"
+    },
+    {
+      "waitFor": {
+        "type": "toolcall_delta",
+        "count": 4
+      }
+    },
+    {
+      "open": "tools-finish"
+    },
+    {
+      "awaitIdle": {}
+    },
+    {
+      "prompt": [
+        {
+          "role": "toolResult",
+          "toolCallId": "call-one",
+          "toolName": "first",
+          "content": [
+            {
+              "type": "text",
+              "text": "one"
+            }
+          ],
+          "isError": false,
+          "timestamp": 2
+        },
+        {
+          "role": "toolResult",
+          "toolCallId": "call-two",
+          "toolName": "second",
+          "content": [
+            {
+              "type": "text",
+              "text": "two"
+            }
+          ],
+          "isError": false,
+          "timestamp": 2
+        },
+        {
+          "role": "user",
+          "content": "summarize",
+          "timestamp": 3
+        }
+      ]
+    },
+    {
+      "waitFor": {
+        "type": "start",
+        "count": 2
+      }
+    },
+    {
+      "open": "answer-start"
+    },
+    {
+      "waitFor": {
+        "type": "text_delta",
+        "count": 1
+      }
+    },
+    {
+      "open": "answer-eof"
+    },
+    {
+      "awaitIdle": {}
+    }
+  ],
+  "initialMessages": [
+    {
+      "role": "system",
+      "content": "Use fixtures.",
+      "timestamp": 0,
+      "toolsAdded": [
+        {
+          "name": "first",
+          "description": "Fixture first",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "x": {
+                "type": "number"
+              }
+            },
+            "required": [
+              "x"
+            ]
+          }
+        },
+        {
+          "name": "second",
+          "description": "Fixture second",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "x": {
+                "type": "number"
+              }
+            },
+            "required": [
+              "x"
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

@@ -4654,73 +4654,82 @@ note = "Credential-gated upstream Anthropic/Responses cache test; retained as ex
 id = "packages/ai/test/cache-retention.test.ts > Cache Retention (PI_CACHE_RETENTION) > OpenAI Completions Provider > should omit long cache retention for 'opencode'/'deepseek-v4-flash'"
 file = "packages/ai/test/cache-retention.test.ts"
 line = 513
-status = "pending"
-adaptation = "Use inline pinned Model fixtures (including provider/id/baseUrl and compat) and the pure Rust request-builder or fake transport seam. Preserve all payload and compat assertions. Replace compat dispatch/SDK auth interception with direct selected call."
+status = "adapted"
 note = "The asserted cache fields or strict-tool omission belong to selected openai-completions buildParams/convertTools; catalog lookup is only model-fixture setup. Source proof: packages/ai/test/cache-retention.test.ts:513; packages/ai/src/api/openai-completions.ts:828-831; packages/ai/src/api/openai-completions.ts:1482-1517; packages/ai/src/api/openai-completions.ts:1675-1731; selection/classes.py:29-31"
+rust = "pi-ai::upstream::cache_retention::should_omit_long_cache_retention_for_opencode_deepseek_v4_flash"
+adaptation = "Use inline pinned Model fixtures (including provider/id/baseUrl and compat) and the pure Rust request-builder or fake transport seam. Preserve all payload and compat assertions. Replace compat dispatch/SDK auth interception with direct selected call."
 
 [[test]]
 id = "packages/ai/test/cache-retention.test.ts > Cache Retention (PI_CACHE_RETENTION) > OpenAI Completions Provider > should omit long cache retention for 'opencode'/'deepseek-v4-pro'"
 file = "packages/ai/test/cache-retention.test.ts"
 line = 513
-status = "pending"
-adaptation = "Use inline pinned Model fixtures (including provider/id/baseUrl and compat) and the pure Rust request-builder or fake transport seam. Preserve all payload and compat assertions. Replace compat dispatch/SDK auth interception with direct selected call."
+status = "adapted"
 note = "The asserted cache fields or strict-tool omission belong to selected openai-completions buildParams/convertTools; catalog lookup is only model-fixture setup. Source proof: packages/ai/test/cache-retention.test.ts:513; packages/ai/src/api/openai-completions.ts:828-831; packages/ai/src/api/openai-completions.ts:1482-1517; packages/ai/src/api/openai-completions.ts:1675-1731; selection/classes.py:29-31"
+rust = "pi-ai::upstream::cache_retention::should_omit_long_cache_retention_for_opencode_deepseek_v4_pro"
+adaptation = "Use inline pinned Model fixtures (including provider/id/baseUrl and compat) and the pure Rust request-builder or fake transport seam. Preserve all payload and compat assertions. Replace compat dispatch/SDK auth interception with direct selected call."
 
 [[test]]
 id = "packages/ai/test/cache-retention.test.ts > Cache Retention (PI_CACHE_RETENTION) > OpenAI Completions Provider > should omit long cache retention for 'opencode'/'kimi-k2.5'"
 file = "packages/ai/test/cache-retention.test.ts"
 line = 513
-status = "pending"
-adaptation = "Use inline pinned Model fixtures (including provider/id/baseUrl and compat) and the pure Rust request-builder or fake transport seam. Preserve all payload and compat assertions. Replace compat dispatch/SDK auth interception with direct selected call."
+status = "adapted"
 note = "The asserted cache fields or strict-tool omission belong to selected openai-completions buildParams/convertTools; catalog lookup is only model-fixture setup. Source proof: packages/ai/test/cache-retention.test.ts:513; packages/ai/src/api/openai-completions.ts:828-831; packages/ai/src/api/openai-completions.ts:1482-1517; packages/ai/src/api/openai-completions.ts:1675-1731; selection/classes.py:29-31"
+rust = "pi-ai::upstream::cache_retention::should_omit_long_cache_retention_for_opencode_kimi_k2_5"
+adaptation = "Use inline pinned Model fixtures (including provider/id/baseUrl and compat) and the pure Rust request-builder or fake transport seam. Preserve all payload and compat assertions. Replace compat dispatch/SDK auth interception with direct selected call."
 
 [[test]]
 id = "packages/ai/test/cache-retention.test.ts > Cache Retention (PI_CACHE_RETENTION) > OpenAI Completions Provider > should omit long cache retention for 'opencode'/'kimi-k2.6'"
 file = "packages/ai/test/cache-retention.test.ts"
 line = 513
-status = "pending"
-adaptation = "Use inline pinned Model fixtures (including provider/id/baseUrl and compat) and the pure Rust request-builder or fake transport seam. Preserve all payload and compat assertions. Replace compat dispatch/SDK auth interception with direct selected call."
+status = "adapted"
 note = "The asserted cache fields or strict-tool omission belong to selected openai-completions buildParams/convertTools; catalog lookup is only model-fixture setup. Source proof: packages/ai/test/cache-retention.test.ts:513; packages/ai/src/api/openai-completions.ts:828-831; packages/ai/src/api/openai-completions.ts:1482-1517; packages/ai/src/api/openai-completions.ts:1675-1731; selection/classes.py:29-31"
+rust = "pi-ai::upstream::cache_retention::should_omit_long_cache_retention_for_opencode_kimi_k2_6"
+adaptation = "Use inline pinned Model fixtures (including provider/id/baseUrl and compat) and the pure Rust request-builder or fake transport seam. Preserve all payload and compat assertions. Replace compat dispatch/SDK auth interception with direct selected call."
 
 [[test]]
 id = "packages/ai/test/cache-retention.test.ts > Cache Retention (PI_CACHE_RETENTION) > OpenAI Completions Provider > should omit long cache retention for 'opencode'/'minimax-m2.7'"
 file = "packages/ai/test/cache-retention.test.ts"
 line = 513
-status = "pending"
-adaptation = "Use inline pinned Model fixtures (including provider/id/baseUrl and compat) and the pure Rust request-builder or fake transport seam. Preserve all payload and compat assertions. Replace compat dispatch/SDK auth interception with direct selected call."
+status = "adapted"
 note = "The asserted cache fields or strict-tool omission belong to selected openai-completions buildParams/convertTools; catalog lookup is only model-fixture setup. Source proof: packages/ai/test/cache-retention.test.ts:513; packages/ai/src/api/openai-completions.ts:828-831; packages/ai/src/api/openai-completions.ts:1482-1517; packages/ai/src/api/openai-completions.ts:1675-1731; selection/classes.py:29-31"
+rust = "pi-ai::upstream::cache_retention::should_omit_long_cache_retention_for_opencode_minimax_m2_7"
+adaptation = "Use inline pinned Model fixtures (including provider/id/baseUrl and compat) and the pure Rust request-builder or fake transport seam. Preserve all payload and compat assertions. Replace compat dispatch/SDK auth interception with direct selected call."
 
 [[test]]
 id = "packages/ai/test/cache-retention.test.ts > Cache Retention (PI_CACHE_RETENTION) > OpenAI Completions Provider > should omit prompt_cache_retention when supportsLongCacheRetention is false"
 file = "packages/ai/test/cache-retention.test.ts"
 line = 482
-status = "pending"
-adaptation = "Use inline pinned Model fixtures (including provider/id/baseUrl and compat) and the pure Rust request-builder or fake transport seam. Preserve all payload and compat assertions. Replace compat dispatch/SDK auth interception with direct selected call."
+status = "adapted"
 note = "The asserted cache fields or strict-tool omission belong to selected openai-completions buildParams/convertTools; catalog lookup is only model-fixture setup. Source proof: packages/ai/test/cache-retention.test.ts:482; packages/ai/src/api/openai-completions.ts:828-831; packages/ai/src/api/openai-completions.ts:1482-1517; packages/ai/src/api/openai-completions.ts:1675-1731; selection/classes.py:29-31"
+rust = "pi-ai::upstream::cache_retention::should_omit_prompt_cache_retention_when_supports_long_cache_retention_is_false"
+adaptation = "Use inline pinned Model fixtures (including provider/id/baseUrl and compat) and the pure Rust request-builder or fake transport seam. Preserve all payload and compat assertions. Replace compat dispatch/SDK auth interception with direct selected call."
 
 [[test]]
 id = "packages/ai/test/cache-retention.test.ts > Cache Retention (PI_CACHE_RETENTION) > OpenAI Completions Provider > should omit strict field on tools for cerebras/'gpt-oss-120b'"
 file = "packages/ai/test/cache-retention.test.ts"
 line = 540
-status = "pending"
-adaptation = "Use inline pinned Model fixtures (including provider/id/baseUrl and compat) and the pure Rust request-builder or fake transport seam. Preserve all payload and compat assertions. Replace compat dispatch/SDK auth interception with direct selected call."
+status = "adapted"
 note = "The asserted cache fields or strict-tool omission belong to selected openai-completions buildParams/convertTools; catalog lookup is only model-fixture setup. Source proof: packages/ai/test/cache-retention.test.ts:540; packages/ai/src/api/openai-completions.ts:828-831; packages/ai/src/api/openai-completions.ts:1482-1517; packages/ai/src/api/openai-completions.ts:1675-1731; selection/classes.py:29-31"
+rust = "pi-ai::upstream::cache_retention::should_omit_strict_field_on_tools_for_cerebras_gpt_oss_120b"
+adaptation = "Use inline pinned Model fixtures (including provider/id/baseUrl and compat) and the pure Rust request-builder or fake transport seam. Preserve all payload and compat assertions. Replace compat dispatch/SDK auth interception with direct selected call."
 
 [[test]]
 id = "packages/ai/test/cache-retention.test.ts > Cache Retention (PI_CACHE_RETENTION) > OpenAI Completions Provider > should omit strict field on tools for cerebras/'qwen-3.8-27b'"
 file = "packages/ai/test/cache-retention.test.ts"
 line = 540
-status = "pending"
-adaptation = "Use inline pinned Model fixtures (including provider/id/baseUrl and compat) and the pure Rust request-builder or fake transport seam. Preserve all payload and compat assertions. Replace compat dispatch/SDK auth interception with direct selected call."
+status = "adapted"
 note = "The asserted cache fields or strict-tool omission belong to selected openai-completions buildParams/convertTools; catalog lookup is only model-fixture setup. Source proof: packages/ai/test/cache-retention.test.ts:540; packages/ai/src/api/openai-completions.ts:828-831; packages/ai/src/api/openai-completions.ts:1482-1517; packages/ai/src/api/openai-completions.ts:1675-1731; selection/classes.py:29-31"
+rust = "pi-ai::upstream::cache_retention::should_omit_strict_field_on_tools_for_cerebras_qwen_3_8_27b"
+adaptation = "Use inline pinned Model fixtures (including provider/id/baseUrl and compat) and the pure Rust request-builder or fake transport seam. Preserve all payload and compat assertions. Replace compat dispatch/SDK auth interception with direct selected call."
 
 [[test]]
 id = "packages/ai/test/cache-retention.test.ts > Cache Retention (PI_CACHE_RETENTION) > OpenAI Completions Provider > should set prompt_cache_retention for non-api.openai.com baseUrl by default"
 file = "packages/ai/test/cache-retention.test.ts"
 line = 457
-status = "pending"
-adaptation = "Use inline pinned Model fixtures (including provider/id/baseUrl and compat) and the pure Rust request-builder or fake transport seam. Preserve all payload and compat assertions. Replace compat dispatch/SDK auth interception with direct selected call."
+status = "adapted"
 note = "The asserted cache fields or strict-tool omission belong to selected openai-completions buildParams/convertTools; catalog lookup is only model-fixture setup. Source proof: packages/ai/test/cache-retention.test.ts:457; packages/ai/src/api/openai-completions.ts:828-831; packages/ai/src/api/openai-completions.ts:1482-1517; packages/ai/src/api/openai-completions.ts:1675-1731; selection/classes.py:29-31"
+rust = "pi-ai::upstream::cache_retention::should_set_prompt_cache_retention_for_non_api_openai_com_base_url_by_default"
+adaptation = "Use inline pinned Model fixtures (including provider/id/baseUrl and compat) and the pure Rust request-builder or fake transport seam. Preserve all payload and compat assertions. Replace compat dispatch/SDK auth interception with direct selected call."
 
 [[test]]
 id = "packages/ai/test/cache-retention.test.ts > Cache Retention (PI_CACHE_RETENTION) > OpenAI Responses Provider > does not enable cache warming from the documented TTL alone for gpt-5.6-luna"
@@ -4987,17 +4996,19 @@ reason = "skip-module"
 id = "packages/ai/test/constrained-sampling.test.ts > constrained tool sampling > converts supported constraints and falls back when unsupported"
 file = "packages/ai/test/constrained-sampling.test.ts"
 line = 90
-status = "pending"
-adaptation = "Exercise selected resolveJsonSchemaStrictSampling, resolveGrammarConstrainedSampling and getJsonSchemaToolParameters directly, with literal JSON schemas; preserve require/prefer errors, supported grammar variant, fallback and false-config behavior. Record omission of excluded Responses type/custom envelope fields."
+status = "adapted"
 note = "Contains direct or observable selected constrained-sampling helper assertions; the Responses imports do not make this entire runtime ID excludable. Source proof: packages/ai/test/constrained-sampling.test.ts:90; packages/ai/src/api/constrained-sampling.ts:127-199; packages/ai/src/api/constrained-sampling.ts:225-298; selection/classes.py:31"
+rust = "pi-ai::upstream::constrained_sampling::constrained_tool_sampling::converts_supported_constraints_and_falls_back_when_unsupported"
+adaptation = "Exercise selected resolveJsonSchemaStrictSampling, resolveGrammarConstrainedSampling and getJsonSchemaToolParameters directly, with literal JSON schemas; preserve require/prefer errors, supported grammar variant, fallback and false-config behavior. Record omission of excluded Responses type/custom envelope fields."
 
 [[test]]
 id = "packages/ai/test/constrained-sampling.test.ts > constrained tool sampling > derives strict provider schemas without changing tool definitions"
 file = "packages/ai/test/constrained-sampling.test.ts"
 line = 129
-status = "pending"
-adaptation = "Replace TypeBox construction with literal JSON schemas, then compare original immutability and the complete selected makeStrictJsonSchema result."
+status = "adapted"
 note = "Contains direct or observable selected constrained-sampling helper assertions; the Responses imports do not make this entire runtime ID excludable. Source proof: packages/ai/test/constrained-sampling.test.ts:129; packages/ai/src/api/constrained-sampling.ts:127-199; packages/ai/src/api/constrained-sampling.ts:225-298; selection/classes.py:31"
+rust = "pi-ai::upstream::constrained_sampling::constrained_tool_sampling::derives_strict_provider_schemas_without_changing_tool_definitions"
+adaptation = "Replace TypeBox construction with literal JSON schemas, then compare original immutability and the complete selected makeStrictJsonSchema result."
 
 [[test]]
 id = "packages/ai/test/constrained-sampling.test.ts > constrained tool sampling > drops foreign item ids when replaying grammar calls as custom Responses items"
@@ -5011,45 +5022,51 @@ note = "The only assertions are custom_tool_call Responses wire representation a
 id = "packages/ai/test/constrained-sampling.test.ts > constrained tool sampling > falls back or rejects schemas that cannot be safely converted"
 file = "packages/ai/test/constrained-sampling.test.ts"
 line = 156
-status = "pending"
-adaptation = "Preserve all four schema rejection cases against makeStrictJsonSchema/resolveJsonSchemaStrictSampling and original-parameters fallback through selected Completions convertTools; record removal of Responses envelope assertion."
+status = "adapted"
 note = "Contains direct or observable selected constrained-sampling helper assertions; the Responses imports do not make this entire runtime ID excludable. Source proof: packages/ai/test/constrained-sampling.test.ts:156; packages/ai/src/api/constrained-sampling.ts:127-199; packages/ai/src/api/constrained-sampling.ts:225-298; selection/classes.py:31"
+rust = "pi-ai::upstream::constrained_sampling::constrained_tool_sampling::falls_back_or_rejects_schemas_that_cannot_be_safely_converted"
+adaptation = "Preserve all four schema rejection cases against makeStrictJsonSchema/resolveJsonSchemaStrictSampling and original-parameters fallback through selected Completions convertTools; record removal of Responses envelope assertion."
 
 [[test]]
 id = "packages/ai/test/constrained-sampling.test.ts > constrained tool sampling > keeps grammar input JSON deltas append-only"
 file = "packages/ai/test/constrained-sampling.test.ts"
 line = 293
-status = "pending"
-adaptation = "Translate direct appendGrammarToolInputJsonDelta calls and buffer state exactly; preserve appended JSON, repeated-close no-op and changed-after-close error."
+status = "adapted"
 note = "Contains direct or observable selected constrained-sampling helper assertions; the Responses imports do not make this entire runtime ID excludable. Source proof: packages/ai/test/constrained-sampling.test.ts:293; packages/ai/src/api/constrained-sampling.ts:127-199; packages/ai/src/api/constrained-sampling.ts:225-298; selection/classes.py:31"
+rust = "pi-ai::upstream::constrained_sampling::constrained_tool_sampling::keeps_grammar_input_json_deltas_append_only"
+adaptation = "Translate direct appendGrammarToolInputJsonDelta calls and buffer state exactly; preserve appended JSON, repeated-close no-op and changed-after-close error."
 
 [[test]]
 id = "packages/ai/test/constrained-sampling.test.ts > constrained tool sampling > replays grammar calls as custom Responses items"
 file = "packages/ai/test/constrained-sampling.test.ts"
 line = 201
-status = "pending"
-adaptation = "Preserve invalid arguments and successful abc input assertions by directly calling selected getGrammarToolInput; record omission of excluded custom_tool_call/custom_tool_call_output wire envelopes."
+status = "adapted"
 note = "Contains direct or observable selected constrained-sampling helper assertions; the Responses imports do not make this entire runtime ID excludable. Source proof: packages/ai/test/constrained-sampling.test.ts:201; packages/ai/src/api/constrained-sampling.ts:127-199; packages/ai/src/api/constrained-sampling.ts:225-298; selection/classes.py:31"
+rust = "pi-ai::upstream::constrained_sampling::constrained_tool_sampling::replays_grammar_calls_as_custom_responses_items"
+adaptation = "Preserve invalid arguments and successful abc input assertions by directly calling selected getGrammarToolInput; record omission of excluded custom_tool_call/custom_tool_call_output wire envelopes."
 
 [[test]]
 id = "packages/ai/test/constrained-sampling.test.ts > constrained tool sampling > starts custom Responses tool calls with their initial input"
 file = "packages/ai/test/constrained-sampling.test.ts"
 line = 305
-status = "pending"
-adaptation = "Retain selected grammar-buffer delta behavior for a, ab and abc (including initial input) through appendGrammarToolInputJsonDelta and the selected Completions grammar SSE equivalent; record omission of Responses event-name/envelope parsing assertions."
+status = "adapted"
 note = "Contains direct or observable selected constrained-sampling helper assertions; the Responses imports do not make this entire runtime ID excludable. Source proof: packages/ai/test/constrained-sampling.test.ts:305; packages/ai/src/api/constrained-sampling.ts:127-199; packages/ai/src/api/constrained-sampling.ts:225-298; selection/classes.py:31"
+rust = "pi-ai::upstream::constrained_sampling::constrained_tool_sampling::starts_custom_responses_tool_calls_with_their_initial_input"
+adaptation = "Retain selected grammar-buffer delta behavior for a, ab and abc (including initial input) through appendGrammarToolInputJsonDelta and the selected Completions grammar SSE equivalent; record omission of Responses event-name/envelope parsing assertions."
 
 [[test]]
 id = "packages/ai/test/context-estimate.test.ts > context token estimation > ignores stale assistant usage after a newer message is inserted before it"
 file = "packages/ai/test/context-estimate.test.ts"
 line = 45
-status = "pending"
+status = "ported"
+rust = "pi-ai::upstream::context_estimate::context_token_estimation::ignores_stale_assistant_usage_after_a_newer_message_is_inserted_before_it"
 
 [[test]]
 id = "packages/ai/test/context-estimate.test.ts > context token estimation > uses assistant usage again after a response to the inserted context"
 file = "packages/ai/test/context-estimate.test.ts"
 line = 64
-status = "pending"
+status = "ported"
+rust = "pi-ai::upstream::context_estimate::context_token_estimation::uses_assistant_usage_again_after_a_response_to_the_inserted_context"
 
 [[test]]
 id = "packages/ai/test/context-overflow.test.ts > Context overflow error handling > Amazon Bedrock > claude-sonnet-4-5 - should detect overflow via isContextOverflow"
@@ -7941,7 +7958,9 @@ reason = "skip-module"
 id = "packages/ai/test/lax-message-content.test.ts > lax message content handling > normalizes null/missing content to an empty array instead of crashing"
 file = "packages/ai/test/lax-message-content.test.ts"
 line = 31
-status = "pending"
+status = "adapted"
+rust = "pi-ai::upstream::lax_message_content::lax_message_content_handling::normalizes_null_missing_content_to_an_empty_array_instead_of_crashing"
+adaptation = "Malformed null/missing content stays in raw JsValue until transform_messages_raw normalizes at the transform boundary and invokes the typed core. Preserve all three roles, result length and empty-array assertions; use the exact inline text-only model. No import-time normalization."
 
 [[test]]
 id = "packages/ai/test/lazy-module-load.test.ts > lazy provider module loading > does not load provider SDKs when building all builtin providers"
@@ -9634,55 +9653,64 @@ reason = "skip-module"
 id = "packages/ai/test/openai-completions-cache-control-format.test.ts > openai-completions cacheControlFormat > applies Anthropic-style cache markers when model compat enables them"
 file = "packages/ai/test/openai-completions-cache-control-format.test.ts"
 line = 130
-status = "pending"
+status = "ported"
+rust = "pi-ai::upstream::openai_completions_cache_control_format::applies_anthropic_style_cache_markers_when_model_compat_enables_them"
 
 [[test]]
 id = "packages/ai/test/openai-completions-cache-control-format.test.ts > openai-completions cacheControlFormat > moves the conversation cache marker to a tool result"
 file = "packages/ai/test/openai-completions-cache-control-format.test.ts"
 line = 162
-status = "pending"
+status = "ported"
+rust = "pi-ai::upstream::openai_completions_cache_control_format::moves_the_conversation_cache_marker_to_a_tool_result"
 
 [[test]]
 id = "packages/ai/test/openai-completions-cache-control-format.test.ts > openai-completions cacheControlFormat > omits Anthropic-style cache markers when cacheRetention is none"
 file = "packages/ai/test/openai-completions-cache-control-format.test.ts"
 line = 203
-status = "pending"
+status = "ported"
+rust = "pi-ai::upstream::openai_completions_cache_control_format::omits_anthropic_style_cache_markers_when_cache_retention_is_none"
 
 [[test]]
 id = "packages/ai/test/openai-completions-cache-control-format.test.ts > openai-completions cacheControlFormat > preserves Anthropic-style cache markers for OpenRouter Anthropic batch aliases"
 file = "packages/ai/test/openai-completions-cache-control-format.test.ts"
 line = 156
-status = "pending"
+status = "ported"
+rust = "pi-ai::upstream::openai_completions_cache_control_format::preserves_anthropic_style_cache_markers_for_open_router_anthropic_batch_aliases"
 
 [[test]]
 id = "packages/ai/test/openai-completions-empty-tools.test.ts > openai-completions empty tools handling > clamps default maxTokens to remaining context"
 file = "packages/ai/test/openai-completions-empty-tools.test.ts"
 line = 129
-status = "pending"
+status = "ported"
+rust = "pi-ai::upstream::openai_completions_empty_tools::clamps_default_max_tokens_to_remaining_context"
 
 [[test]]
 id = "packages/ai/test/openai-completions-empty-tools.test.ts > openai-completions empty tools handling > clamps explicit maxTokens to remaining context"
 file = "packages/ai/test/openai-completions-empty-tools.test.ts"
 line = 146
-status = "pending"
+status = "ported"
+rust = "pi-ai::upstream::openai_completions_empty_tools::clamps_explicit_max_tokens_to_remaining_context"
 
 [[test]]
 id = "packages/ai/test/openai-completions-empty-tools.test.ts > openai-completions empty tools handling > omits tools field when context.tools is an empty array"
 file = "packages/ai/test/openai-completions-empty-tools.test.ts"
 line = 62
-status = "pending"
+status = "ported"
+rust = "pi-ai::upstream::openai_completions_empty_tools::omits_tools_field_when_context_tools_is_an_empty_array"
 
 [[test]]
 id = "packages/ai/test/openai-completions-empty-tools.test.ts > openai-completions empty tools handling > omits tools field when context.tools is undefined"
 file = "packages/ai/test/openai-completions-empty-tools.test.ts"
 line = 79
-status = "pending"
+status = "ported"
+rust = "pi-ai::upstream::openai_completions_empty_tools::omits_tools_field_when_context_tools_is_undefined"
 
 [[test]]
 id = "packages/ai/test/openai-completions-empty-tools.test.ts > openai-completions empty tools handling > preserves inline upstream Authorization for Cloudflare AI Gateway BYOK requests"
 file = "packages/ai/test/openai-completions-empty-tools.test.ts"
 line = 214
-status = "pending"
+status = "adapted"
+rust = "pi-ai::upstream::openai_completions_empty_tools::preserves_inline_upstream_authorization_for_cloudflare_ai_gateway_byok_requests"
 adaptation = "Keep request-field assertions with a resolved model and explicit authentication/header fixtures."
 
 [[test]]
@@ -9697,189 +9725,220 @@ note = "Provider authentication and endpoint resolution belong to the host model
 id = "packages/ai/test/openai-completions-empty-tools.test.ts > openai-completions empty tools handling > sends default maxTokens"
 file = "packages/ai/test/openai-completions-empty-tools.test.ts"
 line = 95
-status = "pending"
+status = "ported"
+rust = "pi-ai::upstream::openai_completions_empty_tools::sends_default_max_tokens"
 
 [[test]]
 id = "packages/ai/test/openai-completions-empty-tools.test.ts > openai-completions empty tools handling > sends explicit maxTokens"
 file = "packages/ai/test/openai-completions-empty-tools.test.ts"
 line = 112
-status = "pending"
+status = "ported"
+rust = "pi-ai::upstream::openai_completions_empty_tools::sends_explicit_max_tokens"
 
 [[test]]
 id = "packages/ai/test/openai-completions-empty-tools.test.ts > openai-completions empty tools handling > sends session affinity headers for Workers AI through Cloudflare AI Gateway"
 file = "packages/ai/test/openai-completions-empty-tools.test.ts"
 line = 233
-status = "pending"
+status = "adapted"
+rust = "pi-ai::upstream::openai_completions_empty_tools::sends_session_affinity_headers_for_workers_ai_through_cloudflare_ai_gateway"
 adaptation = "Keep request-field assertions with a resolved model and explicit authentication/header fixtures."
 
 [[test]]
 id = "packages/ai/test/openai-completions-empty-tools.test.ts > openai-completions empty tools handling > still emits tools: [] for Anthropic/LiteLLM proxy when conversation has tool history"
 file = "packages/ai/test/openai-completions-empty-tools.test.ts"
 line = 253
-status = "pending"
+status = "ported"
+rust = "pi-ai::upstream::openai_completions_empty_tools::still_emits_tools_for_anthropic_litellm_proxy_when_conversation_has_tool_history"
 
 [[test]]
 id = "packages/ai/test/openai-completions-empty-tools.test.ts > openai-completions empty tools handling > uses conservative OpenAI-compatible fields for Cloudflare AI Gateway /compat models"
 file = "packages/ai/test/openai-completions-empty-tools.test.ts"
 line = 163
-status = "pending"
+status = "adapted"
+rust = "pi-ai::upstream::openai_completions_empty_tools::uses_conservative_open_ai_compatible_fields_for_cloudflare_ai_gateway_compat_models"
 adaptation = "Keep request-field assertions with a resolved model and explicit authentication/header fixtures."
 
 [[test]]
 id = "packages/ai/test/openai-completions-prompt-cache.test.ts > openai-completions prompt caching > clamps prompt_cache_key to OpenAI's 64-character limit"
 file = "packages/ai/test/openai-completions-prompt-cache.test.ts"
 line = 129
-status = "pending"
+status = "ported"
+rust = "pi-ai::upstream::openai_completions_prompt_cache::clamps_prompt_cache_key_to_open_ais_64_character_limit"
 
 [[test]]
 id = "packages/ai/test/openai-completions-prompt-cache.test.ts > openai-completions prompt caching > lets explicit headers override generated session-affinity headers"
 file = "packages/ai/test/openai-completions-prompt-cache.test.ts"
 line = 258
-status = "pending"
+status = "ported"
+rust = "pi-ai::upstream::openai_completions_prompt_cache::lets_explicit_headers_override_generated_session_affinity_headers"
 
 [[test]]
 id = "packages/ai/test/openai-completions-prompt-cache.test.ts > openai-completions prompt caching > omits OpenRouter session-affinity data when disabled"
 file = "packages/ai/test/openai-completions-prompt-cache.test.ts"
 line = 233
-status = "pending"
+status = "ported"
+rust = "pi-ai::upstream::openai_completions_prompt_cache::omits_open_router_session_affinity_data_when_disabled"
 
 [[test]]
 id = "packages/ai/test/openai-completions-prompt-cache.test.ts > openai-completions prompt caching > omits prompt cache fields for non-OpenAI base URLs without compatible long retention"
 file = "packages/ai/test/openai-completions-prompt-cache.test.ts"
 line = 143
-status = "pending"
+status = "ported"
+rust = "pi-ai::upstream::openai_completions_prompt_cache::omits_prompt_cache_fields_for_non_open_ai_base_urls_without_compatible_long_retention"
 
 [[test]]
 id = "packages/ai/test/openai-completions-prompt-cache.test.ts > openai-completions prompt caching > omits prompt cache fields when cacheRetention is none"
 file = "packages/ai/test/openai-completions-prompt-cache.test.ts"
 line = 136
-status = "pending"
+status = "ported"
+rust = "pi-ai::upstream::openai_completions_prompt_cache::omits_prompt_cache_fields_when_cache_retention_is_none"
 
 [[test]]
 id = "packages/ai/test/openai-completions-prompt-cache.test.ts > openai-completions prompt caching > omits session-affinity headers when cacheRetention is none"
 file = "packages/ai/test/openai-completions-prompt-cache.test.ts"
 line = 246
-status = "pending"
+status = "ported"
+rust = "pi-ai::upstream::openai_completions_prompt_cache::omits_session_affinity_headers_when_cache_retention_is_none"
 
 [[test]]
 id = "packages/ai/test/openai-completions-prompt-cache.test.ts > openai-completions prompt caching > sends Baseten session affinity for built-in catalog models"
 file = "packages/ai/test/openai-completions-prompt-cache.test.ts"
 line = 184
-status = "pending"
+status = "ported"
+rust = "pi-ai::upstream::openai_completions_prompt_cache::sends_baseten_session_affinity_for_built_in_catalog_models"
 
 [[test]]
 id = "packages/ai/test/openai-completions-prompt-cache.test.ts > openai-completions prompt caching > sends Fireworks session affinity for accounts/fireworks/models/glm-5p3"
 file = "packages/ai/test/openai-completions-prompt-cache.test.ts"
 line = 174
-status = "pending"
+status = "ported"
+rust = "pi-ai::upstream::openai_completions_prompt_cache::sends_fireworks_session_affinity_for_accounts_fireworks_models_glm_5p3"
 
 [[test]]
 id = "packages/ai/test/openai-completions-prompt-cache.test.ts > openai-completions prompt caching > sends Fireworks session affinity for accounts/fireworks/routers/glm-5p3-fast"
 file = "packages/ai/test/openai-completions-prompt-cache.test.ts"
 line = 174
-status = "pending"
+status = "ported"
+rust = "pi-ai::upstream::openai_completions_prompt_cache::sends_fireworks_session_affinity_for_accounts_fireworks_routers_glm_5p3_fast"
 
 [[test]]
 id = "packages/ai/test/openai-completions-prompt-cache.test.ts > openai-completions prompt caching > sends OpenRouter session-affinity header by default for built-in OpenRouter models"
 file = "packages/ai/test/openai-completions-prompt-cache.test.ts"
 line = 221
-status = "pending"
+status = "ported"
+rust = "pi-ai::upstream::openai_completions_prompt_cache::sends_open_router_session_affinity_header_by_default_for_built_in_open_router_models"
 
 [[test]]
 id = "packages/ai/test/openai-completions-prompt-cache.test.ts > openai-completions prompt caching > sends known session-affinity headers when compat.sendSessionAffinityHeaders is enabled"
 file = "packages/ai/test/openai-completions-prompt-cache.test.ts"
 line = 162
-status = "pending"
+status = "ported"
+rust = "pi-ai::upstream::openai_completions_prompt_cache::sends_known_session_affinity_headers_when_compat_send_session_affinity_headers_is_enabled"
 
 [[test]]
 id = "packages/ai/test/openai-completions-prompt-cache.test.ts > openai-completions prompt caching > sets prompt_cache_key for direct OpenAI requests when caching is enabled"
 file = "packages/ai/test/openai-completions-prompt-cache.test.ts"
 line = 115
-status = "pending"
+status = "ported"
+rust = "pi-ai::upstream::openai_completions_prompt_cache::sets_prompt_cache_key_for_direct_open_ai_requests_when_caching_is_enabled"
 
 [[test]]
 id = "packages/ai/test/openai-completions-prompt-cache.test.ts > openai-completions prompt caching > sets prompt_cache_retention to 24h for direct OpenAI requests when cacheRetention is long"
 file = "packages/ai/test/openai-completions-prompt-cache.test.ts"
 line = 122
-status = "pending"
+status = "ported"
+rust = "pi-ai::upstream::openai_completions_prompt_cache::sets_prompt_cache_retention_to_24h_for_direct_open_ai_requests_when_cache_retention_is_long"
 
 [[test]]
 id = "packages/ai/test/openai-completions-prompt-cache.test.ts > openai-completions prompt caching > uses OpenAI no-session format when configured"
 file = "packages/ai/test/openai-completions-prompt-cache.test.ts"
 line = 192
-status = "pending"
+status = "ported"
+rust = "pi-ai::upstream::openai_completions_prompt_cache::uses_open_ai_no_session_format_when_configured"
 
 [[test]]
 id = "packages/ai/test/openai-completions-prompt-cache.test.ts > openai-completions prompt caching > uses OpenRouter session-affinity header when configured"
 file = "packages/ai/test/openai-completions-prompt-cache.test.ts"
 line = 206
-status = "pending"
+status = "ported"
+rust = "pi-ai::upstream::openai_completions_prompt_cache::uses_open_router_session_affinity_header_when_configured"
 
 [[test]]
 id = "packages/ai/test/openai-completions-prompt-cache.test.ts > openai-completions prompt caching > uses PI_CACHE_RETENTION for direct OpenAI requests"
 file = "packages/ai/test/openai-completions-prompt-cache.test.ts"
 line = 154
-status = "pending"
+status = "ported"
+rust = "pi-ai::upstream::openai_completions_prompt_cache::uses_pi_cache_retention_for_direct_open_ai_requests"
 
 [[test]]
 id = "packages/ai/test/openai-completions-provider-stream-event.test.ts > openai-completions provider stream events > exposes provider chunks including OpenRouter metadata"
 file = "packages/ai/test/openai-completions-provider-stream-event.test.ts"
 line = 58
-status = "pending"
+status = "ported"
+rust = "pi-ai::upstream::openai_completions_provider_stream_event::exposes_provider_chunks_including_openrouter_metadata"
 
 [[test]]
 id = "packages/ai/test/openai-completions-raw-stop-reason.test.ts > OpenAI completions raw stop reasons > preserves raw finish reasons for provider error stops"
 file = "packages/ai/test/openai-completions-raw-stop-reason.test.ts"
 line = 71
-status = "pending"
+status = "ported"
+rust = "pi-ai::upstream::openai_completions_raw_stop_reason::preserves_raw_finish_reasons_for_provider_error_stops"
 
 [[test]]
 id = "packages/ai/test/openai-completions-raw-stop-reason.test.ts > OpenAI completions raw stop reasons > preserves raw finish reasons for successful stops"
 file = "packages/ai/test/openai-completions-raw-stop-reason.test.ts"
 line = 61
-status = "pending"
+status = "ported"
+rust = "pi-ai::upstream::openai_completions_raw_stop_reason::preserves_raw_finish_reasons_for_successful_stops"
 
 [[test]]
 id = "packages/ai/test/openai-completions-reasoning-details.test.ts > openai-completions reasoning_details streaming > falls back to encrypted tool-call signatures for older stored assistant messages"
 file = "packages/ai/test/openai-completions-reasoning-details.test.ts"
 line = 144
-status = "pending"
+status = "ported"
+rust = "pi-ai::upstream::openai_completions_reasoning_details::falls_back_to_encrypted_tool_call_signatures_for_older_stored_assistant_messages"
 
 [[test]]
 id = "packages/ai/test/openai-completions-reasoning-details.test.ts > openai-completions reasoning_details streaming > merges consecutive text and summary reasoning_details deltas before replay"
 file = "packages/ai/test/openai-completions-reasoning-details.test.ts"
 line = 188
-status = "pending"
+status = "ported"
+rust = "pi-ai::upstream::openai_completions_reasoning_details::merges_consecutive_text_and_summary_reasoning_details_deltas_before_replay"
 
 [[test]]
 id = "packages/ai/test/openai-completions-reasoning-details.test.ts > openai-completions reasoning_details streaming > preserves reasoning_details in the thinking signature"
 file = "packages/ai/test/openai-completions-reasoning-details.test.ts"
 line = 118
-status = "pending"
+status = "ported"
+rust = "pi-ai::upstream::openai_completions_reasoning_details::preserves_reasoning_details_in_the_thinking_signature"
 
 [[test]]
 id = "packages/ai/test/openai-completions-reasoning-details.test.ts > openai-completions reasoning_details streaming > preserves signed text and summary reasoning_details in their original sequence"
 file = "packages/ai/test/openai-completions-reasoning-details.test.ts"
 line = 161
-status = "pending"
+status = "ported"
+rust = "pi-ai::upstream::openai_completions_reasoning_details::preserves_signed_text_and_summary_reasoning_details_in_their_original_sequence"
 
 [[test]]
 id = "packages/ai/test/openai-completions-response-model.test.ts > openai-completions responseModel > ignores empty or missing chunk.model"
 file = "packages/ai/test/openai-completions-response-model.test.ts"
 line = 115
-status = "pending"
+status = "ported"
+rust = "pi-ai::upstream::openai_completions_response_model::ignores_empty_or_missing_chunk_model"
 
 [[test]]
 id = "packages/ai/test/openai-completions-response-model.test.ts > openai-completions responseModel > leaves responseModel undefined when chunks echo the requested id"
 file = "packages/ai/test/openai-completions-response-model.test.ts"
 line = 89
-status = "pending"
+status = "ported"
+rust = "pi-ai::upstream::openai_completions_response_model::leaves_response_model_undefined_when_chunks_echo_the_requested_id"
 
 [[test]]
 id = "packages/ai/test/openai-completions-response-model.test.ts > openai-completions responseModel > surfaces routed chunk.model on responseModel without changing model"
 file = "packages/ai/test/openai-completions-response-model.test.ts"
 line = 61
-status = "pending"
+status = "ported"
+rust = "pi-ai::upstream::openai_completions_response_model::surfaces_routed_chunk_model_on_response_model_without_changing_model"
 
 [[test]]
 id = "packages/ai/test/openai-completions-retry.test.ts > openai-completions provider retries > disables SDK retries by default"
@@ -9912,409 +9971,539 @@ note = "Host integration is verified in phase 2."
 id = "packages/ai/test/openai-completions-thinking-as-text.test.ts > openai-completions thinking-as-text replay > reaches the endpoint when replay contains both thinking and text"
 file = "packages/ai/test/openai-completions-thinking-as-text.test.ts"
 line = 155
-status = "pending"
+status = "ported"
+rust = "pi-ai::upstream::openai_completions_thinking_as_text::reaches_the_endpoint_when_replay_contains_both_thinking_and_text"
 
 [[test]]
 id = "packages/ai/test/openai-completions-thinking-as-text.test.ts > openai-completions thinking-as-text replay > serializes same-model thinking-only replay as assistant text parts"
 file = "packages/ai/test/openai-completions-thinking-as-text.test.ts"
 line = 142
-status = "pending"
+status = "ported"
+rust = "pi-ai::upstream::openai_completions_thinking_as_text::serializes_same_model_thinking_only_replay_as_assistant_text_parts"
 
 [[test]]
 id = "packages/ai/test/openai-completions-thinking-as-text.test.ts > openai-completions thinking-as-text replay > serializes same-model thinking-plus-text replay as assistant text parts"
 file = "packages/ai/test/openai-completions-thinking-as-text.test.ts"
 line = 119
-status = "pending"
+status = "ported"
+rust = "pi-ai::upstream::openai_completions_thinking_as_text::serializes_same_model_thinking_plus_text_replay_as_assistant_text_parts"
 
 [[test]]
 id = "packages/ai/test/openai-completions-thinking-token-budget.test.ts > openai-completions thinking token budget > clamps xhigh and max to the high budget"
 file = "packages/ai/test/openai-completions-thinking-token-budget.test.ts"
 line = 125
-status = "pending"
+status = "adapted"
+rust = "pi-ai::upstream::openai_completions_thinking_token_budget::openai_completions_thinking_token_budget::clamps_xhigh_and_max_to_the_high_budget"
+adaptation = "Replace the OpenAI SDK mock with ScriptedTransport at the parsed-chunk seam, normalize context explicitly, and use frozen model fixtures plus VirtualEnv on a current-thread runtime. Preserve request fields, missing-property checks, all result/event assertions, and JavaScript JSON numeric semantics."
 
 [[test]]
 id = "packages/ai/test/openai-completions-thinking-token-budget.test.ts > openai-completions thinking token budget > leaves room for the answer when the budget meets the response ceiling"
 file = "packages/ai/test/openai-completions-thinking-token-budget.test.ts"
 line = 132
-status = "pending"
+status = "adapted"
+rust = "pi-ai::upstream::openai_completions_thinking_token_budget::openai_completions_thinking_token_budget::leaves_room_for_the_answer_when_the_budget_meets_the_response_ceiling"
+adaptation = "Replace the OpenAI SDK mock with ScriptedTransport at the parsed-chunk seam, normalize context explicitly, and use frozen model fixtures plus VirtualEnv on a current-thread runtime. Preserve request fields, missing-property checks, all result/event assertions, and JavaScript JSON numeric semantics."
 
 [[test]]
 id = "packages/ai/test/openai-completions-thinking-token-budget.test.ts > openai-completions thinking token budget > lets thinkingTokenBudgetField win over the boolean alias"
 file = "packages/ai/test/openai-completions-thinking-token-budget.test.ts"
 line = 158
-status = "pending"
+status = "adapted"
+rust = "pi-ai::upstream::openai_completions_thinking_token_budget::openai_completions_thinking_token_budget::lets_thinking_token_budget_field_win_over_the_boolean_alias"
+adaptation = "Replace the OpenAI SDK mock with ScriptedTransport at the parsed-chunk seam, normalize context explicitly, and use frozen model fixtures plus VirtualEnv on a current-thread runtime. Preserve request fields, missing-property checks, all result/event assertions, and JavaScript JSON numeric semantics."
 
 [[test]]
 id = "packages/ai/test/openai-completions-thinking-token-budget.test.ts > openai-completions thinking token budget > omits the budget when neither the field nor the alias is set"
 file = "packages/ai/test/openai-completions-thinking-token-budget.test.ts"
 line = 110
-status = "pending"
+status = "adapted"
+rust = "pi-ai::upstream::openai_completions_thinking_token_budget::openai_completions_thinking_token_budget::omits_the_budget_when_neither_the_field_nor_the_alias_is_set"
+adaptation = "Replace the OpenAI SDK mock with ScriptedTransport at the parsed-chunk seam, normalize context explicitly, and use frozen model fixtures plus VirtualEnv on a current-thread runtime. Preserve request fields, missing-property checks, all result/event assertions, and JavaScript JSON numeric semantics."
 
 [[test]]
 id = "packages/ai/test/openai-completions-thinking-token-budget.test.ts > openai-completions thinking token budget > omits the budget when thinking is off"
 file = "packages/ai/test/openai-completions-thinking-token-budget.test.ts"
 line = 120
-status = "pending"
+status = "adapted"
+rust = "pi-ai::upstream::openai_completions_thinking_token_budget::openai_completions_thinking_token_budget::omits_the_budget_when_thinking_is_off"
+adaptation = "Replace the OpenAI SDK mock with ScriptedTransport at the parsed-chunk seam, normalize context explicitly, and use frozen model fixtures plus VirtualEnv on a current-thread runtime. Preserve request fields, missing-property checks, all result/event assertions, and JavaScript JSON numeric semantics."
 
 [[test]]
 id = "packages/ai/test/openai-completions-thinking-token-budget.test.ts > openai-completions thinking token budget > omits thinking.budget from chat_template_kwargs when thinking is off"
 file = "packages/ai/test/openai-completions-thinking-token-budget.test.ts"
 line = 189
-status = "pending"
+status = "adapted"
+rust = "pi-ai::upstream::openai_completions_thinking_token_budget::openai_completions_thinking_token_budget::omits_thinking_budget_from_chat_template_kwargs_when_thinking_is_off"
+adaptation = "Replace the OpenAI SDK mock with ScriptedTransport at the parsed-chunk seam, normalize context explicitly, and use frozen model fixtures plus VirtualEnv on a current-thread runtime. Preserve request fields, missing-property checks, all result/event assertions, and JavaScript JSON numeric semantics."
 
 [[test]]
 id = "packages/ai/test/openai-completions-thinking-token-budget.test.ts > openai-completions thinking token budget > puts the clamped budget in chat_template_kwargs when $var is thinking.budget"
 file = "packages/ai/test/openai-completions-thinking-token-budget.test.ts"
 line = 171
-status = "pending"
+status = "adapted"
+rust = "pi-ai::upstream::openai_completions_thinking_token_budget::openai_completions_thinking_token_budget::puts_the_clamped_budget_in_chat_template_kwargs_when_var_is_thinking_budget"
+adaptation = "Replace the OpenAI SDK mock with ScriptedTransport at the parsed-chunk seam, normalize context explicitly, and use frozen model fixtures plus VirtualEnv on a current-thread runtime. Preserve request fields, missing-property checks, all result/event assertions, and JavaScript JSON numeric semantics."
 
 [[test]]
 id = "packages/ai/test/openai-completions-thinking-token-budget.test.ts > openai-completions thinking token budget > sends the configured budget for the requested level"
 file = "packages/ai/test/openai-completions-thinking-token-budget.test.ts"
 line = 105
-status = "pending"
+status = "adapted"
+rust = "pi-ai::upstream::openai_completions_thinking_token_budget::openai_completions_thinking_token_budget::sends_the_configured_budget_for_the_requested_level"
+adaptation = "Replace the OpenAI SDK mock with ScriptedTransport at the parsed-chunk seam, normalize context explicitly, and use frozen model fixtures plus VirtualEnv on a current-thread runtime. Preserve request fields, missing-property checks, all result/event assertions, and JavaScript JSON numeric semantics."
 
 [[test]]
 id = "packages/ai/test/openai-completions-thinking-token-budget.test.ts > openai-completions thinking token budget > sends thinking_budget when thinkingTokenBudgetField is set"
 file = "packages/ai/test/openai-completions-thinking-token-budget.test.ts"
 line = 146
-status = "pending"
+status = "adapted"
+rust = "pi-ai::upstream::openai_completions_thinking_token_budget::openai_completions_thinking_token_budget::sends_thinking_budget_when_thinking_token_budget_field_is_set"
+adaptation = "Replace the OpenAI SDK mock with ScriptedTransport at the parsed-chunk seam, normalize context explicitly, and use frozen model fixtures plus VirtualEnv on a current-thread runtime. Preserve request fields, missing-property checks, all result/event assertions, and JavaScript JSON numeric semantics."
 
 [[test]]
 id = "packages/ai/test/openai-completions-thinking-token-budget.test.ts > openai-completions thinking token budget > sends thinking_budget_tokens when thinkingTokenBudgetField is set"
 file = "packages/ai/test/openai-completions-thinking-token-budget.test.ts"
 line = 146
-status = "pending"
+status = "adapted"
+rust = "pi-ai::upstream::openai_completions_thinking_token_budget::openai_completions_thinking_token_budget::sends_thinking_budget_tokens_when_thinking_token_budget_field_is_set"
+adaptation = "Replace the OpenAI SDK mock with ScriptedTransport at the parsed-chunk seam, normalize context explicitly, and use frozen model fixtures plus VirtualEnv on a current-thread runtime. Preserve request fields, missing-property checks, all result/event assertions, and JavaScript JSON numeric semantics."
 
 [[test]]
 id = "packages/ai/test/openai-completions-thinking-token-budget.test.ts > openai-completions thinking token budget > uses the caller max_tokens as the ceiling when it is lower than the model cap"
 file = "packages/ai/test/openai-completions-thinking-token-budget.test.ts"
 line = 137
-status = "pending"
+status = "adapted"
+rust = "pi-ai::upstream::openai_completions_thinking_token_budget::openai_completions_thinking_token_budget::uses_the_caller_max_tokens_as_the_ceiling_when_it_is_lower_than_the_model_cap"
+adaptation = "Replace the OpenAI SDK mock with ScriptedTransport at the parsed-chunk seam, normalize context explicitly, and use frozen model fixtures plus VirtualEnv on a current-thread runtime. Preserve request fields, missing-property checks, all result/event assertions, and JavaScript JSON numeric semantics."
 
 [[test]]
 id = "packages/ai/test/openai-completions-tool-choice.test.ts > openai-completions tool_choice > accepts streams without finish_reason when compat disables it"
 file = "packages/ai/test/openai-completions-tool-choice.test.ts"
 line = 734
-status = "pending"
+status = "adapted"
+rust = "pi-ai::upstream::openai_completions_tool_choice::openai_completions_tool_choice::accepts_streams_without_finish_reason_when_compat_disables_it"
+adaptation = "Replace the OpenAI SDK mock with ScriptedTransport at the parsed-chunk seam, normalize context explicitly, and use frozen model fixtures plus VirtualEnv on a current-thread runtime. Preserve request fields, missing-property checks, all result/event assertions, and JavaScript JSON numeric semantics."
 
 [[test]]
 id = "packages/ai/test/openai-completions-tool-choice.test.ts > openai-completions tool_choice > accumulates mixed content, reasoning, and parallel tool call deltas independently"
 file = "packages/ai/test/openai-completions-tool-choice.test.ts"
 line = 921
-status = "pending"
+status = "adapted"
+rust = "pi-ai::upstream::openai_completions_tool_choice::openai_completions_tool_choice::accumulates_mixed_content_reasoning_and_parallel_tool_call_deltas_independently"
+adaptation = "Replace the OpenAI SDK mock with ScriptedTransport at the parsed-chunk seam, normalize context explicitly, and use frozen model fixtures plus VirtualEnv on a current-thread runtime. Preserve request fields, missing-property checks, all result/event assertions, and JavaScript JSON numeric semantics."
 
 [[test]]
 id = "packages/ai/test/openai-completions-tool-choice.test.ts > openai-completions tool_choice > coalesces tool call deltas by stable index when provider mutates ids mid-stream"
 file = "packages/ai/test/openai-completions-tool-choice.test.ts"
 line = 810
-status = "pending"
+status = "adapted"
+rust = "pi-ai::upstream::openai_completions_tool_choice::openai_completions_tool_choice::coalesces_tool_call_deltas_by_stable_index_when_provider_mutates_ids_mid_stream"
+adaptation = "Replace the OpenAI SDK mock with ScriptedTransport at the parsed-chunk seam, normalize context explicitly, and use frozen model fixtures plus VirtualEnv on a current-thread runtime. Preserve request fields, missing-property checks, all result/event assertions, and JavaScript JSON numeric semantics."
 
 [[test]]
 id = "packages/ai/test/openai-completions-tool-choice.test.ts > openai-completions tool_choice > defaults unknown OpenAI-compatible endpoints to non-strict tools"
 file = "packages/ai/test/openai-completions-tool-choice.test.ts"
 line = 222
-status = "pending"
+status = "adapted"
+rust = "pi-ai::upstream::openai_completions_tool_choice::openai_completions_tool_choice::defaults_unknown_openai_compatible_endpoints_to_non_strict_tools"
+adaptation = "Replace the OpenAI SDK mock with ScriptedTransport at the parsed-chunk seam, normalize context explicitly, and use frozen model fixtures plus VirtualEnv on a current-thread runtime. Preserve request fields, missing-property checks, all result/event assertions, and JavaScript JSON numeric semantics."
 
 [[test]]
 id = "packages/ai/test/openai-completions-tool-choice.test.ts > openai-completions tool_choice > does not double-count reasoning tokens in completion usage"
 file = "packages/ai/test/openai-completions-tool-choice.test.ts"
 line = 1641
-status = "pending"
+status = "adapted"
+rust = "pi-ai::upstream::openai_completions_tool_choice::openai_completions_tool_choice::does_not_double_count_reasoning_tokens_in_completion_usage"
+adaptation = "Replace the OpenAI SDK mock with ScriptedTransport at the parsed-chunk seam, normalize context explicitly, and use frozen model fixtures plus VirtualEnv on a current-thread runtime. Preserve request fields, missing-property checks, all result/event assertions, and JavaScript JSON numeric semantics."
 
 [[test]]
 id = "packages/ai/test/openai-completions-tool-choice.test.ts > openai-completions tool_choice > enables tool_stream for supported z.ai models with tools"
 file = "packages/ai/test/openai-completions-tool-choice.test.ts"
 line = 354
-status = "pending"
+status = "adapted"
+rust = "pi-ai::upstream::openai_completions_tool_choice::openai_completions_tool_choice::enables_tool_stream_for_supported_z_ai_models_with_tools"
+adaptation = "Replace the OpenAI SDK mock with ScriptedTransport at the parsed-chunk seam, normalize context explicitly, and use frozen model fixtures plus VirtualEnv on a current-thread runtime. Preserve request fields, missing-property checks, all result/event assertions, and JavaScript JSON numeric semantics."
 
 [[test]]
 id = "packages/ai/test/openai-completions-tool-choice.test.ts > openai-completions tool_choice > errors when a stream ends after only null finish_reason chunks"
 file = "packages/ai/test/openai-completions-tool-choice.test.ts"
 line = 702
-status = "pending"
+status = "adapted"
+rust = "pi-ai::upstream::openai_completions_tool_choice::openai_completions_tool_choice::errors_when_a_stream_ends_after_only_null_finish_reason_chunks"
+adaptation = "Replace the OpenAI SDK mock with ScriptedTransport at the parsed-chunk seam, normalize context explicitly, and use frozen model fixtures plus VirtualEnv on a current-thread runtime. Preserve request fields, missing-property checks, all result/event assertions, and JavaScript JSON numeric semantics."
 
 [[test]]
 id = "packages/ai/test/openai-completions-tool-choice.test.ts > openai-completions tool_choice > forwards toolChoice from simple options to payload"
 file = "packages/ai/test/openai-completions-tool-choice.test.ts"
 line = 112
-status = "pending"
+status = "adapted"
+rust = "pi-ai::upstream::openai_completions_tool_choice::openai_completions_tool_choice::forwards_tool_choice_from_simple_options_to_payload"
+adaptation = "Replace the OpenAI SDK mock with ScriptedTransport at the parsed-chunk seam, normalize context explicitly, and use frozen model fixtures plus VirtualEnv on a current-thread runtime. Preserve request fields, missing-property checks, all result/event assertions, and JavaScript JSON numeric semantics."
 
 [[test]]
 id = "packages/ai/test/openai-completions-tool-choice.test.ts > openai-completions tool_choice > ignores empty custom objects on function tool call deltas"
 file = "packages/ai/test/openai-completions-tool-choice.test.ts"
 line = 761
-status = "pending"
+status = "adapted"
+rust = "pi-ai::upstream::openai_completions_tool_choice::openai_completions_tool_choice::ignores_empty_custom_objects_on_function_tool_call_deltas"
+adaptation = "Replace the OpenAI SDK mock with ScriptedTransport at the parsed-chunk seam, normalize context explicitly, and use frozen model fixtures plus VirtualEnv on a current-thread runtime. Preserve request fields, missing-property checks, all result/event assertions, and JavaScript JSON numeric semantics."
 
 [[test]]
 id = "packages/ai/test/openai-completions-tool-choice.test.ts > openai-completions tool_choice > ignores null stream chunks from openai-compatible providers"
 file = "packages/ai/test/openai-completions-tool-choice.test.ts"
 line = 660
-status = "pending"
+status = "adapted"
+rust = "pi-ai::upstream::openai_completions_tool_choice::openai_completions_tool_choice::ignores_null_stream_chunks_from_openai_compatible_providers"
+adaptation = "Replace the OpenAI SDK mock with ScriptedTransport at the parsed-chunk seam, normalize context explicitly, and use frozen model fixtures plus VirtualEnv on a current-thread runtime. Preserve request fields, missing-property checks, all result/event assertions, and JavaScript JSON numeric semantics."
 
 [[test]]
 id = "packages/ai/test/openai-completions-tool-choice.test.ts > openai-completions tool_choice > includes toolChoice when no tools are provided"
 file = "packages/ai/test/openai-completions-tool-choice.test.ts"
 line = 153
-status = "pending"
+status = "adapted"
+rust = "pi-ai::upstream::openai_completions_tool_choice::openai_completions_tool_choice::includes_tool_choice_when_no_tools_are_provided"
+adaptation = "Replace the OpenAI SDK mock with ScriptedTransport at the parsed-chunk seam, normalize context explicitly, and use frozen model fixtures plus VirtualEnv on a current-thread runtime. Preserve request fields, missing-property checks, all result/event assertions, and JavaScript JSON numeric semantics."
 
 [[test]]
 id = "packages/ai/test/openai-completions-tool-choice.test.ts > openai-completions tool_choice > keeps developer messages for OpenAI and Anthropic OpenRouter batch instructions"
 file = "packages/ai/test/openai-completions-tool-choice.test.ts"
 line = 1175
-status = "pending"
+status = "adapted"
+rust = "pi-ai::upstream::openai_completions_tool_choice::openai_completions_tool_choice::keeps_developer_messages_for_openai_and_anthropic_open_router_batch_instructions"
+adaptation = "Replace the OpenAI SDK mock with ScriptedTransport at the parsed-chunk seam, normalize context explicitly, and use frozen model fixtures plus VirtualEnv on a current-thread runtime. Preserve request fields, missing-property checks, all result/event assertions, and JavaScript JSON numeric semantics."
 
 [[test]]
 id = "packages/ai/test/openai-completions-tool-choice.test.ts > openai-completions tool_choice > keeps developer messages for OpenAI reasoning model instructions"
 file = "packages/ai/test/openai-completions-tool-choice.test.ts"
 line = 1202
-status = "pending"
+status = "adapted"
+rust = "pi-ai::upstream::openai_completions_tool_choice::openai_completions_tool_choice::keeps_developer_messages_for_openai_reasoning_model_instructions"
+adaptation = "Replace the OpenAI SDK mock with ScriptedTransport at the parsed-chunk seam, normalize context explicitly, and use frozen model fixtures plus VirtualEnv on a current-thread runtime. Preserve request fields, missing-property checks, all result/event assertions, and JavaScript JSON numeric semantics."
 
 [[test]]
 id = "packages/ai/test/openai-completions-tool-choice.test.ts > openai-completions tool_choice > keeps disabled thinking for Moonshot Kimi K2.6 when thinking is off"
 file = "packages/ai/test/openai-completions-tool-choice.test.ts"
 line = 1499
-status = "pending"
+status = "adapted"
+rust = "pi-ai::upstream::openai_completions_tool_choice::openai_completions_tool_choice::keeps_disabled_thinking_for_moonshot_kimi_k2_6_when_thinking_is_off"
+adaptation = "Replace the OpenAI SDK mock with ScriptedTransport at the parsed-chunk seam, normalize context explicitly, and use frozen model fixtures plus VirtualEnv on a current-thread runtime. Preserve request fields, missing-property checks, all result/event assertions, and JavaScript JSON numeric semantics."
 
 [[test]]
 id = "packages/ai/test/openai-completions-tool-choice.test.ts > openai-completions tool_choice > keeps non-OpenCode Go reasoning deltas on the original reasoning field"
 file = "packages/ai/test/openai-completions-tool-choice.test.ts"
 line = 1342
-status = "pending"
+status = "adapted"
+rust = "pi-ai::upstream::openai_completions_tool_choice::openai_completions_tool_choice::keeps_non_open_code_go_reasoning_deltas_on_the_original_reasoning_field"
+adaptation = "Replace the OpenAI SDK mock with ScriptedTransport at the parsed-chunk seam, normalize context explicitly, and use frozen model fixtures plus VirtualEnv on a current-thread runtime. Preserve request fields, missing-property checks, all result/event assertions, and JavaScript JSON numeric semantics."
 
 [[test]]
 id = "packages/ai/test/openai-completions-tool-choice.test.ts > openai-completions tool_choice > keeps normal reasoning_effort for groq models without compat mapping"
 file = "packages/ai/test/openai-completions-tool-choice.test.ts"
 line = 326
-status = "pending"
+status = "adapted"
+rust = "pi-ai::upstream::openai_completions_tool_choice::openai_completions_tool_choice::keeps_normal_reasoning_effort_for_groq_models_without_compat_mapping"
+adaptation = "Replace the OpenAI SDK mock with ScriptedTransport at the parsed-chunk seam, normalize context explicitly, and use frozen model fixtures plus VirtualEnv on a current-thread runtime. Preserve request fields, missing-property checks, all result/event assertions, and JavaScript JSON numeric semantics."
 
 [[test]]
 id = "packages/ai/test/openai-completions-tool-choice.test.ts > openai-completions tool_choice > maps Groq Qwen reasoning levels to default reasoning_effort"
 file = "packages/ai/test/openai-completions-tool-choice.test.ts"
 line = 298
-status = "pending"
+status = "adapted"
+rust = "pi-ai::upstream::openai_completions_tool_choice::openai_completions_tool_choice::maps_groq_qwen_reasoning_levels_to_default_reasoning_effort"
+adaptation = "Replace the OpenAI SDK mock with ScriptedTransport at the parsed-chunk seam, normalize context explicitly, and use frozen model fixtures plus VirtualEnv on a current-thread runtime. Preserve request fields, missing-property checks, all result/event assertions, and JavaScript JSON numeric semantics."
 
 [[test]]
 id = "packages/ai/test/openai-completions-tool-choice.test.ts > openai-completions tool_choice > maps non-standard provider finish_reason values to stopReason error"
 file = "packages/ai/test/openai-completions-tool-choice.test.ts"
 line = 625
-status = "pending"
+status = "adapted"
+rust = "pi-ai::upstream::openai_completions_tool_choice::openai_completions_tool_choice::maps_non_standard_provider_finish_reason_values_to_stop_reason_error"
+adaptation = "Replace the OpenAI SDK mock with ScriptedTransport at the parsed-chunk seam, normalize context explicitly, and use frozen model fixtures plus VirtualEnv on a current-thread runtime. Preserve request fields, missing-property checks, all result/event assertions, and JavaScript JSON numeric semantics."
 
 [[test]]
 id = "packages/ai/test/openai-completions-tool-choice.test.ts > openai-completions tool_choice > maps z.ai GLM-5.2 thinking levels to reasoning_effort"
 file = "packages/ai/test/openai-completions-tool-choice.test.ts"
 line = 428
-status = "pending"
+status = "adapted"
+rust = "pi-ai::upstream::openai_completions_tool_choice::openai_completions_tool_choice::maps_z_ai_glm_5_2_thinking_levels_to_reasoning_effort"
+adaptation = "Replace the OpenAI SDK mock with ScriptedTransport at the parsed-chunk seam, normalize context explicitly, and use frozen model fixtures plus VirtualEnv on a current-thread runtime. Preserve request fields, missing-property checks, all result/event assertions, and JavaScript JSON numeric semantics."
 
 [[test]]
 id = "packages/ai/test/openai-completions-tool-choice.test.ts > openai-completions tool_choice > normalizes OpenCode Go reasoning deltas to reasoning_content for replay"
 file = "packages/ai/test/openai-completions-tool-choice.test.ts"
 line = 1315
-status = "pending"
+status = "adapted"
+rust = "pi-ai::upstream::openai_completions_tool_choice::openai_completions_tool_choice::normalizes_open_code_go_reasoning_deltas_to_reasoning_content_for_replay"
+adaptation = "Replace the OpenAI SDK mock with ScriptedTransport at the parsed-chunk seam, normalize context explicitly, and use frozen model fixtures plus VirtualEnv on a current-thread runtime. Preserve request fields, missing-property checks, all result/event assertions, and JavaScript JSON numeric semantics."
 
 [[test]]
 id = "packages/ai/test/openai-completions-tool-choice.test.ts > openai-completions tool_choice > omits Ant Ling reasoning for unmapped direct reasoning efforts and non-reasoning models"
 file = "packages/ai/test/openai-completions-tool-choice.test.ts"
 line = 1919
-status = "pending"
+status = "adapted"
+rust = "pi-ai::upstream::openai_completions_tool_choice::openai_completions_tool_choice::omits_ant_ling_reasoning_for_unmapped_direct_reasoning_efforts_and_non_reasoning_models"
+adaptation = "Replace the OpenAI SDK mock with ScriptedTransport at the parsed-chunk seam, normalize context explicitly, and use frozen model fixtures plus VirtualEnv on a current-thread runtime. Preserve request fields, missing-property checks, all result/event assertions, and JavaScript JSON numeric semantics."
 
 [[test]]
 id = "packages/ai/test/openai-completions-tool-choice.test.ts > openai-completions tool_choice > omits disabled thinking for Moonshot Kimi K2.7 Code models"
 file = "packages/ai/test/openai-completions-tool-choice.test.ts"
 line = 1473
-status = "pending"
+status = "adapted"
+rust = "pi-ai::upstream::openai_completions_tool_choice::openai_completions_tool_choice::omits_disabled_thinking_for_moonshot_kimi_k2_7_code_models"
+adaptation = "Replace the OpenAI SDK mock with ScriptedTransport at the parsed-chunk seam, normalize context explicitly, and use frozen model fixtures plus VirtualEnv on a current-thread runtime. Preserve request fields, missing-property checks, all result/event assertions, and JavaScript JSON numeric semantics."
 
 [[test]]
 id = "packages/ai/test/openai-completions-tool-choice.test.ts > openai-completions tool_choice > omits reasoning effort for OpenCode Grok Build"
 file = "packages/ai/test/openai-completions-tool-choice.test.ts"
 line = 1619
-status = "pending"
+status = "adapted"
+rust = "pi-ai::upstream::openai_completions_tool_choice::openai_completions_tool_choice::omits_reasoning_effort_for_open_code_grok_build"
+adaptation = "Replace the OpenAI SDK mock with ScriptedTransport at the parsed-chunk seam, normalize context explicitly, and use frozen model fixtures plus VirtualEnv on a current-thread runtime. Preserve request fields, missing-property checks, all result/event assertions, and JavaScript JSON numeric semantics."
 
 [[test]]
 id = "packages/ai/test/openai-completions-tool-choice.test.ts > openai-completions tool_choice > omits strict when compat disables strict mode"
 file = "packages/ai/test/openai-completions-tool-choice.test.ts"
 line = 177
-status = "pending"
+status = "adapted"
+rust = "pi-ai::upstream::openai_completions_tool_choice::openai_completions_tool_choice::omits_strict_when_compat_disables_strict_mode"
+adaptation = "Replace the OpenAI SDK mock with ScriptedTransport at the parsed-chunk seam, normalize context explicitly, and use frozen model fixtures plus VirtualEnv on a current-thread runtime. Preserve request fields, missing-property checks, all result/event assertions, and JavaScript JSON numeric semantics."
 
 [[test]]
 id = "packages/ai/test/openai-completions-tool-choice.test.ts > openai-completions tool_choice > omits tool_stream when no tools are provided"
 file = "packages/ai/test/openai-completions-tool-choice.test.ts"
 line = 598
-status = "pending"
+status = "adapted"
+rust = "pi-ai::upstream::openai_completions_tool_choice::openai_completions_tool_choice::omits_tool_stream_when_no_tools_are_provided"
+adaptation = "Replace the OpenAI SDK mock with ScriptedTransport at the parsed-chunk seam, normalize context explicitly, and use frozen model fixtures plus VirtualEnv on a current-thread runtime. Preserve request fields, missing-property checks, all result/event assertions, and JavaScript JSON numeric semantics."
 
 [[test]]
 id = "packages/ai/test/openai-completions-tool-choice.test.ts > openai-completions tool_choice > omits z.ai GLM-5.2 reasoning_effort when thinking is off"
 file = "packages/ai/test/openai-completions-tool-choice.test.ts"
 line = 526
-status = "pending"
+status = "adapted"
+rust = "pi-ai::upstream::openai_completions_tool_choice::openai_completions_tool_choice::omits_z_ai_glm_5_2_reasoning_effort_when_thinking_is_off"
+adaptation = "Replace the OpenAI SDK mock with ScriptedTransport at the parsed-chunk seam, normalize context explicitly, and use frozen model fixtures plus VirtualEnv on a current-thread runtime. Preserve request fields, missing-property checks, all result/event assertions, and JavaScript JSON numeric semantics."
 
 [[test]]
 id = "packages/ai/test/openai-completions-tool-choice.test.ts > openai-completions tool_choice > preserves prompt_tokens_details cache read/write fields from choice usage fallback"
 file = "packages/ai/test/openai-completions-tool-choice.test.ts"
 line = 1717
-status = "pending"
+status = "adapted"
+rust = "pi-ai::upstream::openai_completions_tool_choice::openai_completions_tool_choice::preserves_prompt_tokens_details_cache_read_write_fields_from_choice_usage_fallback"
+adaptation = "Replace the OpenAI SDK mock with ScriptedTransport at the parsed-chunk seam, normalize context explicitly, and use frozen model fixtures plus VirtualEnv on a current-thread runtime. Preserve request fields, missing-property checks, all result/event assertions, and JavaScript JSON numeric semantics."
 
 [[test]]
 id = "packages/ai/test/openai-completions-tool-choice.test.ts > openai-completions tool_choice > preserves prompt_tokens_details cache read/write fields from chunk usage"
 file = "packages/ai/test/openai-completions-tool-choice.test.ts"
 line = 1676
-status = "pending"
+status = "adapted"
+rust = "pi-ai::upstream::openai_completions_tool_choice::openai_completions_tool_choice::preserves_prompt_tokens_details_cache_read_write_fields_from_chunk_usage"
+adaptation = "Replace the OpenAI SDK mock with ScriptedTransport at the parsed-chunk seam, normalize context explicitly, and use frozen model fixtures plus VirtualEnv on a current-thread runtime. Preserve request fields, missing-property checks, all result/event assertions, and JavaScript JSON numeric semantics."
 
 [[test]]
 id = "packages/ai/test/openai-completions-tool-choice.test.ts > openai-completions tool_choice > preserves strict tools for capable built-in Chat Completions models"
 file = "packages/ai/test/openai-completions-tool-choice.test.ts"
 line = 262
-status = "pending"
+status = "adapted"
+rust = "pi-ai::upstream::openai_completions_tool_choice::openai_completions_tool_choice::preserves_strict_tools_for_capable_built_in_chat_completions_models"
+adaptation = "Replace the OpenAI SDK mock with ScriptedTransport at the parsed-chunk seam, normalize context explicitly, and use frozen model fixtures plus VirtualEnv on a current-thread runtime. Preserve request fields, missing-property checks, all result/event assertions, and JavaScript JSON numeric semantics."
 
 [[test]]
 id = "packages/ai/test/openai-completions-tool-choice.test.ts > openai-completions tool_choice > preserves z.ai thinking when replaying reasoning_content"
 file = "packages/ai/test/openai-completions-tool-choice.test.ts"
 line = 466
-status = "pending"
+status = "adapted"
+rust = "pi-ai::upstream::openai_completions_tool_choice::openai_completions_tool_choice::preserves_z_ai_thinking_when_replaying_reasoning_content"
+adaptation = "Replace the OpenAI SDK mock with ScriptedTransport at the parsed-chunk seam, normalize context explicitly, and use frozen model fixtures plus VirtualEnv on a current-thread runtime. Preserve request fields, missing-property checks, all result/event assertions, and JavaScript JSON numeric semantics."
 
 [[test]]
 id = "packages/ai/test/openai-completions-tool-choice.test.ts > openai-completions tool_choice > replays OpenCode Go reasoning thinking blocks as reasoning_content"
 file = "packages/ai/test/openai-completions-tool-choice.test.ts"
 line = 1369
-status = "pending"
+status = "adapted"
+rust = "pi-ai::upstream::openai_completions_tool_choice::openai_completions_tool_choice::replays_open_code_go_reasoning_thinking_blocks_as_reasoning_content"
+adaptation = "Replace the OpenAI SDK mock with ScriptedTransport at the parsed-chunk seam, normalize context explicitly, and use frozen model fixtures plus VirtualEnv on a current-thread runtime. Preserve request fields, missing-property checks, all result/event assertions, and JavaScript JSON numeric semantics."
 
 [[test]]
 id = "packages/ai/test/openai-completions-tool-choice.test.ts > openai-completions tool_choice > replays Xiaomi MiMo assistant tool calls with empty reasoning_content when thinking is missing"
 file = "packages/ai/test/openai-completions-tool-choice.test.ts"
 line = 1257
-status = "pending"
+status = "adapted"
+rust = "pi-ai::upstream::openai_completions_tool_choice::openai_completions_tool_choice::replays_xiaomi_mi_mo_assistant_tool_calls_with_empty_reasoning_content_when_thinking_is_missing"
+adaptation = "Replace the OpenAI SDK mock with ScriptedTransport at the parsed-chunk seam, normalize context explicitly, and use frozen model fixtures plus VirtualEnv on a current-thread runtime. Preserve request fields, missing-property checks, all result/event assertions, and JavaScript JSON numeric semantics."
 
 [[test]]
 id = "packages/ai/test/openai-completions-tool-choice.test.ts > openai-completions tool_choice > respects explicit z.ai tool_stream compat override"
 file = "packages/ai/test/openai-completions-tool-choice.test.ts"
 line = 554
-status = "pending"
+status = "adapted"
+rust = "pi-ai::upstream::openai_completions_tool_choice::openai_completions_tool_choice::respects_explicit_z_ai_tool_stream_compat_override"
+adaptation = "Replace the OpenAI SDK mock with ScriptedTransport at the parsed-chunk seam, normalize context explicitly, and use frozen model fixtures plus VirtualEnv on a current-thread runtime. Preserve request fields, missing-property checks, all result/event assertions, and JavaScript JSON numeric semantics."
 
 [[test]]
 id = "packages/ai/test/openai-completions-tool-choice.test.ts > openai-completions tool_choice > sends max_tokens for OpenCode completions models"
 file = "packages/ai/test/openai-completions-tool-choice.test.ts"
 line = 1521
-status = "pending"
+status = "adapted"
+rust = "pi-ai::upstream::openai_completions_tool_choice::openai_completions_tool_choice::sends_max_tokens_for_open_code_completions_models"
+adaptation = "Replace the OpenAI SDK mock with ScriptedTransport at the parsed-chunk seam, normalize context explicitly, and use frozen model fixtures plus VirtualEnv on a current-thread runtime. Preserve request fields, missing-property checks, all result/event assertions, and JavaScript JSON numeric semantics."
 
 [[test]]
 id = "packages/ai/test/openai-completions-tool-choice.test.ts > openai-completions tool_choice > sends max_tokens for Z.AI completions models"
 file = "packages/ai/test/openai-completions-tool-choice.test.ts"
 line = 1592
-status = "pending"
+status = "adapted"
+rust = "pi-ai::upstream::openai_completions_tool_choice::openai_completions_tool_choice::sends_max_tokens_for_z_ai_completions_models"
+adaptation = "Replace the OpenAI SDK mock with ScriptedTransport at the parsed-chunk seam, normalize context explicitly, and use frozen model fixtures plus VirtualEnv on a current-thread runtime. Preserve request fields, missing-property checks, all result/event assertions, and JavaScript JSON numeric semantics."
 
 [[test]]
 id = "packages/ai/test/openai-completions-tool-choice.test.ts > openai-completions tool_choice > sends max_tokens for built-in and custom DeepSeek API models"
 file = "packages/ai/test/openai-completions-tool-choice.test.ts"
 line = 1548
-status = "pending"
+status = "adapted"
+rust = "pi-ai::upstream::openai_completions_tool_choice::openai_completions_tool_choice::sends_max_tokens_for_built_in_and_custom_deep_seek_api_models"
+adaptation = "Replace the OpenAI SDK mock with ScriptedTransport at the parsed-chunk seam, normalize context explicitly, and use frozen model fixtures plus VirtualEnv on a current-thread runtime. Preserve request fields, missing-property checks, all result/event assertions, and JavaScript JSON numeric semantics."
 
 [[test]]
 id = "packages/ai/test/openai-completions-tool-choice.test.ts > openai-completions tool_choice > sends thinking disabled for OpenCode Kimi K2.6 when thinking is off"
 file = "packages/ai/test/openai-completions-tool-choice.test.ts"
 line = 1428
-status = "pending"
+status = "adapted"
+rust = "pi-ai::upstream::openai_completions_tool_choice::openai_completions_tool_choice::sends_thinking_disabled_for_open_code_kimi_k2_6_when_thinking_is_off"
+adaptation = "Replace the OpenAI SDK mock with ScriptedTransport at the parsed-chunk seam, normalize context explicitly, and use frozen model fixtures plus VirtualEnv on a current-thread runtime. Preserve request fields, missing-property checks, all result/event assertions, and JavaScript JSON numeric semantics."
 
 [[test]]
 id = "packages/ai/test/openai-completions-tool-choice.test.ts > openai-completions tool_choice > sends thinking enabled for OpenCode Kimi K2.6 when thinking is enabled"
 file = "packages/ai/test/openai-completions-tool-choice.test.ts"
 line = 1450
-status = "pending"
+status = "adapted"
+rust = "pi-ai::upstream::openai_completions_tool_choice::openai_completions_tool_choice::sends_thinking_enabled_for_open_code_kimi_k2_6_when_thinking_is_enabled"
+adaptation = "Replace the OpenAI SDK mock with ScriptedTransport at the parsed-chunk seam, normalize context explicitly, and use frozen model fixtures plus VirtualEnv on a current-thread runtime. Preserve request fields, missing-property checks, all result/event assertions, and JavaScript JSON numeric semantics."
 
 [[test]]
 id = "packages/ai/test/openai-completions-tool-choice.test.ts > openai-completions tool_choice > stores OpenRouter Kimi K2.6 reasoning replay compat in built-in metadata"
 file = "packages/ai/test/openai-completions-tool-choice.test.ts"
 line = 1225
-status = "pending"
+status = "adapted"
+rust = "pi-ai::upstream::openai_completions_tool_choice::openai_completions_tool_choice::stores_open_router_kimi_k2_6_reasoning_replay_compat_in_built_in_metadata"
+adaptation = "Replace the OpenAI SDK mock with ScriptedTransport at the parsed-chunk seam, normalize context explicitly, and use frozen model fixtures plus VirtualEnv on a current-thread runtime. Preserve request fields, missing-property checks, all result/event assertions, and JavaScript JSON numeric semantics."
 
 [[test]]
 id = "packages/ai/test/openai-completions-tool-choice.test.ts > openai-completions tool_choice > stores Qwen Token Plan reasoning replay compat in built-in metadata"
 file = "packages/ai/test/openai-completions-tool-choice.test.ts"
 line = 1245
-status = "pending"
+status = "adapted"
+rust = "pi-ai::upstream::openai_completions_tool_choice::openai_completions_tool_choice::stores_qwen_token_plan_reasoning_replay_compat_in_built_in_metadata"
+adaptation = "Replace the OpenAI SDK mock with ScriptedTransport at the parsed-chunk seam, normalize context explicitly, and use frozen model fixtures plus VirtualEnv on a current-thread runtime. Preserve request fields, missing-property checks, all result/event assertions, and JavaScript JSON numeric semantics."
 
 [[test]]
 id = "packages/ai/test/openai-completions-tool-choice.test.ts > openai-completions tool_choice > stores Xiaomi MiMo reasoning replay compat in built-in metadata"
 file = "packages/ai/test/openai-completions-tool-choice.test.ts"
 line = 1233
-status = "pending"
+status = "adapted"
+rust = "pi-ai::upstream::openai_completions_tool_choice::openai_completions_tool_choice::stores_xiaomi_mi_mo_reasoning_replay_compat_in_built_in_metadata"
+adaptation = "Replace the OpenAI SDK mock with ScriptedTransport at the parsed-chunk seam, normalize context explicitly, and use frozen model fixtures plus VirtualEnv on a current-thread runtime. Preserve request fields, missing-property checks, all result/event assertions, and JavaScript JSON numeric semantics."
 
 [[test]]
 id = "packages/ai/test/openai-completions-tool-choice.test.ts > openai-completions tool_choice > stores z.ai effort metadata"
 file = "packages/ai/test/openai-completions-tool-choice.test.ts"
 line = 398
-status = "pending"
+status = "adapted"
+rust = "pi-ai::upstream::openai_completions_tool_choice::openai_completions_tool_choice::stores_z_ai_effort_metadata"
+adaptation = "Replace the OpenAI SDK mock with ScriptedTransport at the parsed-chunk seam, normalize context explicitly, and use frozen model fixtures plus VirtualEnv on a current-thread runtime. Preserve request fields, missing-property checks, all result/event assertions, and JavaScript JSON numeric semantics."
 
 [[test]]
 id = "packages/ai/test/openai-completions-tool-choice.test.ts > openai-completions tool_choice > stores z.ai tool_stream support in model compat metadata"
 file = "packages/ai/test/openai-completions-tool-choice.test.ts"
 line = 391
-status = "pending"
+status = "adapted"
+rust = "pi-ai::upstream::openai_completions_tool_choice::openai_completions_tool_choice::stores_z_ai_tool_stream_support_in_model_compat_metadata"
+adaptation = "Replace the OpenAI SDK mock with ScriptedTransport at the parsed-chunk seam, normalize context explicitly, and use frozen model fixtures plus VirtualEnv on a current-thread runtime. Preserve request fields, missing-property checks, all result/event assertions, and JavaScript JSON numeric semantics."
 
 [[test]]
 id = "packages/ai/test/openai-completions-tool-choice.test.ts > openai-completions tool_choice > uses Ant Ling compatibility metadata"
 file = "packages/ai/test/openai-completions-tool-choice.test.ts"
 line = 1866
-status = "pending"
+status = "adapted"
+rust = "pi-ai::upstream::openai_completions_tool_choice::openai_completions_tool_choice::uses_ant_ling_compatibility_metadata"
+adaptation = "Replace the OpenAI SDK mock with ScriptedTransport at the parsed-chunk seam, normalize context explicitly, and use frozen model fixtures plus VirtualEnv on a current-thread runtime. Preserve request fields, missing-property checks, all result/event assertions, and JavaScript JSON numeric semantics."
 
 [[test]]
 id = "packages/ai/test/openai-completions-tool-choice.test.ts > openai-completions tool_choice > uses OpenRouter reasoning object instead of reasoning_effort"
 file = "packages/ai/test/openai-completions-tool-choice.test.ts"
 line = 1763
-status = "pending"
+status = "adapted"
+rust = "pi-ai::upstream::openai_completions_tool_choice::openai_completions_tool_choice::uses_open_router_reasoning_object_instead_of_reasoning_effort"
+adaptation = "Replace the OpenAI SDK mock with ScriptedTransport at the parsed-chunk seam, normalize context explicitly, and use frozen model fixtures plus VirtualEnv on a current-thread runtime. Preserve request fields, missing-property checks, all result/event assertions, and JavaScript JSON numeric semantics."
 
 [[test]]
 id = "packages/ai/test/openai-completions-tool-choice.test.ts > openai-completions tool_choice > uses configurable chat template boolean thinking kwargs"
 file = "packages/ai/test/openai-completions-tool-choice.test.ts"
 line = 1795
-status = "pending"
+status = "adapted"
+rust = "pi-ai::upstream::openai_completions_tool_choice::openai_completions_tool_choice::uses_configurable_chat_template_boolean_thinking_kwargs"
+adaptation = "Replace the OpenAI SDK mock with ScriptedTransport at the parsed-chunk seam, normalize context explicitly, and use frozen model fixtures plus VirtualEnv on a current-thread runtime. Preserve request fields, missing-property checks, all result/event assertions, and JavaScript JSON numeric semantics."
 
 [[test]]
 id = "packages/ai/test/openai-completions-tool-choice.test.ts > openai-completions tool_choice > uses configurable chat template effort kwargs with static kwargs"
 file = "packages/ai/test/openai-completions-tool-choice.test.ts"
 line = 1844
-status = "pending"
+status = "adapted"
+rust = "pi-ai::upstream::openai_completions_tool_choice::openai_completions_tool_choice::uses_configurable_chat_template_effort_kwargs_with_static_kwargs"
+adaptation = "Replace the OpenAI SDK mock with ScriptedTransport at the parsed-chunk seam, normalize context explicitly, and use frozen model fixtures plus VirtualEnv on a current-thread runtime. Preserve request fields, missing-property checks, all result/event assertions, and JavaScript JSON numeric semantics."
 
 [[test]]
 id = "packages/ai/test/openai-completions-tool-choice.test.ts > openai-completions tool_choice > uses qwen chat template thinking kwargs"
 file = "packages/ai/test/openai-completions-tool-choice.test.ts"
 line = 1819
-status = "pending"
+status = "adapted"
+rust = "pi-ai::upstream::openai_completions_tool_choice::openai_completions_tool_choice::uses_qwen_chat_template_thinking_kwargs"
+adaptation = "Replace the OpenAI SDK mock with ScriptedTransport at the parsed-chunk seam, normalize context explicitly, and use frozen model fixtures plus VirtualEnv on a current-thread runtime. Preserve request fields, missing-property checks, all result/event assertions, and JavaScript JSON numeric semantics."
 
 [[test]]
 id = "packages/ai/test/openai-completions-tool-choice.test.ts > openai-completions tool_choice > uses system messages for non-OpenAI/Anthropic OpenRouter reasoning model instructions"
 file = "packages/ai/test/openai-completions-tool-choice.test.ts"
 line = 1153
-status = "pending"
+status = "adapted"
+rust = "pi-ai::upstream::openai_completions_tool_choice::openai_completions_tool_choice::uses_system_messages_for_non_openai_anthropic_open_router_reasoning_model_instructions"
+adaptation = "Replace the OpenAI SDK mock with ScriptedTransport at the parsed-chunk seam, normalize context explicitly, and use frozen model fixtures plus VirtualEnv on a current-thread runtime. Preserve request fields, missing-property checks, all result/event assertions, and JavaScript JSON numeric semantics."
 
 [[test]]
 id = "packages/ai/test/openai-completions-tool-result-images.test.ts > openai-completions convertMessages > batches tool-result images after consecutive tool results"
 file = "packages/ai/test/openai-completions-tool-result-images.test.ts"
 line = 101
-status = "pending"
+status = "ported"
+rust = "pi-ai::upstream::openai_completions_tool_result_images::batches_tool_result_images_after_consecutive_tool_results"
 
 [[test]]
 id = "packages/ai/test/openai-completions-tool-result-images.test.ts > openai-completions convertMessages > omits empty text parts from user messages with images"
 file = "packages/ai/test/openai-completions-tool-result-images.test.ts"
 line = 73
-status = "pending"
+status = "ported"
+rust = "pi-ai::upstream::openai_completions_tool_result_images::omits_empty_text_parts_from_user_messages_with_images"
 
 [[test]]
 id = "packages/ai/test/openai-completions-tool-result-images.test.ts > openai-completions convertMessages > uses '(no tool output)' placeholder for empty tool results without images"
 file = "packages/ai/test/openai-completions-tool-result-images.test.ts"
 line = 147
-status = "pending"
+status = "ported"
+rust = "pi-ai::upstream::openai_completions_tool_result_images::uses_no_tool_output_placeholder_for_empty_tool_results_without_images"
 
 [[test]]
 id = "packages/ai/test/openai-completions-vllm-priority.test.ts > openai-completions vllm priority > omits priority when vllmPriority is not set"
 file = "packages/ai/test/openai-completions-vllm-priority.test.ts"
 line = 88
-status = "pending"
+status = "adapted"
+rust = "pi-ai::upstream::openai_completions_vllm_priority::openai_completions_vllm_priority::omits_priority_when_vllm_priority_is_not_set"
+adaptation = "Replace the OpenAI SDK mock with ScriptedTransport at the parsed-chunk seam, normalize context explicitly, and use frozen model fixtures plus VirtualEnv on a current-thread runtime. Preserve request fields, missing-property checks, all result/event assertions, and JavaScript JSON numeric semantics."
 
 [[test]]
 id = "packages/ai/test/openai-completions-vllm-priority.test.ts > openai-completions vllm priority > sends compat.vllmPriority as the top-level priority request field"
 file = "packages/ai/test/openai-completions-vllm-priority.test.ts"
 line = 80
-status = "pending"
+status = "adapted"
+rust = "pi-ai::upstream::openai_completions_vllm_priority::openai_completions_vllm_priority::sends_compat_vllm_priority_as_the_top_level_priority_request_field"
+adaptation = "Replace the OpenAI SDK mock with ScriptedTransport at the parsed-chunk seam, normalize context explicitly, and use frozen model fixtures plus VirtualEnv on a current-thread runtime. Preserve request fields, missing-property checks, all result/event assertions, and JavaScript JSON numeric semantics."
 
 [[test]]
 id = "packages/ai/test/openai-responses-cache-affinity-e2e.test.ts > openai responses cache affinity e2e > handles direct OpenAI Responses requests with aligned cache-affinity identifiers"
@@ -12550,65 +12739,73 @@ rust = "pi-ai::upstream::retry::retry_delay_ms::caps_agent_retry_delay"
 id = "packages/ai/test/sampling-options.test.ts > sampling params > applies model-level sampling params with request keys taking precedence for azure-openai-responses"
 file = "packages/ai/test/sampling-options.test.ts"
 line = 115
-status = "pending"
-adaptation = "Call selected resolveSamplingParams with the same literal model and request options; preserve expected top_p/min_p or temperature/top_p/top_k. For summary-only cases pass effective level medium explicitly and preserve temperature 0.8; record omission of excluded Responses reasoningSummary-to-medium envelope assertion."
+status = "adapted"
 note = "Mixed test: excluded Responses/Azure envelope also asserts the selected resolveSamplingParams precedence or effective-level lookup. Existing Completions equivalents do not justify excluding this runtime ID. Source proof: packages/ai/test/sampling-options.test.ts:115; packages/ai/src/api/azure-openai-responses.ts excluded by selection/classes.py; packages/ai/src/api/simple-options.ts:24-34; packages/ai/src/api/openai-responses.ts:363-384; packages/ai/src/api/azure-openai-responses.ts:224-244; selection/classes.py:33"
+rust = "pi-ai::upstream::sampling_options::sampling_params::applies_model_level_sampling_params_with_request_keys_taking_precedence_for_azure_openai_responses"
+adaptation = "Call selected resolveSamplingParams with the same literal model and request options; preserve expected top_p/min_p or temperature/top_p/top_k. For summary-only cases pass effective level medium explicitly and preserve temperature 0.8; record omission of excluded Responses reasoningSummary-to-medium envelope assertion."
 
 [[test]]
 id = "packages/ai/test/sampling-options.test.ts > sampling params > applies model-level sampling params with request keys taking precedence for openai-completions"
 file = "packages/ai/test/sampling-options.test.ts"
 line = 115
-status = "pending"
-adaptation = "Replace compat.stream/streamSimple dispatch and fake-key SDK interception with the Rust request-builder or transport seam; assert the same request payload fields and absent fields using the existing inline models."
+status = "adapted"
 note = "Selected openai-completions request builder and selected sampling/thinking helpers are exercised. Import through excluded compat.ts is test plumbing, not grounds to exclude retained behavior. Source proof: packages/ai/test/sampling-options.test.ts:115; packages/ai/src/api/openai-completions.ts:736-755 streamSimple; packages/ai/src/api/openai-completions.ts:1004-1006 buildParams sampling merge; packages/ai/src/api/simple-options.ts:24-34 resolveSamplingParams"
+rust = "pi-ai::upstream::sampling_options::sampling_params::applies_model_level_sampling_params_with_request_keys_taking_precedence_for_openai_completions"
+adaptation = "Replace compat.stream/streamSimple dispatch and fake-key SDK interception with the Rust request-builder or transport seam; assert the same request payload fields and absent fields using the existing inline models."
 
 [[test]]
 id = "packages/ai/test/sampling-options.test.ts > sampling params > applies model-level sampling params with request keys taking precedence for openai-responses"
 file = "packages/ai/test/sampling-options.test.ts"
 line = 115
-status = "pending"
-adaptation = "Call selected resolveSamplingParams with the same literal model and request options; preserve expected top_p/min_p or temperature/top_p/top_k. For summary-only cases pass effective level medium explicitly and preserve temperature 0.8; record omission of excluded Responses reasoningSummary-to-medium envelope assertion."
+status = "adapted"
 note = "Mixed test: excluded Responses/Azure envelope also asserts the selected resolveSamplingParams precedence or effective-level lookup. Existing Completions equivalents do not justify excluding this runtime ID. Source proof: packages/ai/test/sampling-options.test.ts:115; packages/ai/src/api/openai-responses.ts excluded by selection/classes.py; packages/ai/src/api/simple-options.ts:24-34; packages/ai/src/api/openai-responses.ts:363-384; packages/ai/src/api/azure-openai-responses.ts:224-244; selection/classes.py:33"
+rust = "pi-ai::upstream::sampling_options::sampling_params::applies_model_level_sampling_params_with_request_keys_taking_precedence_for_openai_responses"
+adaptation = "Call selected resolveSamplingParams with the same literal model and request options; preserve expected top_p/min_p or temperature/top_p/top_k. For summary-only cases pass effective level medium explicitly and preserve temperature 0.8; record omission of excluded Responses reasoningSummary-to-medium envelope assertion."
 
 [[test]]
 id = "packages/ai/test/sampling-options.test.ts > sampling params > applies off sampling params when reasoning is disabled"
 file = "packages/ai/test/sampling-options.test.ts"
 line = 154
-status = "pending"
-adaptation = "Replace compat.stream/streamSimple dispatch and fake-key SDK interception with the Rust request-builder or transport seam; assert the same request payload fields and absent fields using the existing inline models."
+status = "adapted"
 note = "Selected openai-completions request builder and selected sampling/thinking helpers are exercised. Import through excluded compat.ts is test plumbing, not grounds to exclude retained behavior. Source proof: packages/ai/test/sampling-options.test.ts:154; packages/ai/src/api/openai-completions.ts:736-755 streamSimple; packages/ai/src/api/openai-completions.ts:1004-1006 buildParams sampling merge; packages/ai/src/api/simple-options.ts:24-34 resolveSamplingParams"
+rust = "pi-ai::upstream::sampling_options::sampling_params::applies_off_sampling_params_when_reasoning_is_disabled"
+adaptation = "Replace compat.stream/streamSimple dispatch and fake-key SDK interception with the Rust request-builder or transport seam; assert the same request payload fields and absent fields using the existing inline models."
 
 [[test]]
 id = "packages/ai/test/sampling-options.test.ts > sampling params > applies sampling params for the effective thinking level over model defaults"
 file = "packages/ai/test/sampling-options.test.ts"
 line = 135
-status = "pending"
-adaptation = "Replace compat.stream/streamSimple dispatch and fake-key SDK interception with the Rust request-builder or transport seam; assert the same request payload fields and absent fields using the existing inline models."
+status = "adapted"
 note = "Selected openai-completions request builder and selected sampling/thinking helpers are exercised. Import through excluded compat.ts is test plumbing, not grounds to exclude retained behavior. Source proof: packages/ai/test/sampling-options.test.ts:135; packages/ai/src/api/openai-completions.ts:736-755 streamSimple; packages/ai/src/api/openai-completions.ts:1004-1006 buildParams sampling merge; packages/ai/src/api/simple-options.ts:24-34 resolveSamplingParams"
+rust = "pi-ai::upstream::sampling_options::sampling_params::applies_sampling_params_for_the_effective_thinking_level_over_model_defaults"
+adaptation = "Replace compat.stream/streamSimple dispatch and fake-key SDK interception with the Rust request-builder or transport seam; assert the same request payload fields and absent fields using the existing inline models."
 
 [[test]]
 id = "packages/ai/test/sampling-options.test.ts > sampling params > applies thinking-level params between model and request params for azure-openai-responses"
 file = "packages/ai/test/sampling-options.test.ts"
 line = 177
-status = "pending"
-adaptation = "Call selected resolveSamplingParams with the same literal model and request options; preserve expected top_p/min_p or temperature/top_p/top_k. For summary-only cases pass effective level medium explicitly and preserve temperature 0.8; record omission of excluded Responses reasoningSummary-to-medium envelope assertion."
+status = "adapted"
 note = "Mixed test: excluded Responses/Azure envelope also asserts the selected resolveSamplingParams precedence or effective-level lookup. Existing Completions equivalents do not justify excluding this runtime ID. Source proof: packages/ai/test/sampling-options.test.ts:177; packages/ai/src/api/azure-openai-responses.ts excluded by selection/classes.py; packages/ai/src/api/simple-options.ts:24-34; packages/ai/src/api/openai-responses.ts:363-384; packages/ai/src/api/azure-openai-responses.ts:224-244; selection/classes.py:33"
+rust = "pi-ai::upstream::sampling_options::sampling_params::applies_thinking_level_params_between_model_and_request_params_for_azure_openai_responses"
+adaptation = "Call selected resolveSamplingParams with the same literal model and request options; preserve expected top_p/min_p or temperature/top_p/top_k. For summary-only cases pass effective level medium explicitly and preserve temperature 0.8; record omission of excluded Responses reasoningSummary-to-medium envelope assertion."
 
 [[test]]
 id = "packages/ai/test/sampling-options.test.ts > sampling params > applies thinking-level params between model and request params for openai-completions"
 file = "packages/ai/test/sampling-options.test.ts"
 line = 177
-status = "pending"
-adaptation = "Replace compat.stream/streamSimple dispatch and fake-key SDK interception with the Rust request-builder or transport seam; assert the same request payload fields and absent fields using the existing inline models."
+status = "adapted"
 note = "Selected openai-completions request builder and selected sampling/thinking helpers are exercised. Import through excluded compat.ts is test plumbing, not grounds to exclude retained behavior. Source proof: packages/ai/test/sampling-options.test.ts:177; packages/ai/src/api/openai-completions.ts:736-755 streamSimple; packages/ai/src/api/openai-completions.ts:1004-1006 buildParams sampling merge; packages/ai/src/api/simple-options.ts:24-34 resolveSamplingParams"
+rust = "pi-ai::upstream::sampling_options::sampling_params::applies_thinking_level_params_between_model_and_request_params_for_openai_completions"
+adaptation = "Replace compat.stream/streamSimple dispatch and fake-key SDK interception with the Rust request-builder or transport seam; assert the same request payload fields and absent fields using the existing inline models."
 
 [[test]]
 id = "packages/ai/test/sampling-options.test.ts > sampling params > applies thinking-level params between model and request params for openai-responses"
 file = "packages/ai/test/sampling-options.test.ts"
 line = 177
-status = "pending"
-adaptation = "Call selected resolveSamplingParams with the same literal model and request options; preserve expected top_p/min_p or temperature/top_p/top_k. For summary-only cases pass effective level medium explicitly and preserve temperature 0.8; record omission of excluded Responses reasoningSummary-to-medium envelope assertion."
+status = "adapted"
 note = "Mixed test: excluded Responses/Azure envelope also asserts the selected resolveSamplingParams precedence or effective-level lookup. Existing Completions equivalents do not justify excluding this runtime ID. Source proof: packages/ai/test/sampling-options.test.ts:177; packages/ai/src/api/openai-responses.ts excluded by selection/classes.py; packages/ai/src/api/simple-options.ts:24-34; packages/ai/src/api/openai-responses.ts:363-384; packages/ai/src/api/azure-openai-responses.ts:224-244; selection/classes.py:33"
+rust = "pi-ai::upstream::sampling_options::sampling_params::applies_thinking_level_params_between_model_and_request_params_for_openai_responses"
+adaptation = "Call selected resolveSamplingParams with the same literal model and request options; preserve expected top_p/min_p or temperature/top_p/top_k. For summary-only cases pass effective level medium explicitly and preserve temperature 0.8; record omission of excluded Responses reasoningSummary-to-medium envelope assertion."
 
 [[test]]
 id = "packages/ai/test/sampling-options.test.ts > sampling params > is ignored by non-OpenAI-compatible APIs"
@@ -12622,57 +12819,64 @@ note = "The case captures the anthropic-messages request payload; its protocol i
 id = "packages/ai/test/sampling-options.test.ts > sampling params > merges request sampling params into the request body"
 file = "packages/ai/test/sampling-options.test.ts"
 line = 97
-status = "pending"
-adaptation = "Replace compat.stream/streamSimple dispatch and fake-key SDK interception with the Rust request-builder or transport seam; assert the same request payload fields and absent fields using the existing inline models."
+status = "adapted"
 note = "Selected openai-completions request builder and selected sampling/thinking helpers are exercised. Import through excluded compat.ts is test plumbing, not grounds to exclude retained behavior. Source proof: packages/ai/test/sampling-options.test.ts:97; packages/ai/src/api/openai-completions.ts:736-755 streamSimple; packages/ai/src/api/openai-completions.ts:1004-1006 buildParams sampling merge; packages/ai/src/api/simple-options.ts:24-34 resolveSamplingParams"
+rust = "pi-ai::upstream::sampling_options::sampling_params::merges_request_sampling_params_into_the_request_body"
+adaptation = "Replace compat.stream/streamSimple dispatch and fake-key SDK interception with the Rust request-builder or transport seam; assert the same request payload fields and absent fields using the existing inline models."
 
 [[test]]
 id = "packages/ai/test/sampling-options.test.ts > sampling params > merges stream-option keys over thinking-level keys"
 file = "packages/ai/test/sampling-options.test.ts"
 line = 164
-status = "pending"
-adaptation = "Replace compat.stream/streamSimple dispatch and fake-key SDK interception with the Rust request-builder or transport seam; assert the same request payload fields and absent fields using the existing inline models."
+status = "adapted"
 note = "Selected openai-completions request builder and selected sampling/thinking helpers are exercised. Import through excluded compat.ts is test plumbing, not grounds to exclude retained behavior. Source proof: packages/ai/test/sampling-options.test.ts:164; packages/ai/src/api/openai-completions.ts:736-755 streamSimple; packages/ai/src/api/openai-completions.ts:1004-1006 buildParams sampling merge; packages/ai/src/api/simple-options.ts:24-34 resolveSamplingParams"
+rust = "pi-ai::upstream::sampling_options::sampling_params::merges_stream_option_keys_over_thinking_level_keys"
+adaptation = "Replace compat.stream/streamSimple dispatch and fake-key SDK interception with the Rust request-builder or transport seam; assert the same request payload fields and absent fields using the existing inline models."
 
 [[test]]
 id = "packages/ai/test/sampling-options.test.ts > sampling params > omits sampling params when neither options nor model set them"
 file = "packages/ai/test/sampling-options.test.ts"
 line = 107
-status = "pending"
-adaptation = "Replace compat.stream/streamSimple dispatch and fake-key SDK interception with the Rust request-builder or transport seam; assert the same request payload fields and absent fields using the existing inline models."
+status = "adapted"
 note = "Selected openai-completions request builder and selected sampling/thinking helpers are exercised. Import through excluded compat.ts is test plumbing, not grounds to exclude retained behavior. Source proof: packages/ai/test/sampling-options.test.ts:107; packages/ai/src/api/openai-completions.ts:736-755 streamSimple; packages/ai/src/api/openai-completions.ts:1004-1006 buildParams sampling merge; packages/ai/src/api/simple-options.ts:24-34 resolveSamplingParams"
+rust = "pi-ai::upstream::sampling_options::sampling_params::omits_sampling_params_when_neither_options_nor_model_set_them"
+adaptation = "Replace compat.stream/streamSimple dispatch and fake-key SDK interception with the Rust request-builder or transport seam; assert the same request payload fields and absent fields using the existing inline models."
 
 [[test]]
 id = "packages/ai/test/sampling-options.test.ts > sampling params > overrides named request fields"
 file = "packages/ai/test/sampling-options.test.ts"
 line = 217
-status = "pending"
-adaptation = "Replace compat.stream/streamSimple dispatch and fake-key SDK interception with the Rust request-builder or transport seam; assert the same request payload fields and absent fields using the existing inline models."
+status = "adapted"
 note = "Selected openai-completions request builder and selected sampling/thinking helpers are exercised. Import through excluded compat.ts is test plumbing, not grounds to exclude retained behavior. Source proof: packages/ai/test/sampling-options.test.ts:217; packages/ai/src/api/openai-completions.ts:736-755 streamSimple; packages/ai/src/api/openai-completions.ts:1004-1006 buildParams sampling merge; packages/ai/src/api/simple-options.ts:24-34 resolveSamplingParams"
+rust = "pi-ai::upstream::sampling_options::sampling_params::overrides_named_request_fields"
+adaptation = "Replace compat.stream/streamSimple dispatch and fake-key SDK interception with the Rust request-builder or transport seam; assert the same request payload fields and absent fields using the existing inline models."
 
 [[test]]
 id = "packages/ai/test/sampling-options.test.ts > sampling params > passes request sampling params through streamSimple"
 file = "packages/ai/test/sampling-options.test.ts"
 line = 127
-status = "pending"
-adaptation = "Replace compat.stream/streamSimple dispatch and fake-key SDK interception with the Rust request-builder or transport seam; assert the same request payload fields and absent fields using the existing inline models."
+status = "adapted"
 note = "Selected openai-completions request builder and selected sampling/thinking helpers are exercised. Import through excluded compat.ts is test plumbing, not grounds to exclude retained behavior. Source proof: packages/ai/test/sampling-options.test.ts:127; packages/ai/src/api/openai-completions.ts:736-755 streamSimple; packages/ai/src/api/openai-completions.ts:1004-1006 buildParams sampling merge; packages/ai/src/api/simple-options.ts:24-34 resolveSamplingParams"
+rust = "pi-ai::upstream::sampling_options::sampling_params::passes_request_sampling_params_through_stream_simple"
+adaptation = "Replace compat.stream/streamSimple dispatch and fake-key SDK interception with the Rust request-builder or transport seam; assert the same request payload fields and absent fields using the existing inline models."
 
 [[test]]
 id = "packages/ai/test/sampling-options.test.ts > sampling params > uses medium sampling params for summary-only azure-openai-responses requests"
 file = "packages/ai/test/sampling-options.test.ts"
 line = 198
-status = "pending"
-adaptation = "Call selected resolveSamplingParams with the same literal model and request options; preserve expected top_p/min_p or temperature/top_p/top_k. For summary-only cases pass effective level medium explicitly and preserve temperature 0.8; record omission of excluded Responses reasoningSummary-to-medium envelope assertion."
+status = "adapted"
 note = "Mixed test: excluded Responses/Azure envelope also asserts the selected resolveSamplingParams precedence or effective-level lookup. Existing Completions equivalents do not justify excluding this runtime ID. Source proof: packages/ai/test/sampling-options.test.ts:198; packages/ai/src/api/azure-openai-responses.ts excluded by selection/classes.py; packages/ai/src/api/simple-options.ts:24-34; packages/ai/src/api/openai-responses.ts:363-384; packages/ai/src/api/azure-openai-responses.ts:224-244; selection/classes.py:33"
+rust = "pi-ai::upstream::sampling_options::sampling_params::uses_medium_sampling_params_for_summary_only_azure_openai_responses_requests"
+adaptation = "Call selected resolveSamplingParams with the same literal model and request options; preserve expected top_p/min_p or temperature/top_p/top_k. For summary-only cases pass effective level medium explicitly and preserve temperature 0.8; record omission of excluded Responses reasoningSummary-to-medium envelope assertion."
 
 [[test]]
 id = "packages/ai/test/sampling-options.test.ts > sampling params > uses medium sampling params for summary-only openai-responses requests"
 file = "packages/ai/test/sampling-options.test.ts"
 line = 198
-status = "pending"
-adaptation = "Call selected resolveSamplingParams with the same literal model and request options; preserve expected top_p/min_p or temperature/top_p/top_k. For summary-only cases pass effective level medium explicitly and preserve temperature 0.8; record omission of excluded Responses reasoningSummary-to-medium envelope assertion."
+status = "adapted"
 note = "Mixed test: excluded Responses/Azure envelope also asserts the selected resolveSamplingParams precedence or effective-level lookup. Existing Completions equivalents do not justify excluding this runtime ID. Source proof: packages/ai/test/sampling-options.test.ts:198; packages/ai/src/api/openai-responses.ts excluded by selection/classes.py; packages/ai/src/api/simple-options.ts:24-34; packages/ai/src/api/openai-responses.ts:363-384; packages/ai/src/api/azure-openai-responses.ts:224-244; selection/classes.py:33"
+rust = "pi-ai::upstream::sampling_options::sampling_params::uses_medium_sampling_params_for_summary_only_openai_responses_requests"
+adaptation = "Call selected resolveSamplingParams with the same literal model and request options; preserve expected top_p/min_p or temperature/top_p/top_k. For summary-only cases pass effective level medium explicitly and preserve temperature 0.8; record omission of excluded Responses reasoningSummary-to-medium envelope assertion."
 
 [[test]]
 id = "packages/ai/test/stream.test.ts > Generate E2E Tests > Amazon Bedrock Provider (claude-opus-4-6 interleaved thinking) > should omit requestMetadata from payload when not provided"
@@ -15518,65 +15722,73 @@ reason = "skip-module"
 id = "packages/ai/test/transcript-tool-changes.test.ts > transcript system messages > anchors Kimi additions in tool-bearing system messages"
 file = "packages/ai/test/transcript-tool-changes.test.ts"
 line = 319
-status = "pending"
-adaptation = "Replace compat.streamSimple dispatch with selected Completions request builder and literal model; preserve every tool list, role, inline-system ordering and collapsed text assertion."
+status = "adapted"
 note = "Mixed or wholly selected transcript semantics: retained helpers determine system replay/text or current-versus-anchored tool state, even when the test also asserts an excluded protocol envelope. Source proof: packages/ai/test/transcript-tool-changes.test.ts:319; packages/ai/src/utils/transcript.ts:58-128; packages/ai/src/utils/transcript.ts:216-260; packages/ai/src/utils/text.ts; selection/classes.py:38-41"
+rust = "pi-ai::upstream::transcript_tool_changes::transcript_system_messages::anchors_kimi_additions_in_tool_bearing_system_messages"
+adaptation = "Replace compat.streamSimple dispatch with selected Completions request builder and literal model; preserve every tool list, role, inline-system ordering and collapsed text assertion."
 
 [[test]]
 id = "packages/ai/test/transcript-tool-changes.test.ts > transcript system messages > anchors OpenAI additions at their developer message"
 file = "packages/ai/test/transcript-tool-changes.test.ts"
 line = 235
-status = "pending"
-adaptation = "Call selected resolveTranscriptTools(additionContext.messages, true): preserve base_tool-only initial requestTools, anchorsAdditions=true and late_tool at its later system message; preserve selected rendered text for anchoring test. Record omission of excluded additional_tools/tool_search_call/tool_search_output and developer wire encoding."
+status = "adapted"
 note = "Mixed or wholly selected transcript semantics: retained helpers determine system replay/text or current-versus-anchored tool state, even when the test also asserts an excluded protocol envelope. Source proof: packages/ai/test/transcript-tool-changes.test.ts:235; packages/ai/src/utils/transcript.ts:58-128; packages/ai/src/utils/transcript.ts:216-260; packages/ai/src/utils/text.ts; selection/classes.py:38-41"
+rust = "pi-ai::upstream::transcript_tool_changes::transcript_system_messages::anchors_openai_additions_at_their_developer_message"
+adaptation = "Call selected resolveTranscriptTools(additionContext.messages, true): preserve base_tool-only initial requestTools, anchorsAdditions=true and late_tool at its later system message; preserve selected rendered text for anchoring test. Record omission of excluded additional_tools/tool_search_call/tool_search_output and developer wire encoding."
 
 [[test]]
 id = "packages/ai/test/transcript-tool-changes.test.ts > transcript system messages > falls back to the complete current tool state when removals are unsupported"
 file = "packages/ai/test/transcript-tool-changes.test.ts"
 line = 300
-status = "pending"
-adaptation = "Call selected resolveTranscriptTools(messages, true) and resolveTranscript(messages, true); assert late_tool-only requestTools, anchorsAdditions=false and both system messages preserved. Omit excluded additional_tools/developer envelope encoding."
+status = "adapted"
 note = "Mixed or wholly selected transcript semantics: retained helpers determine system replay/text or current-versus-anchored tool state, even when the test also asserts an excluded protocol envelope. Source proof: packages/ai/test/transcript-tool-changes.test.ts:300; packages/ai/src/utils/transcript.ts:58-128; packages/ai/src/utils/transcript.ts:216-260; packages/ai/src/utils/text.ts; selection/classes.py:38-41"
+rust = "pi-ai::upstream::transcript_tool_changes::transcript_system_messages::falls_back_to_the_complete_current_tool_state_when_removals_are_unsupported"
+adaptation = "Call selected resolveTranscriptTools(messages, true) and resolveTranscript(messages, true); assert late_tool-only requestTools, anchorsAdditions=false and both system messages preserved. Omit excluded additional_tools/developer envelope encoding."
 
 [[test]]
 id = "packages/ai/test/transcript-tool-changes.test.ts > transcript system messages > folds Anthropic updates into the system prompt without native support"
 file = "packages/ai/test/transcript-tool-changes.test.ts"
 line = 192
-status = "pending"
-adaptation = "Call selected resolveTranscript(..., false), getCurrentTools and getSystemMessageText; preserve late_tool-only state, removal of subsequent system entries and exact combined prompt text. Record omission of Anthropic/Responses wire role/envelope assertions."
+status = "adapted"
 note = "Mixed or wholly selected transcript semantics: retained helpers determine system replay/text or current-versus-anchored tool state, even when the test also asserts an excluded protocol envelope. Source proof: packages/ai/test/transcript-tool-changes.test.ts:192; packages/ai/src/utils/transcript.ts:58-128; packages/ai/src/utils/transcript.ts:216-260; packages/ai/src/utils/text.ts; selection/classes.py:38-41"
+rust = "pi-ai::upstream::transcript_tool_changes::transcript_system_messages::folds_anthropic_updates_into_the_system_prompt_without_native_support"
+adaptation = "Call selected resolveTranscript(..., false), getCurrentTools and getSystemMessageText; preserve late_tool-only state, removal of subsequent system entries and exact combined prompt text. Record omission of Anthropic/Responses wire role/envelope assertions."
 
 [[test]]
 id = "packages/ai/test/transcript-tool-changes.test.ts > transcript system messages > folds OpenAI updates into the leading developer message without native support"
 file = "packages/ai/test/transcript-tool-changes.test.ts"
 line = 281
-status = "pending"
-adaptation = "Call selected resolveTranscript(..., false), getCurrentTools and getSystemMessageText; preserve late_tool-only state, removal of subsequent system entries and exact combined prompt text. Record omission of Anthropic/Responses wire role/envelope assertions."
+status = "adapted"
 note = "Mixed or wholly selected transcript semantics: retained helpers determine system replay/text or current-versus-anchored tool state, even when the test also asserts an excluded protocol envelope. Source proof: packages/ai/test/transcript-tool-changes.test.ts:281; packages/ai/src/utils/transcript.ts:58-128; packages/ai/src/utils/transcript.ts:216-260; packages/ai/src/utils/text.ts; selection/classes.py:38-41"
+rust = "pi-ai::upstream::transcript_tool_changes::transcript_system_messages::folds_openai_updates_into_the_leading_developer_message_without_native_support"
+adaptation = "Call selected resolveTranscript(..., false), getCurrentTools and getSystemMessageText; preserve late_tool-only state, removal of subsequent system entries and exact combined prompt text. Record omission of Anthropic/Responses wire role/envelope assertions."
 
 [[test]]
 id = "packages/ai/test/transcript-tool-changes.test.ts > transcript system messages > folds OpenAI-compatible updates into the system prompt without native support"
 file = "packages/ai/test/transcript-tool-changes.test.ts"
 line = 363
-status = "pending"
-adaptation = "Replace compat.streamSimple dispatch with selected Completions request builder and literal model; preserve every tool list, role, inline-system ordering and collapsed text assertion."
+status = "adapted"
 note = "Mixed or wholly selected transcript semantics: retained helpers determine system replay/text or current-versus-anchored tool state, even when the test also asserts an excluded protocol envelope. Source proof: packages/ai/test/transcript-tool-changes.test.ts:363; packages/ai/src/utils/transcript.ts:58-128; packages/ai/src/utils/transcript.ts:216-260; packages/ai/src/utils/text.ts; selection/classes.py:38-41"
+rust = "pi-ai::upstream::transcript_tool_changes::transcript_system_messages::folds_openai_compatible_updates_into_the_system_prompt_without_native_support"
+adaptation = "Replace compat.streamSimple dispatch with selected Completions request builder and literal model; preserve every tool list, role, inline-system ordering and collapsed text assertion."
 
 [[test]]
 id = "packages/ai/test/transcript-tool-changes.test.ts > transcript system messages > keeps Kimi K2 system text inline without dynamic tool messages"
 file = "packages/ai/test/transcript-tool-changes.test.ts"
 line = 342
-status = "pending"
-adaptation = "Replace compat.streamSimple dispatch with selected Completions request builder and literal model; preserve every tool list, role, inline-system ordering and collapsed text assertion."
+status = "adapted"
 note = "Mixed or wholly selected transcript semantics: retained helpers determine system replay/text or current-versus-anchored tool state, even when the test also asserts an excluded protocol envelope. Source proof: packages/ai/test/transcript-tool-changes.test.ts:342; packages/ai/src/utils/transcript.ts:58-128; packages/ai/src/utils/transcript.ts:216-260; packages/ai/src/utils/text.ts; selection/classes.py:38-41"
+rust = "pi-ai::upstream::transcript_tool_changes::transcript_system_messages::keeps_kimi_k2_system_text_inline_without_dynamic_tool_messages"
+adaptation = "Replace compat.streamSimple dispatch with selected Completions request builder and literal model; preserve every tool list, role, inline-system ordering and collapsed text assertion."
 
 [[test]]
 id = "packages/ai/test/transcript-tool-changes.test.ts > transcript system messages > maps system-message additions into synthetic tool search"
 file = "packages/ai/test/transcript-tool-changes.test.ts"
 line = 260
-status = "pending"
-adaptation = "Call selected resolveTranscriptTools(additionContext.messages, true): preserve base_tool-only initial requestTools, anchorsAdditions=true and late_tool at its later system message; preserve selected rendered text for anchoring test. Record omission of excluded additional_tools/tool_search_call/tool_search_output and developer wire encoding."
+status = "adapted"
 note = "Mixed or wholly selected transcript semantics: retained helpers determine system replay/text or current-versus-anchored tool state, even when the test also asserts an excluded protocol envelope. Source proof: packages/ai/test/transcript-tool-changes.test.ts:260; packages/ai/src/utils/transcript.ts:58-128; packages/ai/src/utils/transcript.ts:216-260; packages/ai/src/utils/text.ts; selection/classes.py:38-41"
+rust = "pi-ai::upstream::transcript_tool_changes::transcript_system_messages::maps_system_message_additions_into_synthetic_tool_search"
+adaptation = "Call selected resolveTranscriptTools(additionContext.messages, true): preserve base_tool-only initial requestTools, anchorsAdditions=true and late_tool at its later system message; preserve selected rendered text for anchoring test. Record omission of excluded additional_tools/tool_search_call/tool_search_output and developer wire encoding."
 
 [[test]]
 id = "packages/ai/test/transcript-tool-changes.test.ts > transcript system messages > redefines an Anthropic tool by value under the same name"
@@ -15590,49 +15802,56 @@ note = "All tested behavior is Anthropic native inline-tool wire encoding: beta 
 id = "packages/ai/test/transcript-tool-changes.test.ts > transcript system messages > requires both Anthropic capabilities for native tool changes"
 file = "packages/ai/test/transcript-tool-changes.test.ts"
 line = 215
-status = "pending"
-adaptation = "Preserve selected collapseSystemMessages/getCurrentTools result when mid-conversation system support is absent: late_tool-only state and one remaining user message. Record omission of Anthropic capability gate and beta encoding assertions."
+status = "adapted"
 note = "Mixed or wholly selected transcript semantics: retained helpers determine system replay/text or current-versus-anchored tool state, even when the test also asserts an excluded protocol envelope. Source proof: packages/ai/test/transcript-tool-changes.test.ts:215; packages/ai/src/utils/transcript.ts:58-128; packages/ai/src/utils/transcript.ts:216-260; packages/ai/src/utils/text.ts; selection/classes.py:38-41"
+rust = "pi-ai::upstream::transcript_tool_changes::transcript_system_messages::requires_both_anthropic_capabilities_for_native_tool_changes"
+adaptation = "Preserve selected collapseSystemMessages/getCurrentTools result when mid-conversation system support is absent: late_tool-only state and one remaining user message. Record omission of Anthropic capability gate and beta encoding assertions."
 
 [[test]]
 id = "packages/ai/test/transcript-tool-changes.test.ts > transcript system messages > sends Anthropic updates and tool changes in native system messages"
 file = "packages/ai/test/transcript-tool-changes.test.ts"
 line = 97
-status = "pending"
-adaptation = "Preserve initial system text and updated guidance/section-removal rendering via selected getSystemMessageText/renderSystemMessageUpdate on the same transcript. Record omission of Anthropic beta, cache-control, placeholder and native tool block envelope assertions."
+status = "adapted"
 note = "Mixed or wholly selected transcript semantics: retained helpers determine system replay/text or current-versus-anchored tool state, even when the test also asserts an excluded protocol envelope. Source proof: packages/ai/test/transcript-tool-changes.test.ts:97; packages/ai/src/utils/transcript.ts:58-128; packages/ai/src/utils/transcript.ts:216-260; packages/ai/src/utils/text.ts; selection/classes.py:38-41"
+rust = "pi-ai::upstream::transcript_tool_changes::transcript_system_messages::sends_anthropic_updates_and_tool_changes_in_native_system_messages"
+adaptation = "Preserve initial system text and updated guidance/section-removal rendering via selected getSystemMessageText/renderSystemMessageUpdate on the same transcript. Record omission of Anthropic beta, cache-control, placeholder and native tool block envelope assertions."
 
 [[test]]
 id = "packages/ai/test/transcript-tool-changes.test.ts > transcript system messages > sends the current Anthropic tool list without an initial tool"
 file = "packages/ai/test/transcript-tool-changes.test.ts"
 line = 177
-status = "pending"
-adaptation = "Preserve selected getCurrentTools resolution of late_tool from an initially tool-less transcript. Record omission of Anthropic-specific no-initial-active-tool gate, placeholder, beta and cache-control wire assertions."
+status = "adapted"
 note = "Mixed or wholly selected transcript semantics: retained helpers determine system replay/text or current-versus-anchored tool state, even when the test also asserts an excluded protocol envelope. Source proof: packages/ai/test/transcript-tool-changes.test.ts:177; packages/ai/src/utils/transcript.ts:58-128; packages/ai/src/utils/transcript.ts:216-260; packages/ai/src/utils/text.ts; selection/classes.py:38-41"
+rust = "pi-ai::upstream::transcript_tool_changes::transcript_system_messages::sends_the_current_anthropic_tool_list_without_an_initial_tool"
+adaptation = "Preserve selected getCurrentTools resolution of late_tool from an initially tool-less transcript. Record omission of Anthropic-specific no-initial-active-tool gate, placeholder, beta and cache-control wire assertions."
 
 [[test]]
 id = "packages/ai/test/transform-messages-copilot-openai-to-anthropic.test.ts > OpenAI to Anthropic session migration for Copilot Claude > adds synthetic results only for trailing tool calls that are still missing results"
 file = "packages/ai/test/transform-messages-copilot-openai-to-anthropic.test.ts"
 line = 162
-status = "pending"
+status = "ported"
+rust = "pi-ai::upstream::transform_messages_copilot_openai_to_anthropic::openai_to_anthropic_session_migration_for_copilot_claude::adds_synthetic_results_only_for_trailing_tool_calls_that_are_still_missing_results"
 
 [[test]]
 id = "packages/ai/test/transform-messages-copilot-openai-to-anthropic.test.ts > OpenAI to Anthropic session migration for Copilot Claude > adds synthetic tool results for trailing orphaned tool calls"
 file = "packages/ai/test/transform-messages-copilot-openai-to-anthropic.test.ts"
 line = 136
-status = "pending"
+status = "ported"
+rust = "pi-ai::upstream::transform_messages_copilot_openai_to_anthropic::openai_to_anthropic_session_migration_for_copilot_claude::adds_synthetic_tool_results_for_trailing_orphaned_tool_calls"
 
 [[test]]
 id = "packages/ai/test/transform-messages-copilot-openai-to-anthropic.test.ts > OpenAI to Anthropic session migration for Copilot Claude > converts thinking blocks to plain text when source model differs"
 file = "packages/ai/test/transform-messages-copilot-openai-to-anthropic.test.ts"
 line = 50
-status = "pending"
+status = "ported"
+rust = "pi-ai::upstream::transform_messages_copilot_openai_to_anthropic::openai_to_anthropic_session_migration_for_copilot_claude::converts_thinking_blocks_to_plain_text_when_source_model_differs"
 
 [[test]]
 id = "packages/ai/test/transform-messages-copilot-openai-to-anthropic.test.ts > OpenAI to Anthropic session migration for Copilot Claude > removes thoughtSignature from tool calls when migrating between models"
 file = "packages/ai/test/transform-messages-copilot-openai-to-anthropic.test.ts"
 line = 90
-status = "pending"
+status = "ported"
+rust = "pi-ai::upstream::transform_messages_copilot_openai_to_anthropic::openai_to_anthropic_session_migration_for_copilot_claude::removes_thought_signature_from_tool_calls_when_migrating_between_models"
 
 [[test]]
 id = "packages/ai/test/typesafe-system-one.test.ts > TypeSafe System One > creates a fresh timeout for every retry attempt"

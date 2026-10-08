@@ -17,7 +17,9 @@ export interface Scenario {
   id: string;
   layer: "agent" | "session" | "wire" | "session+wire";
   covers: string[];
-  model: { ref: string };
+  model: { ref: string; value?: Record<string, Json> };
+  initialMessages?: Record<string, Json>[];
+  options?: Record<string, Json>;
   clock: Clock;
   systemPrompt?: string;
   thinkingLevel?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh";

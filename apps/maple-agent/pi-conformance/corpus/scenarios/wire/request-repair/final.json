@@ -1,0 +1,329 @@
+{
+  "state": {
+    "messages": [
+      {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "text",
+            "text": "failed answer"
+          }
+        ],
+        "api": "openai-completions",
+        "provider": "old",
+        "model": "old",
+        "usage": {
+          "input": 0,
+          "output": 0,
+          "cacheRead": 0,
+          "cacheWrite": 0,
+          "totalTokens": 0,
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "total": 0
+          }
+        },
+        "stopReason": "error",
+        "timestamp": 1,
+        "errorMessage": "old failure"
+      },
+      {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "toolCall",
+            "id": "orphan|old",
+            "name": "first",
+            "arguments": {
+              "x": 1
+            }
+          }
+        ],
+        "api": "openai-completions",
+        "provider": "old",
+        "model": "old",
+        "usage": {
+          "input": 0,
+          "output": 0,
+          "cacheRead": 0,
+          "cacheWrite": 0,
+          "totalTokens": 0,
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "total": 0
+          }
+        },
+        "stopReason": "toolUse",
+        "timestamp": 1
+      },
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "lone \ud800 unit"
+          },
+          {
+            "type": "image",
+            "mimeType": "image/png",
+            "data": "AA=="
+          },
+          {
+            "type": "image",
+            "mimeType": "image/png",
+            "data": "AA=="
+          }
+        ],
+        "timestamp": 2
+      },
+      {
+        "role": "user",
+        "content": "repair this history",
+        "timestamp": 1767225600000
+      },
+      {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "text",
+            "text": "answer"
+          }
+        ],
+        "api": "openai-completions",
+        "provider": "openai",
+        "model": "fixture",
+        "usage": {
+          "input": 16,
+          "output": 3,
+          "cacheRead": 4,
+          "cacheWrite": 0,
+          "reasoning": 1,
+          "totalTokens": 23,
+          "cost": {
+            "input": 0.000016,
+            "output": 0.000006,
+            "cacheRead": 0.000012,
+            "cacheWrite": 0,
+            "total": 0.000034
+          }
+        },
+        "stopReason": "stop",
+        "timestamp": 1767225600000,
+        "rawStopReason": "stop"
+      }
+    ],
+    "results": [
+      {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "text",
+            "text": "answer"
+          }
+        ],
+        "api": "openai-completions",
+        "provider": "openai",
+        "model": "fixture",
+        "usage": {
+          "input": 16,
+          "output": 3,
+          "cacheRead": 4,
+          "cacheWrite": 0,
+          "reasoning": 1,
+          "totalTokens": 23,
+          "cost": {
+            "input": 0.000016,
+            "output": 0.000006,
+            "cacheRead": 0.000012,
+            "cacheWrite": 0,
+            "total": 0.000034
+          }
+        },
+        "stopReason": "stop",
+        "timestamp": 1767225600000,
+        "rawStopReason": "stop"
+      }
+    ],
+    "retainedEvents": [
+      {
+        "type": "start",
+        "partial": {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "answer"
+            }
+          ],
+          "api": "openai-completions",
+          "provider": "openai",
+          "model": "fixture",
+          "usage": {
+            "input": 16,
+            "output": 3,
+            "cacheRead": 4,
+            "cacheWrite": 0,
+            "reasoning": 1,
+            "totalTokens": 23,
+            "cost": {
+              "input": 0.000016,
+              "output": 0.000006,
+              "cacheRead": 0.000012,
+              "cacheWrite": 0,
+              "total": 0.000034
+            }
+          },
+          "stopReason": "stop",
+          "timestamp": 1767225600000,
+          "rawStopReason": "stop"
+        }
+      },
+      {
+        "type": "text_start",
+        "contentIndex": 0,
+        "partial": {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "answer"
+            }
+          ],
+          "api": "openai-completions",
+          "provider": "openai",
+          "model": "fixture",
+          "usage": {
+            "input": 16,
+            "output": 3,
+            "cacheRead": 4,
+            "cacheWrite": 0,
+            "reasoning": 1,
+            "totalTokens": 23,
+            "cost": {
+              "input": 0.000016,
+              "output": 0.000006,
+              "cacheRead": 0.000012,
+              "cacheWrite": 0,
+              "total": 0.000034
+            }
+          },
+          "stopReason": "stop",
+          "timestamp": 1767225600000,
+          "rawStopReason": "stop"
+        }
+      },
+      {
+        "type": "text_delta",
+        "contentIndex": 0,
+        "delta": "answer",
+        "partial": {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "answer"
+            }
+          ],
+          "api": "openai-completions",
+          "provider": "openai",
+          "model": "fixture",
+          "usage": {
+            "input": 16,
+            "output": 3,
+            "cacheRead": 4,
+            "cacheWrite": 0,
+            "reasoning": 1,
+            "totalTokens": 23,
+            "cost": {
+              "input": 0.000016,
+              "output": 0.000006,
+              "cacheRead": 0.000012,
+              "cacheWrite": 0,
+              "total": 0.000034
+            }
+          },
+          "stopReason": "stop",
+          "timestamp": 1767225600000,
+          "rawStopReason": "stop"
+        }
+      },
+      {
+        "type": "text_end",
+        "contentIndex": 0,
+        "content": "answer",
+        "partial": {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "answer"
+            }
+          ],
+          "api": "openai-completions",
+          "provider": "openai",
+          "model": "fixture",
+          "usage": {
+            "input": 16,
+            "output": 3,
+            "cacheRead": 4,
+            "cacheWrite": 0,
+            "reasoning": 1,
+            "totalTokens": 23,
+            "cost": {
+              "input": 0.000016,
+              "output": 0.000006,
+              "cacheRead": 0.000012,
+              "cacheWrite": 0,
+              "total": 0.000034
+            }
+          },
+          "stopReason": "stop",
+          "timestamp": 1767225600000,
+          "rawStopReason": "stop"
+        }
+      },
+      {
+        "type": "done",
+        "reason": "stop",
+        "message": {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "answer"
+            }
+          ],
+          "api": "openai-completions",
+          "provider": "openai",
+          "model": "fixture",
+          "usage": {
+            "input": 16,
+            "output": 3,
+            "cacheRead": 4,
+            "cacheWrite": 0,
+            "reasoning": 1,
+            "totalTokens": 23,
+            "cost": {
+              "input": 0.000016,
+              "output": 0.000006,
+              "cacheRead": 0.000012,
+              "cacheWrite": 0,
+              "total": 0.000034
+            }
+          },
+          "stopReason": "stop",
+          "timestamp": 1767225600000,
+          "rawStopReason": "stop"
+        }
+      }
+    ]
+  },
+  "queues": {},
+  "errors": []
+}

@@ -426,12 +426,12 @@
                   "type": "string"
                 },
                 {
-                  "$ref": "#/$defs/message"
+                  "$ref": "#/$defs/wireMessage"
                 },
                 {
                   "type": "array",
                   "items": {
-                    "$ref": "#/$defs/message"
+                    "$ref": "#/$defs/wireMessage"
                   },
                   "minItems": 1
                 }
@@ -551,6 +551,9 @@
                 "ref": {
                   "type": "string",
                   "minLength": 1
+                },
+                "value": {
+                  "$ref": "#/$defs/wireModel"
                 }
               },
               "required": [
@@ -914,6 +917,9 @@
               "items": {
                 "$ref": "#/$defs/wireChunk"
               }
+            },
+            "transportError": {
+              "type": "string"
             }
           },
           "required": [
@@ -936,7 +942,10 @@
                 "type": "string"
               }
             },
-            "body": {}
+            "body": {},
+            "transportError": {
+              "type": "string"
+            }
           },
           "required": [
             "status",
@@ -948,6 +957,9 @@
           "type": "object",
           "properties": {
             "networkError": {
+              "type": "string"
+            },
+            "transportError": {
               "type": "string"
             }
           },
@@ -990,6 +1002,9 @@
             "ref": {
               "type": "string",
               "minLength": 1
+            },
+            "value": {
+              "$ref": "#/$defs/wireModel"
             }
           },
           "required": [
@@ -1086,6 +1101,38 @@
             ],
             "additionalProperties": false
           }
+        },
+        "initialMessages": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/wireMessage"
+          }
+        },
+        "options": {
+          "type": "object",
+          "properties": {
+            "maxTokens": {
+              "type": "number"
+            },
+            "temperature": {
+              "type": "number"
+            },
+            "maxRetries": {
+              "type": "number"
+            },
+            "sessionId": {
+              "type": "string"
+            },
+            "cacheRetention": {
+              "enum": [
+                "none",
+                "short",
+                "long"
+              ]
+            }
+          },
+          "required": [],
+          "additionalProperties": false
         }
       },
       "required": [
@@ -2065,6 +2112,260 @@
             "cases"
           ],
           "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "dsl": {
+              "const": 1
+            },
+            "id": {
+              "const": "api.transformMessages"
+            },
+            "clock": {
+              "$ref": "#/$defs/clock"
+            },
+            "cases": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "object",
+                "properties": {
+                  "case": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "input": {
+                    "type": "object",
+                    "properties": {
+                      "model": {
+                        "$ref": "#/$defs/completionsFunctionModel"
+                      },
+                      "messages": {
+                        "type": "array",
+                        "items": {
+                          "type": "object"
+                        }
+                      },
+                      "normalizeToolCallId": {
+                        "const": "prefix"
+                      }
+                    },
+                    "required": [
+                      "model",
+                      "messages"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "required": [
+                  "case",
+                  "input"
+                ],
+                "additionalProperties": false
+              }
+            }
+          },
+          "required": [
+            "dsl",
+            "id",
+            "clock",
+            "cases"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "dsl": {
+              "const": 1
+            },
+            "id": {
+              "const": "api.buildParams"
+            },
+            "clock": {
+              "$ref": "#/$defs/clock"
+            },
+            "cases": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "object",
+                "properties": {
+                  "case": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "input": {
+                    "type": "object",
+                    "properties": {
+                      "model": {
+                        "$ref": "#/$defs/completionsFunctionModel"
+                      },
+                      "context": {
+                        "type": "object",
+                        "properties": {
+                          "messages": {
+                            "type": "array",
+                            "items": {
+                              "type": "object"
+                            }
+                          },
+                          "systemPrompt": {
+                            "type": "string"
+                          },
+                          "tools": {
+                            "type": "array",
+                            "items": {
+                              "$ref": "#/$defs/functionTool"
+                            }
+                          }
+                        },
+                        "required": [
+                          "messages"
+                        ],
+                        "additionalProperties": false
+                      },
+                      "options": {
+                        "type": "object",
+                        "properties": {
+                          "cacheRetention": {
+                            "enum": [
+                              "none",
+                              "short",
+                              "long"
+                            ]
+                          },
+                          "maxTokens": {
+                            "type": "number"
+                          },
+                          "temperature": {
+                            "type": "number"
+                          },
+                          "reasoningEffort": {
+                            "enum": [
+                              "minimal",
+                              "low",
+                              "medium",
+                              "high",
+                              "xhigh",
+                              "max"
+                            ]
+                          },
+                          "samplingParams": {
+                            "type": "object"
+                          },
+                          "sessionId": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [],
+                        "additionalProperties": false
+                      }
+                    },
+                    "required": [
+                      "model",
+                      "context",
+                      "options"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "required": [
+                  "case",
+                  "input"
+                ],
+                "additionalProperties": false
+              }
+            }
+          },
+          "required": [
+            "dsl",
+            "id",
+            "clock",
+            "cases"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "dsl": {
+              "const": 1
+            },
+            "id": {
+              "const": "api.convertMessages"
+            },
+            "clock": {
+              "$ref": "#/$defs/clock"
+            },
+            "cases": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "object",
+                "properties": {
+                  "case": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "input": {
+                    "type": "object",
+                    "properties": {
+                      "model": {
+                        "$ref": "#/$defs/completionsFunctionModel"
+                      },
+                      "context": {
+                        "type": "object",
+                        "properties": {
+                          "messages": {
+                            "type": "array",
+                            "items": {
+                              "type": "object"
+                            }
+                          },
+                          "systemPrompt": {
+                            "type": "string"
+                          },
+                          "tools": {
+                            "type": "array",
+                            "items": {
+                              "$ref": "#/$defs/functionTool"
+                            }
+                          }
+                        },
+                        "required": [
+                          "messages"
+                        ],
+                        "additionalProperties": false
+                      },
+                      "compat": {
+                        "type": "object"
+                      }
+                    },
+                    "required": [
+                      "model",
+                      "context",
+                      "compat"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "required": [
+                  "case",
+                  "input"
+                ],
+                "additionalProperties": false
+              }
+            }
+          },
+          "required": [
+            "dsl",
+            "id",
+            "clock",
+            "cases"
+          ],
+          "additionalProperties": false
         }
       ]
     },
@@ -2390,6 +2691,317 @@
         "stopReason",
         "timestamp",
         "usage"
+      ],
+      "additionalProperties": false
+    },
+    "wireCost": {
+      "type": "object",
+      "properties": {
+        "input": {
+          "type": "number"
+        },
+        "output": {
+          "type": "number"
+        },
+        "cacheRead": {
+          "type": "number"
+        },
+        "cacheWrite": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "input",
+        "output",
+        "cacheRead",
+        "cacheWrite"
+      ],
+      "additionalProperties": false
+    },
+    "wireUsage": {
+      "type": "object",
+      "properties": {
+        "input": {
+          "type": "number"
+        },
+        "output": {
+          "type": "number"
+        },
+        "cacheRead": {
+          "type": "number"
+        },
+        "cacheWrite": {
+          "type": "number"
+        },
+        "totalTokens": {
+          "type": "number"
+        },
+        "cost": {
+          "type": "object",
+          "properties": {
+            "input": {
+              "type": "number"
+            },
+            "output": {
+              "type": "number"
+            },
+            "cacheRead": {
+              "type": "number"
+            },
+            "cacheWrite": {
+              "type": "number"
+            },
+            "total": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "input",
+            "output",
+            "cacheRead",
+            "cacheWrite",
+            "total"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "input",
+        "output",
+        "cacheRead",
+        "cacheWrite",
+        "totalTokens",
+        "cost"
+      ],
+      "additionalProperties": false
+    },
+    "wireModel": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "api": {
+          "const": "openai-completions"
+        },
+        "provider": {
+          "type": "string"
+        },
+        "baseUrl": {
+          "type": "string"
+        },
+        "reasoning": {
+          "type": "boolean"
+        },
+        "input": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "text",
+              "image"
+            ]
+          }
+        },
+        "cost": {
+          "$ref": "#/$defs/wireCost"
+        },
+        "contextWindow": {
+          "type": "number"
+        },
+        "maxTokens": {
+          "type": "number"
+        },
+        "compat": {
+          "type": "object",
+          "properties": {
+            "supportsMidConvoSystemMessages": {
+              "type": "boolean"
+            },
+            "supportsMidConvoToolAdditions": {
+              "type": "boolean"
+            }
+          },
+          "required": [],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "api",
+        "provider",
+        "baseUrl",
+        "reasoning",
+        "input",
+        "cost",
+        "contextWindow",
+        "maxTokens"
+      ],
+      "additionalProperties": false
+    },
+    "wireMessage": {
+      "type": "object",
+      "properties": {
+        "role": {
+          "enum": [
+            "user",
+            "system",
+            "assistant",
+            "toolResult",
+            "custom"
+          ]
+        },
+        "content": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/contentBlock"
+              }
+            }
+          ]
+        },
+        "timestamp": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "toolCallId": {
+          "type": "string"
+        },
+        "toolName": {
+          "type": "string"
+        },
+        "isError": {
+          "type": "boolean"
+        },
+        "customType": {
+          "type": "string"
+        },
+        "display": {
+          "type": "boolean"
+        },
+        "details": {},
+        "api": {
+          "type": "string"
+        },
+        "provider": {
+          "type": "string"
+        },
+        "model": {
+          "type": "string"
+        },
+        "errorMessage": {
+          "type": "string"
+        },
+        "stopReason": {
+          "enum": [
+            "stop",
+            "length",
+            "toolUse",
+            "error",
+            "aborted",
+            "pending",
+            "deferred"
+          ]
+        },
+        "usage": {
+          "$ref": "#/$defs/wireUsage"
+        },
+        "toolsAdded": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "description": {
+                "type": "string"
+              },
+              "parameters": {
+                "type": "object"
+              }
+            },
+            "required": [
+              "name",
+              "description",
+              "parameters"
+            ],
+            "additionalProperties": false
+          }
+        }
+      },
+      "required": [
+        "role",
+        "content",
+        "timestamp"
+      ],
+      "additionalProperties": false
+    },
+    "completionsFunctionModel": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "api": {
+          "const": "openai-completions"
+        },
+        "provider": {
+          "type": "string"
+        },
+        "baseUrl": {
+          "type": "string"
+        },
+        "reasoning": {
+          "type": "boolean"
+        },
+        "input": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "text",
+              "image"
+            ]
+          }
+        },
+        "cost": {
+          "$ref": "#/$defs/wireCost"
+        },
+        "contextWindow": {
+          "type": "number"
+        },
+        "maxTokens": {
+          "type": "number"
+        },
+        "compat": {
+          "type": "object"
+        },
+        "thinkingLevelMap": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "api",
+        "provider",
+        "baseUrl",
+        "reasoning",
+        "input",
+        "cost",
+        "contextWindow",
+        "maxTokens"
       ],
       "additionalProperties": false
     }
