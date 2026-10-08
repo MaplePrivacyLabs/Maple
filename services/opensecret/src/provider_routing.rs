@@ -734,28 +734,16 @@ mod tests {
                 expected_source: RouteSelectionSource::StaticSplit,
             },
             Case {
-                name: "paid auto quick Tinfoil bucket",
+                name: "paid auto quick former Tinfoil bucket",
                 selector: AUTO_QUICK_MODEL_ID,
                 plan: ModelPlan::Paid,
                 bucket: 75,
                 continuum_available: true,
                 expected_access: true,
                 expected_public_model: GLM_5_3_FLASH_MODEL_ID,
-                expected_provider: "tinfoil",
-                expected_provider_model: GLM_5_3_FLASH_MODEL_ID,
+                expected_provider: "continuum",
+                expected_provider_model: "glm-5.3-flash",
                 expected_source: RouteSelectionSource::StaticSplit,
-            },
-            Case {
-                name: "paid auto quick without a Continuum proxy",
-                selector: AUTO_QUICK_MODEL_ID,
-                plan: ModelPlan::Paid,
-                bucket: 73,
-                continuum_available: false,
-                expected_access: true,
-                expected_public_model: GLM_5_3_FLASH_MODEL_ID,
-                expected_provider: "tinfoil",
-                expected_provider_model: GLM_5_3_FLASH_MODEL_ID,
-                expected_source: RouteSelectionSource::Fallback,
             },
             Case {
                 name: "paid auto powerful uses GLM weighted route",
@@ -876,15 +864,12 @@ mod tests {
                 "{}",
                 case.name
             );
-            let expected_bucket = if matches!(
-                case.expected_public_model,
-                GLM_5_3_MODEL_ID | GLM_5_3_FLASH_MODEL_ID
-            ) && case.continuum_available
-            {
-                Some(case.bucket)
-            } else {
-                None
-            };
+            let expected_bucket =
+                if case.expected_public_model == GLM_5_3_MODEL_ID && case.continuum_available {
+                    Some(case.bucket)
+                } else {
+                    None
+                };
             assert_eq!(selected.bucket, expected_bucket, "{}", case.name);
         }
     }
@@ -1212,12 +1197,19 @@ mod tests {
             );
 
             let limited = router
-                .select_active_completion_route(&proxy_router, &bucket_zero_intent(limited_model))
-                .expect("limited model retains its healthy Tinfoil route");
-            assert_eq!(limited.provider, ProviderId::Tinfoil);
-            assert_eq!(limited.public_model_id, limited_model);
-            assert_eq!(limited.provider_model_id, limited_model);
-            assert_eq!(limited.selection_source, RouteSelectionSource::Fallback);
+                .select_active_completion_route(&proxy_router, &bucket_zero_intent(limited_model));
+            if limited_model == GLM_5_3_FLASH_MODEL_ID {
+                assert!(matches!(
+                    limited,
+                    Err(ProviderRoutingError::CapacityUnavailable { .. })
+                ));
+            } else {
+                let limited = limited.expect("GLM retains its healthy Tinfoil route");
+                assert_eq!(limited.provider, ProviderId::Tinfoil);
+                assert_eq!(limited.public_model_id, limited_model);
+                assert_eq!(limited.provider_model_id, limited_model);
+                assert_eq!(limited.selection_source, RouteSelectionSource::Fallback);
+            }
 
             let sibling = router
                 .select_active_completion_route(&proxy_router, &bucket_zero_intent(sibling_model))
@@ -1230,7 +1222,7 @@ mod tests {
     }
 
     #[test]
-    fn flash_tinfoil_429_fails_over_to_continuum() {
+    fn retired_flash_tinfoil_health_does_not_affect_continuum() {
         let router = ProviderRouter::default();
         let proxy_router = proxy_router_with_both_providers();
         router.observe_attempt_terminal(
@@ -1256,26 +1248,21 @@ mod tests {
                     WorkloadClass::Interactive,
                 ),
             )
-            .expect("Flash capacity failover");
+            .expect("sole Flash route");
         assert_eq!(selected.provider, ProviderId::Continuum);
         assert_eq!(selected.provider_model_id, "glm-5.3-flash");
-        assert_eq!(selected.selection_source, RouteSelectionSource::Fallback);
+        assert_eq!(selected.selection_source, RouteSelectionSource::StaticSplit);
     }
 
     #[test]
-    fn flash_standard_failure_threshold_selects_the_alternate_in_both_directions() {
+    fn glm_standard_failure_threshold_selects_the_alternate_in_both_directions() {
         let proxy_router = proxy_router_with_both_providers();
         for (bucket, provider, provider_model, alternate) in [
-            (
-                0,
-                ProviderId::Continuum,
-                "glm-5.3-flash",
-                ProviderId::Tinfoil,
-            ),
+            (0, ProviderId::Continuum, "glm-5.3", ProviderId::Tinfoil),
             (
                 75,
                 ProviderId::Tinfoil,
-                GLM_5_3_FLASH_MODEL_ID,
+                GLM_5_3_MODEL_ID,
                 ProviderId::Continuum,
             ),
         ] {
@@ -1289,25 +1276,25 @@ mod tests {
                     InferenceSurface::ChatCompletions,
                     InferenceSurface::Responses,
                 ] {
-                    for selector in [GLM_5_3_FLASH_MODEL_ID, AUTO_QUICK_MODEL_ID] {
+                    for selector in [GLM_5_3_MODEL_ID, AUTO_POWERFUL_MODEL_ID] {
                         let router = ProviderRouter::default();
                         let intent = InferenceIntent::new(
                             uuid_for_bucket(bucket),
                             selector,
-                            GLM_5_3_FLASH_MODEL_ID,
+                            GLM_5_3_MODEL_ID,
                             ModelPlan::Paid,
                             surface,
                             WorkloadClass::Interactive,
                         );
                         let pinned = router
                             .select_active_completion_route(&proxy_router, &intent)
-                            .expect("healthy Flash route");
+                            .expect("healthy GLM route");
                         assert_eq!(pinned.provider, provider);
                         for observed_failures in 1..=3 {
                             router.observe_attempt_terminal(
                                 &route_failure_terminal_with_kind(
                                     provider,
-                                    GLM_5_3_FLASH_MODEL_ID,
+                                    GLM_5_3_MODEL_ID,
                                     provider_model,
                                     kind,
                                 ),
@@ -1315,7 +1302,7 @@ mod tests {
                             );
                             let selected = router
                                 .select_active_completion_route(&proxy_router, &intent)
-                                .expect("a healthy Flash route remains");
+                                .expect("a healthy GLM route remains");
                             let expected = if observed_failures < 3 {
                                 provider
                             } else {
@@ -1323,8 +1310,8 @@ mod tests {
                             };
                             assert_eq!(selected.provider, expected,
                                 "{provider:?} {kind:?} {surface:?} {selector} failure {observed_failures}");
-                            assert_eq!(selected.public_model_id, GLM_5_3_FLASH_MODEL_ID);
-                            assert_eq!(selected.response_model_id, GLM_5_3_FLASH_MODEL_ID);
+                            assert_eq!(selected.public_model_id, GLM_5_3_MODEL_ID);
+                            assert_eq!(selected.response_model_id, GLM_5_3_MODEL_ID);
                             if observed_failures == 3 {
                                 assert_eq!(
                                     selected.selection_source,
@@ -1378,6 +1365,11 @@ mod tests {
         for (provider, public_model, provider_model) in [
             (ProviderId::Tinfoil, KIMI_K3_MODEL_ID, KIMI_K3_MODEL_ID),
             (ProviderId::Tinfoil, QUICK_MODEL_ID, QUICK_MODEL_ID),
+            (
+                ProviderId::Continuum,
+                GLM_5_3_FLASH_MODEL_ID,
+                "glm-5.3-flash",
+            ),
         ] {
             let router = ProviderRouter::default();
             router.observe_attempt_terminal(
@@ -1441,7 +1433,7 @@ mod tests {
     }
 
     #[test]
-    fn glm_flash_weights_preserve_provider_mapping_and_public_identity() {
+    fn glm_flash_continuum_only_preserves_provider_mapping_and_public_identity() {
         let router = ProviderRouter::default();
         let proxies = proxy_router_with_both_providers();
         let targets = ModelAliasTargets::for_plan(ModelPlan::Paid);
@@ -1456,11 +1448,6 @@ mod tests {
                     let mut request = intent(selector, targets.resolve(selector));
                     request.surface = surface;
                     request.account_uuid = uuid_for_bucket(bucket);
-                    let expected = if bucket < 75 {
-                        ProviderId::Continuum
-                    } else {
-                        ProviderId::Tinfoil
-                    };
                     let selected = router
                         .select_active_completion_route(&proxies, &request)
                         .expect("Flash route");
@@ -1469,43 +1456,36 @@ mod tests {
                         ProviderId::Tinfoil => tinfoil_count += 1,
                     }
                     assert_eq!(
-                        selected.provider, expected,
+                        selected.provider,
+                        ProviderId::Continuum,
                         "{surface:?} {selector} bucket {bucket}"
                     );
                     assert_eq!(selected.public_model_id, GLM_5_3_FLASH_MODEL_ID);
                     assert_eq!(selected.response_model_id, GLM_5_3_FLASH_MODEL_ID);
-                    assert_eq!(
-                        selected.provider_model_id,
-                        match expected {
-                            ProviderId::Continuum => "glm-5.3-flash",
-                            ProviderId::Tinfoil => GLM_5_3_FLASH_MODEL_ID,
-                        }
-                    );
-                    assert_eq!(selected.bucket, Some(bucket));
+                    assert_eq!(selected.provider_model_id, "glm-5.3-flash");
+                    assert_eq!(selected.bucket, None);
                     assert_eq!(selected.selection_source, RouteSelectionSource::StaticSplit);
                 }
-                assert_eq!((continuum_count, tinfoil_count), (75, 25));
+                assert_eq!((continuum_count, tinfoil_count), (100, 0));
             }
         }
     }
 
     #[test]
-    fn glm_flash_falls_back_when_continuum_is_not_configured() {
+    fn glm_flash_has_no_route_when_continuum_is_not_configured() {
         let router = ProviderRouter::default();
         let proxies = ProxyRouter::new(
             "https://api.openai.com".to_string(),
             Some("synthetic-openai-key".to_string()),
             "http://tinfoil.example.com".to_string(),
         );
-        let selected = router
+        let error = router
             .select_active_completion_route(
                 &proxies,
                 &intent(GLM_5_3_FLASH_MODEL_ID, GLM_5_3_FLASH_MODEL_ID),
             )
-            .expect("configured Tinfoil fallback");
-        assert_eq!(selected.provider, ProviderId::Tinfoil);
-        assert_eq!(selected.selection_source, RouteSelectionSource::Fallback);
-        assert_eq!(selected.proxy.api_key, None);
+            .expect_err("retired Tinfoil Flash must not be selected");
+        assert!(matches!(error, ProviderRoutingError::NoEligibleRoute(_)));
     }
 
     #[test]
@@ -1524,7 +1504,7 @@ mod tests {
     }
 
     #[test]
-    fn test_router_v2_glm_flash_uses_weighted_continuum_and_tinfoil_routes() {
+    fn test_router_v2_glm_flash_uses_only_continuum() {
         let router = ProviderRouter::default();
         let proxy_router = proxy_router_with_both_providers();
 
@@ -1561,7 +1541,7 @@ mod tests {
         let router = ProviderRouter::default();
         let proxy_router = proxy_router_with_both_providers();
 
-        for model_id in ["kimi-k3", "deepseek-v4-1-flash", "glm-5-3-flash"] {
+        for model_id in ["kimi-k3", "deepseek-v4-1-flash"] {
             let mut request = intent(model_id, model_id);
             request.account_uuid = uuid_for_bucket(75);
             let selected = router
@@ -1572,14 +1552,7 @@ mod tests {
             assert_eq!(selected.public_model_id, model_id);
             assert_eq!(selected.provider_model_id, model_id);
             assert_eq!(selected.response_model_id, model_id);
-            assert_eq!(
-                selected.bucket,
-                if model_id == GLM_5_3_FLASH_MODEL_ID {
-                    Some(75)
-                } else {
-                    None
-                }
-            );
+            assert_eq!(selected.bucket, None);
         }
     }
 
@@ -1768,7 +1741,9 @@ mod tests {
         );
         assert_eq!(
             healthy[GLM_5_3_FLASH_MODEL_ID],
-            ModelAvailability::Available(ConfiguredProviders::all())
+            ModelAvailability::Available(
+                ConfiguredProviders::none().with_provider(ProviderId::Continuum)
+            )
         );
         assert_eq!(
             healthy[GLM_5_3_MODEL_ID],
@@ -1783,12 +1758,6 @@ mod tests {
             ProviderId::Tinfoil,
             DEEPSEEK_V4_1_FLASH_MODEL_ID,
             DEEPSEEK_V4_1_FLASH_MODEL_ID,
-        );
-        open_route_with_transport_failures(
-            &router,
-            ProviderId::Tinfoil,
-            GLM_5_3_FLASH_MODEL_ID,
-            GLM_5_3_FLASH_MODEL_ID,
         );
         open_route_with_transport_failures(
             &router,
@@ -1819,7 +1788,7 @@ mod tests {
         ));
 
         // A Continuum GLM 429 opens only that model's capacity pool:
-        // GLM keeps its Tinfoil route, while Flash retains both providers.
+        // GLM keeps its Tinfoil route, while Flash retains its Continuum route.
         let router = ProviderRouter::default();
         open_route_with_capacity_failure(
             &router,
@@ -1838,7 +1807,9 @@ mod tests {
         );
         assert_eq!(
             after_429[GLM_5_3_FLASH_MODEL_ID],
-            ModelAvailability::Available(ConfiguredProviders::all())
+            ModelAvailability::Available(
+                ConfiguredProviders::none().with_provider(ProviderId::Continuum)
+            )
         );
 
         // A 503 on the remaining Tinfoil GLM route leaves GLM fully unavailable
@@ -1873,14 +1844,12 @@ mod tests {
             .model_availability(&tinfoil_only, &[GLM_5_3_FLASH_MODEL_ID, GLM_5_3_MODEL_ID]);
         assert_eq!(
             without_continuum[GLM_5_3_FLASH_MODEL_ID],
-            ModelAvailability::Available(
-                ConfiguredProviders::none().with_provider(ProviderId::Tinfoil)
-            )
+            ModelAvailability::NotConfigured
         );
     }
 
     #[test]
-    fn auto_quick_uses_remaining_flash_route_before_deepseek_then_rejects_all_open_routes() {
+    fn auto_quick_uses_continuum_flash_then_deepseek_then_rejects_all_open_routes() {
         use crate::inference::auto_model::{
             select_auto_model, AutoModelError, AutoModelReason, AutoModelRequirements,
             AutoModelSelectionInput, PromptTokenEstimate,
@@ -1892,22 +1861,13 @@ mod tests {
             InferenceSurface::ChatCompletions,
             InferenceSurface::Responses,
         ] {
-            for (failed_provider, failed_model, remaining_provider, remaining_model, bucket) in [
-                (
-                    ProviderId::Tinfoil,
-                    GLM_5_3_FLASH_MODEL_ID,
-                    ProviderId::Continuum,
-                    "glm-5.3-flash",
-                    75,
-                ),
-                (
-                    ProviderId::Continuum,
-                    "glm-5.3-flash",
-                    ProviderId::Tinfoil,
-                    GLM_5_3_FLASH_MODEL_ID,
-                    0,
-                ),
-            ] {
+            for (failed_provider, failed_model, remaining_provider, remaining_model, bucket) in [(
+                ProviderId::Tinfoil,
+                GLM_5_3_FLASH_MODEL_ID,
+                ProviderId::Continuum,
+                "glm-5.3-flash",
+                75,
+            )] {
                 let router = ProviderRouter::default();
                 let request_for = |selector, model| {
                     let mut request = intent(selector, model);
@@ -1941,8 +1901,8 @@ mod tests {
                     503,
                     60,
                 );
-                // DeepSeek is healthy, but GLM remains the primary while either
-                // same-model provider can accept a request.
+                // DeepSeek is healthy, but GLM remains the primary while its sole
+                // Continuum provider can accept a request.
                 for sticky in [None, Some(GLM_5_3_FLASH_MODEL_ID)] {
                     let decision = choose(sticky).expect("Flash primary remains eligible");
                     assert_eq!(decision.chosen_model_id, GLM_5_3_FLASH_MODEL_ID);
@@ -1957,7 +1917,7 @@ mod tests {
                     assert_eq!(selected.provider_model_id, remaining_model);
                     assert_eq!(selected.public_model_id, GLM_5_3_FLASH_MODEL_ID);
                     assert_eq!(selected.response_model_id, GLM_5_3_FLASH_MODEL_ID);
-                    assert_eq!(selected.selection_source, RouteSelectionSource::Fallback);
+                    assert_eq!(selected.selection_source, RouteSelectionSource::StaticSplit);
                 }
                 open_route_with_capacity_failure(
                     &router,

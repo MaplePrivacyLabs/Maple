@@ -9,7 +9,7 @@ use crate::model_config::{
     QUICK_MODEL_ID,
 };
 
-pub(crate) const SHADOW_ROUTING_POLICY_VERSION: &str = "routing-v2-weighted-v5";
+pub(crate) const SHADOW_ROUTING_POLICY_VERSION: &str = "routing-v2-weighted-v6";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) enum ProviderId {
@@ -149,23 +149,14 @@ const GLM_5_3_ROUTES: &[ModelRouteSpec] = &[
     },
 ];
 
-// Use the same healthy 75% Continuum / 25% Tinfoil allocation as GLM 5.3.
-const GLM_5_3_FLASH_ROUTES: &[ModelRouteSpec] = &[
-    ModelRouteSpec {
-        provider: ProviderId::Continuum,
-        provider_model_id: "glm-5.3-flash",
-        response_model_id: GLM_5_3_FLASH_MODEL_ID,
-        weight: 700,
-        enabled: true,
-    },
-    ModelRouteSpec {
-        provider: ProviderId::Tinfoil,
-        provider_model_id: GLM_5_3_FLASH_MODEL_ID,
-        response_model_id: GLM_5_3_FLASH_MODEL_ID,
-        weight: 100,
-        enabled: true,
-    },
-];
+// GLM 5.3 Flash is served exclusively by Continuum (PrivateMode).
+const GLM_5_3_FLASH_ROUTES: &[ModelRouteSpec] = &[ModelRouteSpec {
+    provider: ProviderId::Continuum,
+    provider_model_id: "glm-5.3-flash",
+    response_model_id: GLM_5_3_FLASH_MODEL_ID,
+    weight: 700,
+    enabled: true,
+}];
 
 const DEEPSEEK_V4_1_FLASH_ROUTES: &[ModelRouteSpec] = &[ModelRouteSpec {
     provider: ProviderId::Tinfoil,
@@ -337,12 +328,6 @@ mod tests {
                     GLM_5_3_FLASH_MODEL_ID
                 ),
                 (
-                    GLM_5_3_FLASH_MODEL_ID,
-                    ProviderId::Tinfoil,
-                    GLM_5_3_FLASH_MODEL_ID,
-                    GLM_5_3_FLASH_MODEL_ID
-                ),
-                (
                     DEEPSEEK_V4_1_FLASH_MODEL_ID,
                     ProviderId::Tinfoil,
                     DEEPSEEK_V4_1_FLASH_MODEL_ID,
@@ -365,30 +350,13 @@ mod tests {
     }
 
     #[test]
-    fn glm_flash_uses_a_seventy_five_percent_continuum_split() {
+    fn glm_flash_has_only_the_continuum_route() {
         let flash = PROVIDER_REGISTRY
             .completion_model(GLM_5_3_FLASH_MODEL_ID)
             .expect("Flash model");
-        assert_eq!(
-            flash
-                .routes
-                .iter()
-                .map(|route| (route.provider, route.weight))
-                .collect::<Vec<_>>(),
-            vec![(ProviderId::Continuum, 700), (ProviderId::Tinfoil, 100)]
-        );
-
-        let effective_weight = |provider| {
-            let route = flash
-                .routes
-                .iter()
-                .find(|route| route.provider == provider)
-                .unwrap();
-            u32::from(PROVIDER_REGISTRY.provider(provider).unwrap().weight)
-                * u32::from(route.weight)
-        };
-        let tinfoil = effective_weight(ProviderId::Tinfoil);
-        let continuum = effective_weight(ProviderId::Continuum);
-        assert_eq!(continuum * 100 / (tinfoil + continuum), 75);
+        assert_eq!(flash.routes.len(), 1);
+        assert_eq!(flash.routes[0].provider, ProviderId::Continuum);
+        assert_eq!(flash.routes[0].provider_model_id, "glm-5.3-flash");
+        assert!(flash.routes[0].enabled);
     }
 }

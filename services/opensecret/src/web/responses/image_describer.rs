@@ -513,7 +513,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn flash_accepts_both_weighted_providers_without_model_fallback() {
+    async fn flash_uses_continuum_for_all_buckets_without_model_fallback() {
         use crate::{
             inference::{InferenceIntent, InferenceSurface, WorkloadClass},
             model_config::ModelPlan,
@@ -539,7 +539,7 @@ mod tests {
             let route = router
                 .select_active_completion_route(&proxies, &intent)
                 .expect("ordinary image-helper route");
-            let expected = if bucket < 75 { "continuum" } else { "tinfoil" };
+            let expected = "continuum";
             assert_eq!(route.provider.as_str(), expected);
             let mut executor = FakeExecutor::new(vec![PlannedAttempt::Return(Ok(
                 successful_response("A red square."),
@@ -551,7 +551,7 @@ mod tests {
                 input(),
             )
             .await
-            .expect("either routed provider can describe the image");
+            .expect("Continuum can describe the image");
             assert_eq!(outcome.candidate, candidate);
             assert_eq!(outcome.provider, expected);
             assert_eq!(outcome.attempt_count, 1);
