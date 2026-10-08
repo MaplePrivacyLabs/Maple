@@ -35,9 +35,10 @@ static OVERFLOW: LazyLock<RegexSet> = LazyLock::new(|| {
     .expect("overflow patterns compile")
 });
 
-/// Rate limits can mention tokens without being overflow.
+/// Rate limits can mention tokens without being overflow. Errors start with the HTTP
+/// status when there is one.
 static NOT_OVERFLOW: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)rate limit|too many requests|^throttling|^service unavailable")
+    Regex::new(r"(?i)rate.?limit|too many requests|throttl|service.?unavailable|^429\b")
         .expect("pattern compiles")
 });
 
@@ -128,10 +129,19 @@ mod tests {
         ] {
             assert!(is_context_overflow(&failed(error), None), "{error}");
         }
-        assert!(!is_context_overflow(
-            &failed("ThrottlingException: Too many tokens, rate limit"),
+        assert!(is_context_overflow(
+            &failed("400 Too many tokens: 140000 > 128000"),
             None
         ));
+        for throttled in [
+            "ThrottlingException: Too many tokens, rate limit",
+            "429 Too many tokens, please wait before trying again.",
+        ] {
+            assert!(
+                !is_context_overflow(&failed(throttled), None),
+                "{throttled}"
+            );
+        }
         assert!(!is_context_overflow(&failed("invalid api key"), None));
     }
 

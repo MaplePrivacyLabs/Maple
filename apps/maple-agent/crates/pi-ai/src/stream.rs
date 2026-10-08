@@ -319,6 +319,19 @@ impl AssistantMessageBuilder {
         index
     }
 
+    /// Set the id or name of the tool call at `index` when it arrives after the first
+    /// fragment. Its `ToolCallEnd` and the final message carry them.
+    pub fn set_tool_call_identity(&mut self, index: usize, id: Option<&str>, name: Option<&str>) {
+        if let Some(AssistantContent::ToolCall(call)) = self.partial.content.get_mut(index) {
+            if let Some(id) = id {
+                call.id = id.to_string();
+            }
+            if let Some(name) = name {
+                call.name = name.to_string();
+            }
+        }
+    }
+
     /// Append argument JSON to the tool call at `index`.
     pub fn tool_call_delta(&mut self, index: usize, delta: &str) {
         if delta.is_empty() {

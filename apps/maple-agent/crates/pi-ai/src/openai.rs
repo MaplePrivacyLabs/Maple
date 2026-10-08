@@ -4,7 +4,7 @@
 //! [`HttpTransport`] and turns the server-sent events into an assistant stream. The
 //! transport is the host's: a plain HTTP client, an in-process proxy or a test double.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -20,8 +20,8 @@ use crate::transcript::{
     collapse_system_messages, current_tools, render_system_message_update, system_message_text,
 };
 use crate::types::{
-    Content, Context, MaxTokensField, Message, Model, StopReason, ThinkingLevel, ToolResultMessage,
-    Usage,
+    AssistantContent, Content, Context, MaxTokensField, Message, Model, StopReason, ThinkingLevel,
+    ToolResultMessage, Usage,
 };
 
 pub const API: &str = "openai-completions";
@@ -146,19 +146,24 @@ fn request_headers(options: &StreamOptions) -> Vec<(String, String)> {
     headers
 }
 
+/// How much of an error body is kept for the message.
+const ERROR_TEXT_LIMIT: usize = 4_096;
+
 async fn read_error_body(mut body: BoxStream<'static, Result<Bytes, String>>) -> String {
-    const LIMIT: usize = 4_096;
     let mut bytes = Vec::new();
     while let Some(Ok(chunk)) = body.next().await {
         bytes.extend_from_slice(&chunk);
-        if bytes.len() >= LIMIT {
-            bytes.truncate(LIMIT);
+        if bytes.len() >= ERROR_TEXT_LIMIT {
+            bytes.truncate(ERROR_TEXT_LIMIT);
             break;
         }
     }
-    let text = String::from_utf8_lossy(&bytes).trim().to_string();
-    // Prefer the provider's own message when the body is the usual error object.
-    serde_json::from_str::<Value>(&text)
+    error_detail(String::from_utf8_lossy(&bytes).trim())
+}
+
+/// The provider's own message when `text` is the usual error object, otherwise `text`.
+fn error_detail(text: &str) -> String {
+    serde_json::from_str::<Value>(text)
         .ok()
         .and_then(|value| {
             value
@@ -167,7 +172,7 @@ async fn read_error_body(mut body: BoxStream<'static, Result<Bytes, String>>) ->
                 .and_then(Value::as_str)
                 .map(str::to_string)
         })
-        .unwrap_or(text)
+        .unwrap_or_else(|| text.to_string())
 }
 
 /// Build the Chat Completions request body for `context`.
@@ -409,6 +414,22 @@ fn user_content(model: &Model, content: &[Content]) -> Value {
     Value::Array(parts)
 }
 
+/// The message for a body that ends with neither `[DONE]` nor a finish reason.
+const STREAM_CUT_OFF: &str = "Provider stream ended without a finish reason";
+
+/// What a streamed completion has reported besides content.
+#[derive(Default)]
+struct StreamState {
+    /// The builder index of each tool call, by the provider's index.
+    tool_blocks: HashMap<u64, usize>,
+    /// The latest tool call, for servers that leave out `index`.
+    last_tool: Option<usize>,
+    /// Tool calls with a made-up id because the server had not sent one yet.
+    made_up_ids: HashSet<usize>,
+    finish_reason: Option<String>,
+    usage: Option<Usage>,
+}
+
 /// Read the server-sent events of a streamed completion into `builder`.
 async fn read_events(
     model: &Model,
@@ -418,10 +439,11 @@ async fn read_events(
 ) {
     let mut buffer = String::new();
     let mut decoder = Utf8Decoder::default();
-    let mut tool_blocks: HashMap<u64, usize> = HashMap::new();
-    let mut finish_reason: Option<String> = None;
-    let mut usage: Option<Usage> = None;
-    loop {
+    let mut state = StreamState::default();
+    // Lines that are not server-sent events, such as a JSON error body.
+    let mut stray = String::new();
+    let mut ended = false;
+    while !ended {
         let chunk = tokio::select! {
             _ = cancel.cancelled() => {
                 builder.fail(StopReason::Aborted, ABORTED);
@@ -429,24 +451,30 @@ async fn read_events(
             }
             chunk = body.next() => chunk,
         };
-        let chunk = match chunk {
-            None => break,
+        match chunk {
+            None => {
+                ended = true;
+                // The last line may come without its newline.
+                buffer.push('\n');
+            }
             Some(Err(error)) => {
                 builder.fail(StopReason::Error, error);
                 return;
             }
-            Some(Ok(chunk)) => chunk,
-        };
-        buffer.push_str(&decoder.decode(&chunk));
+            Some(Ok(chunk)) => buffer.push_str(&decoder.decode(&chunk)),
+        }
         while let Some(end) = buffer.find('\n') {
             let line = buffer[..end].trim_end_matches('\r').to_string();
             buffer.drain(..=end);
             let Some(data) = line.strip_prefix("data:") else {
+                if !is_event_field(&line) {
+                    push_capped(&mut stray, &line);
+                }
                 continue;
             };
             let data = data.trim();
             if data == "[DONE]" {
-                return finish(model, builder, finish_reason, usage);
+                return finish(model, builder, state.finish_reason, state.usage);
             }
             let Ok(event) = serde_json::from_str::<Value>(data) else {
                 continue;
@@ -460,41 +488,67 @@ async fn read_events(
                 builder.fail(StopReason::Error, message);
                 return;
             }
-            apply_chunk(
-                &event,
-                &mut builder,
-                &mut tool_blocks,
-                &mut finish_reason,
-                &mut usage,
-            );
+            apply_chunk(&event, &mut builder, &mut state);
         }
     }
-    finish(model, builder, finish_reason, usage);
+    if state.finish_reason.is_none() {
+        // The response was cut off. Its tool calls could carry half their arguments.
+        let detail = error_detail(stray.trim());
+        let error = if detail.is_empty() {
+            STREAM_CUT_OFF.to_string()
+        } else {
+            format!("{STREAM_CUT_OFF}: {detail}")
+        };
+        builder.fail(StopReason::Error, error);
+        return;
+    }
+    finish(model, builder, state.finish_reason, state.usage);
 }
 
-fn apply_chunk(
-    event: &Value,
-    builder: &mut AssistantMessageBuilder,
-    tool_blocks: &mut HashMap<u64, usize>,
-    finish_reason: &mut Option<String>,
-    usage: &mut Option<Usage>,
-) {
+/// Blank lines, comments and the server-sent event fields other than `data:`.
+fn is_event_field(line: &str) -> bool {
+    line.is_empty()
+        || line.starts_with(':')
+        || ["event:", "id:", "retry:"]
+            .iter()
+            .any(|field| line.starts_with(field))
+}
+
+fn push_capped(text: &mut String, line: &str) {
+    let mut end = ERROR_TEXT_LIMIT.saturating_sub(text.len()).min(line.len());
+    while !line.is_char_boundary(end) {
+        end -= 1;
+    }
+    if end > 0 {
+        text.push_str(&line[..end]);
+        text.push('\n');
+    }
+}
+
+fn apply_chunk(event: &Value, builder: &mut AssistantMessageBuilder, state: &mut StreamState) {
     if builder.partial().response_id.is_none()
         && let Some(id) = event.get("id").and_then(Value::as_str)
     {
         builder.set_response_id(id);
     }
     if let Some(reported) = event.get("usage").filter(|usage| usage.is_object()) {
-        *usage = Some(parse_usage(reported));
+        state.usage = Some(parse_usage(reported));
     }
     let Some(choice) = event.pointer("/choices/0") else {
         return;
     };
     if let Some(delta) = choice.get("delta") {
-        for field in ["reasoning_content", "reasoning"] {
-            if let Some(text) = delta.get(field).and_then(Value::as_str) {
-                builder.thinking_delta(text);
-            }
+        // Servers name the reasoning field differently, and some fill in two of them.
+        if let Some(text) = ["reasoning_content", "reasoning", "reasoning_text"]
+            .iter()
+            .find_map(|field| {
+                delta
+                    .get(*field)
+                    .and_then(Value::as_str)
+                    .filter(|text| !text.is_empty())
+            })
+        {
+            builder.thinking_delta(text);
         }
         if let Some(text) = delta.get("content").and_then(Value::as_str) {
             builder.text_delta(text);
@@ -505,31 +559,71 @@ fn apply_chunk(
             .into_iter()
             .flatten()
         {
-            let provider_index = call.get("index").and_then(Value::as_u64).unwrap_or(0);
-            let index = match tool_blocks.get(&provider_index) {
-                Some(index) => *index,
-                None => {
-                    let id = call
-                        .get("id")
-                        .and_then(Value::as_str)
-                        .map(str::to_string)
-                        .unwrap_or_else(|| format!("call_{provider_index}"));
-                    let name = call
-                        .pointer("/function/name")
-                        .and_then(Value::as_str)
-                        .unwrap_or_default();
-                    let index = builder.tool_call_start(id, name);
-                    tool_blocks.insert(provider_index, index);
-                    index
-                }
-            };
-            if let Some(arguments) = call.pointer("/function/arguments").and_then(Value::as_str) {
-                builder.tool_call_delta(index, arguments);
-            }
+            apply_tool_call_delta(call, builder, state);
         }
     }
     if let Some(reason) = choice.get("finish_reason").and_then(Value::as_str) {
-        *finish_reason = Some(reason.to_string());
+        state.finish_reason = Some(reason.to_string());
+    }
+}
+
+/// Add a tool-call fragment to its call. Fragments are matched by `index`. Servers that
+/// leave it out send each call's fragments together, so there a new id starts a new
+/// call. An id or name that comes after the first fragment is filled in.
+fn apply_tool_call_delta(
+    call: &Value,
+    builder: &mut AssistantMessageBuilder,
+    state: &mut StreamState,
+) {
+    let id = call
+        .get("id")
+        .and_then(Value::as_str)
+        .filter(|id| !id.is_empty());
+    let name = call
+        .pointer("/function/name")
+        .and_then(Value::as_str)
+        .filter(|name| !name.is_empty());
+    let provider_index = call.get("index").and_then(Value::as_u64);
+    let existing = match provider_index {
+        Some(provider_index) => state.tool_blocks.get(&provider_index).copied(),
+        None => state.last_tool.filter(|index| {
+            id.is_none_or(|id| {
+                state.made_up_ids.contains(index) || tool_call_id(builder, *index) == Some(id)
+            })
+        }),
+    };
+    let index = match existing {
+        Some(index) => {
+            let id = id.filter(|_| state.made_up_ids.remove(&index));
+            builder.set_tool_call_identity(index, id, name);
+            index
+        }
+        None => {
+            let made_up = id.is_none();
+            let id = id.map_or_else(
+                || format!("call_{}", builder.partial().content.len()),
+                str::to_string,
+            );
+            let index = builder.tool_call_start(id, name.unwrap_or_default());
+            if made_up {
+                state.made_up_ids.insert(index);
+            }
+            if let Some(provider_index) = provider_index {
+                state.tool_blocks.insert(provider_index, index);
+            }
+            index
+        }
+    };
+    state.last_tool = Some(index);
+    if let Some(arguments) = call.pointer("/function/arguments").and_then(Value::as_str) {
+        builder.tool_call_delta(index, arguments);
+    }
+}
+
+fn tool_call_id(builder: &AssistantMessageBuilder, index: usize) -> Option<&str> {
+    match builder.partial().content.get(index) {
+        Some(AssistantContent::ToolCall(call)) => Some(&call.id),
+        _ => None,
     }
 }
 
@@ -628,7 +722,8 @@ impl HttpTransport for ReqwestTransport {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{AssistantContent, AssistantMessage, SystemMessage, Tool, UserMessage};
+    use crate::overflow::is_retryable_error;
+    use crate::types::{AssistantMessage, SystemMessage, Tool, UserMessage};
     use std::sync::Mutex;
 
     /// Replies with canned SSE chunks and records each request.
@@ -784,6 +879,107 @@ mod tests {
             .result()
             .await;
         assert_eq!(message.stop_reason, StopReason::Length);
+        assert_eq!(message.text(), "ok");
+    }
+
+    #[tokio::test]
+    async fn a_body_that_ends_without_a_finish_reason_is_a_retryable_error() {
+        // Cut off in the middle of a tool call: its arguments must not run.
+        let cut_off = transport(
+            200,
+            vec![
+                "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"c1\",\"function\":{\"name\":\"write\",\"arguments\":\"{\\\"path\\\":\\\"a\"}}]}}]}\n\n",
+            ],
+        );
+        let message = OpenAiCompletions::new(cut_off)
+            .stream(&model(), Context::default(), StreamOptions::default())
+            .result()
+            .await;
+        assert_eq!(message.stop_reason, StopReason::Error);
+        assert_eq!(message.error_message.as_deref(), Some(STREAM_CUT_OFF));
+        assert!(is_retryable_error(&message));
+
+        // A success status with an error object instead of events.
+        let error_body = transport(200, vec!["{\"error\":{\"message\":\"Upstream gave up\"}}"]);
+        let message = OpenAiCompletions::new(error_body)
+            .stream(&model(), Context::default(), StreamOptions::default())
+            .result()
+            .await;
+        assert_eq!(
+            message.error_message.as_deref(),
+            Some("Provider stream ended without a finish reason: Upstream gave up")
+        );
+    }
+
+    async fn tool_calls_of(chunks: Vec<&'static str>) -> Vec<(String, String, Value)> {
+        let message = OpenAiCompletions::new(transport(200, chunks))
+            .stream(&model(), Context::default(), StreamOptions::default())
+            .result()
+            .await;
+        assert_eq!(
+            message.stop_reason,
+            StopReason::ToolUse,
+            "{:?}",
+            message.error_message
+        );
+        message
+            .tool_calls()
+            .map(|call| {
+                (
+                    call.id.clone(),
+                    call.name.clone(),
+                    Value::Object(call.arguments.clone()),
+                )
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn tool_call_fragments_without_an_index_are_told_apart_by_id() {
+        let calls = tool_calls_of(vec![
+            "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"id\":\"a\",\"function\":{\"name\":\"read\",\"arguments\":\"{\\\"pa\"}}]}}]}\n\n",
+            "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"function\":{\"arguments\":\"th\\\":\\\"x\\\"}\"}}]}}]}\n\n",
+            "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"id\":\"b\",\"function\":{\"name\":\"read\",\"arguments\":\"{\\\"path\\\":\\\"y\\\"}\"}}]},\"finish_reason\":\"tool_calls\"}]}\n\n",
+            // The last line may come without a newline.
+            "data: [DONE]",
+        ])
+        .await;
+        assert_eq!(
+            calls,
+            [
+                ("a".into(), "read".into(), json!({ "path": "x" })),
+                ("b".into(), "read".into(), json!({ "path": "y" })),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_late_name_or_id_is_filled_in() {
+        let calls = tool_calls_of(vec![
+            "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"{\\\"q\\\":\"}}]}}]}\n\n",
+            "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"c\",\"function\":{\"name\":\"grep\",\"arguments\":\"\\\"z\\\"}\"}}]},\"finish_reason\":\"tool_calls\"}]}\n\n",
+            "data: [DONE]\n\n",
+        ])
+        .await;
+        assert_eq!(calls, [("c".into(), "grep".into(), json!({ "q": "z" }))]);
+    }
+
+    #[tokio::test]
+    async fn reasoning_sent_in_two_fields_is_kept_once() {
+        let transport = transport(
+            200,
+            vec![
+                "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"plan\",\"reasoning\":\"plan\"}}]}\n\n",
+                "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n",
+            ],
+        );
+        let message = OpenAiCompletions::new(transport)
+            .stream(&model(), Context::default(), StreamOptions::default())
+            .result()
+            .await;
+        assert!(
+            matches!(&message.content[0], AssistantContent::Thinking(t) if t.thinking == "plan")
+        );
         assert_eq!(message.text(), "ok");
     }
 

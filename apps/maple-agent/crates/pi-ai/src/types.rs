@@ -583,9 +583,11 @@ impl Model {
             .unwrap_or_default()
     }
 
-    /// The provider's value for `level`, or `None` when reasoning stays off.
+    /// The provider's value for `level`, clamped to the levels this model accepts, or
+    /// `None` when reasoning stays off.
     pub fn provider_thinking_value(&self, level: ThinkingLevel) -> Option<String> {
-        if !self.reasoning || level == ThinkingLevel::Off {
+        let level = self.clamp_thinking_level(level);
+        if level == ThinkingLevel::Off {
             return None;
         }
         match self.thinking_levels.get(&level) {
@@ -683,6 +685,11 @@ mod tests {
                 ThinkingLevel::Medium,
                 ThinkingLevel::High
             ]
+        );
+        // A level the model does not accept is clamped, not sent as is.
+        assert_eq!(
+            model.provider_thinking_value(ThinkingLevel::Xhigh),
+            Some("high".into())
         );
         model.thinking_levels.insert(ThinkingLevel::Minimal, None);
         model

@@ -67,6 +67,24 @@ fn matches_type(value: &Value, kind: &str) -> bool {
     }
 }
 
+/// Whether `schema` accepts `null`: by type, enum, const or one of its `anyOf`/`oneOf`
+/// branches.
+fn accepts_null(schema: &Value) -> bool {
+    schema_types(schema).contains(&"null")
+        || schema.get("nullable") == Some(&Value::Bool(true))
+        || schema.get("const") == Some(&Value::Null)
+        || schema
+            .get("enum")
+            .and_then(Value::as_array)
+            .is_some_and(|values| values.contains(&Value::Null))
+        || ["anyOf", "oneOf"].iter().any(|key| {
+            schema
+                .get(*key)
+                .and_then(Value::as_array)
+                .is_some_and(|branches| branches.iter().any(accepts_null))
+        })
+}
+
 /// Drop `null` values of optional properties whose schema does not accept `null`.
 fn normalize_optional_nulls(value: &mut Value, schema: &Value) {
     let (Value::Object(map), Some(Value::Object(properties))) = (value, schema.get("properties"))
@@ -83,7 +101,7 @@ fn normalize_optional_nulls(value: &mut Value, schema: &Value) {
             && !required.contains(&key.as_str())
             && properties
                 .get(key)
-                .is_some_and(|property| !schema_types(property).contains(&"null")))
+                .is_some_and(|property| !accepts_null(property)))
     });
     for (key, value) in map.iter_mut() {
         if let Some(property) = properties.get(key) {
@@ -130,20 +148,30 @@ fn coerce_object(map: &mut Map<String, Value>, schema: &Value) {
     }
 }
 
+/// Integers above this are not exact as `f64`.
+const MAX_EXACT_FLOAT_INTEGER: f64 = 9_007_199_254_740_992.0;
+
+/// Integer text as an exact JSON integer.
+fn exact_integer(text: &str) -> Option<Value> {
+    text.parse::<i64>()
+        .map(Value::from)
+        .or_else(|_| text.parse::<u64>().map(Value::from))
+        .ok()
+}
+
 /// A lossless conversion of a primitive to `kind`.
 fn convert(value: &Value, kind: &str) -> Option<Value> {
     match (kind, value) {
-        ("number", Value::String(text)) => {
+        ("number", Value::String(text)) => exact_integer(text.trim()).or_else(|| {
             let parsed: f64 = text.trim().parse().ok()?;
-            if !parsed.is_finite() {
-                return None;
-            }
-            Some(number_value(parsed))
-        }
-        ("integer", Value::String(text)) => {
+            parsed.is_finite().then(|| number_value(parsed))
+        }),
+        ("integer", Value::String(text)) => exact_integer(text.trim()).or_else(|| {
+            // Forms like "1e3" or "10.0", only while the float holds the value exactly.
             let parsed: f64 = text.trim().parse().ok()?;
-            (parsed.fract() == 0.0 && parsed.is_finite()).then(|| number_value(parsed))
-        }
+            (parsed.fract() == 0.0 && parsed.abs() < MAX_EXACT_FLOAT_INTEGER)
+                .then(|| number_value(parsed))
+        }),
         ("integer", Value::Number(number)) => {
             let parsed = number.as_f64()?;
             (parsed.fract() == 0.0).then(|| number_value(parsed))
@@ -231,6 +259,47 @@ mod tests {
             .unwrap();
         assert_eq!(args, json!({ "path": "a" }));
         assert!(validate_tool_arguments(&tool(), &call(json!({ "path": null }))).is_err());
+    }
+
+    #[test]
+    fn nulls_the_schema_allows_are_kept() {
+        let tool = Tool::new(
+            "assign",
+            "Assign an issue",
+            json!({
+                "type": "object",
+                "properties": {
+                    "assignee": { "anyOf": [{ "type": "string" }, { "type": "null" }] },
+                    "label": { "type": "string" },
+                },
+            }),
+        );
+        let args =
+            validate_tool_arguments(&tool, &call(json!({ "assignee": null, "label": null })))
+                .unwrap();
+        assert_eq!(args, json!({ "assignee": null }));
+    }
+
+    #[test]
+    fn large_integers_keep_every_digit() {
+        let tool = Tool::new(
+            "fetch",
+            "Fetch a record",
+            json!({
+                "type": "object",
+                "properties": { "id": { "type": "integer" }, "size": { "type": "number" } },
+            }),
+        );
+        let args = validate_tool_arguments(
+            &tool,
+            &call(json!({ "id": "9007199254740993", "size": "18446744073709551615" })),
+        )
+        .unwrap();
+        assert_eq!(
+            args,
+            json!({ "id": 9_007_199_254_740_993_i64, "size": u64::MAX })
+        );
+        assert!(validate_tool_arguments(&tool, &call(json!({ "id": "1e300" }))).is_err());
     }
 
     #[test]
