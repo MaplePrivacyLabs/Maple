@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useOpenSecret } from "@mapleai/sdk";
 import { isTauri } from "@/utils/platform";
 import { listen } from "@tauri-apps/api/event";
+import { getCurrent } from "@tauri-apps/plugin-deep-link";
 import { getSafeInternalRedirect } from "@/utils/internalRedirect";
 import {
   authorizeNativeOAuthCallback,
@@ -17,9 +18,59 @@ import {
   type MapleAppVariant
 } from "@/config/mapleAppVariant";
 
-// For direct deep link handling, we'll listen to our custom event
-// If we had the types installed, we would use:
-// import { onOpenUrl } from '@tauri-apps/plugin-deep-link';
+// Rust forwards each deep link as a "deep-link-received" event. A link that
+// launches the app arrives before this component is listening, so that event
+// is dropped; the deep-link plugin keeps the launch URL, and we read it with
+// getCurrent() once the listener is attached.
+//
+// getCurrent() keeps returning that URL for the whole app session, and
+// handling a link reloads the page, so remember what's been handled. Auth
+// links carry a one-time grant, which is blanked before anything is stored.
+const HANDLED_DEEP_LINKS_KEY = "maple.handledDeepLinks";
+const MAX_HANDLED_DEEP_LINKS = 20;
+const deepLinksHandledThisPage = new Set<string>();
+
+function deepLinkKey(url: string): string {
+  try {
+    const parsed = new URL(url);
+    if (parsed.searchParams.has("handoff_grant")) {
+      parsed.searchParams.set("handoff_grant", "redacted");
+    }
+    return parsed.toString();
+  } catch {
+    return url;
+  }
+}
+
+function readHandledDeepLinks(): string[] {
+  try {
+    const parsed: unknown = JSON.parse(sessionStorage.getItem(HANDLED_DEEP_LINKS_KEY) ?? "[]");
+    return Array.isArray(parsed) ? parsed.filter((k): k is string => typeof k === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
+function rememberHandledDeepLink(url: string): void {
+  const key = deepLinkKey(url);
+  deepLinksHandledThisPage.add(key);
+  try {
+    const handled = readHandledDeepLinks().filter((k) => k !== key);
+    handled.push(key);
+    sessionStorage.setItem(
+      HANDLED_DEEP_LINKS_KEY,
+      JSON.stringify(handled.slice(-MAX_HANDLED_DEEP_LINKS))
+    );
+  } catch {
+    // Without storage, a reload may see the launch link again. The handlers
+    // below still reject replays (auth needs a pending attempt).
+  }
+}
+
+function wasDeepLinkHandled(url: string): boolean {
+  const key = deepLinkKey(url);
+  return deepLinksHandledThisPage.has(key) || readHandledDeepLinks().includes(key);
+}
 
 export function DeepLinkHandler({
   tauri = isTauri(),
@@ -71,10 +122,8 @@ export function DeepLinkHandler({
         if (tauri) {
           console.log("[Deep Link] Setting up handler for Tauri app");
 
-          // Listen for the custom event we emit from Rust
-          unlisten = await listen<string>("deep-link-received", async (event) => {
+          const handleDeepLink = async (url: string) => {
             if (disposed) return;
-            const url = event.payload;
             let isAuthenticationCallback = false;
             console.log("[Deep Link] Received callback");
 
@@ -212,11 +261,29 @@ export function DeepLinkHandler({
                 console.error("[Deep Link] Failed to process deep link", error);
               }
             }
+          };
+
+          // Listen for the custom event we emit from Rust
+          unlisten = await listen<string>("deep-link-received", async (event) => {
+            if (disposed) return;
+            rememberHandledDeepLink(event.payload);
+            await handleDeepLink(event.payload);
           });
 
           if (disposed) {
             unlisten();
             return;
+          }
+
+          const launchUrls = await getCurrent().catch((error: unknown) => {
+            console.warn("[Deep Link] Could not read the launch link:", error);
+            return null;
+          });
+          for (const url of launchUrls ?? []) {
+            if (disposed) return;
+            if (wasDeepLinkHandled(url)) continue;
+            rememberHandledDeepLink(url);
+            await handleDeepLink(url);
           }
 
           console.log("[Deep Link] Handler setup complete");
