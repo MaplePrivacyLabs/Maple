@@ -1,0 +1,15 @@
+[package]
+name = "pi-agent-core"
+description = "A stateful agent loop with tools, hooks and message queues, after Pi's pi-agent-core package"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+pi-ai = { path = "../pi-ai", default-features = false }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+futures-util = { workspace = true }
+async-trait = { workspace = true }

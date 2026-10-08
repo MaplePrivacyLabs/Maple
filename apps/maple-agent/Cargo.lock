@@ -7214,6 +7214,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "pi-agent-core"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "futures-util",
+ "pi-ai",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-util",
+]
+
+[[package]]
 name = "pi-ai"
 version = "0.1.0"
 dependencies = [
