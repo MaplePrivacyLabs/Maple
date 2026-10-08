@@ -1,0 +1,16 @@
+{
+  "dsl": 1,
+  "id": "agent/basic-text-turn",
+  "layer": "agent",
+  "covers": ["packages/agent/src/agent.ts", "packages/agent/src/agent-loop.ts"],
+  "model": { "ref": "faux-default" },
+  "clock": { "epochMs": 1767225600000 },
+  "systemPrompt": "You are a helpful assistant.",
+  "thinkingLevel": "off",
+  "provider": {
+    "kind": "faux",
+    "tokenSize": 4,
+    "responses": [{ "content": "Hello, world!", "stopReason": "stop" }]
+  },
+  "steps": [{ "prompt": "Hello" }, { "awaitIdle": {} }]
+}
