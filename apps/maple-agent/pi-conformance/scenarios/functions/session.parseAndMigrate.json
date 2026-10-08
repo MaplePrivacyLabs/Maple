@@ -1,0 +1,72 @@
+{
+  "dsl": 1,
+  "id": "session.parseAndMigrate",
+  "clock": {
+    "epochMs": 1767225600000
+  },
+  "cases": [
+    {
+      "case": "outer-bom-and-whitespace",
+      "input": {
+        "content": "\ufeff \n{\"type\":\"session\",\"version\":3,\"id\":\"fixture-session\",\"timestamp\":\"2026-01-01T00:00:00.000Z\",\"cwd\":\"/workspace/project\"}\n \ufeff",
+        "migrate": false
+      }
+    },
+    {
+      "case": "v2-string-version",
+      "input": {
+        "content": "{\"type\":\"session\",\"version\":\"2\",\"id\":\"fixture-session\",\"timestamp\":\"2026-01-01T00:00:00.000Z\",\"cwd\":\"/workspace/project\"}\n{\"type\":\"message\",\"id\":\"old-id\",\"parentId\":null,\"timestamp\":\"2026-01-01T00:00:00.000Z\",\"message\":{\"role\":\"hookMessage\",\"customType\":\"note\",\"content\":\"legacy\",\"display\":false,\"timestamp\":1767225600000}}",
+        "migrate": true
+      }
+    },
+    {
+      "case": "empty",
+      "input": {
+        "content": "",
+        "migrate": false
+      }
+    },
+    {
+      "case": "malformed-and-scalars",
+      "input": {
+        "content": "\n{broken}\nnull\nfalse\n0\n1\n\"value\"\n[]\n{\"type\":\"session\",\"version\":3,\"id\":\"fixture-session\",\"timestamp\":\"2026-01-01T00:00:00.000Z\",\"cwd\":\"/workspace/project\"}\n",
+        "migrate": false
+      }
+    },
+    {
+      "case": "v1-parent-chain",
+      "input": {
+        "content": "{\"type\":\"session\",\"id\":\"v1\",\"timestamp\":\"2026-01-01T00:00:00.000Z\",\"cwd\":\"/workspace/project\"}\n{\"type\":\"message\",\"timestamp\":\"2026-01-01T00:00:00.000Z\",\"message\":{\"role\":\"user\",\"content\":\"hello\",\"timestamp\":1767225600000}}\n{\"type\":\"message\",\"timestamp\":\"2026-01-01T00:00:00.000Z\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"reply\"}],\"api\":\"openai-completions\",\"provider\":\"openai\",\"model\":\"gpt-4o\",\"usage\":{\"input\":1,\"output\":2,\"cacheRead\":3,\"cacheWrite\":4,\"totalTokens\":10,\"cost\":{\"input\":0.01,\"output\":0.02,\"cacheRead\":0.03,\"cacheWrite\":0.04,\"total\":0.1}},\"stopReason\":\"stop\",\"timestamp\":1767225600000}}\n{\"type\":\"compaction\",\"timestamp\":\"2026-01-01T00:00:00.000Z\",\"summary\":\"checkpoint\",\"firstKeptEntryIndex\":1,\"tokensBefore\":80}",
+        "migrate": true
+      }
+    },
+    {
+      "case": "v2-hook-message",
+      "input": {
+        "content": "{\"type\":\"session\",\"version\":2,\"id\":\"fixture-session\",\"timestamp\":\"2026-01-01T00:00:00.000Z\",\"cwd\":\"/workspace/project\"}\n{\"type\":\"message\",\"id\":\"h\",\"parentId\":null,\"timestamp\":\"2026-01-01T00:00:00.000Z\",\"message\":{\"role\":\"hookMessage\",\"customType\":\"note\",\"content\":\"legacy\",\"display\":false,\"timestamp\":1767225600000,\"extra\":null}}",
+        "migrate": true
+      }
+    },
+    {
+      "case": "future-version-unchanged",
+      "input": {
+        "content": "{\"type\":\"session\",\"version\":99,\"id\":\"fixture-session\",\"timestamp\":\"2026-01-01T00:00:00.000Z\",\"cwd\":\"/workspace/project\",\"extra\":{\"z\":1,\"a\":2}}\n{\"type\":\"message\",\"id\":\"u\",\"parentId\":null,\"timestamp\":\"2026-01-01T00:00:00.000Z\",\"message\":{\"role\":\"user\",\"content\":\"hello\",\"timestamp\":1767225600000}}",
+        "migrate": true
+      }
+    },
+    {
+      "case": "raw-keyorder-null-and-surrogate",
+      "input": {
+        "content": "{\"type\":\"session\",\"version\":3,\"id\":\"raw\",\"timestamp\":\"2026-01-01T00:00:00.000Z\",\"cwd\":\"/workspace/project\",\"z\":1,\"2\":\"two\",\"10\":\"ten\",\"extra\":\"\\ud800\"}\n{\"type\":\"message\",\"id\":\"m\",\"parentId\":null,\"timestamp\":\"2026-01-01T00:00:00.000Z\",\"message\":{\"role\":\"user\",\"content\":null,\"unknown\":{\"z\":2,\"a\":1}}}\n",
+        "migrate": true
+      }
+    },
+    {
+      "case": "missing-content",
+      "input": {
+        "content": "{\"type\":\"session\",\"version\":3,\"id\":\"fixture-session\",\"timestamp\":\"2026-01-01T00:00:00.000Z\",\"cwd\":\"/workspace/project\"}\n{\"type\":\"message\",\"id\":\"m\",\"parentId\":null,\"timestamp\":\"2026-01-01T00:00:00.000Z\",\"message\":{\"role\":\"assistant\",\"unknown\":true}}",
+        "migrate": true
+      }
+    }
+  ]
+}

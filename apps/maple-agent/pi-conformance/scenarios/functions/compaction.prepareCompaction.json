@@ -1,0 +1,952 @@
+{
+  "dsl": 1,
+  "id": "compaction.prepareCompaction",
+  "clock": {
+    "epochMs": 1767225600000
+  },
+  "cases": [
+    {
+      "case": "system-excluded-from-history",
+      "input": {
+        "entries": [
+          {
+            "type": "message",
+            "id": "e0",
+            "parentId": null,
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "message": {
+              "role": "system",
+              "content": "",
+              "sections": {
+                "preamble": "current prompt"
+              },
+              "timestamp": 0
+            }
+          },
+          {
+            "type": "message",
+            "id": "e1",
+            "parentId": "e0",
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "message": {
+              "role": "user",
+              "content": "one long turn",
+              "timestamp": 0
+            }
+          },
+          {
+            "type": "message",
+            "id": "e2",
+            "parentId": "e1",
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "message": {
+              "role": "assistant",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "assistant suffix"
+                }
+              ],
+              "usage": {
+                "input": 100,
+                "output": 50,
+                "cacheRead": 0,
+                "cacheWrite": 0,
+                "totalTokens": 150,
+                "cost": {
+                  "input": 0,
+                  "output": 0,
+                  "cacheRead": 0,
+                  "cacheWrite": 0,
+                  "total": 0
+                }
+              },
+              "stopReason": "stop",
+              "timestamp": 0,
+              "api": "anthropic-messages",
+              "provider": "anthropic",
+              "model": "claude-sonnet-4-5"
+            }
+          }
+        ],
+        "settings": {
+          "enabled": true,
+          "reserveTokens": 16384,
+          "keepRecentTokens": 1
+        }
+      }
+    },
+    {
+      "case": "oversized-trailing-result",
+      "input": {
+        "entries": [
+          {
+            "type": "message",
+            "id": "e0",
+            "parentId": null,
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "message": {
+              "role": "user",
+              "content": "old history",
+              "timestamp": 0
+            }
+          },
+          {
+            "type": "message",
+            "id": "e1",
+            "parentId": "e0",
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "message": {
+              "role": "assistant",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "old answer"
+                }
+              ],
+              "usage": {
+                "input": 100,
+                "output": 50,
+                "cacheRead": 0,
+                "cacheWrite": 0,
+                "totalTokens": 150,
+                "cost": {
+                  "input": 0,
+                  "output": 0,
+                  "cacheRead": 0,
+                  "cacheWrite": 0,
+                  "total": 0
+                }
+              },
+              "stopReason": "stop",
+              "timestamp": 0,
+              "api": "anthropic-messages",
+              "provider": "anthropic",
+              "model": "claude-sonnet-4-5"
+            }
+          },
+          {
+            "type": "message",
+            "id": "e2",
+            "parentId": "e1",
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "message": {
+              "role": "user",
+              "content": "read the large file",
+              "timestamp": 0
+            }
+          },
+          {
+            "type": "message",
+            "id": "e3",
+            "parentId": "e2",
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "message": {
+              "role": "assistant",
+              "content": [
+                {
+                  "type": "toolCall",
+                  "id": "call-1",
+                  "name": "read",
+                  "arguments": {
+                    "path": "big.txt"
+                  }
+                }
+              ],
+              "usage": {
+                "input": 100,
+                "output": 50,
+                "cacheRead": 0,
+                "cacheWrite": 0,
+                "totalTokens": 150,
+                "cost": {
+                  "input": 0,
+                  "output": 0,
+                  "cacheRead": 0,
+                  "cacheWrite": 0,
+                  "total": 0
+                }
+              },
+              "stopReason": "toolUse",
+              "timestamp": 0,
+              "api": "anthropic-messages",
+              "provider": "anthropic",
+              "model": "claude-sonnet-4-5"
+            }
+          },
+          {
+            "type": "message",
+            "id": "e4",
+            "parentId": "e3",
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "message": {
+              "role": "toolResult",
+              "toolCallId": "call-1",
+              "toolName": "read",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+                }
+              ],
+              "isError": false,
+              "timestamp": 0
+            }
+          }
+        ],
+        "settings": {
+          "enabled": true,
+          "reserveTokens": 16384,
+          "keepRecentTokens": 1000
+        }
+      }
+    },
+    {
+      "case": "prior-summary-kept-range",
+      "input": {
+        "entries": [
+          {
+            "type": "message",
+            "id": "e0",
+            "parentId": null,
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "message": {
+              "role": "user",
+              "content": "old historyold historyold historyold history",
+              "timestamp": 0
+            }
+          },
+          {
+            "type": "message",
+            "id": "e1",
+            "parentId": "e0",
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "message": {
+              "role": "assistant",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "old answerold answerold answerold answer"
+                }
+              ],
+              "usage": {
+                "input": 100,
+                "output": 50,
+                "cacheRead": 0,
+                "cacheWrite": 0,
+                "totalTokens": 150,
+                "cost": {
+                  "input": 0,
+                  "output": 0,
+                  "cacheRead": 0,
+                  "cacheWrite": 0,
+                  "total": 0
+                }
+              },
+              "stopReason": "stop",
+              "timestamp": 0,
+              "api": "anthropic-messages",
+              "provider": "anthropic",
+              "model": "claude-sonnet-4-5"
+            }
+          },
+          {
+            "type": "message",
+            "id": "e2",
+            "parentId": "e1",
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "message": {
+              "role": "user",
+              "content": "kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user ",
+              "timestamp": 0
+            }
+          },
+          {
+            "type": "message",
+            "id": "e3",
+            "parentId": "e2",
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "message": {
+              "role": "assistant",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer "
+                }
+              ],
+              "usage": {
+                "input": 5000,
+                "output": 1000,
+                "cacheRead": 0,
+                "cacheWrite": 0,
+                "totalTokens": 6000,
+                "cost": {
+                  "input": 0,
+                  "output": 0,
+                  "cacheRead": 0,
+                  "cacheWrite": 0,
+                  "total": 0
+                }
+              },
+              "stopReason": "stop",
+              "timestamp": 0,
+              "api": "anthropic-messages",
+              "provider": "anthropic",
+              "model": "claude-sonnet-4-5"
+            }
+          },
+          {
+            "type": "compaction",
+            "id": "e4",
+            "parentId": "e3",
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "summary": "First summary",
+            "firstKeptEntryId": "e2",
+            "tokensBefore": 10000,
+            "details": {
+              "readFiles": [
+                "before.ts"
+              ],
+              "modifiedFiles": [
+                "modified.ts"
+              ]
+            }
+          },
+          {
+            "type": "message",
+            "id": "e5",
+            "parentId": "e4",
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "message": {
+              "role": "user",
+              "content": "new input new input new input new input new input new input new input new input new input new input new input new input new input new input new input new input new input new input new input new input new input new input new input new input new input new input new input new input new input new input new input new input new input new input new input new input new input new input new input new input ",
+              "timestamp": 0
+            }
+          },
+          {
+            "type": "message",
+            "id": "e6",
+            "parentId": "e5",
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "message": {
+              "role": "assistant",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "new answer new answer new answer new answer new answer new answer new answer new answer new answer new answer new answer new answer new answer new answer new answer new answer new answer new answer new answer new answer new answer new answer new answer new answer new answer new answer new answer new answer new answer new answer new answer new answer new answer new answer new answer new answer new answer new answer new answer new answer "
+                }
+              ],
+              "usage": {
+                "input": 8000,
+                "output": 2000,
+                "cacheRead": 0,
+                "cacheWrite": 0,
+                "totalTokens": 10000,
+                "cost": {
+                  "input": 0,
+                  "output": 0,
+                  "cacheRead": 0,
+                  "cacheWrite": 0,
+                  "total": 0
+                }
+              },
+              "stopReason": "stop",
+              "timestamp": 0,
+              "api": "anthropic-messages",
+              "provider": "anthropic",
+              "model": "claude-sonnet-4-5"
+            }
+          }
+        ],
+        "settings": {
+          "enabled": true,
+          "reserveTokens": 16384,
+          "keepRecentTokens": 100
+        }
+      }
+    },
+    {
+      "case": "prior-summary-all-fit",
+      "input": {
+        "entries": [
+          {
+            "type": "message",
+            "id": "e0",
+            "parentId": null,
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "message": {
+              "role": "user",
+              "content": "old historyold historyold historyold history",
+              "timestamp": 0
+            }
+          },
+          {
+            "type": "message",
+            "id": "e1",
+            "parentId": "e0",
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "message": {
+              "role": "assistant",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "old answerold answerold answerold answer"
+                }
+              ],
+              "usage": {
+                "input": 100,
+                "output": 50,
+                "cacheRead": 0,
+                "cacheWrite": 0,
+                "totalTokens": 150,
+                "cost": {
+                  "input": 0,
+                  "output": 0,
+                  "cacheRead": 0,
+                  "cacheWrite": 0,
+                  "total": 0
+                }
+              },
+              "stopReason": "stop",
+              "timestamp": 0,
+              "api": "anthropic-messages",
+              "provider": "anthropic",
+              "model": "claude-sonnet-4-5"
+            }
+          },
+          {
+            "type": "message",
+            "id": "e2",
+            "parentId": "e1",
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "message": {
+              "role": "user",
+              "content": "kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user ",
+              "timestamp": 0
+            }
+          },
+          {
+            "type": "message",
+            "id": "e3",
+            "parentId": "e2",
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "message": {
+              "role": "assistant",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer "
+                }
+              ],
+              "usage": {
+                "input": 5000,
+                "output": 1000,
+                "cacheRead": 0,
+                "cacheWrite": 0,
+                "totalTokens": 6000,
+                "cost": {
+                  "input": 0,
+                  "output": 0,
+                  "cacheRead": 0,
+                  "cacheWrite": 0,
+                  "total": 0
+                }
+              },
+              "stopReason": "stop",
+              "timestamp": 0,
+              "api": "anthropic-messages",
+              "provider": "anthropic",
+              "model": "claude-sonnet-4-5"
+            }
+          },
+          {
+            "type": "compaction",
+            "id": "e4",
+            "parentId": "e3",
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "summary": "First summary",
+            "firstKeptEntryId": "e2",
+            "tokensBefore": 10000,
+            "details": {
+              "readFiles": [
+                "before.ts"
+              ],
+              "modifiedFiles": [
+                "modified.ts"
+              ]
+            }
+          },
+          {
+            "type": "message",
+            "id": "e5",
+            "parentId": "e4",
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "message": {
+              "role": "user",
+              "content": "new input new input new input new input new input new input new input new input new input new input new input new input new input new input new input new input new input new input new input new input new input new input new input new input new input new input new input new input new input new input new input new input new input new input new input new input new input new input new input new input ",
+              "timestamp": 0
+            }
+          },
+          {
+            "type": "message",
+            "id": "e6",
+            "parentId": "e5",
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "message": {
+              "role": "assistant",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "new answer new answer new answer new answer new answer new answer new answer new answer new answer new answer new answer new answer new answer new answer new answer new answer new answer new answer new answer new answer new answer new answer new answer new answer new answer new answer new answer new answer new answer new answer new answer new answer new answer new answer new answer new answer new answer new answer new answer new answer "
+                }
+              ],
+              "usage": {
+                "input": 8000,
+                "output": 2000,
+                "cacheRead": 0,
+                "cacheWrite": 0,
+                "totalTokens": 10000,
+                "cost": {
+                  "input": 0,
+                  "output": 0,
+                  "cacheRead": 0,
+                  "cacheWrite": 0,
+                  "total": 0
+                }
+              },
+              "stopReason": "stop",
+              "timestamp": 0,
+              "api": "anthropic-messages",
+              "provider": "anthropic",
+              "model": "claude-sonnet-4-5"
+            }
+          }
+        ],
+        "settings": {
+          "enabled": true,
+          "reserveTokens": 16384,
+          "keepRecentTokens": 20000
+        }
+      }
+    },
+    {
+      "case": "prior-summary-plus-context-edit",
+      "input": {
+        "entries": [
+          {
+            "type": "message",
+            "id": "e0",
+            "parentId": null,
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "message": {
+              "role": "user",
+              "content": "old historyold historyold historyold history",
+              "timestamp": 0
+            }
+          },
+          {
+            "type": "message",
+            "id": "e1",
+            "parentId": "e0",
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "message": {
+              "role": "assistant",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "old answerold answerold answerold answer"
+                }
+              ],
+              "usage": {
+                "input": 100,
+                "output": 50,
+                "cacheRead": 0,
+                "cacheWrite": 0,
+                "totalTokens": 150,
+                "cost": {
+                  "input": 0,
+                  "output": 0,
+                  "cacheRead": 0,
+                  "cacheWrite": 0,
+                  "total": 0
+                }
+              },
+              "stopReason": "stop",
+              "timestamp": 0,
+              "api": "anthropic-messages",
+              "provider": "anthropic",
+              "model": "claude-sonnet-4-5"
+            }
+          },
+          {
+            "type": "message",
+            "id": "e2",
+            "parentId": "e1",
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "message": {
+              "role": "user",
+              "content": "kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user ",
+              "timestamp": 0
+            }
+          },
+          {
+            "type": "message",
+            "id": "e3",
+            "parentId": "e2",
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "message": {
+              "role": "assistant",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer "
+                }
+              ],
+              "usage": {
+                "input": 5000,
+                "output": 1000,
+                "cacheRead": 0,
+                "cacheWrite": 0,
+                "totalTokens": 6000,
+                "cost": {
+                  "input": 0,
+                  "output": 0,
+                  "cacheRead": 0,
+                  "cacheWrite": 0,
+                  "total": 0
+                }
+              },
+              "stopReason": "stop",
+              "timestamp": 0,
+              "api": "anthropic-messages",
+              "provider": "anthropic",
+              "model": "claude-sonnet-4-5"
+            }
+          },
+          {
+            "type": "compaction",
+            "id": "e4",
+            "parentId": "e3",
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "summary": "First summary",
+            "firstKeptEntryId": "e2",
+            "tokensBefore": 10000,
+            "details": {
+              "readFiles": [
+                "before.ts"
+              ],
+              "modifiedFiles": [
+                "modified.ts"
+              ]
+            }
+          },
+          {
+            "type": "message",
+            "id": "e5",
+            "parentId": "e4",
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "message": {
+              "role": "user",
+              "content": "new input new input new input new input new input new input new input new input new input new input new input new input new input new input new input new input new input new input new input new input new input new input new input new input new input new input new input new input new input new input new input new input new input new input new input new input new input new input new input new input ",
+              "timestamp": 0
+            }
+          },
+          {
+            "type": "message",
+            "id": "e6",
+            "parentId": "e5",
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "message": {
+              "role": "assistant",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "new answer new answer new answer new answer new answer new answer new answer new answer new answer new answer new answer new answer new answer new answer new answer new answer new answer new answer new answer new answer new answer new answer new answer new answer new answer new answer new answer new answer new answer new answer new answer new answer new answer new answer new answer new answer new answer new answer new answer new answer "
+                }
+              ],
+              "usage": {
+                "input": 8000,
+                "output": 2000,
+                "cacheRead": 0,
+                "cacheWrite": 0,
+                "totalTokens": 10000,
+                "cost": {
+                  "input": 0,
+                  "output": 0,
+                  "cacheRead": 0,
+                  "cacheWrite": 0,
+                  "total": 0
+                }
+              },
+              "stopReason": "stop",
+              "timestamp": 0,
+              "api": "anthropic-messages",
+              "provider": "anthropic",
+              "model": "claude-sonnet-4-5"
+            }
+          },
+          {
+            "type": "context_edit",
+            "id": "e7",
+            "parentId": "e6",
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "targetId": "e3",
+            "replacement": {
+              "content": [
+                {
+                  "type": "text",
+                  "text": "edited suffix"
+                }
+              ]
+            }
+          }
+        ],
+        "settings": {
+          "enabled": true,
+          "reserveTokens": 16384,
+          "keepRecentTokens": 100
+        }
+      }
+    },
+    {
+      "case": "recovery-omission-suffix",
+      "input": {
+        "entries": [
+          {
+            "type": "message",
+            "id": "e0",
+            "parentId": null,
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "message": {
+              "role": "user",
+              "content": "old historyold historyold historyold historyold historyold historyold historyold historyold historyold history",
+              "timestamp": 0
+            }
+          },
+          {
+            "type": "message",
+            "id": "e1",
+            "parentId": "e0",
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "message": {
+              "role": "assistant",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "old answerold answerold answerold answerold answerold answerold answerold answerold answerold answer"
+                }
+              ],
+              "usage": {
+                "input": 100,
+                "output": 50,
+                "cacheRead": 0,
+                "cacheWrite": 0,
+                "totalTokens": 150,
+                "cost": {
+                  "input": 0,
+                  "output": 0,
+                  "cacheRead": 0,
+                  "cacheWrite": 0,
+                  "total": 0
+                }
+              },
+              "stopReason": "stop",
+              "timestamp": 0,
+              "api": "anthropic-messages",
+              "provider": "anthropic",
+              "model": "claude-sonnet-4-5"
+            }
+          },
+          {
+            "type": "message",
+            "id": "e2",
+            "parentId": "e1",
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "message": {
+              "role": "user",
+              "content": "unsent current request",
+              "timestamp": 0
+            }
+          },
+          {
+            "type": "message",
+            "id": "e3",
+            "parentId": "e2",
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "message": {
+              "role": "assistant",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "retry attempt"
+                }
+              ],
+              "usage": {
+                "input": 0,
+                "output": 0,
+                "cacheRead": 0,
+                "cacheWrite": 0,
+                "totalTokens": 0,
+                "cost": {
+                  "input": 0,
+                  "output": 0,
+                  "cacheRead": 0,
+                  "cacheWrite": 0,
+                  "total": 0
+                }
+              },
+              "stopReason": "error",
+              "timestamp": 0,
+              "api": "anthropic-messages",
+              "provider": "anthropic",
+              "model": "claude-sonnet-4-5"
+            }
+          },
+          {
+            "type": "context_edit",
+            "id": "e4",
+            "parentId": "e3",
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "targetId": "e3",
+            "replacement": null
+          }
+        ],
+        "settings": {
+          "enabled": true,
+          "reserveTokens": 16384,
+          "keepRecentTokens": 1
+        }
+      }
+    },
+    {
+      "case": "last-entry-is-compaction",
+      "input": {
+        "entries": [
+          {
+            "type": "message",
+            "id": "e0",
+            "parentId": null,
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "message": {
+              "role": "user",
+              "content": "old historyold historyold historyold history",
+              "timestamp": 0
+            }
+          },
+          {
+            "type": "message",
+            "id": "e1",
+            "parentId": "e0",
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "message": {
+              "role": "assistant",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "old answerold answerold answerold answer"
+                }
+              ],
+              "usage": {
+                "input": 100,
+                "output": 50,
+                "cacheRead": 0,
+                "cacheWrite": 0,
+                "totalTokens": 150,
+                "cost": {
+                  "input": 0,
+                  "output": 0,
+                  "cacheRead": 0,
+                  "cacheWrite": 0,
+                  "total": 0
+                }
+              },
+              "stopReason": "stop",
+              "timestamp": 0,
+              "api": "anthropic-messages",
+              "provider": "anthropic",
+              "model": "claude-sonnet-4-5"
+            }
+          },
+          {
+            "type": "message",
+            "id": "e2",
+            "parentId": "e1",
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "message": {
+              "role": "user",
+              "content": "kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user kept user ",
+              "timestamp": 0
+            }
+          },
+          {
+            "type": "message",
+            "id": "e3",
+            "parentId": "e2",
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "message": {
+              "role": "assistant",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer kept answer "
+                }
+              ],
+              "usage": {
+                "input": 5000,
+                "output": 1000,
+                "cacheRead": 0,
+                "cacheWrite": 0,
+                "totalTokens": 6000,
+                "cost": {
+                  "input": 0,
+                  "output": 0,
+                  "cacheRead": 0,
+                  "cacheWrite": 0,
+                  "total": 0
+                }
+              },
+              "stopReason": "stop",
+              "timestamp": 0,
+              "api": "anthropic-messages",
+              "provider": "anthropic",
+              "model": "claude-sonnet-4-5"
+            }
+          },
+          {
+            "type": "compaction",
+            "id": "e4",
+            "parentId": "e3",
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "summary": "First summary",
+            "firstKeptEntryId": "e2",
+            "tokensBefore": 10000,
+            "details": {
+              "readFiles": [
+                "before.ts"
+              ],
+              "modifiedFiles": [
+                "modified.ts"
+              ]
+            }
+          }
+        ],
+        "settings": {
+          "enabled": true,
+          "reserveTokens": 16384,
+          "keepRecentTokens": 1
+        }
+      }
+    },
+    {
+      "case": "empty",
+      "input": {
+        "entries": [],
+        "settings": {
+          "enabled": true,
+          "reserveTokens": 16384,
+          "keepRecentTokens": 20
+        }
+      }
+    }
+  ]
+}

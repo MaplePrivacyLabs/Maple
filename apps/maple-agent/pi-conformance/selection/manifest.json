@@ -526,7 +526,9 @@
       "class": "Adapt",
       "crate": "pi-coding-agent",
       "rust_module": "crates/pi-coding-agent/src/config.rs",
-      "adaptations": [],
+      "adaptations": [
+        "HostConfig injects app name, config folder, home/cwd and environment values through the selected rename/configuration seam. A shared UUID generator preserves module-wide sequencing; installer and package discovery remain cut."
+      ],
       "cut": [],
       "ranges": [],
       "keep": [
@@ -535,7 +537,7 @@
         "626-631",
         "641-651"
       ],
-      "status": "pending",
+      "status": "adapted",
       "reason": "`piConfig` name/config-dir conventions, `getAgentDir`, settings/prompts/sessions paths; package.json reading becomes host config, install/self-update/asset paths go"
     },
     {
@@ -611,11 +613,13 @@
       "class": "Port",
       "crate": "pi-coding-agent",
       "rust_module": "crates/pi-coding-agent/src/core/compaction/branch_summarization.rs",
-      "adaptations": [],
+      "adaptations": [
+        "Shared raw entries and injected summary provider/time/UUID services preserve branch collection, prompt formatting, reasoning options and source errors. Nested-call behavior outside selected historical message extraction remains excluded."
+      ],
       "cut": [],
       "ranges": [],
       "keep": [],
-      "status": "pending",
+      "status": "adapted",
       "reason": "Branch summaries for tree navigation: entries back to the common ancestor, budgeted preparation, summary prompt"
     },
     {
@@ -624,11 +628,13 @@
       "class": "Adapt",
       "crate": "pi-coding-agent",
       "rust_module": "crates/pi-coding-agent/src/core/compaction/compaction.rs",
-      "adaptations": [],
+      "adaptations": [
+        "Typed services replace source imports; lossless token arithmetic, source prompts and ordered message handling remain. Summary provider request/configuration DTO ownership uses the separately owner-authorized exact paired fixture."
+      ],
       "cut": [],
       "ranges": [],
       "keep": [],
-      "status": "pending",
+      "status": "adapted",
       "reason": "Thresholds, cut points, summaries, own estimator; `completeSummarization` always gets `streamFn` (the `completeSimple` fallback goes)"
     },
     {
@@ -637,11 +643,13 @@
       "class": "Port",
       "crate": "pi-coding-agent",
       "rust_module": "crates/pi-coding-agent/src/core/compaction/utils.rs",
-      "adaptations": [],
+      "adaptations": [
+        "Raw-aware messages and JavaScript serialization retain source conversation text, truncation and file operation extraction. Environment and UUID services are injected."
+      ],
       "cut": [],
       "ranges": [],
       "keep": [],
-      "status": "pending",
+      "status": "adapted",
       "reason": "Summary prompt, conversation serialization, file-operation lists"
     },
     {
@@ -650,11 +658,13 @@
       "class": "Port",
       "crate": "pi-coding-agent",
       "rust_module": "crates/pi-coding-agent/src/core/defaults.rs",
-      "adaptations": [],
+      "adaptations": [
+        "Native typed constants retain the selected default thinking level and source order."
+      ],
       "cut": [],
       "ranges": [],
       "keep": [],
-      "status": "pending",
+      "status": "adapted",
       "reason": "Default thinking level and level options"
     },
     {
@@ -894,11 +904,13 @@
       "class": "Port",
       "crate": "pi-coding-agent",
       "rust_module": "crates/pi-coding-agent/src/core/messages.rs",
-      "adaptations": [],
+      "adaptations": [
+        "Lossless shared JsValue entries preserve unknown properties, explicit null/missing fields, UTF-16 strings and JavaScript key order. Projection performs only source normalization; raw compaction token values remain distinct from typed convenience constructors."
+      ],
       "cut": [],
       "ranges": [],
       "keep": [],
-      "status": "pending",
+      "status": "adapted",
       "reason": "Coding-agent roles and `convertToLlm`"
     },
     {
@@ -1152,11 +1164,13 @@
       "class": "Port",
       "crate": "pi-coding-agent",
       "rust_module": "crates/pi-coding-agent/src/core/session_cwd.rs",
-      "adaptations": [],
+      "adaptations": [
+        "Explicit host paths and Result errors replace ambient cwd and throws while retaining selected source diagnostic text."
+      ],
       "cut": [],
       "ranges": [],
       "keep": [],
-      "status": "pending",
+      "status": "adapted",
       "reason": "Missing working directory on resume"
     },
     {
@@ -1165,11 +1179,13 @@
       "class": "Port",
       "crate": "pi-coding-agent",
       "rust_module": "crates/pi-coding-agent/src/core/session_export.rs",
-      "adaptations": [],
+      "adaptations": [
+        "Lossless JavaScript serialization preserves selected branch JSONL and source field order."
+      ],
       "cut": [],
       "ranges": [],
       "keep": [],
-      "status": "pending",
+      "status": "adapted",
       "reason": "JSONL export of the current branch"
     },
     {
@@ -1178,11 +1194,13 @@
       "class": "Port",
       "crate": "pi-coding-agent",
       "rust_module": "crates/pi-coding-agent/src/core/session_manager.rs",
-      "adaptations": [],
+      "adaptations": [
+        "Shared raw entries preserve aliases, malformed historical fields, migration order and context edits. PiEnv and a shared UUID generator supply time/randomness; synchronous writes retain the persistence barrier. Bounded native filesystem workers preserve cancellation checks and source discovery limits. A civil-date adapter covers the recorded source timestamp forms; platform-specific cases are tracked separately."
+      ],
       "cut": [],
       "ranges": [],
       "keep": [],
-      "status": "pending",
+      "status": "adapted",
       "reason": "Entry tree, migrations, context building, append API, labels, branching, and the JSONL file store (preserves Pi's JSONL format)"
     },
     {
@@ -1402,11 +1420,13 @@
       "class": "Port",
       "crate": "pi-coding-agent",
       "rust_module": "crates/pi-coding-agent/src/core/usage_totals.rs",
-      "adaptations": [],
+      "adaptations": [
+        "Presence bits and binary64 arithmetic preserve absent totals, NaN at the source JSON boundary and optional split fields."
+      ],
       "cut": [],
       "ranges": [],
       "keep": [],
-      "status": "pending",
+      "status": "adapted",
       "reason": "Session usage totals (stats, context ring input)"
     },
     {
@@ -1572,7 +1592,9 @@
       "class": "Adapt",
       "crate": "pi-coding-agent",
       "rust_module": "crates/pi-coding-agent/src/utils/paths.rs",
-      "adaptations": [],
+      "adaptations": [
+        "Native paths and explicit home/cwd inputs replace Node path/os access, preserving source Windows applicability guards. Cloud-sync installer integration is excluded."
+      ],
       "cut": [
         "markPathIgnoredByCloudSync"
       ],
@@ -1580,7 +1602,7 @@
         "5-5"
       ],
       "keep": [],
-      "status": "pending",
+      "status": "adapted",
       "reason": "Path normalization; `markPathIgnoredByCloudSync` (installer only) goes"
     },
     {
@@ -1602,11 +1624,13 @@
       "class": "Port",
       "crate": "pi-coding-agent",
       "rust_module": "crates/pi-coding-agent/src/utils/text.rs",
-      "adaptations": [],
+      "adaptations": [
+        "UTF-16 helpers preserve source BOM handling without normalizing payload text."
+      ],
       "cut": [],
       "ranges": [],
       "keep": [],
-      "status": "pending",
+      "status": "adapted",
       "reason": "BOM helpers"
     },
     {

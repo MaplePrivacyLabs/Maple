@@ -1,0 +1,10 @@
+{"case":"id-0","input":{"id":"x"},"output":{}}
+{"case":"id-1","input":{"id":"custom.id-2_3"},"output":{}}
+{"case":"id-2","input":{"id":""},"output":{"error":"Session id must be non-empty, contain only alphanumeric characters, '-', '_', and '.', and start and end with an alphanumeric character","errorClass":"Error"}}
+{"case":"id-3","input":{"id":"../escape"},"output":{"error":"Session id must be non-empty, contain only alphanumeric characters, '-', '_', and '.', and start and end with an alphanumeric character","errorClass":"Error"}}
+{"case":"id-4","input":{"id":"_id"},"output":{"error":"Session id must be non-empty, contain only alphanumeric characters, '-', '_', and '.', and start and end with an alphanumeric character","errorClass":"Error"}}
+{"case":"id-5","input":{"id":"id-"},"output":{"error":"Session id must be non-empty, contain only alphanumeric characters, '-', '_', and '.', and start and end with an alphanumeric character","errorClass":"Error"}}
+{"case":"id-6","input":{"id":"a/b"},"output":{"error":"Session id must be non-empty, contain only alphanumeric characters, '-', '_', and '.', and start and end with an alphanumeric character","errorClass":"Error"}}
+{"case":"id-7","input":{"id":"a\n"},"output":{"error":"Session id must be non-empty, contain only alphanumeric characters, '-', '_', and '.', and start and end with an alphanumeric character","errorClass":"Error"}}
+{"case":"id-8","input":{"id":"é"},"output":{"error":"Session id must be non-empty, contain only alphanumeric characters, '-', '_', and '.', and start and end with an alphanumeric character","errorClass":"Error"}}
+{"case":"id-9","input":{"id":"a..b"},"output":{}}

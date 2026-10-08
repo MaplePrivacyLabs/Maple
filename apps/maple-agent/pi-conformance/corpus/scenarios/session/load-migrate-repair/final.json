@@ -1,0 +1,2231 @@
+{
+  "state": {
+    "files": [
+      {
+        "case": "v3-raw-order-surrogate-null",
+        "steps": [
+          {
+            "bytes": "{\"type\":\"session\",\"version\":3,\"id\":\"interchange\",\"timestamp\":\"2026-01-01T00:00:00.000Z\",\"cwd\":\"/workspace/project\"}\n{\"type\":\"message\",\"id\":\"old\",\"parentId\":null,\"timestamp\":\"2026-01-01T00:00:00.000Z\",\"message\":{\"role\":\"user\",\"content\":null,\"unknown\":{\"2\":\"two\",\"10\":\"ten\",\"z\":\"\\ud800\",\"a\":null}}}\n",
+            "header": {
+              "type": "session",
+              "version": 3,
+              "id": "interchange",
+              "timestamp": "2026-01-01T00:00:00.000Z",
+              "cwd": "/workspace/project"
+            },
+            "entries": [
+              {
+                "type": "message",
+                "id": "old",
+                "parentId": null,
+                "timestamp": "2026-01-01T00:00:00.000Z",
+                "message": {
+                  "role": "user",
+                  "content": null,
+                  "unknown": {
+                    "2": "two",
+                    "10": "ten",
+                    "z": "\ud800",
+                    "a": null
+                  }
+                }
+              }
+            ],
+            "leafId": "old",
+            "context": {
+              "messages": [
+                {
+                  "role": "user",
+                  "content": [],
+                  "unknown": {
+                    "2": "two",
+                    "10": "ten",
+                    "z": "\ud800",
+                    "a": null
+                  }
+                }
+              ],
+              "thinkingLevel": "off",
+              "model": null
+            }
+          },
+          {
+            "result": "00000001",
+            "bytes": "{\"type\":\"session\",\"version\":3,\"id\":\"interchange\",\"timestamp\":\"2026-01-01T00:00:00.000Z\",\"cwd\":\"/workspace/project\"}\n{\"type\":\"message\",\"id\":\"old\",\"parentId\":null,\"timestamp\":\"2026-01-01T00:00:00.000Z\",\"message\":{\"role\":\"user\",\"content\":null,\"unknown\":{\"2\":\"two\",\"10\":\"ten\",\"z\":\"\\ud800\",\"a\":null}}}\n{\"type\":\"message\",\"id\":\"00000001\",\"parentId\":\"old\",\"timestamp\":\"2026-01-01T00:00:00.000Z\",\"message\":{\"role\":\"user\",\"content\":\"appended\",\"timestamp\":1767225600000,\"unknown\":{\"z\":1,\"a\":2}}}\n",
+            "header": {
+              "type": "session",
+              "version": 3,
+              "id": "interchange",
+              "timestamp": "2026-01-01T00:00:00.000Z",
+              "cwd": "/workspace/project"
+            },
+            "entries": [
+              {
+                "type": "message",
+                "id": "old",
+                "parentId": null,
+                "timestamp": "2026-01-01T00:00:00.000Z",
+                "message": {
+                  "role": "user",
+                  "content": null,
+                  "unknown": {
+                    "2": "two",
+                    "10": "ten",
+                    "z": "\ud800",
+                    "a": null
+                  }
+                }
+              },
+              {
+                "type": "message",
+                "id": "00000001",
+                "parentId": "old",
+                "timestamp": "2026-01-01T00:00:00.000Z",
+                "message": {
+                  "role": "user",
+                  "content": "appended",
+                  "timestamp": 1767225600000,
+                  "unknown": {
+                    "z": 1,
+                    "a": 2
+                  }
+                }
+              }
+            ],
+            "leafId": "00000001",
+            "context": {
+              "messages": [
+                {
+                  "role": "user",
+                  "content": [],
+                  "unknown": {
+                    "2": "two",
+                    "10": "ten",
+                    "z": "\ud800",
+                    "a": null
+                  }
+                },
+                {
+                  "role": "user",
+                  "content": "appended",
+                  "timestamp": 1767225600000,
+                  "unknown": {
+                    "z": 1,
+                    "a": 2
+                  }
+                }
+              ],
+              "thinkingLevel": "off",
+              "model": null
+            }
+          }
+        ],
+        "finalBytes": "{\"type\":\"session\",\"version\":3,\"id\":\"interchange\",\"timestamp\":\"2026-01-01T00:00:00.000Z\",\"cwd\":\"/workspace/project\"}\n{\"type\":\"message\",\"id\":\"old\",\"parentId\":null,\"timestamp\":\"2026-01-01T00:00:00.000Z\",\"message\":{\"role\":\"user\",\"content\":null,\"unknown\":{\"2\":\"two\",\"10\":\"ten\",\"z\":\"\\ud800\",\"a\":null}}}\n{\"type\":\"message\",\"id\":\"00000001\",\"parentId\":\"old\",\"timestamp\":\"2026-01-01T00:00:00.000Z\",\"message\":{\"role\":\"user\",\"content\":\"appended\",\"timestamp\":1767225600000,\"unknown\":{\"z\":1,\"a\":2}}}\n",
+        "readBack": {
+          "header": {
+            "type": "session",
+            "version": 3,
+            "id": "interchange",
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "cwd": "/workspace/project"
+          },
+          "entries": [
+            {
+              "type": "message",
+              "id": "old",
+              "parentId": null,
+              "timestamp": "2026-01-01T00:00:00.000Z",
+              "message": {
+                "role": "user",
+                "content": null,
+                "unknown": {
+                  "2": "two",
+                  "10": "ten",
+                  "z": "\ud800",
+                  "a": null
+                }
+              }
+            },
+            {
+              "type": "message",
+              "id": "00000001",
+              "parentId": "old",
+              "timestamp": "2026-01-01T00:00:00.000Z",
+              "message": {
+                "role": "user",
+                "content": "appended",
+                "timestamp": 1767225600000,
+                "unknown": {
+                  "z": 1,
+                  "a": 2
+                }
+              }
+            }
+          ],
+          "context": {
+            "messages": [
+              {
+                "role": "user",
+                "content": [],
+                "unknown": {
+                  "2": "two",
+                  "10": "ten",
+                  "z": "\ud800",
+                  "a": null
+                }
+              },
+              {
+                "role": "user",
+                "content": "appended",
+                "timestamp": 1767225600000,
+                "unknown": {
+                  "z": 1,
+                  "a": 2
+                }
+              }
+            ],
+            "thinkingLevel": "off",
+            "model": null
+          }
+        },
+        "listing": []
+      },
+      {
+        "case": "v3-missing-content",
+        "steps": [
+          {
+            "bytes": "{\"type\":\"session\",\"version\":3,\"id\":\"interchange\",\"timestamp\":\"2026-01-01T00:00:00.000Z\",\"cwd\":\"/workspace/project\"}\n{\"type\":\"message\",\"id\":\"old\",\"parentId\":null,\"timestamp\":\"2026-01-01T00:00:00.000Z\",\"message\":{\"role\":\"user\",\"unknown\":true}}\n",
+            "header": {
+              "type": "session",
+              "version": 3,
+              "id": "interchange",
+              "timestamp": "2026-01-01T00:00:00.000Z",
+              "cwd": "/workspace/project"
+            },
+            "entries": [
+              {
+                "type": "message",
+                "id": "old",
+                "parentId": null,
+                "timestamp": "2026-01-01T00:00:00.000Z",
+                "message": {
+                  "role": "user",
+                  "unknown": true
+                }
+              }
+            ],
+            "leafId": "old",
+            "context": {
+              "messages": [
+                {
+                  "role": "user",
+                  "unknown": true,
+                  "content": []
+                }
+              ],
+              "thinkingLevel": "off",
+              "model": null
+            }
+          },
+          {
+            "result": "00000001",
+            "bytes": "{\"type\":\"session\",\"version\":3,\"id\":\"interchange\",\"timestamp\":\"2026-01-01T00:00:00.000Z\",\"cwd\":\"/workspace/project\"}\n{\"type\":\"message\",\"id\":\"old\",\"parentId\":null,\"timestamp\":\"2026-01-01T00:00:00.000Z\",\"message\":{\"role\":\"user\",\"unknown\":true}}\n{\"type\":\"message\",\"id\":\"00000001\",\"parentId\":\"old\",\"timestamp\":\"2026-01-01T00:00:00.000Z\",\"message\":{\"role\":\"user\",\"content\":\"appended\",\"timestamp\":1767225600000,\"unknown\":{\"z\":1,\"a\":2}}}\n",
+            "header": {
+              "type": "session",
+              "version": 3,
+              "id": "interchange",
+              "timestamp": "2026-01-01T00:00:00.000Z",
+              "cwd": "/workspace/project"
+            },
+            "entries": [
+              {
+                "type": "message",
+                "id": "old",
+                "parentId": null,
+                "timestamp": "2026-01-01T00:00:00.000Z",
+                "message": {
+                  "role": "user",
+                  "unknown": true
+                }
+              },
+              {
+                "type": "message",
+                "id": "00000001",
+                "parentId": "old",
+                "timestamp": "2026-01-01T00:00:00.000Z",
+                "message": {
+                  "role": "user",
+                  "content": "appended",
+                  "timestamp": 1767225600000,
+                  "unknown": {
+                    "z": 1,
+                    "a": 2
+                  }
+                }
+              }
+            ],
+            "leafId": "00000001",
+            "context": {
+              "messages": [
+                {
+                  "role": "user",
+                  "unknown": true,
+                  "content": []
+                },
+                {
+                  "role": "user",
+                  "content": "appended",
+                  "timestamp": 1767225600000,
+                  "unknown": {
+                    "z": 1,
+                    "a": 2
+                  }
+                }
+              ],
+              "thinkingLevel": "off",
+              "model": null
+            }
+          }
+        ],
+        "finalBytes": "{\"type\":\"session\",\"version\":3,\"id\":\"interchange\",\"timestamp\":\"2026-01-01T00:00:00.000Z\",\"cwd\":\"/workspace/project\"}\n{\"type\":\"message\",\"id\":\"old\",\"parentId\":null,\"timestamp\":\"2026-01-01T00:00:00.000Z\",\"message\":{\"role\":\"user\",\"unknown\":true}}\n{\"type\":\"message\",\"id\":\"00000001\",\"parentId\":\"old\",\"timestamp\":\"2026-01-01T00:00:00.000Z\",\"message\":{\"role\":\"user\",\"content\":\"appended\",\"timestamp\":1767225600000,\"unknown\":{\"z\":1,\"a\":2}}}\n",
+        "readBack": {
+          "header": {
+            "type": "session",
+            "version": 3,
+            "id": "interchange",
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "cwd": "/workspace/project"
+          },
+          "entries": [
+            {
+              "type": "message",
+              "id": "old",
+              "parentId": null,
+              "timestamp": "2026-01-01T00:00:00.000Z",
+              "message": {
+                "role": "user",
+                "unknown": true
+              }
+            },
+            {
+              "type": "message",
+              "id": "00000001",
+              "parentId": "old",
+              "timestamp": "2026-01-01T00:00:00.000Z",
+              "message": {
+                "role": "user",
+                "content": "appended",
+                "timestamp": 1767225600000,
+                "unknown": {
+                  "z": 1,
+                  "a": 2
+                }
+              }
+            }
+          ],
+          "context": {
+            "messages": [
+              {
+                "role": "user",
+                "unknown": true,
+                "content": []
+              },
+              {
+                "role": "user",
+                "content": "appended",
+                "timestamp": 1767225600000,
+                "unknown": {
+                  "z": 1,
+                  "a": 2
+                }
+              }
+            ],
+            "thinkingLevel": "off",
+            "model": null
+          }
+        },
+        "listing": [
+          {
+            "id": "interchange",
+            "cwd": "/workspace/project",
+            "created": "2026-01-01T00:00:00.000Z",
+            "modified": "2026-01-01T00:00:00.000Z",
+            "messageCount": 2,
+            "firstMessage": "appended",
+            "allMessagesText": "appended"
+          }
+        ]
+      },
+      {
+        "case": "v2-hook-message",
+        "steps": [
+          {
+            "bytes": "{\"type\":\"session\",\"version\":3,\"id\":\"interchange\",\"timestamp\":\"2026-01-01T00:00:00.000Z\",\"cwd\":\"/workspace/project\"}\n{\"type\":\"message\",\"id\":\"old\",\"parentId\":null,\"timestamp\":\"2026-01-01T00:00:00.000Z\",\"message\":{\"role\":\"custom\",\"customType\":\"note\",\"content\":\"legacy\",\"display\":false,\"timestamp\":1767225600000,\"unknown\":true}}\n",
+            "header": {
+              "type": "session",
+              "version": 3,
+              "id": "interchange",
+              "timestamp": "2026-01-01T00:00:00.000Z",
+              "cwd": "/workspace/project"
+            },
+            "entries": [
+              {
+                "type": "message",
+                "id": "old",
+                "parentId": null,
+                "timestamp": "2026-01-01T00:00:00.000Z",
+                "message": {
+                  "role": "custom",
+                  "customType": "note",
+                  "content": "legacy",
+                  "display": false,
+                  "timestamp": 1767225600000,
+                  "unknown": true
+                }
+              }
+            ],
+            "leafId": "old",
+            "context": {
+              "messages": [
+                {
+                  "role": "custom",
+                  "customType": "note",
+                  "content": "legacy",
+                  "display": false,
+                  "timestamp": 1767225600000,
+                  "unknown": true
+                }
+              ],
+              "thinkingLevel": "off",
+              "model": null
+            }
+          },
+          {
+            "result": "00000001",
+            "bytes": "{\"type\":\"session\",\"version\":3,\"id\":\"interchange\",\"timestamp\":\"2026-01-01T00:00:00.000Z\",\"cwd\":\"/workspace/project\"}\n{\"type\":\"message\",\"id\":\"old\",\"parentId\":null,\"timestamp\":\"2026-01-01T00:00:00.000Z\",\"message\":{\"role\":\"custom\",\"customType\":\"note\",\"content\":\"legacy\",\"display\":false,\"timestamp\":1767225600000,\"unknown\":true}}\n{\"type\":\"message\",\"id\":\"00000001\",\"parentId\":\"old\",\"timestamp\":\"2026-01-01T00:00:00.000Z\",\"message\":{\"role\":\"user\",\"content\":\"appended\",\"timestamp\":1767225600000,\"unknown\":{\"z\":1,\"a\":2}}}\n",
+            "header": {
+              "type": "session",
+              "version": 3,
+              "id": "interchange",
+              "timestamp": "2026-01-01T00:00:00.000Z",
+              "cwd": "/workspace/project"
+            },
+            "entries": [
+              {
+                "type": "message",
+                "id": "old",
+                "parentId": null,
+                "timestamp": "2026-01-01T00:00:00.000Z",
+                "message": {
+                  "role": "custom",
+                  "customType": "note",
+                  "content": "legacy",
+                  "display": false,
+                  "timestamp": 1767225600000,
+                  "unknown": true
+                }
+              },
+              {
+                "type": "message",
+                "id": "00000001",
+                "parentId": "old",
+                "timestamp": "2026-01-01T00:00:00.000Z",
+                "message": {
+                  "role": "user",
+                  "content": "appended",
+                  "timestamp": 1767225600000,
+                  "unknown": {
+                    "z": 1,
+                    "a": 2
+                  }
+                }
+              }
+            ],
+            "leafId": "00000001",
+            "context": {
+              "messages": [
+                {
+                  "role": "custom",
+                  "customType": "note",
+                  "content": "legacy",
+                  "display": false,
+                  "timestamp": 1767225600000,
+                  "unknown": true
+                },
+                {
+                  "role": "user",
+                  "content": "appended",
+                  "timestamp": 1767225600000,
+                  "unknown": {
+                    "z": 1,
+                    "a": 2
+                  }
+                }
+              ],
+              "thinkingLevel": "off",
+              "model": null
+            }
+          }
+        ],
+        "finalBytes": "{\"type\":\"session\",\"version\":3,\"id\":\"interchange\",\"timestamp\":\"2026-01-01T00:00:00.000Z\",\"cwd\":\"/workspace/project\"}\n{\"type\":\"message\",\"id\":\"old\",\"parentId\":null,\"timestamp\":\"2026-01-01T00:00:00.000Z\",\"message\":{\"role\":\"custom\",\"customType\":\"note\",\"content\":\"legacy\",\"display\":false,\"timestamp\":1767225600000,\"unknown\":true}}\n{\"type\":\"message\",\"id\":\"00000001\",\"parentId\":\"old\",\"timestamp\":\"2026-01-01T00:00:00.000Z\",\"message\":{\"role\":\"user\",\"content\":\"appended\",\"timestamp\":1767225600000,\"unknown\":{\"z\":1,\"a\":2}}}\n",
+        "readBack": {
+          "header": {
+            "type": "session",
+            "version": 3,
+            "id": "interchange",
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "cwd": "/workspace/project"
+          },
+          "entries": [
+            {
+              "type": "message",
+              "id": "old",
+              "parentId": null,
+              "timestamp": "2026-01-01T00:00:00.000Z",
+              "message": {
+                "role": "custom",
+                "customType": "note",
+                "content": "legacy",
+                "display": false,
+                "timestamp": 1767225600000,
+                "unknown": true
+              }
+            },
+            {
+              "type": "message",
+              "id": "00000001",
+              "parentId": "old",
+              "timestamp": "2026-01-01T00:00:00.000Z",
+              "message": {
+                "role": "user",
+                "content": "appended",
+                "timestamp": 1767225600000,
+                "unknown": {
+                  "z": 1,
+                  "a": 2
+                }
+              }
+            }
+          ],
+          "context": {
+            "messages": [
+              {
+                "role": "custom",
+                "customType": "note",
+                "content": "legacy",
+                "display": false,
+                "timestamp": 1767225600000,
+                "unknown": true
+              },
+              {
+                "role": "user",
+                "content": "appended",
+                "timestamp": 1767225600000,
+                "unknown": {
+                  "z": 1,
+                  "a": 2
+                }
+              }
+            ],
+            "thinkingLevel": "off",
+            "model": null
+          }
+        },
+        "listing": [
+          {
+            "id": "interchange",
+            "cwd": "/workspace/project",
+            "created": "2026-01-01T00:00:00.000Z",
+            "modified": "2026-01-01T00:00:00.000Z",
+            "messageCount": 2,
+            "firstMessage": "appended",
+            "allMessagesText": "appended"
+          }
+        ]
+      },
+      {
+        "case": "v1-migration",
+        "steps": [
+          {
+            "bytes": "{\"type\":\"session\",\"id\":\"old-v1\",\"timestamp\":\"2026-01-01T00:00:00.000Z\",\"cwd\":\"/workspace/project\",\"version\":3}\n{\"type\":\"message\",\"timestamp\":\"2026-01-01T00:00:00.000Z\",\"message\":{\"role\":\"user\",\"content\":\"legacy\",\"timestamp\":1767225600000},\"id\":\"00000001\",\"parentId\":null}\n{\"type\":\"compaction\",\"timestamp\":\"2026-01-01T00:00:00.000Z\",\"summary\":\"summary\",\"tokensBefore\":20,\"id\":\"00000002\",\"parentId\":\"00000001\",\"firstKeptEntryId\":\"00000001\"}\n",
+            "header": {
+              "type": "session",
+              "id": "old-v1",
+              "timestamp": "2026-01-01T00:00:00.000Z",
+              "cwd": "/workspace/project",
+              "version": 3
+            },
+            "entries": [
+              {
+                "type": "message",
+                "timestamp": "2026-01-01T00:00:00.000Z",
+                "message": {
+                  "role": "user",
+                  "content": "legacy",
+                  "timestamp": 1767225600000
+                },
+                "id": "00000001",
+                "parentId": null
+              },
+              {
+                "type": "compaction",
+                "timestamp": "2026-01-01T00:00:00.000Z",
+                "summary": "summary",
+                "tokensBefore": 20,
+                "id": "00000002",
+                "parentId": "00000001",
+                "firstKeptEntryId": "00000001"
+              }
+            ],
+            "leafId": "00000002",
+            "context": {
+              "messages": [
+                {
+                  "role": "compactionSummary",
+                  "summary": "summary",
+                  "tokensBefore": 20,
+                  "timestamp": 1767225600000
+                },
+                {
+                  "role": "user",
+                  "content": "legacy",
+                  "timestamp": 1767225600000
+                }
+              ],
+              "thinkingLevel": "off",
+              "model": null
+            }
+          },
+          {
+            "result": "00000003",
+            "bytes": "{\"type\":\"session\",\"id\":\"old-v1\",\"timestamp\":\"2026-01-01T00:00:00.000Z\",\"cwd\":\"/workspace/project\",\"version\":3}\n{\"type\":\"message\",\"timestamp\":\"2026-01-01T00:00:00.000Z\",\"message\":{\"role\":\"user\",\"content\":\"legacy\",\"timestamp\":1767225600000},\"id\":\"00000001\",\"parentId\":null}\n{\"type\":\"compaction\",\"timestamp\":\"2026-01-01T00:00:00.000Z\",\"summary\":\"summary\",\"tokensBefore\":20,\"id\":\"00000002\",\"parentId\":\"00000001\",\"firstKeptEntryId\":\"00000001\"}\n{\"type\":\"message\",\"id\":\"00000003\",\"parentId\":\"00000002\",\"timestamp\":\"2026-01-01T00:00:00.000Z\",\"message\":{\"role\":\"user\",\"content\":\"appended\",\"timestamp\":1767225600000,\"unknown\":{\"z\":1,\"a\":2}}}\n",
+            "header": {
+              "type": "session",
+              "id": "old-v1",
+              "timestamp": "2026-01-01T00:00:00.000Z",
+              "cwd": "/workspace/project",
+              "version": 3
+            },
+            "entries": [
+              {
+                "type": "message",
+                "timestamp": "2026-01-01T00:00:00.000Z",
+                "message": {
+                  "role": "user",
+                  "content": "legacy",
+                  "timestamp": 1767225600000
+                },
+                "id": "00000001",
+                "parentId": null
+              },
+              {
+                "type": "compaction",
+                "timestamp": "2026-01-01T00:00:00.000Z",
+                "summary": "summary",
+                "tokensBefore": 20,
+                "id": "00000002",
+                "parentId": "00000001",
+                "firstKeptEntryId": "00000001"
+              },
+              {
+                "type": "message",
+                "id": "00000003",
+                "parentId": "00000002",
+                "timestamp": "2026-01-01T00:00:00.000Z",
+                "message": {
+                  "role": "user",
+                  "content": "appended",
+                  "timestamp": 1767225600000,
+                  "unknown": {
+                    "z": 1,
+                    "a": 2
+                  }
+                }
+              }
+            ],
+            "leafId": "00000003",
+            "context": {
+              "messages": [
+                {
+                  "role": "compactionSummary",
+                  "summary": "summary",
+                  "tokensBefore": 20,
+                  "timestamp": 1767225600000
+                },
+                {
+                  "role": "user",
+                  "content": "legacy",
+                  "timestamp": 1767225600000
+                },
+                {
+                  "role": "user",
+                  "content": "appended",
+                  "timestamp": 1767225600000,
+                  "unknown": {
+                    "z": 1,
+                    "a": 2
+                  }
+                }
+              ],
+              "thinkingLevel": "off",
+              "model": null
+            }
+          }
+        ],
+        "finalBytes": "{\"type\":\"session\",\"id\":\"old-v1\",\"timestamp\":\"2026-01-01T00:00:00.000Z\",\"cwd\":\"/workspace/project\",\"version\":3}\n{\"type\":\"message\",\"timestamp\":\"2026-01-01T00:00:00.000Z\",\"message\":{\"role\":\"user\",\"content\":\"legacy\",\"timestamp\":1767225600000},\"id\":\"00000001\",\"parentId\":null}\n{\"type\":\"compaction\",\"timestamp\":\"2026-01-01T00:00:00.000Z\",\"summary\":\"summary\",\"tokensBefore\":20,\"id\":\"00000002\",\"parentId\":\"00000001\",\"firstKeptEntryId\":\"00000001\"}\n{\"type\":\"message\",\"id\":\"00000003\",\"parentId\":\"00000002\",\"timestamp\":\"2026-01-01T00:00:00.000Z\",\"message\":{\"role\":\"user\",\"content\":\"appended\",\"timestamp\":1767225600000,\"unknown\":{\"z\":1,\"a\":2}}}\n",
+        "readBack": {
+          "header": {
+            "type": "session",
+            "id": "old-v1",
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "cwd": "/workspace/project",
+            "version": 3
+          },
+          "entries": [
+            {
+              "type": "message",
+              "timestamp": "2026-01-01T00:00:00.000Z",
+              "message": {
+                "role": "user",
+                "content": "legacy",
+                "timestamp": 1767225600000
+              },
+              "id": "00000001",
+              "parentId": null
+            },
+            {
+              "type": "compaction",
+              "timestamp": "2026-01-01T00:00:00.000Z",
+              "summary": "summary",
+              "tokensBefore": 20,
+              "id": "00000002",
+              "parentId": "00000001",
+              "firstKeptEntryId": "00000001"
+            },
+            {
+              "type": "message",
+              "id": "00000003",
+              "parentId": "00000002",
+              "timestamp": "2026-01-01T00:00:00.000Z",
+              "message": {
+                "role": "user",
+                "content": "appended",
+                "timestamp": 1767225600000,
+                "unknown": {
+                  "z": 1,
+                  "a": 2
+                }
+              }
+            }
+          ],
+          "context": {
+            "messages": [
+              {
+                "role": "compactionSummary",
+                "summary": "summary",
+                "tokensBefore": 20,
+                "timestamp": 1767225600000
+              },
+              {
+                "role": "user",
+                "content": "legacy",
+                "timestamp": 1767225600000
+              },
+              {
+                "role": "user",
+                "content": "appended",
+                "timestamp": 1767225600000,
+                "unknown": {
+                  "z": 1,
+                  "a": 2
+                }
+              }
+            ],
+            "thinkingLevel": "off",
+            "model": null
+          }
+        },
+        "listing": [
+          {
+            "id": "old-v1",
+            "cwd": "/workspace/project",
+            "created": "2026-01-01T00:00:00.000Z",
+            "modified": "2026-01-01T00:00:00.000Z",
+            "messageCount": 2,
+            "firstMessage": "legacy",
+            "allMessagesText": "legacy appended"
+          }
+        ]
+      },
+      {
+        "case": "final-line-repair",
+        "steps": [
+          {
+            "bytes": "{\"type\":\"session\",\"version\":3,\"id\":\"interchange\",\"timestamp\":\"2026-01-01T00:00:00.000Z\",\"cwd\":\"/workspace/project\"}\n{\"type\":\"message\",\"id\":\"old\",\"parentId\":null,\"timestamp\":\"2026-01-01T00:00:00.000Z\",\"message\":{\"role\":\"user\",\"content\":\"last\",\"timestamp\":1767225600000}}\n",
+            "header": {
+              "type": "session",
+              "version": 3,
+              "id": "interchange",
+              "timestamp": "2026-01-01T00:00:00.000Z",
+              "cwd": "/workspace/project"
+            },
+            "entries": [
+              {
+                "type": "message",
+                "id": "old",
+                "parentId": null,
+                "timestamp": "2026-01-01T00:00:00.000Z",
+                "message": {
+                  "role": "user",
+                  "content": "last",
+                  "timestamp": 1767225600000
+                }
+              }
+            ],
+            "leafId": "old",
+            "context": {
+              "messages": [
+                {
+                  "role": "user",
+                  "content": "last",
+                  "timestamp": 1767225600000
+                }
+              ],
+              "thinkingLevel": "off",
+              "model": null
+            }
+          },
+          {
+            "result": "00000001",
+            "bytes": "{\"type\":\"session\",\"version\":3,\"id\":\"interchange\",\"timestamp\":\"2026-01-01T00:00:00.000Z\",\"cwd\":\"/workspace/project\"}\n{\"type\":\"message\",\"id\":\"old\",\"parentId\":null,\"timestamp\":\"2026-01-01T00:00:00.000Z\",\"message\":{\"role\":\"user\",\"content\":\"last\",\"timestamp\":1767225600000}}\n{\"type\":\"message\",\"id\":\"00000001\",\"parentId\":\"old\",\"timestamp\":\"2026-01-01T00:00:00.000Z\",\"message\":{\"role\":\"user\",\"content\":\"appended\",\"timestamp\":1767225600000,\"unknown\":{\"z\":1,\"a\":2}}}\n",
+            "header": {
+              "type": "session",
+              "version": 3,
+              "id": "interchange",
+              "timestamp": "2026-01-01T00:00:00.000Z",
+              "cwd": "/workspace/project"
+            },
+            "entries": [
+              {
+                "type": "message",
+                "id": "old",
+                "parentId": null,
+                "timestamp": "2026-01-01T00:00:00.000Z",
+                "message": {
+                  "role": "user",
+                  "content": "last",
+                  "timestamp": 1767225600000
+                }
+              },
+              {
+                "type": "message",
+                "id": "00000001",
+                "parentId": "old",
+                "timestamp": "2026-01-01T00:00:00.000Z",
+                "message": {
+                  "role": "user",
+                  "content": "appended",
+                  "timestamp": 1767225600000,
+                  "unknown": {
+                    "z": 1,
+                    "a": 2
+                  }
+                }
+              }
+            ],
+            "leafId": "00000001",
+            "context": {
+              "messages": [
+                {
+                  "role": "user",
+                  "content": "last",
+                  "timestamp": 1767225600000
+                },
+                {
+                  "role": "user",
+                  "content": "appended",
+                  "timestamp": 1767225600000,
+                  "unknown": {
+                    "z": 1,
+                    "a": 2
+                  }
+                }
+              ],
+              "thinkingLevel": "off",
+              "model": null
+            }
+          }
+        ],
+        "finalBytes": "{\"type\":\"session\",\"version\":3,\"id\":\"interchange\",\"timestamp\":\"2026-01-01T00:00:00.000Z\",\"cwd\":\"/workspace/project\"}\n{\"type\":\"message\",\"id\":\"old\",\"parentId\":null,\"timestamp\":\"2026-01-01T00:00:00.000Z\",\"message\":{\"role\":\"user\",\"content\":\"last\",\"timestamp\":1767225600000}}\n{\"type\":\"message\",\"id\":\"00000001\",\"parentId\":\"old\",\"timestamp\":\"2026-01-01T00:00:00.000Z\",\"message\":{\"role\":\"user\",\"content\":\"appended\",\"timestamp\":1767225600000,\"unknown\":{\"z\":1,\"a\":2}}}\n",
+        "readBack": {
+          "header": {
+            "type": "session",
+            "version": 3,
+            "id": "interchange",
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "cwd": "/workspace/project"
+          },
+          "entries": [
+            {
+              "type": "message",
+              "id": "old",
+              "parentId": null,
+              "timestamp": "2026-01-01T00:00:00.000Z",
+              "message": {
+                "role": "user",
+                "content": "last",
+                "timestamp": 1767225600000
+              }
+            },
+            {
+              "type": "message",
+              "id": "00000001",
+              "parentId": "old",
+              "timestamp": "2026-01-01T00:00:00.000Z",
+              "message": {
+                "role": "user",
+                "content": "appended",
+                "timestamp": 1767225600000,
+                "unknown": {
+                  "z": 1,
+                  "a": 2
+                }
+              }
+            }
+          ],
+          "context": {
+            "messages": [
+              {
+                "role": "user",
+                "content": "last",
+                "timestamp": 1767225600000
+              },
+              {
+                "role": "user",
+                "content": "appended",
+                "timestamp": 1767225600000,
+                "unknown": {
+                  "z": 1,
+                  "a": 2
+                }
+              }
+            ],
+            "thinkingLevel": "off",
+            "model": null
+          }
+        },
+        "listing": [
+          {
+            "id": "interchange",
+            "cwd": "/workspace/project",
+            "created": "2026-01-01T00:00:00.000Z",
+            "modified": "2026-01-01T00:00:00.000Z",
+            "messageCount": 2,
+            "firstMessage": "last",
+            "allMessagesText": "last appended"
+          }
+        ]
+      },
+      {
+        "case": "truncated-line-repair",
+        "steps": [
+          {
+            "bytes": "{\"type\":\"session\",\"version\":3,\"id\":\"interchange\",\"timestamp\":\"2026-01-01T00:00:00.000Z\",\"cwd\":\"/workspace/project\"}\n{\"type\":\"message\",\"id\":\"old\",\"parentId\":null,\"timestamp\":\"2026-01-01T00:00:00.000Z\",\"message\":{\"role\":\"user\",\"content\":\"retained\",\"timestamp\":1767225600000}}\n{\"type\":\n",
+            "header": {
+              "type": "session",
+              "version": 3,
+              "id": "interchange",
+              "timestamp": "2026-01-01T00:00:00.000Z",
+              "cwd": "/workspace/project"
+            },
+            "entries": [
+              {
+                "type": "message",
+                "id": "old",
+                "parentId": null,
+                "timestamp": "2026-01-01T00:00:00.000Z",
+                "message": {
+                  "role": "user",
+                  "content": "retained",
+                  "timestamp": 1767225600000
+                }
+              }
+            ],
+            "leafId": "old",
+            "context": {
+              "messages": [
+                {
+                  "role": "user",
+                  "content": "retained",
+                  "timestamp": 1767225600000
+                }
+              ],
+              "thinkingLevel": "off",
+              "model": null
+            }
+          },
+          {
+            "result": "00000001",
+            "bytes": "{\"type\":\"session\",\"version\":3,\"id\":\"interchange\",\"timestamp\":\"2026-01-01T00:00:00.000Z\",\"cwd\":\"/workspace/project\"}\n{\"type\":\"message\",\"id\":\"old\",\"parentId\":null,\"timestamp\":\"2026-01-01T00:00:00.000Z\",\"message\":{\"role\":\"user\",\"content\":\"retained\",\"timestamp\":1767225600000}}\n{\"type\":\n{\"type\":\"message\",\"id\":\"00000001\",\"parentId\":\"old\",\"timestamp\":\"2026-01-01T00:00:00.000Z\",\"message\":{\"role\":\"user\",\"content\":\"appended\",\"timestamp\":1767225600000,\"unknown\":{\"z\":1,\"a\":2}}}\n",
+            "header": {
+              "type": "session",
+              "version": 3,
+              "id": "interchange",
+              "timestamp": "2026-01-01T00:00:00.000Z",
+              "cwd": "/workspace/project"
+            },
+            "entries": [
+              {
+                "type": "message",
+                "id": "old",
+                "parentId": null,
+                "timestamp": "2026-01-01T00:00:00.000Z",
+                "message": {
+                  "role": "user",
+                  "content": "retained",
+                  "timestamp": 1767225600000
+                }
+              },
+              {
+                "type": "message",
+                "id": "00000001",
+                "parentId": "old",
+                "timestamp": "2026-01-01T00:00:00.000Z",
+                "message": {
+                  "role": "user",
+                  "content": "appended",
+                  "timestamp": 1767225600000,
+                  "unknown": {
+                    "z": 1,
+                    "a": 2
+                  }
+                }
+              }
+            ],
+            "leafId": "00000001",
+            "context": {
+              "messages": [
+                {
+                  "role": "user",
+                  "content": "retained",
+                  "timestamp": 1767225600000
+                },
+                {
+                  "role": "user",
+                  "content": "appended",
+                  "timestamp": 1767225600000,
+                  "unknown": {
+                    "z": 1,
+                    "a": 2
+                  }
+                }
+              ],
+              "thinkingLevel": "off",
+              "model": null
+            }
+          }
+        ],
+        "finalBytes": "{\"type\":\"session\",\"version\":3,\"id\":\"interchange\",\"timestamp\":\"2026-01-01T00:00:00.000Z\",\"cwd\":\"/workspace/project\"}\n{\"type\":\"message\",\"id\":\"old\",\"parentId\":null,\"timestamp\":\"2026-01-01T00:00:00.000Z\",\"message\":{\"role\":\"user\",\"content\":\"retained\",\"timestamp\":1767225600000}}\n{\"type\":\n{\"type\":\"message\",\"id\":\"00000001\",\"parentId\":\"old\",\"timestamp\":\"2026-01-01T00:00:00.000Z\",\"message\":{\"role\":\"user\",\"content\":\"appended\",\"timestamp\":1767225600000,\"unknown\":{\"z\":1,\"a\":2}}}\n",
+        "readBack": {
+          "header": {
+            "type": "session",
+            "version": 3,
+            "id": "interchange",
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "cwd": "/workspace/project"
+          },
+          "entries": [
+            {
+              "type": "message",
+              "id": "old",
+              "parentId": null,
+              "timestamp": "2026-01-01T00:00:00.000Z",
+              "message": {
+                "role": "user",
+                "content": "retained",
+                "timestamp": 1767225600000
+              }
+            },
+            {
+              "type": "message",
+              "id": "00000001",
+              "parentId": "old",
+              "timestamp": "2026-01-01T00:00:00.000Z",
+              "message": {
+                "role": "user",
+                "content": "appended",
+                "timestamp": 1767225600000,
+                "unknown": {
+                  "z": 1,
+                  "a": 2
+                }
+              }
+            }
+          ],
+          "context": {
+            "messages": [
+              {
+                "role": "user",
+                "content": "retained",
+                "timestamp": 1767225600000
+              },
+              {
+                "role": "user",
+                "content": "appended",
+                "timestamp": 1767225600000,
+                "unknown": {
+                  "z": 1,
+                  "a": 2
+                }
+              }
+            ],
+            "thinkingLevel": "off",
+            "model": null
+          }
+        },
+        "listing": [
+          {
+            "id": "interchange",
+            "cwd": "/workspace/project",
+            "created": "2026-01-01T00:00:00.000Z",
+            "modified": "2026-01-01T00:00:00.000Z",
+            "messageCount": 2,
+            "firstMessage": "retained",
+            "allMessagesText": "retained appended"
+          }
+        ]
+      },
+      {
+        "case": "invalid-json-unchanged",
+        "steps": [
+          {
+            "error": "Session file is not a valid pi session: <SESSION_FILE>",
+            "errorClass": "Error"
+          }
+        ],
+        "finalBytes": "{broken}\n",
+        "readBack": {
+          "error": "Session file is not a valid pi session: <SESSION_FILE>",
+          "errorClass": "Error"
+        },
+        "listing": []
+      },
+      {
+        "case": "invalid-nonheader-unchanged",
+        "steps": [
+          {
+            "error": "Session file is not a valid pi session: <SESSION_FILE>",
+            "errorClass": "Error"
+          }
+        ],
+        "finalBytes": "{\"type\":\"message\",\"id\":\"old\",\"parentId\":null,\"timestamp\":\"2026-01-01T00:00:00.000Z\",\"message\":{\"role\":\"user\",\"content\":\"invalid first\",\"timestamp\":1767225600000}}\n",
+        "readBack": {
+          "error": "Session file is not a valid pi session: <SESSION_FILE>",
+          "errorClass": "Error"
+        },
+        "listing": []
+      },
+      {
+        "case": "empty-explicit-file",
+        "steps": [
+          {
+            "bytes": "{\"type\":\"session\",\"version\":3,\"id\":\"019b76da-a800-751e-8931-109aa015c669\",\"timestamp\":\"2026-01-01T00:00:00.000Z\",\"cwd\":\"/workspace/project\"}\n",
+            "header": {
+              "type": "session",
+              "version": 3,
+              "id": "019b76da-a800-751e-8931-109aa015c669",
+              "timestamp": "2026-01-01T00:00:00.000Z",
+              "cwd": "/workspace/project"
+            },
+            "entries": [],
+            "leafId": null,
+            "context": {
+              "messages": [],
+              "thinkingLevel": "off",
+              "model": null
+            }
+          },
+          {
+            "result": "00000001",
+            "bytes": "{\"type\":\"session\",\"version\":3,\"id\":\"019b76da-a800-751e-8931-109aa015c669\",\"timestamp\":\"2026-01-01T00:00:00.000Z\",\"cwd\":\"/workspace/project\"}\n{\"type\":\"message\",\"id\":\"00000001\",\"parentId\":null,\"timestamp\":\"2026-01-01T00:00:00.000Z\",\"message\":{\"role\":\"user\",\"content\":\"appended\",\"timestamp\":1767225600000,\"unknown\":{\"z\":1,\"a\":2}}}\n",
+            "header": {
+              "type": "session",
+              "version": 3,
+              "id": "019b76da-a800-751e-8931-109aa015c669",
+              "timestamp": "2026-01-01T00:00:00.000Z",
+              "cwd": "/workspace/project"
+            },
+            "entries": [
+              {
+                "type": "message",
+                "id": "00000001",
+                "parentId": null,
+                "timestamp": "2026-01-01T00:00:00.000Z",
+                "message": {
+                  "role": "user",
+                  "content": "appended",
+                  "timestamp": 1767225600000,
+                  "unknown": {
+                    "z": 1,
+                    "a": 2
+                  }
+                }
+              }
+            ],
+            "leafId": "00000001",
+            "context": {
+              "messages": [
+                {
+                  "role": "user",
+                  "content": "appended",
+                  "timestamp": 1767225600000,
+                  "unknown": {
+                    "z": 1,
+                    "a": 2
+                  }
+                }
+              ],
+              "thinkingLevel": "off",
+              "model": null
+            }
+          }
+        ],
+        "finalBytes": "{\"type\":\"session\",\"version\":3,\"id\":\"019b76da-a800-751e-8931-109aa015c669\",\"timestamp\":\"2026-01-01T00:00:00.000Z\",\"cwd\":\"/workspace/project\"}\n{\"type\":\"message\",\"id\":\"00000001\",\"parentId\":null,\"timestamp\":\"2026-01-01T00:00:00.000Z\",\"message\":{\"role\":\"user\",\"content\":\"appended\",\"timestamp\":1767225600000,\"unknown\":{\"z\":1,\"a\":2}}}\n",
+        "readBack": {
+          "header": {
+            "type": "session",
+            "version": 3,
+            "id": "019b76da-a800-751e-8931-109aa015c669",
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "cwd": "/workspace/project"
+          },
+          "entries": [
+            {
+              "type": "message",
+              "id": "00000001",
+              "parentId": null,
+              "timestamp": "2026-01-01T00:00:00.000Z",
+              "message": {
+                "role": "user",
+                "content": "appended",
+                "timestamp": 1767225600000,
+                "unknown": {
+                  "z": 1,
+                  "a": 2
+                }
+              }
+            }
+          ],
+          "context": {
+            "messages": [
+              {
+                "role": "user",
+                "content": "appended",
+                "timestamp": 1767225600000,
+                "unknown": {
+                  "z": 1,
+                  "a": 2
+                }
+              }
+            ],
+            "thinkingLevel": "off",
+            "model": null
+          }
+        },
+        "listing": [
+          {
+            "id": "019b76da-a800-751e-8931-109aa015c669",
+            "cwd": "/workspace/project",
+            "created": "2026-01-01T00:00:00.000Z",
+            "modified": "2026-01-01T00:00:00.000Z",
+            "messageCount": 1,
+            "firstMessage": "appended",
+            "allMessagesText": "appended"
+          }
+        ]
+      },
+      {
+        "case": "missing-explicit-file",
+        "steps": [
+          {
+            "bytes": null,
+            "header": {
+              "type": "session",
+              "version": 3,
+              "id": "019b76da-a800-751e-8931-109aa015c669",
+              "timestamp": "2026-01-01T00:00:00.000Z",
+              "cwd": "/workspace/project"
+            },
+            "entries": [],
+            "leafId": null,
+            "context": {
+              "messages": [],
+              "thinkingLevel": "off",
+              "model": null
+            }
+          },
+          {
+            "result": "00000001",
+            "bytes": "{\"type\":\"session\",\"version\":3,\"id\":\"019b76da-a800-751e-8931-109aa015c669\",\"timestamp\":\"2026-01-01T00:00:00.000Z\",\"cwd\":\"/workspace/project\"}\n{\"type\":\"message\",\"id\":\"00000001\",\"parentId\":null,\"timestamp\":\"2026-01-01T00:00:00.000Z\",\"message\":{\"role\":\"user\",\"content\":\"appended\",\"timestamp\":1767225600000,\"unknown\":{\"z\":1,\"a\":2}}}\n",
+            "header": {
+              "type": "session",
+              "version": 3,
+              "id": "019b76da-a800-751e-8931-109aa015c669",
+              "timestamp": "2026-01-01T00:00:00.000Z",
+              "cwd": "/workspace/project"
+            },
+            "entries": [
+              {
+                "type": "message",
+                "id": "00000001",
+                "parentId": null,
+                "timestamp": "2026-01-01T00:00:00.000Z",
+                "message": {
+                  "role": "user",
+                  "content": "appended",
+                  "timestamp": 1767225600000,
+                  "unknown": {
+                    "z": 1,
+                    "a": 2
+                  }
+                }
+              }
+            ],
+            "leafId": "00000001",
+            "context": {
+              "messages": [
+                {
+                  "role": "user",
+                  "content": "appended",
+                  "timestamp": 1767225600000,
+                  "unknown": {
+                    "z": 1,
+                    "a": 2
+                  }
+                }
+              ],
+              "thinkingLevel": "off",
+              "model": null
+            }
+          }
+        ],
+        "finalBytes": "{\"type\":\"session\",\"version\":3,\"id\":\"019b76da-a800-751e-8931-109aa015c669\",\"timestamp\":\"2026-01-01T00:00:00.000Z\",\"cwd\":\"/workspace/project\"}\n{\"type\":\"message\",\"id\":\"00000001\",\"parentId\":null,\"timestamp\":\"2026-01-01T00:00:00.000Z\",\"message\":{\"role\":\"user\",\"content\":\"appended\",\"timestamp\":1767225600000,\"unknown\":{\"z\":1,\"a\":2}}}\n",
+        "readBack": {
+          "header": {
+            "type": "session",
+            "version": 3,
+            "id": "019b76da-a800-751e-8931-109aa015c669",
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "cwd": "/workspace/project"
+          },
+          "entries": [
+            {
+              "type": "message",
+              "id": "00000001",
+              "parentId": null,
+              "timestamp": "2026-01-01T00:00:00.000Z",
+              "message": {
+                "role": "user",
+                "content": "appended",
+                "timestamp": 1767225600000,
+                "unknown": {
+                  "z": 1,
+                  "a": 2
+                }
+              }
+            }
+          ],
+          "context": {
+            "messages": [
+              {
+                "role": "user",
+                "content": "appended",
+                "timestamp": 1767225600000,
+                "unknown": {
+                  "z": 1,
+                  "a": 2
+                }
+              }
+            ],
+            "thinkingLevel": "off",
+            "model": null
+          }
+        },
+        "listing": [
+          {
+            "id": "019b76da-a800-751e-8931-109aa015c669",
+            "cwd": "/workspace/project",
+            "created": "2026-01-01T00:00:00.000Z",
+            "modified": "2026-01-01T00:00:00.000Z",
+            "messageCount": 1,
+            "firstMessage": "appended",
+            "allMessagesText": "appended"
+          }
+        ]
+      },
+      {
+        "case": "setup-persistence-barrier",
+        "steps": [
+          {
+            "bytes": null,
+            "header": {
+              "type": "session",
+              "version": 3,
+              "id": "barrier-session",
+              "timestamp": "2026-01-01T00:00:00.000Z",
+              "cwd": "/workspace/project"
+            },
+            "entries": [],
+            "leafId": null,
+            "context": {
+              "messages": [],
+              "thinkingLevel": "off",
+              "model": null
+            }
+          },
+          {
+            "result": "00000001",
+            "bytes": null,
+            "header": {
+              "type": "session",
+              "version": 3,
+              "id": "barrier-session",
+              "timestamp": "2026-01-01T00:00:00.000Z",
+              "cwd": "/workspace/project"
+            },
+            "entries": [
+              {
+                "type": "model_change",
+                "id": "00000001",
+                "parentId": null,
+                "timestamp": "2026-01-01T00:00:00.000Z",
+                "provider": "openai",
+                "modelId": "gpt-4o"
+              }
+            ],
+            "leafId": "00000001",
+            "context": {
+              "messages": [],
+              "thinkingLevel": "off",
+              "model": {
+                "provider": "openai",
+                "modelId": "gpt-4o"
+              }
+            }
+          },
+          {
+            "result": "00000002",
+            "bytes": null,
+            "header": {
+              "type": "session",
+              "version": 3,
+              "id": "barrier-session",
+              "timestamp": "2026-01-01T00:00:00.000Z",
+              "cwd": "/workspace/project"
+            },
+            "entries": [
+              {
+                "type": "model_change",
+                "id": "00000001",
+                "parentId": null,
+                "timestamp": "2026-01-01T00:00:00.000Z",
+                "provider": "openai",
+                "modelId": "gpt-4o"
+              },
+              {
+                "type": "message",
+                "id": "00000002",
+                "parentId": "00000001",
+                "timestamp": "2026-01-01T00:00:00.000Z",
+                "message": {
+                  "role": "system",
+                  "content": "policy",
+                  "timestamp": 1767225600000
+                }
+              }
+            ],
+            "leafId": "00000002",
+            "context": {
+              "messages": [
+                {
+                  "role": "system",
+                  "content": "policy",
+                  "timestamp": 1767225600000
+                }
+              ],
+              "thinkingLevel": "off",
+              "model": {
+                "provider": "openai",
+                "modelId": "gpt-4o"
+              }
+            }
+          },
+          {
+            "result": "00000003",
+            "bytes": "{\"type\":\"session\",\"version\":3,\"id\":\"barrier-session\",\"timestamp\":\"2026-01-01T00:00:00.000Z\",\"cwd\":\"/workspace/project\"}\n{\"type\":\"model_change\",\"id\":\"00000001\",\"parentId\":null,\"timestamp\":\"2026-01-01T00:00:00.000Z\",\"provider\":\"openai\",\"modelId\":\"gpt-4o\"}\n{\"type\":\"message\",\"id\":\"00000002\",\"parentId\":\"00000001\",\"timestamp\":\"2026-01-01T00:00:00.000Z\",\"message\":{\"role\":\"system\",\"content\":\"policy\",\"timestamp\":1767225600000}}\n{\"type\":\"message\",\"id\":\"00000003\",\"parentId\":\"00000002\",\"timestamp\":\"2026-01-01T00:00:00.000Z\",\"message\":{\"role\":\"user\",\"content\":\"appended\",\"timestamp\":1767225600000,\"unknown\":{\"z\":1,\"a\":2}}}\n",
+            "header": {
+              "type": "session",
+              "version": 3,
+              "id": "barrier-session",
+              "timestamp": "2026-01-01T00:00:00.000Z",
+              "cwd": "/workspace/project"
+            },
+            "entries": [
+              {
+                "type": "model_change",
+                "id": "00000001",
+                "parentId": null,
+                "timestamp": "2026-01-01T00:00:00.000Z",
+                "provider": "openai",
+                "modelId": "gpt-4o"
+              },
+              {
+                "type": "message",
+                "id": "00000002",
+                "parentId": "00000001",
+                "timestamp": "2026-01-01T00:00:00.000Z",
+                "message": {
+                  "role": "system",
+                  "content": "policy",
+                  "timestamp": 1767225600000
+                }
+              },
+              {
+                "type": "message",
+                "id": "00000003",
+                "parentId": "00000002",
+                "timestamp": "2026-01-01T00:00:00.000Z",
+                "message": {
+                  "role": "user",
+                  "content": "appended",
+                  "timestamp": 1767225600000,
+                  "unknown": {
+                    "z": 1,
+                    "a": 2
+                  }
+                }
+              }
+            ],
+            "leafId": "00000003",
+            "context": {
+              "messages": [
+                {
+                  "role": "system",
+                  "content": "policy",
+                  "timestamp": 1767225600000
+                },
+                {
+                  "role": "user",
+                  "content": "appended",
+                  "timestamp": 1767225600000,
+                  "unknown": {
+                    "z": 1,
+                    "a": 2
+                  }
+                }
+              ],
+              "thinkingLevel": "off",
+              "model": {
+                "provider": "openai",
+                "modelId": "gpt-4o"
+              }
+            }
+          }
+        ],
+        "finalBytes": "{\"type\":\"session\",\"version\":3,\"id\":\"barrier-session\",\"timestamp\":\"2026-01-01T00:00:00.000Z\",\"cwd\":\"/workspace/project\"}\n{\"type\":\"model_change\",\"id\":\"00000001\",\"parentId\":null,\"timestamp\":\"2026-01-01T00:00:00.000Z\",\"provider\":\"openai\",\"modelId\":\"gpt-4o\"}\n{\"type\":\"message\",\"id\":\"00000002\",\"parentId\":\"00000001\",\"timestamp\":\"2026-01-01T00:00:00.000Z\",\"message\":{\"role\":\"system\",\"content\":\"policy\",\"timestamp\":1767225600000}}\n{\"type\":\"message\",\"id\":\"00000003\",\"parentId\":\"00000002\",\"timestamp\":\"2026-01-01T00:00:00.000Z\",\"message\":{\"role\":\"user\",\"content\":\"appended\",\"timestamp\":1767225600000,\"unknown\":{\"z\":1,\"a\":2}}}\n",
+        "readBack": {
+          "header": {
+            "type": "session",
+            "version": 3,
+            "id": "barrier-session",
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "cwd": "/workspace/project"
+          },
+          "entries": [
+            {
+              "type": "model_change",
+              "id": "00000001",
+              "parentId": null,
+              "timestamp": "2026-01-01T00:00:00.000Z",
+              "provider": "openai",
+              "modelId": "gpt-4o"
+            },
+            {
+              "type": "message",
+              "id": "00000002",
+              "parentId": "00000001",
+              "timestamp": "2026-01-01T00:00:00.000Z",
+              "message": {
+                "role": "system",
+                "content": "policy",
+                "timestamp": 1767225600000
+              }
+            },
+            {
+              "type": "message",
+              "id": "00000003",
+              "parentId": "00000002",
+              "timestamp": "2026-01-01T00:00:00.000Z",
+              "message": {
+                "role": "user",
+                "content": "appended",
+                "timestamp": 1767225600000,
+                "unknown": {
+                  "z": 1,
+                  "a": 2
+                }
+              }
+            }
+          ],
+          "context": {
+            "messages": [
+              {
+                "role": "system",
+                "content": "policy",
+                "timestamp": 1767225600000
+              },
+              {
+                "role": "user",
+                "content": "appended",
+                "timestamp": 1767225600000,
+                "unknown": {
+                  "z": 1,
+                  "a": 2
+                }
+              }
+            ],
+            "thinkingLevel": "off",
+            "model": {
+              "provider": "openai",
+              "modelId": "gpt-4o"
+            }
+          }
+        },
+        "listing": [
+          {
+            "id": "barrier-session",
+            "cwd": "/workspace/project",
+            "created": "2026-01-01T00:00:00.000Z",
+            "modified": "2026-01-01T00:00:00.000Z",
+            "messageCount": 2,
+            "firstMessage": "appended",
+            "allMessagesText": "appended"
+          }
+        ]
+      },
+      {
+        "case": "header-date-numeric",
+        "steps": [
+          {
+            "bytes": "{\"type\":\"session\",\"version\":3,\"id\":\"interchange\",\"timestamp\":42,\"cwd\":\"/workspace/project\"}\n",
+            "header": {
+              "type": "session",
+              "version": 3,
+              "id": "interchange",
+              "timestamp": 42,
+              "cwd": "/workspace/project"
+            },
+            "entries": [],
+            "leafId": null,
+            "context": {
+              "messages": [],
+              "thinkingLevel": "off",
+              "model": null
+            }
+          }
+        ],
+        "finalBytes": "{\"type\":\"session\",\"version\":3,\"id\":\"interchange\",\"timestamp\":42,\"cwd\":\"/workspace/project\"}\n",
+        "readBack": {
+          "header": {
+            "type": "session",
+            "version": 3,
+            "id": "interchange",
+            "timestamp": 42,
+            "cwd": "/workspace/project"
+          },
+          "entries": [],
+          "context": {
+            "messages": [],
+            "thinkingLevel": "off",
+            "model": null
+          }
+        },
+        "listing": [
+          {
+            "id": "interchange",
+            "cwd": "/workspace/project",
+            "created": "1970-01-01T00:00:00.042Z",
+            "modified": "2026-01-01T00:00:00.000Z",
+            "messageCount": 0,
+            "firstMessage": "(no messages)",
+            "allMessagesText": ""
+          }
+        ]
+      },
+      {
+        "case": "header-date-null",
+        "steps": [
+          {
+            "bytes": "{\"type\":\"session\",\"version\":3,\"id\":\"interchange\",\"timestamp\":null,\"cwd\":\"/workspace/project\"}\n",
+            "header": {
+              "type": "session",
+              "version": 3,
+              "id": "interchange",
+              "timestamp": null,
+              "cwd": "/workspace/project"
+            },
+            "entries": [],
+            "leafId": null,
+            "context": {
+              "messages": [],
+              "thinkingLevel": "off",
+              "model": null
+            }
+          }
+        ],
+        "finalBytes": "{\"type\":\"session\",\"version\":3,\"id\":\"interchange\",\"timestamp\":null,\"cwd\":\"/workspace/project\"}\n",
+        "readBack": {
+          "header": {
+            "type": "session",
+            "version": 3,
+            "id": "interchange",
+            "timestamp": null,
+            "cwd": "/workspace/project"
+          },
+          "entries": [],
+          "context": {
+            "messages": [],
+            "thinkingLevel": "off",
+            "model": null
+          }
+        },
+        "listing": [
+          {
+            "id": "interchange",
+            "cwd": "/workspace/project",
+            "created": "1970-01-01T00:00:00.000Z",
+            "modified": "2026-01-01T00:00:00.000Z",
+            "messageCount": 0,
+            "firstMessage": "(no messages)",
+            "allMessagesText": ""
+          }
+        ]
+      },
+      {
+        "case": "header-date-boolean",
+        "steps": [
+          {
+            "bytes": "{\"type\":\"session\",\"version\":3,\"id\":\"interchange\",\"timestamp\":true,\"cwd\":\"/workspace/project\"}\n",
+            "header": {
+              "type": "session",
+              "version": 3,
+              "id": "interchange",
+              "timestamp": true,
+              "cwd": "/workspace/project"
+            },
+            "entries": [],
+            "leafId": null,
+            "context": {
+              "messages": [],
+              "thinkingLevel": "off",
+              "model": null
+            }
+          }
+        ],
+        "finalBytes": "{\"type\":\"session\",\"version\":3,\"id\":\"interchange\",\"timestamp\":true,\"cwd\":\"/workspace/project\"}\n",
+        "readBack": {
+          "header": {
+            "type": "session",
+            "version": 3,
+            "id": "interchange",
+            "timestamp": true,
+            "cwd": "/workspace/project"
+          },
+          "entries": [],
+          "context": {
+            "messages": [],
+            "thinkingLevel": "off",
+            "model": null
+          }
+        },
+        "listing": [
+          {
+            "id": "interchange",
+            "cwd": "/workspace/project",
+            "created": "1970-01-01T00:00:00.001Z",
+            "modified": "2026-01-01T00:00:00.000Z",
+            "messageCount": 0,
+            "firstMessage": "(no messages)",
+            "allMessagesText": ""
+          }
+        ]
+      },
+      {
+        "case": "header-date-invalid",
+        "steps": [
+          {
+            "bytes": "{\"type\":\"session\",\"version\":3,\"id\":\"interchange\",\"timestamp\":\"invalid date\",\"cwd\":\"/workspace/project\"}\n",
+            "header": {
+              "type": "session",
+              "version": 3,
+              "id": "interchange",
+              "timestamp": "invalid date",
+              "cwd": "/workspace/project"
+            },
+            "entries": [],
+            "leafId": null,
+            "context": {
+              "messages": [],
+              "thinkingLevel": "off",
+              "model": null
+            }
+          }
+        ],
+        "finalBytes": "{\"type\":\"session\",\"version\":3,\"id\":\"interchange\",\"timestamp\":\"invalid date\",\"cwd\":\"/workspace/project\"}\n",
+        "readBack": {
+          "header": {
+            "type": "session",
+            "version": 3,
+            "id": "interchange",
+            "timestamp": "invalid date",
+            "cwd": "/workspace/project"
+          },
+          "entries": [],
+          "context": {
+            "messages": [],
+            "thinkingLevel": "off",
+            "model": null
+          }
+        },
+        "listing": [
+          {
+            "id": "interchange",
+            "cwd": "/workspace/project",
+            "created": null,
+            "modified": "2026-01-01T00:00:00.000Z",
+            "messageCount": 0,
+            "firstMessage": "(no messages)",
+            "allMessagesText": ""
+          }
+        ]
+      },
+      {
+        "case": "header-date-rfc",
+        "steps": [
+          {
+            "bytes": "{\"type\":\"session\",\"version\":3,\"id\":\"interchange\",\"timestamp\":\"Thu, 01 Jan 2026 00:00:00 GMT\",\"cwd\":\"/workspace/project\"}\n",
+            "header": {
+              "type": "session",
+              "version": 3,
+              "id": "interchange",
+              "timestamp": "Thu, 01 Jan 2026 00:00:00 GMT",
+              "cwd": "/workspace/project"
+            },
+            "entries": [],
+            "leafId": null,
+            "context": {
+              "messages": [],
+              "thinkingLevel": "off",
+              "model": null
+            }
+          }
+        ],
+        "finalBytes": "{\"type\":\"session\",\"version\":3,\"id\":\"interchange\",\"timestamp\":\"Thu, 01 Jan 2026 00:00:00 GMT\",\"cwd\":\"/workspace/project\"}\n",
+        "readBack": {
+          "header": {
+            "type": "session",
+            "version": 3,
+            "id": "interchange",
+            "timestamp": "Thu, 01 Jan 2026 00:00:00 GMT",
+            "cwd": "/workspace/project"
+          },
+          "entries": [],
+          "context": {
+            "messages": [],
+            "thinkingLevel": "off",
+            "model": null
+          }
+        },
+        "listing": [
+          {
+            "id": "interchange",
+            "cwd": "/workspace/project",
+            "created": "2026-01-01T00:00:00.000Z",
+            "modified": "2026-01-01T00:00:00.000Z",
+            "messageCount": 0,
+            "firstMessage": "(no messages)",
+            "allMessagesText": ""
+          }
+        ]
+      },
+      {
+        "case": "header-date-year",
+        "steps": [
+          {
+            "bytes": "{\"type\":\"session\",\"version\":3,\"id\":\"interchange\",\"timestamp\":\"2026\",\"cwd\":\"/workspace/project\"}\n",
+            "header": {
+              "type": "session",
+              "version": 3,
+              "id": "interchange",
+              "timestamp": "2026",
+              "cwd": "/workspace/project"
+            },
+            "entries": [],
+            "leafId": null,
+            "context": {
+              "messages": [],
+              "thinkingLevel": "off",
+              "model": null
+            }
+          }
+        ],
+        "finalBytes": "{\"type\":\"session\",\"version\":3,\"id\":\"interchange\",\"timestamp\":\"2026\",\"cwd\":\"/workspace/project\"}\n",
+        "readBack": {
+          "header": {
+            "type": "session",
+            "version": 3,
+            "id": "interchange",
+            "timestamp": "2026",
+            "cwd": "/workspace/project"
+          },
+          "entries": [],
+          "context": {
+            "messages": [],
+            "thinkingLevel": "off",
+            "model": null
+          }
+        },
+        "listing": [
+          {
+            "id": "interchange",
+            "cwd": "/workspace/project",
+            "created": "2026-01-01T00:00:00.000Z",
+            "modified": "2026-01-01T00:00:00.000Z",
+            "messageCount": 0,
+            "firstMessage": "(no messages)",
+            "allMessagesText": ""
+          }
+        ]
+      },
+      {
+        "case": "header-date-slash",
+        "steps": [
+          {
+            "bytes": "{\"type\":\"session\",\"version\":3,\"id\":\"interchange\",\"timestamp\":\"01/02/2026\",\"cwd\":\"/workspace/project\"}\n",
+            "header": {
+              "type": "session",
+              "version": 3,
+              "id": "interchange",
+              "timestamp": "01/02/2026",
+              "cwd": "/workspace/project"
+            },
+            "entries": [],
+            "leafId": null,
+            "context": {
+              "messages": [],
+              "thinkingLevel": "off",
+              "model": null
+            }
+          }
+        ],
+        "finalBytes": "{\"type\":\"session\",\"version\":3,\"id\":\"interchange\",\"timestamp\":\"01/02/2026\",\"cwd\":\"/workspace/project\"}\n",
+        "readBack": {
+          "header": {
+            "type": "session",
+            "version": 3,
+            "id": "interchange",
+            "timestamp": "01/02/2026",
+            "cwd": "/workspace/project"
+          },
+          "entries": [],
+          "context": {
+            "messages": [],
+            "thinkingLevel": "off",
+            "model": null
+          }
+        },
+        "listing": [
+          {
+            "id": "interchange",
+            "cwd": "/workspace/project",
+            "created": "2026-01-02T00:00:00.000Z",
+            "modified": "2026-01-02T00:00:00.000Z",
+            "messageCount": 0,
+            "firstMessage": "(no messages)",
+            "allMessagesText": ""
+          }
+        ]
+      },
+      {
+        "case": "header-date-whitespace-iso",
+        "steps": [
+          {
+            "bytes": "{\"type\":\"session\",\"version\":3,\"id\":\"interchange\",\"timestamp\":\" 2026-01-01T00:00:00.000Z \",\"cwd\":\"/workspace/project\"}\n",
+            "header": {
+              "type": "session",
+              "version": 3,
+              "id": "interchange",
+              "timestamp": " 2026-01-01T00:00:00.000Z ",
+              "cwd": "/workspace/project"
+            },
+            "entries": [],
+            "leafId": null,
+            "context": {
+              "messages": [],
+              "thinkingLevel": "off",
+              "model": null
+            }
+          }
+        ],
+        "finalBytes": "{\"type\":\"session\",\"version\":3,\"id\":\"interchange\",\"timestamp\":\" 2026-01-01T00:00:00.000Z \",\"cwd\":\"/workspace/project\"}\n",
+        "readBack": {
+          "header": {
+            "type": "session",
+            "version": 3,
+            "id": "interchange",
+            "timestamp": " 2026-01-01T00:00:00.000Z ",
+            "cwd": "/workspace/project"
+          },
+          "entries": [],
+          "context": {
+            "messages": [],
+            "thinkingLevel": "off",
+            "model": null
+          }
+        },
+        "listing": [
+          {
+            "id": "interchange",
+            "cwd": "/workspace/project",
+            "created": null,
+            "modified": "2026-01-01T00:00:00.000Z",
+            "messageCount": 0,
+            "firstMessage": "(no messages)",
+            "allMessagesText": ""
+          }
+        ]
+      },
+      {
+        "case": "header-date-numeric-array",
+        "steps": [
+          {
+            "bytes": "{\"type\":\"session\",\"version\":3,\"id\":\"interchange\",\"timestamp\":[42],\"cwd\":\"/workspace/project\"}\n",
+            "header": {
+              "type": "session",
+              "version": 3,
+              "id": "interchange",
+              "timestamp": [
+                42
+              ],
+              "cwd": "/workspace/project"
+            },
+            "entries": [],
+            "leafId": null,
+            "context": {
+              "messages": [],
+              "thinkingLevel": "off",
+              "model": null
+            }
+          }
+        ],
+        "finalBytes": "{\"type\":\"session\",\"version\":3,\"id\":\"interchange\",\"timestamp\":[42],\"cwd\":\"/workspace/project\"}\n",
+        "readBack": {
+          "header": {
+            "type": "session",
+            "version": 3,
+            "id": "interchange",
+            "timestamp": [
+              42
+            ],
+            "cwd": "/workspace/project"
+          },
+          "entries": [],
+          "context": {
+            "messages": [],
+            "thinkingLevel": "off",
+            "model": null
+          }
+        },
+        "listing": [
+          {
+            "id": "interchange",
+            "cwd": "/workspace/project",
+            "created": "2042-01-01T00:00:00.000Z",
+            "modified": "2026-01-01T00:00:00.000Z",
+            "messageCount": 0,
+            "firstMessage": "(no messages)",
+            "allMessagesText": ""
+          }
+        ]
+      },
+      {
+        "case": "malformed-middle-line",
+        "steps": [
+          {
+            "bytes": "{\"type\":\"session\",\"version\":3,\"id\":\"interchange\",\"timestamp\":\"2026-01-01T00:00:00.000Z\",\"cwd\":\"/workspace/project\"}\nnot valid JSON\n{\"type\":\"message\",\"id\":\"old\",\"parentId\":null,\"timestamp\":\"2026-01-01T00:00:00.000Z\",\"message\":{\"role\":\"user\",\"unknown\":true}}\n",
+            "header": {
+              "type": "session",
+              "version": 3,
+              "id": "interchange",
+              "timestamp": "2026-01-01T00:00:00.000Z",
+              "cwd": "/workspace/project"
+            },
+            "entries": [
+              {
+                "type": "message",
+                "id": "old",
+                "parentId": null,
+                "timestamp": "2026-01-01T00:00:00.000Z",
+                "message": {
+                  "role": "user",
+                  "unknown": true
+                }
+              }
+            ],
+            "leafId": "old",
+            "context": {
+              "messages": [
+                {
+                  "role": "user",
+                  "unknown": true,
+                  "content": []
+                }
+              ],
+              "thinkingLevel": "off",
+              "model": null
+            }
+          },
+          {
+            "result": "00000001",
+            "bytes": "{\"type\":\"session\",\"version\":3,\"id\":\"interchange\",\"timestamp\":\"2026-01-01T00:00:00.000Z\",\"cwd\":\"/workspace/project\"}\nnot valid JSON\n{\"type\":\"message\",\"id\":\"old\",\"parentId\":null,\"timestamp\":\"2026-01-01T00:00:00.000Z\",\"message\":{\"role\":\"user\",\"unknown\":true}}\n{\"type\":\"message\",\"id\":\"00000001\",\"parentId\":\"old\",\"timestamp\":\"2026-01-01T00:00:00.000Z\",\"message\":{\"role\":\"user\",\"content\":\"appended\",\"timestamp\":1767225600000,\"unknown\":{\"z\":1,\"a\":2}}}\n",
+            "header": {
+              "type": "session",
+              "version": 3,
+              "id": "interchange",
+              "timestamp": "2026-01-01T00:00:00.000Z",
+              "cwd": "/workspace/project"
+            },
+            "entries": [
+              {
+                "type": "message",
+                "id": "old",
+                "parentId": null,
+                "timestamp": "2026-01-01T00:00:00.000Z",
+                "message": {
+                  "role": "user",
+                  "unknown": true
+                }
+              },
+              {
+                "type": "message",
+                "id": "00000001",
+                "parentId": "old",
+                "timestamp": "2026-01-01T00:00:00.000Z",
+                "message": {
+                  "role": "user",
+                  "content": "appended",
+                  "timestamp": 1767225600000,
+                  "unknown": {
+                    "z": 1,
+                    "a": 2
+                  }
+                }
+              }
+            ],
+            "leafId": "00000001",
+            "context": {
+              "messages": [
+                {
+                  "role": "user",
+                  "unknown": true,
+                  "content": []
+                },
+                {
+                  "role": "user",
+                  "content": "appended",
+                  "timestamp": 1767225600000,
+                  "unknown": {
+                    "z": 1,
+                    "a": 2
+                  }
+                }
+              ],
+              "thinkingLevel": "off",
+              "model": null
+            }
+          }
+        ],
+        "finalBytes": "{\"type\":\"session\",\"version\":3,\"id\":\"interchange\",\"timestamp\":\"2026-01-01T00:00:00.000Z\",\"cwd\":\"/workspace/project\"}\nnot valid JSON\n{\"type\":\"message\",\"id\":\"old\",\"parentId\":null,\"timestamp\":\"2026-01-01T00:00:00.000Z\",\"message\":{\"role\":\"user\",\"unknown\":true}}\n{\"type\":\"message\",\"id\":\"00000001\",\"parentId\":\"old\",\"timestamp\":\"2026-01-01T00:00:00.000Z\",\"message\":{\"role\":\"user\",\"content\":\"appended\",\"timestamp\":1767225600000,\"unknown\":{\"z\":1,\"a\":2}}}\n",
+        "readBack": {
+          "header": {
+            "type": "session",
+            "version": 3,
+            "id": "interchange",
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "cwd": "/workspace/project"
+          },
+          "entries": [
+            {
+              "type": "message",
+              "id": "old",
+              "parentId": null,
+              "timestamp": "2026-01-01T00:00:00.000Z",
+              "message": {
+                "role": "user",
+                "unknown": true
+              }
+            },
+            {
+              "type": "message",
+              "id": "00000001",
+              "parentId": "old",
+              "timestamp": "2026-01-01T00:00:00.000Z",
+              "message": {
+                "role": "user",
+                "content": "appended",
+                "timestamp": 1767225600000,
+                "unknown": {
+                  "z": 1,
+                  "a": 2
+                }
+              }
+            }
+          ],
+          "context": {
+            "messages": [
+              {
+                "role": "user",
+                "unknown": true,
+                "content": []
+              },
+              {
+                "role": "user",
+                "content": "appended",
+                "timestamp": 1767225600000,
+                "unknown": {
+                  "z": 1,
+                  "a": 2
+                }
+              }
+            ],
+            "thinkingLevel": "off",
+            "model": null
+          }
+        },
+        "listing": [
+          {
+            "id": "interchange",
+            "cwd": "/workspace/project",
+            "created": "2026-01-01T00:00:00.000Z",
+            "modified": "2026-01-01T00:00:00.000Z",
+            "messageCount": 2,
+            "firstMessage": "appended",
+            "allMessagesText": "appended"
+          }
+        ]
+      }
+    ]
+  },
+  "queues": {},
+  "errors": []
+}

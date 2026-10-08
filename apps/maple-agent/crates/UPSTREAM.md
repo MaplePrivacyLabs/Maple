@@ -15,7 +15,8 @@ Rust ownership, async, or host-interface adaptations there.
 The port is in progress. Step 1 implements 19 selected `pi-ai` files:
 contracts, model helpers, session resources, utilities and the scripted
 provider. Step 2 adds six chat-completions modules; Step 3 adds the four
-agent-core modules. The other 52 selected source files remain pending. Rust-only
+agent-core modules. Step 4 adds the 12 session-store and compaction modules.
+The other 40 selected source files remain pending. Rust-only
 `js_value`, `js_string`, `js_json`, `js_serde`, `js_deserialize` and
 `raw_message` modules support
 JavaScript binary64 values, UTF-16 strings, ordered properties, field presence
@@ -105,6 +106,33 @@ clearing the model preserve the source event/history/error/cleanup sequence,
 but cannot invoke the typed provider with JavaScript `undefined`. The owner
 approved this narrow boundary on 2026-10-08; the ordinary session API keeps its
 `No model selected` guard. This does not permit substituting a fabricated model.
+
+## Session storage and compaction
+
+Step 4 adds **5,417 production Rust code lines** against the 4,200–5,100
+estimate: 5,009 across the 12 mapped source files and 408 in the civil-date
+adapter. Prompt assets are separate from the Rust count. The JSONL store keeps
+raw entries and shared message identity, version migrations, append barriers,
+context edits, branches, labels and exports. Compaction keeps source token
+arithmetic, cut points, summary prompts and request options.
+
+There are 209 registered selected upstream tests and two retained live-provider
+exclusions. On macOS, 207 test bodies apply and two Windows-only bodies stop at
+their source-equivalent platform guards. The coverage checker validates those
+three exact source predicates and reports applicability separately from test
+registration; macOS success does not prove the Windows assertions executed.
+
+The canonical reference records 241 function observations in 28 groups and 21
+session-file cases, including exact JSONL bytes, repair and migration behavior.
+Two named function groups are direct aliases for existing selected-function
+observations; they do not replace assertions. The retry ownership comparison
+uses the owner's provisional provider-request DTO boundary, validating both
+sides' complete observations with a single narrow executable rule.
+
+The date adapter covers the recorded ISO and legacy header forms. This evidence
+does not establish every implementation-dependent V8 Date.parse spelling or
+non-UTC timezone behavior. Windows filesystem/date behavior remains part of
+the final platform validation.
 
 ## Boundaries
 

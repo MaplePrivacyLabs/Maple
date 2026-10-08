@@ -1,0 +1,1227 @@
+{
+  "dsl": 1,
+  "id": "branch-summarization.collectEntriesForBranchSummary",
+  "clock": {
+    "epochMs": 1767225600000
+  },
+  "cases": [
+    {
+      "case": "common-ancestor",
+      "input": {
+        "entriesById": {
+          "root": {
+            "type": "message",
+            "id": "root",
+            "parentId": null,
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "message": {
+              "role": "user",
+              "content": "root",
+              "timestamp": 0
+            }
+          },
+          "left": {
+            "type": "message",
+            "id": "left",
+            "parentId": "root",
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "message": {
+              "role": "user",
+              "content": "left branch",
+              "timestamp": 0
+            }
+          },
+          "left-leaf": {
+            "type": "message",
+            "id": "left-leaf",
+            "parentId": "left",
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "message": {
+              "role": "assistant",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "left answer"
+                }
+              ],
+              "usage": {
+                "input": 100,
+                "output": 50,
+                "cacheRead": 0,
+                "cacheWrite": 0,
+                "totalTokens": 150,
+                "cost": {
+                  "input": 0,
+                  "output": 0,
+                  "cacheRead": 0,
+                  "cacheWrite": 0,
+                  "total": 0
+                }
+              },
+              "stopReason": "stop",
+              "timestamp": 0,
+              "api": "anthropic-messages",
+              "provider": "anthropic",
+              "model": "claude-sonnet-4-5"
+            }
+          },
+          "right": {
+            "type": "message",
+            "id": "right",
+            "parentId": "root",
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "message": {
+              "role": "user",
+              "content": "right branch",
+              "timestamp": 0
+            }
+          }
+        },
+        "branches": {
+          "left-leaf": [
+            {
+              "type": "message",
+              "id": "root",
+              "parentId": null,
+              "timestamp": "2026-01-01T00:00:00.000Z",
+              "message": {
+                "role": "user",
+                "content": "root",
+                "timestamp": 0
+              }
+            },
+            {
+              "type": "message",
+              "id": "left",
+              "parentId": "root",
+              "timestamp": "2026-01-01T00:00:00.000Z",
+              "message": {
+                "role": "user",
+                "content": "left branch",
+                "timestamp": 0
+              }
+            },
+            {
+              "type": "message",
+              "id": "left-leaf",
+              "parentId": "left",
+              "timestamp": "2026-01-01T00:00:00.000Z",
+              "message": {
+                "role": "assistant",
+                "content": [
+                  {
+                    "type": "text",
+                    "text": "left answer"
+                  }
+                ],
+                "usage": {
+                  "input": 100,
+                  "output": 50,
+                  "cacheRead": 0,
+                  "cacheWrite": 0,
+                  "totalTokens": 150,
+                  "cost": {
+                    "input": 0,
+                    "output": 0,
+                    "cacheRead": 0,
+                    "cacheWrite": 0,
+                    "total": 0
+                  }
+                },
+                "stopReason": "stop",
+                "timestamp": 0,
+                "api": "anthropic-messages",
+                "provider": "anthropic",
+                "model": "claude-sonnet-4-5"
+              }
+            }
+          ],
+          "right": [
+            {
+              "type": "message",
+              "id": "root",
+              "parentId": null,
+              "timestamp": "2026-01-01T00:00:00.000Z",
+              "message": {
+                "role": "user",
+                "content": "root",
+                "timestamp": 0
+              }
+            },
+            {
+              "type": "message",
+              "id": "right",
+              "parentId": "root",
+              "timestamp": "2026-01-01T00:00:00.000Z",
+              "message": {
+                "role": "user",
+                "content": "right branch",
+                "timestamp": 0
+              }
+            }
+          ],
+          "root": [
+            {
+              "type": "message",
+              "id": "root",
+              "parentId": null,
+              "timestamp": "2026-01-01T00:00:00.000Z",
+              "message": {
+                "role": "user",
+                "content": "root",
+                "timestamp": 0
+              }
+            }
+          ],
+          "missing": []
+        },
+        "oldLeafId": "left-leaf",
+        "targetId": "right"
+      }
+    },
+    {
+      "case": "old-is-ancestor",
+      "input": {
+        "entriesById": {
+          "root": {
+            "type": "message",
+            "id": "root",
+            "parentId": null,
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "message": {
+              "role": "user",
+              "content": "root",
+              "timestamp": 0
+            }
+          },
+          "left": {
+            "type": "message",
+            "id": "left",
+            "parentId": "root",
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "message": {
+              "role": "user",
+              "content": "left branch",
+              "timestamp": 0
+            }
+          },
+          "left-leaf": {
+            "type": "message",
+            "id": "left-leaf",
+            "parentId": "left",
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "message": {
+              "role": "assistant",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "left answer"
+                }
+              ],
+              "usage": {
+                "input": 100,
+                "output": 50,
+                "cacheRead": 0,
+                "cacheWrite": 0,
+                "totalTokens": 150,
+                "cost": {
+                  "input": 0,
+                  "output": 0,
+                  "cacheRead": 0,
+                  "cacheWrite": 0,
+                  "total": 0
+                }
+              },
+              "stopReason": "stop",
+              "timestamp": 0,
+              "api": "anthropic-messages",
+              "provider": "anthropic",
+              "model": "claude-sonnet-4-5"
+            }
+          },
+          "right": {
+            "type": "message",
+            "id": "right",
+            "parentId": "root",
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "message": {
+              "role": "user",
+              "content": "right branch",
+              "timestamp": 0
+            }
+          }
+        },
+        "branches": {
+          "left-leaf": [
+            {
+              "type": "message",
+              "id": "root",
+              "parentId": null,
+              "timestamp": "2026-01-01T00:00:00.000Z",
+              "message": {
+                "role": "user",
+                "content": "root",
+                "timestamp": 0
+              }
+            },
+            {
+              "type": "message",
+              "id": "left",
+              "parentId": "root",
+              "timestamp": "2026-01-01T00:00:00.000Z",
+              "message": {
+                "role": "user",
+                "content": "left branch",
+                "timestamp": 0
+              }
+            },
+            {
+              "type": "message",
+              "id": "left-leaf",
+              "parentId": "left",
+              "timestamp": "2026-01-01T00:00:00.000Z",
+              "message": {
+                "role": "assistant",
+                "content": [
+                  {
+                    "type": "text",
+                    "text": "left answer"
+                  }
+                ],
+                "usage": {
+                  "input": 100,
+                  "output": 50,
+                  "cacheRead": 0,
+                  "cacheWrite": 0,
+                  "totalTokens": 150,
+                  "cost": {
+                    "input": 0,
+                    "output": 0,
+                    "cacheRead": 0,
+                    "cacheWrite": 0,
+                    "total": 0
+                  }
+                },
+                "stopReason": "stop",
+                "timestamp": 0,
+                "api": "anthropic-messages",
+                "provider": "anthropic",
+                "model": "claude-sonnet-4-5"
+              }
+            }
+          ],
+          "right": [
+            {
+              "type": "message",
+              "id": "root",
+              "parentId": null,
+              "timestamp": "2026-01-01T00:00:00.000Z",
+              "message": {
+                "role": "user",
+                "content": "root",
+                "timestamp": 0
+              }
+            },
+            {
+              "type": "message",
+              "id": "right",
+              "parentId": "root",
+              "timestamp": "2026-01-01T00:00:00.000Z",
+              "message": {
+                "role": "user",
+                "content": "right branch",
+                "timestamp": 0
+              }
+            }
+          ],
+          "root": [
+            {
+              "type": "message",
+              "id": "root",
+              "parentId": null,
+              "timestamp": "2026-01-01T00:00:00.000Z",
+              "message": {
+                "role": "user",
+                "content": "root",
+                "timestamp": 0
+              }
+            }
+          ],
+          "missing": []
+        },
+        "oldLeafId": "root",
+        "targetId": "right"
+      }
+    },
+    {
+      "case": "same-leaf",
+      "input": {
+        "entriesById": {
+          "root": {
+            "type": "message",
+            "id": "root",
+            "parentId": null,
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "message": {
+              "role": "user",
+              "content": "root",
+              "timestamp": 0
+            }
+          },
+          "left": {
+            "type": "message",
+            "id": "left",
+            "parentId": "root",
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "message": {
+              "role": "user",
+              "content": "left branch",
+              "timestamp": 0
+            }
+          },
+          "left-leaf": {
+            "type": "message",
+            "id": "left-leaf",
+            "parentId": "left",
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "message": {
+              "role": "assistant",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "left answer"
+                }
+              ],
+              "usage": {
+                "input": 100,
+                "output": 50,
+                "cacheRead": 0,
+                "cacheWrite": 0,
+                "totalTokens": 150,
+                "cost": {
+                  "input": 0,
+                  "output": 0,
+                  "cacheRead": 0,
+                  "cacheWrite": 0,
+                  "total": 0
+                }
+              },
+              "stopReason": "stop",
+              "timestamp": 0,
+              "api": "anthropic-messages",
+              "provider": "anthropic",
+              "model": "claude-sonnet-4-5"
+            }
+          },
+          "right": {
+            "type": "message",
+            "id": "right",
+            "parentId": "root",
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "message": {
+              "role": "user",
+              "content": "right branch",
+              "timestamp": 0
+            }
+          }
+        },
+        "branches": {
+          "left-leaf": [
+            {
+              "type": "message",
+              "id": "root",
+              "parentId": null,
+              "timestamp": "2026-01-01T00:00:00.000Z",
+              "message": {
+                "role": "user",
+                "content": "root",
+                "timestamp": 0
+              }
+            },
+            {
+              "type": "message",
+              "id": "left",
+              "parentId": "root",
+              "timestamp": "2026-01-01T00:00:00.000Z",
+              "message": {
+                "role": "user",
+                "content": "left branch",
+                "timestamp": 0
+              }
+            },
+            {
+              "type": "message",
+              "id": "left-leaf",
+              "parentId": "left",
+              "timestamp": "2026-01-01T00:00:00.000Z",
+              "message": {
+                "role": "assistant",
+                "content": [
+                  {
+                    "type": "text",
+                    "text": "left answer"
+                  }
+                ],
+                "usage": {
+                  "input": 100,
+                  "output": 50,
+                  "cacheRead": 0,
+                  "cacheWrite": 0,
+                  "totalTokens": 150,
+                  "cost": {
+                    "input": 0,
+                    "output": 0,
+                    "cacheRead": 0,
+                    "cacheWrite": 0,
+                    "total": 0
+                  }
+                },
+                "stopReason": "stop",
+                "timestamp": 0,
+                "api": "anthropic-messages",
+                "provider": "anthropic",
+                "model": "claude-sonnet-4-5"
+              }
+            }
+          ],
+          "right": [
+            {
+              "type": "message",
+              "id": "root",
+              "parentId": null,
+              "timestamp": "2026-01-01T00:00:00.000Z",
+              "message": {
+                "role": "user",
+                "content": "root",
+                "timestamp": 0
+              }
+            },
+            {
+              "type": "message",
+              "id": "right",
+              "parentId": "root",
+              "timestamp": "2026-01-01T00:00:00.000Z",
+              "message": {
+                "role": "user",
+                "content": "right branch",
+                "timestamp": 0
+              }
+            }
+          ],
+          "root": [
+            {
+              "type": "message",
+              "id": "root",
+              "parentId": null,
+              "timestamp": "2026-01-01T00:00:00.000Z",
+              "message": {
+                "role": "user",
+                "content": "root",
+                "timestamp": 0
+              }
+            }
+          ],
+          "missing": []
+        },
+        "oldLeafId": "left-leaf",
+        "targetId": "left-leaf"
+      }
+    },
+    {
+      "case": "no-old-position",
+      "input": {
+        "entriesById": {
+          "root": {
+            "type": "message",
+            "id": "root",
+            "parentId": null,
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "message": {
+              "role": "user",
+              "content": "root",
+              "timestamp": 0
+            }
+          },
+          "left": {
+            "type": "message",
+            "id": "left",
+            "parentId": "root",
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "message": {
+              "role": "user",
+              "content": "left branch",
+              "timestamp": 0
+            }
+          },
+          "left-leaf": {
+            "type": "message",
+            "id": "left-leaf",
+            "parentId": "left",
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "message": {
+              "role": "assistant",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "left answer"
+                }
+              ],
+              "usage": {
+                "input": 100,
+                "output": 50,
+                "cacheRead": 0,
+                "cacheWrite": 0,
+                "totalTokens": 150,
+                "cost": {
+                  "input": 0,
+                  "output": 0,
+                  "cacheRead": 0,
+                  "cacheWrite": 0,
+                  "total": 0
+                }
+              },
+              "stopReason": "stop",
+              "timestamp": 0,
+              "api": "anthropic-messages",
+              "provider": "anthropic",
+              "model": "claude-sonnet-4-5"
+            }
+          },
+          "right": {
+            "type": "message",
+            "id": "right",
+            "parentId": "root",
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "message": {
+              "role": "user",
+              "content": "right branch",
+              "timestamp": 0
+            }
+          }
+        },
+        "branches": {
+          "left-leaf": [
+            {
+              "type": "message",
+              "id": "root",
+              "parentId": null,
+              "timestamp": "2026-01-01T00:00:00.000Z",
+              "message": {
+                "role": "user",
+                "content": "root",
+                "timestamp": 0
+              }
+            },
+            {
+              "type": "message",
+              "id": "left",
+              "parentId": "root",
+              "timestamp": "2026-01-01T00:00:00.000Z",
+              "message": {
+                "role": "user",
+                "content": "left branch",
+                "timestamp": 0
+              }
+            },
+            {
+              "type": "message",
+              "id": "left-leaf",
+              "parentId": "left",
+              "timestamp": "2026-01-01T00:00:00.000Z",
+              "message": {
+                "role": "assistant",
+                "content": [
+                  {
+                    "type": "text",
+                    "text": "left answer"
+                  }
+                ],
+                "usage": {
+                  "input": 100,
+                  "output": 50,
+                  "cacheRead": 0,
+                  "cacheWrite": 0,
+                  "totalTokens": 150,
+                  "cost": {
+                    "input": 0,
+                    "output": 0,
+                    "cacheRead": 0,
+                    "cacheWrite": 0,
+                    "total": 0
+                  }
+                },
+                "stopReason": "stop",
+                "timestamp": 0,
+                "api": "anthropic-messages",
+                "provider": "anthropic",
+                "model": "claude-sonnet-4-5"
+              }
+            }
+          ],
+          "right": [
+            {
+              "type": "message",
+              "id": "root",
+              "parentId": null,
+              "timestamp": "2026-01-01T00:00:00.000Z",
+              "message": {
+                "role": "user",
+                "content": "root",
+                "timestamp": 0
+              }
+            },
+            {
+              "type": "message",
+              "id": "right",
+              "parentId": "root",
+              "timestamp": "2026-01-01T00:00:00.000Z",
+              "message": {
+                "role": "user",
+                "content": "right branch",
+                "timestamp": 0
+              }
+            }
+          ],
+          "root": [
+            {
+              "type": "message",
+              "id": "root",
+              "parentId": null,
+              "timestamp": "2026-01-01T00:00:00.000Z",
+              "message": {
+                "role": "user",
+                "content": "root",
+                "timestamp": 0
+              }
+            }
+          ],
+          "missing": []
+        },
+        "oldLeafId": null,
+        "targetId": "right"
+      }
+    },
+    {
+      "case": "missing-target",
+      "input": {
+        "entriesById": {
+          "root": {
+            "type": "message",
+            "id": "root",
+            "parentId": null,
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "message": {
+              "role": "user",
+              "content": "root",
+              "timestamp": 0
+            }
+          },
+          "left": {
+            "type": "message",
+            "id": "left",
+            "parentId": "root",
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "message": {
+              "role": "user",
+              "content": "left branch",
+              "timestamp": 0
+            }
+          },
+          "left-leaf": {
+            "type": "message",
+            "id": "left-leaf",
+            "parentId": "left",
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "message": {
+              "role": "assistant",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "left answer"
+                }
+              ],
+              "usage": {
+                "input": 100,
+                "output": 50,
+                "cacheRead": 0,
+                "cacheWrite": 0,
+                "totalTokens": 150,
+                "cost": {
+                  "input": 0,
+                  "output": 0,
+                  "cacheRead": 0,
+                  "cacheWrite": 0,
+                  "total": 0
+                }
+              },
+              "stopReason": "stop",
+              "timestamp": 0,
+              "api": "anthropic-messages",
+              "provider": "anthropic",
+              "model": "claude-sonnet-4-5"
+            }
+          },
+          "right": {
+            "type": "message",
+            "id": "right",
+            "parentId": "root",
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "message": {
+              "role": "user",
+              "content": "right branch",
+              "timestamp": 0
+            }
+          }
+        },
+        "branches": {
+          "left-leaf": [
+            {
+              "type": "message",
+              "id": "root",
+              "parentId": null,
+              "timestamp": "2026-01-01T00:00:00.000Z",
+              "message": {
+                "role": "user",
+                "content": "root",
+                "timestamp": 0
+              }
+            },
+            {
+              "type": "message",
+              "id": "left",
+              "parentId": "root",
+              "timestamp": "2026-01-01T00:00:00.000Z",
+              "message": {
+                "role": "user",
+                "content": "left branch",
+                "timestamp": 0
+              }
+            },
+            {
+              "type": "message",
+              "id": "left-leaf",
+              "parentId": "left",
+              "timestamp": "2026-01-01T00:00:00.000Z",
+              "message": {
+                "role": "assistant",
+                "content": [
+                  {
+                    "type": "text",
+                    "text": "left answer"
+                  }
+                ],
+                "usage": {
+                  "input": 100,
+                  "output": 50,
+                  "cacheRead": 0,
+                  "cacheWrite": 0,
+                  "totalTokens": 150,
+                  "cost": {
+                    "input": 0,
+                    "output": 0,
+                    "cacheRead": 0,
+                    "cacheWrite": 0,
+                    "total": 0
+                  }
+                },
+                "stopReason": "stop",
+                "timestamp": 0,
+                "api": "anthropic-messages",
+                "provider": "anthropic",
+                "model": "claude-sonnet-4-5"
+              }
+            }
+          ],
+          "right": [
+            {
+              "type": "message",
+              "id": "root",
+              "parentId": null,
+              "timestamp": "2026-01-01T00:00:00.000Z",
+              "message": {
+                "role": "user",
+                "content": "root",
+                "timestamp": 0
+              }
+            },
+            {
+              "type": "message",
+              "id": "right",
+              "parentId": "root",
+              "timestamp": "2026-01-01T00:00:00.000Z",
+              "message": {
+                "role": "user",
+                "content": "right branch",
+                "timestamp": 0
+              }
+            }
+          ],
+          "root": [
+            {
+              "type": "message",
+              "id": "root",
+              "parentId": null,
+              "timestamp": "2026-01-01T00:00:00.000Z",
+              "message": {
+                "role": "user",
+                "content": "root",
+                "timestamp": 0
+              }
+            }
+          ],
+          "missing": []
+        },
+        "oldLeafId": "left-leaf",
+        "targetId": "missing"
+      }
+    },
+    {
+      "case": "missing-old-entry",
+      "input": {
+        "entriesById": {
+          "root": {
+            "type": "message",
+            "id": "root",
+            "parentId": null,
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "message": {
+              "role": "user",
+              "content": "root",
+              "timestamp": 0
+            }
+          },
+          "left": {
+            "type": "message",
+            "id": "left",
+            "parentId": "root",
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "message": {
+              "role": "user",
+              "content": "left branch",
+              "timestamp": 0
+            }
+          },
+          "left-leaf": {
+            "type": "message",
+            "id": "left-leaf",
+            "parentId": "left",
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "message": {
+              "role": "assistant",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "left answer"
+                }
+              ],
+              "usage": {
+                "input": 100,
+                "output": 50,
+                "cacheRead": 0,
+                "cacheWrite": 0,
+                "totalTokens": 150,
+                "cost": {
+                  "input": 0,
+                  "output": 0,
+                  "cacheRead": 0,
+                  "cacheWrite": 0,
+                  "total": 0
+                }
+              },
+              "stopReason": "stop",
+              "timestamp": 0,
+              "api": "anthropic-messages",
+              "provider": "anthropic",
+              "model": "claude-sonnet-4-5"
+            }
+          },
+          "right": {
+            "type": "message",
+            "id": "right",
+            "parentId": "root",
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "message": {
+              "role": "user",
+              "content": "right branch",
+              "timestamp": 0
+            }
+          }
+        },
+        "branches": {
+          "left-leaf": [
+            {
+              "type": "message",
+              "id": "root",
+              "parentId": null,
+              "timestamp": "2026-01-01T00:00:00.000Z",
+              "message": {
+                "role": "user",
+                "content": "root",
+                "timestamp": 0
+              }
+            },
+            {
+              "type": "message",
+              "id": "left",
+              "parentId": "root",
+              "timestamp": "2026-01-01T00:00:00.000Z",
+              "message": {
+                "role": "user",
+                "content": "left branch",
+                "timestamp": 0
+              }
+            },
+            {
+              "type": "message",
+              "id": "left-leaf",
+              "parentId": "left",
+              "timestamp": "2026-01-01T00:00:00.000Z",
+              "message": {
+                "role": "assistant",
+                "content": [
+                  {
+                    "type": "text",
+                    "text": "left answer"
+                  }
+                ],
+                "usage": {
+                  "input": 100,
+                  "output": 50,
+                  "cacheRead": 0,
+                  "cacheWrite": 0,
+                  "totalTokens": 150,
+                  "cost": {
+                    "input": 0,
+                    "output": 0,
+                    "cacheRead": 0,
+                    "cacheWrite": 0,
+                    "total": 0
+                  }
+                },
+                "stopReason": "stop",
+                "timestamp": 0,
+                "api": "anthropic-messages",
+                "provider": "anthropic",
+                "model": "claude-sonnet-4-5"
+              }
+            }
+          ],
+          "right": [
+            {
+              "type": "message",
+              "id": "root",
+              "parentId": null,
+              "timestamp": "2026-01-01T00:00:00.000Z",
+              "message": {
+                "role": "user",
+                "content": "root",
+                "timestamp": 0
+              }
+            },
+            {
+              "type": "message",
+              "id": "right",
+              "parentId": "root",
+              "timestamp": "2026-01-01T00:00:00.000Z",
+              "message": {
+                "role": "user",
+                "content": "right branch",
+                "timestamp": 0
+              }
+            }
+          ],
+          "root": [
+            {
+              "type": "message",
+              "id": "root",
+              "parentId": null,
+              "timestamp": "2026-01-01T00:00:00.000Z",
+              "message": {
+                "role": "user",
+                "content": "root",
+                "timestamp": 0
+              }
+            }
+          ],
+          "missing": []
+        },
+        "oldLeafId": "missing",
+        "targetId": "right"
+      }
+    },
+    {
+      "case": "changed-entry-id-under-original-lookup",
+      "input": {
+        "entriesById": {
+          "root": {
+            "type": "message",
+            "id": "root",
+            "parentId": null,
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "message": {
+              "role": "user",
+              "content": "root",
+              "timestamp": 0
+            }
+          },
+          "left": {
+            "type": "message",
+            "id": "left",
+            "parentId": "root",
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "message": {
+              "role": "user",
+              "content": "left branch",
+              "timestamp": 0
+            }
+          },
+          "left-leaf": {
+            "type": "message",
+            "id": "renamed-leaf",
+            "parentId": "left",
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "message": {
+              "role": "assistant",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "left answer"
+                }
+              ],
+              "usage": {
+                "input": 100,
+                "output": 50,
+                "cacheRead": 0,
+                "cacheWrite": 0,
+                "totalTokens": 150,
+                "cost": {
+                  "input": 0,
+                  "output": 0,
+                  "cacheRead": 0,
+                  "cacheWrite": 0,
+                  "total": 0
+                }
+              },
+              "stopReason": "stop",
+              "timestamp": 0,
+              "api": "anthropic-messages",
+              "provider": "anthropic",
+              "model": "claude-sonnet-4-5"
+            }
+          },
+          "right": {
+            "type": "message",
+            "id": "right",
+            "parentId": "root",
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "message": {
+              "role": "user",
+              "content": "right branch",
+              "timestamp": 0
+            }
+          }
+        },
+        "branches": {
+          "left-leaf": [
+            {
+              "type": "message",
+              "id": "root",
+              "parentId": null,
+              "timestamp": "2026-01-01T00:00:00.000Z",
+              "message": {
+                "role": "user",
+                "content": "root",
+                "timestamp": 0
+              }
+            },
+            {
+              "type": "message",
+              "id": "left",
+              "parentId": "root",
+              "timestamp": "2026-01-01T00:00:00.000Z",
+              "message": {
+                "role": "user",
+                "content": "left branch",
+                "timestamp": 0
+              }
+            },
+            {
+              "type": "message",
+              "id": "renamed-leaf",
+              "parentId": "left",
+              "timestamp": "2026-01-01T00:00:00.000Z",
+              "message": {
+                "role": "assistant",
+                "content": [
+                  {
+                    "type": "text",
+                    "text": "left answer"
+                  }
+                ],
+                "usage": {
+                  "input": 100,
+                  "output": 50,
+                  "cacheRead": 0,
+                  "cacheWrite": 0,
+                  "totalTokens": 150,
+                  "cost": {
+                    "input": 0,
+                    "output": 0,
+                    "cacheRead": 0,
+                    "cacheWrite": 0,
+                    "total": 0
+                  }
+                },
+                "stopReason": "stop",
+                "timestamp": 0,
+                "api": "anthropic-messages",
+                "provider": "anthropic",
+                "model": "claude-sonnet-4-5"
+              }
+            }
+          ],
+          "right": [
+            {
+              "type": "message",
+              "id": "root",
+              "parentId": null,
+              "timestamp": "2026-01-01T00:00:00.000Z",
+              "message": {
+                "role": "user",
+                "content": "root",
+                "timestamp": 0
+              }
+            },
+            {
+              "type": "message",
+              "id": "right",
+              "parentId": "root",
+              "timestamp": "2026-01-01T00:00:00.000Z",
+              "message": {
+                "role": "user",
+                "content": "right branch",
+                "timestamp": 0
+              }
+            }
+          ],
+          "root": [
+            {
+              "type": "message",
+              "id": "root",
+              "parentId": null,
+              "timestamp": "2026-01-01T00:00:00.000Z",
+              "message": {
+                "role": "user",
+                "content": "root",
+                "timestamp": 0
+              }
+            }
+          ],
+          "missing": []
+        },
+        "oldLeafId": "left-leaf",
+        "targetId": "right"
+      }
+    }
+  ]
+}

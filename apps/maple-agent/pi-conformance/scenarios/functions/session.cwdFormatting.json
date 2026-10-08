@@ -1,0 +1,28 @@
+{
+  "dsl": 1,
+  "id": "session.cwdFormatting",
+  "clock": {
+    "epochMs": 1767225600000
+  },
+  "cases": [
+    {
+      "case": "without-file",
+      "input": {
+        "issue": {
+          "sessionCwd": "/missing/a",
+          "fallbackCwd": "/project"
+        }
+      }
+    },
+    {
+      "case": "with-file",
+      "input": {
+        "issue": {
+          "sessionFile": "/sessions/a.jsonl",
+          "sessionCwd": "/missing/a",
+          "fallbackCwd": "/project"
+        }
+      }
+    }
+  ]
+}

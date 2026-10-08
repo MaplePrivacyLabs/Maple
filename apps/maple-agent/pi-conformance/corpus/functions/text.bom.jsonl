@@ -1,0 +1,6 @@
+{"case":"bom-0","input":{"text":""},"output":{"value":{"split":{"bom":"","text":""},"stripped":""}}}
+{"case":"bom-1","input":{"text":"plain"},"output":{"value":{"split":{"bom":"","text":"plain"},"stripped":"plain"}}}
+{"case":"bom-2","input":{"text":"﻿text"},"output":{"value":{"split":{"bom":"﻿","text":"text"},"stripped":"text"}}}
+{"case":"bom-3","input":{"text":"﻿﻿text"},"output":{"value":{"split":{"bom":"﻿","text":"﻿text"},"stripped":"﻿text"}}}
+{"case":"bom-4","input":{"text":"a﻿b"},"output":{"value":{"split":{"bom":"","text":"a﻿b"},"stripped":"a﻿b"}}}
+{"case":"bom-5","input":{"text":"﻿\ud800"},"output":{"value":{"split":{"bom":"﻿","text":"\ud800"},"stripped":"\ud800"}}}

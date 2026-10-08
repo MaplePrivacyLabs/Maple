@@ -4,6 +4,7 @@ description = "Portable session and resource runtime ported from Pi"
 edition.workspace = true
 version.workspace = true
 license.workspace = true
+autotests = false
 
 [features]
 default = []
@@ -13,3 +14,19 @@ test-internals = []
 pi-ai = { path = "../pi-ai" }
 pi-agent-core = { path = "../pi-agent-core" }
 pi-mcp = { path = "../pi-mcp" }
+indexmap = { version = "2", features = ["serde"] }
+serde = { workspace = true }
+serde_json = { workspace = true, features = ["preserve_order", "raw_value"] }
+futures-util = "0.3"
+tokio = { version = "1", features = ["rt", "macros", "sync"] }
+url = "=2.5.8"
+libc = "0.2"
+
+[dev-dependencies]
+pi-ai = { path = "../pi-ai", features = ["faux", "test-internals"] }
+pi-testkit = { path = "../pi-testkit" }
+tempfile = "3"
+
+[[test]]
+name = "upstream"
+path = "tests/main.rs"

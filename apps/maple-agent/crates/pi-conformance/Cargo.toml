@@ -17,6 +17,8 @@ jsonschema = { version = "=0.55.1", default-features = false }
 pi-ai = { path = "../pi-ai" }
 pi-agent-core = { path = "../pi-agent-core" }
 pi-testkit = { path = "../pi-testkit" }
+pi-coding-agent = { path = "../pi-coding-agent" }
+tempfile = "3"
 tokio = { workspace = true }
 
 [dev-dependencies]

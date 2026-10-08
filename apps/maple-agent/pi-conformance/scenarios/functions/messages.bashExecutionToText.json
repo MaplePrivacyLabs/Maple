@@ -1,0 +1,105 @@
+{
+  "dsl": 1,
+  "id": "messages.bashExecutionToText",
+  "clock": {
+    "epochMs": 1767225600000
+  },
+  "cases": [
+    {
+      "case": "empty",
+      "input": {
+        "message": {
+          "role": "bashExecution",
+          "command": "echo `x`",
+          "output": "",
+          "cancelled": false,
+          "truncated": false,
+          "timestamp": 1767225600000
+        }
+      }
+    },
+    {
+      "case": "output",
+      "input": {
+        "message": {
+          "role": "bashExecution",
+          "command": "echo `x`",
+          "output": "ok\n",
+          "cancelled": false,
+          "truncated": false,
+          "timestamp": 1767225600000
+        }
+      }
+    },
+    {
+      "case": "cancelled",
+      "input": {
+        "message": {
+          "role": "bashExecution",
+          "command": "echo `x`",
+          "output": "",
+          "cancelled": true,
+          "truncated": false,
+          "timestamp": 1767225600000,
+          "exitCode": 2
+        }
+      }
+    },
+    {
+      "case": "exit",
+      "input": {
+        "message": {
+          "role": "bashExecution",
+          "command": "echo `x`",
+          "output": "",
+          "cancelled": false,
+          "truncated": false,
+          "timestamp": 1767225600000,
+          "exitCode": 12
+        }
+      }
+    },
+    {
+      "case": "null-exit",
+      "input": {
+        "message": {
+          "role": "bashExecution",
+          "command": "echo `x`",
+          "output": "",
+          "cancelled": false,
+          "truncated": false,
+          "timestamp": 1767225600000,
+          "exitCode": null
+        }
+      }
+    },
+    {
+      "case": "truncated",
+      "input": {
+        "message": {
+          "role": "bashExecution",
+          "command": "echo `x`",
+          "output": "",
+          "cancelled": false,
+          "truncated": true,
+          "timestamp": 1767225600000,
+          "fullOutputPath": "/tmp/full"
+        }
+      }
+    },
+    {
+      "case": "excluded",
+      "input": {
+        "message": {
+          "role": "bashExecution",
+          "command": "echo `x`",
+          "output": "",
+          "cancelled": false,
+          "truncated": false,
+          "timestamp": 1767225600000,
+          "excludeFromContext": true
+        }
+      }
+    }
+  ]
+}

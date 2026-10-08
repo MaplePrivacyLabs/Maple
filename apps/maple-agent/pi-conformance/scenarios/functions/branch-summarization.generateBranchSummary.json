@@ -1,0 +1,433 @@
+{
+  "dsl": 1,
+  "id": "branch-summarization.generateBranchSummary",
+  "clock": {
+    "epochMs": 1767225600000
+  },
+  "cases": [
+    {
+      "case": "default-options",
+      "input": {
+        "entries": [
+          {
+            "type": "message",
+            "id": "branch-user",
+            "parentId": null,
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "message": {
+              "role": "user",
+              "content": "Abandoned request",
+              "timestamp": 1
+            }
+          }
+        ],
+        "options": {
+          "model": {
+            "id": "test-model",
+            "name": "Test Model",
+            "api": "anthropic-messages",
+            "provider": "anthropic",
+            "baseUrl": "https://api.anthropic.com",
+            "reasoning": false,
+            "input": [
+              "text"
+            ],
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0
+            },
+            "contextWindow": 200000,
+            "maxTokens": 8192
+          }
+        },
+        "responses": [
+          {
+            "role": "assistant",
+            "content": [
+              {
+                "type": "text",
+                "text": "summary"
+              }
+            ],
+            "usage": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "totalTokens": 0,
+              "cost": {
+                "input": 0,
+                "output": 0,
+                "cacheRead": 0,
+                "cacheWrite": 0,
+                "total": 0
+              }
+            },
+            "stopReason": "stop",
+            "timestamp": 0,
+            "api": "anthropic-messages",
+            "provider": "anthropic",
+            "model": "test-model"
+          }
+        ],
+        "doneReasons": [
+          "stop"
+        ]
+      }
+    },
+    {
+      "case": "output-cap",
+      "input": {
+        "entries": [
+          {
+            "type": "message",
+            "id": "branch-user",
+            "parentId": null,
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "message": {
+              "role": "user",
+              "content": "Abandoned request",
+              "timestamp": 1
+            }
+          }
+        ],
+        "options": {
+          "model": {
+            "id": "test-model",
+            "name": "Test Model",
+            "api": "anthropic-messages",
+            "provider": "anthropic",
+            "baseUrl": "https://api.anthropic.com",
+            "reasoning": false,
+            "input": [
+              "text"
+            ],
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0
+            },
+            "contextWindow": 200000,
+            "maxTokens": 1024
+          }
+        },
+        "responses": [
+          {
+            "role": "assistant",
+            "content": [
+              {
+                "type": "text",
+                "text": "summary"
+              }
+            ],
+            "usage": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "totalTokens": 0,
+              "cost": {
+                "input": 0,
+                "output": 0,
+                "cacheRead": 0,
+                "cacheWrite": 0,
+                "total": 0
+              }
+            },
+            "stopReason": "stop",
+            "timestamp": 0,
+            "api": "anthropic-messages",
+            "provider": "anthropic",
+            "model": "test-model"
+          }
+        ],
+        "doneReasons": [
+          "stop"
+        ]
+      }
+    },
+    {
+      "case": "empty-text-summary",
+      "input": {
+        "entries": [
+          {
+            "type": "message",
+            "id": "branch-user",
+            "parentId": null,
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "message": {
+              "role": "user",
+              "content": "Abandoned request",
+              "timestamp": 1
+            }
+          }
+        ],
+        "options": {
+          "model": {
+            "id": "test-model",
+            "name": "Test Model",
+            "api": "anthropic-messages",
+            "provider": "anthropic",
+            "baseUrl": "https://api.anthropic.com",
+            "reasoning": false,
+            "input": [
+              "text"
+            ],
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0
+            },
+            "contextWindow": 200000,
+            "maxTokens": 8192
+          }
+        },
+        "responses": [
+          {
+            "role": "assistant",
+            "content": [
+              {
+                "type": "text",
+                "text": ""
+              }
+            ],
+            "usage": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "totalTokens": 0,
+              "cost": {
+                "input": 0,
+                "output": 0,
+                "cacheRead": 0,
+                "cacheWrite": 0,
+                "total": 0
+              }
+            },
+            "stopReason": "stop",
+            "timestamp": 0,
+            "api": "anthropic-messages",
+            "provider": "anthropic",
+            "model": "test-model"
+          }
+        ],
+        "doneReasons": [
+          "stop"
+        ]
+      }
+    },
+    {
+      "case": "tool-call-stop-message",
+      "input": {
+        "entries": [
+          {
+            "type": "message",
+            "id": "branch-user",
+            "parentId": null,
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "message": {
+              "role": "user",
+              "content": "Abandoned request",
+              "timestamp": 1
+            }
+          }
+        ],
+        "options": {
+          "model": {
+            "id": "test-model",
+            "name": "Test Model",
+            "api": "anthropic-messages",
+            "provider": "anthropic",
+            "baseUrl": "https://api.anthropic.com",
+            "reasoning": false,
+            "input": [
+              "text"
+            ],
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0
+            },
+            "contextWindow": 200000,
+            "maxTokens": 8192
+          }
+        },
+        "responses": [
+          {
+            "role": "assistant",
+            "content": [
+              {
+                "type": "toolCall",
+                "id": "tool-call-1",
+                "name": "read",
+                "arguments": {
+                  "path": "README.md"
+                }
+              }
+            ],
+            "usage": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "totalTokens": 0,
+              "cost": {
+                "input": 0,
+                "output": 0,
+                "cacheRead": 0,
+                "cacheWrite": 0,
+                "total": 0
+              }
+            },
+            "stopReason": "stop",
+            "timestamp": 0,
+            "api": "anthropic-messages",
+            "provider": "anthropic",
+            "model": "test-model"
+          }
+        ],
+        "doneReasons": [
+          "toolUse"
+        ]
+      }
+    },
+    {
+      "case": "length",
+      "input": {
+        "entries": [
+          {
+            "type": "message",
+            "id": "branch-user",
+            "parentId": null,
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "message": {
+              "role": "user",
+              "content": "Abandoned request",
+              "timestamp": 1
+            }
+          }
+        ],
+        "options": {
+          "model": {
+            "id": "test-model",
+            "name": "Test Model",
+            "api": "anthropic-messages",
+            "provider": "anthropic",
+            "baseUrl": "https://api.anthropic.com",
+            "reasoning": false,
+            "input": [
+              "text"
+            ],
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0
+            },
+            "contextWindow": 200000,
+            "maxTokens": 8192
+          }
+        },
+        "responses": [
+          {
+            "role": "assistant",
+            "content": [
+              {
+                "type": "text",
+                "text": "partial"
+              }
+            ],
+            "usage": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "totalTokens": 0,
+              "cost": {
+                "input": 0,
+                "output": 0,
+                "cacheRead": 0,
+                "cacheWrite": 0,
+                "total": 0
+              }
+            },
+            "stopReason": "length",
+            "timestamp": 0,
+            "api": "anthropic-messages",
+            "provider": "anthropic",
+            "model": "test-model"
+          }
+        ],
+        "doneReasons": [
+          "length"
+        ]
+      }
+    },
+    {
+      "case": "empty-entries",
+      "input": {
+        "entries": [],
+        "options": {
+          "model": {
+            "id": "test-model",
+            "name": "Test Model",
+            "api": "anthropic-messages",
+            "provider": "anthropic",
+            "baseUrl": "https://api.anthropic.com",
+            "reasoning": false,
+            "input": [
+              "text"
+            ],
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0
+            },
+            "contextWindow": 200000,
+            "maxTokens": 8192
+          }
+        },
+        "responses": [
+          {
+            "role": "assistant",
+            "content": [
+              {
+                "type": "text",
+                "text": "summary"
+              }
+            ],
+            "usage": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "totalTokens": 0,
+              "cost": {
+                "input": 0,
+                "output": 0,
+                "cacheRead": 0,
+                "cacheWrite": 0,
+                "total": 0
+              }
+            },
+            "stopReason": "stop",
+            "timestamp": 0,
+            "api": "anthropic-messages",
+            "provider": "anthropic",
+            "model": "test-model"
+          }
+        ],
+        "doneReasons": [
+          "stop"
+        ]
+      }
+    }
+  ]
+}

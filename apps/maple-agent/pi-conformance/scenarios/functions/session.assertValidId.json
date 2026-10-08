@@ -1,0 +1,69 @@
+{
+  "dsl": 1,
+  "id": "session.assertValidId",
+  "clock": {
+    "epochMs": 1767225600000
+  },
+  "cases": [
+    {
+      "case": "id-0",
+      "input": {
+        "id": "x"
+      }
+    },
+    {
+      "case": "id-1",
+      "input": {
+        "id": "custom.id-2_3"
+      }
+    },
+    {
+      "case": "id-2",
+      "input": {
+        "id": ""
+      }
+    },
+    {
+      "case": "id-3",
+      "input": {
+        "id": "../escape"
+      }
+    },
+    {
+      "case": "id-4",
+      "input": {
+        "id": "_id"
+      }
+    },
+    {
+      "case": "id-5",
+      "input": {
+        "id": "id-"
+      }
+    },
+    {
+      "case": "id-6",
+      "input": {
+        "id": "a/b"
+      }
+    },
+    {
+      "case": "id-7",
+      "input": {
+        "id": "a\n"
+      }
+    },
+    {
+      "case": "id-8",
+      "input": {
+        "id": "\u00e9"
+      }
+    },
+    {
+      "case": "id-9",
+      "input": {
+        "id": "a..b"
+      }
+    }
+  ]
+}

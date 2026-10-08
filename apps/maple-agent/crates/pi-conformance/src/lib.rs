@@ -5,14 +5,20 @@
 
 mod agent_replay;
 mod cleared_model;
+mod compaction_functions;
 pub mod compare;
 pub mod coverage;
 pub mod dependencies;
 mod functions;
 mod functions_step2;
+mod functions_step4;
 pub mod integrity;
 pub mod replay;
+mod retry_request_ownership;
 pub mod selection;
+mod session_file_replay;
+mod session_files;
+mod session_functions;
 mod timers;
 mod wire_replay;
 

@@ -216,7 +216,23 @@ pub fn check_deviations(reference: &Path) -> CheckResult {
 }
 
 fn supported_deviation(deviation: &Deviation) -> bool {
-    owned_tool_definitions(deviation) || gated_live_partials(deviation) || cleared_model(deviation)
+    owned_tool_definitions(deviation)
+        || gated_live_partials(deviation)
+        || cleared_model(deviation)
+        || owned_summary_requests(deviation)
+}
+
+fn owned_summary_requests(deviation: &Deviation) -> bool {
+    deviation.scenario == "functions/compaction.retryRequestOwnership"
+        && deviation.json_path == crate::retry_request_ownership::RULE_PATH
+        && deviation.kind == "language"
+        && deviation.rule == crate::retry_request_ownership::RULE_ID
+}
+
+pub(crate) fn permits_owned_summary_requests(reference: &Path) -> CheckResult<bool> {
+    check_deviations(reference)?;
+    let deviations: Deviations = toml(&reference.join("coverage/deviations.toml"))?;
+    Ok(deviations.deviation.iter().any(owned_summary_requests))
 }
 
 fn owned_tool_definitions(deviation: &Deviation) -> bool {

@@ -1,0 +1,200 @@
+{
+  "dsl": 1,
+  "id": "compaction.estimateTokens",
+  "clock": {
+    "epochMs": 1767225600000
+  },
+  "cases": [
+    {
+      "case": "raw-text-object-string-length",
+      "input": {
+        "message": {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": {
+                "length": "4"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "case": "user-astral",
+      "input": {
+        "message": {
+          "role": "user",
+          "content": "a\ud83d\ude00b\ud83d\ude00c",
+          "timestamp": 0
+        }
+      }
+    },
+    {
+      "case": "user-image",
+      "input": {
+        "message": {
+          "role": "user",
+          "content": [
+            {
+              "type": "image",
+              "data": "AA==",
+              "mimeType": "image/png"
+            }
+          ],
+          "timestamp": 0
+        }
+      }
+    },
+    {
+      "case": "system-sections-tools",
+      "input": {
+        "message": {
+          "role": "system",
+          "content": "sys",
+          "sections": {
+            "alpha": "\ud83d\ude00",
+            "empty": "",
+            "beta": "xy"
+          },
+          "toolsAdded": [
+            {
+              "name": "read",
+              "description": "Read",
+              "parameters": {
+                "type": "object",
+                "properties": {}
+              }
+            }
+          ],
+          "timestamp": 0
+        }
+      }
+    },
+    {
+      "case": "mixed-assistant",
+      "input": {
+        "message": {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "abcd"
+            },
+            {
+              "type": "thinking",
+              "thinking": "thought"
+            },
+            {
+              "type": "toolCall",
+              "id": "call-1",
+              "name": "read",
+              "arguments": {
+                "10": "ten",
+                "2": "two",
+                "a": 1
+              }
+            }
+          ],
+          "usage": {
+            "input": 100,
+            "output": 50,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "totalTokens": 150,
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0
+            }
+          },
+          "stopReason": "stop",
+          "timestamp": 0,
+          "api": "anthropic-messages",
+          "provider": "anthropic",
+          "model": "claude-sonnet-4-5"
+        }
+      }
+    },
+    {
+      "case": "tool-result-image",
+      "input": {
+        "message": {
+          "role": "toolResult",
+          "toolCallId": "call-1",
+          "toolName": "read",
+          "content": [
+            {
+              "type": "image",
+              "data": "AA==",
+              "mimeType": "image/png"
+            }
+          ],
+          "isError": false,
+          "timestamp": 0
+        }
+      }
+    },
+    {
+      "case": "custom",
+      "input": {
+        "message": {
+          "role": "custom",
+          "content": "abcde",
+          "customType": "test",
+          "display": true,
+          "timestamp": 0
+        }
+      }
+    },
+    {
+      "case": "bash",
+      "input": {
+        "message": {
+          "role": "bashExecution",
+          "command": "echo hi",
+          "output": "hi\n",
+          "exitCode": 0,
+          "cancelled": false,
+          "truncated": false,
+          "timestamp": 0
+        }
+      }
+    },
+    {
+      "case": "branch-summary",
+      "input": {
+        "message": {
+          "role": "branchSummary",
+          "summary": "checkpoint",
+          "fromId": "other",
+          "timestamp": 0
+        }
+      }
+    },
+    {
+      "case": "compaction-summary",
+      "input": {
+        "message": {
+          "role": "compactionSummary",
+          "summary": "checkpoint",
+          "tokensBefore": 100,
+          "timestamp": 0
+        }
+      }
+    },
+    {
+      "case": "unknown-custom-role",
+      "input": {
+        "message": {
+          "role": "extension-note",
+          "content": "not counted",
+          "timestamp": 0
+        }
+      }
+    }
+  ]
+}

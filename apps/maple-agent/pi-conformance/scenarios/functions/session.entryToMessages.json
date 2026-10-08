@@ -1,0 +1,263 @@
+{
+  "dsl": 1,
+  "id": "session.entryToMessages",
+  "clock": {
+    "epochMs": 1767225600000
+  },
+  "cases": [
+    {
+      "case": "system-missing",
+      "input": {
+        "entry": {
+          "type": "message",
+          "id": "m",
+          "parentId": null,
+          "timestamp": "2026-01-01T00:00:00.000Z",
+          "message": {
+            "role": "system",
+            "timestamp": 1767225600000,
+            "unknown": {
+              "z": 1,
+              "a": 2
+            }
+          }
+        }
+      }
+    },
+    {
+      "case": "system-null",
+      "input": {
+        "entry": {
+          "type": "message",
+          "id": "m",
+          "parentId": null,
+          "timestamp": "2026-01-01T00:00:00.000Z",
+          "message": {
+            "role": "system",
+            "timestamp": 1767225600000,
+            "unknown": {
+              "z": 1,
+              "a": 2
+            },
+            "content": null
+          }
+        }
+      }
+    },
+    {
+      "case": "user-missing",
+      "input": {
+        "entry": {
+          "type": "message",
+          "id": "m",
+          "parentId": null,
+          "timestamp": "2026-01-01T00:00:00.000Z",
+          "message": {
+            "role": "user",
+            "timestamp": 1767225600000,
+            "unknown": {
+              "z": 1,
+              "a": 2
+            }
+          }
+        }
+      }
+    },
+    {
+      "case": "user-null",
+      "input": {
+        "entry": {
+          "type": "message",
+          "id": "m",
+          "parentId": null,
+          "timestamp": "2026-01-01T00:00:00.000Z",
+          "message": {
+            "role": "user",
+            "timestamp": 1767225600000,
+            "unknown": {
+              "z": 1,
+              "a": 2
+            },
+            "content": null
+          }
+        }
+      }
+    },
+    {
+      "case": "assistant-missing",
+      "input": {
+        "entry": {
+          "type": "message",
+          "id": "m",
+          "parentId": null,
+          "timestamp": "2026-01-01T00:00:00.000Z",
+          "message": {
+            "role": "assistant",
+            "timestamp": 1767225600000,
+            "unknown": {
+              "z": 1,
+              "a": 2
+            }
+          }
+        }
+      }
+    },
+    {
+      "case": "assistant-null",
+      "input": {
+        "entry": {
+          "type": "message",
+          "id": "m",
+          "parentId": null,
+          "timestamp": "2026-01-01T00:00:00.000Z",
+          "message": {
+            "role": "assistant",
+            "timestamp": 1767225600000,
+            "unknown": {
+              "z": 1,
+              "a": 2
+            },
+            "content": null
+          }
+        }
+      }
+    },
+    {
+      "case": "toolResult-missing",
+      "input": {
+        "entry": {
+          "type": "message",
+          "id": "m",
+          "parentId": null,
+          "timestamp": "2026-01-01T00:00:00.000Z",
+          "message": {
+            "role": "toolResult",
+            "timestamp": 1767225600000,
+            "unknown": {
+              "z": 1,
+              "a": 2
+            }
+          }
+        }
+      }
+    },
+    {
+      "case": "toolResult-null",
+      "input": {
+        "entry": {
+          "type": "message",
+          "id": "m",
+          "parentId": null,
+          "timestamp": "2026-01-01T00:00:00.000Z",
+          "message": {
+            "role": "toolResult",
+            "timestamp": 1767225600000,
+            "unknown": {
+              "z": 1,
+              "a": 2
+            },
+            "content": null
+          }
+        }
+      }
+    },
+    {
+      "case": "custom-missing",
+      "input": {
+        "entry": {
+          "type": "message",
+          "id": "m",
+          "parentId": null,
+          "timestamp": "2026-01-01T00:00:00.000Z",
+          "message": {
+            "role": "custom",
+            "timestamp": 1767225600000,
+            "unknown": {
+              "z": 1,
+              "a": 2
+            }
+          }
+        }
+      }
+    },
+    {
+      "case": "custom-null",
+      "input": {
+        "entry": {
+          "type": "message",
+          "id": "m",
+          "parentId": null,
+          "timestamp": "2026-01-01T00:00:00.000Z",
+          "message": {
+            "role": "custom",
+            "timestamp": 1767225600000,
+            "unknown": {
+              "z": 1,
+              "a": 2
+            },
+            "content": null
+          }
+        }
+      }
+    },
+    {
+      "case": "custom",
+      "input": {
+        "entry": {
+          "type": "custom",
+          "id": "e",
+          "parentId": null,
+          "timestamp": "2026-01-01T00:00:00.000Z",
+          "customType": "state",
+          "data": 1
+        }
+      }
+    },
+    {
+      "case": "custom_message",
+      "input": {
+        "entry": {
+          "type": "custom_message",
+          "id": "e",
+          "parentId": null,
+          "timestamp": "2026-01-01T00:00:00.000Z",
+          "customType": "note",
+          "content": null,
+          "display": true,
+          "details": null
+        }
+      }
+    },
+    {
+      "case": "branch_summary",
+      "input": {
+        "entry": {
+          "type": "branch_summary",
+          "id": "e",
+          "parentId": null,
+          "timestamp": "2026-01-01T00:00:00.000Z",
+          "summary": "",
+          "fromId": "old"
+        }
+      }
+    },
+    {
+      "case": "compaction",
+      "input": {
+        "entry": {
+          "type": "compaction",
+          "id": "e",
+          "parentId": null,
+          "timestamp": "2026-01-01T00:00:00.000Z",
+          "summary": "sum",
+          "tokensBefore": 10,
+          "systemMessage": {
+            "role": "system",
+            "content": "saved",
+            "timestamp": 1767225600000
+          }
+        }
+      }
+    }
+  ]
+}

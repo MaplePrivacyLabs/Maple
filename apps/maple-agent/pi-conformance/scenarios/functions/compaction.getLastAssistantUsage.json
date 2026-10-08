@@ -1,0 +1,391 @@
+{
+  "dsl": 1,
+  "id": "compaction.getLastAssistantUsage",
+  "clock": {
+    "epochMs": 1767225600000
+  },
+  "cases": [
+    {
+      "case": "last-valid",
+      "input": {
+        "entries": [
+          {
+            "type": "message",
+            "id": "e0",
+            "parentId": null,
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "message": {
+              "role": "user",
+              "content": "Hello",
+              "timestamp": 0
+            }
+          },
+          {
+            "type": "message",
+            "id": "e1",
+            "parentId": "e0",
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "message": {
+              "role": "assistant",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "Hi"
+                }
+              ],
+              "usage": {
+                "input": 100,
+                "output": 50,
+                "cacheRead": 0,
+                "cacheWrite": 0,
+                "totalTokens": 150,
+                "cost": {
+                  "input": 0,
+                  "output": 0,
+                  "cacheRead": 0,
+                  "cacheWrite": 0,
+                  "total": 0
+                }
+              },
+              "stopReason": "stop",
+              "timestamp": 0,
+              "api": "anthropic-messages",
+              "provider": "anthropic",
+              "model": "claude-sonnet-4-5"
+            }
+          },
+          {
+            "type": "message",
+            "id": "e2",
+            "parentId": "e1",
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "message": {
+              "role": "user",
+              "content": "How are you?",
+              "timestamp": 0
+            }
+          },
+          {
+            "type": "message",
+            "id": "e3",
+            "parentId": "e2",
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "message": {
+              "role": "assistant",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "Good"
+                }
+              ],
+              "usage": {
+                "input": 200,
+                "output": 100,
+                "cacheRead": 0,
+                "cacheWrite": 0,
+                "totalTokens": 300,
+                "cost": {
+                  "input": 0,
+                  "output": 0,
+                  "cacheRead": 0,
+                  "cacheWrite": 0,
+                  "total": 0
+                }
+              },
+              "stopReason": "stop",
+              "timestamp": 0,
+              "api": "anthropic-messages",
+              "provider": "anthropic",
+              "model": "claude-sonnet-4-5"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "case": "skip-aborted",
+      "input": {
+        "entries": [
+          {
+            "type": "message",
+            "id": "e0",
+            "parentId": null,
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "message": {
+              "role": "assistant",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "Hi"
+                }
+              ],
+              "usage": {
+                "input": 100,
+                "output": 50,
+                "cacheRead": 0,
+                "cacheWrite": 0,
+                "totalTokens": 150,
+                "cost": {
+                  "input": 0,
+                  "output": 0,
+                  "cacheRead": 0,
+                  "cacheWrite": 0,
+                  "total": 0
+                }
+              },
+              "stopReason": "stop",
+              "timestamp": 0,
+              "api": "anthropic-messages",
+              "provider": "anthropic",
+              "model": "claude-sonnet-4-5"
+            }
+          },
+          {
+            "type": "message",
+            "id": "e1",
+            "parentId": "e0",
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "message": {
+              "role": "assistant",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "Aborted"
+                }
+              ],
+              "usage": {
+                "input": 300,
+                "output": 150,
+                "cacheRead": 0,
+                "cacheWrite": 0,
+                "totalTokens": 450,
+                "cost": {
+                  "input": 0,
+                  "output": 0,
+                  "cacheRead": 0,
+                  "cacheWrite": 0,
+                  "total": 0
+                }
+              },
+              "stopReason": "aborted",
+              "timestamp": 0,
+              "api": "anthropic-messages",
+              "provider": "anthropic",
+              "model": "claude-sonnet-4-5"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "case": "skip-error",
+      "input": {
+        "entries": [
+          {
+            "type": "message",
+            "id": "e0",
+            "parentId": null,
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "message": {
+              "role": "assistant",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "Hi"
+                }
+              ],
+              "usage": {
+                "input": 100,
+                "output": 50,
+                "cacheRead": 0,
+                "cacheWrite": 0,
+                "totalTokens": 150,
+                "cost": {
+                  "input": 0,
+                  "output": 0,
+                  "cacheRead": 0,
+                  "cacheWrite": 0,
+                  "total": 0
+                }
+              },
+              "stopReason": "stop",
+              "timestamp": 0,
+              "api": "anthropic-messages",
+              "provider": "anthropic",
+              "model": "claude-sonnet-4-5"
+            }
+          },
+          {
+            "type": "message",
+            "id": "e1",
+            "parentId": "e0",
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "message": {
+              "role": "assistant",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "Error"
+                }
+              ],
+              "usage": {
+                "input": 300,
+                "output": 150,
+                "cacheRead": 0,
+                "cacheWrite": 0,
+                "totalTokens": 450,
+                "cost": {
+                  "input": 0,
+                  "output": 0,
+                  "cacheRead": 0,
+                  "cacheWrite": 0,
+                  "total": 0
+                }
+              },
+              "stopReason": "error",
+              "timestamp": 0,
+              "api": "anthropic-messages",
+              "provider": "anthropic",
+              "model": "claude-sonnet-4-5"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "case": "skip-zero",
+      "input": {
+        "entries": [
+          {
+            "type": "message",
+            "id": "e0",
+            "parentId": null,
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "message": {
+              "role": "assistant",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "Hi"
+                }
+              ],
+              "usage": {
+                "input": 100,
+                "output": 50,
+                "cacheRead": 0,
+                "cacheWrite": 0,
+                "totalTokens": 150,
+                "cost": {
+                  "input": 0,
+                  "output": 0,
+                  "cacheRead": 0,
+                  "cacheWrite": 0,
+                  "total": 0
+                }
+              },
+              "stopReason": "stop",
+              "timestamp": 0,
+              "api": "anthropic-messages",
+              "provider": "anthropic",
+              "model": "claude-sonnet-4-5"
+            }
+          },
+          {
+            "type": "message",
+            "id": "e1",
+            "parentId": "e0",
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "message": {
+              "role": "assistant",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "Partial"
+                }
+              ],
+              "usage": {
+                "input": 0,
+                "output": 0,
+                "cacheRead": 0,
+                "cacheWrite": 0,
+                "totalTokens": 0,
+                "cost": {
+                  "input": 0,
+                  "output": 0,
+                  "cacheRead": 0,
+                  "cacheWrite": 0,
+                  "total": 0
+                }
+              },
+              "stopReason": "stop",
+              "timestamp": 0,
+              "api": "anthropic-messages",
+              "provider": "anthropic",
+              "model": "claude-sonnet-4-5"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "case": "no-assistant",
+      "input": {
+        "entries": [
+          {
+            "type": "message",
+            "id": "e0",
+            "parentId": null,
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "message": {
+              "role": "user",
+              "content": "Hello",
+              "timestamp": 0
+            }
+          }
+        ]
+      }
+    },
+    {
+      "case": "raw-partial-usage-preserved",
+      "input": {
+        "entries": [
+          {
+            "type": "message",
+            "id": "e0",
+            "parentId": null,
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "message": {
+              "role": "assistant",
+              "content": [],
+              "stopReason": "stop",
+              "usage": {
+                "totalTokens": 8
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "case": "raw-string-usage-preserved",
+      "input": {
+        "entries": [
+          {
+            "type": "message",
+            "id": "e0",
+            "parentId": null,
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "message": {
+              "role": "assistant",
+              "content": [],
+              "stopReason": "stop",
+              "usage": {
+                "totalTokens": "8"
+              }
+            }
+          }
+        ]
+      }
+    }
+  ]
+}

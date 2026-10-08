@@ -1,0 +1,57 @@
+{
+  "dsl": 1,
+  "id": "compaction.shouldCompact",
+  "clock": {
+    "epochMs": 1767225600000
+  },
+  "cases": [
+    {
+      "case": "above-threshold",
+      "input": {
+        "contextTokens": 95000,
+        "contextWindow": 100000,
+        "settings": {
+          "enabled": true,
+          "reserveTokens": 10000,
+          "keepRecentTokens": 20000
+        }
+      }
+    },
+    {
+      "case": "below-threshold",
+      "input": {
+        "contextTokens": 89000,
+        "contextWindow": 100000,
+        "settings": {
+          "enabled": true,
+          "reserveTokens": 10000,
+          "keepRecentTokens": 20000
+        }
+      }
+    },
+    {
+      "case": "exact-threshold",
+      "input": {
+        "contextTokens": 90000,
+        "contextWindow": 100000,
+        "settings": {
+          "enabled": true,
+          "reserveTokens": 10000,
+          "keepRecentTokens": 20000
+        }
+      }
+    },
+    {
+      "case": "disabled",
+      "input": {
+        "contextTokens": 95000,
+        "contextWindow": 100000,
+        "settings": {
+          "enabled": false,
+          "reserveTokens": 10000,
+          "keepRecentTokens": 20000
+        }
+      }
+    }
+  ]
+}

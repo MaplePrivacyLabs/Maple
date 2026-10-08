@@ -1,0 +1,446 @@
+{
+  "dsl": 1,
+  "id": "branch-summarization.prepareBranchEntries",
+  "clock": {
+    "epochMs": 1767225600000
+  },
+  "cases": [
+    {
+      "case": "all-entry-kinds",
+      "input": {
+        "entries": [
+          {
+            "type": "message",
+            "id": "e0",
+            "parentId": null,
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "message": {
+              "role": "user",
+              "content": "branch start",
+              "timestamp": 0
+            }
+          },
+          {
+            "type": "message",
+            "id": "e1",
+            "parentId": "e0",
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "message": {
+              "role": "assistant",
+              "content": [
+                {
+                  "type": "toolCall",
+                  "id": "call-1",
+                  "name": "read",
+                  "arguments": {
+                    "path": "from-call.ts"
+                  }
+                }
+              ],
+              "usage": {
+                "input": 100,
+                "output": 50,
+                "cacheRead": 0,
+                "cacheWrite": 0,
+                "totalTokens": 150,
+                "cost": {
+                  "input": 0,
+                  "output": 0,
+                  "cacheRead": 0,
+                  "cacheWrite": 0,
+                  "total": 0
+                }
+              },
+              "stopReason": "stop",
+              "timestamp": 0,
+              "api": "anthropic-messages",
+              "provider": "anthropic",
+              "model": "claude-sonnet-4-5"
+            }
+          },
+          {
+            "type": "message",
+            "id": "e2",
+            "parentId": "e1",
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "message": {
+              "role": "toolResult",
+              "toolCallId": "call-1",
+              "toolName": "read",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "ignored result"
+                }
+              ],
+              "isError": false,
+              "timestamp": 0
+            }
+          },
+          {
+            "type": "branch_summary",
+            "id": "e3",
+            "parentId": "e2",
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "summary": "prior branch",
+            "fromId": "old",
+            "details": {
+              "readFiles": [
+                "tracked.ts"
+              ],
+              "modifiedFiles": [
+                "updated.ts"
+              ]
+            }
+          },
+          {
+            "type": "message",
+            "id": "e4",
+            "parentId": "e3",
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "message": {
+              "role": "user",
+              "content": "latest",
+              "timestamp": 0
+            }
+          }
+        ],
+        "tokenBudget": 0
+      }
+    },
+    {
+      "case": "budget-keeps-summary-overrun",
+      "input": {
+        "entries": [
+          {
+            "type": "message",
+            "id": "e0",
+            "parentId": null,
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "message": {
+              "role": "user",
+              "content": "branch start",
+              "timestamp": 0
+            }
+          },
+          {
+            "type": "message",
+            "id": "e1",
+            "parentId": "e0",
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "message": {
+              "role": "assistant",
+              "content": [
+                {
+                  "type": "toolCall",
+                  "id": "call-1",
+                  "name": "read",
+                  "arguments": {
+                    "path": "from-call.ts"
+                  }
+                }
+              ],
+              "usage": {
+                "input": 100,
+                "output": 50,
+                "cacheRead": 0,
+                "cacheWrite": 0,
+                "totalTokens": 150,
+                "cost": {
+                  "input": 0,
+                  "output": 0,
+                  "cacheRead": 0,
+                  "cacheWrite": 0,
+                  "total": 0
+                }
+              },
+              "stopReason": "stop",
+              "timestamp": 0,
+              "api": "anthropic-messages",
+              "provider": "anthropic",
+              "model": "claude-sonnet-4-5"
+            }
+          },
+          {
+            "type": "message",
+            "id": "e2",
+            "parentId": "e1",
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "message": {
+              "role": "toolResult",
+              "toolCallId": "call-1",
+              "toolName": "read",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "ignored result"
+                }
+              ],
+              "isError": false,
+              "timestamp": 0
+            }
+          },
+          {
+            "type": "branch_summary",
+            "id": "e3",
+            "parentId": "e2",
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "summary": "prior branch",
+            "fromId": "old",
+            "details": {
+              "readFiles": [
+                "tracked.ts"
+              ],
+              "modifiedFiles": [
+                "updated.ts"
+              ]
+            }
+          },
+          {
+            "type": "message",
+            "id": "e4",
+            "parentId": "e3",
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "message": {
+              "role": "user",
+              "content": "latest",
+              "timestamp": 0
+            }
+          }
+        ],
+        "tokenBudget": 3
+      }
+    },
+    {
+      "case": "too-small-for-last-user",
+      "input": {
+        "entries": [
+          {
+            "type": "message",
+            "id": "e0",
+            "parentId": null,
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "message": {
+              "role": "user",
+              "content": "branch start",
+              "timestamp": 0
+            }
+          },
+          {
+            "type": "message",
+            "id": "e1",
+            "parentId": "e0",
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "message": {
+              "role": "assistant",
+              "content": [
+                {
+                  "type": "toolCall",
+                  "id": "call-1",
+                  "name": "read",
+                  "arguments": {
+                    "path": "from-call.ts"
+                  }
+                }
+              ],
+              "usage": {
+                "input": 100,
+                "output": 50,
+                "cacheRead": 0,
+                "cacheWrite": 0,
+                "totalTokens": 150,
+                "cost": {
+                  "input": 0,
+                  "output": 0,
+                  "cacheRead": 0,
+                  "cacheWrite": 0,
+                  "total": 0
+                }
+              },
+              "stopReason": "stop",
+              "timestamp": 0,
+              "api": "anthropic-messages",
+              "provider": "anthropic",
+              "model": "claude-sonnet-4-5"
+            }
+          },
+          {
+            "type": "message",
+            "id": "e2",
+            "parentId": "e1",
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "message": {
+              "role": "toolResult",
+              "toolCallId": "call-1",
+              "toolName": "read",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "ignored result"
+                }
+              ],
+              "isError": false,
+              "timestamp": 0
+            }
+          },
+          {
+            "type": "branch_summary",
+            "id": "e3",
+            "parentId": "e2",
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "summary": "prior branch",
+            "fromId": "old",
+            "details": {
+              "readFiles": [
+                "tracked.ts"
+              ],
+              "modifiedFiles": [
+                "updated.ts"
+              ]
+            }
+          },
+          {
+            "type": "message",
+            "id": "e4",
+            "parentId": "e3",
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "message": {
+              "role": "user",
+              "content": "latest",
+              "timestamp": 0
+            }
+          }
+        ],
+        "tokenBudget": 1
+      }
+    },
+    {
+      "case": "empty",
+      "input": {
+        "entries": [],
+        "tokenBudget": 0
+      }
+    },
+    {
+      "case": "compaction-overrun",
+      "input": {
+        "entries": [
+          {
+            "type": "compaction",
+            "id": "c",
+            "parentId": null,
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "summary": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+            "firstKeptEntryId": "x",
+            "tokensBefore": 100
+          }
+        ],
+        "tokenBudget": 1
+      }
+    },
+    {
+      "case": "hook-summary-details-skipped",
+      "input": {
+        "entries": [
+          {
+            "type": "message",
+            "id": "e0",
+            "parentId": null,
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "message": {
+              "role": "user",
+              "content": "branch start",
+              "timestamp": 0
+            }
+          },
+          {
+            "type": "message",
+            "id": "e1",
+            "parentId": "e0",
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "message": {
+              "role": "assistant",
+              "content": [
+                {
+                  "type": "toolCall",
+                  "id": "call-1",
+                  "name": "read",
+                  "arguments": {
+                    "path": "from-call.ts"
+                  }
+                }
+              ],
+              "usage": {
+                "input": 100,
+                "output": 50,
+                "cacheRead": 0,
+                "cacheWrite": 0,
+                "totalTokens": 150,
+                "cost": {
+                  "input": 0,
+                  "output": 0,
+                  "cacheRead": 0,
+                  "cacheWrite": 0,
+                  "total": 0
+                }
+              },
+              "stopReason": "stop",
+              "timestamp": 0,
+              "api": "anthropic-messages",
+              "provider": "anthropic",
+              "model": "claude-sonnet-4-5"
+            }
+          },
+          {
+            "type": "message",
+            "id": "e2",
+            "parentId": "e1",
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "message": {
+              "role": "toolResult",
+              "toolCallId": "call-1",
+              "toolName": "read",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "ignored result"
+                }
+              ],
+              "isError": false,
+              "timestamp": 0
+            }
+          },
+          {
+            "type": "branch_summary",
+            "id": "e3",
+            "parentId": "e2",
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "summary": "prior branch",
+            "fromId": "old",
+            "details": {
+              "readFiles": [
+                "tracked.ts"
+              ],
+              "modifiedFiles": [
+                "updated.ts"
+              ]
+            },
+            "fromHook": true
+          },
+          {
+            "type": "message",
+            "id": "e4",
+            "parentId": "e3",
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "message": {
+              "role": "user",
+              "content": "latest",
+              "timestamp": 0
+            }
+          }
+        ],
+        "tokenBudget": 0
+      }
+    }
+  ]
+}

@@ -19322,25 +19322,33 @@ note = "packages/coding-agent/test/block-images.test.ts:137: Body calls excluded
 id = "packages/coding-agent/test/branch-summarization.test.ts > branch summarization > clamps the branch summary output cap to the model limit"
 file = "packages/coding-agent/test/branch-summarization.test.ts"
 line = 68
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::branch_summarization::branch_summarization::clamps_the_branch_summary_output_cap_to_the_model_limit"
+adaptation = "Use injected time and UUID services, scripted summary providers and lossless messages; preserve selected cut points, token arithmetic, prompts, retry options and exact source-authored errors."
 
 [[test]]
 id = "packages/coding-agent/test/branch-summarization.test.ts > branch summarization > does not override tool choice for branch summaries"
 file = "packages/coding-agent/test/branch-summarization.test.ts"
 line = 47
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::branch_summarization::branch_summarization::does_not_override_tool_choice_for_branch_summaries"
+adaptation = "Use injected time and UUID services, scripted summary providers and lossless messages; preserve selected cut points, token arithmetic, prompts, retry options and exact source-authored errors."
 
 [[test]]
 id = "packages/coding-agent/test/branch-summarization.test.ts > branch summarization > rejects length-limited branch summaries"
 file = "packages/coding-agent/test/branch-summarization.test.ts"
 line = 112
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::branch_summarization::branch_summarization::rejects_length_limited_branch_summaries"
+adaptation = "Use injected time and UUID services, scripted summary providers and lossless messages; preserve selected cut points, token arithmetic, prompts, retry options and exact source-authored errors."
 
 [[test]]
 id = "packages/coding-agent/test/branch-summarization.test.ts > branch summarization > rejects tool calls from branch summaries"
 file = "packages/coding-agent/test/branch-summarization.test.ts"
 line = 88
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::branch_summarization::branch_summarization::rejects_tool_calls_from_branch_summaries"
+adaptation = "Use injected time and UUID services, scripted summary providers and lossless messages; preserve selected cut points, token arithmetic, prompts, retry options and exact source-authored errors."
 
 [[test]]
 id = "packages/coding-agent/test/branch-summary-extensions.test.ts > Branch summary extensions > persists extension-provided summary usage in session totals"
@@ -20203,109 +20211,145 @@ reason = "live-provider"
 id = "packages/coding-agent/test/compaction-nested-calls.test.ts > compaction file operations > include files touched by nested calls recorded on tool results"
 file = "packages/coding-agent/test/compaction-nested-calls.test.ts"
 line = 6
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::compaction_nested_calls::compaction_file_operations::include_files_touched_by_nested_calls_recorded_on_tool_results"
+adaptation = "Use injected time and UUID services, scripted summary providers and lossless messages; preserve selected cut points, token arithmetic, prompts, retry options and exact source-authored errors."
 
 [[test]]
 id = "packages/coding-agent/test/compaction-serialization.test.ts > serializeConversation > should not truncate assistant or user messages"
 file = "packages/coding-agent/test/compaction-serialization.test.ts"
 line = 47
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::compaction_serialization::serialize_conversation::should_not_truncate_assistant_or_user_messages"
+adaptation = "Use injected time and UUID services, scripted summary providers and lossless messages; preserve selected cut points, token arithmetic, prompts, retry options and exact source-authored errors."
 
 [[test]]
 id = "packages/coding-agent/test/compaction-serialization.test.ts > serializeConversation > should not truncate short tool results"
 file = "packages/coding-agent/test/compaction-serialization.test.ts"
 line = 28
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::compaction_serialization::serialize_conversation::should_not_truncate_short_tool_results"
+adaptation = "Use injected time and UUID services, scripted summary providers and lossless messages; preserve selected cut points, token arithmetic, prompts, retry options and exact source-authored errors."
 
 [[test]]
 id = "packages/coding-agent/test/compaction-serialization.test.ts > serializeConversation > should truncate long tool results"
 file = "packages/coding-agent/test/compaction-serialization.test.ts"
 line = 6
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::compaction_serialization::serialize_conversation::should_truncate_long_tool_results"
+adaptation = "Use injected time and UUID services, scripted summary providers and lossless messages; preserve selected cut points, token arithmetic, prompts, retry options and exact source-authored errors."
 
 [[test]]
 id = "packages/coding-agent/test/compaction-summary-reasoning.test.ts > generateSummary reasoning options > clamps compaction summary maxTokens to the model output cap"
 file = "packages/coding-agent/test/compaction-summary-reasoning.test.ts"
 line = 279
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::compaction_summary_reasoning::generate_summary_reasoning_options::clamps_compaction_summary_max_tokens_to_the_model_output_cap"
+adaptation = "Use injected time and UUID services, scripted summary providers and lossless messages; preserve selected cut points, token arithmetic, prompts, retry options and exact source-authored errors."
 
 [[test]]
 id = "packages/coding-agent/test/compaction-summary-reasoning.test.ts > generateSummary reasoning options > does not set Anthropic refusal fallback for models without allowed fallback targets"
 file = "packages/coding-agent/test/compaction-summary-reasoning.test.ts"
 line = 272
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::compaction_summary_reasoning::generate_summary_reasoning_options::does_not_set_anthropic_refusal_fallback_for_models_without_allowed_fallback_targets"
+adaptation = "Use injected time and UUID services, scripted summary providers and lossless messages; preserve selected cut points, token arithmetic, prompts, retry options and exact source-authored errors."
 
 [[test]]
 id = "packages/coding-agent/test/compaction-summary-reasoning.test.ts > generateSummary reasoning options > does not set reasoning for non-reasoning models"
 file = "packages/coding-agent/test/compaction-summary-reasoning.test.ts"
 line = 232
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::compaction_summary_reasoning::generate_summary_reasoning_options::does_not_set_reasoning_for_non_reasoning_models"
+adaptation = "Use injected time and UUID services, scripted summary providers and lossless messages; preserve selected cut points, token arithmetic, prompts, retry options and exact source-authored errors."
 
 [[test]]
 id = "packages/coding-agent/test/compaction-summary-reasoning.test.ts > generateSummary reasoning options > does not set reasoning when thinking is off"
 file = "packages/coding-agent/test/compaction-summary-reasoning.test.ts"
 line = 212
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::compaction_summary_reasoning::generate_summary_reasoning_options::does_not_set_reasoning_when_thinking_is_off"
+adaptation = "Use injected time and UUID services, scripted summary providers and lossless messages; preserve selected cut points, token arithmetic, prompts, retry options and exact source-authored errors."
 
 [[test]]
 id = "packages/coding-agent/test/compaction-summary-reasoning.test.ts > generateSummary reasoning options > honors caller-supplied routing session and tool choice without prompt caching"
 file = "packages/coding-agent/test/compaction-summary-reasoning.test.ts"
 line = 117
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::compaction_summary_reasoning::generate_summary_reasoning_options::honors_caller_supplied_routing_session_and_tool_choice_without_prompt_caching"
+adaptation = "Use injected time and UUID services, scripted summary providers and lossless messages; preserve selected cut points, token arithmetic, prompts, retry options and exact source-authored errors."
 
 [[test]]
 id = "packages/coding-agent/test/compaction-summary-reasoning.test.ts > generateSummary reasoning options > leaves Anthropic refusal fallback handling to pi-ai model metadata"
 file = "packages/coding-agent/test/compaction-summary-reasoning.test.ts"
 line = 252
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::compaction_summary_reasoning::generate_summary_reasoning_options::leaves_anthropic_refusal_fallback_handling_to_pi_ai_model_metadata"
+adaptation = "Use injected time and UUID services, scripted summary providers and lossless messages; preserve selected cut points, token arithmetic, prompts, retry options and exact source-authored errors."
 
 [[test]]
 id = "packages/coding-agent/test/compaction-summary-reasoning.test.ts > generateSummary reasoning options > preserves the previous summary without an empty history request for a split turn"
 file = "packages/coding-agent/test/compaction-summary-reasoning.test.ts"
 line = 131
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::compaction_summary_reasoning::generate_summary_reasoning_options::preserves_the_previous_summary_without_an_empty_history_request_for_a_split_turn"
+adaptation = "Use injected time and UUID services, scripted summary providers and lossless messages; preserve selected cut points, token arithmetic, prompts, retry options and exact source-authored errors."
 
 [[test]]
 id = "packages/coding-agent/test/compaction-summary-reasoning.test.ts > generateSummary reasoning options > preserves the string result from generateSummary"
 file = "packages/coding-agent/test/compaction-summary-reasoning.test.ts"
 line = 99
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::compaction_summary_reasoning::generate_summary_reasoning_options::preserves_the_string_result_from_generate_summary"
+adaptation = "Use injected time and UUID services, scripted summary providers and lossless messages; preserve selected cut points, token arithmetic, prompts, retry options and exact source-authored errors."
 
 [[test]]
 id = "packages/coding-agent/test/compaction-summary-reasoning.test.ts > generateSummary reasoning options > rejects a length-limited history summary"
 file = "packages/coding-agent/test/compaction-summary-reasoning.test.ts"
 line = 179
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::compaction_summary_reasoning::generate_summary_reasoning_options::rejects_a_length_limited_history_summary"
+adaptation = "Use injected time and UUID services, scripted summary providers and lossless messages; preserve selected cut points, token arithmetic, prompts, retry options and exact source-authored errors."
 
 [[test]]
 id = "packages/coding-agent/test/compaction-summary-reasoning.test.ts > generateSummary reasoning options > rejects a length-limited split-turn summary"
 file = "packages/coding-agent/test/compaction-summary-reasoning.test.ts"
 line = 191
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::compaction_summary_reasoning::generate_summary_reasoning_options::rejects_a_length_limited_split_turn_summary"
+adaptation = "Use injected time and UUID services, scripted summary providers and lossless messages; preserve selected cut points, token arithmetic, prompts, retry options and exact source-authored errors."
 
 [[test]]
 id = "packages/coding-agent/test/compaction-summary-reasoning.test.ts > generateSummary reasoning options > rejects tool calls from conversation summaries"
 file = "packages/coding-agent/test/compaction-summary-reasoning.test.ts"
 line = 154
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::compaction_summary_reasoning::generate_summary_reasoning_options::rejects_tool_calls_from_conversation_summaries"
+adaptation = "Use injected time and UUID services, scripted summary providers and lossless messages; preserve selected cut points, token arithmetic, prompts, retry options and exact source-authored errors."
 
 [[test]]
 id = "packages/coding-agent/test/compaction-summary-reasoning.test.ts > generateSummary reasoning options > rejects tool calls from split-turn summaries"
 file = "packages/coding-agent/test/compaction-summary-reasoning.test.ts"
 line = 162
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::compaction_summary_reasoning::generate_summary_reasoning_options::rejects_tool_calls_from_split_turn_summaries"
+adaptation = "Use injected time and UUID services, scripted summary providers and lossless messages; preserve selected cut points, token arithmetic, prompts, retry options and exact source-authored errors."
 
 [[test]]
 id = "packages/coding-agent/test/compaction-summary-reasoning.test.ts > generateSummary reasoning options > uses fresh routing sessions without prompt caching"
 file = "packages/coding-agent/test/compaction-summary-reasoning.test.ts"
 line = 105
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::compaction_summary_reasoning::generate_summary_reasoning_options::uses_fresh_routing_sessions_without_prompt_caching"
+adaptation = "Use injected time and UUID services, scripted summary providers and lossless messages; preserve selected cut points, token arithmetic, prompts, retry options and exact source-authored errors."
 
 [[test]]
 id = "packages/coding-agent/test/compaction-summary-reasoning.test.ts > generateSummary reasoning options > uses the provided thinking level for reasoning-capable models"
 file = "packages/coding-agent/test/compaction-summary-reasoning.test.ts"
 line = 76
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::compaction_summary_reasoning::generate_summary_reasoning_options::uses_the_provided_thinking_level_for_reasoning_capable_models"
+adaptation = "Use injected time and UUID services, scripted summary providers and lossless messages; preserve selected cut points, token arithmetic, prompts, retry options and exact source-authored errors."
 
 [[test]]
 id = "packages/coding-agent/test/compaction.test.ts > LLM summarization > should generate a compaction result for the large session"
@@ -20327,157 +20371,209 @@ note = "This case invokes live Anthropic summarization and requires ANTHROPIC_OA
 id = "packages/coding-agent/test/compaction.test.ts > Large session fixture > should find cut point in large session"
 file = "packages/coding-agent/test/compaction.test.ts"
 line = 580
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::compaction::large_session_fixture::should_find_cut_point_in_large_session"
+adaptation = "Use injected time and UUID services, scripted summary providers and lossless messages; preserve selected cut points, token arithmetic, prompts, retry options and exact source-authored errors."
 
 [[test]]
 id = "packages/coding-agent/test/compaction.test.ts > Large session fixture > should load session correctly"
 file = "packages/coding-agent/test/compaction.test.ts"
 line = 590
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::compaction::large_session_fixture::should_load_session_correctly"
+adaptation = "Use injected time and UUID services, scripted summary providers and lossless messages; preserve selected cut points, token arithmetic, prompts, retry options and exact source-authored errors."
 
 [[test]]
 id = "packages/coding-agent/test/compaction.test.ts > Large session fixture > should parse the large session"
 file = "packages/coding-agent/test/compaction.test.ts"
 line = 572
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::compaction::large_session_fixture::should_parse_the_large_session"
+adaptation = "Use injected time and UUID services, scripted summary providers and lossless messages; preserve selected cut points, token arithmetic, prompts, retry options and exact source-authored errors."
 
 [[test]]
 id = "packages/coding-agent/test/compaction.test.ts > Token calculation > should calculate total context tokens from usage"
 file = "packages/coding-agent/test/compaction.test.ts"
 line = 194
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::compaction::token_calculation::should_calculate_total_context_tokens_from_usage"
+adaptation = "Use injected time and UUID services, scripted summary providers and lossless messages; preserve selected cut points, token arithmetic, prompts, retry options and exact source-authored errors."
 
 [[test]]
 id = "packages/coding-agent/test/compaction.test.ts > Token calculation > should handle zero values"
 file = "packages/coding-agent/test/compaction.test.ts"
 line = 199
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::compaction::token_calculation::should_handle_zero_values"
+adaptation = "Use injected time and UUID services, scripted summary providers and lossless messages; preserve selected cut points, token arithmetic, prompts, retry options and exact source-authored errors."
 
 [[test]]
 id = "packages/coding-agent/test/compaction.test.ts > buildSessionContext > should handle multiple compactions (only latest matters)"
 file = "packages/coding-agent/test/compaction.test.ts"
 line = 448
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::compaction::build_session_context::should_handle_multiple_compactions_only_latest_matters"
+adaptation = "Use injected time and UUID services, scripted summary providers and lossless messages; preserve selected cut points, token arithmetic, prompts, retry options and exact source-authored errors."
 
 [[test]]
 id = "packages/coding-agent/test/compaction.test.ts > buildSessionContext > should handle single compaction"
 file = "packages/coding-agent/test/compaction.test.ts"
 line = 429
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::compaction::build_session_context::should_handle_single_compaction"
+adaptation = "Use injected time and UUID services, scripted summary providers and lossless messages; preserve selected cut points, token arithmetic, prompts, retry options and exact source-authored errors."
 
 [[test]]
 id = "packages/coding-agent/test/compaction.test.ts > buildSessionContext > should keep all messages when firstKeptEntryId is first entry"
 file = "packages/coding-agent/test/compaction.test.ts"
 line = 471
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::compaction::build_session_context::should_keep_all_messages_when_first_kept_entry_id_is_first_entry"
+adaptation = "Use injected time and UUID services, scripted summary providers and lossless messages; preserve selected cut points, token arithmetic, prompts, retry options and exact source-authored errors."
 
 [[test]]
 id = "packages/coding-agent/test/compaction.test.ts > buildSessionContext > should load all messages when no compaction"
 file = "packages/coding-agent/test/compaction.test.ts"
 line = 415
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::compaction::build_session_context::should_load_all_messages_when_no_compaction"
+adaptation = "Use injected time and UUID services, scripted summary providers and lossless messages; preserve selected cut points, token arithmetic, prompts, retry options and exact source-authored errors."
 
 [[test]]
 id = "packages/coding-agent/test/compaction.test.ts > buildSessionContext > should track model and thinking level changes"
 file = "packages/coding-agent/test/compaction.test.ts"
 line = 485
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::compaction::build_session_context::should_track_model_and_thinking_level_changes"
+adaptation = "Use injected time and UUID services, scripted summary providers and lossless messages; preserve selected cut points, token arithmetic, prompts, retry options and exact source-authored errors."
 
 [[test]]
 id = "packages/coding-agent/test/compaction.test.ts > estimateContextTokens > uses the last non-zero assistant usage as the context anchor"
 file = "packages/coding-agent/test/compaction.test.ts"
 line = 257
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::compaction::estimate_context_tokens::uses_the_last_non_zero_assistant_usage_as_the_context_anchor"
+adaptation = "Use injected time and UUID services, scripted summary providers and lossless messages; preserve selected cut points, token arithmetic, prompts, retry options and exact source-authored errors."
 
 [[test]]
 id = "packages/coding-agent/test/compaction.test.ts > findCutPoint > should budget context-visible custom message entries"
 file = "packages/coding-agent/test/compaction.test.ts"
 line = 358
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::compaction::find_cut_point::should_budget_context_visible_custom_message_entries"
+adaptation = "Use injected time and UUID services, scripted summary providers and lossless messages; preserve selected cut points, token arithmetic, prompts, retry options and exact source-authored errors."
 
 [[test]]
 id = "packages/coding-agent/test/compaction.test.ts > findCutPoint > should fall back to the latest valid cut point before oversized trailing tool results"
 file = "packages/coding-agent/test/compaction.test.ts"
 line = 378
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::compaction::find_cut_point::should_fall_back_to_the_latest_valid_cut_point_before_oversized_trailing_tool_results"
+adaptation = "Use injected time and UUID services, scripted summary providers and lossless messages; preserve selected cut points, token arithmetic, prompts, retry options and exact source-authored errors."
 
 [[test]]
 id = "packages/coding-agent/test/compaction.test.ts > findCutPoint > should find cut point based on actual token differences"
 file = "packages/coding-agent/test/compaction.test.ts"
 line = 298
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::compaction::find_cut_point::should_find_cut_point_based_on_actual_token_differences"
+adaptation = "Use injected time and UUID services, scripted summary providers and lossless messages; preserve selected cut points, token arithmetic, prompts, retry options and exact source-authored errors."
 
 [[test]]
 id = "packages/coding-agent/test/compaction.test.ts > findCutPoint > should indicate split turn when cutting at assistant message"
 file = "packages/coding-agent/test/compaction.test.ts"
 line = 336
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::compaction::find_cut_point::should_indicate_split_turn_when_cutting_at_assistant_message"
+adaptation = "Use injected time and UUID services, scripted summary providers and lossless messages; preserve selected cut points, token arithmetic, prompts, retry options and exact source-authored errors."
 
 [[test]]
 id = "packages/coding-agent/test/compaction.test.ts > findCutPoint > should keep everything if all messages fit within budget"
 file = "packages/coding-agent/test/compaction.test.ts"
 line = 324
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::compaction::find_cut_point::should_keep_everything_if_all_messages_fit_within_budget"
+adaptation = "Use injected time and UUID services, scripted summary providers and lossless messages; preserve selected cut points, token arithmetic, prompts, retry options and exact source-authored errors."
 
 [[test]]
 id = "packages/coding-agent/test/compaction.test.ts > findCutPoint > should return startIndex if no valid cut points in range"
 file = "packages/coding-agent/test/compaction.test.ts"
 line = 318
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::compaction::find_cut_point::should_return_start_index_if_no_valid_cut_points_in_range"
+adaptation = "Use injected time and UUID services, scripted summary providers and lossless messages; preserve selected cut points, token arithmetic, prompts, retry options and exact source-authored errors."
 
 [[test]]
 id = "packages/coding-agent/test/compaction.test.ts > getLastAssistantUsage > should find the last non-aborted assistant message usage"
 file = "packages/coding-agent/test/compaction.test.ts"
 line = 206
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::compaction::get_last_assistant_usage::should_find_the_last_non_aborted_assistant_message_usage"
+adaptation = "Use injected time and UUID services, scripted summary providers and lossless messages; preserve selected cut points, token arithmetic, prompts, retry options and exact source-authored errors."
 
 [[test]]
 id = "packages/coding-agent/test/compaction.test.ts > getLastAssistantUsage > should return undefined if no assistant messages"
 file = "packages/coding-agent/test/compaction.test.ts"
 line = 250
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::compaction::get_last_assistant_usage::should_return_undefined_if_no_assistant_messages"
+adaptation = "Use injected time and UUID services, scripted summary providers and lossless messages; preserve selected cut points, token arithmetic, prompts, retry options and exact source-authored errors."
 
 [[test]]
 id = "packages/coding-agent/test/compaction.test.ts > getLastAssistantUsage > should skip aborted messages"
 file = "packages/coding-agent/test/compaction.test.ts"
 line = 219
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::compaction::get_last_assistant_usage::should_skip_aborted_messages"
+adaptation = "Use injected time and UUID services, scripted summary providers and lossless messages; preserve selected cut points, token arithmetic, prompts, retry options and exact source-authored errors."
 
 [[test]]
 id = "packages/coding-agent/test/compaction.test.ts > getLastAssistantUsage > should skip all-zero assistant usage"
 file = "packages/coding-agent/test/compaction.test.ts"
 line = 237
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::compaction::get_last_assistant_usage::should_skip_all_zero_assistant_usage"
+adaptation = "Use injected time and UUID services, scripted summary providers and lossless messages; preserve selected cut points, token arithmetic, prompts, retry options and exact source-authored errors."
 
 [[test]]
 id = "packages/coding-agent/test/compaction.test.ts > prepareCompaction > does not treat system messages as conversation history"
 file = "packages/coding-agent/test/compaction.test.ts"
 line = 501
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::compaction::prepare_compaction::does_not_treat_system_messages_as_conversation_history"
+adaptation = "Use injected time and UUID services, scripted summary providers and lossless messages; preserve selected cut points, token arithmetic, prompts, retry options and exact source-authored errors."
 
 [[test]]
 id = "packages/coding-agent/test/compaction.test.ts > prepareCompaction with previous compaction > should re-summarize previously kept messages when the recent window moves past them"
 file = "packages/coding-agent/test/compaction.test.ts"
 line = 541
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::compaction::prepare_compaction_with_previous_compaction::should_re_summarize_previously_kept_messages_when_the_recent_window_moves_past_them"
+adaptation = "Use injected time and UUID services, scripted summary providers and lossless messages; preserve selected cut points, token arithmetic, prompts, retry options and exact source-authored errors."
 
 [[test]]
 id = "packages/coding-agent/test/compaction.test.ts > prepareCompaction with previous compaction > should skip repeated compactions when kept messages still fit"
 file = "packages/coding-agent/test/compaction.test.ts"
 line = 524
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::compaction::prepare_compaction_with_previous_compaction::should_skip_repeated_compactions_when_kept_messages_still_fit"
+adaptation = "Use injected time and UUID services, scripted summary providers and lossless messages; preserve selected cut points, token arithmetic, prompts, retry options and exact source-authored errors."
 
 [[test]]
 id = "packages/coding-agent/test/compaction.test.ts > shouldCompact > should return false when disabled"
 file = "packages/coding-agent/test/compaction.test.ts"
 line = 286
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::compaction::should_compact::should_return_false_when_disabled"
+adaptation = "Use injected time and UUID services, scripted summary providers and lossless messages; preserve selected cut points, token arithmetic, prompts, retry options and exact source-authored errors."
 
 [[test]]
 id = "packages/coding-agent/test/compaction.test.ts > shouldCompact > should return true when context exceeds threshold"
 file = "packages/coding-agent/test/compaction.test.ts"
 line = 275
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::compaction::should_compact::should_return_true_when_context_exceeds_threshold"
+adaptation = "Use injected time and UUID services, scripted summary providers and lossless messages; preserve selected cut points, token arithmetic, prompts, retry options and exact source-authored errors."
 
 [[test]]
 id = "packages/coding-agent/test/config-value-migration.test.ts > config value env var syntax migration > does not throw on blank models.json during migrations"
@@ -27270,133 +27366,180 @@ reason = "skip-module"
 id = "packages/coding-agent/test/paths.test.ts > canonicalizePath > falls back to the raw path for a dangling symlink"
 file = "packages/coding-agent/test/paths.test.ts"
 line = 61
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::paths::canonicalize_path_tests::falls_back_to_the_raw_path_for_a_dangling_symlink"
+adaptation = "Use explicit fixture homes/cwd and temporary paths, native filesystem operations and source-equivalent platform guards; preserve every applicable path and symlink assertion."
 
 [[test]]
 id = "packages/coding-agent/test/paths.test.ts > canonicalizePath > falls back to the raw path when the target does not exist"
 file = "packages/coding-agent/test/paths.test.ts"
 line = 55
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::paths::canonicalize_path_tests::falls_back_to_the_raw_path_when_the_target_does_not_exist"
+adaptation = "Use explicit fixture homes/cwd and temporary paths, native filesystem operations and source-equivalent platform guards; preserve every applicable path and symlink assertion."
 
 [[test]]
 id = "packages/coding-agent/test/paths.test.ts > canonicalizePath > resolves directory symlinks"
 file = "packages/coding-agent/test/paths.test.ts"
 line = 46
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::paths::canonicalize_path_tests::resolves_directory_symlinks"
+adaptation = "Use explicit fixture homes/cwd and temporary paths, native filesystem operations and source-equivalent platform guards; preserve every applicable path and symlink assertion."
 
 [[test]]
 id = "packages/coding-agent/test/paths.test.ts > canonicalizePath > resolves symlinks to their targets"
 file = "packages/coding-agent/test/paths.test.ts"
 line = 37
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::paths::canonicalize_path_tests::resolves_symlinks_to_their_targets"
+adaptation = "Use explicit fixture homes/cwd and temporary paths, native filesystem operations and source-equivalent platform guards; preserve every applicable path and symlink assertion."
 
 [[test]]
 id = "packages/coding-agent/test/paths.test.ts > canonicalizePath > returns the real path for a regular file"
 file = "packages/coding-agent/test/paths.test.ts"
 line = 30
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::paths::canonicalize_path_tests::returns_the_real_path_for_a_regular_file"
+adaptation = "Use explicit fixture homes/cwd and temporary paths, native filesystem operations and source-equivalent platform guards; preserve every applicable path and symlink assertion."
 
 [[test]]
 id = "packages/coding-agent/test/paths.test.ts > getCwdRelativePath > keeps cwd-relative names that start with dots"
 file = "packages/coding-agent/test/paths.test.ts"
 line = 73
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::paths::get_cwd_relative_path_tests::keeps_cwd_relative_names_that_start_with_dots"
+adaptation = "Use explicit fixture homes/cwd and temporary paths, native filesystem operations and source-equivalent platform guards; preserve every applicable path and symlink assertion."
 
 [[test]]
 id = "packages/coding-agent/test/paths.test.ts > getCwdRelativePath > rejects parent-directory traversals"
 file = "packages/coding-agent/test/paths.test.ts"
 line = 78
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::paths::get_cwd_relative_path_tests::rejects_parent_directory_traversals"
+adaptation = "Use explicit fixture homes/cwd and temporary paths, native filesystem operations and source-equivalent platform guards; preserve every applicable path and symlink assertion."
 
 [[test]]
 id = "packages/coding-agent/test/paths.test.ts > isLocalPath > returns false for git: protocol"
 file = "packages/coding-agent/test/paths.test.ts"
 line = 177
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::paths::is_local_path_tests::returns_false_for_git_protocol"
+adaptation = "Use explicit fixture homes/cwd and temporary paths, native filesystem operations and source-equivalent platform guards; preserve every applicable path and symlink assertion."
 
 [[test]]
 id = "packages/coding-agent/test/paths.test.ts > isLocalPath > returns false for https: protocol"
 file = "packages/coding-agent/test/paths.test.ts"
 line = 181
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::paths::is_local_path_tests::returns_false_for_https_protocol"
+adaptation = "Use explicit fixture homes/cwd and temporary paths, native filesystem operations and source-equivalent platform guards; preserve every applicable path and symlink assertion."
 
 [[test]]
 id = "packages/coding-agent/test/paths.test.ts > isLocalPath > returns false for npm: protocol"
 file = "packages/coding-agent/test/paths.test.ts"
 line = 173
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::paths::is_local_path_tests::returns_false_for_npm_protocol"
+adaptation = "Use explicit fixture homes/cwd and temporary paths, native filesystem operations and source-equivalent platform guards; preserve every applicable path and symlink assertion."
 
 [[test]]
 id = "packages/coding-agent/test/paths.test.ts > isLocalPath > returns true for bare names"
 file = "packages/coding-agent/test/paths.test.ts"
 line = 161
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::paths::is_local_path_tests::returns_true_for_bare_names"
+adaptation = "Use explicit fixture homes/cwd and temporary paths, native filesystem operations and source-equivalent platform guards; preserve every applicable path and symlink assertion."
 
 [[test]]
 id = "packages/coding-agent/test/paths.test.ts > isLocalPath > returns true for file URLs"
 file = "packages/coding-agent/test/paths.test.ts"
 line = 169
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::paths::is_local_path_tests::returns_true_for_file_urls"
+adaptation = "Use explicit fixture homes/cwd and temporary paths, native filesystem operations and source-equivalent platform guards; preserve every applicable path and symlink assertion."
 
 [[test]]
 id = "packages/coding-agent/test/paths.test.ts > isLocalPath > returns true for relative paths"
 file = "packages/coding-agent/test/paths.test.ts"
 line = 165
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::paths::is_local_path_tests::returns_true_for_relative_paths"
+adaptation = "Use explicit fixture homes/cwd and temporary paths, native filesystem operations and source-equivalent platform guards; preserve every applicable path and symlink assertion."
 
 [[test]]
 id = "packages/coding-agent/test/paths.test.ts > normalizeWindowsShellPath > converts Git Bash, MSYS, Cygwin, and WSL drive paths"
 file = "packages/coding-agent/test/paths.test.ts"
 line = 134
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::paths::normalize_windows_shell_path_tests::converts_git_bash_msys_cygwin_and_wsl_drive_paths"
+adaptation = "Use explicit fixture homes/cwd and temporary paths, native filesystem operations and source-equivalent platform guards; preserve every applicable path and symlink assertion."
 
 [[test]]
 id = "packages/coding-agent/test/paths.test.ts > normalizeWindowsShellPath > is applied by normal path handling on Windows"
 file = "packages/coding-agent/test/paths.test.ts"
 line = 154
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::paths::normalize_windows_shell_path_tests::is_applied_by_normal_path_handling_on_windows"
+adaptation = "Use explicit fixture homes/cwd and temporary paths, native filesystem operations and source-equivalent platform guards; preserve every applicable path and symlink assertion."
+platform = { applies_to = "windows", source_line = 154, source_kind = "run-if" }
 
 [[test]]
 id = "packages/coding-agent/test/paths.test.ts > normalizeWindowsShellPath > leaves other path forms unchanged"
 file = "packages/coding-agent/test/paths.test.ts"
 line = 141
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::paths::normalize_windows_shell_path_tests::leaves_other_path_forms_unchanged"
+adaptation = "Use explicit fixture homes/cwd and temporary paths, native filesystem operations and source-equivalent platform guards; preserve every applicable path and symlink assertion."
 
 [[test]]
 id = "packages/coding-agent/test/paths.test.ts > resolvePath > accepts file URLs"
 file = "packages/coding-agent/test/paths.test.ts"
 line = 99
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::paths::resolve_path_tests::accepts_file_urls"
+adaptation = "Use explicit fixture homes/cwd and temporary paths, native filesystem operations and source-equivalent platform guards; preserve every applicable path and symlink assertion."
 
 [[test]]
 id = "packages/coding-agent/test/paths.test.ts > resolvePath > does not treat Windows file URL pathname strings as native paths"
 file = "packages/coding-agent/test/paths.test.ts"
 line = 120
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::paths::resolve_path_tests::does_not_treat_windows_file_url_pathname_strings_as_native_paths"
+adaptation = "Use explicit fixture homes/cwd and temporary paths, native filesystem operations and source-equivalent platform guards; preserve every applicable path and symlink assertion."
+platform = { applies_to = "windows", source_line = 121, source_kind = "early-return" }
 
 [[test]]
 id = "packages/coding-agent/test/paths.test.ts > resolvePath > expands only home tilde shortcuts"
 file = "packages/coding-agent/test/paths.test.ts"
 line = 85
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::paths::resolve_path_tests::expands_only_home_tilde_shortcuts"
+adaptation = "Use explicit fixture homes/cwd and temporary paths, native filesystem operations and source-equivalent platform guards; preserve every applicable path and symlink assertion."
 
 [[test]]
 id = "packages/coding-agent/test/paths.test.ts > resolvePath > preserves POSIX absolute paths with literal percent sequences"
 file = "packages/coding-agent/test/paths.test.ts"
 line = 109
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::paths::resolve_path_tests::preserves_posix_absolute_paths_with_literal_percent_sequences"
+adaptation = "Use explicit fixture homes/cwd and temporary paths, native filesystem operations and source-equivalent platform guards; preserve every applicable path and symlink assertion."
+platform = { applies_to = "non-windows", source_line = 110, source_kind = "early-return" }
 
 [[test]]
 id = "packages/coding-agent/test/paths.test.ts > resolvePath > resolves relative paths against the base directory"
 file = "packages/coding-agent/test/paths.test.ts"
 line = 93
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::paths::resolve_path_tests::resolves_relative_paths_against_the_base_directory"
+adaptation = "Use explicit fixture homes/cwd and temporary paths, native filesystem operations and source-equivalent platform guards; preserve every applicable path and symlink assertion."
 
 [[test]]
 id = "packages/coding-agent/test/paths.test.ts > resolvePath > throws for invalid file URLs"
 file = "packages/coding-agent/test/paths.test.ts"
 line = 105
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::paths::resolve_path_tests::throws_for_invalid_file_urls"
+adaptation = "Use explicit fixture homes/cwd and temporary paths, native filesystem operations and source-equivalent platform guards; preserve every applicable path and symlink assertion."
 
 [[test]]
 id = "packages/coding-agent/test/pi-user-agent.test.ts > getPiUserAgent > formats the user agent expected by pi.dev"
@@ -29352,109 +29495,145 @@ note = "packages/coding-agent/test/sdk-stream-options.test.ts:204: All assertion
 id = "packages/coding-agent/test/session-context-edit.test.ts > session context edits > advances past input for an omitted assistant recovery suffix with metadata"
 file = "packages/coding-agent/test/session-context-edit.test.ts"
 line = 323
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::session_context_edit::omitted_assistant_recovery_advances_past_input"
+adaptation = "Use per-test VirtualEnv and host identity, lossless shared session entries, Result errors and fixture-owned temporary directories; preserve raw JSONL, migrations, context, branch and identity assertions."
 
 [[test]]
 id = "packages/coding-agent/test/session-context-edit.test.ts > session context edits > applies post-compaction edits to retained pre-compaction entries"
 file = "packages/coding-agent/test/session-context-edit.test.ts"
 line = 148
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::session_context_edit::applies_edits_after_compaction_to_retained_entries"
+adaptation = "Use injected time and UUID services, scripted summary providers and lossless messages; preserve selected cut points, token arithmetic, prompts, retry options and exact source-authored errors."
 
 [[test]]
 id = "packages/coding-agent/test/session-context-edit.test.ts > session context edits > does not advance past a boundary replacement of the candidate input"
 file = "packages/coding-agent/test/session-context-edit.test.ts"
 line = 267
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::session_context_edit::boundary_replacement_does_not_advance_cut"
+adaptation = "Use per-test VirtualEnv and host identity, lossless shared session entries, Result errors and fixture-owned temporary directories; preserve raw JSONL, migrations, context, branch and identity assertions."
 
 [[test]]
 id = "packages/coding-agent/test/session-context-edit.test.ts > session context edits > does not let metadata move the cut past unsent boundary input"
 file = "packages/coding-agent/test/session-context-edit.test.ts"
 line = 290
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::session_context_edit::metadata_does_not_move_cut_past_unsent_input"
+adaptation = "Use per-test VirtualEnv and host identity, lossless shared session entries, Result errors and fixture-owned temporary directories; preserve raw JSONL, migrations, context, branch and identity assertions."
 
 [[test]]
 id = "packages/coding-agent/test/session-context-edit.test.ts > session context edits > does not reuse post-edit assistant usage after a later compaction"
 file = "packages/coding-agent/test/session-context-edit.test.ts"
 line = 230
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::session_context_edit::later_compaction_invalidates_post_edit_usage"
+adaptation = "Use injected time and UUID services, scripted summary providers and lossless messages; preserve selected cut points, token arithmetic, prompts, retry options and exact source-authored errors."
 
 [[test]]
 id = "packages/coding-agent/test/session-context-edit.test.ts > session context edits > does not treat an omitted custom message as a recovery attempt"
 file = "packages/coding-agent/test/session-context-edit.test.ts"
 line = 306
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::session_context_edit::omitted_custom_message_is_not_recovery_attempt"
+adaptation = "Use per-test VirtualEnv and host identity, lossless shared session entries, Result errors and fixture-owned temporary directories; preserve raw JSONL, migrations, context, branch and identity assertions."
 
 [[test]]
 id = "packages/coding-agent/test/session-context-edit.test.ts > session context edits > does not trust pre-edit assistant usage for projected context estimates"
 file = "packages/coding-agent/test/session-context-edit.test.ts"
 line = 195
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::session_context_edit::distrusts_pre_edit_usage"
+adaptation = "Use per-test VirtualEnv and host identity, lossless shared session entries, Result errors and fixture-owned temporary directories; preserve raw JSONL, migrations, context, branch and identity assertions."
 
 [[test]]
 id = "packages/coding-agent/test/session-context-edit.test.ts > session context edits > includes effective system and tool context in edited estimates"
 file = "packages/coding-agent/test/session-context-edit.test.ts"
 line = 244
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::session_context_edit::estimates_include_system_and_tools"
+adaptation = "Use per-test VirtualEnv and host identity, lossless shared session entries, Result errors and fixture-owned temporary directories; preserve raw JSONL, migrations, context, branch and identity assertions."
 
 [[test]]
 id = "packages/coding-agent/test/session-context-edit.test.ts > session context edits > keeps edits branch-relative"
 file = "packages/coding-agent/test/session-context-edit.test.ts"
 line = 119
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::session_context_edit::edits_are_branch_relative"
+adaptation = "Use per-test VirtualEnv and host identity, lossless shared session entries, Result errors and fixture-owned temporary directories; preserve raw JSONL, migrations, context, branch and identity assertions."
 
 [[test]]
 id = "packages/coding-agent/test/session-context-edit.test.ts > session context edits > normalizes imported string replacements while projecting array-only roles"
 file = "packages/coding-agent/test/session-context-edit.test.ts"
 line = 105
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::session_context_edit::normalizes_imported_string_replacements"
+adaptation = "Use per-test VirtualEnv and host identity, lossless shared session entries, Result errors and fixture-owned temporary directories; preserve raw JSONL, migrations, context, branch and identity assertions."
 
 [[test]]
 id = "packages/coding-agent/test/session-context-edit.test.ts > session context edits > normalizes string replacements for array-only assistant and tool-result roles"
 file = "packages/coding-agent/test/session-context-edit.test.ts"
 line = 74
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::session_context_edit::normalizes_string_replacements"
+adaptation = "Use per-test VirtualEnv and host identity, lossless shared session entries, Result errors and fixture-owned temporary directories; preserve raw JSONL, migrations, context, branch and identity assertions."
 
 [[test]]
 id = "packages/coding-agent/test/session-context-edit.test.ts > session context edits > omits a target only from model projection"
 file = "packages/coding-agent/test/session-context-edit.test.ts"
 line = 37
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::session_context_edit::omits_target_only_from_projection"
+adaptation = "Use per-test VirtualEnv and host identity, lossless shared session entries, Result errors and fixture-owned temporary directories; preserve raw JSONL, migrations, context, branch and identity assertions."
 
 [[test]]
 id = "packages/coding-agent/test/session-context-edit.test.ts > session context edits > prepares compaction from edited model content"
 file = "packages/coding-agent/test/session-context-edit.test.ts"
 line = 348
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::session_context_edit::prepares_compaction_from_edited_content"
+adaptation = "Use injected time and UUID services, scripted summary providers and lossless messages; preserve selected cut points, token arithmetic, prompts, retry options and exact source-authored errors."
 
 [[test]]
 id = "packages/coding-agent/test/session-context-edit.test.ts > session context edits > replaces only content and lets the latest edit win"
 file = "packages/coding-agent/test/session-context-edit.test.ts"
 line = 59
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::session_context_edit::replaces_only_content_latest_wins"
+adaptation = "Use per-test VirtualEnv and host identity, lossless shared session entries, Result errors and fixture-owned temporary directories; preserve raw JSONL, migrations, context, branch and identity assertions."
 
 [[test]]
 id = "packages/coding-agent/test/session-context-edit.test.ts > session context edits > supports repeated retain-none compactions"
 file = "packages/coding-agent/test/session-context-edit.test.ts"
 line = 182
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::session_context_edit::repeated_retain_none_compactions"
+adaptation = "Use injected time and UUID services, scripted summary providers and lossless messages; preserve selected cut points, token arithmetic, prompts, retry options and exact source-authored errors."
 
 [[test]]
 id = "packages/coding-agent/test/session-context-edit.test.ts > session context edits > uses a self-referencing compaction to retain no preceding entries"
 file = "packages/coding-agent/test/session-context-edit.test.ts"
 line = 129
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::session_context_edit::self_referencing_compaction_retains_none"
+adaptation = "Use injected time and UUID services, scripted summary providers and lossless messages; preserve selected cut points, token arithmetic, prompts, retry options and exact source-authored errors."
 
 [[test]]
 id = "packages/coding-agent/test/session-context-edit.test.ts > session context edits > uses assistant usage captured after the latest context edit"
 file = "packages/coding-agent/test/session-context-edit.test.ts"
 line = 215
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::session_context_edit::uses_usage_after_latest_edit"
+adaptation = "Use per-test VirtualEnv and host identity, lossless shared session entries, Result errors and fixture-owned temporary directories; preserve raw JSONL, migrations, context, branch and identity assertions."
 
 [[test]]
 id = "packages/coding-agent/test/session-context-edit.test.ts > session context edits > uses only the newest summary when a repeated compaction retains entries before the older compaction"
 file = "packages/coding-agent/test/session-context-edit.test.ts"
 line = 162
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::session_context_edit::newest_summary_when_retaining_before_previous_compaction"
+adaptation = "Use injected time and UUID services, scripted summary providers and lossless messages; preserve selected cut points, token arithmetic, prompts, retry options and exact source-authored errors."
 
 [[test]]
 id = "packages/coding-agent/test/session-cwd.test.ts > session cwd handling > detects missing session cwd from persisted sessions"
@@ -29478,7 +29657,9 @@ status = "pending"
 id = "packages/coding-agent/test/session-file-invalid.test.ts > --session invalid file handling > prints a friendly error and preserves non-session file content"
 file = "packages/coding-agent/test/session-file-invalid.test.ts"
 line = 49
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::session_file_invalid::prints_a_friendly_error_and_preserves_non_session_file_content"
+adaptation = "Use per-test VirtualEnv and host identity, lossless shared session entries, Result errors and fixture-owned temporary directories; preserve raw JSONL, migrations, context, branch and identity assertions."
 
 [[test]]
 id = "packages/coding-agent/test/session-id-readonly.test.ts > --session-id > creates missing IDs and reopens existing IDs in process"
@@ -29533,703 +29714,937 @@ reason = "skip-module"
 id = "packages/coding-agent/test/session-manager/build-context.test.ts > buildSessionContext > edge cases > handles orphaned entries gracefully"
 file = "packages/coding-agent/test/session-manager/build-context.test.ts"
 line = 295
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::session_manager::build_context::handles_orphaned_entries"
+adaptation = "Use per-test VirtualEnv and host identity, lossless shared session entries, Result errors and fixture-owned temporary directories; preserve raw JSONL, migrations, context, branch and identity assertions."
 
 [[test]]
 id = "packages/coding-agent/test/session-manager/build-context.test.ts > buildSessionContext > edge cases > uses last entry when leafId not found"
 file = "packages/coding-agent/test/session-manager/build-context.test.ts"
 line = 289
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::session_manager::build_context::uses_last_entry_when_leaf_missing"
+adaptation = "Use per-test VirtualEnv and host identity, lossless shared session entries, Result errors and fixture-owned temporary directories; preserve raw JSONL, migrations, context, branch and identity assertions."
 
 [[test]]
 id = "packages/coding-agent/test/session-manager/build-context.test.ts > buildSessionContext > trivial cases > empty entries returns empty context"
 file = "packages/coding-agent/test/session-manager/build-context.test.ts"
 line = 71
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::session_manager::build_context::empty_entries_returns_empty_context"
+adaptation = "Use per-test VirtualEnv and host identity, lossless shared session entries, Result errors and fixture-owned temporary directories; preserve raw JSONL, migrations, context, branch and identity assertions."
 
 [[test]]
 id = "packages/coding-agent/test/session-manager/build-context.test.ts > buildSessionContext > trivial cases > simple conversation"
 file = "packages/coding-agent/test/session-manager/build-context.test.ts"
 line = 85
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::session_manager::build_context::simple_conversation"
+adaptation = "Use per-test VirtualEnv and host identity, lossless shared session entries, Result errors and fixture-owned temporary directories; preserve raw JSONL, migrations, context, branch and identity assertions."
 
 [[test]]
 id = "packages/coding-agent/test/session-manager/build-context.test.ts > buildSessionContext > trivial cases > single user message"
 file = "packages/coding-agent/test/session-manager/build-context.test.ts"
 line = 78
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::session_manager::build_context::single_user_message"
+adaptation = "Use per-test VirtualEnv and host identity, lossless shared session entries, Result errors and fixture-owned temporary directories; preserve raw JSONL, migrations, context, branch and identity assertions."
 
 [[test]]
 id = "packages/coding-agent/test/session-manager/build-context.test.ts > buildSessionContext > trivial cases > tracks model from assistant message"
 file = "packages/coding-agent/test/session-manager/build-context.test.ts"
 line = 108
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::session_manager::build_context::tracks_model_from_assistant_message"
+adaptation = "Use per-test VirtualEnv and host identity, lossless shared session entries, Result errors and fixture-owned temporary directories; preserve raw JSONL, migrations, context, branch and identity assertions."
 
 [[test]]
 id = "packages/coding-agent/test/session-manager/build-context.test.ts > buildSessionContext > trivial cases > tracks model from model change entry"
 file = "packages/coding-agent/test/session-manager/build-context.test.ts"
 line = 114
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::session_manager::build_context::tracks_model_from_model_change_entry"
+adaptation = "Use per-test VirtualEnv and host identity, lossless shared session entries, Result errors and fixture-owned temporary directories; preserve raw JSONL, migrations, context, branch and identity assertions."
 
 [[test]]
 id = "packages/coding-agent/test/session-manager/build-context.test.ts > buildSessionContext > trivial cases > tracks thinking level changes"
 file = "packages/coding-agent/test/session-manager/build-context.test.ts"
 line = 97
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::session_manager::build_context::tracks_thinking_level_changes"
+adaptation = "Use per-test VirtualEnv and host identity, lossless shared session entries, Result errors and fixture-owned temporary directories; preserve raw JSONL, migrations, context, branch and identity assertions."
 
 [[test]]
 id = "packages/coding-agent/test/session-manager/build-context.test.ts > buildSessionContext > with branches > complex tree with multiple branches and compaction"
 file = "packages/coding-agent/test/session-manager/build-context.test.ts"
 line = 247
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::session_manager::build_context::complex_tree_with_branches_and_compaction"
+adaptation = "Use injected time and UUID services, scripted summary providers and lossless messages; preserve selected cut points, token arithmetic, prompts, retry options and exact source-authored errors."
 
 [[test]]
 id = "packages/coding-agent/test/session-manager/build-context.test.ts > buildSessionContext > with branches > follows path to specified leaf"
 file = "packages/coding-agent/test/session-manager/build-context.test.ts"
 line = 212
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::session_manager::build_context::follows_path_to_specified_leaf"
+adaptation = "Use per-test VirtualEnv and host identity, lossless shared session entries, Result errors and fixture-owned temporary directories; preserve raw JSONL, migrations, context, branch and identity assertions."
 
 [[test]]
 id = "packages/coding-agent/test/session-manager/build-context.test.ts > buildSessionContext > with branches > includes branch summary in path"
 file = "packages/coding-agent/test/session-manager/build-context.test.ts"
 line = 232
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::session_manager::build_context::includes_branch_summary_in_path"
+adaptation = "Use per-test VirtualEnv and host identity, lossless shared session entries, Result errors and fixture-owned temporary directories; preserve raw JSONL, migrations, context, branch and identity assertions."
 
 [[test]]
 id = "packages/coding-agent/test/session-manager/build-context.test.ts > buildSessionContext > with compaction > buildContextEntries returns compaction-aware entries including custom entries"
 file = "packages/coding-agent/test/session-manager/build-context.test.ts"
 line = 179
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::session_manager::build_context::context_entries_includes_custom_entries"
+adaptation = "Use injected time and UUID services, scripted summary providers and lossless messages; preserve selected cut points, token arithmetic, prompts, retry options and exact source-authored errors."
 
 [[test]]
 id = "packages/coding-agent/test/session-manager/build-context.test.ts > buildSessionContext > with compaction > handles compaction keeping from first message"
 file = "packages/coding-agent/test/session-manager/build-context.test.ts"
 line = 148
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::session_manager::build_context::handles_compaction_keeping_from_first_message"
+adaptation = "Use injected time and UUID services, scripted summary providers and lossless messages; preserve selected cut points, token arithmetic, prompts, retry options and exact source-authored errors."
 
 [[test]]
 id = "packages/coding-agent/test/session-manager/build-context.test.ts > buildSessionContext > with compaction > includes summary before kept messages"
 file = "packages/coding-agent/test/session-manager/build-context.test.ts"
 line = 127
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::session_manager::build_context::includes_summary_before_kept_messages"
+adaptation = "Use injected time and UUID services, scripted summary providers and lossless messages; preserve selected cut points, token arithmetic, prompts, retry options and exact source-authored errors."
 
 [[test]]
 id = "packages/coding-agent/test/session-manager/build-context.test.ts > buildSessionContext > with compaction > keeps settings from the full path after compaction"
 file = "packages/coding-agent/test/session-manager/build-context.test.ts"
 line = 196
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::session_manager::build_context::keeps_settings_after_compaction"
+adaptation = "Use injected time and UUID services, scripted summary providers and lossless messages; preserve selected cut points, token arithmetic, prompts, retry options and exact source-authored errors."
 
 [[test]]
 id = "packages/coding-agent/test/session-manager/build-context.test.ts > buildSessionContext > with compaction > multiple compactions uses latest"
 file = "packages/coding-agent/test/session-manager/build-context.test.ts"
 line = 162
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::session_manager::build_context::multiple_compactions_uses_latest"
+adaptation = "Use injected time and UUID services, scripted summary providers and lossless messages; preserve selected cut points, token arithmetic, prompts, retry options and exact source-authored errors."
 
 [[test]]
 id = "packages/coding-agent/test/session-manager/custom-session-id.test.ts > SessionManager.newSession with custom id > allows alphanumeric session ids with interior punctuation"
 file = "packages/coding-agent/test/session-manager/custom-session-id.test.ts"
 line = 23
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::session_manager::custom_session_id::allows_interior_punctuation"
+adaptation = "Use per-test VirtualEnv and host identity, lossless shared session entries, Result errors and fixture-owned temporary directories; preserve raw JSONL, migrations, context, branch and identity assertions."
 
 [[test]]
 id = "packages/coding-agent/test/session-manager/custom-session-id.test.ts > SessionManager.newSession with custom id > generates a UUIDv7 id when constructed without an explicit id"
 file = "packages/coding-agent/test/session-manager/custom-session-id.test.ts"
 line = 67
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::session_manager::custom_session_id::construction_generates_uuid"
+adaptation = "Use per-test VirtualEnv and host identity, lossless shared session entries, Result errors and fixture-owned temporary directories; preserve raw JSONL, migrations, context, branch and identity assertions."
 
 [[test]]
 id = "packages/coding-agent/test/session-manager/custom-session-id.test.ts > SessionManager.newSession with custom id > generates a UUIDv7 id when creating a branched session"
 file = "packages/coding-agent/test/session-manager/custom-session-id.test.ts"
 line = 85
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::session_manager::custom_session_id::branch_generates_uuid"
+adaptation = "Use per-test VirtualEnv and host identity, lossless shared session entries, Result errors and fixture-owned temporary directories; preserve raw JSONL, migrations, context, branch and identity assertions."
 
 [[test]]
 id = "packages/coding-agent/test/session-manager/custom-session-id.test.ts > SessionManager.newSession with custom id > generates a UUIDv7 id when forking from another session file"
 file = "packages/coding-agent/test/session-manager/custom-session-id.test.ts"
 line = 99
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::session_manager::custom_session_id::fork_file_generates_uuid"
+adaptation = "Use per-test VirtualEnv and host identity, lossless shared session entries, Result errors and fixture-owned temporary directories; preserve raw JSONL, migrations, context, branch and identity assertions."
 
 [[test]]
 id = "packages/coding-agent/test/session-manager/custom-session-id.test.ts > SessionManager.newSession with custom id > generates a UUIDv7 id when no id is provided"
 file = "packages/coding-agent/test/session-manager/custom-session-id.test.ts"
 line = 40
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::session_manager::custom_session_id::generates_uuid_without_id"
+adaptation = "Use per-test VirtualEnv and host identity, lossless shared session entries, Result errors and fixture-owned temporary directories; preserve raw JSONL, migrations, context, branch and identity assertions."
 
 [[test]]
 id = "packages/coding-agent/test/session-manager/custom-session-id.test.ts > SessionManager.newSession with custom id > generates a UUIDv7 id when options is provided without id"
 file = "packages/coding-agent/test/session-manager/custom-session-id.test.ts"
 line = 49
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::session_manager::custom_session_id::generates_uuid_with_options_without_id"
+adaptation = "Use per-test VirtualEnv and host identity, lossless shared session entries, Result errors and fixture-owned temporary directories; preserve raw JSONL, migrations, context, branch and identity assertions."
 
 [[test]]
 id = "packages/coding-agent/test/session-manager/custom-session-id.test.ts > SessionManager.newSession with custom id > includes the custom id in the session header"
 file = "packages/coding-agent/test/session-manager/custom-session-id.test.ts"
 line = 58
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::session_manager::custom_session_id::includes_custom_id_in_header"
+adaptation = "Use per-test VirtualEnv and host identity, lossless shared session entries, Result errors and fixture-owned temporary directories; preserve raw JSONL, migrations, context, branch and identity assertions."
 
 [[test]]
 id = "packages/coding-agent/test/session-manager/custom-session-id.test.ts > SessionManager.newSession with custom id > rejects invalid custom session ids"
 file = "packages/coding-agent/test/session-manager/custom-session-id.test.ts"
 line = 29
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::session_manager::custom_session_id::rejects_invalid_custom_ids"
+adaptation = "Use per-test VirtualEnv and host identity, lossless shared session entries, Result errors and fixture-owned temporary directories; preserve raw JSONL, migrations, context, branch and identity assertions."
 
 [[test]]
 id = "packages/coding-agent/test/session-manager/custom-session-id.test.ts > SessionManager.newSession with custom id > uses the provided id instead of generating one"
 file = "packages/coding-agent/test/session-manager/custom-session-id.test.ts"
 line = 10
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::session_manager::custom_session_id::uses_provided_id_for_new_session"
+adaptation = "Use per-test VirtualEnv and host identity, lossless shared session entries, Result errors and fixture-owned temporary directories; preserve raw JSONL, migrations, context, branch and identity assertions."
 
 [[test]]
 id = "packages/coding-agent/test/session-manager/custom-session-id.test.ts > SessionManager.newSession with custom id > uses the provided id when creating a persisted session"
 file = "packages/coding-agent/test/session-manager/custom-session-id.test.ts"
 line = 73
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::session_manager::custom_session_id::uses_provided_id_persisted"
+adaptation = "Use per-test VirtualEnv and host identity, lossless shared session entries, Result errors and fixture-owned temporary directories; preserve raw JSONL, migrations, context, branch and identity assertions."
 
 [[test]]
 id = "packages/coding-agent/test/session-manager/custom-session-id.test.ts > SessionManager.newSession with custom id > uses the provided id when creating an in-memory session"
 file = "packages/coding-agent/test/session-manager/custom-session-id.test.ts"
 line = 16
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::session_manager::custom_session_id::uses_provided_id_in_memory"
+adaptation = "Use per-test VirtualEnv and host identity, lossless shared session entries, Result errors and fixture-owned temporary directories; preserve raw JSONL, migrations, context, branch and identity assertions."
 
 [[test]]
 id = "packages/coding-agent/test/session-manager/custom-session-id.test.ts > SessionManager.newSession with custom id > uses the provided id when forking from another session file"
 file = "packages/coding-agent/test/session-manager/custom-session-id.test.ts"
 line = 146
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::session_manager::custom_session_id::fork_file_uses_provided_id"
+adaptation = "Use per-test VirtualEnv and host identity, lossless shared session entries, Result errors and fixture-owned temporary directories; preserve raw JSONL, migrations, context, branch and identity assertions."
 
 [[test]]
 id = "packages/coding-agent/test/session-manager/file-operations.test.ts > SessionManager custom flat session directory > rejects a cancelled session listing"
 file = "packages/coding-agent/test/session-manager/file-operations.test.ts"
 line = 341
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::session_manager::file_operations::custom_flat_session_directory::rejects_a_cancelled_session_listing"
+adaptation = "Use per-test VirtualEnv and host identity, lossless shared session entries, Result errors and fixture-owned temporary directories; preserve raw JSONL, migrations, context, branch and identity assertions."
 
 [[test]]
 id = "packages/coding-agent/test/session-manager/file-operations.test.ts > SessionManager custom flat session directory > scopes current-folder APIs by cwd while listing all flat sessions"
 file = "packages/coding-agent/test/session-manager/file-operations.test.ts"
 line = 326
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::session_manager::file_operations::custom_flat_session_directory::scopes_current_folder_apis_by_cwd_while_listing_all_flat_sessions"
+adaptation = "Use per-test VirtualEnv and host identity, lossless shared session entries, Result errors and fixture-owned temporary directories; preserve raw JSONL, migrations, context, branch and identity assertions."
 
 [[test]]
 id = "packages/coding-agent/test/session-manager/file-operations.test.ts > SessionManager session file creation > appends later entries to the file without rewriting earlier ones"
 file = "packages/coding-agent/test/session-manager/file-operations.test.ts"
 line = 466
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::session_manager::file_operations::session_file_creation::appends_later_entries_to_the_file_without_rewriting_earlier_ones"
+adaptation = "Use per-test VirtualEnv and host identity, lossless shared session entries, Result errors and fixture-owned temporary directories; preserve raw JSONL, migrations, context, branch and identity assertions."
 
 [[test]]
 id = "packages/coding-agent/test/session-manager/file-operations.test.ts > SessionManager session file creation > creates the file when the first user message is appended"
 file = "packages/coding-agent/test/session-manager/file-operations.test.ts"
 line = 456
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::session_manager::file_operations::session_file_creation::creates_the_file_when_the_first_user_message_is_appended"
+adaptation = "Use per-test VirtualEnv and host identity, lossless shared session entries, Result errors and fixture-owned temporary directories; preserve raw JSONL, migrations, context, branch and identity assertions."
 
 [[test]]
 id = "packages/coding-agent/test/session-manager/file-operations.test.ts > SessionManager session file creation > does not create a file for a session with only setup entries"
 file = "packages/coding-agent/test/session-manager/file-operations.test.ts"
 line = 447
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::session_manager::file_operations::session_file_creation::does_not_create_a_file_for_a_session_with_only_setup_entries"
+adaptation = "Use per-test VirtualEnv and host identity, lossless shared session entries, Result errors and fixture-owned temporary directories; preserve raw JSONL, migrations, context, branch and identity assertions."
 
 [[test]]
 id = "packages/coding-agent/test/session-manager/file-operations.test.ts > SessionManager.setSessionFile with corrupted files > preserves explicit session file path when recovering from corrupted file"
 file = "packages/coding-agent/test/session-manager/file-operations.test.ts"
 line = 413
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::session_manager::file_operations::set_session_file_with_corrupted_files::preserves_explicit_session_file_path_when_recovering_from_corrupted_file"
+adaptation = "Use per-test VirtualEnv and host identity, lossless shared session entries, Result errors and fixture-owned temporary directories; preserve raw JSONL, migrations, context, branch and identity assertions."
 
 [[test]]
 id = "packages/coding-agent/test/session-manager/file-operations.test.ts > SessionManager.setSessionFile with corrupted files > subsequent loads of initialized empty file work correctly"
 file = "packages/coding-agent/test/session-manager/file-operations.test.ts"
 line = 423
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::session_manager::file_operations::set_session_file_with_corrupted_files::subsequent_loads_of_initialized_empty_file_work_correctly"
+adaptation = "Use per-test VirtualEnv and host identity, lossless shared session entries, Result errors and fixture-owned temporary directories; preserve raw JSONL, migrations, context, branch and identity assertions."
 
 [[test]]
 id = "packages/coding-agent/test/session-manager/file-operations.test.ts > SessionManager.setSessionFile with corrupted files > throws and preserves non-empty file without valid header"
 file = "packages/coding-agent/test/session-manager/file-operations.test.ts"
 line = 390
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::session_manager::file_operations::set_session_file_with_corrupted_files::throws_and_preserves_non_empty_file_without_valid_header"
+adaptation = "Use per-test VirtualEnv and host identity, lossless shared session entries, Result errors and fixture-owned temporary directories; preserve raw JSONL, migrations, context, branch and identity assertions."
 
 [[test]]
 id = "packages/coding-agent/test/session-manager/file-operations.test.ts > SessionManager.setSessionFile with corrupted files > throws and preserves non-session JSONL files"
 file = "packages/coding-agent/test/session-manager/file-operations.test.ts"
 line = 402
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::session_manager::file_operations::set_session_file_with_corrupted_files::throws_and_preserves_non_session_jsonl_files"
+adaptation = "Use per-test VirtualEnv and host identity, lossless shared session entries, Result errors and fixture-owned temporary directories; preserve raw JSONL, migrations, context, branch and identity assertions."
 
 [[test]]
 id = "packages/coding-agent/test/session-manager/file-operations.test.ts > SessionManager.setSessionFile with corrupted files > truncates and rewrites empty file with valid header"
 file = "packages/coding-agent/test/session-manager/file-operations.test.ts"
 line = 370
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::session_manager::file_operations::set_session_file_with_corrupted_files::truncates_and_rewrites_empty_file_with_valid_header"
+adaptation = "Use per-test VirtualEnv and host identity, lossless shared session entries, Result errors and fixture-owned temporary directories; preserve raw JSONL, migrations, context, branch and identity assertions."
 
 [[test]]
 id = "packages/coding-agent/test/session-manager/file-operations.test.ts > findMostRecentSession > filters most recent session by cwd"
 file = "packages/coding-agent/test/session-manager/file-operations.test.ts"
 line = 261
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::session_manager::file_operations::find_most_recent_session::filters_most_recent_session_by_cwd"
+adaptation = "Use per-test VirtualEnv and host identity, lossless shared session entries, Result errors and fixture-owned temporary directories; preserve raw JSONL, migrations, context, branch and identity assertions."
 
 [[test]]
 id = "packages/coding-agent/test/session-manager/file-operations.test.ts > findMostRecentSession > ignores jsonl files without valid session header"
 file = "packages/coding-agent/test/session-manager/file-operations.test.ts"
 line = 218
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::session_manager::file_operations::find_most_recent_session::ignores_jsonl_files_without_valid_session_header"
+adaptation = "Use per-test VirtualEnv and host identity, lossless shared session entries, Result errors and fixture-owned temporary directories; preserve raw JSONL, migrations, context, branch and identity assertions."
 
 [[test]]
 id = "packages/coding-agent/test/session-manager/file-operations.test.ts > findMostRecentSession > ignores non-jsonl files"
 file = "packages/coding-agent/test/session-manager/file-operations.test.ts"
 line = 212
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::session_manager::file_operations::find_most_recent_session::ignores_non_jsonl_files"
+adaptation = "Use per-test VirtualEnv and host identity, lossless shared session entries, Result errors and fixture-owned temporary directories; preserve raw JSONL, migrations, context, branch and identity assertions."
 
 [[test]]
 id = "packages/coding-agent/test/session-manager/file-operations.test.ts > findMostRecentSession > returns most recently modified session"
 file = "packages/coding-agent/test/session-manager/file-operations.test.ts"
 line = 229
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::session_manager::file_operations::find_most_recent_session::returns_most_recently_modified_session"
+adaptation = "Use per-test VirtualEnv and host identity, lossless shared session entries, Result errors and fixture-owned temporary directories; preserve raw JSONL, migrations, context, branch and identity assertions."
 
 [[test]]
 id = "packages/coding-agent/test/session-manager/file-operations.test.ts > findMostRecentSession > returns null for empty directory"
 file = "packages/coding-agent/test/session-manager/file-operations.test.ts"
 line = 204
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::session_manager::file_operations::find_most_recent_session::returns_null_for_empty_directory"
+adaptation = "Use per-test VirtualEnv and host identity, lossless shared session entries, Result errors and fixture-owned temporary directories; preserve raw JSONL, migrations, context, branch and identity assertions."
 
 [[test]]
 id = "packages/coding-agent/test/session-manager/file-operations.test.ts > findMostRecentSession > returns null for non-existent directory"
 file = "packages/coding-agent/test/session-manager/file-operations.test.ts"
 line = 208
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::session_manager::file_operations::find_most_recent_session::returns_null_for_non_existent_directory"
+adaptation = "Use per-test VirtualEnv and host identity, lossless shared session entries, Result errors and fixture-owned temporary directories; preserve raw JSONL, migrations, context, branch and identity assertions."
 
 [[test]]
 id = "packages/coding-agent/test/session-manager/file-operations.test.ts > findMostRecentSession > returns single valid session file"
 file = "packages/coding-agent/test/session-manager/file-operations.test.ts"
 line = 223
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::session_manager::file_operations::find_most_recent_session::returns_single_valid_session_file"
+adaptation = "Use per-test VirtualEnv and host identity, lossless shared session entries, Result errors and fixture-owned temporary directories; preserve raw JSONL, migrations, context, branch and identity assertions."
 
 [[test]]
 id = "packages/coding-agent/test/session-manager/file-operations.test.ts > findMostRecentSession > skips invalid files and returns valid one"
 file = "packages/coding-agent/test/session-manager/file-operations.test.ts"
 line = 241
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::session_manager::file_operations::find_most_recent_session::skips_invalid_files_and_returns_valid_one"
+adaptation = "Use per-test VirtualEnv and host identity, lossless shared session entries, Result errors and fixture-owned temporary directories; preserve raw JSONL, migrations, context, branch and identity assertions."
 
 [[test]]
 id = "packages/coding-agent/test/session-manager/file-operations.test.ts > findMostRecentSession > skips oversized corrupt files and returns a valid session"
 file = "packages/coding-agent/test/session-manager/file-operations.test.ts"
 line = 252
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::session_manager::file_operations::find_most_recent_session::skips_oversized_corrupt_files_and_returns_a_valid_session"
+adaptation = "Use per-test VirtualEnv and host identity, lossless shared session entries, Result errors and fixture-owned temporary directories; preserve raw JSONL, migrations, context, branch and identity assertions."
 
 [[test]]
 id = "packages/coding-agent/test/session-manager/file-operations.test.ts > loadEntriesFromFile > adds a newline after an unterminated malformed final fragment"
 file = "packages/coding-agent/test/session-manager/file-operations.test.ts"
 line = 106
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::session_manager::file_operations::load_entries_from_file::adds_a_newline_after_an_unterminated_malformed_final_fragment"
+adaptation = "Use per-test VirtualEnv and host identity, lossless shared session entries, Result errors and fixture-owned temporary directories; preserve raw JSONL, migrations, context, branch and identity assertions."
 
 [[test]]
 id = "packages/coding-agent/test/session-manager/file-operations.test.ts > loadEntriesFromFile > adds a newline after an unterminated valid record"
 file = "packages/coding-agent/test/session-manager/file-operations.test.ts"
 line = 95
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::session_manager::file_operations::load_entries_from_file::adds_a_newline_after_an_unterminated_valid_record"
+adaptation = "Use per-test VirtualEnv and host identity, lossless shared session entries, Result errors and fixture-owned temporary directories; preserve raw JSONL, migrations, context, branch and identity assertions."
 
 [[test]]
 id = "packages/coding-agent/test/session-manager/file-operations.test.ts > loadEntriesFromFile > does not modify an unterminated non-session file"
 file = "packages/coding-agent/test/session-manager/file-operations.test.ts"
 line = 116
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::session_manager::file_operations::load_entries_from_file::does_not_modify_an_unterminated_non_session_file"
+adaptation = "Use per-test VirtualEnv and host identity, lossless shared session entries, Result errors and fixture-owned temporary directories; preserve raw JSONL, migrations, context, branch and identity assertions."
 
 [[test]]
 id = "packages/coding-agent/test/session-manager/file-operations.test.ts > loadEntriesFromFile > loads valid session file"
 file = "packages/coding-agent/test/session-manager/file-operations.test.ts"
 line = 70
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::session_manager::file_operations::load_entries_from_file::loads_valid_session_file"
+adaptation = "Use per-test VirtualEnv and host identity, lossless shared session entries, Result errors and fixture-owned temporary directories; preserve raw JSONL, migrations, context, branch and identity assertions."
 
 [[test]]
 id = "packages/coding-agent/test/session-manager/file-operations.test.ts > loadEntriesFromFile > opens compatible sessions beyond the discovery scan limit"
 file = "packages/coding-agent/test/session-manager/file-operations.test.ts"
 line = 139
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::session_manager::file_operations::load_entries_from_file::opens_compatible_sessions_beyond_the_discovery_scan_limit"
+adaptation = "Use per-test VirtualEnv and host identity, lossless shared session entries, Result errors and fixture-owned temporary directories; preserve raw JSONL, migrations, context, branch and identity assertions."
 
 [[test]]
 id = "packages/coding-agent/test/session-manager/file-operations.test.ts > loadEntriesFromFile > opens session files larger than Node's max string length"
 file = "packages/coding-agent/test/session-manager/file-operations.test.ts"
 line = 162
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::session_manager::file_operations::load_entries_from_file::opens_session_files_larger_than_nodes_max_string_length"
+adaptation = "Use per-test VirtualEnv and host identity, lossless shared session entries, Result errors and fixture-owned temporary directories; preserve raw JSONL, migrations, context, branch and identity assertions."
 
 [[test]]
 id = "packages/coding-agent/test/session-manager/file-operations.test.ts > loadEntriesFromFile > reads cwd from a session with a multi-buffer header"
 file = "packages/coding-agent/test/session-manager/file-operations.test.ts"
 line = 129
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::session_manager::file_operations::load_entries_from_file::reads_cwd_from_a_session_with_a_multi_buffer_header"
+adaptation = "Use per-test VirtualEnv and host identity, lossless shared session entries, Result errors and fixture-owned temporary directories; preserve raw JSONL, migrations, context, branch and identity assertions."
 
 [[test]]
 id = "packages/coding-agent/test/session-manager/file-operations.test.ts > loadEntriesFromFile > reads cwd from a session with leading blank lines"
 file = "packages/coding-agent/test/session-manager/file-operations.test.ts"
 line = 129
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::session_manager::file_operations::load_entries_from_file::reads_cwd_from_a_session_with_leading_blank_lines"
+adaptation = "Use per-test VirtualEnv and host identity, lossless shared session entries, Result errors and fixture-owned temporary directories; preserve raw JSONL, migrations, context, branch and identity assertions."
 
 [[test]]
 id = "packages/coding-agent/test/session-manager/file-operations.test.ts > loadEntriesFromFile > reads cwd from a session with leading malformed lines"
 file = "packages/coding-agent/test/session-manager/file-operations.test.ts"
 line = 129
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::session_manager::file_operations::load_entries_from_file::reads_cwd_from_a_session_with_leading_malformed_lines"
+adaptation = "Use per-test VirtualEnv and host identity, lossless shared session entries, Result errors and fixture-owned temporary directories; preserve raw JSONL, migrations, context, branch and identity assertions."
 
 [[test]]
 id = "packages/coding-agent/test/session-manager/file-operations.test.ts > loadEntriesFromFile > returns empty array for empty file"
 file = "packages/coding-agent/test/session-manager/file-operations.test.ts"
 line = 52
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::session_manager::file_operations::load_entries_from_file::returns_empty_array_for_empty_file"
+adaptation = "Use per-test VirtualEnv and host identity, lossless shared session entries, Result errors and fixture-owned temporary directories; preserve raw JSONL, migrations, context, branch and identity assertions."
 
 [[test]]
 id = "packages/coding-agent/test/session-manager/file-operations.test.ts > loadEntriesFromFile > returns empty array for file without valid session header"
 file = "packages/coding-agent/test/session-manager/file-operations.test.ts"
 line = 58
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::session_manager::file_operations::load_entries_from_file::returns_empty_array_for_file_without_valid_session_header"
+adaptation = "Use per-test VirtualEnv and host identity, lossless shared session entries, Result errors and fixture-owned temporary directories; preserve raw JSONL, migrations, context, branch and identity assertions."
 
 [[test]]
 id = "packages/coding-agent/test/session-manager/file-operations.test.ts > loadEntriesFromFile > returns empty array for malformed JSON"
 file = "packages/coding-agent/test/session-manager/file-operations.test.ts"
 line = 64
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::session_manager::file_operations::load_entries_from_file::returns_empty_array_for_malformed_json"
+adaptation = "Use per-test VirtualEnv and host identity, lossless shared session entries, Result errors and fixture-owned temporary directories; preserve raw JSONL, migrations, context, branch and identity assertions."
 
 [[test]]
 id = "packages/coding-agent/test/session-manager/file-operations.test.ts > loadEntriesFromFile > returns empty array for non-existent file"
 file = "packages/coding-agent/test/session-manager/file-operations.test.ts"
 line = 47
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::session_manager::file_operations::load_entries_from_file::returns_empty_array_for_non_existent_file"
+adaptation = "Use per-test VirtualEnv and host identity, lossless shared session entries, Result errors and fixture-owned temporary directories; preserve raw JSONL, migrations, context, branch and identity assertions."
 
 [[test]]
 id = "packages/coding-agent/test/session-manager/file-operations.test.ts > loadEntriesFromFile > skips malformed lines but keeps valid ones"
 file = "packages/coding-agent/test/session-manager/file-operations.test.ts"
 line = 83
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::session_manager::file_operations::load_entries_from_file::skips_malformed_lines_but_keeps_valid_ones"
+adaptation = "Use per-test VirtualEnv and host identity, lossless shared session entries, Result errors and fixture-owned temporary directories; preserve raw JSONL, migrations, context, branch and identity assertions."
 
 [[test]]
 id = "packages/coding-agent/test/session-manager/labels.test.ts > SessionManager labels > clears labels with undefined"
 file = "packages/coding-agent/test/session-manager/labels.test.ts"
 line = 26
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::session_manager::labels::clears_labels_with_undefined"
+adaptation = "Use per-test VirtualEnv and host identity, lossless shared session entries, Result errors and fixture-owned temporary directories; preserve raw JSONL, migrations, context, branch and identity assertions."
 
 [[test]]
 id = "packages/coding-agent/test/session-manager/labels.test.ts > SessionManager labels > labels are included in tree nodes"
 file = "packages/coding-agent/test/session-manager/labels.test.ts"
 line = 57
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::session_manager::labels::labels_in_tree_nodes"
+adaptation = "Use per-test VirtualEnv and host identity, lossless shared session entries, Result errors and fixture-owned temporary directories; preserve raw JSONL, migrations, context, branch and identity assertions."
 
 [[test]]
 id = "packages/coding-agent/test/session-manager/labels.test.ts > SessionManager labels > labels are not included in buildSessionContext"
 file = "packages/coding-agent/test/session-manager/labels.test.ts"
 line = 195
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::session_manager::labels::labels_excluded_from_context"
+adaptation = "Use per-test VirtualEnv and host identity, lossless shared session entries, Result errors and fixture-owned temporary directories; preserve raw JSONL, migrations, context, branch and identity assertions."
 
 [[test]]
 id = "packages/coding-agent/test/session-manager/labels.test.ts > SessionManager labels > labels are preserved in createBranchedSession"
 file = "packages/coding-agent/test/session-manager/labels.test.ts"
 line = 98
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::session_manager::labels::labels_preserved_when_forking"
+adaptation = "Use per-test VirtualEnv and host identity, lossless shared session entries, Result errors and fixture-owned temporary directories; preserve raw JSONL, migrations, context, branch and identity assertions."
 
 [[test]]
 id = "packages/coding-agent/test/session-manager/labels.test.ts > SessionManager labels > labels not on path are not preserved in createBranchedSession"
 file = "packages/coding-agent/test/session-manager/labels.test.ts"
 line = 158
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::session_manager::labels::excludes_labels_outside_fork_path"
+adaptation = "Use per-test VirtualEnv and host identity, lossless shared session entries, Result errors and fixture-owned temporary directories; preserve raw JSONL, migrations, context, branch and identity assertions."
 
 [[test]]
 id = "packages/coding-agent/test/session-manager/labels.test.ts > SessionManager labels > last label wins"
 file = "packages/coding-agent/test/session-manager/labels.test.ts"
 line = 39
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::session_manager::labels::last_label_wins"
+adaptation = "Use per-test VirtualEnv and host identity, lossless shared session entries, Result errors and fixture-owned temporary directories; preserve raw JSONL, migrations, context, branch and identity assertions."
 
 [[test]]
 id = "packages/coding-agent/test/session-manager/labels.test.ts > SessionManager labels > rewires children of removed labels when forking"
 file = "packages/coding-agent/test/session-manager/labels.test.ts"
 line = 145
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::session_manager::labels::rewires_children_of_removed_labels"
+adaptation = "Use per-test VirtualEnv and host identity, lossless shared session entries, Result errors and fixture-owned temporary directories; preserve raw JSONL, migrations, context, branch and identity assertions."
 
 [[test]]
 id = "packages/coding-agent/test/session-manager/labels.test.ts > SessionManager labels > sets and gets labels"
 file = "packages/coding-agent/test/session-manager/labels.test.ts"
 line = 5
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::session_manager::labels::sets_and_gets_labels"
+adaptation = "Use per-test VirtualEnv and host identity, lossless shared session entries, Result errors and fixture-owned temporary directories; preserve raw JSONL, migrations, context, branch and identity assertions."
 
 [[test]]
 id = "packages/coding-agent/test/session-manager/labels.test.ts > SessionManager labels > throws when labeling non-existent entry"
 file = "packages/coding-agent/test/session-manager/labels.test.ts"
 line = 206
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::session_manager::labels::rejects_missing_label_target"
+adaptation = "Use per-test VirtualEnv and host identity, lossless shared session entries, Result errors and fixture-owned temporary directories; preserve raw JSONL, migrations, context, branch and identity assertions."
 
 [[test]]
 id = "packages/coding-agent/test/session-manager/load-entries.test.ts > SessionManager.inMemory with preloaded entries > adopts entries verbatim"
 file = "packages/coding-agent/test/session-manager/load-entries.test.ts"
 line = 18
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::session_manager::load_entries::adopts_entries_verbatim"
+adaptation = "Use per-test VirtualEnv and host identity, lossless shared session entries, Result errors and fixture-owned temporary directories; preserve raw JSONL, migrations, context, branch and identity assertions."
 
 [[test]]
 id = "packages/coding-agent/test/session-manager/load-entries.test.ts > SessionManager.inMemory with preloaded entries > adopts headerless entries as current-version without migrating them"
 file = "packages/coding-agent/test/session-manager/load-entries.test.ts"
 line = 166
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::session_manager::load_entries::preserves_headerless_entries_as_current_version"
+adaptation = "Use per-test VirtualEnv and host identity, lossless shared session entries, Result errors and fixture-owned temporary directories; preserve raw JSONL, migrations, context, branch and identity assertions."
 
 [[test]]
 id = "packages/coding-agent/test/session-manager/load-entries.test.ts > SessionManager.inMemory with preloaded entries > creates a header from the options when the entries carry none"
 file = "packages/coding-agent/test/session-manager/load-entries.test.ts"
 line = 96
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::session_manager::load_entries::creates_header_from_options"
+adaptation = "Use per-test VirtualEnv and host identity, lossless shared session entries, Result errors and fixture-owned temporary directories; preserve raw JSONL, migrations, context, branch and identity assertions."
 
 [[test]]
 id = "packages/coding-agent/test/session-manager/load-entries.test.ts > SessionManager.inMemory with preloaded entries > generates a session id when the options carry none"
 file = "packages/coding-agent/test/session-manager/load-entries.test.ts"
 line = 106
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::session_manager::load_entries::generates_session_id"
+adaptation = "Use per-test VirtualEnv and host identity, lossless shared session entries, Result errors and fixture-owned temporary directories; preserve raw JSONL, migrations, context, branch and identity assertions."
 
 [[test]]
 id = "packages/coding-agent/test/session-manager/load-entries.test.ts > SessionManager.inMemory with preloaded entries > keeps the loaded leaf so appends continue the conversation"
 file = "packages/coding-agent/test/session-manager/load-entries.test.ts"
 line = 30
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::session_manager::load_entries::continues_from_loaded_leaf"
+adaptation = "Use per-test VirtualEnv and host identity, lossless shared session entries, Result errors and fixture-owned temporary directories; preserve raw JSONL, migrations, context, branch and identity assertions."
 
 [[test]]
 id = "packages/coding-agent/test/session-manager/load-entries.test.ts > SessionManager.inMemory with preloaded entries > migrates entries restored with an older header"
 file = "packages/coding-agent/test/session-manager/load-entries.test.ts"
 line = 146
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::session_manager::load_entries::migrates_entries_with_old_header"
+adaptation = "Use per-test VirtualEnv and host identity, lossless shared session entries, Result errors and fixture-owned temporary directories; preserve raw JSONL, migrations, context, branch and identity assertions."
 
 [[test]]
 id = "packages/coding-agent/test/session-manager/load-entries.test.ts > SessionManager.inMemory with preloaded entries > never mints an id that collides with a loaded entry"
 file = "packages/coding-agent/test/session-manager/load-entries.test.ts"
 line = 44
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::session_manager::load_entries::never_collides_with_loaded_ids"
+adaptation = "Use per-test VirtualEnv and host identity, lossless shared session entries, Result errors and fixture-owned temporary directories; preserve raw JSONL, migrations, context, branch and identity assertions."
 
 [[test]]
 id = "packages/coding-agent/test/session-manager/load-entries.test.ts > SessionManager.inMemory with preloaded entries > rebuilds labels"
 file = "packages/coding-agent/test/session-manager/load-entries.test.ts"
 line = 70
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::session_manager::load_entries::rebuilds_labels"
+adaptation = "Use per-test VirtualEnv and host identity, lossless shared session entries, Result errors and fixture-owned temporary directories; preserve raw JSONL, migrations, context, branch and identity assertions."
 
 [[test]]
 id = "packages/coding-agent/test/session-manager/load-entries.test.ts > SessionManager.inMemory with preloaded entries > rebuilds the branch structure rather than a flat chain"
 file = "packages/coding-agent/test/session-manager/load-entries.test.ts"
 line = 55
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::session_manager::load_entries::restores_branch_structure"
+adaptation = "Use per-test VirtualEnv and host identity, lossless shared session entries, Result errors and fixture-owned temporary directories; preserve raw JSONL, migrations, context, branch and identity assertions."
 
 [[test]]
 id = "packages/coding-agent/test/session-manager/load-entries.test.ts > SessionManager.inMemory with preloaded entries > resolves a compaction against the entry it was written against"
 file = "packages/coding-agent/test/session-manager/load-entries.test.ts"
 line = 82
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::session_manager::load_entries::resolves_compaction_against_original_entry"
+adaptation = "Use injected time and UUID services, scripted summary providers and lossless messages; preserve selected cut points, token arithmetic, prompts, retry options and exact source-authored errors."
 
 [[test]]
 id = "packages/coding-agent/test/session-manager/load-entries.test.ts > SessionManager.inMemory with preloaded entries > starts an empty session when the entries are empty"
 file = "packages/coding-agent/test/session-manager/load-entries.test.ts"
 line = 125
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::session_manager::load_entries::starts_empty_session"
+adaptation = "Use per-test VirtualEnv and host identity, lossless shared session entries, Result errors and fixture-owned temporary directories; preserve raw JSONL, migrations, context, branch and identity assertions."
 
 [[test]]
 id = "packages/coding-agent/test/session-manager/load-entries.test.ts > SessionManager.inMemory with preloaded entries > stays off the filesystem"
 file = "packages/coding-agent/test/session-manager/load-entries.test.ts"
 line = 115
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::session_manager::load_entries::stays_off_filesystem"
+adaptation = "Use per-test VirtualEnv and host identity, lossless shared session entries, Result errors and fixture-owned temporary directories; preserve raw JSONL, migrations, context, branch and identity assertions."
 
 [[test]]
 id = "packages/coding-agent/test/session-manager/load-entries.test.ts > SessionManager.inMemory with preloaded entries > takes the session identity from a header among the entries"
 file = "packages/coding-agent/test/session-manager/load-entries.test.ts"
 line = 133
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::session_manager::load_entries::adopts_header_identity"
+adaptation = "Use per-test VirtualEnv and host identity, lossless shared session entries, Result errors and fixture-owned temporary directories; preserve raw JSONL, migrations, context, branch and identity assertions."
 
 [[test]]
 id = "packages/coding-agent/test/session-manager/migration.test.ts > migrateSessionEntries > should add id/parentId to v1 entries"
 file = "packages/coding-agent/test/session-manager/migration.test.ts"
 line = 5
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::session_manager::migration::adds_ids_and_parents_to_v1"
+adaptation = "Use per-test VirtualEnv and host identity, lossless shared session entries, Result errors and fixture-owned temporary directories; preserve raw JSONL, migrations, context, branch and identity assertions."
 
 [[test]]
 id = "packages/coding-agent/test/session-manager/migration.test.ts > migrateSessionEntries > should be idempotent (skip already migrated)"
 file = "packages/coding-agent/test/session-manager/migration.test.ts"
 line = 43
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::session_manager::migration::idempotent_preserves_existing_ids"
+adaptation = "Use per-test VirtualEnv and host identity, lossless shared session entries, Result errors and fixture-owned temporary directories; preserve raw JSONL, migrations, context, branch and identity assertions."
 
 [[test]]
 id = "packages/coding-agent/test/session-manager/save-entry.test.ts > SessionManager.saveCustomEntry > saves custom entries and includes them in tree traversal"
 file = "packages/coding-agent/test/session-manager/save-entry.test.ts"
 line = 5
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::session_manager::save_entry::appends_custom_entries_with_tree_structure"
+adaptation = "Use per-test VirtualEnv and host identity, lossless shared session entries, Result errors and fixture-owned temporary directories; preserve raw JSONL, migrations, context, branch and identity assertions."
 
 [[test]]
 id = "packages/coding-agent/test/session-manager/tree-traversal.test.ts > SessionManager append and tree traversal > append operations > appendCompaction integrates into tree"
 file = "packages/coding-agent/test/session-manager/tree-traversal.test.ts"
 line = 69
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::session_manager::tree_traversal::append_compaction_integrates_into_tree"
+adaptation = "Use per-test VirtualEnv and host identity, lossless shared session entries, Result errors and fixture-owned temporary directories; preserve raw JSONL, migrations, context, branch and identity assertions."
 
 [[test]]
 id = "packages/coding-agent/test/session-manager/tree-traversal.test.ts > SessionManager append and tree traversal > append operations > appendCustomEntry integrates into tree"
 file = "packages/coding-agent/test/session-manager/tree-traversal.test.ts"
 line = 100
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::session_manager::tree_traversal::append_custom_integrates_into_tree"
+adaptation = "Use per-test VirtualEnv and host identity, lossless shared session entries, Result errors and fixture-owned temporary directories; preserve raw JSONL, migrations, context, branch and identity assertions."
 
 [[test]]
 id = "packages/coding-agent/test/session-manager/tree-traversal.test.ts > SessionManager append and tree traversal > append operations > appendMessage creates entry with correct parentId chain"
 file = "packages/coding-agent/test/session-manager/tree-traversal.test.ts"
 line = 10
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::session_manager::tree_traversal::append_message_parent_chain"
+adaptation = "Use per-test VirtualEnv and host identity, lossless shared session entries, Result errors and fixture-owned temporary directories; preserve raw JSONL, migrations, context, branch and identity assertions."
 
 [[test]]
 id = "packages/coding-agent/test/session-manager/tree-traversal.test.ts > SessionManager append and tree traversal > append operations > appendModelChange integrates into tree"
 file = "packages/coding-agent/test/session-manager/tree-traversal.test.ts"
 line = 49
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::session_manager::tree_traversal::append_model_integrates_into_tree"
+adaptation = "Use per-test VirtualEnv and host identity, lossless shared session entries, Result errors and fixture-owned temporary directories; preserve raw JSONL, migrations, context, branch and identity assertions."
 
 [[test]]
 id = "packages/coding-agent/test/session-manager/tree-traversal.test.ts > SessionManager append and tree traversal > append operations > appendThinkingLevelChange integrates into tree"
 file = "packages/coding-agent/test/session-manager/tree-traversal.test.ts"
 line = 31
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::session_manager::tree_traversal::append_thinking_integrates_into_tree"
+adaptation = "Use per-test VirtualEnv and host identity, lossless shared session entries, Result errors and fixture-owned temporary directories; preserve raw JSONL, migrations, context, branch and identity assertions."
 
 [[test]]
 id = "packages/coding-agent/test/session-manager/tree-traversal.test.ts > SessionManager append and tree traversal > append operations > leaf pointer advances after each append"
 file = "packages/coding-agent/test/session-manager/tree-traversal.test.ts"
 line = 118
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::session_manager::tree_traversal::leaf_advances_after_each_append"
+adaptation = "Use per-test VirtualEnv and host identity, lossless shared session entries, Result errors and fixture-owned temporary directories; preserve raw JSONL, migrations, context, branch and identity assertions."
 
 [[test]]
 id = "packages/coding-agent/test/session-manager/tree-traversal.test.ts > SessionManager append and tree traversal > branch > moves leaf pointer to specified entry"
 file = "packages/coding-agent/test/session-manager/tree-traversal.test.ts"
 line = 288
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::session_manager::tree_traversal::branch_moves_leaf"
+adaptation = "Use per-test VirtualEnv and host identity, lossless shared session entries, Result errors and fixture-owned temporary directories; preserve raw JSONL, migrations, context, branch and identity assertions."
 
 [[test]]
 id = "packages/coding-agent/test/session-manager/tree-traversal.test.ts > SessionManager append and tree traversal > branch > new appends become children of branch point"
 file = "packages/coding-agent/test/session-manager/tree-traversal.test.ts"
 line = 308
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::session_manager::tree_traversal::appends_become_branch_point_children"
+adaptation = "Use per-test VirtualEnv and host identity, lossless shared session entries, Result errors and fixture-owned temporary directories; preserve raw JSONL, migrations, context, branch and identity assertions."
 
 [[test]]
 id = "packages/coding-agent/test/session-manager/tree-traversal.test.ts > SessionManager append and tree traversal > branch > throws for non-existent entry"
 file = "packages/coding-agent/test/session-manager/tree-traversal.test.ts"
 line = 301
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::session_manager::tree_traversal::branch_rejects_missing_entry"
+adaptation = "Use per-test VirtualEnv and host identity, lossless shared session entries, Result errors and fixture-owned temporary directories; preserve raw JSONL, migrations, context, branch and identity assertions."
 
 [[test]]
 id = "packages/coding-agent/test/session-manager/tree-traversal.test.ts > SessionManager append and tree traversal > branchWithSummary > inserts branch summary with the source and destination and advances leaf"
 file = "packages/coding-agent/test/session-manager/tree-traversal.test.ts"
 line = 324
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::session_manager::tree_traversal::summary_records_source_destination_and_advances_leaf"
+adaptation = "Use per-test VirtualEnv and host identity, lossless shared session entries, Result errors and fixture-owned temporary directories; preserve raw JSONL, migrations, context, branch and identity assertions."
 
 [[test]]
 id = "packages/coding-agent/test/session-manager/tree-traversal.test.ts > SessionManager append and tree traversal > branchWithSummary > throws for non-existent entry"
 file = "packages/coding-agent/test/session-manager/tree-traversal.test.ts"
 line = 354
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::session_manager::tree_traversal::summary_rejects_missing_entry"
+adaptation = "Use per-test VirtualEnv and host identity, lossless shared session entries, Result errors and fixture-owned temporary directories; preserve raw JSONL, migrations, context, branch and identity assertions."
 
 [[test]]
 id = "packages/coding-agent/test/session-manager/tree-traversal.test.ts > SessionManager append and tree traversal > buildSessionContext with branches > returns messages from current branch only"
 file = "packages/coding-agent/test/session-manager/tree-traversal.test.ts"
 line = 408
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::session_manager::tree_traversal::context_uses_current_branch_only"
+adaptation = "Use per-test VirtualEnv and host identity, lossless shared session entries, Result errors and fixture-owned temporary directories; preserve raw JSONL, migrations, context, branch and identity assertions."
 
 [[test]]
 id = "packages/coding-agent/test/session-manager/tree-traversal.test.ts > SessionManager append and tree traversal > getEntry > returns entry by id"
 file = "packages/coding-agent/test/session-manager/tree-traversal.test.ts"
 line = 386
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::session_manager::tree_traversal::returns_entry_by_id"
+adaptation = "Use per-test VirtualEnv and host identity, lossless shared session entries, Result errors and fixture-owned temporary directories; preserve raw JSONL, migrations, context, branch and identity assertions."
 
 [[test]]
 id = "packages/coding-agent/test/session-manager/tree-traversal.test.ts > SessionManager append and tree traversal > getEntry > returns undefined for non-existent id"
 file = "packages/coding-agent/test/session-manager/tree-traversal.test.ts"
 line = 381
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::session_manager::tree_traversal::missing_entry_is_none"
+adaptation = "Use per-test VirtualEnv and host identity, lossless shared session entries, Result errors and fixture-owned temporary directories; preserve raw JSONL, migrations, context, branch and identity assertions."
 
 [[test]]
 id = "packages/coding-agent/test/session-manager/tree-traversal.test.ts > SessionManager append and tree traversal > getLeafEntry > returns current leaf entry"
 file = "packages/coding-agent/test/session-manager/tree-traversal.test.ts"
 line = 368
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::session_manager::tree_traversal::returns_current_leaf_entry"
+adaptation = "Use per-test VirtualEnv and host identity, lossless shared session entries, Result errors and fixture-owned temporary directories; preserve raw JSONL, migrations, context, branch and identity assertions."
 
 [[test]]
 id = "packages/coding-agent/test/session-manager/tree-traversal.test.ts > SessionManager append and tree traversal > getLeafEntry > returns undefined for empty session"
 file = "packages/coding-agent/test/session-manager/tree-traversal.test.ts"
 line = 363
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::session_manager::tree_traversal::empty_leaf_entry"
+adaptation = "Use per-test VirtualEnv and host identity, lossless shared session entries, Result errors and fixture-owned temporary directories; preserve raw JSONL, migrations, context, branch and identity assertions."
 
 [[test]]
 id = "packages/coding-agent/test/session-manager/tree-traversal.test.ts > SessionManager append and tree traversal > getPath > returns empty array for empty session"
 file = "packages/coding-agent/test/session-manager/tree-traversal.test.ts"
 line = 135
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::session_manager::tree_traversal::empty_branch"
+adaptation = "Use per-test VirtualEnv and host identity, lossless shared session entries, Result errors and fixture-owned temporary directories; preserve raw JSONL, migrations, context, branch and identity assertions."
 
 [[test]]
 id = "packages/coding-agent/test/session-manager/tree-traversal.test.ts > SessionManager append and tree traversal > getPath > returns full path from root to leaf"
 file = "packages/coding-agent/test/session-manager/tree-traversal.test.ts"
 line = 149
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::session_manager::tree_traversal::full_root_to_leaf_branch"
+adaptation = "Use per-test VirtualEnv and host identity, lossless shared session entries, Result errors and fixture-owned temporary directories; preserve raw JSONL, migrations, context, branch and identity assertions."
 
 [[test]]
 id = "packages/coding-agent/test/session-manager/tree-traversal.test.ts > SessionManager append and tree traversal > getPath > returns path from specified entry to root"
 file = "packages/coding-agent/test/session-manager/tree-traversal.test.ts"
 line = 162
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::session_manager::tree_traversal::branch_to_specified_entry"
+adaptation = "Use per-test VirtualEnv and host identity, lossless shared session entries, Result errors and fixture-owned temporary directories; preserve raw JSONL, migrations, context, branch and identity assertions."
 
 [[test]]
 id = "packages/coding-agent/test/session-manager/tree-traversal.test.ts > SessionManager append and tree traversal > getPath > returns single entry path"
 file = "packages/coding-agent/test/session-manager/tree-traversal.test.ts"
 line = 140
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::session_manager::tree_traversal::single_entry_branch"
+adaptation = "Use per-test VirtualEnv and host identity, lossless shared session entries, Result errors and fixture-owned temporary directories; preserve raw JSONL, migrations, context, branch and identity assertions."
 
 [[test]]
 id = "packages/coding-agent/test/session-manager/tree-traversal.test.ts > SessionManager append and tree traversal > getTree > handles deep branching"
 file = "packages/coding-agent/test/session-manager/tree-traversal.test.ts"
 line = 255
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::session_manager::tree_traversal::deep_branching"
+adaptation = "Use per-test VirtualEnv and host identity, lossless shared session entries, Result errors and fixture-owned temporary directories; preserve raw JSONL, migrations, context, branch and identity assertions."
 
 [[test]]
 id = "packages/coding-agent/test/session-manager/tree-traversal.test.ts > SessionManager append and tree traversal > getTree > handles multiple branches at same point"
 file = "packages/coding-agent/test/session-manager/tree-traversal.test.ts"
 line = 228
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::session_manager::tree_traversal::multiple_branches_at_same_point"
+adaptation = "Use per-test VirtualEnv and host identity, lossless shared session entries, Result errors and fixture-owned temporary directories; preserve raw JSONL, migrations, context, branch and identity assertions."
 
 [[test]]
 id = "packages/coding-agent/test/session-manager/tree-traversal.test.ts > SessionManager append and tree traversal > getTree > returns empty array for empty session"
 file = "packages/coding-agent/test/session-manager/tree-traversal.test.ts"
 line = 177
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::session_manager::tree_traversal::empty_tree"
+adaptation = "Use per-test VirtualEnv and host identity, lossless shared session entries, Result errors and fixture-owned temporary directories; preserve raw JSONL, migrations, context, branch and identity assertions."
 
 [[test]]
 id = "packages/coding-agent/test/session-manager/tree-traversal.test.ts > SessionManager append and tree traversal > getTree > returns single root for linear session"
 file = "packages/coding-agent/test/session-manager/tree-traversal.test.ts"
 line = 182
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::session_manager::tree_traversal::linear_tree_single_root"
+adaptation = "Use per-test VirtualEnv and host identity, lossless shared session entries, Result errors and fixture-owned temporary directories; preserve raw JSONL, migrations, context, branch and identity assertions."
 
 [[test]]
 id = "packages/coding-agent/test/session-manager/tree-traversal.test.ts > SessionManager append and tree traversal > getTree > returns tree with branches after branch"
 file = "packages/coding-agent/test/session-manager/tree-traversal.test.ts"
 line = 201
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::session_manager::tree_traversal::tree_has_sibling_branches"
+adaptation = "Use per-test VirtualEnv and host identity, lossless shared session entries, Result errors and fixture-owned temporary directories; preserve raw JSONL, migrations, context, branch and identity assertions."
 
 [[test]]
 id = "packages/coding-agent/test/session-manager/tree-traversal.test.ts > createBranchedSession > creates new session with path to specified leaf (in-memory)"
 file = "packages/coding-agent/test/session-manager/tree-traversal.test.ts"
 line = 438
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::session_manager::tree_traversal::fork_in_memory_extracts_path"
+adaptation = "Use per-test VirtualEnv and host identity, lossless shared session entries, Result errors and fixture-owned temporary directories; preserve raw JSONL, migrations, context, branch and identity assertions."
 
 [[test]]
 id = "packages/coding-agent/test/session-manager/tree-traversal.test.ts > createBranchedSession > does not duplicate entries when forking from before the first user message"
 file = "packages/coding-agent/test/session-manager/tree-traversal.test.ts"
 line = 483
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::session_manager::tree_traversal::fork_before_user_does_not_duplicate_entries"
+adaptation = "Use per-test VirtualEnv and host identity, lossless shared session entries, Result errors and fixture-owned temporary directories; preserve raw JSONL, migrations, context, branch and identity assertions."
 
 [[test]]
 id = "packages/coding-agent/test/session-manager/tree-traversal.test.ts > createBranchedSession > extracts correct path from branched tree"
 file = "packages/coding-agent/test/session-manager/tree-traversal.test.ts"
 line = 462
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::session_manager::tree_traversal::fork_extracts_correct_branched_path"
+adaptation = "Use per-test VirtualEnv and host identity, lossless shared session entries, Result errors and fixture-owned temporary directories; preserve raw JSONL, migrations, context, branch and identity assertions."
 
 [[test]]
 id = "packages/coding-agent/test/session-manager/tree-traversal.test.ts > createBranchedSession > preserves tool and summary usage across a file-backed reload"
 file = "packages/coding-agent/test/session-manager/tree-traversal.test.ts"
 line = 515
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::session_manager::tree_traversal::reload_preserves_tool_and_summary_usage"
+adaptation = "Use per-test VirtualEnv and host identity, lossless shared session entries, Result errors and fixture-owned temporary directories; preserve raw JSONL, migrations, context, branch and identity assertions."
 
 [[test]]
 id = "packages/coding-agent/test/session-manager/tree-traversal.test.ts > createBranchedSession > throws for non-existent entry"
 file = "packages/coding-agent/test/session-manager/tree-traversal.test.ts"
 line = 431
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::session_manager::tree_traversal::fork_rejects_missing_entry"
+adaptation = "Use per-test VirtualEnv and host identity, lossless shared session entries, Result errors and fixture-owned temporary directories; preserve raw JSONL, migrations, context, branch and identity assertions."
 
 [[test]]
 id = "packages/coding-agent/test/session-manager/tree-traversal.test.ts > createBranchedSession > writes file immediately when forking at a user message"
 file = "packages/coding-agent/test/session-manager/tree-traversal.test.ts"
 line = 561
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::session_manager::tree_traversal::fork_at_user_writes_immediately"
+adaptation = "Use per-test VirtualEnv and host identity, lossless shared session entries, Result errors and fixture-owned temporary directories; preserve raw JSONL, migrations, context, branch and identity assertions."
 
 [[test]]
 id = "packages/coding-agent/test/session-selector-path-delete.test.ts > session selector path/delete interactions > does not start redundant All loads when toggling scopes while All is already loading"
@@ -33970,19 +34385,25 @@ reason = "skip-module"
 id = "packages/coding-agent/test/suite/regressions/7497-session-discovery-symlink.test.ts > regression #7497: discover sessions through symlinked directories > discovers a session through a directory link and preserves the alias path"
 file = "packages/coding-agent/test/suite/regressions/7497-session-discovery-symlink.test.ts"
 line = 41
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::r7497_session_discovery_symlink::discovers_a_session_through_a_directory_link_and_preserves_the_alias_path"
+adaptation = "Use explicit fixture homes/cwd and temporary paths, native filesystem operations and source-equivalent platform guards; preserve every applicable path and symlink assertion."
 
 [[test]]
 id = "packages/coding-agent/test/suite/regressions/7497-session-discovery-symlink.test.ts > regression #7497: discover sessions through symlinked directories > ignores a broken directory link without hiding valid sessions"
 file = "packages/coding-agent/test/suite/regressions/7497-session-discovery-symlink.test.ts"
 line = 53
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::r7497_session_discovery_symlink::ignores_a_broken_directory_link_without_hiding_valid_sessions"
+adaptation = "Use explicit fixture homes/cwd and temporary paths, native filesystem operations and source-equivalent platform guards; preserve every applicable path and symlink assertion."
 
 [[test]]
 id = "packages/coding-agent/test/suite/regressions/7497-session-discovery-symlink.test.ts > regression #7497: discover sessions through symlinked directories > ignores links to files"
 file = "packages/coding-agent/test/suite/regressions/7497-session-discovery-symlink.test.ts"
 line = 65
-status = "pending"
+status = "adapted"
+rust = "pi-coding-agent::upstream::r7497_session_discovery_symlink::ignores_links_to_files"
+adaptation = "Use explicit fixture homes/cwd and temporary paths, native filesystem operations and source-equivalent platform guards; preserve every applicable path and symlink assertion."
 
 [[test]]
 id = "packages/coding-agent/test/suite/regressions/7572-provider-retry-settings-merge.test.ts > regression #7572: nested provider retry settings merge > preserves global provider settings not overridden by the project"

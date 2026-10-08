@@ -123,8 +123,7 @@ reason = "Recording and Rust replay are completed in port step 7."
 
 [[scenario]]
 id = "session/load-migrate-repair"
-status = "pending"
-reason = "Recording and Rust replay are completed in port step 4."
+status = "passing"
 
 [[scenario]]
 id = "wire/basic-text-usage"
@@ -238,23 +237,19 @@ status = "passing"
 
 [[function]]
 id = "compaction.findCutPoint"
-status = "pending"
-reason = "Function golden recording and Rust dispatch are completed in port step 4."
+status = "passing"
 
 [[function]]
 id = "compaction.serializeConversation"
-status = "pending"
-reason = "Function golden recording and Rust dispatch are completed in port step 4."
+status = "passing"
 
 [[function]]
 id = "compaction.prepareCompaction"
-status = "pending"
-reason = "Function golden recording and Rust dispatch are completed in port step 4."
+status = "passing"
 
 [[function]]
 id = "session-manager.buildSessionContext"
-status = "pending"
-reason = "Function golden recording and Rust dispatch are completed in port step 4."
+status = "passing"
 
 [[function]]
 id = "prompt-templates.expandPromptTemplate"
@@ -287,4 +282,100 @@ status = "passing"
 
 [[function]]
 id = "agent.clearedModel"
+status = "passing"
+
+[[function]]
+id = "branch-summarization.collectEntriesForBranchSummary"
+status = "passing"
+
+[[function]]
+id = "branch-summarization.generateBranchSummary"
+status = "passing"
+
+[[function]]
+id = "branch-summarization.prepareBranchEntries"
+status = "passing"
+
+[[function]]
+id = "compaction-utils.fileOperations"
+status = "passing"
+
+[[function]]
+id = "compaction-utils.serializeConversation"
+status = "passing"
+
+[[function]]
+id = "compaction.calculateContextTokens"
+status = "passing"
+
+[[function]]
+id = "compaction.estimateContextTokens"
+status = "passing"
+
+[[function]]
+id = "compaction.estimateProjectedContextTokens"
+status = "passing"
+
+[[function]]
+id = "compaction.estimateTokens"
+status = "passing"
+
+[[function]]
+id = "compaction.getLastAssistantUsage"
+status = "passing"
+
+[[function]]
+id = "compaction.retryRequestOwnership"
+status = "passing"
+
+[[function]]
+id = "compaction.shouldCompact"
+status = "passing"
+
+[[function]]
+id = "compaction.summarization"
+status = "passing"
+
+[[function]]
+id = "messages.bashExecutionToText"
+status = "passing"
+
+[[function]]
+id = "messages.construct"
+status = "passing"
+
+[[function]]
+id = "messages.convertToLlm"
+status = "passing"
+
+[[function]]
+id = "session.assertValidId"
+status = "passing"
+
+[[function]]
+id = "session.cwdFormatting"
+status = "passing"
+
+[[function]]
+id = "session.entryToMessages"
+status = "passing"
+
+[[function]]
+id = "session.inMemory"
+status = "passing"
+
+[[function]]
+id = "session.parseAndMigrate"
+status = "passing"
+
+[[function]]
+id = "session.project"
+status = "passing"
+
+[[function]]
+id = "text.bom"
+status = "passing"
+
+[[function]]
+id = "usage.totals"
 status = "passing"

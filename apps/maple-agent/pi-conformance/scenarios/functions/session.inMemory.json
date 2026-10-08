@@ -1,0 +1,394 @@
+{
+  "dsl": 1,
+  "id": "session.inMemory",
+  "clock": {
+    "epochMs": 1767225600000
+  },
+  "cases": [
+    {
+      "case": "append-all-kinds",
+      "input": {
+        "cwd": "/workspace/project",
+        "options": {
+          "id": "custom.session-1"
+        },
+        "operations": [
+          {
+            "operation": "appendModelChange",
+            "provider": "openai",
+            "modelId": "gpt-4o",
+            "alias": "model"
+          },
+          {
+            "operation": "appendThinkingLevelChange",
+            "thinkingLevel": "high"
+          },
+          {
+            "operation": "appendMessage",
+            "message": {
+              "role": "system",
+              "content": "policy",
+              "timestamp": 1767225600000
+            },
+            "alias": "system"
+          },
+          {
+            "operation": "appendMessage",
+            "message": {
+              "role": "user",
+              "content": "hello",
+              "timestamp": 1767225600000
+            },
+            "alias": "user"
+          },
+          {
+            "operation": "appendLabelChange",
+            "target": "user",
+            "label": "bookmark"
+          },
+          {
+            "operation": "appendMessage",
+            "message": {
+              "role": "assistant",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "reply"
+                }
+              ],
+              "api": "openai-completions",
+              "provider": "openai",
+              "model": "gpt-4o",
+              "usage": {
+                "input": 1,
+                "output": 2,
+                "cacheRead": 3,
+                "cacheWrite": 4,
+                "totalTokens": 10,
+                "cost": {
+                  "input": 0.01,
+                  "output": 0.02,
+                  "cacheRead": 0.03,
+                  "cacheWrite": 0.04,
+                  "total": 0.1
+                }
+              },
+              "stopReason": "stop",
+              "timestamp": 1767225600000
+            },
+            "alias": "assistant"
+          },
+          {
+            "operation": "appendContextEdit",
+            "target": "assistant",
+            "replacement": {
+              "content": "edited"
+            }
+          },
+          {
+            "operation": "appendCustomEntry",
+            "customType": "state",
+            "data": {
+              "z": 1,
+              "a": 2
+            }
+          },
+          {
+            "operation": "appendSessionInfo",
+            "name": " \nProject\r\n title \t"
+          },
+          {
+            "operation": "appendCustomMessageEntry",
+            "customType": "note",
+            "content": "custom",
+            "display": false,
+            "details": null
+          },
+          {
+            "operation": "appendUsage",
+            "kind": "summary",
+            "provider": "openai",
+            "model": "gpt-4o",
+            "usage": {
+              "input": 1,
+              "output": 2,
+              "cacheRead": 3,
+              "cacheWrite": 4,
+              "totalTokens": 10,
+              "cost": {
+                "input": 0.01,
+                "output": 0.02,
+                "cacheRead": 0.03,
+                "cacheWrite": 0.04,
+                "total": 0.1
+              }
+            },
+            "note": "recorded"
+          },
+          {
+            "operation": "appendCompaction",
+            "summary": "checkpoint",
+            "firstKept": "user",
+            "tokensBefore": 200,
+            "details": {
+              "keep": true
+            },
+            "fromHook": false,
+            "alias": "compaction"
+          },
+          {
+            "operation": "serializeBranch",
+            "trailing": [
+              {
+                "type": "custom",
+                "id": "export-only",
+                "customType": "export",
+                "data": null
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "case": "branch-edit-and-fork",
+      "input": {
+        "cwd": "/workspace/project",
+        "options": {
+          "id": "branch-fixture"
+        },
+        "operations": [
+          {
+            "operation": "appendMessage",
+            "message": {
+              "role": "user",
+              "content": "hello",
+              "timestamp": 1767225600000
+            },
+            "alias": "root"
+          },
+          {
+            "operation": "appendMessage",
+            "message": {
+              "role": "assistant",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "reply"
+                }
+              ],
+              "api": "openai-completions",
+              "provider": "openai",
+              "model": "gpt-4o",
+              "usage": {
+                "input": 1,
+                "output": 2,
+                "cacheRead": 3,
+                "cacheWrite": 4,
+                "totalTokens": 10,
+                "cost": {
+                  "input": 0.01,
+                  "output": 0.02,
+                  "cacheRead": 0.03,
+                  "cacheWrite": 0.04,
+                  "total": 0.1
+                }
+              },
+              "stopReason": "stop",
+              "timestamp": 1767225600000
+            },
+            "alias": "first"
+          },
+          {
+            "operation": "appendLabelChange",
+            "target": "root",
+            "label": "kept"
+          },
+          {
+            "operation": "branch",
+            "target": "root"
+          },
+          {
+            "operation": "appendMessage",
+            "message": {
+              "role": "user",
+              "content": "branch two",
+              "timestamp": 1767225600000
+            },
+            "alias": "second"
+          },
+          {
+            "operation": "appendContextEdit",
+            "target": "first",
+            "replacement": null
+          },
+          {
+            "operation": "branchWithSummary",
+            "branchFrom": "root",
+            "summary": "came back",
+            "alias": "summary"
+          },
+          {
+            "operation": "createBranchedSession",
+            "target": "summary"
+          },
+          {
+            "operation": "serializeBranch"
+          }
+        ]
+      }
+    },
+    {
+      "case": "public-alias-mutations",
+      "input": {
+        "cwd": "/workspace/project",
+        "options": {
+          "id": "alias-fixture"
+        },
+        "operations": [
+          {
+            "operation": "appendMessage",
+            "message": {
+              "role": "user",
+              "content": "hello",
+              "timestamp": 1767225600000
+            },
+            "alias": "u"
+          },
+          {
+            "operation": "mutateMessage",
+            "target": "u",
+            "fields": {
+              "content": "mutated",
+              "extra": {
+                "z": 1,
+                "a": 2
+              }
+            }
+          },
+          {
+            "operation": "mutateEntry",
+            "target": "u",
+            "fields": {
+              "extra": [
+                1,
+                null
+              ]
+            }
+          },
+          {
+            "operation": "serializeBranch"
+          }
+        ]
+      }
+    },
+    {
+      "case": "validation-and-reset",
+      "input": {
+        "cwd": "/workspace/project",
+        "options": {
+          "id": "valid"
+        },
+        "operations": [
+          {
+            "operation": "appendMessage",
+            "message": {
+              "role": "user",
+              "content": "hello",
+              "timestamp": 1767225600000
+            },
+            "alias": "u"
+          },
+          {
+            "operation": "appendContextEdit",
+            "target": "u",
+            "replacement": {
+              "content": 42
+            }
+          },
+          {
+            "operation": "appendContextEdit",
+            "target": "missing",
+            "replacement": null
+          },
+          {
+            "operation": "appendLabelChange",
+            "target": "missing",
+            "label": "x"
+          },
+          {
+            "operation": "branch",
+            "target": "missing"
+          },
+          {
+            "operation": "newSession",
+            "options": {
+              "id": "../invalid"
+            }
+          },
+          {
+            "operation": "resetLeaf"
+          },
+          {
+            "operation": "appendMessage",
+            "message": {
+              "role": "user",
+              "content": "root two",
+              "timestamp": 1767225600000
+            },
+            "alias": "v"
+          },
+          {
+            "operation": "newSession",
+            "options": {
+              "id": "new.id",
+              "parentSession": "/sessions/parent.jsonl"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "case": "preloaded-null-preserved",
+      "input": {
+        "cwd": "/workspace/project",
+        "options": {
+          "id": "ignored"
+        },
+        "entries": [
+          {
+            "type": "session",
+            "version": 3,
+            "id": "fixture-session",
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "cwd": "/workspace/project"
+          },
+          {
+            "type": "message",
+            "id": "old",
+            "parentId": null,
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "message": {
+              "role": "user",
+              "content": null,
+              "unknown": "kept"
+            }
+          }
+        ],
+        "operations": [
+          {
+            "operation": "serializeBranch"
+          },
+          {
+            "operation": "appendMessage",
+            "message": {
+              "role": "user",
+              "content": "new",
+              "timestamp": 1767225600000
+            }
+          }
+        ]
+      }
+    }
+  ]
+}

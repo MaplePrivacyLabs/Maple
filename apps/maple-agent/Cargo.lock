@@ -7266,9 +7266,18 @@ dependencies = [
 name = "pi-coding-agent"
 version = "0.1.0"
 dependencies = [
+ "futures-util",
+ "indexmap 2.14.0",
+ "libc",
  "pi-agent-core",
  "pi-ai",
  "pi-mcp",
+ "pi-testkit",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "url",
 ]
 
 [[package]]
@@ -7280,6 +7289,7 @@ dependencies = [
  "libtest-mimic",
  "pi-agent-core",
  "pi-ai",
+ "pi-coding-agent",
  "pi-testkit",
  "serde",
  "serde_json",

@@ -1,0 +1,814 @@
+{
+  "dsl": 1,
+  "id": "session-manager.buildSessionContext",
+  "clock": {
+    "epochMs": 1767225600000
+  },
+  "cases": [
+    {
+      "case": "default",
+      "input": {
+        "entries": [
+          {
+            "type": "message",
+            "id": "s",
+            "parentId": null,
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "message": {
+              "role": "system",
+              "content": "policy",
+              "timestamp": 1767225600000
+            }
+          },
+          {
+            "type": "thinking_level_change",
+            "id": "t",
+            "parentId": "s",
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "thinkingLevel": "high"
+          },
+          {
+            "type": "model_change",
+            "id": "m",
+            "parentId": "t",
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "provider": "openai",
+            "modelId": "gpt-4o"
+          },
+          {
+            "type": "message",
+            "id": "u",
+            "parentId": "m",
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "message": {
+              "role": "user",
+              "content": "hello",
+              "timestamp": 1767225600000
+            }
+          },
+          {
+            "type": "message",
+            "id": "a",
+            "parentId": "u",
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "message": {
+              "role": "assistant",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "reply"
+                }
+              ],
+              "api": "openai-completions",
+              "provider": "openai",
+              "model": "gpt-4o",
+              "usage": {
+                "input": 1,
+                "output": 2,
+                "cacheRead": 3,
+                "cacheWrite": 4,
+                "totalTokens": 10,
+                "cost": {
+                  "input": 0.01,
+                  "output": 0.02,
+                  "cacheRead": 0.03,
+                  "cacheWrite": 0.04,
+                  "total": 0.1
+                }
+              },
+              "stopReason": "stop",
+              "timestamp": 1767225600000
+            }
+          },
+          {
+            "type": "custom",
+            "id": "c",
+            "parentId": "a",
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "customType": "state",
+            "data": {
+              "unknown": [
+                1,
+                null
+              ]
+            }
+          },
+          {
+            "type": "custom_message",
+            "id": "n",
+            "parentId": "c",
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "customType": "note",
+            "content": "injected",
+            "display": false
+          }
+        ]
+      }
+    },
+    {
+      "case": "explicit-root",
+      "input": {
+        "entries": [
+          {
+            "type": "message",
+            "id": "s",
+            "parentId": null,
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "message": {
+              "role": "system",
+              "content": "policy",
+              "timestamp": 1767225600000
+            }
+          },
+          {
+            "type": "thinking_level_change",
+            "id": "t",
+            "parentId": "s",
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "thinkingLevel": "high"
+          },
+          {
+            "type": "model_change",
+            "id": "m",
+            "parentId": "t",
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "provider": "openai",
+            "modelId": "gpt-4o"
+          },
+          {
+            "type": "message",
+            "id": "u",
+            "parentId": "m",
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "message": {
+              "role": "user",
+              "content": "hello",
+              "timestamp": 1767225600000
+            }
+          },
+          {
+            "type": "message",
+            "id": "a",
+            "parentId": "u",
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "message": {
+              "role": "assistant",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "reply"
+                }
+              ],
+              "api": "openai-completions",
+              "provider": "openai",
+              "model": "gpt-4o",
+              "usage": {
+                "input": 1,
+                "output": 2,
+                "cacheRead": 3,
+                "cacheWrite": 4,
+                "totalTokens": 10,
+                "cost": {
+                  "input": 0.01,
+                  "output": 0.02,
+                  "cacheRead": 0.03,
+                  "cacheWrite": 0.04,
+                  "total": 0.1
+                }
+              },
+              "stopReason": "stop",
+              "timestamp": 1767225600000
+            }
+          },
+          {
+            "type": "custom",
+            "id": "c",
+            "parentId": "a",
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "customType": "state",
+            "data": {
+              "unknown": [
+                1,
+                null
+              ]
+            }
+          },
+          {
+            "type": "custom_message",
+            "id": "n",
+            "parentId": "c",
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "customType": "note",
+            "content": "injected",
+            "display": false
+          }
+        ],
+        "leafId": null
+      }
+    },
+    {
+      "case": "selected-user",
+      "input": {
+        "entries": [
+          {
+            "type": "message",
+            "id": "s",
+            "parentId": null,
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "message": {
+              "role": "system",
+              "content": "policy",
+              "timestamp": 1767225600000
+            }
+          },
+          {
+            "type": "thinking_level_change",
+            "id": "t",
+            "parentId": "s",
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "thinkingLevel": "high"
+          },
+          {
+            "type": "model_change",
+            "id": "m",
+            "parentId": "t",
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "provider": "openai",
+            "modelId": "gpt-4o"
+          },
+          {
+            "type": "message",
+            "id": "u",
+            "parentId": "m",
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "message": {
+              "role": "user",
+              "content": "hello",
+              "timestamp": 1767225600000
+            }
+          },
+          {
+            "type": "message",
+            "id": "a",
+            "parentId": "u",
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "message": {
+              "role": "assistant",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "reply"
+                }
+              ],
+              "api": "openai-completions",
+              "provider": "openai",
+              "model": "gpt-4o",
+              "usage": {
+                "input": 1,
+                "output": 2,
+                "cacheRead": 3,
+                "cacheWrite": 4,
+                "totalTokens": 10,
+                "cost": {
+                  "input": 0.01,
+                  "output": 0.02,
+                  "cacheRead": 0.03,
+                  "cacheWrite": 0.04,
+                  "total": 0.1
+                }
+              },
+              "stopReason": "stop",
+              "timestamp": 1767225600000
+            }
+          },
+          {
+            "type": "custom",
+            "id": "c",
+            "parentId": "a",
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "customType": "state",
+            "data": {
+              "unknown": [
+                1,
+                null
+              ]
+            }
+          },
+          {
+            "type": "custom_message",
+            "id": "n",
+            "parentId": "c",
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "customType": "note",
+            "content": "injected",
+            "display": false
+          }
+        ],
+        "leafId": "u"
+      }
+    },
+    {
+      "case": "unknown-falls-back",
+      "input": {
+        "entries": [
+          {
+            "type": "message",
+            "id": "s",
+            "parentId": null,
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "message": {
+              "role": "system",
+              "content": "policy",
+              "timestamp": 1767225600000
+            }
+          },
+          {
+            "type": "thinking_level_change",
+            "id": "t",
+            "parentId": "s",
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "thinkingLevel": "high"
+          },
+          {
+            "type": "model_change",
+            "id": "m",
+            "parentId": "t",
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "provider": "openai",
+            "modelId": "gpt-4o"
+          },
+          {
+            "type": "message",
+            "id": "u",
+            "parentId": "m",
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "message": {
+              "role": "user",
+              "content": "hello",
+              "timestamp": 1767225600000
+            }
+          },
+          {
+            "type": "message",
+            "id": "a",
+            "parentId": "u",
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "message": {
+              "role": "assistant",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "reply"
+                }
+              ],
+              "api": "openai-completions",
+              "provider": "openai",
+              "model": "gpt-4o",
+              "usage": {
+                "input": 1,
+                "output": 2,
+                "cacheRead": 3,
+                "cacheWrite": 4,
+                "totalTokens": 10,
+                "cost": {
+                  "input": 0.01,
+                  "output": 0.02,
+                  "cacheRead": 0.03,
+                  "cacheWrite": 0.04,
+                  "total": 0.1
+                }
+              },
+              "stopReason": "stop",
+              "timestamp": 1767225600000
+            }
+          },
+          {
+            "type": "custom",
+            "id": "c",
+            "parentId": "a",
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "customType": "state",
+            "data": {
+              "unknown": [
+                1,
+                null
+              ]
+            }
+          },
+          {
+            "type": "custom_message",
+            "id": "n",
+            "parentId": "c",
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "customType": "note",
+            "content": "injected",
+            "display": false
+          }
+        ],
+        "leafId": "missing"
+      }
+    },
+    {
+      "case": "compaction-system-and-kept",
+      "input": {
+        "entries": [
+          {
+            "type": "message",
+            "id": "s",
+            "parentId": null,
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "message": {
+              "role": "system",
+              "content": "policy",
+              "timestamp": 1767225600000
+            }
+          },
+          {
+            "type": "thinking_level_change",
+            "id": "t",
+            "parentId": "s",
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "thinkingLevel": "high"
+          },
+          {
+            "type": "model_change",
+            "id": "m",
+            "parentId": "t",
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "provider": "openai",
+            "modelId": "gpt-4o"
+          },
+          {
+            "type": "message",
+            "id": "u",
+            "parentId": "m",
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "message": {
+              "role": "user",
+              "content": "hello",
+              "timestamp": 1767225600000
+            }
+          },
+          {
+            "type": "message",
+            "id": "a",
+            "parentId": "u",
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "message": {
+              "role": "assistant",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "reply"
+                }
+              ],
+              "api": "openai-completions",
+              "provider": "openai",
+              "model": "gpt-4o",
+              "usage": {
+                "input": 1,
+                "output": 2,
+                "cacheRead": 3,
+                "cacheWrite": 4,
+                "totalTokens": 10,
+                "cost": {
+                  "input": 0.01,
+                  "output": 0.02,
+                  "cacheRead": 0.03,
+                  "cacheWrite": 0.04,
+                  "total": 0.1
+                }
+              },
+              "stopReason": "stop",
+              "timestamp": 1767225600000
+            }
+          },
+          {
+            "type": "custom",
+            "id": "c",
+            "parentId": "a",
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "customType": "state",
+            "data": {
+              "unknown": [
+                1,
+                null
+              ]
+            }
+          },
+          {
+            "type": "custom_message",
+            "id": "n",
+            "parentId": "c",
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "customType": "note",
+            "content": "injected",
+            "display": false
+          },
+          {
+            "type": "compaction",
+            "id": "q",
+            "parentId": "n",
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "summary": "checkpoint",
+            "firstKeptEntryId": "u",
+            "tokensBefore": 200,
+            "systemMessage": {
+              "role": "system",
+              "content": "saved policy",
+              "timestamp": 1767225600000
+            }
+          },
+          {
+            "type": "message",
+            "id": "after",
+            "parentId": "q",
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "message": {
+              "role": "user",
+              "content": "next",
+              "timestamp": 1767225600000
+            }
+          }
+        ]
+      }
+    },
+    {
+      "case": "edit-after-compaction",
+      "input": {
+        "entries": [
+          {
+            "type": "message",
+            "id": "s",
+            "parentId": null,
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "message": {
+              "role": "system",
+              "content": "policy",
+              "timestamp": 1767225600000
+            }
+          },
+          {
+            "type": "thinking_level_change",
+            "id": "t",
+            "parentId": "s",
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "thinkingLevel": "high"
+          },
+          {
+            "type": "model_change",
+            "id": "m",
+            "parentId": "t",
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "provider": "openai",
+            "modelId": "gpt-4o"
+          },
+          {
+            "type": "message",
+            "id": "u",
+            "parentId": "m",
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "message": {
+              "role": "user",
+              "content": "hello",
+              "timestamp": 1767225600000
+            }
+          },
+          {
+            "type": "message",
+            "id": "a",
+            "parentId": "u",
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "message": {
+              "role": "assistant",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "reply"
+                }
+              ],
+              "api": "openai-completions",
+              "provider": "openai",
+              "model": "gpt-4o",
+              "usage": {
+                "input": 1,
+                "output": 2,
+                "cacheRead": 3,
+                "cacheWrite": 4,
+                "totalTokens": 10,
+                "cost": {
+                  "input": 0.01,
+                  "output": 0.02,
+                  "cacheRead": 0.03,
+                  "cacheWrite": 0.04,
+                  "total": 0.1
+                }
+              },
+              "stopReason": "stop",
+              "timestamp": 1767225600000
+            }
+          },
+          {
+            "type": "custom",
+            "id": "c",
+            "parentId": "a",
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "customType": "state",
+            "data": {
+              "unknown": [
+                1,
+                null
+              ]
+            }
+          },
+          {
+            "type": "custom_message",
+            "id": "n",
+            "parentId": "c",
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "customType": "note",
+            "content": "injected",
+            "display": false
+          },
+          {
+            "type": "compaction",
+            "id": "q",
+            "parentId": "n",
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "summary": "checkpoint",
+            "firstKeptEntryId": "u",
+            "tokensBefore": 200,
+            "systemMessage": {
+              "role": "system",
+              "content": "saved policy",
+              "timestamp": 1767225600000
+            }
+          },
+          {
+            "type": "message",
+            "id": "after",
+            "parentId": "q",
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "message": {
+              "role": "user",
+              "content": "next",
+              "timestamp": 1767225600000
+            }
+          },
+          {
+            "type": "context_edit",
+            "id": "e",
+            "parentId": "after",
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "targetId": "u",
+            "replacement": {
+              "content": "rewritten"
+            }
+          },
+          {
+            "type": "context_edit",
+            "id": "o",
+            "parentId": "e",
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "targetId": "a",
+            "replacement": null
+          }
+        ]
+      }
+    },
+    {
+      "case": "older-compaction-retained-without-messages",
+      "input": {
+        "entries": [
+          {
+            "type": "message",
+            "id": "s",
+            "parentId": null,
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "message": {
+              "role": "system",
+              "content": "policy",
+              "timestamp": 1767225600000
+            }
+          },
+          {
+            "type": "thinking_level_change",
+            "id": "t",
+            "parentId": "s",
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "thinkingLevel": "high"
+          },
+          {
+            "type": "model_change",
+            "id": "m",
+            "parentId": "t",
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "provider": "openai",
+            "modelId": "gpt-4o"
+          },
+          {
+            "type": "message",
+            "id": "u",
+            "parentId": "m",
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "message": {
+              "role": "user",
+              "content": "hello",
+              "timestamp": 1767225600000
+            }
+          },
+          {
+            "type": "message",
+            "id": "a",
+            "parentId": "u",
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "message": {
+              "role": "assistant",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "reply"
+                }
+              ],
+              "api": "openai-completions",
+              "provider": "openai",
+              "model": "gpt-4o",
+              "usage": {
+                "input": 1,
+                "output": 2,
+                "cacheRead": 3,
+                "cacheWrite": 4,
+                "totalTokens": 10,
+                "cost": {
+                  "input": 0.01,
+                  "output": 0.02,
+                  "cacheRead": 0.03,
+                  "cacheWrite": 0.04,
+                  "total": 0.1
+                }
+              },
+              "stopReason": "stop",
+              "timestamp": 1767225600000
+            }
+          },
+          {
+            "type": "custom",
+            "id": "c",
+            "parentId": "a",
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "customType": "state",
+            "data": {
+              "unknown": [
+                1,
+                null
+              ]
+            }
+          },
+          {
+            "type": "custom_message",
+            "id": "n",
+            "parentId": "c",
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "customType": "note",
+            "content": "injected",
+            "display": false
+          },
+          {
+            "type": "compaction",
+            "id": "q",
+            "parentId": "n",
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "summary": "checkpoint",
+            "firstKeptEntryId": "u",
+            "tokensBefore": 200,
+            "systemMessage": {
+              "role": "system",
+              "content": "saved policy",
+              "timestamp": 1767225600000
+            }
+          },
+          {
+            "type": "message",
+            "id": "after",
+            "parentId": "q",
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "message": {
+              "role": "user",
+              "content": "next",
+              "timestamp": 1767225600000
+            }
+          },
+          {
+            "type": "compaction",
+            "id": "new",
+            "parentId": "after",
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "summary": "new checkpoint",
+            "firstKeptEntryId": "q",
+            "tokensBefore": 250
+          }
+        ]
+      }
+    }
+  ]
+}

@@ -1,0 +1,8 @@
+{"case":"component-total","input":{"usage":{"input":1000,"output":500,"cacheRead":200,"cacheWrite":100,"totalTokens":1800,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}}},"output":{"value":1800}}
+{"case":"zero","input":{"usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}}},"output":{"value":0}}
+{"case":"zero-total-falls-back","input":{"usage":{"input":11,"output":7,"cacheRead":3,"cacheWrite":5,"totalTokens":0,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}}},"output":{"value":26}}
+{"case":"native-total-wins","input":{"usage":{"input":11,"output":7,"cacheRead":3,"cacheWrite":5,"totalTokens":100,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}}},"output":{"value":100}}
+{"case":"negative-native-total-is-truthy","input":{"usage":{"input":11,"output":7,"cacheRead":0,"cacheWrite":0,"totalTokens":-1,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}}},"output":{"value":-1}}
+{"case":"raw-partial-usage","input":{"usage":{"totalTokens":8}},"output":{"value":8}}
+{"case":"raw-string-total","input":{"usage":{"totalTokens":"8"}},"output":{"value":"8"}}
+{"case":"null-usage-errors","input":{"usage":null},"output":{"error":"Cannot read properties of null (reading 'totalTokens')","errorClass":"TypeError"}}

@@ -13,6 +13,9 @@ use std::{
 };
 use syn::{Attribute, Item, Meta};
 
+#[path = "platform_coverage.rs"]
+mod platform_coverage;
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Inventory {
@@ -79,6 +82,7 @@ struct Mapping {
     rust: Option<String>,
     #[serde(default)]
     corpus: Vec<String>,
+    platform: Option<platform_coverage::Platform>,
     #[allow(dead_code)]
     note: Option<String>,
 }
@@ -98,6 +102,8 @@ pub struct CoverageSummary {
     pub inventory_tests: usize,
     pub pending_tests: usize,
     pub translated_tests: usize,
+    pub applicable_translated_tests: usize,
+    pub platform_inapplicable_translated_tests: Vec<String>,
     pub corpus_tests: usize,
     pub excluded_tests: usize,
 }
@@ -248,6 +254,7 @@ fn unconditional(attributes: &[Attribute], location: &str) -> CheckResult {
 #[derive(Debug)]
 struct RustTest {
     ignored: bool,
+    platform_guard: Option<platform_coverage::AppliesTo>,
 }
 
 /// Follow Rust's module declarations from the actual integration-test root.
@@ -299,6 +306,7 @@ fn rust_tests(agent: &Path) -> CheckResult<BTreeMap<String, RustTest>> {
                             name.clone(),
                             RustTest {
                                 ignored: ignored(&function.attrs),
+                                platform_guard: platform_coverage::body_guard(function),
                             },
                         )
                         .is_some()
@@ -532,7 +540,22 @@ pub fn check(reference: &Path, agent: &Path) -> CheckResult<CoverageSummary> {
                 if function.ignored {
                     return Err(format!("translated test {target} must not be ignored"));
                 }
+                let applicable = platform_coverage::validate(
+                    &entry.id,
+                    &entry.file,
+                    entry.line,
+                    entry.platform.as_ref(),
+                    function.platform_guard,
+                    cfg!(windows),
+                )?;
                 summary.translated_tests += 1;
+                if applicable {
+                    summary.applicable_translated_tests += 1;
+                } else {
+                    summary
+                        .platform_inapplicable_translated_tests
+                        .push(entry.id.clone());
+                }
             }
             Status::Corpus => {
                 if entry.corpus.is_empty() {
@@ -753,6 +776,7 @@ mod tests {
             phase: None,
             rust: None,
             corpus: Vec::new(),
+            platform: None,
             note: None,
         };
         assert!(check_phase(&entry).is_err());

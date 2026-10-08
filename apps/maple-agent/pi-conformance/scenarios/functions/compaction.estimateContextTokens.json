@@ -1,0 +1,158 @@
+{
+  "dsl": 1,
+  "id": "compaction.estimateContextTokens",
+  "clock": {
+    "epochMs": 1767225600000
+  },
+  "cases": [
+    {
+      "case": "last-nonzero-anchor",
+      "input": {
+        "messages": [
+          {
+            "role": "user",
+            "content": "Hello",
+            "timestamp": 0
+          },
+          {
+            "role": "assistant",
+            "content": [
+              {
+                "type": "text",
+                "text": "Hi"
+              }
+            ],
+            "usage": {
+              "input": 100,
+              "output": 50,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "totalTokens": 150,
+              "cost": {
+                "input": 0,
+                "output": 0,
+                "cacheRead": 0,
+                "cacheWrite": 0,
+                "total": 0
+              }
+            },
+            "stopReason": "stop",
+            "timestamp": 0,
+            "api": "anthropic-messages",
+            "provider": "anthropic",
+            "model": "claude-sonnet-4-5"
+          },
+          {
+            "role": "user",
+            "content": "continue",
+            "timestamp": 0
+          },
+          {
+            "role": "assistant",
+            "content": [
+              {
+                "type": "text",
+                "text": "Partial thinking"
+              }
+            ],
+            "usage": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "totalTokens": 0,
+              "cost": {
+                "input": 0,
+                "output": 0,
+                "cacheRead": 0,
+                "cacheWrite": 0,
+                "total": 0
+              }
+            },
+            "stopReason": "stop",
+            "timestamp": 0,
+            "api": "anthropic-messages",
+            "provider": "anthropic",
+            "model": "claude-sonnet-4-5"
+          }
+        ]
+      }
+    },
+    {
+      "case": "only-zero-usage",
+      "input": {
+        "messages": [
+          {
+            "role": "user",
+            "content": "hello",
+            "timestamp": 0
+          },
+          {
+            "role": "assistant",
+            "content": [
+              {
+                "type": "text",
+                "text": "answer"
+              }
+            ],
+            "usage": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "totalTokens": 0,
+              "cost": {
+                "input": 0,
+                "output": 0,
+                "cacheRead": 0,
+                "cacheWrite": 0,
+                "total": 0
+              }
+            },
+            "stopReason": "stop",
+            "timestamp": 0,
+            "api": "anthropic-messages",
+            "provider": "anthropic",
+            "model": "claude-sonnet-4-5"
+          }
+        ]
+      }
+    },
+    {
+      "case": "empty",
+      "input": {
+        "messages": []
+      }
+    },
+    {
+      "case": "raw-partial-usage-anchor",
+      "input": {
+        "messages": [
+          {
+            "role": "assistant",
+            "content": [],
+            "stopReason": "stop",
+            "usage": {
+              "totalTokens": 8
+            }
+          }
+        ]
+      }
+    },
+    {
+      "case": "raw-string-usage-anchor",
+      "input": {
+        "messages": [
+          {
+            "role": "assistant",
+            "content": [],
+            "stopReason": "stop",
+            "usage": {
+              "totalTokens": "8"
+            }
+          }
+        ]
+      }
+    }
+  ]
+}

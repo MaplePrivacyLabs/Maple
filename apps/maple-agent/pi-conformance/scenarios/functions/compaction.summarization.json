@@ -1,0 +1,1328 @@
+{
+  "dsl": 1,
+  "id": "compaction.summarization",
+  "clock": {
+    "epochMs": 1767225600000
+  },
+  "cases": [
+    {
+      "case": "thinking-medium",
+      "input": {
+        "operation": "generateSummaryWithUsage",
+        "model": {
+          "id": "reasoning-model",
+          "name": "Test Model",
+          "api": "anthropic-messages",
+          "provider": "anthropic",
+          "baseUrl": "https://api.anthropic.com",
+          "reasoning": true,
+          "input": [
+            "text"
+          ],
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0
+          },
+          "contextWindow": 200000,
+          "maxTokens": 8192
+        },
+        "messages": [
+          {
+            "role": "user",
+            "content": "Summarize this.",
+            "timestamp": 0
+          }
+        ],
+        "reserveTokens": 2000,
+        "options": {
+          "apiKey": "test-key",
+          "thinkingLevel": "medium"
+        },
+        "responses": [
+          {
+            "role": "assistant",
+            "content": [
+              {
+                "type": "text",
+                "text": "## Goal\nTest summary"
+              }
+            ],
+            "usage": {
+              "input": 10,
+              "output": 10,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "totalTokens": 20,
+              "cost": {
+                "input": 0,
+                "output": 0,
+                "cacheRead": 0,
+                "cacheWrite": 0,
+                "total": 0
+              }
+            },
+            "stopReason": "stop",
+            "timestamp": 0,
+            "api": "anthropic-messages",
+            "provider": "anthropic",
+            "model": "claude-sonnet-4-5"
+          }
+        ],
+        "doneReasons": [
+          "stop"
+        ]
+      }
+    },
+    {
+      "case": "string-result",
+      "input": {
+        "operation": "generateSummary",
+        "model": {
+          "id": "non-reasoning-model",
+          "name": "Test Model",
+          "api": "anthropic-messages",
+          "provider": "anthropic",
+          "baseUrl": "https://api.anthropic.com",
+          "reasoning": false,
+          "input": [
+            "text"
+          ],
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0
+          },
+          "contextWindow": 200000,
+          "maxTokens": 8192
+        },
+        "messages": [
+          {
+            "role": "user",
+            "content": "Summarize this.",
+            "timestamp": 0
+          }
+        ],
+        "reserveTokens": 2000,
+        "options": {
+          "apiKey": "test-key"
+        },
+        "responses": [
+          {
+            "role": "assistant",
+            "content": [
+              {
+                "type": "text",
+                "text": "## Goal\nTest summary"
+              }
+            ],
+            "usage": {
+              "input": 10,
+              "output": 10,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "totalTokens": 20,
+              "cost": {
+                "input": 0,
+                "output": 0,
+                "cacheRead": 0,
+                "cacheWrite": 0,
+                "total": 0
+              }
+            },
+            "stopReason": "stop",
+            "timestamp": 0,
+            "api": "anthropic-messages",
+            "provider": "anthropic",
+            "model": "claude-sonnet-4-5"
+          }
+        ],
+        "doneReasons": [
+          "stop"
+        ]
+      }
+    },
+    {
+      "case": "fresh-routing-two-calls",
+      "input": {
+        "operation": "generateSummary",
+        "model": {
+          "id": "non-reasoning-model",
+          "name": "Test Model",
+          "api": "anthropic-messages",
+          "provider": "anthropic",
+          "baseUrl": "https://api.anthropic.com",
+          "reasoning": false,
+          "input": [
+            "text"
+          ],
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0
+          },
+          "contextWindow": 200000,
+          "maxTokens": 8192
+        },
+        "messages": [
+          {
+            "role": "user",
+            "content": "Summarize this.",
+            "timestamp": 0
+          }
+        ],
+        "reserveTokens": 2000,
+        "options": {
+          "apiKey": "test-key"
+        },
+        "responses": [
+          {
+            "role": "assistant",
+            "content": [
+              {
+                "type": "text",
+                "text": "## Goal\nTest summary"
+              }
+            ],
+            "usage": {
+              "input": 10,
+              "output": 10,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "totalTokens": 20,
+              "cost": {
+                "input": 0,
+                "output": 0,
+                "cacheRead": 0,
+                "cacheWrite": 0,
+                "total": 0
+              }
+            },
+            "stopReason": "stop",
+            "timestamp": 0,
+            "api": "anthropic-messages",
+            "provider": "anthropic",
+            "model": "claude-sonnet-4-5"
+          },
+          {
+            "role": "assistant",
+            "content": [
+              {
+                "type": "text",
+                "text": "## Goal\nTest summary"
+              }
+            ],
+            "usage": {
+              "input": 10,
+              "output": 10,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "totalTokens": 20,
+              "cost": {
+                "input": 0,
+                "output": 0,
+                "cacheRead": 0,
+                "cacheWrite": 0,
+                "total": 0
+              }
+            },
+            "stopReason": "stop",
+            "timestamp": 0,
+            "api": "anthropic-messages",
+            "provider": "anthropic",
+            "model": "claude-sonnet-4-5"
+          }
+        ],
+        "doneReasons": [
+          "stop",
+          "stop"
+        ],
+        "times": 2
+      }
+    },
+    {
+      "case": "caller-routing-and-tool-choice",
+      "input": {
+        "operation": "completeSummarization",
+        "model": {
+          "id": "non-reasoning-model",
+          "name": "Test Model",
+          "api": "anthropic-messages",
+          "provider": "anthropic",
+          "baseUrl": "https://api.anthropic.com",
+          "reasoning": false,
+          "input": [
+            "text"
+          ],
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0
+          },
+          "contextWindow": 200000,
+          "maxTokens": 8192
+        },
+        "messages": [
+          {
+            "role": "user",
+            "content": "Summarize this.",
+            "timestamp": 0
+          }
+        ],
+        "reserveTokens": 2000,
+        "options": {
+          "sessionId": "current-routing-session",
+          "cacheRetention": "long",
+          "toolChoice": "auto"
+        },
+        "responses": [
+          {
+            "role": "assistant",
+            "content": [
+              {
+                "type": "text",
+                "text": "## Goal\nTest summary"
+              }
+            ],
+            "usage": {
+              "input": 10,
+              "output": 10,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "totalTokens": 20,
+              "cost": {
+                "input": 0,
+                "output": 0,
+                "cacheRead": 0,
+                "cacheWrite": 0,
+                "total": 0
+              }
+            },
+            "stopReason": "stop",
+            "timestamp": 0,
+            "api": "anthropic-messages",
+            "provider": "anthropic",
+            "model": "claude-sonnet-4-5"
+          }
+        ],
+        "doneReasons": [
+          "stop"
+        ],
+        "context": {
+          "systemPrompt": "Summarize",
+          "messages": []
+        }
+      }
+    },
+    {
+      "case": "split-prefix-preserves-previous",
+      "input": {
+        "operation": "compact",
+        "model": {
+          "id": "non-reasoning-model",
+          "name": "Test Model",
+          "api": "anthropic-messages",
+          "provider": "anthropic",
+          "baseUrl": "https://api.anthropic.com",
+          "reasoning": false,
+          "input": [
+            "text"
+          ],
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0
+          },
+          "contextWindow": 200000,
+          "maxTokens": 8192
+        },
+        "messages": [
+          {
+            "role": "user",
+            "content": "Summarize this.",
+            "timestamp": 0
+          }
+        ],
+        "reserveTokens": 2000,
+        "options": {
+          "apiKey": "test-key"
+        },
+        "responses": [
+          {
+            "role": "assistant",
+            "content": [
+              {
+                "type": "text",
+                "text": "## Goal\nTest summary"
+              }
+            ],
+            "usage": {
+              "input": 10,
+              "output": 10,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "totalTokens": 20,
+              "cost": {
+                "input": 0,
+                "output": 0,
+                "cacheRead": 0,
+                "cacheWrite": 0,
+                "total": 0
+              }
+            },
+            "stopReason": "stop",
+            "timestamp": 0,
+            "api": "anthropic-messages",
+            "provider": "anthropic",
+            "model": "claude-sonnet-4-5"
+          }
+        ],
+        "doneReasons": [
+          "stop"
+        ],
+        "preparation": {
+          "firstKeptEntryId": "entry-keep",
+          "messagesToSummarize": [],
+          "turnPrefixMessages": [
+            {
+              "role": "user",
+              "content": "Summarize this.",
+              "timestamp": 0
+            }
+          ],
+          "isSplitTurn": true,
+          "tokensBefore": 100,
+          "fileOps": {
+            "read": [],
+            "written": [],
+            "edited": []
+          },
+          "settings": {
+            "enabled": true,
+            "reserveTokens": 2000,
+            "keepRecentTokens": 20
+          },
+          "previousSummary": "previous checkpoint"
+        }
+      }
+    },
+    {
+      "case": "history-tool-call",
+      "input": {
+        "operation": "generateSummaryWithUsage",
+        "model": {
+          "id": "non-reasoning-model",
+          "name": "Test Model",
+          "api": "anthropic-messages",
+          "provider": "anthropic",
+          "baseUrl": "https://api.anthropic.com",
+          "reasoning": false,
+          "input": [
+            "text"
+          ],
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0
+          },
+          "contextWindow": 200000,
+          "maxTokens": 8192
+        },
+        "messages": [
+          {
+            "role": "user",
+            "content": "Summarize this.",
+            "timestamp": 0
+          }
+        ],
+        "reserveTokens": 2000,
+        "options": {
+          "apiKey": "test-key"
+        },
+        "responses": [
+          {
+            "role": "assistant",
+            "content": [
+              {
+                "type": "toolCall",
+                "id": "tool-call-1",
+                "name": "read",
+                "arguments": {
+                  "path": "README.md"
+                }
+              }
+            ],
+            "usage": {
+              "input": 10,
+              "output": 10,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "totalTokens": 20,
+              "cost": {
+                "input": 0,
+                "output": 0,
+                "cacheRead": 0,
+                "cacheWrite": 0,
+                "total": 0
+              }
+            },
+            "stopReason": "toolUse",
+            "timestamp": 0,
+            "api": "anthropic-messages",
+            "provider": "anthropic",
+            "model": "claude-sonnet-4-5"
+          }
+        ],
+        "doneReasons": [
+          "toolUse"
+        ]
+      }
+    },
+    {
+      "case": "split-prefix-tool-call",
+      "input": {
+        "operation": "compact",
+        "model": {
+          "id": "non-reasoning-model",
+          "name": "Test Model",
+          "api": "anthropic-messages",
+          "provider": "anthropic",
+          "baseUrl": "https://api.anthropic.com",
+          "reasoning": false,
+          "input": [
+            "text"
+          ],
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0
+          },
+          "contextWindow": 200000,
+          "maxTokens": 8192
+        },
+        "messages": [
+          {
+            "role": "user",
+            "content": "Summarize this.",
+            "timestamp": 0
+          }
+        ],
+        "reserveTokens": 2000,
+        "options": {
+          "apiKey": "test-key"
+        },
+        "responses": [
+          {
+            "role": "assistant",
+            "content": [
+              {
+                "type": "toolCall",
+                "id": "tool-call-1",
+                "name": "read",
+                "arguments": {
+                  "path": "README.md"
+                }
+              }
+            ],
+            "usage": {
+              "input": 10,
+              "output": 10,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "totalTokens": 20,
+              "cost": {
+                "input": 0,
+                "output": 0,
+                "cacheRead": 0,
+                "cacheWrite": 0,
+                "total": 0
+              }
+            },
+            "stopReason": "toolUse",
+            "timestamp": 0,
+            "api": "anthropic-messages",
+            "provider": "anthropic",
+            "model": "claude-sonnet-4-5"
+          }
+        ],
+        "doneReasons": [
+          "toolUse"
+        ],
+        "preparation": {
+          "firstKeptEntryId": "entry-keep",
+          "messagesToSummarize": [],
+          "turnPrefixMessages": [
+            {
+              "role": "user",
+              "content": "Summarize this.",
+              "timestamp": 0
+            }
+          ],
+          "isSplitTurn": true,
+          "tokensBefore": 100,
+          "fileOps": {
+            "read": [],
+            "written": [],
+            "edited": []
+          },
+          "settings": {
+            "enabled": true,
+            "reserveTokens": 2000,
+            "keepRecentTokens": 20
+          }
+        }
+      }
+    },
+    {
+      "case": "history-length",
+      "input": {
+        "operation": "generateSummaryWithUsage",
+        "model": {
+          "id": "non-reasoning-model",
+          "name": "Test Model",
+          "api": "anthropic-messages",
+          "provider": "anthropic",
+          "baseUrl": "https://api.anthropic.com",
+          "reasoning": false,
+          "input": [
+            "text"
+          ],
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0
+          },
+          "contextWindow": 200000,
+          "maxTokens": 8192
+        },
+        "messages": [
+          {
+            "role": "user",
+            "content": "Summarize this.",
+            "timestamp": 0
+          }
+        ],
+        "reserveTokens": 2000,
+        "options": {
+          "apiKey": "test-key"
+        },
+        "responses": [
+          {
+            "role": "assistant",
+            "content": [
+              {
+                "type": "text",
+                "text": "partial"
+              }
+            ],
+            "usage": {
+              "input": 10,
+              "output": 10,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "totalTokens": 20,
+              "cost": {
+                "input": 0,
+                "output": 0,
+                "cacheRead": 0,
+                "cacheWrite": 0,
+                "total": 0
+              }
+            },
+            "stopReason": "length",
+            "timestamp": 0,
+            "api": "anthropic-messages",
+            "provider": "anthropic",
+            "model": "claude-sonnet-4-5"
+          }
+        ],
+        "doneReasons": [
+          "length"
+        ]
+      }
+    },
+    {
+      "case": "split-prefix-length",
+      "input": {
+        "operation": "compact",
+        "model": {
+          "id": "non-reasoning-model",
+          "name": "Test Model",
+          "api": "anthropic-messages",
+          "provider": "anthropic",
+          "baseUrl": "https://api.anthropic.com",
+          "reasoning": false,
+          "input": [
+            "text"
+          ],
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0
+          },
+          "contextWindow": 200000,
+          "maxTokens": 8192
+        },
+        "messages": [
+          {
+            "role": "user",
+            "content": "Summarize this.",
+            "timestamp": 0
+          }
+        ],
+        "reserveTokens": 2000,
+        "options": {
+          "apiKey": "test-key"
+        },
+        "responses": [
+          {
+            "role": "assistant",
+            "content": [
+              {
+                "type": "text",
+                "text": "partial"
+              }
+            ],
+            "usage": {
+              "input": 10,
+              "output": 10,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "totalTokens": 20,
+              "cost": {
+                "input": 0,
+                "output": 0,
+                "cacheRead": 0,
+                "cacheWrite": 0,
+                "total": 0
+              }
+            },
+            "stopReason": "length",
+            "timestamp": 0,
+            "api": "anthropic-messages",
+            "provider": "anthropic",
+            "model": "claude-sonnet-4-5"
+          }
+        ],
+        "doneReasons": [
+          "length"
+        ],
+        "preparation": {
+          "firstKeptEntryId": "entry-keep",
+          "messagesToSummarize": [],
+          "turnPrefixMessages": [
+            {
+              "role": "user",
+              "content": "Summarize this.",
+              "timestamp": 0
+            }
+          ],
+          "isSplitTurn": true,
+          "tokensBefore": 100,
+          "fileOps": {
+            "read": [],
+            "written": [],
+            "edited": []
+          },
+          "settings": {
+            "enabled": true,
+            "reserveTokens": 2000,
+            "keepRecentTokens": 20
+          }
+        }
+      }
+    },
+    {
+      "case": "thinking-off",
+      "input": {
+        "operation": "generateSummary",
+        "model": {
+          "id": "reasoning-model",
+          "name": "Test Model",
+          "api": "anthropic-messages",
+          "provider": "anthropic",
+          "baseUrl": "https://api.anthropic.com",
+          "reasoning": true,
+          "input": [
+            "text"
+          ],
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0
+          },
+          "contextWindow": 200000,
+          "maxTokens": 8192
+        },
+        "messages": [
+          {
+            "role": "user",
+            "content": "Summarize this.",
+            "timestamp": 0
+          }
+        ],
+        "reserveTokens": 2000,
+        "options": {
+          "apiKey": "test-key",
+          "thinkingLevel": "off"
+        },
+        "responses": [
+          {
+            "role": "assistant",
+            "content": [
+              {
+                "type": "text",
+                "text": "## Goal\nTest summary"
+              }
+            ],
+            "usage": {
+              "input": 10,
+              "output": 10,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "totalTokens": 20,
+              "cost": {
+                "input": 0,
+                "output": 0,
+                "cacheRead": 0,
+                "cacheWrite": 0,
+                "total": 0
+              }
+            },
+            "stopReason": "stop",
+            "timestamp": 0,
+            "api": "anthropic-messages",
+            "provider": "anthropic",
+            "model": "claude-sonnet-4-5"
+          }
+        ],
+        "doneReasons": [
+          "stop"
+        ]
+      }
+    },
+    {
+      "case": "non-reasoning-model",
+      "input": {
+        "operation": "generateSummary",
+        "model": {
+          "id": "non-reasoning-model",
+          "name": "Test Model",
+          "api": "anthropic-messages",
+          "provider": "anthropic",
+          "baseUrl": "https://api.anthropic.com",
+          "reasoning": false,
+          "input": [
+            "text"
+          ],
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0
+          },
+          "contextWindow": 200000,
+          "maxTokens": 8192
+        },
+        "messages": [
+          {
+            "role": "user",
+            "content": "Summarize this.",
+            "timestamp": 0
+          }
+        ],
+        "reserveTokens": 2000,
+        "options": {
+          "apiKey": "test-key",
+          "thinkingLevel": "medium"
+        },
+        "responses": [
+          {
+            "role": "assistant",
+            "content": [
+              {
+                "type": "text",
+                "text": "## Goal\nTest summary"
+              }
+            ],
+            "usage": {
+              "input": 10,
+              "output": 10,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "totalTokens": 20,
+              "cost": {
+                "input": 0,
+                "output": 0,
+                "cacheRead": 0,
+                "cacheWrite": 0,
+                "total": 0
+              }
+            },
+            "stopReason": "stop",
+            "timestamp": 0,
+            "api": "anthropic-messages",
+            "provider": "anthropic",
+            "model": "claude-sonnet-4-5"
+          }
+        ],
+        "doneReasons": [
+          "stop"
+        ]
+      }
+    },
+    {
+      "case": "fallback-in-model-metadata",
+      "input": {
+        "operation": "generateSummary",
+        "model": {
+          "id": "reasoning-model",
+          "name": "Test Model",
+          "api": "anthropic-messages",
+          "provider": "anthropic",
+          "baseUrl": "https://api.anthropic.com",
+          "reasoning": true,
+          "input": [
+            "text"
+          ],
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0
+          },
+          "contextWindow": 200000,
+          "maxTokens": 8192,
+          "compat": {
+            "allowedFallbackModels": [
+              {
+                "provider": "anthropic",
+                "model": "claude-opus-4-8",
+                "cost": {
+                  "input": 5,
+                  "output": 25,
+                  "cacheRead": 0.5,
+                  "cacheWrite": 6.25
+                }
+              }
+            ]
+          }
+        },
+        "messages": [
+          {
+            "role": "user",
+            "content": "Summarize this.",
+            "timestamp": 0
+          }
+        ],
+        "reserveTokens": 2000,
+        "options": {
+          "apiKey": "test-key"
+        },
+        "responses": [
+          {
+            "role": "assistant",
+            "content": [
+              {
+                "type": "text",
+                "text": "## Goal\nTest summary"
+              }
+            ],
+            "usage": {
+              "input": 10,
+              "output": 10,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "totalTokens": 20,
+              "cost": {
+                "input": 0,
+                "output": 0,
+                "cacheRead": 0,
+                "cacheWrite": 0,
+                "total": 0
+              }
+            },
+            "stopReason": "stop",
+            "timestamp": 0,
+            "api": "anthropic-messages",
+            "provider": "anthropic",
+            "model": "claude-sonnet-4-5"
+          }
+        ],
+        "doneReasons": [
+          "stop"
+        ]
+      }
+    },
+    {
+      "case": "no-fallback-metadata",
+      "input": {
+        "operation": "generateSummary",
+        "model": {
+          "id": "reasoning-model",
+          "name": "Test Model",
+          "api": "anthropic-messages",
+          "provider": "anthropic",
+          "baseUrl": "https://api.anthropic.com",
+          "reasoning": true,
+          "input": [
+            "text"
+          ],
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0
+          },
+          "contextWindow": 200000,
+          "maxTokens": 8192
+        },
+        "messages": [
+          {
+            "role": "user",
+            "content": "Summarize this.",
+            "timestamp": 0
+          }
+        ],
+        "reserveTokens": 2000,
+        "options": {
+          "apiKey": "test-key"
+        },
+        "responses": [
+          {
+            "role": "assistant",
+            "content": [
+              {
+                "type": "text",
+                "text": "## Goal\nTest summary"
+              }
+            ],
+            "usage": {
+              "input": 10,
+              "output": 10,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "totalTokens": 20,
+              "cost": {
+                "input": 0,
+                "output": 0,
+                "cacheRead": 0,
+                "cacheWrite": 0,
+                "total": 0
+              }
+            },
+            "stopReason": "stop",
+            "timestamp": 0,
+            "api": "anthropic-messages",
+            "provider": "anthropic",
+            "model": "claude-sonnet-4-5"
+          }
+        ],
+        "doneReasons": [
+          "stop"
+        ]
+      }
+    },
+    {
+      "case": "split-output-cap-and-usage",
+      "input": {
+        "operation": "compact",
+        "model": {
+          "id": "non-reasoning-model",
+          "name": "Test Model",
+          "api": "anthropic-messages",
+          "provider": "anthropic",
+          "baseUrl": "https://api.anthropic.com",
+          "reasoning": false,
+          "input": [
+            "text"
+          ],
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0
+          },
+          "contextWindow": 200000,
+          "maxTokens": 128000
+        },
+        "messages": [
+          {
+            "role": "user",
+            "content": "Summarize this.",
+            "timestamp": 0
+          }
+        ],
+        "reserveTokens": 2000,
+        "options": {
+          "apiKey": "test-key"
+        },
+        "responses": [
+          {
+            "role": "assistant",
+            "content": [
+              {
+                "type": "text",
+                "text": "## Goal\nTest summary"
+              }
+            ],
+            "usage": {
+              "input": 10,
+              "output": 10,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "totalTokens": 20,
+              "cost": {
+                "input": 0,
+                "output": 0,
+                "cacheRead": 0,
+                "cacheWrite": 0,
+                "total": 0
+              }
+            },
+            "stopReason": "stop",
+            "timestamp": 0,
+            "api": "anthropic-messages",
+            "provider": "anthropic",
+            "model": "claude-sonnet-4-5"
+          },
+          {
+            "role": "assistant",
+            "content": [
+              {
+                "type": "text",
+                "text": "## Goal\nTest summary"
+              }
+            ],
+            "usage": {
+              "input": 10,
+              "output": 10,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "totalTokens": 20,
+              "cost": {
+                "input": 0,
+                "output": 0,
+                "cacheRead": 0,
+                "cacheWrite": 0,
+                "total": 0
+              }
+            },
+            "stopReason": "stop",
+            "timestamp": 0,
+            "api": "anthropic-messages",
+            "provider": "anthropic",
+            "model": "claude-sonnet-4-5"
+          }
+        ],
+        "doneReasons": [
+          "stop",
+          "stop"
+        ],
+        "preparation": {
+          "firstKeptEntryId": "entry-keep",
+          "messagesToSummarize": [
+            {
+              "role": "user",
+              "content": "Summarize this.",
+              "timestamp": 0
+            }
+          ],
+          "turnPrefixMessages": [
+            {
+              "role": "user",
+              "content": "Summarize this.",
+              "timestamp": 0
+            }
+          ],
+          "isSplitTurn": true,
+          "tokensBefore": 600000,
+          "fileOps": {
+            "read": [],
+            "written": [],
+            "edited": []
+          },
+          "settings": {
+            "enabled": true,
+            "reserveTokens": 500000,
+            "keepRecentTokens": 20000
+          }
+        }
+      }
+    },
+    {
+      "case": "empty-previous-summary-preserved",
+      "input": {
+        "operation": "compact",
+        "model": {
+          "id": "non-reasoning-model",
+          "name": "Test Model",
+          "api": "anthropic-messages",
+          "provider": "anthropic",
+          "baseUrl": "https://api.anthropic.com",
+          "reasoning": false,
+          "input": [
+            "text"
+          ],
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0
+          },
+          "contextWindow": 200000,
+          "maxTokens": 8192
+        },
+        "messages": [
+          {
+            "role": "user",
+            "content": "Summarize this.",
+            "timestamp": 0
+          }
+        ],
+        "reserveTokens": 2000,
+        "options": {
+          "apiKey": "test-key"
+        },
+        "responses": [
+          {
+            "role": "assistant",
+            "content": [
+              {
+                "type": "text",
+                "text": "## Goal\nTest summary"
+              }
+            ],
+            "usage": {
+              "input": 10,
+              "output": 10,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "totalTokens": 20,
+              "cost": {
+                "input": 0,
+                "output": 0,
+                "cacheRead": 0,
+                "cacheWrite": 0,
+                "total": 0
+              }
+            },
+            "stopReason": "stop",
+            "timestamp": 0,
+            "api": "anthropic-messages",
+            "provider": "anthropic",
+            "model": "claude-sonnet-4-5"
+          }
+        ],
+        "doneReasons": [
+          "stop"
+        ],
+        "preparation": {
+          "firstKeptEntryId": "entry-keep",
+          "messagesToSummarize": [],
+          "turnPrefixMessages": [
+            {
+              "role": "user",
+              "content": "Summarize this.",
+              "timestamp": 0
+            }
+          ],
+          "isSplitTurn": true,
+          "tokensBefore": 100,
+          "fileOps": {
+            "read": [],
+            "written": [],
+            "edited": []
+          },
+          "settings": {
+            "enabled": true,
+            "reserveTokens": 2000,
+            "keepRecentTokens": 20
+          },
+          "previousSummary": ""
+        }
+      }
+    },
+    {
+      "case": "update-summary-custom-instructions",
+      "input": {
+        "operation": "generateSummary",
+        "model": {
+          "id": "non-reasoning-model",
+          "name": "Test Model",
+          "api": "anthropic-messages",
+          "provider": "anthropic",
+          "baseUrl": "https://api.anthropic.com",
+          "reasoning": false,
+          "input": [
+            "text"
+          ],
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0
+          },
+          "contextWindow": 200000,
+          "maxTokens": 8192
+        },
+        "messages": [
+          {
+            "role": "user",
+            "content": "Summarize this.",
+            "timestamp": 0
+          }
+        ],
+        "reserveTokens": 2000,
+        "options": {
+          "apiKey": "test-key",
+          "previousSummary": "prior checkpoint",
+          "customInstructions": "Focus on touched paths"
+        },
+        "responses": [
+          {
+            "role": "assistant",
+            "content": [
+              {
+                "type": "text",
+                "text": "## Goal\nTest summary"
+              }
+            ],
+            "usage": {
+              "input": 10,
+              "output": 10,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "totalTokens": 20,
+              "cost": {
+                "input": 0,
+                "output": 0,
+                "cacheRead": 0,
+                "cacheWrite": 0,
+                "total": 0
+              }
+            },
+            "stopReason": "stop",
+            "timestamp": 0,
+            "api": "anthropic-messages",
+            "provider": "anthropic",
+            "model": "claude-sonnet-4-5"
+          }
+        ],
+        "doneReasons": [
+          "stop"
+        ]
+      }
+    }
+  ]
+}

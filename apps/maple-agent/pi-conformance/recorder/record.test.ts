@@ -1,6 +1,8 @@
 import { assertNoNetworkAttempts } from "./network-guard.ts";
 import { recordClearedModel } from "./cleared-model.ts";
 import { recordAgentScenario } from "./agent-recorder.ts";
+import { recordSessionFiles } from "./session-file-recorder.ts";
+import { STEP4_FUNCTION_IDS, recordStep4Function } from "./step4-functions.ts";
 import { recordWireScenario } from "./wire-recorder.ts";
 import { prepareCompletionsFunction } from "./completions-functions.ts";
 import { mkdir, writeFile } from "node:fs/promises";
@@ -63,6 +65,7 @@ for (const input of inputs.scenarios) {
   test(`records ${input.value.id} from pinned source`, async () => {
     if (input.value.layer === "wire") return recordWireScenario(input, outputRoot);
     if (input.value.layer === "agent") return recordAgentScenario(input, outputRoot);
+    if (input.value.id === "session/load-migrate-repair") return recordSessionFiles(input, outputRoot);
     throw new Error(`Recorder does not yet implement scenario capabilities: ${input.value.id}`);
   });
 }
@@ -132,6 +135,7 @@ test("rejects ambiguous function inputs and invalid schema metadata", () => {
 });
 
 async function recordFunction(input: Input<FunctionMatrix>, destination: string) {
+  if (STEP4_FUNCTION_IDS.includes(input.value.id)) return recordStep4Function(input, destination);
   const rows: unknown[] = [];
   for (const item of input.value.cases) {
     const clock = deterministicEnvironment(input.value.clock.epochMs);

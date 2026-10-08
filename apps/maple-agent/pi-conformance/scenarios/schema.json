@@ -11,6 +11,9 @@
     },
     {
       "$ref": "#/$defs/modelMatrix"
+    },
+    {
+      "$ref": "#/$defs/sessionFileScenario"
     }
   ],
   "$defs": {
@@ -2511,6 +2514,1447 @@
             "cases"
           ],
           "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "dsl": {
+              "const": 1
+            },
+            "id": {
+              "const": "branch-summarization.collectEntriesForBranchSummary"
+            },
+            "clock": {
+              "$ref": "#/$defs/clock"
+            },
+            "cases": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "object",
+                "properties": {
+                  "case": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "input": {
+                    "type": "object",
+                    "properties": {
+                      "branches": {},
+                      "entriesById": {},
+                      "oldLeafId": {},
+                      "targetId": {}
+                    },
+                    "required": [
+                      "branches",
+                      "entriesById",
+                      "oldLeafId",
+                      "targetId"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "required": [
+                  "case",
+                  "input"
+                ],
+                "additionalProperties": false
+              }
+            }
+          },
+          "required": [
+            "dsl",
+            "id",
+            "clock",
+            "cases"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "dsl": {
+              "const": 1
+            },
+            "id": {
+              "const": "branch-summarization.generateBranchSummary"
+            },
+            "clock": {
+              "$ref": "#/$defs/clock"
+            },
+            "cases": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "object",
+                "properties": {
+                  "case": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "input": {
+                    "type": "object",
+                    "properties": {
+                      "doneReasons": {},
+                      "entries": {},
+                      "options": {},
+                      "responses": {}
+                    },
+                    "required": [
+                      "doneReasons",
+                      "entries",
+                      "options",
+                      "responses"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "required": [
+                  "case",
+                  "input"
+                ],
+                "additionalProperties": false
+              }
+            }
+          },
+          "required": [
+            "dsl",
+            "id",
+            "clock",
+            "cases"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "dsl": {
+              "const": 1
+            },
+            "id": {
+              "const": "branch-summarization.prepareBranchEntries"
+            },
+            "clock": {
+              "$ref": "#/$defs/clock"
+            },
+            "cases": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "object",
+                "properties": {
+                  "case": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "input": {
+                    "type": "object",
+                    "properties": {
+                      "entries": {},
+                      "tokenBudget": {}
+                    },
+                    "required": [
+                      "entries",
+                      "tokenBudget"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "required": [
+                  "case",
+                  "input"
+                ],
+                "additionalProperties": false
+              }
+            }
+          },
+          "required": [
+            "dsl",
+            "id",
+            "clock",
+            "cases"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "dsl": {
+              "const": 1
+            },
+            "id": {
+              "const": "compaction-utils.fileOperations"
+            },
+            "clock": {
+              "$ref": "#/$defs/clock"
+            },
+            "cases": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "object",
+                "properties": {
+                  "case": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "input": {
+                    "type": "object",
+                    "properties": {
+                      "messages": {},
+                      "messagesJson": {}
+                    },
+                    "required": [],
+                    "additionalProperties": false
+                  }
+                },
+                "required": [
+                  "case",
+                  "input"
+                ],
+                "additionalProperties": false
+              }
+            }
+          },
+          "required": [
+            "dsl",
+            "id",
+            "clock",
+            "cases"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "dsl": {
+              "const": 1
+            },
+            "id": {
+              "const": "compaction-utils.serializeConversation"
+            },
+            "clock": {
+              "$ref": "#/$defs/clock"
+            },
+            "cases": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "object",
+                "properties": {
+                  "case": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "input": {
+                    "type": "object",
+                    "properties": {
+                      "messages": {}
+                    },
+                    "required": [
+                      "messages"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "required": [
+                  "case",
+                  "input"
+                ],
+                "additionalProperties": false
+              }
+            }
+          },
+          "required": [
+            "dsl",
+            "id",
+            "clock",
+            "cases"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "dsl": {
+              "const": 1
+            },
+            "id": {
+              "const": "compaction.calculateContextTokens"
+            },
+            "clock": {
+              "$ref": "#/$defs/clock"
+            },
+            "cases": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "object",
+                "properties": {
+                  "case": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "input": {
+                    "type": "object",
+                    "properties": {
+                      "usage": {}
+                    },
+                    "required": [
+                      "usage"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "required": [
+                  "case",
+                  "input"
+                ],
+                "additionalProperties": false
+              }
+            }
+          },
+          "required": [
+            "dsl",
+            "id",
+            "clock",
+            "cases"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "dsl": {
+              "const": 1
+            },
+            "id": {
+              "const": "compaction.estimateContextTokens"
+            },
+            "clock": {
+              "$ref": "#/$defs/clock"
+            },
+            "cases": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "object",
+                "properties": {
+                  "case": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "input": {
+                    "type": "object",
+                    "properties": {
+                      "messages": {}
+                    },
+                    "required": [
+                      "messages"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "required": [
+                  "case",
+                  "input"
+                ],
+                "additionalProperties": false
+              }
+            }
+          },
+          "required": [
+            "dsl",
+            "id",
+            "clock",
+            "cases"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "dsl": {
+              "const": 1
+            },
+            "id": {
+              "const": "compaction.estimateProjectedContextTokens"
+            },
+            "clock": {
+              "$ref": "#/$defs/clock"
+            },
+            "cases": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "object",
+                "properties": {
+                  "case": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "input": {
+                    "type": "object",
+                    "properties": {
+                      "entries": {}
+                    },
+                    "required": [
+                      "entries"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "required": [
+                  "case",
+                  "input"
+                ],
+                "additionalProperties": false
+              }
+            }
+          },
+          "required": [
+            "dsl",
+            "id",
+            "clock",
+            "cases"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "dsl": {
+              "const": 1
+            },
+            "id": {
+              "const": "compaction.estimateTokens"
+            },
+            "clock": {
+              "$ref": "#/$defs/clock"
+            },
+            "cases": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "object",
+                "properties": {
+                  "case": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "input": {
+                    "type": "object",
+                    "properties": {
+                      "message": {}
+                    },
+                    "required": [
+                      "message"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "required": [
+                  "case",
+                  "input"
+                ],
+                "additionalProperties": false
+              }
+            }
+          },
+          "required": [
+            "dsl",
+            "id",
+            "clock",
+            "cases"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "dsl": {
+              "const": 1
+            },
+            "id": {
+              "const": "compaction.findCutPoint"
+            },
+            "clock": {
+              "$ref": "#/$defs/clock"
+            },
+            "cases": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "object",
+                "properties": {
+                  "case": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "input": {
+                    "type": "object",
+                    "properties": {
+                      "endIndex": {},
+                      "entries": {},
+                      "keepRecentTokens": {},
+                      "startIndex": {}
+                    },
+                    "required": [
+                      "endIndex",
+                      "entries",
+                      "keepRecentTokens",
+                      "startIndex"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "required": [
+                  "case",
+                  "input"
+                ],
+                "additionalProperties": false
+              }
+            }
+          },
+          "required": [
+            "dsl",
+            "id",
+            "clock",
+            "cases"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "dsl": {
+              "const": 1
+            },
+            "id": {
+              "const": "compaction.getLastAssistantUsage"
+            },
+            "clock": {
+              "$ref": "#/$defs/clock"
+            },
+            "cases": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "object",
+                "properties": {
+                  "case": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "input": {
+                    "type": "object",
+                    "properties": {
+                      "entries": {}
+                    },
+                    "required": [
+                      "entries"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "required": [
+                  "case",
+                  "input"
+                ],
+                "additionalProperties": false
+              }
+            }
+          },
+          "required": [
+            "dsl",
+            "id",
+            "clock",
+            "cases"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "dsl": {
+              "const": 1
+            },
+            "id": {
+              "const": "compaction.prepareCompaction"
+            },
+            "clock": {
+              "$ref": "#/$defs/clock"
+            },
+            "cases": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "object",
+                "properties": {
+                  "case": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "input": {
+                    "type": "object",
+                    "properties": {
+                      "entries": {},
+                      "settings": {}
+                    },
+                    "required": [
+                      "entries",
+                      "settings"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "required": [
+                  "case",
+                  "input"
+                ],
+                "additionalProperties": false
+              }
+            }
+          },
+          "required": [
+            "dsl",
+            "id",
+            "clock",
+            "cases"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "dsl": {
+              "const": 1
+            },
+            "id": {
+              "const": "compaction.retryRequestOwnership"
+            },
+            "clock": {
+              "$ref": "#/$defs/clock"
+            },
+            "cases": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "object",
+                "properties": {
+                  "case": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "input": {
+                    "type": "object",
+                    "properties": {
+                      "context": {},
+                      "model": {},
+                      "mutations": {},
+                      "options": {},
+                      "responses": {},
+                      "retry": {}
+                    },
+                    "required": [
+                      "context",
+                      "model",
+                      "mutations",
+                      "options",
+                      "responses",
+                      "retry"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "required": [
+                  "case",
+                  "input"
+                ],
+                "additionalProperties": false
+              }
+            }
+          },
+          "required": [
+            "dsl",
+            "id",
+            "clock",
+            "cases"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "dsl": {
+              "const": 1
+            },
+            "id": {
+              "const": "compaction.serializeConversation"
+            },
+            "clock": {
+              "$ref": "#/$defs/clock"
+            },
+            "cases": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "object",
+                "properties": {
+                  "case": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "input": {
+                    "type": "object",
+                    "properties": {
+                      "messages": {}
+                    },
+                    "required": [
+                      "messages"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "required": [
+                  "case",
+                  "input"
+                ],
+                "additionalProperties": false
+              }
+            }
+          },
+          "required": [
+            "dsl",
+            "id",
+            "clock",
+            "cases"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "dsl": {
+              "const": 1
+            },
+            "id": {
+              "const": "compaction.shouldCompact"
+            },
+            "clock": {
+              "$ref": "#/$defs/clock"
+            },
+            "cases": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "object",
+                "properties": {
+                  "case": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "input": {
+                    "type": "object",
+                    "properties": {
+                      "contextTokens": {},
+                      "contextWindow": {},
+                      "settings": {}
+                    },
+                    "required": [
+                      "contextTokens",
+                      "contextWindow",
+                      "settings"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "required": [
+                  "case",
+                  "input"
+                ],
+                "additionalProperties": false
+              }
+            }
+          },
+          "required": [
+            "dsl",
+            "id",
+            "clock",
+            "cases"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "dsl": {
+              "const": 1
+            },
+            "id": {
+              "const": "compaction.summarization"
+            },
+            "clock": {
+              "$ref": "#/$defs/clock"
+            },
+            "cases": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "object",
+                "properties": {
+                  "case": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "input": {
+                    "type": "object",
+                    "properties": {
+                      "context": {},
+                      "doneReasons": {},
+                      "messages": {},
+                      "model": {},
+                      "operation": {},
+                      "options": {},
+                      "preparation": {},
+                      "reserveTokens": {},
+                      "responses": {},
+                      "times": {}
+                    },
+                    "required": [
+                      "doneReasons",
+                      "messages",
+                      "model",
+                      "operation",
+                      "options",
+                      "reserveTokens",
+                      "responses"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "required": [
+                  "case",
+                  "input"
+                ],
+                "additionalProperties": false
+              }
+            }
+          },
+          "required": [
+            "dsl",
+            "id",
+            "clock",
+            "cases"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "dsl": {
+              "const": 1
+            },
+            "id": {
+              "const": "messages.bashExecutionToText"
+            },
+            "clock": {
+              "$ref": "#/$defs/clock"
+            },
+            "cases": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "object",
+                "properties": {
+                  "case": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "input": {
+                    "type": "object",
+                    "properties": {
+                      "message": {}
+                    },
+                    "required": [
+                      "message"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "required": [
+                  "case",
+                  "input"
+                ],
+                "additionalProperties": false
+              }
+            }
+          },
+          "required": [
+            "dsl",
+            "id",
+            "clock",
+            "cases"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "dsl": {
+              "const": 1
+            },
+            "id": {
+              "const": "messages.construct"
+            },
+            "clock": {
+              "$ref": "#/$defs/clock"
+            },
+            "cases": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "object",
+                "properties": {
+                  "case": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "input": {
+                    "type": "object",
+                    "properties": {
+                      "content": {},
+                      "customType": {},
+                      "details": {},
+                      "display": {},
+                      "fromId": {},
+                      "operation": {},
+                      "summary": {},
+                      "timestamp": {},
+                      "tokensBefore": {}
+                    },
+                    "required": [
+                      "operation",
+                      "timestamp"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "required": [
+                  "case",
+                  "input"
+                ],
+                "additionalProperties": false
+              }
+            }
+          },
+          "required": [
+            "dsl",
+            "id",
+            "clock",
+            "cases"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "dsl": {
+              "const": 1
+            },
+            "id": {
+              "const": "messages.convertToLlm"
+            },
+            "clock": {
+              "$ref": "#/$defs/clock"
+            },
+            "cases": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "object",
+                "properties": {
+                  "case": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "input": {
+                    "type": "object",
+                    "properties": {
+                      "messages": {},
+                      "messagesJson": {}
+                    },
+                    "required": [],
+                    "additionalProperties": false
+                  }
+                },
+                "required": [
+                  "case",
+                  "input"
+                ],
+                "additionalProperties": false
+              }
+            }
+          },
+          "required": [
+            "dsl",
+            "id",
+            "clock",
+            "cases"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "dsl": {
+              "const": 1
+            },
+            "id": {
+              "const": "session-manager.buildSessionContext"
+            },
+            "clock": {
+              "$ref": "#/$defs/clock"
+            },
+            "cases": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "object",
+                "properties": {
+                  "case": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "input": {
+                    "type": "object",
+                    "properties": {
+                      "entries": {},
+                      "leafId": {}
+                    },
+                    "required": [
+                      "entries"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "required": [
+                  "case",
+                  "input"
+                ],
+                "additionalProperties": false
+              }
+            }
+          },
+          "required": [
+            "dsl",
+            "id",
+            "clock",
+            "cases"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "dsl": {
+              "const": 1
+            },
+            "id": {
+              "const": "session.assertValidId"
+            },
+            "clock": {
+              "$ref": "#/$defs/clock"
+            },
+            "cases": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "object",
+                "properties": {
+                  "case": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "input": {
+                    "type": "object",
+                    "properties": {
+                      "id": {}
+                    },
+                    "required": [
+                      "id"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "required": [
+                  "case",
+                  "input"
+                ],
+                "additionalProperties": false
+              }
+            }
+          },
+          "required": [
+            "dsl",
+            "id",
+            "clock",
+            "cases"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "dsl": {
+              "const": 1
+            },
+            "id": {
+              "const": "session.cwdFormatting"
+            },
+            "clock": {
+              "$ref": "#/$defs/clock"
+            },
+            "cases": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "object",
+                "properties": {
+                  "case": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "input": {
+                    "type": "object",
+                    "properties": {
+                      "issue": {}
+                    },
+                    "required": [
+                      "issue"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "required": [
+                  "case",
+                  "input"
+                ],
+                "additionalProperties": false
+              }
+            }
+          },
+          "required": [
+            "dsl",
+            "id",
+            "clock",
+            "cases"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "dsl": {
+              "const": 1
+            },
+            "id": {
+              "const": "session.entryToMessages"
+            },
+            "clock": {
+              "$ref": "#/$defs/clock"
+            },
+            "cases": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "object",
+                "properties": {
+                  "case": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "input": {
+                    "type": "object",
+                    "properties": {
+                      "entry": {}
+                    },
+                    "required": [
+                      "entry"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "required": [
+                  "case",
+                  "input"
+                ],
+                "additionalProperties": false
+              }
+            }
+          },
+          "required": [
+            "dsl",
+            "id",
+            "clock",
+            "cases"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "dsl": {
+              "const": 1
+            },
+            "id": {
+              "const": "session.inMemory"
+            },
+            "clock": {
+              "$ref": "#/$defs/clock"
+            },
+            "cases": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "object",
+                "properties": {
+                  "case": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "input": {
+                    "type": "object",
+                    "properties": {
+                      "cwd": {},
+                      "entries": {},
+                      "operations": {},
+                      "options": {}
+                    },
+                    "required": [
+                      "cwd",
+                      "operations",
+                      "options"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "required": [
+                  "case",
+                  "input"
+                ],
+                "additionalProperties": false
+              }
+            }
+          },
+          "required": [
+            "dsl",
+            "id",
+            "clock",
+            "cases"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "dsl": {
+              "const": 1
+            },
+            "id": {
+              "const": "session.parseAndMigrate"
+            },
+            "clock": {
+              "$ref": "#/$defs/clock"
+            },
+            "cases": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "object",
+                "properties": {
+                  "case": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "input": {
+                    "type": "object",
+                    "properties": {
+                      "content": {},
+                      "migrate": {}
+                    },
+                    "required": [
+                      "content",
+                      "migrate"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "required": [
+                  "case",
+                  "input"
+                ],
+                "additionalProperties": false
+              }
+            }
+          },
+          "required": [
+            "dsl",
+            "id",
+            "clock",
+            "cases"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "dsl": {
+              "const": 1
+            },
+            "id": {
+              "const": "session.project"
+            },
+            "clock": {
+              "$ref": "#/$defs/clock"
+            },
+            "cases": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "object",
+                "properties": {
+                  "case": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "input": {
+                    "type": "object",
+                    "properties": {
+                      "entries": {},
+                      "leafId": {}
+                    },
+                    "required": [
+                      "entries"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "required": [
+                  "case",
+                  "input"
+                ],
+                "additionalProperties": false
+              }
+            }
+          },
+          "required": [
+            "dsl",
+            "id",
+            "clock",
+            "cases"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "dsl": {
+              "const": 1
+            },
+            "id": {
+              "const": "text.bom"
+            },
+            "clock": {
+              "$ref": "#/$defs/clock"
+            },
+            "cases": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "object",
+                "properties": {
+                  "case": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "input": {
+                    "type": "object",
+                    "properties": {
+                      "text": {}
+                    },
+                    "required": [
+                      "text"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "required": [
+                  "case",
+                  "input"
+                ],
+                "additionalProperties": false
+              }
+            }
+          },
+          "required": [
+            "dsl",
+            "id",
+            "clock",
+            "cases"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "dsl": {
+              "const": 1
+            },
+            "id": {
+              "const": "usage.totals"
+            },
+            "clock": {
+              "$ref": "#/$defs/clock"
+            },
+            "cases": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "object",
+                "properties": {
+                  "case": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "input": {
+                    "type": "object",
+                    "properties": {
+                      "entries": {},
+                      "usages": {}
+                    },
+                    "required": [
+                      "entries",
+                      "usages"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "required": [
+                  "case",
+                  "input"
+                ],
+                "additionalProperties": false
+              }
+            }
+          },
+          "required": [
+            "dsl",
+            "id",
+            "clock",
+            "cases"
+          ],
+          "additionalProperties": false
         }
       ]
     },
@@ -3298,6 +4742,151 @@
       },
       "required": [
         "behavior"
+      ],
+      "additionalProperties": false
+    },
+    "sessionFileScenario": {
+      "type": "object",
+      "properties": {
+        "dsl": {
+          "const": 1
+        },
+        "id": {
+          "const": "session/load-migrate-repair"
+        },
+        "layer": {
+          "const": "session"
+        },
+        "covers": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 1
+        },
+        "model": {
+          "type": "object",
+          "properties": {
+            "ref": {
+              "type": "string",
+              "minLength": 1
+            },
+            "value": {
+              "$ref": "#/$defs/wireModel"
+            }
+          },
+          "required": [
+            "ref"
+          ],
+          "additionalProperties": false
+        },
+        "clock": {
+          "$ref": "#/$defs/clock"
+        },
+        "provider": {
+          "$ref": "#/$defs/provider"
+        },
+        "steps": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "properties": {
+              "sessionFile": {
+                "type": "object",
+                "properties": {
+                  "case": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "mode": {
+                    "const": "create"
+                  },
+                  "content": {
+                    "type": "string"
+                  },
+                  "operations": {
+                    "type": "array",
+                    "items": {
+                      "oneOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "operation": {
+                              "const": "appendMessage"
+                            },
+                            "message": {
+                              "type": "object"
+                            }
+                          },
+                          "required": [
+                            "operation",
+                            "message"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "operation": {
+                              "const": "appendModelChange"
+                            },
+                            "provider": {
+                              "type": "string"
+                            },
+                            "modelId": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "operation",
+                            "provider",
+                            "modelId"
+                          ],
+                          "additionalProperties": false
+                        }
+                      ]
+                    }
+                  }
+                },
+                "required": [
+                  "case",
+                  "operations"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "required": [
+              "sessionFile"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "options": {
+          "type": "object",
+          "properties": {
+            "cwd": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "required": [
+            "cwd"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "dsl",
+        "id",
+        "layer",
+        "covers",
+        "model",
+        "clock",
+        "provider",
+        "options",
+        "steps"
       ],
       "additionalProperties": false
     }

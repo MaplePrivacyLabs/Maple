@@ -597,6 +597,9 @@ pub async fn replay_scenario(root: &Path, id: &str) -> CheckResult {
         return Err("TypeScript scenario recording and Rust interpreter are pending".into());
     }
     let scenario = load_scenario(root, id)?;
+    if id == "session/load-migrate-repair" {
+        return crate::session_file_replay::replay(root).await;
+    }
     if scenario.layer == "wire" {
         return crate::wire_replay::replay(root, id).await;
     }
@@ -645,6 +648,9 @@ pub async fn replay_function(root: &Path, id: &str) -> CheckResult {
         return Err(
             "TypeScript function recording and Rust function dispatcher are pending".into(),
         );
+    }
+    if crate::functions_step4::supports(id) {
+        return crate::functions_step4::replay(root, id).await;
     }
     if id == "agent.clearedModel" {
         return crate::cleared_model::replay_recorded(root).await;
