@@ -1,5 +1,6 @@
 mod common;
 
+use std::io;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
@@ -8,8 +9,8 @@ use pi_agent_core::AgentEvent;
 use pi_ai::faux::{FauxProvider, faux_message};
 use pi_ai::{AssistantContent, Message, StopReason, ThinkingLevel, Usage};
 use pi_coding_agent::resources::{PromptTemplate, ResourceSource, Resources};
-use pi_coding_agent::session::{EntryKind, SessionManager};
-use pi_coding_agent::store::{JsonlStore, MemoryStore};
+use pi_coding_agent::session::{EntryKind, SessionEntry, SessionHeader, SessionManager};
+use pi_coding_agent::store::{JsonlStore, MemoryStore, SessionStore};
 use pi_coding_agent::{
     AgentSession, AgentSessionError, AgentSessionEvent, PromptOptions, PromptOutcome,
     SessionMessage, StreamingBehavior,
@@ -547,4 +548,220 @@ async fn context_usage_reports_the_last_known_size() {
     let usage = session.context_usage().unwrap();
     assert_eq!((usage.tokens, usage.context_window), (1_280, 128_000));
     assert!((usage.percent - 1.0).abs() < 0.001);
+}
+
+#[tokio::test]
+async fn a_retry_keeps_the_session_busy() {
+    let harness = Harness::new();
+    harness.faux.push_error("503 Service Unavailable");
+    harness.faux.push_text("recovered");
+    harness.faux.push_text("answered later");
+    // Long enough for the checks below on a slow machine.
+    let session = harness
+        .session_with(|options| options.settings.retry.base_delay_ms = 500)
+        .await;
+    let events = record(&session);
+    let runner = session.clone();
+    let run = tokio::spawn(async move { runner.prompt("first", PromptOptions::default()).await });
+    while !events
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|event| event.starts_with("retry_start"))
+    {
+        tokio::time::sleep(Duration::from_millis(1)).await;
+    }
+
+    // The agent waits out the backoff idle; the session does not take other work.
+    assert!(session.is_streaming());
+    assert!(matches!(
+        session.prompt("second", PromptOptions::default()).await,
+        Err(AgentSessionError::Busy)
+    ));
+    assert!(matches!(
+        session.compact(None).await,
+        Err(AgentSessionError::Busy)
+    ));
+    let follow_up = PromptOptions {
+        streaming_behavior: Some(StreamingBehavior::FollowUp),
+        ..PromptOptions::default()
+    };
+    assert_eq!(
+        session.prompt("later", follow_up).await.unwrap(),
+        PromptOutcome::Queued
+    );
+
+    run.await.unwrap().unwrap();
+    assert_eq!(harness.faux.requests().len(), 3);
+    assert_eq!(last_assistant_text(&session), "answered later");
+    assert!(!session.is_streaming());
+}
+
+#[tokio::test]
+async fn a_cancelled_retry_does_not_carry_into_the_next_prompt() {
+    let harness = Harness::new();
+    harness.faux.push_error("503 Service Unavailable");
+    harness.faux.push_hang();
+    let session = harness.session().await;
+    let events = record(&session);
+    let runner = session.clone();
+    let run = tokio::spawn(async move { runner.prompt("first", PromptOptions::default()).await });
+    while harness.faux.requests().len() < 2 {
+        tokio::time::sleep(Duration::from_millis(1)).await;
+    }
+    session.abort();
+    run.await.unwrap().unwrap();
+    assert!(
+        events
+            .lock()
+            .unwrap()
+            .contains(&"retry_end:false:1".to_string())
+    );
+
+    events.lock().unwrap().clear();
+    harness.faux.push_text("fine");
+    session
+        .prompt("next", PromptOptions::default())
+        .await
+        .unwrap();
+    assert!(
+        !events
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|event| event.starts_with("retry"))
+    );
+}
+
+#[tokio::test]
+async fn the_starting_thinking_level_is_restored_on_resume() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("session.jsonl");
+    let harness = Harness::new();
+    harness.faux.push_text("hi");
+    let first = harness
+        .session_with(|options| {
+            options.settings.default_thinking_level = Some(ThinkingLevel::High);
+            options.session = SessionManager::create("/work", Box::new(JsonlStore::new(&path)));
+        })
+        .await;
+    assert_eq!(first.thinking_level(), ThinkingLevel::High);
+    first
+        .prompt("hello", PromptOptions::default())
+        .await
+        .unwrap();
+
+    let (header, entries) = JsonlStore::load(&path).unwrap().unwrap();
+    let resumed = harness
+        .session_with(|options| {
+            options.session =
+                SessionManager::open(header, entries, Box::new(JsonlStore::new(&path)));
+        })
+        .await;
+    assert_eq!(resumed.thinking_level(), ThinkingLevel::High);
+}
+
+#[tokio::test]
+async fn a_dropped_compaction_does_not_leave_the_session_busy() {
+    let harness = Harness::new();
+    let session = harness
+        .session_with(|options| options.settings.compaction.keep_recent_tokens = 50)
+        .await;
+    with_history(&harness, &session).await;
+    harness.faux.push_hang();
+    let events = record(&session);
+
+    let timed_out = tokio::time::timeout(Duration::from_millis(20), session.compact(None)).await;
+    assert!(timed_out.is_err());
+    assert!(
+        events
+            .lock()
+            .unwrap()
+            .contains(&"compaction_end:Manual:false".to_string())
+    );
+    harness.faux.push_text("## Goal\nanswer questions");
+    harness.faux.push_text("## Original Request\nquestion 1");
+    session.compact(None).await.unwrap();
+}
+
+#[tokio::test]
+async fn a_reply_cut_off_by_a_full_context_is_compacted_and_asked_again() {
+    let mut model = FauxProvider::default_model();
+    model.context_window = 1_000;
+    let harness = Harness::with_model(model);
+    let session = harness
+        .session_with(|options| {
+            options.settings.compaction.reserve_tokens = 200;
+            options.settings.compaction.keep_recent_tokens = 50;
+        })
+        .await;
+    with_history(&harness, &session).await;
+    // The server cut the input to fit and stopped before writing anything.
+    let mut silent = faux_message(Vec::new());
+    silent.stop_reason = StopReason::Length;
+    silent.usage = Usage {
+        input: 1_000,
+        total_tokens: 1_000,
+        ..Usage::default()
+    };
+    harness.faux.push_reply(silent);
+    harness.faux.push_text("## Goal\nanswer questions");
+    harness.faux.push_text("## Original Request\nquestion 1");
+    harness.faux.push_text("recovered");
+    let events = record(&session);
+
+    session
+        .prompt("question 2", PromptOptions::default())
+        .await
+        .unwrap();
+    assert_eq!(last_assistant_text(&session), "recovered");
+    assert!(
+        events
+            .lock()
+            .unwrap()
+            .contains(&"compaction_end:Overflow:true".to_string())
+    );
+}
+
+/// A store whose every write fails.
+struct ReadOnlyStore;
+
+impl SessionStore for ReadOnlyStore {
+    fn write_all(&mut self, _header: &SessionHeader, _entries: &[SessionEntry]) -> io::Result<()> {
+        Err(io::Error::other("read-only"))
+    }
+
+    fn append(&mut self, _entry: &SessionEntry) -> io::Result<()> {
+        Err(io::Error::other("read-only"))
+    }
+}
+
+#[tokio::test]
+async fn a_fork_that_cannot_be_written_still_moves_the_conversation() {
+    let harness = Harness::new();
+    harness.faux.push_text("first answer");
+    harness.faux.push_text("second answer");
+    let session = harness.session().await;
+    session
+        .prompt("first", PromptOptions::default())
+        .await
+        .unwrap();
+    let fork_point = session.with_session(|tree| tree.leaf_id().unwrap().to_string());
+    session
+        .prompt("second", PromptOptions::default())
+        .await
+        .unwrap();
+    let events = record(&session);
+
+    session
+        .fork(&fork_point, Box::new(ReadOnlyStore))
+        .await
+        .unwrap();
+    assert_eq!(last_assistant_text(&session), "first answer");
+    assert!(
+        events
+            .lock()
+            .unwrap()
+            .contains(&"persistence_error".to_string())
+    );
 }

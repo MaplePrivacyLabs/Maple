@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::messages::SessionMessage;
-use crate::session::{EntryKind, ProjectedEntry, SessionEntry, entry_messages, project};
+use crate::session::{ContextEdits, EntryKind, ProjectedEntry, SessionEntry, project};
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
@@ -60,13 +60,20 @@ pub fn estimate_tokens(message: &SessionMessage) -> u64 {
 
 /// The context size: the last reported usage plus estimates for what came after it.
 pub fn estimate_context_tokens(messages: &[SessionMessage]) -> u64 {
+    // Usage reported before the latest compaction measured the context it replaced.
+    let compacted_at = messages.iter().rev().find_map(|message| match message {
+        SessionMessage::CompactionSummary(summary) => Some(summary.timestamp),
+        _ => None,
+    });
     let last_usage = messages
         .iter()
         .enumerate()
         .rev()
         .find_map(|(index, message)| match message {
             SessionMessage::Llm(Message::Assistant(assistant))
-                if !assistant.is_failure() && assistant.usage.context_tokens() > 0 =>
+                if !assistant.is_failure()
+                    && assistant.usage.context_tokens() > 0
+                    && compacted_at.is_none_or(|at| assistant.timestamp > at) =>
             {
                 Some((index, assistant.usage.context_tokens()))
             }
@@ -140,16 +147,19 @@ fn find_cut_point(
             break;
         }
     }
+    // Whether the cut splits a turn is decided before moving it onto state-only entries,
+    // which start no turn of their own.
+    let splits_turn = !visible(cut, is_turn_start);
     // Keep state-only entries right before the cut with what follows them.
     while cut > start && !entries[cut - 1].is_compaction && entries[cut - 1].messages.is_empty() {
         cut -= 1;
     }
-    let turn_start = if visible(cut, is_turn_start) {
-        None
-    } else {
+    let turn_start = if splits_turn {
         (start..=cut)
             .rev()
             .find(|index| visible(*index, is_turn_start))
+    } else {
+        None
     };
     CutPoint {
         first_kept: cut,
@@ -513,17 +523,21 @@ pub async fn compact(
     })
 }
 
-/// Summarize the entries of a branch being left, newest first within `token_budget`.
+/// Summarize the entries of a branch being left, newest first within `token_budget`, as
+/// the context showed them: edited or omitted content stays out. With nothing to
+/// summarize, the summary is empty and no request is made.
 pub async fn summarize_branch(
     entries: &[&SessionEntry],
     summarizer: &Summarizer<'_>,
     token_budget: u64,
     custom_instructions: Option<&str>,
 ) -> Result<(String, Usage), String> {
+    let edits = ContextEdits::of(entries);
     let mut newest_first: Vec<Vec<SessionMessage>> = Vec::new();
     let mut used = 0;
     for entry in entries.iter().rev() {
-        let entry_messages: Vec<SessionMessage> = entry_messages(entry)
+        let entry_messages: Vec<SessionMessage> = edits
+            .messages(entry)
             .into_iter()
             .filter(|message| !matches!(message.as_message(), Some(Message::System(_))))
             .collect();
@@ -536,6 +550,9 @@ pub async fn summarize_branch(
     }
     let messages: Vec<SessionMessage> = newest_first.into_iter().rev().flatten().collect();
     let conversation = serialize_conversation(&llm_messages(&messages));
+    if conversation.is_empty() {
+        return Ok((String::new(), Usage::default()));
+    }
     let focus = custom_instructions
         .map(|instructions| format!("\n\nAdditional focus: {instructions}"))
         .unwrap_or_default();
@@ -607,6 +624,43 @@ mod tests {
             user("abcdefgh"),
         ];
         assert_eq!(estimate_context_tokens(&messages), 1_002);
+    }
+
+    #[test]
+    fn usage_from_before_a_compaction_is_not_the_context_size() {
+        let mut kept_reply = AssistantMessage::empty(&FauxProvider::default_model());
+        kept_reply.usage.total_tokens = 100_000;
+        kept_reply.timestamp = 10;
+        let messages = vec![
+            SessionMessage::CompactionSummary(crate::messages::CompactionSummaryMessage {
+                summary: "summary".into(),
+                tokens_before: 100_000,
+                timestamp: 20,
+            }),
+            SessionMessage::Llm(Message::Assistant(kept_reply)),
+            user("abcdefgh"),
+        ];
+        assert!(estimate_context_tokens(&messages) < 1_000);
+    }
+
+    #[test]
+    fn a_state_change_before_a_turn_does_not_split_it() {
+        let mut session = SessionManager::in_memory("/work");
+        for turn in 0..3 {
+            if turn == 2 {
+                session.append_model_change("faux", "faux-2");
+            }
+            session.append_message(user(&format!("question {turn} {}", "x".repeat(500))));
+            session.append_message(assistant(vec![AssistantContent::text(format!(
+                "answer {turn} {}",
+                "y".repeat(500)
+            ))]));
+        }
+        let preparation = prepare_compaction(&session.branch(), &settings(250)).unwrap();
+        assert!(preparation.turn_prefix_messages.is_empty());
+        assert_eq!(preparation.messages_to_summarize.len(), 4);
+        let kept = session.entry(&preparation.first_kept_entry_id).unwrap();
+        assert!(matches!(kept.kind, EntryKind::ModelChange { .. }));
     }
 
     #[test]
@@ -708,6 +762,45 @@ mod tests {
         let prompt = content_text(&prompt.content);
         assert!(prompt.contains("[User]: edit main.rs"));
         assert!(prompt.contains("Additional focus: keep paths"));
+    }
+
+    #[tokio::test]
+    async fn a_branch_summary_sees_the_branch_as_the_context_did() {
+        let mut session = SessionManager::in_memory("/work");
+        let secret = session.append_message(user("my password is hunter2"));
+        session.append_message(assistant(vec![AssistantContent::text("noted")]));
+        session
+            .append_context_edit(&secret, Some(vec![Content::text("[redacted]")]))
+            .unwrap();
+        let faux = FauxProvider::new();
+        faux.push_text("## Goal\nRemember a password");
+        let model = faux.model();
+        let summarizer = Summarizer {
+            model: &model,
+            stream_fn: &faux,
+            options: StreamOptions::default(),
+            max_retries: 0,
+            retry_base_ms: 1,
+        };
+        summarize_branch(&session.branch(), &summarizer, 10_000, None)
+            .await
+            .unwrap();
+        let Message::User(prompt) = faux.requests()[0].context.messages.last().unwrap().clone()
+        else {
+            panic!()
+        };
+        let prompt = content_text(&prompt.content);
+        assert!(prompt.contains("[User]: [redacted]"), "{prompt}");
+        assert!(!prompt.contains("hunter2"));
+
+        // A branch without messages makes no request.
+        let mut settings_only = SessionManager::in_memory("/work");
+        settings_only.append_model_change("faux", "faux-2");
+        let (summary, _) = summarize_branch(&settings_only.branch(), &summarizer, 10_000, None)
+            .await
+            .unwrap();
+        assert!(summary.is_empty());
+        assert_eq!(faux.requests().len(), 1);
     }
 
     #[tokio::test]

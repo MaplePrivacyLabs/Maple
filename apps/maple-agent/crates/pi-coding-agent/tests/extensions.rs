@@ -1,6 +1,7 @@
 mod common;
 
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use common::{Harness, echo_tool, entry_kinds, last_assistant_text, record};
 use pi_agent_core::{
@@ -14,7 +15,8 @@ use pi_coding_agent::extensions::{
     CustomMessageDraft, Input, InputAction, MessageEnd, SessionBeforeCompact, SessionStart,
     ToolCall, ToolPrompt, ToolResult, extension,
 };
-use pi_coding_agent::session::EntryKind;
+use pi_coding_agent::session::{EntryKind, SessionManager};
+use pi_coding_agent::store::JsonlStore;
 use pi_coding_agent::{AgentSessionError, Delivery, PromptOptions, PromptOutcome, SessionMessage};
 use serde_json::json;
 
@@ -512,4 +514,141 @@ async fn context_actions_reach_the_session() {
             .any(|message| message.text().contains("count"))
     );
     assert_eq!(entry_kinds(&session)[..2], ["custom", "session_info"]);
+}
+
+#[tokio::test]
+async fn a_user_message_from_an_extension_is_a_full_prompt() {
+    let harness = Harness::new();
+    harness.faux.push_text("reviewed");
+    let review = extension("review", |api| {
+        api.register_command("review", "Review the diff", |_args, ctx| async move {
+            ctx.send_user_message("Review the diff", Delivery::Steer);
+            Ok(())
+        });
+    });
+    let session = harness.session_with_extensions(vec![review]).await;
+    session
+        .prompt("/review", PromptOptions::default())
+        .await
+        .unwrap();
+    while harness.faux.requests().is_empty() {
+        tokio::time::sleep(Duration::from_millis(1)).await;
+    }
+    session.wait_for_idle().await;
+
+    // A fresh session's first run still declares the system prompt.
+    let request = &harness.faux.requests()[0];
+    assert!(
+        pi_ai::transcript::current_system_prompt(&request.context.messages)
+            .contains("inside Maple")
+    );
+    assert_eq!(harness.sent_text(0), "Review the diff");
+    assert_eq!(last_assistant_text(&session), "reviewed");
+}
+
+#[tokio::test]
+async fn extension_messages_queued_during_a_run_are_not_listed() {
+    let harness = Harness::new();
+    harness.faux.push_hang();
+    let session = harness.session().await;
+    let runner = session.clone();
+    let run = tokio::spawn(async move { runner.prompt("go", PromptOptions::default()).await });
+    while harness.faux.requests().is_empty() {
+        tokio::time::sleep(Duration::from_millis(1)).await;
+    }
+
+    session.extension_context().send_message(
+        CustomMessageDraft {
+            custom_type: "note".into(),
+            content: vec![Content::text("from an extension")],
+            display: true,
+            details: None,
+        },
+        Delivery::Steer,
+    );
+    assert_eq!(session.clear_queue(), (Vec::new(), Vec::new()));
+    session.abort();
+    run.await.unwrap().unwrap();
+}
+
+fn provider_extension(provider: FauxProvider) -> Arc<dyn pi_coding_agent::extensions::Extension> {
+    extension("provider", move |api| {
+        api.register_provider(
+            vec![provider.model()],
+            Some(("ext-api".into(), Arc::new(provider.clone()))),
+        );
+    })
+}
+
+#[tokio::test]
+async fn a_session_resumes_with_a_model_an_extension_provides() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("session.jsonl");
+    let harness = Harness::new();
+    let provider = FauxProvider::with_model({
+        let mut model = FauxProvider::default_model();
+        model.id = "ext-model".into();
+        model.provider = "ext".into();
+        model.api = "ext-api".into();
+        model
+    });
+    provider.push_text("served by the extension");
+    let first = harness
+        .session_with(|options| {
+            options.extensions = vec![provider_extension(provider.clone())];
+            options.session = SessionManager::create("/work", Box::new(JsonlStore::new(&path)));
+        })
+        .await;
+    first.set_model(provider.model()).await;
+    first.prompt("hi", PromptOptions::default()).await.unwrap();
+
+    // The host passes its default model, as it does for every session.
+    let (header, entries) = JsonlStore::load(&path).unwrap().unwrap();
+    let resumed = harness
+        .session_with(|options| {
+            options.extensions = vec![provider_extension(provider.clone())];
+            options.session =
+                SessionManager::open(header, entries, Box::new(JsonlStore::new(&path)));
+        })
+        .await;
+    assert_eq!(
+        resumed.model().map(|model| model.id),
+        Some("ext-model".to_string())
+    );
+}
+
+#[tokio::test]
+async fn prompt_options_that_cannot_build_a_prompt_are_refused() {
+    let harness = Harness::new();
+    harness.faux.push_text("one");
+    harness.faux.push_text("two");
+    let broken = extension("sections", |api| {
+        api.on(|event: BeforeAgentStart, _ctx| async move {
+            let mut options = event.options;
+            options
+                .sections
+                .insert("Project Notes".into(), "notes".into());
+            Ok(BeforeAgentStartResult {
+                options: Some(options),
+                ..BeforeAgentStartResult::default()
+            })
+        });
+    });
+    let session = harness.session_with_extensions(vec![broken]).await;
+    let events = record(&session);
+    for text in ["first", "second"] {
+        assert_eq!(
+            session
+                .prompt(text, PromptOptions::default())
+                .await
+                .unwrap(),
+            PromptOutcome::Completed
+        );
+    }
+    assert!(
+        events
+            .lock()
+            .unwrap()
+            .contains(&"extension_error:sections:before_agent_start".to_string())
+    );
 }

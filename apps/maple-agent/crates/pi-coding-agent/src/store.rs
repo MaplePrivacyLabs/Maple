@@ -1,5 +1,5 @@
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, BufRead, BufReader, Write};
+use std::io::{self, BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
 use serde_json::Value;
@@ -46,7 +46,8 @@ impl JsonlStore {
     }
 
     /// Read a session file. `Ok(None)` when the file is missing or empty; an error when
-    /// it has content but no session header. Lines that do not parse are skipped.
+    /// it has content but no session header. Lines that do not parse, such as one cut off
+    /// by a crash, are skipped.
     pub fn load(path: &Path) -> io::Result<Option<(SessionHeader, Vec<SessionEntry>)>> {
         let file = match File::open(path) {
             Ok(file) => file,
@@ -56,13 +57,13 @@ impl JsonlStore {
         let mut header = None;
         let mut entries = Vec::new();
         let mut saw_content = false;
-        for line in BufReader::new(file).lines() {
+        for line in BufReader::new(file).split(b'\n') {
             let line = line?;
-            if line.trim().is_empty() {
+            if line.trim_ascii().is_empty() {
                 continue;
             }
             saw_content = true;
-            let Ok(value) = serde_json::from_str::<Value>(&line) else {
+            let Ok(value) = serde_json::from_slice::<Value>(&line) else {
                 continue;
             };
             if value.get("type").and_then(Value::as_str) == Some("session") {
@@ -92,6 +93,13 @@ impl JsonlStore {
     }
 }
 
+/// One JSON line, written with a single call so it lands whole or not at all.
+fn entry_line(entry: &SessionEntry) -> io::Result<Vec<u8>> {
+    let mut line = serde_json::to_vec(entry)?;
+    line.push(b'\n');
+    Ok(line)
+}
+
 impl SessionStore for JsonlStore {
     fn write_all(&mut self, header: &SessionHeader, entries: &[SessionEntry]) -> io::Result<()> {
         if let Some(parent) = self.path.parent() {
@@ -103,7 +111,7 @@ impl SessionStore for JsonlStore {
             let mut file = File::create(&staging)?;
             writeln!(file, "{}", Self::header_line(header)?)?;
             for entry in entries {
-                writeln!(file, "{}", serde_json::to_string(entry)?)?;
+                file.write_all(&entry_line(entry)?)?;
             }
             file.sync_all()?;
         }
@@ -111,7 +119,21 @@ impl SessionStore for JsonlStore {
     }
 
     fn append(&mut self, entry: &SessionEntry) -> io::Result<()> {
-        let mut file = OpenOptions::new().append(true).open(&self.path)?;
-        writeln!(file, "{}", serde_json::to_string(entry)?)
+        let mut file = OpenOptions::new()
+            .read(true)
+            .append(true)
+            .open(&self.path)?;
+        // A line cut off by a crash would swallow this entry; end it first.
+        let mut line = Vec::new();
+        if file.metadata()?.len() > 0 {
+            let mut last = [0u8];
+            file.seek(SeekFrom::End(-1))?;
+            file.read_exact(&mut last)?;
+            if last[0] != b'\n' {
+                line.push(b'\n');
+            }
+        }
+        line.extend(entry_line(entry)?);
+        file.write_all(&line)
     }
 }

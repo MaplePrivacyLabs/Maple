@@ -46,13 +46,14 @@ pub fn parse_frontmatter(text: &str) -> Result<(Value, String), String> {
     let Some(rest) = normalized.strip_prefix("---\n") else {
         return Ok((Value::Object(Default::default()), normalized));
     };
-    let (yaml, body) = match rest.find("\n---") {
-        Some(end) => {
-            let after = &rest[end + 4..];
-            (&rest[..end], after.strip_prefix('\n').unwrap_or(after))
-        }
-        None => return Err("frontmatter is not closed".into()),
+    let (yaml, after) = match rest.strip_prefix("---") {
+        Some(after) => ("", after),
+        None => match rest.find("\n---") {
+            Some(end) => (&rest[..end], &rest[end + 4..]),
+            None => return Err("frontmatter is not closed".into()),
+        },
     };
+    let body = after.strip_prefix('\n').unwrap_or(after);
     let value: Value = if yaml.trim().is_empty() {
         Value::Object(Default::default())
     } else {
@@ -194,14 +195,16 @@ fn load_skill(
         ));
     }
     let base_dir = path.parent().unwrap_or(Path::new("")).to_path_buf();
+    // A SKILL.md is named after its folder, any other file after itself.
+    let fallback = if declared {
+        base_dir.file_name()
+    } else {
+        path.file_stem()
+    };
     let name = frontmatter["name"]
         .as_str()
         .map(str::to_string)
-        .or_else(|| {
-            base_dir
-                .file_name()
-                .map(|name| name.to_string_lossy().into_owned())
-        })
+        .or_else(|| fallback.map(|name| name.to_string_lossy().into_owned()))
         .unwrap_or_default();
     for problem in skill_name_problems(&name) {
         diagnostics.push(diagnostic(path, problem));
@@ -456,7 +459,8 @@ fn load_templates_in(
     }
 }
 
-/// Templates from the user and project `prompts` folders and any extra folders.
+/// Templates from the user and project `prompts` folders and any extra folders. The
+/// first template with a name wins; later ones are reported as collisions.
 pub fn load_prompt_templates(
     cwd: &Path,
     paths: &ResourcePaths,
@@ -489,7 +493,25 @@ pub fn load_prompt_templates(
             &mut diagnostics,
         );
     }
-    (templates, diagnostics)
+    let mut unique: Vec<PromptTemplate> = Vec::new();
+    for template in templates {
+        if let Some(winner) = unique
+            .iter()
+            .find(|existing| existing.name == template.name)
+        {
+            diagnostics.push(diagnostic(
+                &template.file_path,
+                format!(
+                    "name \"{}\" collides with {}",
+                    template.name,
+                    winner.file_path.display()
+                ),
+            ));
+        } else {
+            unique.push(template);
+        }
+    }
+    (unique, diagnostics)
 }
 
 /// Split arguments on whitespace, keeping quoted strings together.
@@ -547,10 +569,11 @@ pub fn substitute_args(content: &str, args: &[String]) -> String {
                 };
             }
             if let Some(start) = captures.get(3) {
+                // A start too large to parse is past every argument.
                 let start = start
                     .as_str()
                     .parse::<usize>()
-                    .unwrap_or(1)
+                    .unwrap_or(usize::MAX)
                     .saturating_sub(1);
                 let rest = args.iter().skip(start);
                 return match captures
@@ -638,6 +661,9 @@ mod tests {
         let (meta, body) = parse_frontmatter("No frontmatter").unwrap();
         assert!(meta.as_object().unwrap().is_empty());
         assert_eq!(body, "No frontmatter");
+        let (meta, body) = parse_frontmatter("---\n---\nBody").unwrap();
+        assert!(meta.as_object().unwrap().is_empty());
+        assert_eq!(body, "Body");
         assert!(parse_frontmatter("---\nname: a\n").is_err());
     }
 
@@ -679,10 +705,14 @@ mod tests {
             &paths.project_dir(&cwd).join("skills/notes.md"),
             "just notes",
         );
+        write(
+            &paths.project_dir(&cwd).join("skills/commit.md"),
+            "---\ndescription: Write a commit message\n---\n",
+        );
 
         let (skills, diagnostics) = load_skills(&cwd, &paths, &[]);
         let names: Vec<&str> = skills.iter().map(|skill| skill.name.as_str()).collect();
-        assert_eq!(names, ["review", "Deploy_It"]);
+        assert_eq!(names, ["review", "commit", "Deploy_It"]);
         assert_eq!(skills[0].description, "Review code");
         assert!(diagnostics.iter().any(|d| d.message.contains("collides")));
         assert!(
@@ -732,6 +762,7 @@ mod tests {
         );
         assert_eq!(substitute_args("${ARGUMENTS:-empty}", &[]), "empty");
         assert_eq!(substitute_args("$1", &["$2".into(), "x".into()]), "$2");
+        assert_eq!(substitute_args("${@:99999999999999999999}", &args), "");
     }
 
     #[test]
@@ -745,13 +776,18 @@ mod tests {
             &paths.agent_dir.join("prompts/explain.md"),
             "Explain $@ in simple terms",
         );
-        let (templates, _) = load_prompt_templates(&cwd, &paths, &[]);
+        write(
+            &paths.project_dir(&cwd).join("prompts/explain.md"),
+            "Explain $@ in detail",
+        );
+        let (templates, diagnostics) = load_prompt_templates(&cwd, &paths, &[]);
         let names: Vec<&str> = templates
             .iter()
             .map(|template| template.name.as_str())
             .collect();
         assert_eq!(names, ["explain", "fix"]);
         assert_eq!(templates[0].description, "Explain $@ in simple terms");
+        assert!(diagnostics.iter().any(|d| d.message.contains("collides")));
         assert_eq!(templates[1].argument_hint.as_deref(), Some("<issue>"));
         assert_eq!(
             expand_prompt_template("/fix 42", &templates),

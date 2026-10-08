@@ -27,6 +27,7 @@ use pi_ai::{
     UserMessage, content_text, is_context_overflow, is_retryable_error, now_ms, retry_delay_ms,
 };
 use serde_json::Value;
+use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 
 use crate::compaction::{
@@ -245,6 +246,53 @@ impl AgentSessionOptions {
 
 type Listener = Arc<dyn Fn(&AgentSessionEvent) + Send + Sync>;
 
+/// What the session is doing. A prompt is active from its start until it settles, its
+/// retries and compactions included; maintenance is a manual compaction, a move in the
+/// tree or a fork.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Activity {
+    Idle,
+    Prompt,
+    Maintenance,
+}
+
+/// Holds the session's activity and returns it to idle when dropped, also when the
+/// future holding it is dropped.
+struct ActivityGuard<'a> {
+    activity: &'a watch::Sender<Activity>,
+}
+
+impl Drop for ActivityGuard<'_> {
+    fn drop(&mut self) {
+        self.activity.send_replace(Activity::Idle);
+    }
+}
+
+/// Clears a running compaction when it ends, also when the future running it is dropped,
+/// so the session does not stay busy.
+struct CompactionGuard<'a> {
+    core: &'a SessionCore,
+    reason: CompactionReason,
+    ended: bool,
+}
+
+impl Drop for CompactionGuard<'_> {
+    fn drop(&mut self) {
+        let token = lock(&self.core.run).compaction_cancel.take();
+        if !self.ended {
+            // Its summary requests stop with it.
+            if let Some(token) = token {
+                token.cancel();
+            }
+            self.core.emit(AgentSessionEvent::CompactionEnd {
+                reason: self.reason,
+                result: None,
+                error: Some("Compaction was cancelled".into()),
+            });
+        }
+    }
+}
+
 #[derive(Default)]
 struct RunState {
     abort_requested: bool,
@@ -276,6 +324,7 @@ pub(crate) struct SessionCore {
     active_tools: Mutex<Vec<String>>,
     listeners: Mutex<Vec<(u64, Listener)>>,
     next_listener: AtomicU64,
+    activity: watch::Sender<Activity>,
     run: Mutex<RunState>,
     weak: Weak<SessionCore>,
 }
@@ -313,13 +362,13 @@ impl AgentSession {
             .as_ref()
             .and_then(|(provider, id)| models.find(provider, id))
             .or(options.model.clone());
-        let thinking_level = if has_history {
+        let requested_thinking_level = if has_history {
             projection.thinking_level
         } else {
             options.settings.default_thinking_level.unwrap_or_default()
         };
         let thinking_level = model.as_ref().map_or(ThinkingLevel::Off, |model| {
-            model.clamp_thinking_level(thinking_level)
+            model.clamp_thinking_level(requested_thinking_level)
         });
         let prompt_base = SystemPromptOptions {
             app_name: options.app_name.clone(),
@@ -375,6 +424,7 @@ impl AgentSession {
                 active_tools: Mutex::new(active),
                 listeners: Mutex::new(Vec::new()),
                 next_listener: AtomicU64::new(1),
+                activity: watch::channel(Activity::Idle).0,
                 run: Mutex::new(RunState::default()),
                 weak: weak.clone(),
             }
@@ -386,16 +436,22 @@ impl AgentSession {
                 models.register_api(api, implementation.clone());
             }
         }
-        if lock(&core.model).is_none() && projection.model.is_some() {
-            // A provider an extension registers can serve the session's model.
-            let model = projection
-                .model
-                .as_ref()
-                .and_then(|(provider, id)| models.find(provider, id));
-            if let Some(model) = model {
-                core.agent.set_model(model.clone());
-                *lock(&core.model) = Some(model);
-            }
+        // A provider an extension registers can serve the session's model, so look it up
+        // again now that they are registered.
+        if let Some(model) = projection
+            .model
+            .as_ref()
+            .and_then(|(provider, id)| models.find(provider, id))
+        {
+            core.agent.set_model(model.clone());
+            core.agent
+                .set_thinking_level(model.clamp_thinking_level(requested_thinking_level));
+            *lock(&core.model) = Some(model);
+        }
+        let thinking_level = core.agent.thinking_level();
+        if !has_history && thinking_level != ThinkingLevel::Off {
+            // Recorded so a resumed session starts at the same level.
+            lock(&core.session).append_thinking_level_change(thinking_level);
         }
         let sink = core.weak.clone();
         core.runner.set_error_sink(Arc::new(move |report| {
@@ -486,8 +542,12 @@ impl AgentSession {
         self.core.abort();
     }
 
+    /// Wait until no prompt, retry or compaction is in progress.
     pub async fn wait_for_idle(&self) {
-        self.core.agent.wait_for_idle().await;
+        let mut activity = self.core.activity.subscribe();
+        let _ = activity
+            .wait_for(|activity| *activity == Activity::Idle)
+            .await;
     }
 
     /// Compact the current branch.
@@ -495,9 +555,10 @@ impl AgentSession {
         &self,
         custom_instructions: Option<&str>,
     ) -> Result<CompactionResult, AgentSessionError> {
-        if self.core.agent.is_streaming() {
-            return Err(AgentSessionError::Busy);
-        }
+        let _maintenance = self
+            .core
+            .begin(Activity::Maintenance)
+            .ok_or(AgentSessionError::Busy)?;
         self.core
             .clone()
             .compact(CompactionReason::Manual, custom_instructions)
@@ -511,6 +572,10 @@ impl AgentSession {
         summarize: bool,
         custom_instructions: Option<&str>,
     ) -> Result<(), AgentSessionError> {
+        let _maintenance = self
+            .core
+            .begin(Activity::Maintenance)
+            .ok_or(AgentSessionError::Busy)?;
         self.core
             .clone()
             .navigate_tree(target_id, summarize, custom_instructions)
@@ -523,10 +588,12 @@ impl AgentSession {
         entry_id: &str,
         store: Box<dyn SessionStore>,
     ) -> Result<(), AgentSessionError> {
-        if self.core.agent.is_streaming() {
-            return Err(AgentSessionError::Busy);
-        }
+        let _maintenance = self
+            .core
+            .begin(Activity::Maintenance)
+            .ok_or(AgentSessionError::Busy)?;
         lock(&self.core.session).fork(entry_id, store)?;
+        self.core.report_persistence();
         self.core.rebuild_messages();
         self.core
             .runner
@@ -556,8 +623,9 @@ impl AgentSession {
         self.core.agent.thinking_level()
     }
 
+    /// Whether a prompt is in progress, including its retries and compactions.
     pub fn is_streaming(&self) -> bool {
-        self.core.agent.is_streaming()
+        self.core.activity() == Activity::Prompt
     }
 
     /// The model context: the projection of the current branch.
@@ -630,7 +698,7 @@ impl AgentSession {
     /// Tell extensions the session is ending.
     pub async fn shutdown(&self) {
         self.core.abort();
-        self.core.agent.wait_for_idle().await;
+        self.wait_for_idle().await;
         self.core
             .runner
             .emit(&SessionShutdown, &self.core.weak)
@@ -658,6 +726,30 @@ fn custom_message(draft: CustomMessageDraft) -> SessionMessage {
 }
 
 impl SessionCore {
+    fn activity(&self) -> Activity {
+        *self.activity.borrow()
+    }
+
+    /// Take the session for `kind`, or `None` when it is not idle.
+    fn begin(&self, kind: Activity) -> Option<ActivityGuard<'_>> {
+        let mut started = false;
+        self.activity.send_if_modified(|activity| {
+            started = *activity == Activity::Idle;
+            if started {
+                *activity = kind;
+            }
+            started
+        });
+        // Built only on success: dropping a guard makes the session idle.
+        if started {
+            Some(ActivityGuard {
+                activity: &self.activity,
+            })
+        } else {
+            None
+        }
+    }
+
     fn emit(&self, event: AgentSessionEvent) {
         let listeners: Vec<Listener> = lock(&self.listeners)
             .iter()
@@ -777,8 +869,11 @@ impl SessionCore {
     }
 
     fn queue(&self, behavior: StreamingBehavior, message: SessionMessage) {
-        let text = message.text();
-        {
+        // The queue lists typed prompts. Extension messages are delivered unlisted, since
+        // only a user message's start takes its text off the list.
+        let listed = matches!(message, SessionMessage::Llm(Message::User(_)));
+        if listed {
+            let text = message.text();
             let mut run = lock(&self.run);
             match behavior {
                 StreamingBehavior::Steer => run.steering_texts.push(text),
@@ -789,7 +884,9 @@ impl SessionCore {
             StreamingBehavior::Steer => self.agent.steer(message),
             StreamingBehavior::FollowUp => self.agent.follow_up(message),
         }
-        self.emit_queue();
+        if listed {
+            self.emit_queue();
+        }
     }
 
     fn abort(&self) {
@@ -842,9 +939,6 @@ impl SessionCore {
                 return Ok(PromptOutcome::Handled);
             }
         }
-        if lock(&self.run).compaction_cancel.is_some() {
-            return Err(AgentSessionError::Busy);
-        }
         let input = Input {
             text: text.to_string(),
             images: options.images.clone(),
@@ -862,11 +956,21 @@ impl SessionCore {
                 &resources.prompt_templates,
             );
         }
-        if self.agent.is_streaming() {
-            let behavior = options.streaming_behavior.ok_or(AgentSessionError::Busy)?;
-            self.queue(behavior, user_message(&text, images));
-            return Ok(PromptOutcome::Queued);
-        }
+        let activity = loop {
+            if let Some(activity) = self.begin(Activity::Prompt) {
+                break activity;
+            }
+            // A prompt in progress takes this one as steering or a follow-up, when asked.
+            match (self.activity(), options.streaming_behavior) {
+                (Activity::Prompt, Some(behavior)) => {
+                    self.queue(behavior, user_message(&text, images));
+                    return Ok(PromptOutcome::Queued);
+                }
+                // It settled in between.
+                (Activity::Idle, _) => continue,
+                _ => return Err(AgentSessionError::Busy),
+            }
+        };
         if self.model().is_none() {
             return Err(AgentSessionError::NoModel);
         }
@@ -893,12 +997,30 @@ impl SessionCore {
             messages.append(&mut run.next_turn_messages);
         }
         messages.extend(drafts.into_iter().map(custom_message));
-        self.run_prompt(messages).await?;
+        self.run_prompt(activity, messages).await?;
         Ok(PromptOutcome::Completed)
+    }
+
+    /// Start a run with a message an extension sent, bringing the prompt up to date first.
+    async fn run_delivered(
+        self: &Arc<Self>,
+        activity: ActivityGuard<'_>,
+        message: SessionMessage,
+    ) -> Result<(), AgentSessionError> {
+        if self.model().is_none() {
+            return Err(AgentSessionError::NoModel);
+        }
+        let mut messages: Vec<SessionMessage> = self
+            .system_update(&self.prompt_options())?
+            .into_iter()
+            .collect();
+        messages.push(message);
+        self.run_prompt(activity, messages).await
     }
 
     async fn run_prompt(
         self: &Arc<Self>,
+        activity: ActivityGuard<'_>,
         messages: Vec<SessionMessage>,
     ) -> Result<(), AgentSessionError> {
         {
@@ -912,9 +1034,28 @@ impl SessionCore {
             Err(error) => Err(error.into()),
         };
         self.flush_pending_custom();
+        self.end_retry();
         lock(&self.run).forced_prompt = None;
+        drop(activity);
         self.emit(AgentSessionEvent::Settled);
         result
+    }
+
+    /// End a retry the run left unfinished, so the next prompt counts from the start.
+    fn end_retry(&self) {
+        let attempt = std::mem::take(&mut lock(&self.run).retry_attempt);
+        if attempt > 0 {
+            let error = if self.abort_requested() {
+                "Retry cancelled"
+            } else {
+                "The run ended before a retry succeeded"
+            };
+            self.emit(AgentSessionEvent::RetryEnd {
+                success: false,
+                attempt,
+                error: Some(error.into()),
+            });
+        }
     }
 
     /// Retry, compact or continue with queued messages until the run is really over.
@@ -949,11 +1090,14 @@ impl SessionCore {
         let overflow = is_context_overflow(&last, Some(model.context_window));
         let recovered = std::mem::replace(&mut lock(&self.run).overflow_recovery_attempted, true);
         if overflow && settings.compaction.enabled && !recovered {
-            if last.is_failure() {
+            // An error, or a reply cut off before any output, leaves the prompt unanswered:
+            // the reply leaves the context and the prompt runs again after compaction.
+            let unanswered = last.is_failure() || last.stop_reason == pi_ai::StopReason::Length;
+            if unanswered {
                 self.omit_last_assistant();
             }
             return match self.clone().compact(CompactionReason::Overflow, None).await {
-                Ok(_) => last.is_failure() || self.agent.has_queued_messages(),
+                Ok(_) => unanswered || self.agent.has_queued_messages(),
                 Err(_) => false,
             };
         }
@@ -1103,8 +1247,14 @@ impl SessionCore {
             token
         };
         self.emit(AgentSessionEvent::CompactionStart { reason });
+        let mut running = CompactionGuard {
+            core: &self,
+            reason,
+            ended: false,
+        };
         let result = self.compact_inner(custom_instructions, token).await;
-        lock(&self.run).compaction_cancel = None;
+        running.ended = true;
+        drop(running);
         self.emit(AgentSessionEvent::CompactionEnd {
             reason,
             result: result.as_ref().ok().cloned(),
@@ -1188,9 +1338,6 @@ impl SessionCore {
         summarize: bool,
         custom_instructions: Option<&str>,
     ) -> Result<(), AgentSessionError> {
-        if self.agent.is_streaming() {
-            return Err(AgentSessionError::Busy);
-        }
         let (old_leaf, abandoned) = {
             let session = lock(&self.session);
             if session.entry(target_id).is_none() {
@@ -1414,7 +1561,7 @@ impl AgentHooks<SessionMessage> for SessionHooks {
     async fn prepare_next_turn(
         &self,
         turn: TurnContext<'_, SessionMessage>,
-        _cancel: &CancellationToken,
+        cancel: &CancellationToken,
     ) -> Option<TurnUpdate<SessionMessage>> {
         let core = self.core.upgrade()?;
         // Extension messages queued during the turn go in now, after its tool results.
@@ -1426,8 +1573,10 @@ impl AgentHooks<SessionMessage> for SessionHooks {
             messages: pending,
             ..TurnUpdate::default()
         };
-        // A long tool loop can outgrow the context within one run.
-        if should_compact(tokens, model.context_window, &settings)
+        // A long tool loop can outgrow the context within one run. An aborted run ends
+        // with its next request, so it is not compacted first.
+        if !cancel.is_cancelled()
+            && should_compact(tokens, model.context_window, &settings)
             && core
                 .clone()
                 .compact(CompactionReason::Threshold, None)
@@ -1526,7 +1675,8 @@ impl ExtensionContext {
     }
 
     pub fn is_idle(&self) -> bool {
-        self.core().is_none_or(|core| !core.agent.is_streaming())
+        self.core()
+            .is_none_or(|core| core.activity() == Activity::Idle)
     }
 
     pub fn abort(&self) {
@@ -1620,37 +1770,67 @@ impl ExtensionContext {
 
     /// Add a message to the conversation as `delivery` says.
     pub fn send_message(&self, draft: CustomMessageDraft, delivery: Delivery) {
-        if let Some(core) = self.core() {
-            deliver(core, custom_message(draft), delivery);
+        let Some(core) = self.core() else { return };
+        let message = custom_message(draft);
+        let prompting = core.activity() == Activity::Prompt;
+        let behavior = match delivery {
+            Delivery::NextTurn => {
+                lock(&core.run).next_turn_messages.push(message);
+                return;
+            }
+            Delivery::Append if prompting => {
+                lock(&core.run).pending_custom.push(message);
+                return;
+            }
+            Delivery::Append => {
+                core.append_now(message);
+                return;
+            }
+            Delivery::Steer => StreamingBehavior::Steer,
+            Delivery::FollowUp => StreamingBehavior::FollowUp,
+        };
+        if prompting {
+            core.queue(behavior, message);
+            return;
         }
+        let extension = self.extension.clone();
+        tokio::spawn(async move {
+            // A prompt that started meanwhile takes the message instead.
+            let Some(activity) = core.begin(Activity::Prompt) else {
+                core.queue(behavior, message);
+                return;
+            };
+            if let Err(error) = core.run_delivered(activity, message).await {
+                core.runner.report(&extension, "send_message", error);
+            }
+        });
     }
 
-    /// Send a user message. It always leads to a turn: now when idle, otherwise as steering
-    /// or a follow-up.
+    /// Send a user message. It always leads to a turn: now when idle, going through input
+    /// handlers like a typed prompt, otherwise as steering or a follow-up.
     pub fn send_user_message(&self, text: &str, delivery: Delivery) {
         let Some(core) = self.core() else { return };
-        let delivery = if delivery == Delivery::FollowUp {
-            Delivery::FollowUp
+        let behavior = if delivery == Delivery::FollowUp {
+            StreamingBehavior::FollowUp
         } else {
-            Delivery::Steer
+            StreamingBehavior::Steer
         };
-        deliver(core, user_message(text, Vec::new()), delivery);
-    }
-}
-
-fn deliver(core: Arc<SessionCore>, message: SessionMessage, delivery: Delivery) {
-    let streaming = core.agent.is_streaming();
-    match delivery {
-        Delivery::NextTurn => lock(&core.run).next_turn_messages.push(message),
-        Delivery::Append if streaming => lock(&core.run).pending_custom.push(message),
-        Delivery::Append => core.append_now(message),
-        Delivery::Steer if streaming => core.queue(StreamingBehavior::Steer, message),
-        Delivery::FollowUp if streaming => core.queue(StreamingBehavior::FollowUp, message),
-        Delivery::Steer | Delivery::FollowUp => {
-            tokio::spawn(async move {
-                let _ = core.run_prompt(vec![message]).await;
-            });
+        if core.activity() == Activity::Prompt {
+            core.queue(behavior, user_message(text, Vec::new()));
+            return;
         }
+        let (text, extension) = (text.to_string(), self.extension.clone());
+        tokio::spawn(async move {
+            let options = PromptOptions {
+                streaming_behavior: Some(behavior),
+                expand: false,
+                source: InputSource::Extension,
+                ..PromptOptions::default()
+            };
+            if let Err(error) = core.clone().prompt(&text, options).await {
+                core.runner.report(&extension, "send_user_message", error);
+            }
+        });
     }
 }
 

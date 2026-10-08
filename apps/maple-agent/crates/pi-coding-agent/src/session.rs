@@ -251,6 +251,39 @@ fn apply_edit(message: SessionMessage, replacement: &[Content]) -> SessionMessag
     }
 }
 
+/// The context edits among some entries, by target; a later edit of a target wins.
+pub(crate) struct ContextEdits<'a> {
+    edits: HashMap<&'a str, &'a Option<Vec<Content>>>,
+}
+
+impl<'a> ContextEdits<'a> {
+    pub(crate) fn of(entries: &[&'a SessionEntry]) -> Self {
+        let mut edits = HashMap::new();
+        for entry in entries {
+            if let EntryKind::ContextEdit {
+                target_id,
+                replacement,
+            } = &entry.kind
+            {
+                edits.insert(target_id.as_str(), replacement);
+            }
+        }
+        Self { edits }
+    }
+
+    /// The messages `entry` contributes once its edit is applied.
+    pub(crate) fn messages(&self, entry: &SessionEntry) -> Vec<SessionMessage> {
+        match self.edits.get(entry.id.as_str()) {
+            Some(None) => Vec::new(),
+            Some(Some(replacement)) => entry_messages(entry)
+                .into_iter()
+                .map(|message| apply_edit(message, replacement))
+                .collect(),
+            None => entry_messages(entry),
+        }
+    }
+}
+
 /// The entries that make up the context: with a compaction on the path, the latest one
 /// comes first, then the kept entries before it and everything after it.
 pub fn context_entries<'a>(path: &[&'a SessionEntry]) -> Vec<&'a SessionEntry> {
@@ -301,16 +334,7 @@ pub fn project(path: &[&SessionEntry]) -> SessionProjection {
         }
     }
     let entries = context_entries(path);
-    let mut edits: HashMap<&str, &Option<Vec<Content>>> = HashMap::new();
-    for entry in &entries {
-        if let EntryKind::ContextEdit {
-            target_id,
-            replacement,
-        } = &entry.kind
-        {
-            edits.insert(target_id, replacement);
-        }
-    }
+    let edits = ContextEdits::of(&entries);
     let projected: Vec<ProjectedEntry> = entries
         .iter()
         .enumerate()
@@ -320,14 +344,7 @@ pub fn project(path: &[&SessionEntry]) -> SessionProjection {
             let messages = if is_compaction && index > 0 {
                 Vec::new()
             } else {
-                match edits.get(entry.id.as_str()) {
-                    Some(None) => Vec::new(),
-                    Some(Some(replacement)) => entry_messages(entry)
-                        .into_iter()
-                        .map(|message| apply_edit(message, replacement))
-                        .collect(),
-                    None => entry_messages(entry),
-                }
+                edits.messages(entry)
             };
             ProjectedEntry {
                 entry_id: entry.id.clone(),
@@ -489,13 +506,17 @@ impl SessionManager {
                 None => Ok(()),
             }
         } else if self.entries.iter().any(is_conversation) {
-            self.flushed = true;
             self.store.write_all(&self.header, &self.entries)
         } else {
-            Ok(())
+            return;
         };
-        if let Err(error) = result {
-            self.persist_error = Some(error);
+        match result {
+            Ok(()) => self.flushed = true,
+            Err(error) => {
+                // Write everything again next time, so a failed write leaves no gap.
+                self.flushed = false;
+                self.persist_error = Some(error);
+            }
         }
     }
 
@@ -741,7 +762,8 @@ impl SessionManager {
     }
 
     /// Turn this into a new session holding only the path to `leaf_id`, stored in
-    /// `store`. Labels on the path are carried over.
+    /// `store`. Labels on the path are carried over. A failed write is reported by
+    /// [`Self::take_persist_error`], like any other.
     pub fn fork(
         &mut self,
         leaf_id: &str,
@@ -751,11 +773,27 @@ impl SessionManager {
             return Err(SessionError::NotFound(leaf_id.into()));
         }
         let mut entries: Vec<SessionEntry> = Vec::new();
+        // Label entries are rewritten at the end. A compaction that keeps entries from a
+        // label on keeps them from the next entry instead.
+        let mut dropped_labels: Vec<String> = Vec::new();
+        let mut kept_from: HashMap<String, String> = HashMap::new();
         for entry in self.branch_to(leaf_id) {
             if matches!(entry.kind, EntryKind::Label { .. }) {
+                dropped_labels.push(entry.id.clone());
                 continue;
             }
+            for label in dropped_labels.drain(..) {
+                kept_from.insert(label, entry.id.clone());
+            }
             let mut entry = entry.clone();
+            if let EntryKind::Compaction {
+                first_kept_entry_id,
+                ..
+            } = &mut entry.kind
+                && let Some(next) = kept_from.get(first_kept_entry_id)
+            {
+                *first_kept_entry_id = next.clone();
+            }
             entry.parent_id = entries.last().map(|previous| previous.id.clone());
             entries.push(entry);
         }
@@ -794,10 +832,7 @@ impl SessionManager {
         self.store = store;
         self.flushed = false;
         self.rebuild_index();
-        if self.entries.iter().any(is_conversation) {
-            self.flushed = true;
-            self.store.write_all(&self.header, &self.entries)?;
-        }
+        self.persist();
         Ok(())
     }
 }
@@ -808,6 +843,8 @@ mod tests {
     use crate::store::JsonlStore;
     use pi_ai::{AssistantMessage, StopReason, UserMessage};
     use serde_json::json;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Mutex};
 
     fn user(text: &str) -> SessionMessage {
         SessionMessage::Llm(Message::User(UserMessage::text(text)))
@@ -1002,5 +1039,106 @@ mod tests {
         assert_eq!(texts(&session), ["question", "answer"]);
         assert_eq!(session.label(&question), Some("here"));
         assert!(session.entries().iter().all(|entry| !matches!(&entry.kind, EntryKind::Message { message } if message.text() == "other answer")));
+    }
+
+    #[test]
+    fn a_fork_keeps_what_a_compaction_kept_from_a_label() {
+        let mut session = SessionManager::in_memory("/work");
+        session.append_message(user("old question"));
+        let old_answer = session.append_message(assistant("old answer"));
+        let label = session
+            .append_label(&old_answer, Some("checkpoint".into()))
+            .unwrap();
+        session.append_message(user("recent question"));
+        session.append_message(assistant("recent answer"));
+        session.append_compaction("summary".into(), Some(label), 1, None, None, false);
+        let leaf = session.append_message(user("next"));
+        let before = texts(&session);
+        assert_eq!(
+            before,
+            ["summary", "recent question", "recent answer", "next"]
+        );
+
+        session.fork(&leaf, Box::new(MemoryStore)).unwrap();
+        assert_eq!(texts(&session), before);
+    }
+
+    /// A store that fails while `failing` is set, and otherwise records entry ids.
+    struct FlakyStore {
+        failing: Arc<AtomicBool>,
+        stored: Arc<Mutex<Vec<String>>>,
+    }
+
+    impl SessionStore for FlakyStore {
+        fn write_all(
+            &mut self,
+            _header: &SessionHeader,
+            entries: &[SessionEntry],
+        ) -> io::Result<()> {
+            if self.failing.load(Ordering::SeqCst) {
+                return Err(io::Error::other("disk full"));
+            }
+            *self.stored.lock().unwrap() = entries.iter().map(|entry| entry.id.clone()).collect();
+            Ok(())
+        }
+
+        fn append(&mut self, entry: &SessionEntry) -> io::Result<()> {
+            if self.failing.load(Ordering::SeqCst) {
+                return Err(io::Error::other("disk full"));
+            }
+            self.stored.lock().unwrap().push(entry.id.clone());
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn after_a_failed_write_the_next_one_stores_everything() {
+        let failing = Arc::new(AtomicBool::new(true));
+        let stored = Arc::new(Mutex::new(Vec::new()));
+        let mut session = SessionManager::create(
+            "/work",
+            Box::new(FlakyStore {
+                failing: failing.clone(),
+                stored: stored.clone(),
+            }),
+        );
+        let ids = |session: &SessionManager| -> Vec<String> {
+            session
+                .entries()
+                .iter()
+                .map(|entry| entry.id.clone())
+                .collect()
+        };
+
+        session.append_message(user("hello"));
+        assert!(session.take_persist_error().is_some());
+        failing.store(false, Ordering::SeqCst);
+        session.append_message(assistant("hi"));
+        assert_eq!(*stored.lock().unwrap(), ids(&session));
+
+        failing.store(true, Ordering::SeqCst);
+        session.append_message(user("again"));
+        assert!(session.take_persist_error().is_some());
+        failing.store(false, Ordering::SeqCst);
+        session.append_message(assistant("ok"));
+        assert_eq!(*stored.lock().unwrap(), ids(&session));
+        assert!(session.take_persist_error().is_none());
+    }
+
+    #[test]
+    fn a_line_cut_off_by_a_crash_costs_only_itself() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("s.jsonl");
+        let mut session = SessionManager::create("/work", Box::new(JsonlStore::new(&path)));
+        session.append_message(user("hello"));
+        // Cut inside a two-byte character, so the line is not even valid UTF-8.
+        let partial = "{\"id\":\"x\",\"text\":\"é";
+        let mut bytes = std::fs::read(&path).unwrap();
+        bytes.extend_from_slice(&partial.as_bytes()[..partial.len() - 1]);
+        std::fs::write(&path, bytes).unwrap();
+
+        session.append_message(assistant("hi"));
+        let (_, entries) = JsonlStore::load(&path).unwrap().unwrap();
+        assert_eq!(entries, session.entries());
     }
 }

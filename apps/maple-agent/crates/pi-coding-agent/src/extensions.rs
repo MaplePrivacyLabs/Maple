@@ -727,8 +727,12 @@ impl ExtensionRunner {
         for (extension, handler) in self.handlers::<BeforeAgentStart>() {
             match handler(event.clone(), self.context(core, &extension)).await {
                 Ok(result) => {
+                    // Options that cannot build a prompt are refused, not kept for later prompts.
                     if let Some(options) = result.options {
-                        event.options = options;
+                        match crate::system_prompt::build_sections(&options) {
+                            Ok(_) => event.options = options,
+                            Err(error) => self.report(&extension, BeforeAgentStart::NAME, error),
+                        }
                     }
                     messages.extend(result.message);
                     if let Some(prompt) = result.system_prompt {
