@@ -7,7 +7,7 @@ mod state_tests {
     use crate::ui::chat::composer::SideThreadTurn;
     use crate::ui::chat::images::{MAX_DRAFT_IMAGES, encode_data_url};
     use crate::ui::chat::sidebar::{RenameTarget, SidebarEvent, TaskMove};
-    use crate::ui::chat::transcript::{diff_lines_for, maple_display_text, tool_label_title};
+    use crate::ui::chat::transcript::{diff_lines_for, tool_label_title};
     use crate::ui::chat::*;
     use gpui::TestAppContext;
     use maple_agent::agent::{
@@ -3230,19 +3230,6 @@ mod state_tests {
             assert!(!this.composer_has_text);
         });
     }
-    #[test]
-    fn test_maple_display_text_rebrands_compaction() {
-        assert_eq!(
-            maple_display_text("goose is compacting the conversation..."),
-            "Compacting…"
-        );
-        assert_eq!(
-            maple_display_text("Context limit reached. Compacting to continue conversation..."),
-            "Context limit reached — compacting to continue…"
-        );
-        assert_eq!(maple_display_text("Anything else"), "Anything else");
-    }
-
     #[test]
     fn test_tool_label_title_strips_descriptive_detail() {
         // Known friendly labels drop the ": detail" part before the model

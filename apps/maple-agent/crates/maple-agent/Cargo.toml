@@ -1,0 +1,52 @@
+[package]
+name = "maple-agent"
+description = "Transport-neutral Maple agent runtime on the Pi crates: sessions, provider, tools"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[features]
+default = ["acp"]
+# The Agent Client Protocol server (`maple_agent::acp`).
+acp = []
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+log = { workspace = true }
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+futures-util = { workspace = true }
+once_cell = { workspace = true }
+http = { workspace = true }
+reqwest = { workspace = true }
+bytes = "1"
+base64 = "0.22"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+dirs = "6"
+httpdate = "1"
+icu_properties = "2.1.1"
+rand = "0.8.6"
+rusqlite = { version = "0.32", features = ["bundled"] }
+sha2 = "0.10"
+tempfile = "3"
+maple-sdk = { workspace = true }
+maple-proxy = { workspace = true }
+pi-ai = { path = "../pi-ai", default-features = false }
+pi-agent-core = { path = "../pi-agent-core" }
+pi-coding-agent = { path = "../pi-coding-agent" }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[dev-dependencies]
+chacha20poly1305 = "0.10"
+hkdf = "0.12"
+axum = "0.8"
+ciborium = "0.2"
+
+[build-dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }

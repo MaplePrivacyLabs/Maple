@@ -15,8 +15,7 @@ use maple_agent::agent::{AgentTimelineItem, ExternalAgentActivity};
 
 use super::ChatScreen;
 use super::transcript::{
-    diff_lines_for, external_agent_activity, maple_display_text, tool_input_line,
-    tool_output_markdown,
+    diff_lines_for, external_agent_activity, tool_input_line, tool_output_markdown,
 };
 use crate::ui::markdown;
 
@@ -271,9 +270,7 @@ impl ItemDerived {
     fn build(item: &AgentTimelineItem) -> Self {
         let output_text = tool_output_markdown(item).map(SharedString::from);
         Self {
-            text: SharedString::from(
-                maple_display_text(item.text.as_deref().unwrap_or("")).into_owned(),
-            ),
+            text: SharedString::from(item.text.clone().unwrap_or_default()),
             output_text,
             input_line: tool_input_line(item).map(SharedString::from),
             diff_lines: Arc::new(diff_lines_for(item)),

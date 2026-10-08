@@ -5722,6 +5722,43 @@ dependencies = [
 ]
 
 [[package]]
+name = "maple-agent"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "axum",
+ "base64 0.22.1",
+ "bytes",
+ "chacha20poly1305 0.10.1",
+ "chrono",
+ "ciborium",
+ "dirs 6.0.0",
+ "futures-util",
+ "hkdf 0.12.4",
+ "http",
+ "httpdate",
+ "icu_properties",
+ "libc",
+ "log",
+ "maple-proxy",
+ "maple-sdk",
+ "once_cell",
+ "pi-agent-core",
+ "pi-ai",
+ "pi-coding-agent",
+ "rand 0.8.7",
+ "reqwest 0.13.4",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "tokio",
+ "tokio-util",
+]
+
+[[package]]
 name = "maple-agent-app"
 version = "0.1.0"
 dependencies = [
@@ -5737,7 +5774,7 @@ dependencies = [
  "httparse",
  "image 0.25.10",
  "log",
- "maple-agent-goose",
+ "maple-agent",
  "maple-billing",
  "maple-proxy",
  "maple-sdk",
