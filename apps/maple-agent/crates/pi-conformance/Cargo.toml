@@ -1,0 +1,31 @@
+[package]
+name = "pi-conformance"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = "0.10"
+syn = { version = "2", features = ["full"] }
+toml = "0.8"
+jsonschema = { version = "=0.55.1", default-features = false }
+pi-ai = { path = "../pi-ai" }
+pi-testkit = { path = "../pi-testkit" }
+tokio = { workspace = true }
+
+[dev-dependencies]
+libtest-mimic = "0.8"
+tempfile = "3"
+
+[[test]]
+name = "corpus"
+path = "tests/corpus.rs"
+harness = false
+
+[[test]]
+name = "functions"
+path = "tests/functions.rs"
+harness = false

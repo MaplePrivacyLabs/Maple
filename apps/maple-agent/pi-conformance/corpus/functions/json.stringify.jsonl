@@ -1,0 +1,9 @@
+{"case":"one-float","input":{"number":"1.0"},"output":"1"}
+{"case":"negative-zero","input":{"number":"-0.0"},"output":"0"}
+{"case":"positive-exponent","input":{"number":"1e21"},"output":"1e+21"}
+{"case":"small-decimal","input":{"number":"1e-6"},"output":"0.000001"}
+{"case":"small-exponent","input":{"number":"1e-7"},"output":"1e-7"}
+{"case":"integer-key-order","input":{"space":2,"entries":[["10","ten"],["2","two"],["z",0],["01","leading"],["a",1]]},"output":"{\n  \"2\": \"two\",\n  \"10\": \"ten\",\n  \"z\": 0,\n  \"01\": \"leading\",\n  \"a\": 1\n}"}
+{"case":"escaped","input":{"value":{"text":"line\nquote\"tab\t"}},"output":"{\"text\":\"line\\nquote\\\"tab\\t\"}"}
+{"case":"lone-surrogate","input":{"utf16":[55296]},"output":"\"\\ud800\""}
+{"case":"astral","input":{"value":"😀"},"output":"\"😀\""}

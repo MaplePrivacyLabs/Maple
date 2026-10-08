@@ -82,6 +82,31 @@ class AgentWorkflowBoundaryTests(unittest.TestCase):
         self.assertIn("needs.changes.outputs.agent != 'false'", condition)
         self.assertNotIn("head.repo", condition)
 
+    def test_reference_job_fails_closed_and_uses_only_the_pinned_reference(self):
+        config = workflow("agent-ci.yml")
+        self.assertEqual(config["jobs"]["changes"]["outputs"]["pi_reference"],
+                         "${{ steps.classify.outputs.pi_reference }}")
+        reference = config["jobs"]["pi-reference"]
+        self.assertEqual(reference["needs"], "changes")
+        self.assertEqual(reference["runs-on"], "ubuntu-latest")
+        self.assertEqual(reference["timeout-minutes"], 60)
+        condition = reference["if"]
+        self.assertIn("always() && !cancelled()", condition)
+        self.assertIn("needs.changes.result != 'success'", condition)
+        self.assertIn("needs.changes.outputs.pi_reference != 'false'", condition)
+        self.assertNotIn("head.repo", condition)
+        commands = [step["run"] for step in reference["steps"] if "run" in step]
+        self.assertEqual(commands, [
+            "nix build ./pi-conformance#upstream-tests -L --no-link --no-update-lock-file",
+            "nix build ./pi-conformance#checks.x86_64-linux.corpus-fresh -L --no-link --no-update-lock-file",
+        ])
+        self.assertEqual(config["defaults"]["run"]["working-directory"], "apps/maple-agent")
+        desktop_commands = [step["run"] for step in config["jobs"]["desktop"]["steps"]
+                            if "run" in step]
+        for command in desktop_commands:
+            self.assertNotIn("pi-conformance#", command)
+            self.assertNotRegex(command, r"\b(node|npm|npx|vitest)\b")
+
     def test_namespaced_agent_releases_do_not_enter_research_jobs(self):
         release = workflow("release.yml")
         classifier = release["jobs"]["classify-app-release"]
@@ -561,21 +586,30 @@ class AgentDiffSelectionTests(unittest.TestCase):
 
     def test_docs_only_push_and_agent_runtime_push(self):
         docs = self.commit_file("apps/maple-agent/docs/design.md", "design\n")
-        self.assertEqual(self.select("push", self.base, docs), "agent=false\n")
+        self.assertEqual(self.select("push", self.base, docs), "agent=false\npi_reference=false\n")
         runtime = self.commit_file("apps/maple-agent/app/src/main.rs", "fn main() {}\n")
-        self.assertEqual(self.select("push", docs, runtime), "agent=true\n")
+        self.assertEqual(self.select("push", docs, runtime), "agent=true\npi_reference=false\n")
 
     def test_pull_request_uses_merge_base_instead_of_unrelated_base_changes(self):
         master = self.commit_file("apps/maple-agent/app/src/main.rs", "fn main() {}\n")
         self.git("checkout", "-qb", "contributor", self.base)
         docs = self.commit_file("apps/maple-agent/docs/design.md", "design\n")
-        self.assertEqual(self.select("pull_request", master, docs), "agent=false\n")
+        self.assertEqual(self.select("pull_request", master, docs), "agent=false\npi_reference=false\n")
 
     def test_deletion_or_rename_out_of_component_still_builds(self):
         runtime = self.commit_file("apps/maple-agent/app/src/main.rs", "fn main() {}\n")
         self.git("mv", "apps/maple-agent/app/src/main.rs", "README.md.moved")
         self.git("commit", "-qm", "rename fixture")
-        self.assertEqual(self.select("push", runtime, self.git("rev-parse", "HEAD")), "agent=true\n")
+        self.assertEqual(self.select("push", runtime, self.git("rev-parse", "HEAD")), "agent=true\npi_reference=true\n")
+
+    def test_reference_fixture_deletion_selects_both_checks(self):
+        fixture = self.commit_file("apps/maple-agent/pi-conformance/fixtures/notes.txt", "fixture\n")
+        self.assertEqual(self.select("push", self.base, fixture),
+                         "agent=true\npi_reference=true\n")
+        self.git("rm", "apps/maple-agent/pi-conformance/fixtures/notes.txt")
+        self.git("commit", "-qm", "delete fixture")
+        self.assertEqual(self.select("push", fixture, self.git("rev-parse", "HEAD")),
+                         "agent=true\npi_reference=true\n")
 
     def test_missing_history_manual_event_and_classifier_failure_select_build(self):
         for event, base, head in (
@@ -584,9 +618,9 @@ class AgentDiffSelectionTests(unittest.TestCase):
             ("workflow_dispatch", "", ""),
         ):
             with self.subTest(event=event, base=base):
-                self.assertEqual(self.select(event, base, head), "agent=true\n")
+                self.assertEqual(self.select(event, base, head), "agent=true\npi_reference=true\n")
         (self.root / "scripts/ci/agent_change_detection.py").write_text("raise RuntimeError('fixture')\n")
-        self.assertEqual(self.select("push", self.base, self.base), "agent=true\n")
+        self.assertEqual(self.select("push", self.base, self.base), "agent=true\npi_reference=true\n")
 
 
 if __name__ == "__main__":

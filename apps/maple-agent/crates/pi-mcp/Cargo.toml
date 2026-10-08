@@ -1,0 +1,9 @@
+[package]
+name = "pi-mcp"
+description = "Portable MCP content conversion ported from Pi"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+pi-ai = { path = "../pi-ai" }

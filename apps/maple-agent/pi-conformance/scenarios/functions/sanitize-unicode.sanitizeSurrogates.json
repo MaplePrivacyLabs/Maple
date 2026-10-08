@@ -1,0 +1,61 @@
+{
+  "dsl": 1,
+  "id": "sanitize-unicode.sanitizeSurrogates",
+  "clock": {
+    "epochMs": 1767225600000
+  },
+  "cases": [
+    {
+      "case": "plain",
+      "input": {
+        "utf16": [
+          104,
+          101,
+          108,
+          108,
+          111
+        ]
+      }
+    },
+    {
+      "case": "astral",
+      "input": {
+        "utf16": [
+          55357,
+          56832
+        ]
+      }
+    },
+    {
+      "case": "lone-high",
+      "input": {
+        "utf16": [
+          97,
+          55296,
+          98
+        ]
+      }
+    },
+    {
+      "case": "lone-low",
+      "input": {
+        "utf16": [
+          97,
+          56320,
+          98
+        ]
+      }
+    },
+    {
+      "case": "mixed-pairs",
+      "input": {
+        "utf16": [
+          55296,
+          55296,
+          56320,
+          56320
+        ]
+      }
+    }
+  ]
+}

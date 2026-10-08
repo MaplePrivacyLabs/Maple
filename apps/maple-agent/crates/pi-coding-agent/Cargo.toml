@@ -1,0 +1,15 @@
+[package]
+name = "pi-coding-agent"
+description = "Portable session and resource runtime ported from Pi"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[features]
+default = []
+test-internals = []
+
+[dependencies]
+pi-ai = { path = "../pi-ai" }
+pi-agent-core = { path = "../pi-agent-core" }
+pi-mcp = { path = "../pi-mcp" }

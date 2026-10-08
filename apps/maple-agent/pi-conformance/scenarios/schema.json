@@ -1,0 +1,1830 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Pi conformance scenario and function input DSL v1",
+  "description": "Structural validation only. The recorder fails unsupported capabilities explicitly; declarations are not evidence of implemented replay.",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/scenario"
+    },
+    {
+      "$ref": "#/$defs/functionMatrix"
+    },
+    {
+      "$ref": "#/$defs/modelMatrix"
+    }
+  ],
+  "$defs": {
+    "clock": {
+      "type": "object",
+      "properties": {
+        "epochMs": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        }
+      },
+      "required": [
+        "epochMs"
+      ],
+      "additionalProperties": false
+    },
+    "contentBlock": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "const": "text"
+            },
+            "text": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "text"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "const": "thinking"
+            },
+            "thinking": {
+              "type": "string"
+            },
+            "thinkingSignature": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "thinking"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "const": "toolCall"
+            },
+            "id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "name": {
+              "type": "string",
+              "minLength": 1
+            },
+            "arguments": {
+              "type": "object"
+            }
+          },
+          "required": [
+            "type",
+            "id",
+            "name",
+            "arguments"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "const": "image"
+            },
+            "data": {
+              "type": "string"
+            },
+            "mimeType": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "required": [
+            "type",
+            "data",
+            "mimeType"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "message": {
+      "type": "object",
+      "properties": {
+        "role": {
+          "enum": [
+            "user",
+            "system",
+            "assistant",
+            "toolResult",
+            "custom"
+          ]
+        },
+        "content": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/contentBlock"
+              }
+            }
+          ]
+        },
+        "timestamp": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "toolCallId": {
+          "type": "string"
+        },
+        "toolName": {
+          "type": "string"
+        },
+        "isError": {
+          "type": "boolean"
+        },
+        "customType": {
+          "type": "string"
+        },
+        "display": {
+          "type": "boolean"
+        },
+        "details": {}
+      },
+      "required": [
+        "role",
+        "content",
+        "timestamp"
+      ],
+      "additionalProperties": false
+    },
+    "toolResult": {
+      "type": "object",
+      "properties": {
+        "content": {
+          "type": "array",
+          "items": {
+            "oneOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "const": "text"
+                  },
+                  "text": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "text"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "const": "image"
+                  },
+                  "data": {
+                    "type": "string"
+                  },
+                  "mimeType": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                "required": [
+                  "type",
+                  "data",
+                  "mimeType"
+                ],
+                "additionalProperties": false
+              }
+            ]
+          }
+        },
+        "details": {},
+        "structuredContent": {},
+        "isError": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "content"
+      ],
+      "additionalProperties": false
+    },
+    "fauxResponse": {
+      "type": "object",
+      "properties": {
+        "content": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "$ref": "#/$defs/fauxBlock"
+            },
+            {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/fauxBlock"
+              }
+            }
+          ]
+        },
+        "stopReason": {
+          "enum": [
+            "stop",
+            "length",
+            "toolUse",
+            "error",
+            "aborted"
+          ]
+        },
+        "errorMessage": {
+          "type": "string"
+        },
+        "responseId": {
+          "type": "string"
+        },
+        "timestamp": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        }
+      },
+      "required": [
+        "content",
+        "stopReason"
+      ],
+      "additionalProperties": false
+    },
+    "provider": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "faux"
+            },
+            "tokenSize": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "tokensPerSecond": {
+              "type": "number",
+              "exclusiveMinimum": 0
+            },
+            "responses": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/fauxResponse"
+              },
+              "minItems": 1
+            }
+          },
+          "required": [
+            "kind",
+            "tokenSize",
+            "responses"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "wire"
+            },
+            "responses": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/wireResponse"
+              },
+              "minItems": 1
+            }
+          },
+          "required": [
+            "kind",
+            "responses"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "tool": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "label": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "parameters": {
+          "type": "object"
+        },
+        "executionMode": {
+          "enum": [
+            "sequential",
+            "parallel"
+          ]
+        },
+        "behavior": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/toolAction"
+          },
+          "minItems": 1
+        }
+      },
+      "required": [
+        "name",
+        "parameters",
+        "behavior"
+      ],
+      "additionalProperties": false
+    },
+    "toolAction": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "wait": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "required": [
+            "wait"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "update": {
+              "$ref": "#/$defs/toolResult"
+            }
+          },
+          "required": [
+            "update"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "result": {
+              "$ref": "#/$defs/toolResult"
+            }
+          },
+          "required": [
+            "result"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "throw": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "throw"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "step": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "prompt": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "$ref": "#/$defs/message"
+                },
+                {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/$defs/message"
+                  },
+                  "minItems": 1
+                }
+              ]
+            }
+          },
+          "required": [
+            "prompt"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "steer": {
+              "$ref": "#/$defs/message"
+            }
+          },
+          "required": [
+            "steer"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "followUp": {
+              "$ref": "#/$defs/message"
+            }
+          },
+          "required": [
+            "followUp"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "continue": {
+              "type": "object",
+              "properties": {},
+              "required": [],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "continue"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "abort": {
+              "type": "object",
+              "properties": {},
+              "required": [],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "abort"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "sendCustomMessage": {
+              "type": "object",
+              "properties": {
+                "message": {
+                  "$ref": "#/$defs/message"
+                },
+                "mode": {
+                  "enum": [
+                    "steer",
+                    "followUp",
+                    "nextTurn"
+                  ]
+                }
+              },
+              "required": [
+                "message",
+                "mode"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "sendCustomMessage"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "setActiveTools": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          },
+          "required": [
+            "setActiveTools"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "setModel": {
+              "type": "object",
+              "properties": {
+                "ref": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "required": [
+                "ref"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "setModel"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "setThinkingLevel": {
+              "enum": [
+                "off",
+                "minimal",
+                "low",
+                "medium",
+                "high",
+                "xhigh"
+              ]
+            }
+          },
+          "required": [
+            "setThinkingLevel"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "compact": {
+              "type": "object",
+              "properties": {
+                "customInstructions": {
+                  "type": "string"
+                }
+              },
+              "required": [],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "compact"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "branch": {
+              "type": "object",
+              "properties": {
+                "entryId": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "required": [
+                "entryId"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "branch"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "navigateTree": {
+              "type": "object",
+              "properties": {
+                "targetId": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "summarize": {
+                  "type": "boolean"
+                },
+                "customInstructions": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "targetId"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "navigateTree"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "appendLabel": {
+              "type": "object",
+              "properties": {
+                "targetId": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "label": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "targetId",
+                "label"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "appendLabel"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "appendContextEdit": {
+              "type": "object",
+              "properties": {
+                "targetId": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "operation": {
+                  "enum": [
+                    "omit",
+                    "replace"
+                  ]
+                },
+                "message": {
+                  "$ref": "#/$defs/message"
+                }
+              },
+              "required": [
+                "targetId",
+                "operation"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "appendContextEdit"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "reopenSession": {
+              "type": "object",
+              "properties": {},
+              "required": [],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "reopenSession"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "waitFor": {
+              "type": "object",
+              "properties": {
+                "type": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "toolCallId": {
+                  "type": "string"
+                },
+                "role": {
+                  "type": "string"
+                },
+                "count": {
+                  "type": "integer",
+                  "minimum": 1
+                }
+              },
+              "required": [
+                "type"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "waitFor"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "open": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "required": [
+            "open"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "advanceClock": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            }
+          },
+          "required": [
+            "advanceClock"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "awaitIdle": {
+              "type": "object",
+              "properties": {
+                "autoAdvance": {
+                  "type": "boolean"
+                }
+              },
+              "required": [],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "awaitIdle"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "expectError": {
+              "type": "object",
+              "properties": {
+                "message": {
+                  "type": "string"
+                },
+                "step": {
+                  "$ref": "#/$defs/step"
+                }
+              },
+              "required": [
+                "message",
+                "step"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "expectError"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "wireChunk": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "data": {}
+          },
+          "required": [
+            "data"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "comment": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "comment"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "raw": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "raw"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "gate": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "required": [
+            "gate"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "disconnect": {
+              "const": true
+            }
+          },
+          "required": [
+            "disconnect"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "wireResponse": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "status": {
+              "type": "integer",
+              "minimum": 100,
+              "maximum": 599
+            },
+            "headers": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string"
+              }
+            },
+            "sse": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/wireChunk"
+              }
+            }
+          },
+          "required": [
+            "status",
+            "sse"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "status": {
+              "type": "integer",
+              "minimum": 100,
+              "maximum": 599
+            },
+            "headers": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string"
+              }
+            },
+            "body": {}
+          },
+          "required": [
+            "status",
+            "body"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "networkError": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "networkError"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "scenario": {
+      "type": "object",
+      "properties": {
+        "dsl": {
+          "const": 1
+        },
+        "id": {
+          "type": "string",
+          "pattern": "^(agent|session|wire)/[a-z0-9]+(?:-[a-z0-9]+)*(?:~[a-z0-9]+(?:-[a-z0-9]+)*)?$"
+        },
+        "layer": {
+          "enum": [
+            "agent",
+            "session",
+            "wire",
+            "session+wire"
+          ]
+        },
+        "covers": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 1
+        },
+        "model": {
+          "type": "object",
+          "properties": {
+            "ref": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "required": [
+            "ref"
+          ],
+          "additionalProperties": false
+        },
+        "clock": {
+          "$ref": "#/$defs/clock"
+        },
+        "systemPrompt": {
+          "type": "string"
+        },
+        "thinkingLevel": {
+          "enum": [
+            "off",
+            "minimal",
+            "low",
+            "medium",
+            "high",
+            "xhigh"
+          ]
+        },
+        "provider": {
+          "$ref": "#/$defs/provider"
+        },
+        "tools": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/tool"
+          }
+        },
+        "steeringMode": {
+          "enum": [
+            "one-at-a-time",
+            "all"
+          ]
+        },
+        "followUpMode": {
+          "enum": [
+            "one-at-a-time",
+            "all"
+          ]
+        },
+        "concurrency": {
+          "enum": [
+            "gated",
+            "free"
+          ]
+        },
+        "platforms": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "linux",
+              "macos",
+              "windows"
+            ]
+          },
+          "minItems": 1
+        },
+        "normalize": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "timestamps"
+            ]
+          }
+        },
+        "steps": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/step"
+          },
+          "minItems": 1
+        },
+        "variants": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+              },
+              "subscriberDelayOn": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "required": [
+              "id",
+              "subscriberDelayOn"
+            ],
+            "additionalProperties": false
+          }
+        }
+      },
+      "required": [
+        "dsl",
+        "id",
+        "layer",
+        "covers",
+        "model",
+        "clock",
+        "provider",
+        "steps"
+      ],
+      "additionalProperties": false
+    },
+    "functionMatrix": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "dsl": {
+              "const": 1
+            },
+            "id": {
+              "const": "json-parse.parseStreamingJson"
+            },
+            "clock": {
+              "$ref": "#/$defs/clock"
+            },
+            "cases": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "case": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "input": {
+                    "type": "object",
+                    "properties": {
+                      "partialJson": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "partialJson"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "required": [
+                  "case",
+                  "input"
+                ],
+                "additionalProperties": false
+              },
+              "minItems": 1
+            }
+          },
+          "required": [
+            "dsl",
+            "id",
+            "clock",
+            "cases"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "dsl": {
+              "const": 1
+            },
+            "id": {
+              "const": "estimate.estimateTextTokens"
+            },
+            "clock": {
+              "$ref": "#/$defs/clock"
+            },
+            "cases": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "case": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "input": {
+                    "type": "object",
+                    "properties": {
+                      "text": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "text"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "required": [
+                  "case",
+                  "input"
+                ],
+                "additionalProperties": false
+              },
+              "minItems": 1
+            }
+          },
+          "required": [
+            "dsl",
+            "id",
+            "clock",
+            "cases"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "dsl": {
+              "const": 1
+            },
+            "id": {
+              "const": "sanitize-unicode.sanitizeSurrogates"
+            },
+            "clock": {
+              "$ref": "#/$defs/clock"
+            },
+            "cases": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "case": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "input": {
+                    "type": "object",
+                    "properties": {
+                      "utf16": {
+                        "type": "array",
+                        "items": {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 65535
+                        }
+                      }
+                    },
+                    "required": [
+                      "utf16"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "required": [
+                  "case",
+                  "input"
+                ],
+                "additionalProperties": false
+              },
+              "minItems": 1
+            }
+          },
+          "required": [
+            "dsl",
+            "id",
+            "clock",
+            "cases"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "dsl": {
+              "const": 1
+            },
+            "id": {
+              "const": "json.stringify"
+            },
+            "clock": {
+              "$ref": "#/$defs/clock"
+            },
+            "cases": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "case": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "input": {
+                    "oneOf": [
+                      {
+                        "type": "object",
+                        "properties": {
+                          "value": {},
+                          "space": {
+                            "anyOf": [
+                              {
+                                "type": "integer",
+                                "minimum": 0,
+                                "maximum": 10
+                              },
+                              {
+                                "type": "string"
+                              }
+                            ]
+                          }
+                        },
+                        "required": [
+                          "value"
+                        ],
+                        "additionalProperties": false
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "utf16": {
+                            "type": "array",
+                            "items": {
+                              "type": "integer",
+                              "minimum": 0,
+                              "maximum": 65535
+                            }
+                          },
+                          "space": {
+                            "anyOf": [
+                              {
+                                "type": "integer",
+                                "minimum": 0,
+                                "maximum": 10
+                              },
+                              {
+                                "type": "string"
+                              }
+                            ]
+                          }
+                        },
+                        "required": [
+                          "utf16"
+                        ],
+                        "additionalProperties": false
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "entries": {
+                            "type": "array",
+                            "items": {
+                              "type": "array",
+                              "prefixItems": [
+                                {
+                                  "type": "string"
+                                },
+                                {}
+                              ],
+                              "items": false,
+                              "minItems": 2,
+                              "maxItems": 2
+                            }
+                          },
+                          "space": {
+                            "anyOf": [
+                              {
+                                "type": "integer",
+                                "minimum": 0,
+                                "maximum": 10
+                              },
+                              {
+                                "type": "string"
+                              }
+                            ]
+                          }
+                        },
+                        "required": [
+                          "entries"
+                        ],
+                        "additionalProperties": false
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "number": {
+                            "type": "string",
+                            "pattern": "^-?(?:0|[1-9][0-9]*)(?:\\.[0-9]+)?(?:[eE][+-]?[0-9]+)?$"
+                          },
+                          "space": {
+                            "anyOf": [
+                              {
+                                "type": "integer",
+                                "minimum": 0,
+                                "maximum": 10
+                              },
+                              {
+                                "type": "string"
+                              }
+                            ]
+                          }
+                        },
+                        "required": [
+                          "number"
+                        ],
+                        "additionalProperties": false
+                      }
+                    ]
+                  }
+                },
+                "required": [
+                  "case",
+                  "input"
+                ],
+                "additionalProperties": false
+              },
+              "minItems": 1
+            }
+          },
+          "required": [
+            "dsl",
+            "id",
+            "clock",
+            "cases"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "dsl": {
+              "const": 1
+            },
+            "id": {
+              "const": "validation.validateToolArguments"
+            },
+            "clock": {
+              "$ref": "#/$defs/clock"
+            },
+            "cases": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "case": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "input": {
+                    "type": "object",
+                    "properties": {
+                      "tool": {
+                        "type": "object",
+                        "properties": {
+                          "name": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "description": {
+                            "type": "string"
+                          },
+                          "parameters": {
+                            "type": "object"
+                          }
+                        },
+                        "required": [
+                          "name",
+                          "description",
+                          "parameters"
+                        ],
+                        "additionalProperties": false
+                      },
+                      "toolCall": {
+                        "type": "object",
+                        "properties": {
+                          "type": {
+                            "const": "toolCall"
+                          },
+                          "id": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "name": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "arguments": {
+                            "type": "object"
+                          }
+                        },
+                        "required": [
+                          "type",
+                          "id",
+                          "name",
+                          "arguments"
+                        ],
+                        "additionalProperties": false
+                      }
+                    },
+                    "required": [
+                      "tool",
+                      "toolCall"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "required": [
+                  "case",
+                  "input"
+                ],
+                "additionalProperties": false
+              },
+              "minItems": 1
+            }
+          },
+          "required": [
+            "dsl",
+            "id",
+            "clock",
+            "cases"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "dsl": {
+              "const": 1
+            },
+            "id": {
+              "const": "retry.retryDelayMs"
+            },
+            "clock": {
+              "$ref": "#/$defs/clock"
+            },
+            "cases": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "case": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "input": {
+                    "type": "object",
+                    "properties": {
+                      "policy": {
+                        "type": "object",
+                        "properties": {
+                          "baseDelayMs": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 9007199254740991
+                          },
+                          "maxAgentDelayMs": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 9007199254740991
+                          }
+                        },
+                        "required": [
+                          "baseDelayMs"
+                        ],
+                        "additionalProperties": false
+                      },
+                      "attempt": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 9007199254740991
+                      }
+                    },
+                    "required": [
+                      "policy",
+                      "attempt"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "required": [
+                  "case",
+                  "input"
+                ],
+                "additionalProperties": false
+              },
+              "minItems": 1
+            }
+          },
+          "required": [
+            "dsl",
+            "id",
+            "clock",
+            "cases"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "dsl": {
+              "const": 1
+            },
+            "id": {
+              "const": "env.virtualTimers"
+            },
+            "clock": {
+              "$ref": "#/$defs/clock"
+            },
+            "cases": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "case": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "input": {
+                    "type": "object",
+                    "properties": {
+                      "operations": {
+                        "type": "array",
+                        "items": {
+                          "oneOf": [
+                            {
+                              "type": "object",
+                              "properties": {
+                                "schedule": {
+                                  "$ref": "#/$defs/timer"
+                                }
+                              },
+                              "required": [
+                                "schedule"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "advance": {
+                                  "type": "integer",
+                                  "minimum": 0,
+                                  "maximum": 9007199254740991
+                                }
+                              },
+                              "required": [
+                                "advance"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "setNow": {
+                                  "type": "integer",
+                                  "minimum": 0,
+                                  "maximum": 9007199254740991
+                                }
+                              },
+                              "required": [
+                                "setNow"
+                              ],
+                              "additionalProperties": false
+                            }
+                          ]
+                        },
+                        "minItems": 1
+                      }
+                    },
+                    "required": [
+                      "operations"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "required": [
+                  "case",
+                  "input"
+                ],
+                "additionalProperties": false
+              },
+              "minItems": 1
+            }
+          },
+          "required": [
+            "dsl",
+            "id",
+            "clock",
+            "cases"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "timer": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "delayMs": {
+          "type": "number",
+          "minimum": 0
+        },
+        "next": {
+          "$ref": "#/$defs/timer"
+        },
+        "microtasksBeforeNext": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1024
+        }
+      },
+      "required": [
+        "id",
+        "delayMs"
+      ],
+      "additionalProperties": false
+    },
+    "fauxBlock": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "const": "text"
+            },
+            "text": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "text"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "const": "thinking"
+            },
+            "thinking": {
+              "type": "string"
+            },
+            "thinkingSignature": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "thinking"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "const": "toolCall"
+            },
+            "id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "name": {
+              "type": "string",
+              "minLength": 1
+            },
+            "arguments": {
+              "type": "object"
+            }
+          },
+          "required": [
+            "type",
+            "id",
+            "name",
+            "arguments"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "modelMatrix": {
+      "type": "object",
+      "properties": {
+        "dsl": {
+          "const": 1
+        },
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+        },
+        "clock": {
+          "$ref": "#/$defs/clock"
+        },
+        "covers": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 1
+        },
+        "models": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "provider": {
+                "type": "string",
+                "minLength": 1
+              },
+              "id": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "required": [
+              "provider",
+              "id"
+            ],
+            "additionalProperties": false
+          },
+          "minItems": 1
+        }
+      },
+      "required": [
+        "dsl",
+        "id",
+        "clock",
+        "covers",
+        "models"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

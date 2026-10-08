@@ -1,0 +1,262 @@
+{
+  "dsl": 1,
+  "id": "validation.validateToolArguments",
+  "clock": {
+    "epochMs": 1767225600000
+  },
+  "cases": [
+    {
+      "case": "integer",
+      "input": {
+        "tool": {
+          "name": "lookup",
+          "description": "Look up a numbered result",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "count": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "label": {
+                "type": "string"
+              },
+              "enabled": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "count"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "toolCall": {
+          "type": "toolCall",
+          "id": "call_1",
+          "name": "lookup",
+          "arguments": {
+            "count": 2
+          }
+        }
+      }
+    },
+    {
+      "case": "coerce-string",
+      "input": {
+        "tool": {
+          "name": "lookup",
+          "description": "Look up a numbered result",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "count": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "label": {
+                "type": "string"
+              },
+              "enabled": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "count"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "toolCall": {
+          "type": "toolCall",
+          "id": "call_1",
+          "name": "lookup",
+          "arguments": {
+            "count": "2"
+          }
+        }
+      }
+    },
+    {
+      "case": "optional-null",
+      "input": {
+        "tool": {
+          "name": "lookup",
+          "description": "Look up a numbered result",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "count": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "label": {
+                "type": "string"
+              },
+              "enabled": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "count"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "toolCall": {
+          "type": "toolCall",
+          "id": "call_1",
+          "name": "lookup",
+          "arguments": {
+            "count": 2,
+            "label": null
+          }
+        }
+      }
+    },
+    {
+      "case": "boolean-string",
+      "input": {
+        "tool": {
+          "name": "lookup",
+          "description": "Look up a numbered result",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "count": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "label": {
+                "type": "string"
+              },
+              "enabled": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "count"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "toolCall": {
+          "type": "toolCall",
+          "id": "call_1",
+          "name": "lookup",
+          "arguments": {
+            "count": 2,
+            "enabled": "true"
+          }
+        }
+      }
+    },
+    {
+      "case": "missing-required",
+      "input": {
+        "tool": {
+          "name": "lookup",
+          "description": "Look up a numbered result",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "count": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "label": {
+                "type": "string"
+              },
+              "enabled": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "count"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "toolCall": {
+          "type": "toolCall",
+          "id": "call_1",
+          "name": "lookup",
+          "arguments": {}
+        }
+      }
+    },
+    {
+      "case": "minimum",
+      "input": {
+        "tool": {
+          "name": "lookup",
+          "description": "Look up a numbered result",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "count": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "label": {
+                "type": "string"
+              },
+              "enabled": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "count"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "toolCall": {
+          "type": "toolCall",
+          "id": "call_1",
+          "name": "lookup",
+          "arguments": {
+            "count": 0
+          }
+        }
+      }
+    },
+    {
+      "case": "extra-property",
+      "input": {
+        "tool": {
+          "name": "lookup",
+          "description": "Look up a numbered result",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "count": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "label": {
+                "type": "string"
+              },
+              "enabled": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "count"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "toolCall": {
+          "type": "toolCall",
+          "id": "call_1",
+          "name": "lookup",
+          "arguments": {
+            "count": 2,
+            "unexpected": true
+          }
+        }
+      }
+    }
+  ]
+}

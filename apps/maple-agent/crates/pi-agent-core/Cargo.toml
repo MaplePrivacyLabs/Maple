@@ -1,0 +1,13 @@
+[package]
+name = "pi-agent-core"
+description = "Portable agent loop ported from Pi"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[features]
+default = []
+test-internals = []
+
+[dependencies]
+pi-ai = { path = "../pi-ai" }

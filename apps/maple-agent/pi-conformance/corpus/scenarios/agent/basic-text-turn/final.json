@@ -1,0 +1,80 @@
+{
+  "state": {
+    "systemPrompt": "You are a helpful assistant.",
+    "model": {
+      "id": "faux-1",
+      "name": "Faux Model",
+      "api": "faux",
+      "provider": "faux",
+      "baseUrl": "http://localhost:0",
+      "reasoning": false,
+      "input": [
+        "text",
+        "image"
+      ],
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "contextWindow": 128000,
+      "maxTokens": 16384
+    },
+    "thinkingLevel": "off",
+    "tools": [],
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are a helpful assistant.",
+        "timestamp": 0
+      },
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "Hello"
+          }
+        ],
+        "timestamp": 1767225600000
+      },
+      {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "text",
+            "text": "Hello, world!"
+          }
+        ],
+        "api": "faux",
+        "provider": "faux",
+        "model": "faux-1",
+        "usage": {
+          "input": 12,
+          "output": 4,
+          "cacheRead": 0,
+          "cacheWrite": 0,
+          "totalTokens": 16,
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "total": 0
+          }
+        },
+        "stopReason": "stop",
+        "timestamp": 1767225600000,
+        "thinkingLevel": "off"
+      }
+    ],
+    "isStreaming": false,
+    "pendingToolCalls": []
+  },
+  "queues": {
+    "hasQueuedMessages": false,
+    "next": []
+  },
+  "errors": []
+}

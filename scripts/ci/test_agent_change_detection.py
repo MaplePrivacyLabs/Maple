@@ -5,7 +5,9 @@ import subprocess
 import sys
 import unittest
 
-from agent_change_detection import affects_agent, classify_paths
+from agent_change_detection import (
+    affects_agent, affects_pi_reference, classify_paths, classify_pi_reference,
+)
 from change_detection import DESKTOP_PLATFORMS, classify_path as research_routes
 
 
@@ -111,13 +113,60 @@ class AgentChangeDetectionTests(unittest.TestCase):
         self.assertFalse(classify_paths(["README.md", "sdk/rust/README.md"]))
         self.assertTrue(classify_paths(["README.md", "proxy/src/proxy.rs"]))
 
+    def test_reference_inputs_always_select_reference_and_rust_checks(self):
+        for path in (
+            "apps/maple-agent/pi-conformance/pin.json",
+            "apps/maple-agent/pi-conformance/flake.lock",
+            "apps/maple-agent/pi-conformance/recorder/record.test.ts",
+            "apps/maple-agent/pi-conformance/scenarios/text.json",
+            "apps/maple-agent/pi-conformance/corpus/basic/events.jsonl",
+            "apps/maple-agent/pi-conformance/fixtures/README.md",
+            "apps/maple-agent/pi-conformance/README.md",
+            "apps/maple-agent/pi-conformance/LICENSE",
+            "apps/maple-agent/justfile",
+            "flake.nix", "flake.lock", ".gitattributes",
+            ".github/workflows/agent-ci.yml",
+            ".github/workflows/agent-desktop-build.yml",
+            "scripts/ci/agent_change_detection.py", "scripts/ci/change_detection.py",
+            "scripts/ci/verify-agent-rust-deps.py",
+            "scripts/ci/apple-toolchain.json", "scripts/ci/select-xcode.py",
+            "new-build-config.toml", "", "/tmp/file", "../file",
+            "apps/maple-agent/../pi-conformance/pin.json",
+        ):
+            with self.subTest(path=path):
+                self.assertTrue(affects_pi_reference(path))
+                self.assertTrue(affects_agent(path))
+
+    def test_reference_does_not_rebuild_for_rust_only_or_unrelated_changes(self):
+        for path in (
+            "apps/maple-agent/crates/pi-ai/src/lib.rs",
+            "apps/maple-agent/crates/pi-conformance/tests/main.rs",
+            "apps/maple-agent/app/src/main.rs",
+            "apps/maple-agent/Cargo.toml", "apps/maple-agent/Cargo.lock",
+            "apps/maple-agent/flake.nix", "apps/maple-agent/flake.lock",
+            "apps/maple-agent/README.md", "apps/maple-agent/docs/pi.md",
+            "proxy/src/proxy.rs", "sdk/rust/src/client.rs", "sdk/src/lib/index.ts",
+            "README.md", "services/opensecret/src/main.rs",
+            ".github/workflows/desktop-pr-build.yml",
+        ):
+            with self.subTest(path=path):
+                self.assertFalse(affects_pi_reference(path))
+        self.assertFalse(classify_pi_reference([]))
+        self.assertFalse(classify_pi_reference(["README.md", "proxy/src/proxy.rs"]))
+        self.assertTrue(classify_pi_reference([
+            "README.md", "apps/maple-agent/pi-conformance/pin.json",
+        ]))
+
     def test_cli_preserves_null_delimited_names_and_explicit_fallback(self):
         script = Path(__file__).with_name("agent_change_detection.py")
         for arguments, paths, expected in (
-            ([], b"README.md\0apps/maple-agent/app/assets/a\nspace name\0", b"agent=true\n"),
-            ([], b"README.md\0apps/maple-agent/docs/design notes.md\0", b"agent=false\n"),
-            ([], b"", b"agent=false\n"),
-            (["--all"], b"", b"agent=true\n"),
+            ([], b"README.md\0apps/maple-agent/app/assets/a\nspace name\0", b"agent=true\npi_reference=false\n"),
+            ([], b"README.md\0apps/maple-agent/docs/design notes.md\0", b"agent=false\npi_reference=false\n"),
+            ([], b"", b"agent=false\npi_reference=false\n"),
+            (["--all"], b"", b"agent=true\npi_reference=true\n"),
+            ([], b"apps/maple-agent/pi-conformance/fixtures/a\nname\0",
+             b"agent=true\npi_reference=true\n"),
+            ([], b"../file\0", b"agent=true\npi_reference=true\n"),
         ):
             result = subprocess.run([sys.executable, str(script), *arguments], input=paths,
                                     check=True, capture_output=True)

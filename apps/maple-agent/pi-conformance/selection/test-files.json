@@ -1,0 +1,725 @@
+{
+  "schemaVersion": 1,
+  "files": [
+    {
+      "path": "packages/agent/test/agent-loop.test.ts",
+      "classification": "T",
+      "note": "Loop events, queues, executionMode, finishTurn, prepareRequest/NextTurn, terminate, runToolCall"
+    },
+    {
+      "path": "packages/agent/test/agent.test.ts",
+      "classification": "T",
+      "note": "Agent state, queues, listener settlement"
+    },
+    {
+      "path": "packages/agent/test/e2e.test.ts",
+      "classification": "T",
+      "note": "Agent over the faux provider"
+    },
+    {
+      "path": "packages/ai/test/cache-retention.test.ts",
+      "classification": "P",
+      "note": "openai-completions cases only"
+    },
+    {
+      "path": "packages/ai/test/constrained-sampling.test.ts",
+      "classification": "P",
+      "note": "completions cases; Responses conversion cases go"
+    },
+    {
+      "path": "packages/ai/test/context-estimate.test.ts",
+      "classification": "T",
+      "note": "estimate + simple-options clamping"
+    },
+    {
+      "path": "packages/ai/test/event-stream.test.ts",
+      "classification": "T",
+      "note": ""
+    },
+    {
+      "path": "packages/ai/test/faux-provider.test.ts",
+      "classification": "T",
+      "note": "uses compat `registerFauxProvider`; re-target at the Rust faux handle"
+    },
+    {
+      "path": "packages/ai/test/lax-message-content.test.ts",
+      "classification": "T",
+      "note": "transform-messages null content"
+    },
+    {
+      "path": "packages/ai/test/openai-completions-cache-control-format.test.ts",
+      "classification": "T",
+      "note": "catalog `getModel`: use fixture models"
+    },
+    {
+      "path": "packages/ai/test/openai-completions-empty-tools.test.ts",
+      "classification": "T",
+      "note": "catalog `getModel`: use fixture models"
+    },
+    {
+      "path": "packages/ai/test/openai-completions-prompt-cache.test.ts",
+      "classification": "T",
+      "note": "catalog `getModel`: use fixture models"
+    },
+    {
+      "path": "packages/ai/test/openai-completions-provider-stream-event.test.ts",
+      "classification": "T",
+      "note": "catalog `getModel`: use fixture models"
+    },
+    {
+      "path": "packages/ai/test/openai-completions-raw-stop-reason.test.ts",
+      "classification": "T",
+      "note": ""
+    },
+    {
+      "path": "packages/ai/test/openai-completions-reasoning-details.test.ts",
+      "classification": "T",
+      "note": ""
+    },
+    {
+      "path": "packages/ai/test/openai-completions-response-model.test.ts",
+      "classification": "T",
+      "note": "catalog `getModel`: use fixture models"
+    },
+    {
+      "path": "packages/ai/test/openai-completions-retry.test.ts",
+      "classification": "A",
+      "note": "asserts SDK retry options and `retryProviderRequest`; becomes a Maple adapter test"
+    },
+    {
+      "path": "packages/ai/test/openai-completions-thinking-as-text.test.ts",
+      "classification": "T",
+      "note": ""
+    },
+    {
+      "path": "packages/ai/test/openai-completions-thinking-token-budget.test.ts",
+      "classification": "T",
+      "note": "catalog `getModel`: use fixture models"
+    },
+    {
+      "path": "packages/ai/test/openai-completions-tool-choice.test.ts",
+      "classification": "T",
+      "note": "catalog `getModel`: use fixture models"
+    },
+    {
+      "path": "packages/ai/test/openai-completions-tool-result-images.test.ts",
+      "classification": "T",
+      "note": "catalog `getModel`: use fixture models"
+    },
+    {
+      "path": "packages/ai/test/openai-completions-vllm-priority.test.ts",
+      "classification": "T",
+      "note": "catalog `getModel`: use fixture models"
+    },
+    {
+      "path": "packages/ai/test/overflow.test.ts",
+      "classification": "T",
+      "note": ""
+    },
+    {
+      "path": "packages/ai/test/pre-generation-error.test.ts",
+      "classification": "P",
+      "note": "openai-completions case only"
+    },
+    {
+      "path": "packages/ai/test/retry.test.ts",
+      "classification": "T",
+      "note": "retryAssistantCall over faux"
+    },
+    {
+      "path": "packages/ai/test/sampling-options.test.ts",
+      "classification": "P",
+      "note": "openai-completions sampling params"
+    },
+    {
+      "path": "packages/ai/test/supports-xhigh.test.ts",
+      "classification": "P",
+      "note": "thinking-level clamps against vendor catalog models: rewrite with fixtures"
+    },
+    {
+      "path": "packages/ai/test/system-message-replay.test.ts",
+      "classification": "T",
+      "note": "transcript replay"
+    },
+    {
+      "path": "packages/ai/test/text.test.ts",
+      "classification": "T",
+      "note": ""
+    },
+    {
+      "path": "packages/ai/test/transcript-tool-changes.test.ts",
+      "classification": "P",
+      "note": "openai-completions cases; anthropic/responses cases go"
+    },
+    {
+      "path": "packages/ai/test/transform-messages-copilot-openai-to-anthropic.test.ts",
+      "classification": "T",
+      "note": "cross-model replay fixtures (no excluded module imported)"
+    },
+    {
+      "path": "packages/ai/test/uuid.test.ts",
+      "classification": "T",
+      "note": ""
+    },
+    {
+      "path": "packages/ai/test/validation.test.ts",
+      "classification": "T",
+      "note": "Tool-argument coercion and schema validation"
+    },
+    {
+      "path": "packages/coding-agent/test/agent-session-auto-compaction-queue.test.ts",
+      "classification": "T",
+      "note": ""
+    },
+    {
+      "path": "packages/coding-agent/test/agent-session-branching.test.ts",
+      "classification": "E",
+      "note": ""
+    },
+    {
+      "path": "packages/coding-agent/test/agent-session-compaction.test.ts",
+      "classification": "E",
+      "note": ""
+    },
+    {
+      "path": "packages/coding-agent/test/agent-session-concurrent.test.ts",
+      "classification": "T",
+      "note": ""
+    },
+    {
+      "path": "packages/coding-agent/test/agent-session-dynamic-tools.test.ts",
+      "classification": "P",
+      "note": "uses the built-in bash tool; swap in a test tool"
+    },
+    {
+      "path": "packages/coding-agent/test/agent-session-retry.test.ts",
+      "classification": "T",
+      "note": ""
+    },
+    {
+      "path": "packages/coding-agent/test/agent-session-runtime-events.test.ts",
+      "classification": "T",
+      "note": ""
+    },
+    {
+      "path": "packages/coding-agent/test/agent-session-stats.test.ts",
+      "classification": "T",
+      "note": ""
+    },
+    {
+      "path": "packages/coding-agent/test/agent-session-tree-navigation.test.ts",
+      "classification": "E",
+      "note": ""
+    },
+    {
+      "path": "packages/coding-agent/test/block-images.test.ts",
+      "classification": "P",
+      "note": "SettingsManager cases; read tool and `processFileArguments` cases go"
+    },
+    {
+      "path": "packages/coding-agent/test/branch-summarization.test.ts",
+      "classification": "T",
+      "note": ""
+    },
+    {
+      "path": "packages/coding-agent/test/branch-summary-extensions.test.ts",
+      "classification": "T",
+      "note": ""
+    },
+    {
+      "path": "packages/coding-agent/test/compaction-extensions-example.test.ts",
+      "classification": "R",
+      "note": "TypeScript example extension; rewrite as a Rust-native extension test"
+    },
+    {
+      "path": "packages/coding-agent/test/compaction-extensions.test.ts",
+      "classification": "E",
+      "note": ""
+    },
+    {
+      "path": "packages/coding-agent/test/compaction-nested-calls.test.ts",
+      "classification": "T",
+      "note": "serializes `nestedCalls` records (type kept)"
+    },
+    {
+      "path": "packages/coding-agent/test/compaction-serialization.test.ts",
+      "classification": "T",
+      "note": ""
+    },
+    {
+      "path": "packages/coding-agent/test/compaction-summary-reasoning.test.ts",
+      "classification": "T",
+      "note": ""
+    },
+    {
+      "path": "packages/coding-agent/test/compaction.test.ts",
+      "classification": "T",
+      "note": "2 cases live-gated (LLM summarization)"
+    },
+    {
+      "path": "packages/coding-agent/test/default-tools-setting.test.ts",
+      "classification": "P",
+      "note": "assumes built-in `read`/`bash`/`edit`/`write`; use test tools"
+    },
+    {
+      "path": "packages/coding-agent/test/export-jsonl-share.test.ts",
+      "classification": "P",
+      "note": "JSONL export case; share goes"
+    },
+    {
+      "path": "packages/coding-agent/test/extensions-input-event.test.ts",
+      "classification": "T",
+      "note": ""
+    },
+    {
+      "path": "packages/coding-agent/test/extensions-runner.test.ts",
+      "classification": "P",
+      "note": "Hook runner cases; shortcut, renderer, flag and provider-registration cases are excluded"
+    },
+    {
+      "path": "packages/coding-agent/test/frontmatter.test.ts",
+      "classification": "T",
+      "note": ""
+    },
+    {
+      "path": "packages/coding-agent/test/image-process.test.ts",
+      "classification": "T",
+      "note": ""
+    },
+    {
+      "path": "packages/coding-agent/test/image-processing.test.ts",
+      "classification": "T",
+      "note": "assert dimensions/MIME, not Photon's exact bytes"
+    },
+    {
+      "path": "packages/coding-agent/test/image-resize-callers.test.ts",
+      "classification": "P",
+      "note": "read tool and `@file` cases go"
+    },
+    {
+      "path": "packages/coding-agent/test/mcp-extension.test.ts",
+      "classification": "P",
+      "note": "`MCP tools` block; config, connection and servers-section cases are excluded"
+    },
+    {
+      "path": "packages/coding-agent/test/package-manager.test.ts",
+      "classification": "P",
+      "note": "Resolve, skill metadata, `.agents/skills`, ignore files, top-level patterns, force include/exclude; installer cases are excluded"
+    },
+    {
+      "path": "packages/coding-agent/test/paths.test.ts",
+      "classification": "T",
+      "note": "1 case gated"
+    },
+    {
+      "path": "packages/coding-agent/test/prompt-templates.test.ts",
+      "classification": "T",
+      "note": ""
+    },
+    {
+      "path": "packages/coding-agent/test/resource-loader.test.ts",
+      "classification": "P",
+      "note": "theme and TypeScript-file extension cases go"
+    },
+    {
+      "path": "packages/coding-agent/test/sdk-session-manager.test.ts",
+      "classification": "T",
+      "note": ""
+    },
+    {
+      "path": "packages/coding-agent/test/sdk-skills.test.ts",
+      "classification": "T",
+      "note": ""
+    },
+    {
+      "path": "packages/coding-agent/test/sdk-stream-options.test.ts",
+      "classification": "P",
+      "note": "timeout/attribution cases go"
+    },
+    {
+      "path": "packages/coding-agent/test/session-context-edit.test.ts",
+      "classification": "T",
+      "note": "Session context edits"
+    },
+    {
+      "path": "packages/coding-agent/test/session-cwd.test.ts",
+      "classification": "T",
+      "note": ""
+    },
+    {
+      "path": "packages/coding-agent/test/session-file-invalid.test.ts",
+      "classification": "T",
+      "note": ""
+    },
+    {
+      "path": "packages/coding-agent/test/session-manager/build-context.test.ts",
+      "classification": "T",
+      "note": "Context reconstruction from session entries"
+    },
+    {
+      "path": "packages/coding-agent/test/session-manager/custom-session-id.test.ts",
+      "classification": "T",
+      "note": ""
+    },
+    {
+      "path": "packages/coding-agent/test/session-manager/file-operations.test.ts",
+      "classification": "T",
+      "note": "JSONL file I/O"
+    },
+    {
+      "path": "packages/coding-agent/test/session-manager/labels.test.ts",
+      "classification": "T",
+      "note": ""
+    },
+    {
+      "path": "packages/coding-agent/test/session-manager/load-entries.test.ts",
+      "classification": "T",
+      "note": ""
+    },
+    {
+      "path": "packages/coding-agent/test/session-manager/migration.test.ts",
+      "classification": "T",
+      "note": ""
+    },
+    {
+      "path": "packages/coding-agent/test/session-manager/save-entry.test.ts",
+      "classification": "T",
+      "note": ""
+    },
+    {
+      "path": "packages/coding-agent/test/session-manager/tree-traversal.test.ts",
+      "classification": "T",
+      "note": "tree API (kept; navigation UI is not)"
+    },
+    {
+      "path": "packages/coding-agent/test/settings-diagnostics.test.ts",
+      "classification": "T",
+      "note": ""
+    },
+    {
+      "path": "packages/coding-agent/test/settings-manager-bug.test.ts",
+      "classification": "T",
+      "note": ""
+    },
+    {
+      "path": "packages/coding-agent/test/settings-manager-compaction.test.ts",
+      "classification": "T",
+      "note": ""
+    },
+    {
+      "path": "packages/coding-agent/test/settings-manager.test.ts",
+      "classification": "P",
+      "note": "Agent settings; theme, terminal, TUI, network, cache-warming, shell and device-ID cases are excluded"
+    },
+    {
+      "path": "packages/coding-agent/test/skills.test.ts",
+      "classification": "T",
+      "note": ""
+    },
+    {
+      "path": "packages/coding-agent/test/suite/agent-session-boundaries.test.ts",
+      "classification": "T",
+      "note": ""
+    },
+    {
+      "path": "packages/coding-agent/test/suite/agent-session-compaction-model-overrides.test.ts",
+      "classification": "T",
+      "note": ""
+    },
+    {
+      "path": "packages/coding-agent/test/suite/agent-session-compaction.test.ts",
+      "classification": "T",
+      "note": ""
+    },
+    {
+      "path": "packages/coding-agent/test/suite/agent-session-mcp.test.ts",
+      "classification": "P",
+      "note": "drives Pi's MCP extension; re-target at Maple's MCP extension"
+    },
+    {
+      "path": "packages/coding-agent/test/suite/agent-session-model-extension.test.ts",
+      "classification": "T",
+      "note": ""
+    },
+    {
+      "path": "packages/coding-agent/test/suite/agent-session-prompt.test.ts",
+      "classification": "T",
+      "note": ""
+    },
+    {
+      "path": "packages/coding-agent/test/suite/agent-session-queue.test.ts",
+      "classification": "T",
+      "note": ""
+    },
+    {
+      "path": "packages/coding-agent/test/suite/agent-session-retry-events.test.ts",
+      "classification": "T",
+      "note": ""
+    },
+    {
+      "path": "packages/coding-agent/test/suite/agent-session-runtime.test.ts",
+      "classification": "T",
+      "note": ""
+    },
+    {
+      "path": "packages/coding-agent/test/suite/agent-session-tool-orchestration.test.ts",
+      "classification": "P",
+      "note": "codemode and tool_search cases go"
+    },
+    {
+      "path": "packages/coding-agent/test/suite/agent-session-tool-result-images.test.ts",
+      "classification": "T",
+      "note": ""
+    },
+    {
+      "path": "packages/coding-agent/test/suite/lax-message-content.test.ts",
+      "classification": "T",
+      "note": ""
+    },
+    {
+      "path": "packages/coding-agent/test/suite/regressions/1717-2113-agent-session-event-settlement.test.ts",
+      "classification": "T",
+      "note": ""
+    },
+    {
+      "path": "packages/coding-agent/test/suite/regressions/2023-queued-slash-command-followup.test.ts",
+      "classification": "T",
+      "note": ""
+    },
+    {
+      "path": "packages/coding-agent/test/suite/regressions/2753-reload-stale-resource-settings.test.ts",
+      "classification": "T",
+      "note": ""
+    },
+    {
+      "path": "packages/coding-agent/test/suite/regressions/2781-skill-collision-precedence.test.ts",
+      "classification": "T",
+      "note": ""
+    },
+    {
+      "path": "packages/coding-agent/test/suite/regressions/2835-tools-allowlist-filters-extension-tools.test.ts",
+      "classification": "T",
+      "note": ""
+    },
+    {
+      "path": "packages/coding-agent/test/suite/regressions/2860-replaced-session-context.test.ts",
+      "classification": "T",
+      "note": ""
+    },
+    {
+      "path": "packages/coding-agent/test/suite/regressions/3317-network-connection-lost-retry.test.ts",
+      "classification": "T",
+      "note": ""
+    },
+    {
+      "path": "packages/coding-agent/test/suite/regressions/3592-no-builtin-tools-keeps-extension-tools.test.ts",
+      "classification": "T",
+      "note": "the `noTools: \"builtin\"` path Maple's tools use"
+    },
+    {
+      "path": "packages/coding-agent/test/suite/regressions/3616-settings-inmemory-reload.test.ts",
+      "classification": "T",
+      "note": ""
+    },
+    {
+      "path": "packages/coding-agent/test/suite/regressions/3686-session-name-event.test.ts",
+      "classification": "T",
+      "note": ""
+    },
+    {
+      "path": "packages/coding-agent/test/suite/regressions/3688-tree-cancel-compacting.test.ts",
+      "classification": "T",
+      "note": ""
+    },
+    {
+      "path": "packages/coding-agent/test/suite/regressions/3982-message-end-cost-override.test.ts",
+      "classification": "T",
+      "note": ""
+    },
+    {
+      "path": "packages/coding-agent/test/suite/regressions/5109-exclude-tools.test.ts",
+      "classification": "T",
+      "note": ""
+    },
+    {
+      "path": "packages/coding-agent/test/suite/regressions/5217-compaction-reason.test.ts",
+      "classification": "T",
+      "note": ""
+    },
+    {
+      "path": "packages/coding-agent/test/suite/regressions/5303-bash-output-truncation.test.ts",
+      "classification": "T",
+      "note": "`waitForChildProcess` post-exit grace, which the Rust `pi.exec` keeps; fake child and fake timers"
+    },
+    {
+      "path": "packages/coding-agent/test/suite/regressions/5996-session-name-newlines.test.ts",
+      "classification": "T",
+      "note": ""
+    },
+    {
+      "path": "packages/coding-agent/test/suite/regressions/5998-blocked-tool-terminate.test.ts",
+      "classification": "T",
+      "note": ""
+    },
+    {
+      "path": "packages/coding-agent/test/suite/regressions/6019-explicit-provider-retry-message.test.ts",
+      "classification": "T",
+      "note": ""
+    },
+    {
+      "path": "packages/coding-agent/test/suite/regressions/6162-extension-active-tools-next-turn.test.ts",
+      "classification": "T",
+      "note": ""
+    },
+    {
+      "path": "packages/coding-agent/test/suite/regressions/6260-inline-extension-naming.test.ts",
+      "classification": "T",
+      "note": ""
+    },
+    {
+      "path": "packages/coding-agent/test/suite/regressions/6324-branch-summary-ambient-auth.test.ts",
+      "classification": "T",
+      "note": ""
+    },
+    {
+      "path": "packages/coding-agent/test/suite/regressions/6363-agent-settled-event.test.ts",
+      "classification": "T",
+      "note": ""
+    },
+    {
+      "path": "packages/coding-agent/test/suite/regressions/6647-compaction-retries-transient-stream-drop.test.ts",
+      "classification": "T",
+      "note": ""
+    },
+    {
+      "path": "packages/coding-agent/test/suite/regressions/6768-copilot-compaction-base-url.test.ts",
+      "classification": "P",
+      "note": "auth `baseUrl` override in summaries; vendor model fixture"
+    },
+    {
+      "path": "packages/coding-agent/test/suite/regressions/6904-dns-transport-retry.test.ts",
+      "classification": "T",
+      "note": ""
+    },
+    {
+      "path": "packages/coding-agent/test/suite/regressions/7048-compaction-truncated-summary.test.ts",
+      "classification": "T",
+      "note": ""
+    },
+    {
+      "path": "packages/coding-agent/test/suite/regressions/7150-rpc-prompt-during-compaction.test.ts",
+      "classification": "T",
+      "note": "AgentSession-level despite the name"
+    },
+    {
+      "path": "packages/coding-agent/test/suite/regressions/7193-event-bus-lifecycle.test.ts",
+      "classification": "T",
+      "note": ""
+    },
+    {
+      "path": "packages/coding-agent/test/suite/regressions/7253-manual-compact-during-response.test.ts",
+      "classification": "T",
+      "note": ""
+    },
+    {
+      "path": "packages/coding-agent/test/suite/regressions/7301-stalled-availability-refresh.test.ts",
+      "classification": "P",
+      "note": "model-runtime availability refresh; re-target at the seam"
+    },
+    {
+      "path": "packages/coding-agent/test/suite/regressions/7497-session-discovery-symlink.test.ts",
+      "classification": "T",
+      "note": "1 case gated"
+    },
+    {
+      "path": "packages/coding-agent/test/suite/regressions/7572-provider-retry-settings-merge.test.ts",
+      "classification": "T",
+      "note": ""
+    },
+    {
+      "path": "packages/coding-agent/test/suite/regressions/8328-zero-usage-auto-compaction.test.ts",
+      "classification": "T",
+      "note": ""
+    },
+    {
+      "path": "packages/coding-agent/test/suite/regressions/8337-utf8-bom-parsing.test.ts",
+      "classification": "T",
+      "note": ""
+    },
+    {
+      "path": "packages/coding-agent/test/suite/regressions/8423-extension-factory-failure.test.ts",
+      "classification": "T",
+      "note": ""
+    },
+    {
+      "path": "packages/coding-agent/test/suite/regressions/8537-custom-message-tool-result-ordering.test.ts",
+      "classification": "T",
+      "note": ""
+    },
+    {
+      "path": "packages/coding-agent/test/suite/regressions/8724-in-memory-fork-active-tool.test.ts",
+      "classification": "T",
+      "note": ""
+    },
+    {
+      "path": "packages/coding-agent/test/suite/regressions/8935-parallel-preflight-abort.test.ts",
+      "classification": "T",
+      "note": ""
+    },
+    {
+      "path": "packages/coding-agent/test/suite/regressions/8989-fork-compaction-label-boundary.test.ts",
+      "classification": "T",
+      "note": ""
+    },
+    {
+      "path": "packages/coding-agent/test/suite/regressions/9178-tree-during-compaction.test.ts",
+      "classification": "T",
+      "note": ""
+    },
+    {
+      "path": "packages/coding-agent/test/suite/regressions/9340-9777-auto-compaction-cancellation.test.ts",
+      "classification": "T",
+      "note": ""
+    },
+    {
+      "path": "packages/coding-agent/test/suite/regressions/9789-context-handler-system-messages.test.ts",
+      "classification": "T",
+      "note": ""
+    },
+    {
+      "path": "packages/coding-agent/test/suite/regressions/pre-prompt-compaction-no-continue.test.ts",
+      "classification": "T",
+      "note": ""
+    },
+    {
+      "path": "packages/coding-agent/test/suite/regressions/tree-during-streaming.test.ts",
+      "classification": "T",
+      "note": ""
+    },
+    {
+      "path": "packages/coding-agent/test/system-prompt-updates.test.ts",
+      "classification": "T",
+      "note": ""
+    },
+    {
+      "path": "packages/coding-agent/test/system-prompt.test.ts",
+      "classification": "T",
+      "note": ""
+    },
+    {
+      "path": "packages/coding-agent/test/tool-result-images.test.ts",
+      "classification": "T",
+      "note": ""
+    },
+    {
+      "path": "packages/coding-agent/test/trigger-compact-extension.test.ts",
+      "classification": "R",
+      "note": "TypeScript example extension; rewrite as a Rust-native extension test"
+    },
+    {
+      "path": "packages/coding-agent/test/trust-manager.test.ts",
+      "classification": "T",
+      "note": ""
+    }
+  ]
+}

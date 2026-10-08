@@ -11,6 +11,7 @@ from change_detection import DESKTOP_PLATFORMS, classify_path as research_routes
 
 
 AGENT_PREFIX = "apps/maple-agent/"
+PI_REFERENCE_PREFIX = AGENT_PREFIX + "pi-conformance/"
 AGENT_INERT_FILES = frozenset(
     {
         "AGENTS.md",
@@ -74,19 +75,39 @@ def affects_agent(path: str) -> bool:
     return True
 
 
+def affects_pi_reference(path: str) -> bool:
+    """Select reference recording only for its inputs, failing closed on unknown roots."""
+    if not path or path.startswith("/") or ".." in path.split("/"):
+        return True
+    if path in SHARED_INPUTS or path == AGENT_PREFIX + "justfile":
+        return True
+    if path.startswith(PI_REFERENCE_PREFIX):
+        return True
+    if path.startswith((AGENT_PREFIX, "proxy/", "sdk/")):
+        return False
+    if path in KNOWN_INDEPENDENT_FILES or path.startswith(KNOWN_INDEPENDENT_PREFIXES):
+        return False
+    return True
+
+
+def classify_pi_reference(paths: Iterable[str]) -> bool:
+    return any(affects_pi_reference(path) for path in paths)
+
+
 def classify_paths(paths: Iterable[str]) -> bool:
     return any(affects_agent(path) for path in paths)
 
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--all", action="store_true", help="Select Agent when a diff is unavailable")
+    parser.add_argument("--all", action="store_true", help="Select all Agent checks when a diff is unavailable")
     args = parser.parse_args()
-    paths = (
+    paths = tuple(
         path.decode("utf-8", errors="surrogateescape")
         for path in sys.stdin.buffer.read().split(b"\0") if path
     ) if not args.all else ()
     print(f"agent={'true' if args.all or classify_paths(paths) else 'false'}")
+    print(f"pi_reference={'true' if args.all or classify_pi_reference(paths) else 'false'}")
     return 0
 
 

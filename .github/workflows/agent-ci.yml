@@ -35,6 +35,7 @@ jobs:
     timeout-minutes: 5
     outputs:
       agent: ${{ steps.classify.outputs.agent }}
+      pi_reference: ${{ steps.classify.outputs.pi_reference }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
@@ -49,29 +50,54 @@ jobs:
           HEAD_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
         run: |
           set -euo pipefail
-          enable_agent() { echo 'agent=true' >> "$GITHUB_OUTPUT"; }
+          enable_checks() {
+            echo 'agent=true' >> "$GITHUB_OUTPUT"
+            echo 'pi_reference=true' >> "$GITHUB_OUTPUT"
+          }
           case "$GITHUB_EVENT_NAME" in
             pull_request) separator='...' ;;
             push)
               separator='..'
               if [[ "$BASE_SHA" =~ ^0+$ ]]; then
-                enable_agent
+                enable_checks
                 exit 0
               fi
               ;;
-            *) enable_agent; exit 0 ;;
+            *) enable_checks; exit 0 ;;
           esac
           if ! git cat-file -e "${BASE_SHA}^{commit}" || ! git cat-file -e "${HEAD_SHA}^{commit}"; then
-            enable_agent
+            enable_checks
             exit 0
           fi
           changed_paths="$(mktemp)"
           trap 'rm -f "$changed_paths"' EXIT
           if ! git diff --no-renames --name-only -z "${BASE_SHA}${separator}${HEAD_SHA}" > "$changed_paths"; then
-            enable_agent
+            enable_checks
           elif ! python3 scripts/ci/agent_change_detection.py < "$changed_paths" >> "$GITHUB_OUTPUT"; then
-            enable_agent
+            enable_checks
           fi
+
+  pi-reference:
+    name: Pi reference corpus
+    needs: changes
+    if: ${{ always() && !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.pi_reference != 'false') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+
+      - name: Install pinned Nix environment
+        uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
+        with:
+          github-token: ""
+
+      - name: Upstream Pi tests at the pin
+        run: nix build ./pi-conformance#upstream-tests -L --no-link --no-update-lock-file
+
+      - name: Committed corpus equals a fresh recording
+        run: nix build ./pi-conformance#checks.x86_64-linux.corpus-fresh -L --no-link --no-update-lock-file
 
   desktop:
     name: Agent (${{ matrix.os }})

@@ -1,0 +1,45 @@
+{
+  "dsl": 1,
+  "id": "estimate.estimateTextTokens",
+  "clock": {
+    "epochMs": 1767225600000
+  },
+  "cases": [
+    {
+      "case": "empty",
+      "input": {
+        "text": ""
+      }
+    },
+    {
+      "case": "ascii-four",
+      "input": {
+        "text": "abcd"
+      }
+    },
+    {
+      "case": "ascii-five",
+      "input": {
+        "text": "abcde"
+      }
+    },
+    {
+      "case": "astral",
+      "input": {
+        "text": "\ud83d\ude00\ud83d\ude00\ud83d\ude00"
+      }
+    },
+    {
+      "case": "combining",
+      "input": {
+        "text": "e\u0301e\u0301e\u0301"
+      }
+    },
+    {
+      "case": "mixed",
+      "input": {
+        "text": "a\ud83d\ude00b\ud83d\ude00c"
+      }
+    }
+  ]
+}

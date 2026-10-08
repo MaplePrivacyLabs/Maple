@@ -5,6 +5,7 @@
   importNpmLock,
   fetchurl,
   git,
+  python3,
   source,
   pin,
   name,
@@ -19,6 +20,7 @@ let
   };
 in
 assert catalogPin.revision == pin.catalogRevision;
+assert builtins.hashFile "sha256" (source + "/package-lock.json") == pin.packageLockSha256;
 stdenv.mkDerivation {
   pname = "pi-reference-${name}";
   version = lib.removePrefix "v" pin.tag;
@@ -30,6 +32,7 @@ stdenv.mkDerivation {
     nodejs_22
     importNpmLock.npmConfigHook
     git
+    python3
   ];
 
   env = {

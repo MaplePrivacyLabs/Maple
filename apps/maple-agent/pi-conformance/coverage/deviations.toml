@@ -1,0 +1,6 @@
+# No behavioral deviations have been approved.
+# A future entry requires a concrete owner approval in approvedIn and an
+# implemented, narrowly scoped comparison rule; a pending note is not approval.
+[meta]
+pin = "v1.0.4"
+revision = "7c10bd4337495ee613f2224843ecdf349b80d1df"

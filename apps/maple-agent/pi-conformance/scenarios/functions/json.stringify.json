@@ -1,0 +1,89 @@
+{
+  "dsl": 1,
+  "id": "json.stringify",
+  "clock": {
+    "epochMs": 1767225600000
+  },
+  "cases": [
+    {
+      "case": "one-float",
+      "input": {
+        "number": "1.0"
+      }
+    },
+    {
+      "case": "negative-zero",
+      "input": {
+        "number": "-0.0"
+      }
+    },
+    {
+      "case": "positive-exponent",
+      "input": {
+        "number": "1e21"
+      }
+    },
+    {
+      "case": "small-decimal",
+      "input": {
+        "number": "1e-6"
+      }
+    },
+    {
+      "case": "small-exponent",
+      "input": {
+        "number": "1e-7"
+      }
+    },
+    {
+      "case": "integer-key-order",
+      "input": {
+        "space": 2,
+        "entries": [
+          [
+            "10",
+            "ten"
+          ],
+          [
+            "2",
+            "two"
+          ],
+          [
+            "z",
+            0
+          ],
+          [
+            "01",
+            "leading"
+          ],
+          [
+            "a",
+            1
+          ]
+        ]
+      }
+    },
+    {
+      "case": "escaped",
+      "input": {
+        "value": {
+          "text": "line\nquote\"tab\t"
+        }
+      }
+    },
+    {
+      "case": "lone-surrogate",
+      "input": {
+        "utf16": [
+          55296
+        ]
+      }
+    },
+    {
+      "case": "astral",
+      "input": {
+        "value": "\ud83d\ude00"
+      }
+    }
+  ]
+}

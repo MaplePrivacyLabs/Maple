@@ -1,0 +1,6 @@
+{"case":"empty","input":{"text":""},"output":0}
+{"case":"ascii-four","input":{"text":"abcd"},"output":1}
+{"case":"ascii-five","input":{"text":"abcde"},"output":2}
+{"case":"astral","input":{"text":"😀😀😀"},"output":2}
+{"case":"combining","input":{"text":"ééé"},"output":2}
+{"case":"mixed","input":{"text":"a😀b😀c"},"output":2}

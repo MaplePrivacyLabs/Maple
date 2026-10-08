@@ -1,0 +1,753 @@
+{
+  "dsl": 1,
+  "id": "json-parse.parseStreamingJson",
+  "clock": {
+    "epochMs": 1767225600000
+  },
+  "cases": [
+    {
+      "case": "object-prefix-0",
+      "input": {
+        "partialJson": ""
+      }
+    },
+    {
+      "case": "object-prefix-1",
+      "input": {
+        "partialJson": "{"
+      }
+    },
+    {
+      "case": "object-prefix-2",
+      "input": {
+        "partialJson": "{\""
+      }
+    },
+    {
+      "case": "object-prefix-3",
+      "input": {
+        "partialJson": "{\"q"
+      }
+    },
+    {
+      "case": "object-prefix-4",
+      "input": {
+        "partialJson": "{\"qu"
+      }
+    },
+    {
+      "case": "object-prefix-5",
+      "input": {
+        "partialJson": "{\"que"
+      }
+    },
+    {
+      "case": "object-prefix-6",
+      "input": {
+        "partialJson": "{\"quer"
+      }
+    },
+    {
+      "case": "object-prefix-7",
+      "input": {
+        "partialJson": "{\"query"
+      }
+    },
+    {
+      "case": "object-prefix-8",
+      "input": {
+        "partialJson": "{\"query\""
+      }
+    },
+    {
+      "case": "object-prefix-9",
+      "input": {
+        "partialJson": "{\"query\":"
+      }
+    },
+    {
+      "case": "object-prefix-10",
+      "input": {
+        "partialJson": "{\"query\":\""
+      }
+    },
+    {
+      "case": "object-prefix-11",
+      "input": {
+        "partialJson": "{\"query\":\"h"
+      }
+    },
+    {
+      "case": "object-prefix-12",
+      "input": {
+        "partialJson": "{\"query\":\"he"
+      }
+    },
+    {
+      "case": "object-prefix-13",
+      "input": {
+        "partialJson": "{\"query\":\"hel"
+      }
+    },
+    {
+      "case": "object-prefix-14",
+      "input": {
+        "partialJson": "{\"query\":\"hell"
+      }
+    },
+    {
+      "case": "object-prefix-15",
+      "input": {
+        "partialJson": "{\"query\":\"hello"
+      }
+    },
+    {
+      "case": "object-prefix-16",
+      "input": {
+        "partialJson": "{\"query\":\"hello\""
+      }
+    },
+    {
+      "case": "object-prefix-17",
+      "input": {
+        "partialJson": "{\"query\":\"hello\","
+      }
+    },
+    {
+      "case": "object-prefix-18",
+      "input": {
+        "partialJson": "{\"query\":\"hello\",\""
+      }
+    },
+    {
+      "case": "object-prefix-19",
+      "input": {
+        "partialJson": "{\"query\":\"hello\",\"c"
+      }
+    },
+    {
+      "case": "object-prefix-20",
+      "input": {
+        "partialJson": "{\"query\":\"hello\",\"co"
+      }
+    },
+    {
+      "case": "object-prefix-21",
+      "input": {
+        "partialJson": "{\"query\":\"hello\",\"cou"
+      }
+    },
+    {
+      "case": "object-prefix-22",
+      "input": {
+        "partialJson": "{\"query\":\"hello\",\"coun"
+      }
+    },
+    {
+      "case": "object-prefix-23",
+      "input": {
+        "partialJson": "{\"query\":\"hello\",\"count"
+      }
+    },
+    {
+      "case": "object-prefix-24",
+      "input": {
+        "partialJson": "{\"query\":\"hello\",\"count\""
+      }
+    },
+    {
+      "case": "object-prefix-25",
+      "input": {
+        "partialJson": "{\"query\":\"hello\",\"count\":"
+      }
+    },
+    {
+      "case": "object-prefix-26",
+      "input": {
+        "partialJson": "{\"query\":\"hello\",\"count\":2"
+      }
+    },
+    {
+      "case": "object-prefix-27",
+      "input": {
+        "partialJson": "{\"query\":\"hello\",\"count\":2,"
+      }
+    },
+    {
+      "case": "object-prefix-28",
+      "input": {
+        "partialJson": "{\"query\":\"hello\",\"count\":2,\""
+      }
+    },
+    {
+      "case": "object-prefix-29",
+      "input": {
+        "partialJson": "{\"query\":\"hello\",\"count\":2,\"e"
+      }
+    },
+    {
+      "case": "object-prefix-30",
+      "input": {
+        "partialJson": "{\"query\":\"hello\",\"count\":2,\"en"
+      }
+    },
+    {
+      "case": "object-prefix-31",
+      "input": {
+        "partialJson": "{\"query\":\"hello\",\"count\":2,\"ena"
+      }
+    },
+    {
+      "case": "object-prefix-32",
+      "input": {
+        "partialJson": "{\"query\":\"hello\",\"count\":2,\"enab"
+      }
+    },
+    {
+      "case": "object-prefix-33",
+      "input": {
+        "partialJson": "{\"query\":\"hello\",\"count\":2,\"enabl"
+      }
+    },
+    {
+      "case": "object-prefix-34",
+      "input": {
+        "partialJson": "{\"query\":\"hello\",\"count\":2,\"enable"
+      }
+    },
+    {
+      "case": "object-prefix-35",
+      "input": {
+        "partialJson": "{\"query\":\"hello\",\"count\":2,\"enabled"
+      }
+    },
+    {
+      "case": "object-prefix-36",
+      "input": {
+        "partialJson": "{\"query\":\"hello\",\"count\":2,\"enabled\""
+      }
+    },
+    {
+      "case": "object-prefix-37",
+      "input": {
+        "partialJson": "{\"query\":\"hello\",\"count\":2,\"enabled\":"
+      }
+    },
+    {
+      "case": "object-prefix-38",
+      "input": {
+        "partialJson": "{\"query\":\"hello\",\"count\":2,\"enabled\":t"
+      }
+    },
+    {
+      "case": "object-prefix-39",
+      "input": {
+        "partialJson": "{\"query\":\"hello\",\"count\":2,\"enabled\":tr"
+      }
+    },
+    {
+      "case": "object-prefix-40",
+      "input": {
+        "partialJson": "{\"query\":\"hello\",\"count\":2,\"enabled\":tru"
+      }
+    },
+    {
+      "case": "object-prefix-41",
+      "input": {
+        "partialJson": "{\"query\":\"hello\",\"count\":2,\"enabled\":true"
+      }
+    },
+    {
+      "case": "object-prefix-42",
+      "input": {
+        "partialJson": "{\"query\":\"hello\",\"count\":2,\"enabled\":true,"
+      }
+    },
+    {
+      "case": "object-prefix-43",
+      "input": {
+        "partialJson": "{\"query\":\"hello\",\"count\":2,\"enabled\":true,\""
+      }
+    },
+    {
+      "case": "object-prefix-44",
+      "input": {
+        "partialJson": "{\"query\":\"hello\",\"count\":2,\"enabled\":true,\"i"
+      }
+    },
+    {
+      "case": "object-prefix-45",
+      "input": {
+        "partialJson": "{\"query\":\"hello\",\"count\":2,\"enabled\":true,\"it"
+      }
+    },
+    {
+      "case": "object-prefix-46",
+      "input": {
+        "partialJson": "{\"query\":\"hello\",\"count\":2,\"enabled\":true,\"ite"
+      }
+    },
+    {
+      "case": "object-prefix-47",
+      "input": {
+        "partialJson": "{\"query\":\"hello\",\"count\":2,\"enabled\":true,\"item"
+      }
+    },
+    {
+      "case": "object-prefix-48",
+      "input": {
+        "partialJson": "{\"query\":\"hello\",\"count\":2,\"enabled\":true,\"items"
+      }
+    },
+    {
+      "case": "object-prefix-49",
+      "input": {
+        "partialJson": "{\"query\":\"hello\",\"count\":2,\"enabled\":true,\"items\""
+      }
+    },
+    {
+      "case": "object-prefix-50",
+      "input": {
+        "partialJson": "{\"query\":\"hello\",\"count\":2,\"enabled\":true,\"items\":"
+      }
+    },
+    {
+      "case": "object-prefix-51",
+      "input": {
+        "partialJson": "{\"query\":\"hello\",\"count\":2,\"enabled\":true,\"items\":["
+      }
+    },
+    {
+      "case": "object-prefix-52",
+      "input": {
+        "partialJson": "{\"query\":\"hello\",\"count\":2,\"enabled\":true,\"items\":[1"
+      }
+    },
+    {
+      "case": "object-prefix-53",
+      "input": {
+        "partialJson": "{\"query\":\"hello\",\"count\":2,\"enabled\":true,\"items\":[1,"
+      }
+    },
+    {
+      "case": "object-prefix-54",
+      "input": {
+        "partialJson": "{\"query\":\"hello\",\"count\":2,\"enabled\":true,\"items\":[1,n"
+      }
+    },
+    {
+      "case": "object-prefix-55",
+      "input": {
+        "partialJson": "{\"query\":\"hello\",\"count\":2,\"enabled\":true,\"items\":[1,nu"
+      }
+    },
+    {
+      "case": "object-prefix-56",
+      "input": {
+        "partialJson": "{\"query\":\"hello\",\"count\":2,\"enabled\":true,\"items\":[1,nul"
+      }
+    },
+    {
+      "case": "object-prefix-57",
+      "input": {
+        "partialJson": "{\"query\":\"hello\",\"count\":2,\"enabled\":true,\"items\":[1,null"
+      }
+    },
+    {
+      "case": "object-prefix-58",
+      "input": {
+        "partialJson": "{\"query\":\"hello\",\"count\":2,\"enabled\":true,\"items\":[1,null]"
+      }
+    },
+    {
+      "case": "object-prefix-59",
+      "input": {
+        "partialJson": "{\"query\":\"hello\",\"count\":2,\"enabled\":true,\"items\":[1,null]}"
+      }
+    },
+    {
+      "case": "escapes-prefix-0",
+      "input": {
+        "partialJson": ""
+      }
+    },
+    {
+      "case": "escapes-prefix-1",
+      "input": {
+        "partialJson": "{"
+      }
+    },
+    {
+      "case": "escapes-prefix-2",
+      "input": {
+        "partialJson": "{\""
+      }
+    },
+    {
+      "case": "escapes-prefix-3",
+      "input": {
+        "partialJson": "{\"p"
+      }
+    },
+    {
+      "case": "escapes-prefix-4",
+      "input": {
+        "partialJson": "{\"pa"
+      }
+    },
+    {
+      "case": "escapes-prefix-5",
+      "input": {
+        "partialJson": "{\"pat"
+      }
+    },
+    {
+      "case": "escapes-prefix-6",
+      "input": {
+        "partialJson": "{\"path"
+      }
+    },
+    {
+      "case": "escapes-prefix-7",
+      "input": {
+        "partialJson": "{\"path\""
+      }
+    },
+    {
+      "case": "escapes-prefix-8",
+      "input": {
+        "partialJson": "{\"path\":"
+      }
+    },
+    {
+      "case": "escapes-prefix-9",
+      "input": {
+        "partialJson": "{\"path\":\""
+      }
+    },
+    {
+      "case": "escapes-prefix-10",
+      "input": {
+        "partialJson": "{\"path\":\"C"
+      }
+    },
+    {
+      "case": "escapes-prefix-11",
+      "input": {
+        "partialJson": "{\"path\":\"C:"
+      }
+    },
+    {
+      "case": "escapes-prefix-12",
+      "input": {
+        "partialJson": "{\"path\":\"C:\\"
+      }
+    },
+    {
+      "case": "escapes-prefix-13",
+      "input": {
+        "partialJson": "{\"path\":\"C:\\\\"
+      }
+    },
+    {
+      "case": "escapes-prefix-14",
+      "input": {
+        "partialJson": "{\"path\":\"C:\\\\t"
+      }
+    },
+    {
+      "case": "escapes-prefix-15",
+      "input": {
+        "partialJson": "{\"path\":\"C:\\\\tm"
+      }
+    },
+    {
+      "case": "escapes-prefix-16",
+      "input": {
+        "partialJson": "{\"path\":\"C:\\\\tmp"
+      }
+    },
+    {
+      "case": "escapes-prefix-17",
+      "input": {
+        "partialJson": "{\"path\":\"C:\\\\tmp\\"
+      }
+    },
+    {
+      "case": "escapes-prefix-18",
+      "input": {
+        "partialJson": "{\"path\":\"C:\\\\tmp\\\\"
+      }
+    },
+    {
+      "case": "escapes-prefix-19",
+      "input": {
+        "partialJson": "{\"path\":\"C:\\\\tmp\\\\d"
+      }
+    },
+    {
+      "case": "escapes-prefix-20",
+      "input": {
+        "partialJson": "{\"path\":\"C:\\\\tmp\\\\de"
+      }
+    },
+    {
+      "case": "escapes-prefix-21",
+      "input": {
+        "partialJson": "{\"path\":\"C:\\\\tmp\\\\dem"
+      }
+    },
+    {
+      "case": "escapes-prefix-22",
+      "input": {
+        "partialJson": "{\"path\":\"C:\\\\tmp\\\\demo"
+      }
+    },
+    {
+      "case": "escapes-prefix-23",
+      "input": {
+        "partialJson": "{\"path\":\"C:\\\\tmp\\\\demo\""
+      }
+    },
+    {
+      "case": "escapes-prefix-24",
+      "input": {
+        "partialJson": "{\"path\":\"C:\\\\tmp\\\\demo\","
+      }
+    },
+    {
+      "case": "escapes-prefix-25",
+      "input": {
+        "partialJson": "{\"path\":\"C:\\\\tmp\\\\demo\",\""
+      }
+    },
+    {
+      "case": "escapes-prefix-26",
+      "input": {
+        "partialJson": "{\"path\":\"C:\\\\tmp\\\\demo\",\"l"
+      }
+    },
+    {
+      "case": "escapes-prefix-27",
+      "input": {
+        "partialJson": "{\"path\":\"C:\\\\tmp\\\\demo\",\"la"
+      }
+    },
+    {
+      "case": "escapes-prefix-28",
+      "input": {
+        "partialJson": "{\"path\":\"C:\\\\tmp\\\\demo\",\"lab"
+      }
+    },
+    {
+      "case": "escapes-prefix-29",
+      "input": {
+        "partialJson": "{\"path\":\"C:\\\\tmp\\\\demo\",\"labe"
+      }
+    },
+    {
+      "case": "escapes-prefix-30",
+      "input": {
+        "partialJson": "{\"path\":\"C:\\\\tmp\\\\demo\",\"label"
+      }
+    },
+    {
+      "case": "escapes-prefix-31",
+      "input": {
+        "partialJson": "{\"path\":\"C:\\\\tmp\\\\demo\",\"label\""
+      }
+    },
+    {
+      "case": "escapes-prefix-32",
+      "input": {
+        "partialJson": "{\"path\":\"C:\\\\tmp\\\\demo\",\"label\":"
+      }
+    },
+    {
+      "case": "escapes-prefix-33",
+      "input": {
+        "partialJson": "{\"path\":\"C:\\\\tmp\\\\demo\",\"label\":\""
+      }
+    },
+    {
+      "case": "escapes-prefix-34",
+      "input": {
+        "partialJson": "{\"path\":\"C:\\\\tmp\\\\demo\",\"label\":\"h"
+      }
+    },
+    {
+      "case": "escapes-prefix-35",
+      "input": {
+        "partialJson": "{\"path\":\"C:\\\\tmp\\\\demo\",\"label\":\"he"
+      }
+    },
+    {
+      "case": "escapes-prefix-36",
+      "input": {
+        "partialJson": "{\"path\":\"C:\\\\tmp\\\\demo\",\"label\":\"hel"
+      }
+    },
+    {
+      "case": "escapes-prefix-37",
+      "input": {
+        "partialJson": "{\"path\":\"C:\\\\tmp\\\\demo\",\"label\":\"hell"
+      }
+    },
+    {
+      "case": "escapes-prefix-38",
+      "input": {
+        "partialJson": "{\"path\":\"C:\\\\tmp\\\\demo\",\"label\":\"hello"
+      }
+    },
+    {
+      "case": "escapes-prefix-39",
+      "input": {
+        "partialJson": "{\"path\":\"C:\\\\tmp\\\\demo\",\"label\":\"hello\\"
+      }
+    },
+    {
+      "case": "escapes-prefix-40",
+      "input": {
+        "partialJson": "{\"path\":\"C:\\\\tmp\\\\demo\",\"label\":\"hello\\n"
+      }
+    },
+    {
+      "case": "escapes-prefix-41",
+      "input": {
+        "partialJson": "{\"path\":\"C:\\\\tmp\\\\demo\",\"label\":\"hello\\nw"
+      }
+    },
+    {
+      "case": "escapes-prefix-42",
+      "input": {
+        "partialJson": "{\"path\":\"C:\\\\tmp\\\\demo\",\"label\":\"hello\\nwo"
+      }
+    },
+    {
+      "case": "escapes-prefix-43",
+      "input": {
+        "partialJson": "{\"path\":\"C:\\\\tmp\\\\demo\",\"label\":\"hello\\nwor"
+      }
+    },
+    {
+      "case": "escapes-prefix-44",
+      "input": {
+        "partialJson": "{\"path\":\"C:\\\\tmp\\\\demo\",\"label\":\"hello\\nworl"
+      }
+    },
+    {
+      "case": "escapes-prefix-45",
+      "input": {
+        "partialJson": "{\"path\":\"C:\\\\tmp\\\\demo\",\"label\":\"hello\\nworld"
+      }
+    },
+    {
+      "case": "escapes-prefix-46",
+      "input": {
+        "partialJson": "{\"path\":\"C:\\\\tmp\\\\demo\",\"label\":\"hello\\nworld\""
+      }
+    },
+    {
+      "case": "escapes-prefix-47",
+      "input": {
+        "partialJson": "{\"path\":\"C:\\\\tmp\\\\demo\",\"label\":\"hello\\nworld\"}"
+      }
+    },
+    {
+      "case": "scalar-prefix-0",
+      "input": {
+        "partialJson": ""
+      }
+    },
+    {
+      "case": "scalar-prefix-1",
+      "input": {
+        "partialJson": "t"
+      }
+    },
+    {
+      "case": "scalar-prefix-2",
+      "input": {
+        "partialJson": "tr"
+      }
+    },
+    {
+      "case": "scalar-prefix-3",
+      "input": {
+        "partialJson": "tru"
+      }
+    },
+    {
+      "case": "scalar-prefix-4",
+      "input": {
+        "partialJson": "true"
+      }
+    },
+    {
+      "case": "number-prefix-0",
+      "input": {
+        "partialJson": ""
+      }
+    },
+    {
+      "case": "number-prefix-1",
+      "input": {
+        "partialJson": "-"
+      }
+    },
+    {
+      "case": "number-prefix-2",
+      "input": {
+        "partialJson": "-1"
+      }
+    },
+    {
+      "case": "number-prefix-3",
+      "input": {
+        "partialJson": "-12"
+      }
+    },
+    {
+      "case": "number-prefix-4",
+      "input": {
+        "partialJson": "-12."
+      }
+    },
+    {
+      "case": "number-prefix-5",
+      "input": {
+        "partialJson": "-12.5"
+      }
+    },
+    {
+      "case": "number-prefix-6",
+      "input": {
+        "partialJson": "-12.5e"
+      }
+    },
+    {
+      "case": "number-prefix-7",
+      "input": {
+        "partialJson": "-12.5e+"
+      }
+    },
+    {
+      "case": "number-prefix-8",
+      "input": {
+        "partialJson": "-12.5e+2"
+      }
+    },
+    {
+      "case": "raw-control-character",
+      "input": {
+        "partialJson": "{\"text\":\"hello\nworld\"}"
+      }
+    },
+    {
+      "case": "invalid-escape",
+      "input": {
+        "partialJson": "{\"path\":\"C:\\q\"}"
+      }
+    }
+  ]
+}

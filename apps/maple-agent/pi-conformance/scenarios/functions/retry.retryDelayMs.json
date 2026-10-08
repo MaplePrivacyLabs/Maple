@@ -1,0 +1,64 @@
+{
+  "dsl": 1,
+  "id": "retry.retryDelayMs",
+  "clock": {
+    "epochMs": 1767225600000
+  },
+  "cases": [
+    {
+      "case": "first",
+      "input": {
+        "policy": {
+          "baseDelayMs": 2000
+        },
+        "attempt": 1
+      }
+    },
+    {
+      "case": "second",
+      "input": {
+        "policy": {
+          "baseDelayMs": 2000
+        },
+        "attempt": 2
+      }
+    },
+    {
+      "case": "default-cap",
+      "input": {
+        "policy": {
+          "baseDelayMs": 2000
+        },
+        "attempt": 20
+      }
+    },
+    {
+      "case": "explicit-cap",
+      "input": {
+        "policy": {
+          "baseDelayMs": 2000,
+          "maxAgentDelayMs": 5000
+        },
+        "attempt": 4
+      }
+    },
+    {
+      "case": "zero-attempt",
+      "input": {
+        "policy": {
+          "baseDelayMs": 2000
+        },
+        "attempt": 0
+      }
+    },
+    {
+      "case": "overflow",
+      "input": {
+        "policy": {
+          "baseDelayMs": 2000
+        },
+        "attempt": 1000
+      }
+    }
+  ]
+}

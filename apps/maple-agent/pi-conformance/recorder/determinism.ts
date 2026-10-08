@@ -4,6 +4,7 @@ import { vi } from "vitest";
 
 /** Install before importing Pi. Microtasks and setImmediate remain real. */
 export function deterministicEnvironment(epochMs: number) {
+  if (!Number.isSafeInteger(epochMs) || epochMs < 0) throw new Error("Clock epoch must be a nonnegative safe integer");
   let seed = 0x12345678;
   let uuid = 0;
   const next = () => {
@@ -26,9 +27,15 @@ export function deterministicEnvironment(epochMs: number) {
     return buffer;
   });
   syncBuiltinESMExports();
-  return () => {
+  const restore = () => {
     vi.useRealTimers();
     vi.restoreAllMocks();
     syncBuiltinESMExports();
+  };
+  return {
+    restore,
+    advance: (milliseconds: number) => vi.advanceTimersByTimeAsync(milliseconds),
+    setNow: (milliseconds: number) => vi.setSystemTime(milliseconds),
+    pendingTimers: () => vi.getTimerCount(),
   };
 }

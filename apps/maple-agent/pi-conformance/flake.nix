@@ -17,6 +17,21 @@
     }:
     let
       pin = builtins.fromJSON (builtins.readFile ./pin.json);
+      harnessInputs = nixpkgs.lib.fileset.toSource {
+        root = ./.;
+        fileset = nixpkgs.lib.fileset.unions (
+          [
+            ./flake.nix
+            ./flake.lock
+            ./pin.json
+            ./nix
+            ./recorder
+            ./scenarios
+            ./selection
+          ]
+          ++ nixpkgs.lib.optional (builtins.pathExists ./fixtures) ./fixtures
+        );
+      };
       forAllSystems = nixpkgs.lib.genAttrs [
         "x86_64-linux"
         "aarch64-linux"
@@ -44,22 +59,18 @@
           upstream-tests = mkReference {
             name = "upstream-tests";
             script = ''
+              python3 -I -B ${./selection}/generate-test-files.py --check --upstream-root "$PWD"
               mkdir -p "$out/upstream"
-              run_package_tests() {
-                local package="$1"
-                shift
-                (
-                  cd "packages/$package"
-                  node "$PI_VITEST_CLI" list "$@" --includeTaskLocation \
-                    --json="$out/upstream/$package-list.json"
-                  test -s "$out/upstream/$package-list.json"
-                  node "$PI_VITEST_CLI" run "$@" --includeTaskLocation \
-                    --reporter=json --outputFile="$out/upstream/$package-results.json"
-                  test -s "$out/upstream/$package-results.json"
-                )
-              }
-              run_package_tests agent test/agent-loop.test.ts test/agent.test.ts
-              run_package_tests coding-agent test/session-context-edit.test.ts test/extensions-runner.test.ts
+              mkdir -p .maple-harness
+              cp ${./recorder/inventory.ts} .maple-harness/inventory.ts
+              export PI_SELECTION_DIR=${./selection}
+              export PI_PIN_JSON=${./pin.json}
+              for package in agent ai coding-agent; do
+                node .maple-harness/inventory.ts collect "$package" "$out/upstream/$package.inventory.json"
+                node .maple-harness/inventory.ts run "$package" "$out/upstream/$package.results.json"
+              done
+              node .maple-harness/inventory.ts combine "$out/upstream"
+              node .maple-harness/inventory.ts coverage "$out/upstream/inventory.json" "$out/upstream-map.toml"
             '';
           };
 
@@ -69,6 +80,8 @@
               cp -R ${./recorder} packages/coding-agent/test/maple-recorder
               chmod -R u+w packages/coding-agent/test/maple-recorder
               export PI_SCENARIOS_DIR=${./scenarios}
+              export PI_HARNESS_INPUTS=${harnessInputs}
+              export PI_UPSTREAM_RESULTS=${upstream-tests}/upstream
               for run in 1 2; do
                 export PI_CORPUS_OUT="$TMPDIR/recording-$run"
                 mkdir -p "$PI_CORPUS_OUT"
@@ -78,6 +91,7 @@
                     test/maple-recorder/record.test.ts
                 )
                 test -n "$(find "$PI_CORPUS_OUT" -type f -print -quit)"
+                node packages/coding-agent/test/maple-recorder/build-corpus.ts "$PI_CORPUS_OUT"
               done
               diff -ru "$TMPDIR/recording-1" "$TMPDIR/recording-2"
               cp -R "$TMPDIR/recording-1" "$out/corpus"
@@ -98,6 +112,10 @@
 
       checks = forAllSystems (system: {
         spike = self.packages.${system}.spike;
+        corpus-fresh = (import nixpkgs { inherit system; }).runCommand "pi-corpus-fresh" { } ''
+          diff -ru ${self.packages.${system}.corpus}/corpus ${./corpus}
+          touch "$out"
+        '';
       });
     };
 }

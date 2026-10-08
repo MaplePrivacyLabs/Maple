@@ -1,0 +1,5 @@
+{"case":"plain","input":{"utf16":[104,101,108,108,111]},"output":"hello"}
+{"case":"astral","input":{"utf16":[55357,56832]},"output":"😀"}
+{"case":"lone-high","input":{"utf16":[97,55296,98]},"output":"ab"}
+{"case":"lone-low","input":{"utf16":[97,56320,98]},"output":"ab"}
+{"case":"mixed-pairs","input":{"utf16":[55296,55296,56320,56320]},"output":"𐀀"}

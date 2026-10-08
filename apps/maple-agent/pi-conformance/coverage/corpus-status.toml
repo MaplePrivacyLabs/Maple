@@ -1,0 +1,314 @@
+# Pending entries are explicit work, not conformance evidence.
+# PI_PORT_GATE=1 requires every entry to be passing.
+[meta]
+pin = "v1.0.4"
+revision = "7c10bd4337495ee613f2224843ecdf349b80d1df"
+
+[[scenario]]
+id = "agent/basic-text-turn"
+status = "pending"
+reason = "Recording and Rust replay are completed in port step 3."
+
+[[scenario]]
+id = "agent/sequential-tool-batch"
+status = "pending"
+reason = "Recording and Rust replay are completed in port step 3."
+
+[[scenario]]
+id = "agent/parallel-completion-order"
+status = "pending"
+reason = "Recording and Rust replay are completed in port step 3."
+
+[[scenario]]
+id = "agent/parallel-completion-order~barrier"
+status = "pending"
+reason = "Recording and Rust replay are completed in port step 3."
+
+[[scenario]]
+id = "agent/preflight-validation"
+status = "pending"
+reason = "Recording and Rust replay are completed in port step 3."
+
+[[scenario]]
+id = "agent/tool-hooks-and-terminate"
+status = "pending"
+reason = "Recording and Rust replay are completed in port step 3."
+
+[[scenario]]
+id = "agent/steer-and-follow-up"
+status = "pending"
+reason = "Recording and Rust replay are completed in port step 3."
+
+[[scenario]]
+id = "agent/steer-and-follow-up~one-at-a-time"
+status = "pending"
+reason = "Recording and Rust replay are completed in port step 3."
+
+[[scenario]]
+id = "agent/steer-and-follow-up~all"
+status = "pending"
+reason = "Recording and Rust replay are completed in port step 3."
+
+[[scenario]]
+id = "agent/length-stop-tool-calls"
+status = "pending"
+reason = "Recording and Rust replay are completed in port step 3."
+
+[[scenario]]
+id = "agent/abort-mid-stream"
+status = "pending"
+reason = "Recording and Rust replay are completed in port step 3."
+
+[[scenario]]
+id = "agent/abort-parallel-preflight"
+status = "pending"
+reason = "Recording and Rust replay are completed in port step 3."
+
+[[scenario]]
+id = "agent/turn-boundary-hooks"
+status = "pending"
+reason = "Recording and Rust replay are completed in port step 3."
+
+[[scenario]]
+id = "session/persist-and-project"
+status = "pending"
+reason = "Recording and Rust replay are completed in port step 7."
+
+[[scenario]]
+id = "session/system-prompt-and-tool-deltas"
+status = "pending"
+reason = "Recording and Rust replay are completed in port step 7."
+
+[[scenario]]
+id = "session/auto-retry"
+status = "pending"
+reason = "Recording and Rust replay are completed in port step 7."
+
+[[scenario]]
+id = "session/auto-retry~non-retryable"
+status = "pending"
+reason = "Recording and Rust replay are completed in port step 7."
+
+[[scenario]]
+id = "session/threshold-compaction"
+status = "pending"
+reason = "Recording and Rust replay are completed in port step 7."
+
+[[scenario]]
+id = "session/threshold-compaction~split-turn"
+status = "pending"
+reason = "Recording and Rust replay are completed in port step 7."
+
+[[scenario]]
+id = "session/overflow-recovery"
+status = "pending"
+reason = "Recording and Rust replay are completed in port step 7."
+
+[[scenario]]
+id = "session/between-turn-compaction"
+status = "pending"
+reason = "Recording and Rust replay are completed in port step 7."
+
+[[scenario]]
+id = "session/extension-dispatch"
+status = "pending"
+reason = "Recording and Rust replay are completed in port step 7."
+
+[[scenario]]
+id = "session/context-hooks-and-custom-messages"
+status = "pending"
+reason = "Recording and Rust replay are completed in port step 7."
+
+[[scenario]]
+id = "session/skills-and-templates"
+status = "pending"
+reason = "Recording and Rust replay are completed in port step 7."
+
+[[scenario]]
+id = "session/resource-loader-context"
+status = "pending"
+reason = "Recording and Rust replay are completed in port step 7."
+
+[[scenario]]
+id = "session/tree-labels-fork"
+status = "pending"
+reason = "Recording and Rust replay are completed in port step 7."
+
+[[scenario]]
+id = "session/load-migrate-repair"
+status = "pending"
+reason = "Recording and Rust replay are completed in port step 4."
+
+[[scenario]]
+id = "wire/basic-text-usage"
+status = "pending"
+reason = "Recording and Rust replay are completed in port step 2."
+
+[[scenario]]
+id = "wire/streamed-tool-calls"
+status = "pending"
+reason = "Recording and Rust replay are completed in port step 2."
+
+[[scenario]]
+id = "wire/reasoning-fields"
+status = "pending"
+reason = "Recording and Rust replay are completed in port step 2."
+
+[[scenario]]
+id = "wire/request-repair"
+status = "pending"
+reason = "Recording and Rust replay are completed in port step 2."
+
+[[scenario]]
+id = "wire/system-collapse-and-tools"
+status = "pending"
+reason = "Recording and Rust replay are completed in port step 2."
+
+[[scenario]]
+id = "wire/stream-failures"
+status = "pending"
+reason = "Recording and Rust replay are completed in port step 2."
+
+[[scenario]]
+id = "wire/full-session-two-turns"
+status = "pending"
+reason = "Recording and Rust replay are completed in port step 7."
+
+[[scenario]]
+id = "session/mcp-direct-exposure"
+status = "pending"
+reason = "Recording and Rust replay are completed in port step 8."
+
+[[scenario]]
+id = "session/tree-navigation-summary"
+status = "pending"
+reason = "Recording and Rust replay are completed in port step 7."
+
+[[scenario]]
+id = "session/tree-navigation-summary~extension-summary"
+status = "pending"
+reason = "Recording and Rust replay are completed in port step 7."
+
+[[scenario]]
+id = "session/tree-navigation-summary~cancel"
+status = "pending"
+reason = "Recording and Rust replay are completed in port step 7."
+
+[[scenario]]
+id = "session/tree-navigation-summary~abort"
+status = "pending"
+reason = "Recording and Rust replay are completed in port step 7."
+
+[[function]]
+id = "json-parse.parseStreamingJson"
+status = "pending"
+reason = "Function golden recording and Rust dispatch are completed in port step 1."
+
+[[function]]
+id = "estimate.estimateTextTokens"
+status = "pending"
+reason = "Function golden recording and Rust dispatch are completed in port step 1."
+
+[[function]]
+id = "sanitize-unicode.sanitizeSurrogates"
+status = "pending"
+reason = "Function golden recording and Rust dispatch are completed in port step 1."
+
+[[function]]
+id = "json.stringify"
+status = "pending"
+reason = "Function golden recording and Rust dispatch are completed in port step 1."
+
+[[function]]
+id = "validation.validateToolArguments"
+status = "pending"
+reason = "Function golden recording and Rust dispatch are completed in port step 1."
+
+[[function]]
+id = "retry.retryDelayMs"
+status = "pending"
+reason = "Function golden recording and Rust dispatch are completed in port step 1."
+
+[[function]]
+id = "env.virtualTimers"
+status = "passing"
+
+[[function]]
+id = "overflow.isContextOverflow"
+status = "pending"
+reason = "Function golden recording and Rust dispatch are completed in port step 1."
+
+[[function]]
+id = "overflow.isRecoverableLength"
+status = "pending"
+reason = "Function golden recording and Rust dispatch are completed in port step 1."
+
+[[function]]
+id = "retry.isRetryableAssistantError"
+status = "pending"
+reason = "Function golden recording and Rust dispatch are completed in port step 1."
+
+[[function]]
+id = "transcript.toolStateChanges"
+status = "pending"
+reason = "Function golden recording and Rust dispatch are completed in port step 1."
+
+[[function]]
+id = "api.transformMessages"
+status = "pending"
+reason = "Function golden recording and Rust dispatch are completed in port step 2."
+
+[[function]]
+id = "api.buildParams"
+status = "pending"
+reason = "Function golden recording and Rust dispatch are completed in port step 2."
+
+[[function]]
+id = "api.convertMessages"
+status = "pending"
+reason = "Function golden recording and Rust dispatch are completed in port step 2."
+
+[[function]]
+id = "compaction.findCutPoint"
+status = "pending"
+reason = "Function golden recording and Rust dispatch are completed in port step 4."
+
+[[function]]
+id = "compaction.serializeConversation"
+status = "pending"
+reason = "Function golden recording and Rust dispatch are completed in port step 4."
+
+[[function]]
+id = "compaction.prepareCompaction"
+status = "pending"
+reason = "Function golden recording and Rust dispatch are completed in port step 4."
+
+[[function]]
+id = "session-manager.buildSessionContext"
+status = "pending"
+reason = "Function golden recording and Rust dispatch are completed in port step 4."
+
+[[function]]
+id = "prompt-templates.expandPromptTemplate"
+status = "pending"
+reason = "Function golden recording and Rust dispatch are completed in port step 5."
+
+[[function]]
+id = "skills.validateFrontmatter"
+status = "pending"
+reason = "Function golden recording and Rust dispatch are completed in port step 5."
+
+[[function]]
+id = "settings.deepMerge"
+status = "pending"
+reason = "Function golden recording and Rust dispatch are completed in port step 5."
+
+[[function]]
+id = "images.normalizeImage"
+status = "pending"
+reason = "Function golden recording and Rust dispatch are completed in port step 5."
+
+[[function]]
+id = "system-prompt.buildSystemPrompt"
+status = "pending"
+reason = "Function golden recording and Rust dispatch are completed in port step 6."

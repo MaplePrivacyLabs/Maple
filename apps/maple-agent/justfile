@@ -19,6 +19,19 @@ default:
 # Run all the checks that CI runs.
 ci: fmt-check clippy test
 
+# Run the pinned TypeScript reference tests in the isolated Nix environment.
+pi-upstream-tests:
+    nix build ./pi-conformance#upstream-tests -L --no-link --no-update-lock-file
+
+# Re-record generated reference data after changing its pin, scenarios or recorder.
+pi-corpus:
+    out="$(nix build ./pi-conformance#corpus --no-link --print-out-paths --no-update-lock-file)"; \
+    rm -rf pi-conformance/corpus && cp -R "$out/corpus" pi-conformance/corpus && chmod -R u+w pi-conformance/corpus
+
+# Compare the committed corpus with a fresh recording without changing it.
+pi-corpus-check:
+    nix build "./pi-conformance#checks.$(nix eval --raw --impure --expr builtins.currentSystem).corpus-fresh" -L --no-link --no-update-lock-file
+
 # Format all code.
 fmt:
     cargo fmt --all

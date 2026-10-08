@@ -1,0 +1,176 @@
+{
+  "dsl": 1,
+  "id": "supports-xhigh",
+  "clock": {
+    "epochMs": 1767225600000
+  },
+  "covers": [
+    "packages/ai/test/supports-xhigh.test.ts"
+  ],
+  "models": [
+    {
+      "provider": "amazon-bedrock",
+      "id": "global.anthropic.claude-fable-5"
+    },
+    {
+      "provider": "amazon-bedrock",
+      "id": "global.anthropic.claude-opus-5"
+    },
+    {
+      "provider": "anthropic",
+      "id": "claude-fable-5"
+    },
+    {
+      "provider": "anthropic",
+      "id": "claude-opus-4-6"
+    },
+    {
+      "provider": "anthropic",
+      "id": "claude-opus-4-8"
+    },
+    {
+      "provider": "anthropic",
+      "id": "claude-opus-5"
+    },
+    {
+      "provider": "anthropic",
+      "id": "claude-opus-5-5"
+    },
+    {
+      "provider": "anthropic",
+      "id": "claude-sonnet-4-5"
+    },
+    {
+      "provider": "anthropic",
+      "id": "claude-sonnet-4-6"
+    },
+    {
+      "provider": "anthropic",
+      "id": "claude-sonnet-5"
+    },
+    {
+      "provider": "anthropic",
+      "id": "claude-sonnet-5-5"
+    },
+    {
+      "provider": "azure",
+      "id": "gpt-6.1-sol"
+    },
+    {
+      "provider": "deepseek",
+      "id": "deepseek-flash"
+    },
+    {
+      "provider": "kimi-coding",
+      "id": "k3"
+    },
+    {
+      "provider": "moonshotai",
+      "id": "kimi-k2.7-code"
+    },
+    {
+      "provider": "moonshotai",
+      "id": "kimi-k3"
+    },
+    {
+      "provider": "moonshotai-cn",
+      "id": "kimi-k2.7-code"
+    },
+    {
+      "provider": "moonshotai-cn",
+      "id": "kimi-k3"
+    },
+    {
+      "provider": "openai",
+      "id": "gpt-5.5-pro"
+    },
+    {
+      "provider": "openai",
+      "id": "gpt-5.6-luna"
+    },
+    {
+      "provider": "openai",
+      "id": "gpt-5.6-sol"
+    },
+    {
+      "provider": "openai",
+      "id": "gpt-5.6-terra"
+    },
+    {
+      "provider": "openai",
+      "id": "gpt-6-luna"
+    },
+    {
+      "provider": "openai",
+      "id": "gpt-6-sol"
+    },
+    {
+      "provider": "openai",
+      "id": "gpt-6.1-sol"
+    },
+    {
+      "provider": "openai-codex",
+      "id": "gpt-5.5"
+    },
+    {
+      "provider": "openai-codex",
+      "id": "gpt-5.6-luna"
+    },
+    {
+      "provider": "openai-codex",
+      "id": "gpt-5.6-sol"
+    },
+    {
+      "provider": "openai-codex",
+      "id": "gpt-5.6-terra"
+    },
+    {
+      "provider": "openai-codex",
+      "id": "gpt-6-astra"
+    },
+    {
+      "provider": "openai-codex",
+      "id": "gpt-6-luna"
+    },
+    {
+      "provider": "openai-codex",
+      "id": "gpt-6-sol"
+    },
+    {
+      "provider": "openai-codex",
+      "id": "gpt-6.1-sol"
+    },
+    {
+      "provider": "opencode",
+      "id": "grok-build-0.1"
+    },
+    {
+      "provider": "opencode-go",
+      "id": "deepseek-v4-flash"
+    },
+    {
+      "provider": "opencode-go",
+      "id": "deepseek-v4.1-flash"
+    },
+    {
+      "provider": "openrouter",
+      "id": "anthropic/claude-opus-4.6"
+    },
+    {
+      "provider": "openrouter",
+      "id": "deepseek/deepseek-v4-flash"
+    },
+    {
+      "provider": "openrouter",
+      "id": "deepseek/deepseek-v4.1-flash"
+    },
+    {
+      "provider": "openrouter",
+      "id": "openai/gpt-5.5-pro"
+    },
+    {
+      "provider": "xai",
+      "id": "grok-4.6"
+    }
+  ]
+}
