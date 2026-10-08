@@ -1,9 +1,12 @@
+import { assertNoNetworkAttempts } from "./network-guard.ts";
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { expect, test } from "vitest";
+import { afterAll, expect, test } from "vitest";
 import type { AssistantMessage, Tool, ToolCall } from "@earendil-works/pi-ai";
 import { deterministicEnvironment } from "./determinism.ts";
 import { loadInputs, validateInput, type FunctionMatrix, type Input, type Json, type Scenario } from "./schema.ts";
+
+afterAll(assertNoNetworkAttempts);
 
 /** Snapshot on delivery: upstream stream objects continue mutating afterwards. */
 function snapshot(value: unknown): unknown {
@@ -42,8 +45,7 @@ test("rejects malformed DSL before starting Pi", () => {
     expect(() => validateInput(inputs.validator, { ...original, ...change }, description)).toThrow();
   }
   expect(() => validateInput(inputs.validator, original, "valid input")).not.toThrow();
-  if (inputs.functions.length > 0) {
-    const matrix = inputs.functions[0].value;
+  for (const { value: matrix } of inputs.functions) {
     expect(() => validateInput(inputs.validator, {
       ...matrix, cases: [matrix.cases[0], matrix.cases[0]],
     }, "duplicate function cases")).toThrow(/Duplicate function case/);
@@ -176,7 +178,71 @@ for (const input of inputs.scenarios) {
   });
 }
 
-async function recordFunction(input: Input<FunctionMatrix>) {
+/** Restore non-JSON schema identity without modifying the recorded input. */
+function validationTool(value: Record<string, Json>): Tool {
+  const tool = structuredClone(value.tool) as unknown as Tool;
+  if (typeof value.schemaJson === "string") tool.parameters = JSON.parse(value.schemaJson);
+  function schemaNode(pointer: string): object {
+    let node: unknown = tool.parameters;
+    if (pointer !== "") {
+      if (!pointer.startsWith("/")) throw new Error("Invalid schema metadata pointer");
+      for (const part of pointer.slice(1).split("/")) {
+        const key = part.replaceAll("~1", "/").replaceAll("~0", "~");
+        if (node === null || typeof node !== "object" || !Object.hasOwn(node, key)) {
+          throw new Error("Schema metadata pointer does not exist");
+        }
+        node = (node as Record<string, unknown>)[key];
+      }
+    }
+    if (node === null || typeof node !== "object" || Array.isArray(node)) {
+      throw new Error("Schema metadata pointer must identify a schema object");
+    }
+    return node;
+  }
+  for (const [pointer, kind] of Object.entries((value.schemaKinds ?? {}) as Record<string, Json>)) {
+    if (typeof kind !== "string") throw new Error("Invalid TypeBox kind");
+    Object.defineProperty(schemaNode(pointer), "~kind", { value: kind, configurable: true });
+  }
+  for (const pointer of (value.schemaOptional ?? []) as string[]) {
+    Object.defineProperty(schemaNode(pointer), "~optional", { value: true, configurable: true });
+  }
+  if (value.legacySchemaSymbol === true) {
+    Object.defineProperty(tool.parameters, Symbol.for("TypeBox.Kind"), { value: "fixture" });
+  }
+  return tool;
+}
+
+function toolState(value: Record<string, Json>, field: "previous" | "current"): Tool[] {
+  const raw = value[`${field}Json`];
+  return (typeof raw === "string" ? JSON.parse(raw) : structuredClone(value[field])) as unknown as Tool[];
+}
+
+test("rejects ambiguous function inputs and invalid schema metadata", () => {
+  const matrix = (id: string, input: Record<string, Json>) => ({
+    dsl: 1, id, clock: { epochMs: 0 }, cases: [{ case: "boundary", input }],
+  });
+  expect(() => validateInput(inputs.validator, matrix("json-parse.parseStreamingJson", {
+    partialJson: "{}", utf16: [123, 125],
+  }), "ambiguous parser input")).toThrow(/Invalid DSL/);
+  expect(() => validateInput(inputs.validator, matrix("json-parse.parseStreamingJson", {
+    utf16: [65536],
+  }), "out-of-range UTF-16")).toThrow(/Invalid DSL/);
+  expect(() => validateInput(inputs.validator, matrix("transcript.toolStateChanges", {
+    previous: [], previousJson: "[]", current: [],
+  }), "ambiguous transcript input")).toThrow(/Invalid DSL/);
+  const value = { tool: { name: "tool", description: "", parameters: { type: "object" } } };
+  expect(() => validationTool({ ...value, schemaKinds: { "/absent": "String" } }))
+    .toThrow("Schema metadata pointer does not exist");
+  expect(() => validationTool({ ...value, schemaKinds: { "/type": "String" } }))
+    .toThrow("Schema metadata pointer must identify a schema object");
+  const prepared = validationTool({ ...value, schemaKinds: { "": "Object" }, legacySchemaSymbol: true });
+  expect(Object.keys(prepared.parameters)).toEqual(["type"]);
+  expect(Object.hasOwn(value.tool.parameters, "~kind")).toBe(false);
+  expect(Object.getOwnPropertyDescriptor(prepared.parameters, "~kind")?.enumerable).toBe(false);
+  expect(Object.hasOwn(prepared.parameters, Symbol.for("TypeBox.Kind"))).toBe(true);
+});
+
+async function recordFunction(input: Input<FunctionMatrix>, destination: string) {
   const rows: unknown[] = [];
   for (const item of input.value.cases) {
     const clock = deterministicEnvironment(input.value.clock.epochMs);
@@ -187,7 +253,9 @@ async function recordFunction(input: Input<FunctionMatrix>) {
       switch (input.value.id) {
         case "json-parse.parseStreamingJson": {
           const { parseStreamingJson } = await import("@earendil-works/pi-ai/utils/json-parse");
-          output = parseStreamingJson(value.partialJson as string);
+          output = parseStreamingJson("utf16" in value
+            ? String.fromCharCode(...value.utf16 as number[])
+            : value.partialJson as string);
           break;
         }
         case "estimate.estimateTextTokens": {
@@ -208,11 +276,47 @@ async function recordFunction(input: Input<FunctionMatrix>) {
           break;
         case "validation.validateToolArguments": {
           const { validateToolArguments } = await import("@earendil-works/pi-ai/utils/validation");
+          // Input restoration failures must fail recording, not become golden errors.
+          const tool = validationTool(value);
+          const toolCall = structuredClone(value.toolCall) as unknown as ToolCall;
+          if (typeof value.argumentsJson === "string") toolCall.arguments = JSON.parse(value.argumentsJson);
           try {
-            output = validateToolArguments(value.tool as unknown as Tool, value.toolCall as unknown as ToolCall);
+            output = validateToolArguments(tool, toolCall);
           } catch (thrown) {
             error = thrown instanceof Error ? thrown.message : String(thrown);
           }
+          break;
+        }
+        case "overflow.isContextOverflow": {
+          const { isContextOverflow } = await import("@earendil-works/pi-ai/utils/overflow");
+          output = isContextOverflow(value.message as unknown as AssistantMessage, value.contextWindow as number | undefined);
+          break;
+        }
+        case "overflow.isRecoverableLength": {
+          const { isRecoverableLength } = await import("@earendil-works/pi-ai/utils/overflow");
+          output = isRecoverableLength(value.message as unknown as AssistantMessage, value.desiredMaxOutput as number);
+          break;
+        }
+        case "retry.isRetryableAssistantError": {
+          const { isRetryableAssistantError } = await import("@earendil-works/pi-ai/utils/retry");
+          output = isRetryableAssistantError(value.message as unknown as AssistantMessage);
+          break;
+        }
+        case "transcript.toolOwnership": {
+          const { createInitialSystemMessage, getCurrentTools } = await import("@earendil-works/pi-ai/utils/transcript");
+          const tool = structuredClone(value.tool) as unknown as Tool;
+          const message = createInitialSystemMessage(undefined, [tool]);
+          if (!message) throw new Error("Ownership fixture must create a message");
+          const before = snapshot(message);
+          if (value.operation === "mutateSourceTool") tool.description = value.description as string;
+          else if (value.operation === "mutateReplayedTool") getCurrentTools([message])[0].description = value.description as string;
+          else throw new Error("Unknown ownership operation");
+          output = { before, after: message };
+          break;
+        }
+        case "transcript.toolStateChanges": {
+          const { getToolStateChanges } = await import("@earendil-works/pi-ai/utils/transcript");
+          output = getToolStateChanges(toolState(value, "previous"), toolState(value, "current"));
           break;
         }
         case "retry.retryDelayMs": {
@@ -252,13 +356,13 @@ async function recordFunction(input: Input<FunctionMatrix>) {
       clock.restore();
     }
   }
-  const out = path.join(outputRoot, "functions");
+  const out = path.join(destination, "functions");
   await mkdir(out, { recursive: true });
   await writeFile(path.join(out, `${input.value.id}.jsonl`), jsonl(rows));
 }
 
 for (const input of inputs.functions) {
-  test(`records function ${input.value.id} from pinned source`, () => recordFunction(input));
+  test(`records function ${input.value.id} from pinned source`, () => recordFunction(input, outputRoot));
 }
 
 

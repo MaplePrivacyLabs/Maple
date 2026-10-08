@@ -1,6 +1,12 @@
-# No behavioral deviations have been approved.
-# A future entry requires a concrete owner approval in approvedIn and an
-# implemented, narrowly scoped comparison rule; a pending note is not approval.
+# Each rule requires owner authorization and a narrowly scoped executable check.
 [meta]
 pin = "v1.0.4"
 revision = "7c10bd4337495ee613f2224843ecdf349b80d1df"
+
+[[deviation]]
+scenario = "functions/transcript.toolOwnership"
+jsonPath = "$.after"
+kind = "language"
+rule = "owned-tool-definitions"
+reason = "Tool definitions and provider request/configuration inputs use owned Rust values. Mutating a definition after inserting or replaying it does not mutate the stored message. This bounds shared mutable state in the Rust API; streaming messages and explicit mutable hook arguments/results retain shared identity. The paired fixture verifies Pi's alias mutation and Rust's unchanged copy separately, without ignoring other fields. This implementation decision is provisional and may be revisited after planning review."
+approvedIn = "Owner authorized continuing this boundary in the task conversation on 2026-10-08; decision and engineering rationale recorded in https://github.com/MaplePrivacyLabs/Maple/pull/1102."

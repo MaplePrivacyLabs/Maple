@@ -1,0 +1,374 @@
+{
+  "dsl": 1,
+  "id": "transcript.toolStateChanges",
+  "clock": {
+    "epochMs": 1767225600000
+  },
+  "cases": [
+    {
+      "case": "empty",
+      "input": {
+        "previous": [],
+        "current": []
+      }
+    },
+    {
+      "case": "unchanged",
+      "input": {
+        "previous": [
+          {
+            "name": "a",
+            "description": "tool",
+            "parameters": {
+              "type": "object",
+              "properties": {}
+            }
+          },
+          {
+            "name": "b",
+            "description": "tool",
+            "parameters": {
+              "type": "object",
+              "properties": {}
+            }
+          }
+        ],
+        "current": [
+          {
+            "name": "a",
+            "description": "tool",
+            "parameters": {
+              "type": "object",
+              "properties": {}
+            }
+          },
+          {
+            "name": "b",
+            "description": "tool",
+            "parameters": {
+              "type": "object",
+              "properties": {}
+            }
+          }
+        ]
+      }
+    },
+    {
+      "case": "reorder-without-definition-change",
+      "input": {
+        "previous": [
+          {
+            "name": "a",
+            "description": "tool",
+            "parameters": {
+              "type": "object",
+              "properties": {}
+            }
+          },
+          {
+            "name": "b",
+            "description": "tool",
+            "parameters": {
+              "type": "object",
+              "properties": {}
+            }
+          }
+        ],
+        "current": [
+          {
+            "name": "b",
+            "description": "tool",
+            "parameters": {
+              "type": "object",
+              "properties": {}
+            }
+          },
+          {
+            "name": "a",
+            "description": "tool",
+            "parameters": {
+              "type": "object",
+              "properties": {}
+            }
+          }
+        ]
+      }
+    },
+    {
+      "case": "remove-and-add",
+      "input": {
+        "previous": [
+          {
+            "name": "a",
+            "description": "tool",
+            "parameters": {
+              "type": "object",
+              "properties": {}
+            }
+          },
+          {
+            "name": "b",
+            "description": "tool",
+            "parameters": {
+              "type": "object",
+              "properties": {}
+            }
+          }
+        ],
+        "current": [
+          {
+            "name": "b",
+            "description": "tool",
+            "parameters": {
+              "type": "object",
+              "properties": {}
+            }
+          },
+          {
+            "name": "c",
+            "description": "tool",
+            "parameters": {
+              "type": "object",
+              "properties": {}
+            }
+          }
+        ]
+      }
+    },
+    {
+      "case": "description-change",
+      "input": {
+        "previous": [
+          {
+            "name": "a",
+            "description": "tool",
+            "parameters": {
+              "type": "object",
+              "properties": {}
+            }
+          }
+        ],
+        "current": [
+          {
+            "name": "a",
+            "description": "changed",
+            "parameters": {
+              "type": "object",
+              "properties": {}
+            }
+          }
+        ]
+      }
+    },
+    {
+      "case": "parameter-property-order",
+      "input": {
+        "previous": [
+          {
+            "name": "a",
+            "description": "tool",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "x": {
+                  "type": "string"
+                },
+                "y": {
+                  "type": "number"
+                }
+              }
+            }
+          }
+        ],
+        "current": [
+          {
+            "name": "a",
+            "description": "tool",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "y": {
+                  "type": "number"
+                },
+                "x": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "case": "integer-property-enumeration",
+      "input": {
+        "previous": [
+          {
+            "name": "a",
+            "description": "tool",
+            "parameters": {
+              "2": {},
+              "1": {}
+            }
+          }
+        ],
+        "current": [
+          {
+            "name": "a",
+            "description": "tool",
+            "parameters": {
+              "1": {},
+              "2": {}
+            }
+          }
+        ]
+      }
+    },
+    {
+      "case": "constraint-undefined-vs-false",
+      "input": {
+        "previous": [
+          {
+            "name": "a",
+            "description": "tool",
+            "parameters": {
+              "type": "object",
+              "properties": {}
+            }
+          }
+        ],
+        "current": [
+          {
+            "name": "a",
+            "description": "tool",
+            "parameters": {
+              "type": "object",
+              "properties": {}
+            },
+            "constrainedSampling": false
+          }
+        ]
+      }
+    },
+    {
+      "case": "constraint-object-order",
+      "input": {
+        "previous": [
+          {
+            "name": "a",
+            "description": "tool",
+            "parameters": {
+              "type": "object",
+              "properties": {}
+            },
+            "constrainedSampling": {
+              "type": "jsonSchema",
+              "strict": "prefer"
+            }
+          }
+        ],
+        "current": [
+          {
+            "name": "a",
+            "description": "tool",
+            "parameters": {
+              "type": "object",
+              "properties": {}
+            },
+            "constrainedSampling": {
+              "strict": "prefer",
+              "type": "jsonSchema"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "case": "duplicate-prior-last-definition-wins",
+      "input": {
+        "previous": [
+          {
+            "name": "a",
+            "description": "tool",
+            "parameters": {
+              "type": "object",
+              "properties": {}
+            }
+          },
+          {
+            "name": "a",
+            "description": "updated",
+            "parameters": {
+              "type": "object",
+              "properties": {}
+            }
+          }
+        ],
+        "current": [
+          {
+            "name": "a",
+            "description": "updated",
+            "parameters": {
+              "type": "object",
+              "properties": {}
+            }
+          }
+        ]
+      }
+    },
+    {
+      "case": "duplicate-current-preserves-filter-order",
+      "input": {
+        "previous": [
+          {
+            "name": "a",
+            "description": "tool",
+            "parameters": {
+              "type": "object",
+              "properties": {}
+            }
+          }
+        ],
+        "current": [
+          {
+            "name": "a",
+            "description": "first",
+            "parameters": {
+              "type": "object",
+              "properties": {}
+            }
+          },
+          {
+            "name": "a",
+            "description": "second",
+            "parameters": {
+              "type": "object",
+              "properties": {}
+            }
+          }
+        ]
+      }
+    },
+    {
+      "case": "lone-surrogate-names-remain-distinct",
+      "input": {
+        "previousJson": "[{\"name\":\"\\ud800\",\"description\":\"tool\",\"parameters\":{\"type\":\"object\",\"properties\":{}}},{\"name\":\"\\ud801\",\"description\":\"tool\",\"parameters\":{\"type\":\"object\",\"properties\":{}}}]",
+        "currentJson": "[{\"name\":\"\\ud800\",\"description\":\"tool\",\"parameters\":{\"type\":\"object\",\"properties\":{}}}]"
+      }
+    },
+    {
+      "case": "lone-surrogate-description-change",
+      "input": {
+        "previousJson": "[{\"name\":\"a\",\"description\":\"\\ud800\",\"parameters\":{\"type\":\"object\",\"properties\":{}}}]",
+        "currentJson": "[{\"name\":\"a\",\"description\":\"\\ud801\",\"parameters\":{\"type\":\"object\",\"properties\":{}}}]"
+      }
+    },
+    {
+      "case": "constraint-lone-surrogate-grammar",
+      "input": {
+        "previousJson": "[{\"name\":\"a\",\"description\":\"tool\",\"parameters\":{\"type\":\"object\",\"properties\":{}},\"constrainedSampling\":{\"type\":\"grammar\",\"variants\":{\"openai_lark\":\"\\ud800\"}}}]",
+        "currentJson": "[{\"name\":\"a\",\"description\":\"tool\",\"parameters\":{\"type\":\"object\",\"properties\":{}},\"constrainedSampling\":{\"type\":\"grammar\",\"variants\":{\"openai_lark\":\"\\ud801\"}}}]"
+      }
+    }
+  ]
+}

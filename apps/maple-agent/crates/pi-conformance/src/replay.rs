@@ -435,7 +435,7 @@ pub fn check_structure(root: &Path) -> CheckResult {
             let matrix = function_inputs
                 .get(id)
                 .ok_or_else(|| format!("recorded function {id} has no input matrix"))?;
-            let rows = read_jsonl(&function_root.join(path))?;
+            let rows = crate::functions::read_goldens(&function_root.join(path))?;
             if rows.len() != matrix.cases.len() {
                 return Err(format!(
                     "recorded function {id} has {} cases but its input declares {}",
@@ -444,15 +444,18 @@ pub fn check_structure(root: &Path) -> CheckResult {
                 ));
             }
             let mut cases = BTreeSet::new();
-            for (row, input) in rows.into_iter().zip(&matrix.cases) {
-                let golden = parse_golden(row).map_err(|error| format!("{path}: {error}"))?;
+            for (golden, input) in rows.into_iter().zip(&matrix.cases) {
                 if golden.case.is_empty() || !cases.insert(golden.case.clone()) {
                     return Err(format!(
                         "function {id} has empty or duplicate case {:?}",
                         golden.case
                     ));
                 }
-                if golden.case != input.case || !copied_input_equal(&input.input, &golden.input) {
+                let copied = golden
+                    .input
+                    .to_json()
+                    .map_err(|error| format!("{path}: invalid copied input: {error}"))?;
+                if golden.case != input.case || !copied_input_equal(&input.input, &copied) {
                     return Err(format!(
                         "recorded function {id} does not preserve input case {:?}",
                         input.case
@@ -544,8 +547,16 @@ pub async fn replay_function(root: &Path, id: &str) -> CheckResult {
                 ..Default::default()
             };
             options.generated_ids.discover_protocol_ids = false;
+            let expected = pi_ai::utils::js_value::JsValue::try_from(expected)
+                .map_err(|error| error.to_string())?;
+            let actual = pi_ai::utils::js_value::JsValue::try_from(actual)
+                .map_err(|error| error.to_string())?;
             if let Err(error) = crate::compare::compare(&expected, &actual, &options) {
-                failures.push(format!("{}: {error}; actual={actual}", golden.case));
+                failures.push(format!(
+                    "{}: {error}; actual={}",
+                    golden.case,
+                    pi_ai::utils::js_json::stringify(&actual)
+                ));
             }
         }
         return if failures.is_empty() {
@@ -554,9 +565,7 @@ pub async fn replay_function(root: &Path, id: &str) -> CheckResult {
             Err(failures.join("\n"))
         };
     }
-    Err(format!(
-        "Rust function dispatcher for {id} is not implemented yet"
-    ))
+    crate::functions::replay(root, id)
 }
 
 #[cfg(test)]

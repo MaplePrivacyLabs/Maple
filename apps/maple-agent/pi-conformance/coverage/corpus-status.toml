@@ -201,33 +201,27 @@ reason = "Recording and Rust replay are completed in port step 7."
 
 [[function]]
 id = "json-parse.parseStreamingJson"
-status = "pending"
-reason = "Function golden recording and Rust dispatch are completed in port step 1."
+status = "passing"
 
 [[function]]
 id = "estimate.estimateTextTokens"
-status = "pending"
-reason = "Function golden recording and Rust dispatch are completed in port step 1."
+status = "passing"
 
 [[function]]
 id = "sanitize-unicode.sanitizeSurrogates"
-status = "pending"
-reason = "Function golden recording and Rust dispatch are completed in port step 1."
+status = "passing"
 
 [[function]]
 id = "json.stringify"
-status = "pending"
-reason = "Function golden recording and Rust dispatch are completed in port step 1."
+status = "passing"
 
 [[function]]
 id = "validation.validateToolArguments"
-status = "pending"
-reason = "Function golden recording and Rust dispatch are completed in port step 1."
+status = "passing"
 
 [[function]]
 id = "retry.retryDelayMs"
-status = "pending"
-reason = "Function golden recording and Rust dispatch are completed in port step 1."
+status = "passing"
 
 [[function]]
 id = "env.virtualTimers"
@@ -235,23 +229,19 @@ status = "passing"
 
 [[function]]
 id = "overflow.isContextOverflow"
-status = "pending"
-reason = "Function golden recording and Rust dispatch are completed in port step 1."
+status = "passing"
 
 [[function]]
 id = "overflow.isRecoverableLength"
-status = "pending"
-reason = "Function golden recording and Rust dispatch are completed in port step 1."
+status = "passing"
 
 [[function]]
 id = "retry.isRetryableAssistantError"
-status = "pending"
-reason = "Function golden recording and Rust dispatch are completed in port step 1."
+status = "passing"
 
 [[function]]
 id = "transcript.toolStateChanges"
-status = "pending"
-reason = "Function golden recording and Rust dispatch are completed in port step 1."
+status = "passing"
 
 [[function]]
 id = "api.transformMessages"
@@ -312,3 +302,7 @@ reason = "Function golden recording and Rust dispatch are completed in port step
 id = "system-prompt.buildSystemPrompt"
 status = "pending"
 reason = "Function golden recording and Rust dispatch are completed in port step 6."
+
+[[function]]
+id = "transcript.toolOwnership"
+status = "passing"

@@ -1,0 +1,588 @@
+{
+  "dsl": 1,
+  "id": "overflow.isContextOverflow",
+  "clock": {
+    "epochMs": 1767225600000
+  },
+  "cases": [
+    {
+      "case": "anthropic-prompt-too-long",
+      "input": {
+        "message": {
+          "role": "assistant",
+          "content": [],
+          "api": "faux",
+          "provider": "faux",
+          "model": "faux-1",
+          "usage": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "totalTokens": 0,
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0
+            }
+          },
+          "stopReason": "error",
+          "timestamp": 0,
+          "errorMessage": "prompt is too long: 213462 tokens > 200000 maximum"
+        }
+      }
+    },
+    {
+      "case": "openai-compatible-comma-limit",
+      "input": {
+        "message": {
+          "role": "assistant",
+          "content": [],
+          "api": "faux",
+          "provider": "faux",
+          "model": "faux-1",
+          "usage": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "totalTokens": 0,
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0
+            }
+          },
+          "stopReason": "error",
+          "timestamp": 0,
+          "errorMessage": "Requested token count exceeds the model's maximum context length of 131,072 tokens"
+        }
+      }
+    },
+    {
+      "case": "ds4-configured-context",
+      "input": {
+        "message": {
+          "role": "assistant",
+          "content": [],
+          "api": "faux",
+          "provider": "faux",
+          "model": "faux-1",
+          "usage": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "totalTokens": 0,
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0
+            }
+          },
+          "stopReason": "error",
+          "timestamp": 0,
+          "errorMessage": "Prompt has 137,000 tokens, but the configured context size is 131,072 tokens"
+        }
+      }
+    },
+    {
+      "case": "throttling-exclusion-wins",
+      "input": {
+        "message": {
+          "role": "assistant",
+          "content": [],
+          "api": "faux",
+          "provider": "faux",
+          "model": "faux-1",
+          "usage": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "totalTokens": 0,
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0
+            }
+          },
+          "stopReason": "error",
+          "timestamp": 0,
+          "errorMessage": "Throttling error: Too many tokens, please wait before trying again."
+        }
+      }
+    },
+    {
+      "case": "rate-limit-exclusion-wins",
+      "input": {
+        "message": {
+          "role": "assistant",
+          "content": [],
+          "api": "faux",
+          "provider": "faux",
+          "model": "faux-1",
+          "usage": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "totalTokens": 0,
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0
+            }
+          },
+          "stopReason": "error",
+          "timestamp": 0,
+          "errorMessage": "rate limit: too many tokens"
+        }
+      }
+    },
+    {
+      "case": "service-unavailable-exclusion-wins",
+      "input": {
+        "message": {
+          "role": "assistant",
+          "content": [],
+          "api": "faux",
+          "provider": "faux",
+          "model": "faux-1",
+          "usage": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "totalTokens": 0,
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0
+            }
+          },
+          "stopReason": "error",
+          "timestamp": 0,
+          "errorMessage": "Service unavailable: prompt too long"
+        }
+      }
+    },
+    {
+      "case": "cerebras-bodyless-413",
+      "input": {
+        "message": {
+          "role": "assistant",
+          "content": [],
+          "api": "faux",
+          "provider": "cerebras",
+          "model": "faux-1",
+          "usage": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "totalTokens": 0,
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0
+            }
+          },
+          "stopReason": "error",
+          "timestamp": 0,
+          "errorMessage": "413 status code (no body)"
+        }
+      }
+    },
+    {
+      "case": "other-provider-bodyless-413",
+      "input": {
+        "message": {
+          "role": "assistant",
+          "content": [],
+          "api": "faux",
+          "provider": "openai",
+          "model": "faux-1",
+          "usage": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "totalTokens": 0,
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0
+            }
+          },
+          "stopReason": "error",
+          "timestamp": 0,
+          "errorMessage": "413 status code (no body)"
+        }
+      }
+    },
+    {
+      "case": "cerebras-bodyless-must-start",
+      "input": {
+        "message": {
+          "role": "assistant",
+          "content": [],
+          "api": "faux",
+          "provider": "cerebras",
+          "model": "faux-1",
+          "usage": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "totalTokens": 0,
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0
+            }
+          },
+          "stopReason": "error",
+          "timestamp": 0,
+          "errorMessage": "wrapped: 413 status code (no body)"
+        }
+      }
+    },
+    {
+      "case": "error-pattern-with-stop-reason",
+      "input": {
+        "message": {
+          "role": "assistant",
+          "content": [],
+          "api": "faux",
+          "provider": "faux",
+          "model": "faux-1",
+          "usage": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "totalTokens": 0,
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0
+            }
+          },
+          "stopReason": "stop",
+          "timestamp": 0,
+          "errorMessage": "prompt too long"
+        }
+      }
+    },
+    {
+      "case": "silent-equal-window",
+      "input": {
+        "message": {
+          "role": "assistant",
+          "content": [],
+          "api": "faux",
+          "provider": "faux",
+          "model": "faux-1",
+          "usage": {
+            "input": 90,
+            "output": 0,
+            "cacheRead": 10,
+            "cacheWrite": 0,
+            "totalTokens": 100,
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0
+            }
+          },
+          "stopReason": "stop",
+          "timestamp": 0
+        },
+        "contextWindow": 100
+      }
+    },
+    {
+      "case": "silent-above-window",
+      "input": {
+        "message": {
+          "role": "assistant",
+          "content": [],
+          "api": "faux",
+          "provider": "faux",
+          "model": "faux-1",
+          "usage": {
+            "input": 91,
+            "output": 0,
+            "cacheRead": 10,
+            "cacheWrite": 0,
+            "totalTokens": 101,
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0
+            }
+          },
+          "stopReason": "stop",
+          "timestamp": 0
+        },
+        "contextWindow": 100
+      }
+    },
+    {
+      "case": "cache-write-is-not-input",
+      "input": {
+        "message": {
+          "role": "assistant",
+          "content": [],
+          "api": "faux",
+          "provider": "faux",
+          "model": "faux-1",
+          "usage": {
+            "input": 90,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 50,
+            "totalTokens": 140,
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0
+            }
+          },
+          "stopReason": "stop",
+          "timestamp": 0
+        },
+        "contextWindow": 100
+      }
+    },
+    {
+      "case": "silent-overflow-without-window",
+      "input": {
+        "message": {
+          "role": "assistant",
+          "content": [],
+          "api": "faux",
+          "provider": "faux",
+          "model": "faux-1",
+          "usage": {
+            "input": 101,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "totalTokens": 101,
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0
+            }
+          },
+          "stopReason": "stop",
+          "timestamp": 0
+        }
+      }
+    },
+    {
+      "case": "zero-window-is-absent",
+      "input": {
+        "message": {
+          "role": "assistant",
+          "content": [],
+          "api": "faux",
+          "provider": "faux",
+          "model": "faux-1",
+          "usage": {
+            "input": 1,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "totalTokens": 1,
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0
+            }
+          },
+          "stopReason": "stop",
+          "timestamp": 0
+        },
+        "contextWindow": 0
+      }
+    },
+    {
+      "case": "length-ninety-nine-percent-boundary",
+      "input": {
+        "message": {
+          "role": "assistant",
+          "content": [],
+          "api": "faux",
+          "provider": "faux",
+          "model": "faux-1",
+          "usage": {
+            "input": 89,
+            "output": 0,
+            "cacheRead": 10,
+            "cacheWrite": 0,
+            "totalTokens": 99,
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0
+            }
+          },
+          "stopReason": "length",
+          "timestamp": 0
+        },
+        "contextWindow": 100
+      }
+    },
+    {
+      "case": "length-below-boundary",
+      "input": {
+        "message": {
+          "role": "assistant",
+          "content": [],
+          "api": "faux",
+          "provider": "faux",
+          "model": "faux-1",
+          "usage": {
+            "input": 98,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "totalTokens": 98,
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0
+            }
+          },
+          "stopReason": "length",
+          "timestamp": 0
+        },
+        "contextWindow": 100
+      }
+    },
+    {
+      "case": "length-generated-output-is-not-overflow",
+      "input": {
+        "message": {
+          "role": "assistant",
+          "content": [],
+          "api": "faux",
+          "provider": "faux",
+          "model": "faux-1",
+          "usage": {
+            "input": 100,
+            "output": 1,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "totalTokens": 101,
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0
+            }
+          },
+          "stopReason": "length",
+          "timestamp": 0
+        },
+        "contextWindow": 100
+      }
+    },
+    {
+      "case": "aborted-is-not-silent-overflow",
+      "input": {
+        "message": {
+          "role": "assistant",
+          "content": [],
+          "api": "faux",
+          "provider": "faux",
+          "model": "faux-1",
+          "usage": {
+            "input": 200,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "totalTokens": 200,
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0
+            }
+          },
+          "stopReason": "aborted",
+          "timestamp": 0
+        },
+        "contextWindow": 100
+      }
+    },
+    {
+      "case": "linebreak-does-not-match-dot",
+      "input": {
+        "message": {
+          "role": "assistant",
+          "content": [],
+          "api": "faux",
+          "provider": "faux",
+          "model": "faux-1",
+          "usage": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "totalTokens": 0,
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0
+            }
+          },
+          "stopReason": "error",
+          "timestamp": 0,
+          "errorMessage": "input token count\nexceeds the maximum"
+        }
+      }
+    }
+  ]
+}

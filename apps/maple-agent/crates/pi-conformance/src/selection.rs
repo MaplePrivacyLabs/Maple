@@ -160,12 +160,19 @@ pub fn check_deviations(reference: &Path) -> CheckResult {
     let mut locations = BTreeSet::new();
     for deviation in &deviations.deviation {
         safe_relative(&deviation.scenario)?;
-        if !reference
-            .join("corpus/scenarios")
-            .join(&deviation.scenario)
-            .join("scenario.json")
-            .is_file()
-        {
+        let exists = if let Some(function) = deviation.scenario.strip_prefix("functions/") {
+            reference
+                .join("corpus/functions")
+                .join(format!("{function}.jsonl"))
+                .is_file()
+        } else {
+            reference
+                .join("corpus/scenarios")
+                .join(&deviation.scenario)
+                .join("scenario.json")
+                .is_file()
+        };
+        if !exists {
             return Err(format!(
                 "deviation references missing scenario {}",
                 deviation.scenario
@@ -198,14 +205,27 @@ pub fn check_deviations(reference: &Path) -> CheckResult {
                 deviation.scenario
             ));
         }
-    }
-    // No behavioral deviations have been approved or implemented in the
-    // initial harness. Do not silently accept a rule the comparator ignores.
-    if let Some(deviation) = deviations.deviation.first() {
-        return Err(format!(
-            "deviation rule {:?} for {} has no implemented comparison handler",
-            deviation.rule, deviation.scenario
-        ));
+        if !supported_deviation(deviation) {
+            return Err(format!(
+                "deviation rule {:?} for {} has no implemented comparison handler",
+                deviation.rule, deviation.scenario
+            ));
+        }
     }
     Ok(())
+}
+
+fn supported_deviation(deviation: &Deviation) -> bool {
+    deviation.scenario == "functions/transcript.toolOwnership"
+        && deviation.json_path == "$.after"
+        && deviation.kind == "language"
+        && deviation.rule == "owned-tool-definitions"
+}
+
+/// Behavior-specific replay handlers require the corresponding recorded owner
+/// authorization. An unknown or relocated rule is never a generic ignore path.
+pub(crate) fn permits_owned_tool_definitions(reference: &Path) -> CheckResult<bool> {
+    check_deviations(reference)?;
+    let deviations: Deviations = toml(&reference.join("coverage/deviations.toml"))?;
+    Ok(deviations.deviation.iter().any(supported_deviation))
 }

@@ -1124,16 +1124,37 @@
                     "minLength": 1
                   },
                   "input": {
-                    "type": "object",
-                    "properties": {
-                      "partialJson": {
-                        "type": "string"
+                    "oneOf": [
+                      {
+                        "type": "object",
+                        "properties": {
+                          "partialJson": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "partialJson"
+                        ],
+                        "additionalProperties": false
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "utf16": {
+                            "type": "array",
+                            "items": {
+                              "type": "integer",
+                              "minimum": 0,
+                              "maximum": 65535
+                            }
+                          }
+                        },
+                        "required": [
+                          "utf16"
+                        ],
+                        "additionalProperties": false
                       }
-                    },
-                    "required": [
-                      "partialJson"
-                    ],
-                    "additionalProperties": false
+                    ]
                   }
                 },
                 "required": [
@@ -1474,9 +1495,7 @@
                             "type": "string",
                             "minLength": 1
                           },
-                          "arguments": {
-                            "type": "object"
-                          }
+                          "arguments": {}
                         },
                         "required": [
                           "type",
@@ -1485,6 +1504,32 @@
                           "arguments"
                         ],
                         "additionalProperties": false
+                      },
+                      "argumentsJson": {
+                        "type": "string"
+                      },
+                      "schemaKinds": {
+                        "type": "object",
+                        "propertyNames": {
+                          "pattern": "^(?:|(?:/(?:[^~]|~[01])*))$"
+                        },
+                        "additionalProperties": {
+                          "type": "string"
+                        }
+                      },
+                      "schemaOptional": {
+                        "type": "array",
+                        "items": {
+                          "type": "string",
+                          "pattern": "^(?:|(?:/(?:[^~]|~[01])*))$"
+                        },
+                        "uniqueItems": true
+                      },
+                      "legacySchemaSymbol": {
+                        "type": "boolean"
+                      },
+                      "schemaJson": {
+                        "type": "string"
                       }
                     },
                     "required": [
@@ -1679,6 +1724,347 @@
             "cases"
           ],
           "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "dsl": {
+              "const": 1
+            },
+            "id": {
+              "const": "overflow.isContextOverflow"
+            },
+            "clock": {
+              "$ref": "#/$defs/clock"
+            },
+            "cases": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "case": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "input": {
+                    "type": "object",
+                    "properties": {
+                      "message": {
+                        "$ref": "#/$defs/functionAssistant"
+                      },
+                      "contextWindow": {
+                        "type": "number"
+                      }
+                    },
+                    "required": [
+                      "message"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "required": [
+                  "case",
+                  "input"
+                ],
+                "additionalProperties": false
+              },
+              "minItems": 1
+            }
+          },
+          "required": [
+            "dsl",
+            "id",
+            "clock",
+            "cases"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "dsl": {
+              "const": 1
+            },
+            "id": {
+              "const": "overflow.isRecoverableLength"
+            },
+            "clock": {
+              "$ref": "#/$defs/clock"
+            },
+            "cases": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "case": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "input": {
+                    "type": "object",
+                    "properties": {
+                      "message": {
+                        "$ref": "#/$defs/functionAssistant"
+                      },
+                      "desiredMaxOutput": {
+                        "type": "number"
+                      }
+                    },
+                    "required": [
+                      "message",
+                      "desiredMaxOutput"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "required": [
+                  "case",
+                  "input"
+                ],
+                "additionalProperties": false
+              },
+              "minItems": 1
+            }
+          },
+          "required": [
+            "dsl",
+            "id",
+            "clock",
+            "cases"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "dsl": {
+              "const": 1
+            },
+            "id": {
+              "const": "retry.isRetryableAssistantError"
+            },
+            "clock": {
+              "$ref": "#/$defs/clock"
+            },
+            "cases": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "case": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "input": {
+                    "type": "object",
+                    "properties": {
+                      "message": {
+                        "$ref": "#/$defs/functionAssistant"
+                      }
+                    },
+                    "required": [
+                      "message"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "required": [
+                  "case",
+                  "input"
+                ],
+                "additionalProperties": false
+              },
+              "minItems": 1
+            }
+          },
+          "required": [
+            "dsl",
+            "id",
+            "clock",
+            "cases"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "dsl": {
+              "const": 1
+            },
+            "id": {
+              "const": "transcript.toolStateChanges"
+            },
+            "clock": {
+              "$ref": "#/$defs/clock"
+            },
+            "cases": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "case": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "input": {
+                    "oneOf": [
+                      {
+                        "type": "object",
+                        "properties": {
+                          "previous": {
+                            "type": "array",
+                            "items": {
+                              "$ref": "#/$defs/functionTool"
+                            }
+                          },
+                          "current": {
+                            "type": "array",
+                            "items": {
+                              "$ref": "#/$defs/functionTool"
+                            }
+                          }
+                        },
+                        "required": [
+                          "previous",
+                          "current"
+                        ],
+                        "additionalProperties": false
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "previous": {
+                            "type": "array",
+                            "items": {
+                              "$ref": "#/$defs/functionTool"
+                            }
+                          },
+                          "currentJson": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "previous",
+                          "currentJson"
+                        ],
+                        "additionalProperties": false
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "previousJson": {
+                            "type": "string"
+                          },
+                          "current": {
+                            "type": "array",
+                            "items": {
+                              "$ref": "#/$defs/functionTool"
+                            }
+                          }
+                        },
+                        "required": [
+                          "previousJson",
+                          "current"
+                        ],
+                        "additionalProperties": false
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "previousJson": {
+                            "type": "string"
+                          },
+                          "currentJson": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "previousJson",
+                          "currentJson"
+                        ],
+                        "additionalProperties": false
+                      }
+                    ]
+                  }
+                },
+                "required": [
+                  "case",
+                  "input"
+                ],
+                "additionalProperties": false
+              },
+              "minItems": 1
+            }
+          },
+          "required": [
+            "dsl",
+            "id",
+            "clock",
+            "cases"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "dsl": {
+              "const": 1
+            },
+            "id": {
+              "const": "transcript.toolOwnership"
+            },
+            "clock": {
+              "$ref": "#/$defs/clock"
+            },
+            "cases": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "case": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "input": {
+                    "type": "object",
+                    "properties": {
+                      "operation": {
+                        "enum": [
+                          "mutateSourceTool",
+                          "mutateReplayedTool"
+                        ]
+                      },
+                      "tool": {
+                        "$ref": "#/$defs/functionTool"
+                      },
+                      "description": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "operation",
+                      "tool",
+                      "description"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "required": [
+                  "case",
+                  "input"
+                ],
+                "additionalProperties": false
+              },
+              "minItems": 1
+            }
+          },
+          "required": [
+            "dsl",
+            "id",
+            "clock",
+            "cases"
+          ],
+          "additionalProperties": false
         }
       ]
     },
@@ -1823,6 +2209,187 @@
         "clock",
         "covers",
         "models"
+      ],
+      "additionalProperties": false
+    },
+    "functionTool": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "description": {
+          "type": "string"
+        },
+        "parameters": {
+          "type": "object"
+        },
+        "constrainedSampling": {
+          "oneOf": [
+            {
+              "const": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "type": {
+                  "const": "jsonSchema"
+                },
+                "strict": {
+                  "enum": [
+                    "prefer",
+                    "require"
+                  ]
+                }
+              },
+              "required": [
+                "type",
+                "strict"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "type": {
+                  "const": "grammar"
+                },
+                "variants": {
+                  "type": "object",
+                  "properties": {
+                    "openai_lark": {
+                      "type": "string"
+                    },
+                    "openai_regex": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [],
+                  "additionalProperties": false
+                }
+              },
+              "required": [
+                "type",
+                "variants"
+              ],
+              "additionalProperties": false
+            }
+          ]
+        }
+      },
+      "required": [
+        "name",
+        "description",
+        "parameters"
+      ],
+      "additionalProperties": false
+    },
+    "functionAssistant": {
+      "type": "object",
+      "properties": {
+        "role": {
+          "const": "assistant"
+        },
+        "content": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/fauxBlock"
+          }
+        },
+        "api": {
+          "type": "string"
+        },
+        "provider": {
+          "type": "string"
+        },
+        "model": {
+          "type": "string"
+        },
+        "stopReason": {
+          "enum": [
+            "stop",
+            "length",
+            "toolUse",
+            "error",
+            "aborted",
+            "pending",
+            "deferred"
+          ]
+        },
+        "errorMessage": {
+          "type": "string"
+        },
+        "timestamp": {
+          "type": "number"
+        },
+        "usage": {
+          "type": "object",
+          "properties": {
+            "input": {
+              "type": "number"
+            },
+            "output": {
+              "type": "number"
+            },
+            "cacheRead": {
+              "type": "number"
+            },
+            "cacheWrite": {
+              "type": "number"
+            },
+            "totalTokens": {
+              "type": "number"
+            },
+            "cost": {
+              "type": "object",
+              "properties": {
+                "input": {
+                  "type": "number"
+                },
+                "output": {
+                  "type": "number"
+                },
+                "cacheRead": {
+                  "type": "number"
+                },
+                "cacheWrite": {
+                  "type": "number"
+                },
+                "total": {
+                  "type": "number"
+                }
+              },
+              "required": [
+                "input",
+                "output",
+                "cacheRead",
+                "cacheWrite",
+                "total"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "input",
+            "output",
+            "cacheRead",
+            "cacheWrite",
+            "totalTokens",
+            "cost"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "role",
+        "content",
+        "api",
+        "provider",
+        "model",
+        "stopReason",
+        "timestamp",
+        "usage"
       ],
       "additionalProperties": false
     }

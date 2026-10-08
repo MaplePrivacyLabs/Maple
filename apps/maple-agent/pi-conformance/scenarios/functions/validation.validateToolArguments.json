@@ -257,6 +257,1997 @@
           }
         }
       }
+    },
+    {
+      "case": "typebox-number-uppercase-boolean",
+      "input": {
+        "tool": {
+          "name": "lookup",
+          "description": "Validate a supplied value",
+          "parameters": {
+            "type": "object",
+            "required": [
+              "value"
+            ],
+            "properties": {
+              "value": {
+                "type": "number"
+              }
+            }
+          }
+        },
+        "toolCall": {
+          "type": "toolCall",
+          "id": "call_typebox",
+          "name": "lookup",
+          "arguments": {
+            "value": "TRUE"
+          }
+        },
+        "schemaKinds": {
+          "": "Object",
+          "/properties/value": "Number"
+        }
+      }
+    },
+    {
+      "case": "typebox-number-empty-whitespace",
+      "input": {
+        "tool": {
+          "name": "lookup",
+          "description": "Validate a supplied value",
+          "parameters": {
+            "type": "object",
+            "required": [
+              "value"
+            ],
+            "properties": {
+              "value": {
+                "type": "number"
+              }
+            }
+          }
+        },
+        "toolCall": {
+          "type": "toolCall",
+          "id": "call_typebox",
+          "name": "lookup",
+          "arguments": {
+            "value": "﻿"
+          }
+        },
+        "schemaKinds": {
+          "": "Object",
+          "/properties/value": "Number"
+        }
+      }
+    },
+    {
+      "case": "typebox-number-rejects-non-js-whitespace",
+      "input": {
+        "tool": {
+          "name": "lookup",
+          "description": "Validate a supplied value",
+          "parameters": {
+            "type": "object",
+            "required": [
+              "value"
+            ],
+            "properties": {
+              "value": {
+                "type": "number"
+              }
+            }
+          }
+        },
+        "toolCall": {
+          "type": "toolCall",
+          "id": "call_typebox",
+          "name": "lookup",
+          "arguments": {
+            "value": ""
+          }
+        },
+        "schemaKinds": {
+          "": "Object",
+          "/properties/value": "Number"
+        }
+      }
+    },
+    {
+      "case": "typebox-number-bigint-like",
+      "input": {
+        "tool": {
+          "name": "lookup",
+          "description": "Validate a supplied value",
+          "parameters": {
+            "type": "object",
+            "required": [
+              "value"
+            ],
+            "properties": {
+              "value": {
+                "type": "number"
+              }
+            }
+          }
+        },
+        "toolCall": {
+          "type": "toolCall",
+          "id": "call_typebox",
+          "name": "lookup",
+          "arguments": {
+            "value": "2n"
+          }
+        },
+        "schemaKinds": {
+          "": "Object",
+          "/properties/value": "Number"
+        }
+      }
+    },
+    {
+      "case": "typebox-number-rejects-leading-zero-bigint",
+      "input": {
+        "tool": {
+          "name": "lookup",
+          "description": "Validate a supplied value",
+          "parameters": {
+            "type": "object",
+            "required": [
+              "value"
+            ],
+            "properties": {
+              "value": {
+                "type": "number"
+              }
+            }
+          }
+        },
+        "toolCall": {
+          "type": "toolCall",
+          "id": "call_typebox",
+          "name": "lookup",
+          "arguments": {
+            "value": "02n"
+          }
+        },
+        "schemaKinds": {
+          "": "Object",
+          "/properties/value": "Number"
+        }
+      }
+    },
+    {
+      "case": "typebox-integer-truncates",
+      "input": {
+        "tool": {
+          "name": "lookup",
+          "description": "Validate a supplied value",
+          "parameters": {
+            "type": "object",
+            "required": [
+              "value"
+            ],
+            "properties": {
+              "value": {
+                "type": "integer"
+              }
+            }
+          }
+        },
+        "toolCall": {
+          "type": "toolCall",
+          "id": "call_typebox",
+          "name": "lookup",
+          "arguments": {
+            "value": "2.7"
+          }
+        },
+        "schemaKinds": {
+          "": "Object",
+          "/properties/value": "Integer"
+        }
+      }
+    },
+    {
+      "case": "typebox-boolean-one-string",
+      "input": {
+        "tool": {
+          "name": "lookup",
+          "description": "Validate a supplied value",
+          "parameters": {
+            "type": "object",
+            "required": [
+              "value"
+            ],
+            "properties": {
+              "value": {
+                "type": "boolean"
+              }
+            }
+          }
+        },
+        "toolCall": {
+          "type": "toolCall",
+          "id": "call_typebox",
+          "name": "lookup",
+          "arguments": {
+            "value": "1"
+          }
+        },
+        "schemaKinds": {
+          "": "Object",
+          "/properties/value": "Boolean"
+        }
+      }
+    },
+    {
+      "case": "typebox-boolean-uppercase",
+      "input": {
+        "tool": {
+          "name": "lookup",
+          "description": "Validate a supplied value",
+          "parameters": {
+            "type": "object",
+            "required": [
+              "value"
+            ],
+            "properties": {
+              "value": {
+                "type": "boolean"
+              }
+            }
+          }
+        },
+        "toolCall": {
+          "type": "toolCall",
+          "id": "call_typebox",
+          "name": "lookup",
+          "arguments": {
+            "value": "TRUE"
+          }
+        },
+        "schemaKinds": {
+          "": "Object",
+          "/properties/value": "Boolean"
+        }
+      }
+    },
+    {
+      "case": "typebox-string-required-null",
+      "input": {
+        "tool": {
+          "name": "lookup",
+          "description": "Validate a supplied value",
+          "parameters": {
+            "type": "object",
+            "required": [
+              "value"
+            ],
+            "properties": {
+              "value": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "toolCall": {
+          "type": "toolCall",
+          "id": "call_typebox",
+          "name": "lookup",
+          "arguments": {
+            "value": null
+          }
+        },
+        "schemaKinds": {
+          "": "Object",
+          "/properties/value": "String"
+        }
+      }
+    },
+    {
+      "case": "typebox-null-string",
+      "input": {
+        "tool": {
+          "name": "lookup",
+          "description": "Validate a supplied value",
+          "parameters": {
+            "type": "object",
+            "required": [
+              "value"
+            ],
+            "properties": {
+              "value": {
+                "type": "null"
+              }
+            }
+          }
+        },
+        "toolCall": {
+          "type": "toolCall",
+          "id": "call_typebox",
+          "name": "lookup",
+          "arguments": {
+            "value": "NULL"
+          }
+        },
+        "schemaKinds": {
+          "": "Object",
+          "/properties/value": "Null"
+        }
+      }
+    },
+    {
+      "case": "typebox-array-wraps-scalar",
+      "input": {
+        "tool": {
+          "name": "lookup",
+          "description": "Validate a supplied value",
+          "parameters": {
+            "type": "object",
+            "required": [
+              "value"
+            ],
+            "properties": {
+              "value": {
+                "type": "array",
+                "items": {
+                  "type": "integer"
+                }
+              }
+            }
+          }
+        },
+        "toolCall": {
+          "type": "toolCall",
+          "id": "call_typebox",
+          "name": "lookup",
+          "arguments": {
+            "value": "2.7"
+          }
+        },
+        "schemaKinds": {
+          "": "Object",
+          "/properties/value": "Array",
+          "/properties/value/items": "Integer"
+        }
+      }
+    },
+    {
+      "case": "typebox-tuple-interior-conversion",
+      "input": {
+        "tool": {
+          "name": "lookup",
+          "description": "Validate a supplied value",
+          "parameters": {
+            "type": "object",
+            "required": [
+              "value"
+            ],
+            "properties": {
+              "value": {
+                "type": "array",
+                "additionalItems": false,
+                "items": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "boolean"
+                  }
+                ],
+                "minItems": 2
+              }
+            }
+          }
+        },
+        "toolCall": {
+          "type": "toolCall",
+          "id": "call_typebox",
+          "name": "lookup",
+          "arguments": {
+            "value": [
+              "2",
+              "1"
+            ]
+          }
+        },
+        "schemaKinds": {
+          "": "Object",
+          "/properties/value": "Tuple",
+          "/properties/value/items/0": "Number",
+          "/properties/value/items/1": "Boolean"
+        }
+      }
+    },
+    {
+      "case": "typebox-union-preserves-existing-arm",
+      "input": {
+        "tool": {
+          "name": "lookup",
+          "description": "Validate a supplied value",
+          "parameters": {
+            "type": "object",
+            "required": [
+              "value"
+            ],
+            "properties": {
+              "value": {
+                "anyOf": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "string"
+                  }
+                ]
+              }
+            }
+          }
+        },
+        "toolCall": {
+          "type": "toolCall",
+          "id": "call_typebox",
+          "name": "lookup",
+          "arguments": {
+            "value": "2"
+          }
+        },
+        "schemaKinds": {
+          "": "Object",
+          "/properties/value": "Union",
+          "/properties/value/anyOf/0": "Number",
+          "/properties/value/anyOf/1": "String"
+        }
+      }
+    },
+    {
+      "case": "typebox-nullable-union-preserves-null",
+      "input": {
+        "tool": {
+          "name": "lookup",
+          "description": "Validate a supplied value",
+          "parameters": {
+            "type": "object",
+            "required": [
+              "value"
+            ],
+            "properties": {
+              "value": {
+                "anyOf": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            }
+          }
+        },
+        "toolCall": {
+          "type": "toolCall",
+          "id": "call_typebox",
+          "name": "lookup",
+          "arguments": {
+            "value": null
+          }
+        },
+        "schemaKinds": {
+          "": "Object",
+          "/properties/value": "Union",
+          "/properties/value/anyOf/0": "Number",
+          "/properties/value/anyOf/1": "Null"
+        }
+      }
+    },
+    {
+      "case": "typebox-enum-coerces-candidate",
+      "input": {
+        "tool": {
+          "name": "lookup",
+          "description": "Validate a supplied value",
+          "parameters": {
+            "type": "object",
+            "required": [
+              "value"
+            ],
+            "properties": {
+              "value": {
+                "enum": [
+                  "two",
+                  2
+                ]
+              }
+            }
+          }
+        },
+        "toolCall": {
+          "type": "toolCall",
+          "id": "call_typebox",
+          "name": "lookup",
+          "arguments": {
+            "value": "2n"
+          }
+        },
+        "schemaKinds": {
+          "": "Object",
+          "/properties/value": "Enum"
+        }
+      }
+    },
+    {
+      "case": "typebox-intersect-object-conversion",
+      "input": {
+        "tool": {
+          "name": "lookup",
+          "description": "Validate a supplied value",
+          "parameters": {
+            "type": "object",
+            "required": [
+              "value"
+            ],
+            "properties": {
+              "value": {
+                "allOf": [
+                  {
+                    "type": "object",
+                    "required": [
+                      "a"
+                    ],
+                    "properties": {
+                      "a": {
+                        "type": "number"
+                      }
+                    }
+                  },
+                  {
+                    "type": "object",
+                    "required": [
+                      "b"
+                    ],
+                    "properties": {
+                      "b": {
+                        "type": "boolean"
+                      }
+                    }
+                  }
+                ]
+              }
+            }
+          }
+        },
+        "toolCall": {
+          "type": "toolCall",
+          "id": "call_typebox",
+          "name": "lookup",
+          "arguments": {
+            "value": {
+              "a": "true",
+              "b": "1"
+            }
+          }
+        },
+        "schemaKinds": {
+          "": "Object",
+          "/properties/value": "Intersect",
+          "/properties/value/allOf/0": "Object",
+          "/properties/value/allOf/0/properties/a": "Number",
+          "/properties/value/allOf/1": "Object",
+          "/properties/value/allOf/1/properties/b": "Boolean"
+        }
+      }
+    },
+    {
+      "case": "typebox-intersect-contradictory-arrays",
+      "input": {
+        "tool": {
+          "name": "lookup",
+          "description": "Validate a supplied value",
+          "parameters": {
+            "type": "object",
+            "required": [
+              "value"
+            ],
+            "properties": {
+              "value": {
+                "allOf": [
+                  {
+                    "type": "array",
+                    "items": {
+                      "type": "number"
+                    }
+                  },
+                  {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                ]
+              }
+            }
+          }
+        },
+        "toolCall": {
+          "type": "toolCall",
+          "id": "call_typebox",
+          "name": "lookup",
+          "arguments": {
+            "value": "2"
+          }
+        },
+        "schemaKinds": {
+          "": "Object",
+          "/properties/value": "Intersect",
+          "/properties/value/allOf/0": "Array",
+          "/properties/value/allOf/0/items": "Number",
+          "/properties/value/allOf/1": "Array",
+          "/properties/value/allOf/1/items": "String"
+        }
+      }
+    },
+    {
+      "case": "typebox-intersect-number-integer-order",
+      "input": {
+        "tool": {
+          "name": "lookup",
+          "description": "Validate a supplied value",
+          "parameters": {
+            "type": "object",
+            "required": [
+              "value"
+            ],
+            "properties": {
+              "value": {
+                "allOf": [
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "number"
+                  }
+                ]
+              }
+            }
+          }
+        },
+        "toolCall": {
+          "type": "toolCall",
+          "id": "call_typebox",
+          "name": "lookup",
+          "arguments": {
+            "value": "2.7"
+          }
+        },
+        "schemaKinds": {
+          "": "Object",
+          "/properties/value": "Intersect",
+          "/properties/value/allOf/0": "Integer",
+          "/properties/value/allOf/1": "Number"
+        }
+      }
+    },
+    {
+      "case": "typebox-record-conversion",
+      "input": {
+        "tool": {
+          "name": "lookup",
+          "description": "Validate a supplied value",
+          "parameters": {
+            "type": "object",
+            "required": [
+              "value"
+            ],
+            "properties": {
+              "value": {
+                "type": "object",
+                "patternProperties": {
+                  "^.*$": {
+                    "type": "number"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "toolCall": {
+          "type": "toolCall",
+          "id": "call_typebox",
+          "name": "lookup",
+          "arguments": {
+            "value": {
+              "first": "true",
+              "second": "2"
+            }
+          }
+        },
+        "schemaKinds": {
+          "": "Object",
+          "/properties/value": "Record",
+          "/properties/value/patternProperties/^.*$": "Number"
+        }
+      }
+    },
+    {
+      "case": "typebox-optional-null-omission",
+      "input": {
+        "tool": {
+          "name": "lookup",
+          "description": "Validate a supplied value",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "value": {
+                "type": "number"
+              }
+            }
+          }
+        },
+        "toolCall": {
+          "type": "toolCall",
+          "id": "call_typebox",
+          "name": "lookup",
+          "arguments": {
+            "value": null
+          }
+        },
+        "schemaKinds": {
+          "": "Object",
+          "/properties/value": "Number"
+        },
+        "schemaOptional": [
+          "/properties/value"
+        ]
+      }
+    },
+    {
+      "case": "legacy-symbol-plain-schema-skips-json-coercion",
+      "input": {
+        "tool": {
+          "name": "lookup",
+          "description": "Validate a supplied value",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "value": {
+                "type": "number"
+              }
+            },
+            "required": [
+              "value"
+            ]
+          }
+        },
+        "toolCall": {
+          "type": "toolCall",
+          "id": "call_typebox",
+          "name": "lookup",
+          "arguments": {
+            "value": "2"
+          }
+        },
+        "schemaKinds": {},
+        "legacySchemaSymbol": true
+      }
+    },
+    {
+      "case": "legacy-symbol-modern-kind-converts",
+      "input": {
+        "tool": {
+          "name": "lookup",
+          "description": "Validate a supplied value",
+          "parameters": {
+            "type": "object",
+            "required": [
+              "value"
+            ],
+            "properties": {
+              "value": {
+                "type": "number"
+              }
+            }
+          }
+        },
+        "toolCall": {
+          "type": "toolCall",
+          "id": "call_typebox",
+          "name": "lookup",
+          "arguments": {
+            "value": "2"
+          }
+        },
+        "schemaKinds": {
+          "": "Object",
+          "/properties/value": "Number"
+        },
+        "legacySchemaSymbol": true
+      }
+    },
+    {
+      "case": "number-rejects-infinity",
+      "input": {
+        "tool": {
+          "name": "echo",
+          "description": "Validate a supplied value",
+          "parameters": {
+            "type": "object",
+            "required": [
+              "v"
+            ],
+            "properties": {
+              "v": {
+                "type": "number"
+              }
+            }
+          }
+        },
+        "toolCall": {
+          "type": "toolCall",
+          "id": "call_exact",
+          "name": "echo",
+          "arguments": {}
+        },
+        "argumentsJson": "{\"v\":1e400}"
+      }
+    },
+    {
+      "case": "number-rejects-negative-infinity",
+      "input": {
+        "tool": {
+          "name": "echo",
+          "description": "Validate a supplied value",
+          "parameters": {
+            "type": "object",
+            "required": [
+              "v"
+            ],
+            "properties": {
+              "v": {
+                "type": "number"
+              }
+            }
+          }
+        },
+        "toolCall": {
+          "type": "toolCall",
+          "id": "call_exact",
+          "name": "echo",
+          "arguments": {}
+        },
+        "argumentsJson": "{\"v\":-1e400}"
+      }
+    },
+    {
+      "case": "string-coerces-infinity",
+      "input": {
+        "tool": {
+          "name": "echo",
+          "description": "Validate a supplied value",
+          "parameters": {
+            "type": "object",
+            "required": [
+              "v"
+            ],
+            "properties": {
+              "v": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "toolCall": {
+          "type": "toolCall",
+          "id": "call_exact",
+          "name": "echo",
+          "arguments": {}
+        },
+        "argumentsJson": "{\"v\":1e400}"
+      }
+    },
+    {
+      "case": "string-coerces-negative-infinity",
+      "input": {
+        "tool": {
+          "name": "echo",
+          "description": "Validate a supplied value",
+          "parameters": {
+            "type": "object",
+            "required": [
+              "v"
+            ],
+            "properties": {
+              "v": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "toolCall": {
+          "type": "toolCall",
+          "id": "call_exact",
+          "name": "echo",
+          "arguments": {}
+        },
+        "argumentsJson": "{\"v\":-1e400}"
+      }
+    },
+    {
+      "case": "modern-string-coerces-infinity",
+      "input": {
+        "tool": {
+          "name": "echo",
+          "description": "Validate a supplied value",
+          "parameters": {
+            "type": "object",
+            "required": [
+              "v"
+            ],
+            "properties": {
+              "v": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "toolCall": {
+          "type": "toolCall",
+          "id": "call_exact",
+          "name": "echo",
+          "arguments": {}
+        },
+        "argumentsJson": "{\"v\":1e400}",
+        "schemaKinds": {
+          "": "Object",
+          "/properties/v": "String"
+        }
+      }
+    },
+    {
+      "case": "legacy-string-rejects-infinity",
+      "input": {
+        "tool": {
+          "name": "echo",
+          "description": "Validate a supplied value",
+          "parameters": {
+            "type": "object",
+            "required": [
+              "v"
+            ],
+            "properties": {
+              "v": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "toolCall": {
+          "type": "toolCall",
+          "id": "call_exact",
+          "name": "echo",
+          "arguments": {}
+        },
+        "argumentsJson": "{\"v\":1e400}",
+        "schemaKinds": {
+          "": "Object",
+          "/properties/v": "String"
+        },
+        "legacySchemaSymbol": true
+      }
+    },
+    {
+      "case": "unknown-retains-infinity-before-observation",
+      "input": {
+        "tool": {
+          "name": "echo",
+          "description": "Validate a supplied value",
+          "parameters": {
+            "type": "object",
+            "required": [
+              "v"
+            ],
+            "properties": {
+              "v": {}
+            }
+          }
+        },
+        "toolCall": {
+          "type": "toolCall",
+          "id": "call_exact",
+          "name": "echo",
+          "arguments": {}
+        },
+        "argumentsJson": "{\"v\":1e400}"
+      }
+    },
+    {
+      "case": "type-union-rejects-infinity-without-coercion",
+      "input": {
+        "tool": {
+          "name": "echo",
+          "description": "Validate a supplied value",
+          "parameters": {
+            "type": "object",
+            "required": [
+              "v"
+            ],
+            "properties": {
+              "v": {
+                "type": [
+                  "number",
+                  "string"
+                ]
+              }
+            }
+          }
+        },
+        "toolCall": {
+          "type": "toolCall",
+          "id": "call_exact",
+          "name": "echo",
+          "arguments": {}
+        },
+        "argumentsJson": "{\"v\":1e400}"
+      }
+    },
+    {
+      "case": "root-number-rejects-infinity",
+      "input": {
+        "tool": {
+          "name": "echo",
+          "description": "Validate a supplied value",
+          "parameters": {
+            "type": "number"
+          }
+        },
+        "toolCall": {
+          "type": "toolCall",
+          "id": "call_exact",
+          "name": "echo",
+          "arguments": {}
+        },
+        "argumentsJson": "1e400"
+      }
+    },
+    {
+      "case": "root-string-coerces-infinity",
+      "input": {
+        "tool": {
+          "name": "echo",
+          "description": "Validate a supplied value",
+          "parameters": {
+            "type": "string"
+          }
+        },
+        "toolCall": {
+          "type": "toolCall",
+          "id": "call_exact",
+          "name": "echo",
+          "arguments": {}
+        },
+        "argumentsJson": "1e400"
+      }
+    },
+    {
+      "case": "root-invalid-coercion-returns-original-infinity",
+      "input": {
+        "tool": {
+          "name": "echo",
+          "description": "Validate a supplied value",
+          "parameters": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1
+          }
+        },
+        "toolCall": {
+          "type": "toolCall",
+          "id": "call_exact",
+          "name": "echo",
+          "arguments": {}
+        },
+        "argumentsJson": "1e400"
+      }
+    },
+    {
+      "case": "root-invalid-number-coercion-returns-original-string",
+      "input": {
+        "tool": {
+          "name": "echo",
+          "description": "Validate a supplied value",
+          "parameters": {
+            "type": "number",
+            "minimum": 50
+          }
+        },
+        "toolCall": {
+          "type": "toolCall",
+          "id": "call_exact",
+          "name": "echo",
+          "arguments": {}
+        },
+        "argumentsJson": "\"42\""
+      }
+    },
+    {
+      "case": "root-null-object-validation",
+      "input": {
+        "tool": {
+          "name": "echo",
+          "description": "Validate a supplied value",
+          "parameters": {
+            "type": "object",
+            "required": [
+              "n"
+            ],
+            "properties": {
+              "n": {
+                "type": "number"
+              }
+            }
+          }
+        },
+        "toolCall": {
+          "type": "toolCall",
+          "id": "call_exact",
+          "name": "echo",
+          "arguments": {}
+        },
+        "argumentsJson": "null"
+      }
+    },
+    {
+      "case": "root-array-modern-second-pass",
+      "input": {
+        "tool": {
+          "name": "echo",
+          "description": "Validate a supplied value",
+          "parameters": {
+            "type": "array",
+            "items": {
+              "type": "number"
+            }
+          }
+        },
+        "toolCall": {
+          "type": "toolCall",
+          "id": "call_exact",
+          "name": "echo",
+          "arguments": {}
+        },
+        "argumentsJson": "[\"42\"]",
+        "schemaKinds": {
+          "": "Array",
+          "/items": "Number"
+        }
+      }
+    },
+    {
+      "case": "root-array-legacy-ignores-map-return",
+      "input": {
+        "tool": {
+          "name": "echo",
+          "description": "Validate a supplied value",
+          "parameters": {
+            "type": "array",
+            "items": {
+              "type": "number"
+            }
+          }
+        },
+        "toolCall": {
+          "type": "toolCall",
+          "id": "call_exact",
+          "name": "echo",
+          "arguments": {}
+        },
+        "argumentsJson": "[\"42\"]",
+        "schemaKinds": {
+          "": "Array",
+          "/items": "Number"
+        },
+        "legacySchemaSymbol": true
+      }
+    },
+    {
+      "case": "root-array-keeps-object-interior-mutation",
+      "input": {
+        "tool": {
+          "name": "echo",
+          "description": "Validate a supplied value",
+          "parameters": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "n"
+              ],
+              "properties": {
+                "n": {
+                  "type": "number"
+                }
+              }
+            }
+          }
+        },
+        "toolCall": {
+          "type": "toolCall",
+          "id": "call_exact",
+          "name": "echo",
+          "arguments": {}
+        },
+        "argumentsJson": "[{\"n\":\"42\"}]",
+        "schemaKinds": {
+          "": "Array",
+          "/items": "Object",
+          "/items/properties/n": "Number"
+        },
+        "legacySchemaSymbol": true
+      }
+    },
+    {
+      "case": "lone-high-surrogate-length-one",
+      "input": {
+        "tool": {
+          "name": "echo",
+          "description": "Validate a supplied value",
+          "parameters": {
+            "type": "object",
+            "required": [
+              "v"
+            ],
+            "properties": {
+              "v": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 1
+              }
+            }
+          }
+        },
+        "toolCall": {
+          "type": "toolCall",
+          "id": "call_exact",
+          "name": "echo",
+          "arguments": {}
+        },
+        "argumentsJson": "{\"v\":\"\\ud800\"}"
+      }
+    },
+    {
+      "case": "lone-low-surrogate-length-one",
+      "input": {
+        "tool": {
+          "name": "echo",
+          "description": "Validate a supplied value",
+          "parameters": {
+            "type": "object",
+            "required": [
+              "v"
+            ],
+            "properties": {
+              "v": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 1
+              }
+            }
+          }
+        },
+        "toolCall": {
+          "type": "toolCall",
+          "id": "call_exact",
+          "name": "echo",
+          "arguments": {}
+        },
+        "argumentsJson": "{\"v\":\"\\udc00\"}"
+      }
+    },
+    {
+      "case": "two-lone-surrogates-length-two",
+      "input": {
+        "tool": {
+          "name": "echo",
+          "description": "Validate a supplied value",
+          "parameters": {
+            "type": "object",
+            "required": [
+              "v"
+            ],
+            "properties": {
+              "v": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 1
+              }
+            }
+          }
+        },
+        "toolCall": {
+          "type": "toolCall",
+          "id": "call_exact",
+          "name": "echo",
+          "arguments": {}
+        },
+        "argumentsJson": "{\"v\":\"\\ud800\\ud800\"}"
+      }
+    },
+    {
+      "case": "lone-surrogate-combining-length-one",
+      "input": {
+        "tool": {
+          "name": "echo",
+          "description": "Validate a supplied value",
+          "parameters": {
+            "type": "object",
+            "required": [
+              "v"
+            ],
+            "properties": {
+              "v": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 1
+              }
+            }
+          }
+        },
+        "toolCall": {
+          "type": "toolCall",
+          "id": "call_exact",
+          "name": "echo",
+          "arguments": {}
+        },
+        "argumentsJson": "{\"v\":\"\\ud800́\"}"
+      }
+    },
+    {
+      "case": "unicode-pattern-matches-lone-surrogate",
+      "input": {
+        "tool": {
+          "name": "echo",
+          "description": "Validate a supplied value",
+          "parameters": {
+            "type": "object",
+            "required": [
+              "v"
+            ],
+            "properties": {
+              "v": {
+                "type": "string",
+                "pattern": "^\\uD800$"
+              }
+            }
+          }
+        },
+        "toolCall": {
+          "type": "toolCall",
+          "id": "call_exact",
+          "name": "echo",
+          "arguments": {}
+        },
+        "argumentsJson": "{\"v\":\"\\ud800\"}"
+      }
+    },
+    {
+      "case": "unicode-dot-matches-lone-surrogate",
+      "input": {
+        "tool": {
+          "name": "echo",
+          "description": "Validate a supplied value",
+          "parameters": {
+            "type": "object",
+            "required": [
+              "v"
+            ],
+            "properties": {
+              "v": {
+                "type": "string",
+                "pattern": "^.$"
+              }
+            }
+          }
+        },
+        "toolCall": {
+          "type": "toolCall",
+          "id": "call_exact",
+          "name": "echo",
+          "arguments": {}
+        },
+        "argumentsJson": "{\"v\":\"\\ud800\"}"
+      }
+    },
+    {
+      "case": "unicode-category-matches-lone-surrogate",
+      "input": {
+        "tool": {
+          "name": "echo",
+          "description": "Validate a supplied value",
+          "parameters": {
+            "type": "object",
+            "required": [
+              "v"
+            ],
+            "properties": {
+              "v": {
+                "type": "string",
+                "pattern": "^\\p{Cs}$"
+              }
+            }
+          }
+        },
+        "toolCall": {
+          "type": "toolCall",
+          "id": "call_exact",
+          "name": "echo",
+          "arguments": {}
+        },
+        "argumentsJson": "{\"v\":\"\\ud800\"}"
+      }
+    },
+    {
+      "case": "lone-surrogate-property-errors",
+      "input": {
+        "tool": {
+          "name": "echo",
+          "description": "Validate a supplied value",
+          "parameters": {
+            "type": "object",
+            "patternProperties": {
+              "^.*$": {
+                "type": "number"
+              }
+            }
+          }
+        },
+        "toolCall": {
+          "type": "toolCall",
+          "id": "call_exact",
+          "name": "echo",
+          "arguments": {}
+        },
+        "argumentsJson": "{\"\\ud800\":\"bad\",\"a/\\udc00\":1e400}"
+      }
+    },
+    {
+      "case": "unique-items-distinguishes-signed-zero",
+      "input": {
+        "tool": {
+          "name": "echo",
+          "description": "Validate a supplied value",
+          "parameters": {
+            "type": "object",
+            "required": [
+              "v"
+            ],
+            "properties": {
+              "v": {
+                "type": "array",
+                "items": {},
+                "uniqueItems": true
+              }
+            }
+          }
+        },
+        "toolCall": {
+          "type": "toolCall",
+          "id": "call_exact",
+          "name": "echo",
+          "arguments": {}
+        },
+        "argumentsJson": "{\"v\":[0,-0]}"
+      }
+    },
+    {
+      "case": "unique-items-uses-textencoder-hash",
+      "input": {
+        "tool": {
+          "name": "echo",
+          "description": "Validate a supplied value",
+          "parameters": {
+            "type": "object",
+            "required": [
+              "v"
+            ],
+            "properties": {
+              "v": {
+                "type": "array",
+                "items": {},
+                "uniqueItems": true
+              }
+            }
+          }
+        },
+        "toolCall": {
+          "type": "toolCall",
+          "id": "call_exact",
+          "name": "echo",
+          "arguments": {}
+        },
+        "argumentsJson": "{\"v\":[[\"\\ud800\"],[\"�\"]]}"
+      }
+    },
+    {
+      "case": "email-preserves-lone-surrogate-in-quoted-local",
+      "input": {
+        "tool": {
+          "name": "echo",
+          "description": "Validate a supplied value",
+          "parameters": {
+            "type": "object",
+            "required": [
+              "v"
+            ],
+            "properties": {
+              "v": {
+                "type": "string",
+                "format": "email"
+              }
+            }
+          }
+        },
+        "toolCall": {
+          "type": "toolCall",
+          "id": "call_exact",
+          "name": "echo",
+          "arguments": {}
+        },
+        "argumentsJson": "{\"v\":\"\\\"\\ud800\\\"@example.com\"}"
+      }
+    },
+    {
+      "case": "email-rejects-lone-surrogate-in-unquoted-local",
+      "input": {
+        "tool": {
+          "name": "echo",
+          "description": "Validate a supplied value",
+          "parameters": {
+            "type": "object",
+            "required": [
+              "v"
+            ],
+            "properties": {
+              "v": {
+                "type": "string",
+                "format": "email"
+              }
+            }
+          }
+        },
+        "toolCall": {
+          "type": "toolCall",
+          "id": "call_exact",
+          "name": "echo",
+          "arguments": {}
+        },
+        "argumentsJson": "{\"v\":\"\\ud800@example.com\"}"
+      }
+    },
+    {
+      "case": "idn-email-normalizes-scalars-around-lone-surrogate",
+      "input": {
+        "tool": {
+          "name": "echo",
+          "description": "Validate a supplied value",
+          "parameters": {
+            "type": "object",
+            "required": [
+              "v"
+            ],
+            "properties": {
+              "v": {
+                "type": "string",
+                "format": "idn-email"
+              }
+            }
+          }
+        },
+        "toolCall": {
+          "type": "toolCall",
+          "id": "call_exact",
+          "name": "echo",
+          "arguments": {}
+        },
+        "argumentsJson": "{\"v\":\"é\\ud800@example.com\"}"
+      }
+    },
+    {
+      "case": "iri-native-url-boundary",
+      "input": {
+        "tool": {
+          "name": "echo",
+          "description": "Validate a supplied value",
+          "parameters": {
+            "type": "object",
+            "required": [
+              "v"
+            ],
+            "properties": {
+              "v": {
+                "type": "string",
+                "format": "iri"
+              }
+            }
+          }
+        },
+        "toolCall": {
+          "type": "toolCall",
+          "id": "call_exact",
+          "name": "echo",
+          "arguments": {}
+        },
+        "argumentsJson": "{\"v\":\"http://example.com/\\ud800\"}"
+      }
+    },
+    {
+      "case": "uri-rejects-lone-surrogate",
+      "input": {
+        "tool": {
+          "name": "echo",
+          "description": "Validate a supplied value",
+          "parameters": {
+            "type": "object",
+            "required": [
+              "v"
+            ],
+            "properties": {
+              "v": {
+                "type": "string",
+                "format": "uri"
+              }
+            }
+          }
+        },
+        "toolCall": {
+          "type": "toolCall",
+          "id": "call_exact",
+          "name": "echo",
+          "arguments": {}
+        },
+        "argumentsJson": "{\"v\":\"http://example.com/\\ud800\"}"
+      }
+    },
+    {
+      "case": "url-rejects-surrogate-host",
+      "input": {
+        "tool": {
+          "name": "echo",
+          "description": "Validate a supplied value",
+          "parameters": {
+            "type": "object",
+            "required": [
+              "v"
+            ],
+            "properties": {
+              "v": {
+                "type": "string",
+                "format": "url"
+              }
+            }
+          }
+        },
+        "toolCall": {
+          "type": "toolCall",
+          "id": "call_exact",
+          "name": "echo",
+          "arguments": {}
+        },
+        "argumentsJson": "{\"v\":\"http://\\ud800.com\"}"
+      }
+    },
+    {
+      "case": "pointer-retains-lone-surrogate",
+      "input": {
+        "tool": {
+          "name": "echo",
+          "description": "Validate a supplied value",
+          "parameters": {
+            "type": "object",
+            "required": [
+              "v"
+            ],
+            "properties": {
+              "v": {
+                "type": "string",
+                "format": "json-pointer"
+              }
+            }
+          }
+        },
+        "toolCall": {
+          "type": "toolCall",
+          "id": "call_exact",
+          "name": "echo",
+          "arguments": {}
+        },
+        "argumentsJson": "{\"v\":\"/\\ud800\"}"
+      }
+    },
+    {
+      "case": "unknown-format-retains-lone-surrogate",
+      "input": {
+        "tool": {
+          "name": "echo",
+          "description": "Validate a supplied value",
+          "parameters": {
+            "type": "object",
+            "required": [
+              "v"
+            ],
+            "properties": {
+              "v": {
+                "type": "string",
+                "format": "unknown"
+              }
+            }
+          }
+        },
+        "toolCall": {
+          "type": "toolCall",
+          "id": "call_exact",
+          "name": "echo",
+          "arguments": {}
+        },
+        "argumentsJson": "{\"v\":\"\\ud800\"}"
+      }
+    },
+    {
+      "case": "schema-lone-constant-accepts",
+      "input": {
+        "tool": {
+          "name": "echo",
+          "description": "Validate a supplied value",
+          "parameters": {}
+        },
+        "toolCall": {
+          "type": "toolCall",
+          "id": "call_schema",
+          "name": "echo",
+          "arguments": {}
+        },
+        "schemaJson": "{\"const\":\"\\ud800\"}",
+        "argumentsJson": "\"\\ud800\""
+      }
+    },
+    {
+      "case": "schema-lone-constant-rejects",
+      "input": {
+        "tool": {
+          "name": "echo",
+          "description": "Validate a supplied value",
+          "parameters": {}
+        },
+        "toolCall": {
+          "type": "toolCall",
+          "id": "call_schema",
+          "name": "echo",
+          "arguments": {}
+        },
+        "schemaJson": "{\"const\":\"\\ud800\"}",
+        "argumentsJson": "\"\\udc00\""
+      }
+    },
+    {
+      "case": "schema-lone-enum-accepts",
+      "input": {
+        "tool": {
+          "name": "echo",
+          "description": "Validate a supplied value",
+          "parameters": {}
+        },
+        "toolCall": {
+          "type": "toolCall",
+          "id": "call_schema",
+          "name": "echo",
+          "arguments": {}
+        },
+        "schemaJson": "{\"enum\":[\"\\ud800\",\"okay\"]}",
+        "argumentsJson": "\"\\ud800\""
+      }
+    },
+    {
+      "case": "schema-infinity-constant-accepts",
+      "input": {
+        "tool": {
+          "name": "echo",
+          "description": "Validate a supplied value",
+          "parameters": {}
+        },
+        "toolCall": {
+          "type": "toolCall",
+          "id": "call_schema",
+          "name": "echo",
+          "arguments": {}
+        },
+        "schemaJson": "{\"const\":1e400}",
+        "argumentsJson": "1e400"
+      }
+    },
+    {
+      "case": "schema-infinity-constant-rejects-null",
+      "input": {
+        "tool": {
+          "name": "echo",
+          "description": "Validate a supplied value",
+          "parameters": {}
+        },
+        "toolCall": {
+          "type": "toolCall",
+          "id": "call_schema",
+          "name": "echo",
+          "arguments": {}
+        },
+        "schemaJson": "{\"const\":1e400}",
+        "argumentsJson": "null"
+      }
+    },
+    {
+      "case": "schema-nonfinite-minimum-is-ignored",
+      "input": {
+        "tool": {
+          "name": "echo",
+          "description": "Validate a supplied value",
+          "parameters": {}
+        },
+        "toolCall": {
+          "type": "toolCall",
+          "id": "call_schema",
+          "name": "echo",
+          "arguments": {}
+        },
+        "schemaJson": "{\"type\":\"number\",\"minimum\":1e400}",
+        "argumentsJson": "42"
+      }
+    },
+    {
+      "case": "schema-nonfinite-maximum-is-ignored",
+      "input": {
+        "tool": {
+          "name": "echo",
+          "description": "Validate a supplied value",
+          "parameters": {}
+        },
+        "toolCall": {
+          "type": "toolCall",
+          "id": "call_schema",
+          "name": "echo",
+          "arguments": {}
+        },
+        "schemaJson": "{\"type\":\"number\",\"maximum\":-1e400}",
+        "argumentsJson": "42"
+      }
+    },
+    {
+      "case": "schema-literal-lone-pattern-accepts",
+      "input": {
+        "tool": {
+          "name": "echo",
+          "description": "Validate a supplied value",
+          "parameters": {}
+        },
+        "toolCall": {
+          "type": "toolCall",
+          "id": "call_schema",
+          "name": "echo",
+          "arguments": {}
+        },
+        "schemaJson": "{\"type\":\"string\",\"pattern\":\"^\\ud800$\"}",
+        "argumentsJson": "\"\\ud800\""
+      }
+    },
+    {
+      "case": "schema-literal-lone-pattern-error",
+      "input": {
+        "tool": {
+          "name": "echo",
+          "description": "Validate a supplied value",
+          "parameters": {}
+        },
+        "toolCall": {
+          "type": "toolCall",
+          "id": "call_schema",
+          "name": "echo",
+          "arguments": {}
+        },
+        "schemaJson": "{\"type\":\"string\",\"pattern\":\"^\\ud800$\"}",
+        "argumentsJson": "\"\\udc00\""
+      }
+    },
+    {
+      "case": "schema-lone-property-coerces",
+      "input": {
+        "tool": {
+          "name": "echo",
+          "description": "Validate a supplied value",
+          "parameters": {}
+        },
+        "toolCall": {
+          "type": "toolCall",
+          "id": "call_schema",
+          "name": "echo",
+          "arguments": {}
+        },
+        "schemaJson": "{\"type\":\"object\",\"properties\":{\"\\ud800\":{\"type\":\"number\"}},\"required\":[\"\\ud800\"],\"additionalProperties\":false}",
+        "argumentsJson": "{\"\\ud800\":\"42\"}"
+      }
+    },
+    {
+      "case": "schema-required-slash-name-error",
+      "input": {
+        "tool": {
+          "name": "echo",
+          "description": "Validate a supplied value",
+          "parameters": {}
+        },
+        "toolCall": {
+          "type": "toolCall",
+          "id": "call_schema",
+          "name": "echo",
+          "arguments": {}
+        },
+        "schemaJson": "{\"type\":\"object\",\"properties\":{\"a/\\ud800\":{\"type\":\"number\"}},\"required\":[\"a/\\ud800\"]}",
+        "argumentsJson": "{}"
+      }
+    },
+    {
+      "case": "schema-lone-dependent-required-error",
+      "input": {
+        "tool": {
+          "name": "echo",
+          "description": "Validate a supplied value",
+          "parameters": {}
+        },
+        "toolCall": {
+          "type": "toolCall",
+          "id": "call_schema",
+          "name": "echo",
+          "arguments": {}
+        },
+        "schemaJson": "{\"type\":\"object\",\"dependentRequired\":{\"\\ud800\":[\"\\udc00\"]}}",
+        "argumentsJson": "{\"\\ud800\":42}"
+      }
+    },
+    {
+      "case": "schema-ref-native-url-boundary",
+      "input": {
+        "tool": {
+          "name": "echo",
+          "description": "Validate a supplied value",
+          "parameters": {}
+        },
+        "toolCall": {
+          "type": "toolCall",
+          "id": "call_schema",
+          "name": "echo",
+          "arguments": {}
+        },
+        "schemaJson": "{\"type\":\"object\",\"properties\":{\"v\":{\"$ref\":\"#/$defs/\\ud800\"}},\"$defs\":{\"\\ud800\":{\"type\":\"string\",\"pattern\":\"^\\ud800$\"}}}",
+        "argumentsJson": "{\"v\":\"\\ud800\"}"
+      }
+    },
+    {
+      "case": "schema-escaped-lone-record-pattern",
+      "input": {
+        "tool": {
+          "name": "echo",
+          "description": "Validate a supplied value",
+          "parameters": {}
+        },
+        "toolCall": {
+          "type": "toolCall",
+          "id": "call_schema",
+          "name": "echo",
+          "arguments": {}
+        },
+        "schemaJson": "{\"type\":\"object\",\"patternProperties\":{\"^\\\\uD800$\":{\"type\":\"number\"}}}",
+        "argumentsJson": "{\"\\ud800\":\"42\"}",
+        "schemaKinds": {
+          "": "Record",
+          "/patternProperties/^\\uD800$": "Number"
+        }
+      }
     }
   ]
 }

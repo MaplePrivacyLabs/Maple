@@ -270,11 +270,19 @@ fn rust_tests(agent: &Path) -> CheckResult<BTreeMap<String, RustTest>> {
         let file = syn::parse_file(&read(path)?)
             .map_err(|error| format!("{}: {error}", path.display()))?;
         unconditional(&file.attrs, &path.display().to_string())?;
-        visit_items(&file.items, module_directory, prefix, output, visited)
+        visit_items(
+            &file.items,
+            module_directory,
+            path.parent().expect("Rust module has a parent"),
+            prefix,
+            output,
+            visited,
+        )
     }
     fn visit_items(
         items: &[Item],
         directory: &Path,
+        path_directory: &Path,
         prefix: &[String],
         output: &mut BTreeMap<String, RustTest>,
         visited: &mut BTreeSet<PathBuf>,
@@ -304,7 +312,14 @@ fn rust_tests(agent: &Path) -> CheckResult<BTreeMap<String, RustTest>> {
                     unconditional(&module.attrs, &name.join("::"))?;
                     let nested_directory = directory.join(module.ident.to_string());
                     if let Some((_, items)) = &module.content {
-                        visit_items(items, &nested_directory, &name, output, visited)?;
+                        visit_items(
+                            items,
+                            &nested_directory,
+                            &nested_directory,
+                            &name,
+                            output,
+                            visited,
+                        )?;
                     } else {
                         let override_path = module
                             .attrs
@@ -323,7 +338,10 @@ fn rust_tests(agent: &Path) -> CheckResult<BTreeMap<String, RustTest>> {
                         let overridden = override_path.is_some();
                         let path = if let Some(path) = override_path {
                             safe_relative(&path)?;
-                            directory.join(path)
+                            // A path attribute in an out-of-line module is
+                            // relative to the source file, even for foo.rs
+                            // whose ordinary children live in foo/.
+                            path_directory.join(path)
                         } else if directory.join(format!("{}.rs", module.ident)).exists() {
                             directory.join(format!("{}.rs", module.ident))
                         } else {
@@ -799,6 +817,36 @@ mod tests {
             rust_tests(temporary.path())
                 .unwrap_err()
                 .contains("conditional")
+        );
+    }
+
+    #[test]
+    fn path_attributes_in_non_mod_files_use_the_source_parent() {
+        let temporary = tempfile::tempdir().unwrap();
+        let tests = temporary.path().join("crates/pi-ai/tests");
+        std::fs::create_dir_all(tests.join("upstream/inline")).unwrap();
+        std::fs::write(tests.join("main.rs"), "mod upstream;").unwrap();
+        std::fs::write(
+            tests.join("upstream.rs"),
+            "#[path=\"upstream/custom.rs\"] mod renamed; mod ordinary; \
+             mod inline { #[path=\"other.rs\"] mod child; }",
+        )
+        .unwrap();
+        for path in [
+            "upstream/custom.rs",
+            "upstream/ordinary.rs",
+            "upstream/inline/other.rs",
+        ] {
+            std::fs::write(tests.join(path), "#[test] fn real() {}").unwrap();
+        }
+        let found = rust_tests(temporary.path()).unwrap();
+        assert_eq!(
+            found.keys().map(String::as_str).collect::<Vec<_>>(),
+            [
+                "pi-ai::upstream::inline::child::real",
+                "pi-ai::upstream::ordinary::real",
+                "pi-ai::upstream::renamed::real",
+            ]
         );
     }
 }

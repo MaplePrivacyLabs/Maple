@@ -1,0 +1,37 @@
+{
+  "dsl": 1,
+  "id": "transcript.toolOwnership",
+  "clock": {
+    "epochMs": 1700000000000
+  },
+  "cases": [
+    {
+      "case": "mutateSourceTool",
+      "input": {
+        "operation": "mutateSourceTool",
+        "tool": {
+          "name": "tool",
+          "description": "before",
+          "parameters": {
+            "type": "object"
+          }
+        },
+        "description": "after"
+      }
+    },
+    {
+      "case": "mutateReplayedTool",
+      "input": {
+        "operation": "mutateReplayedTool",
+        "tool": {
+          "name": "tool",
+          "description": "before",
+          "parameters": {
+            "type": "object"
+          }
+        },
+        "description": "after"
+      }
+    }
+  ]
+}

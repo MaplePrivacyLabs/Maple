@@ -1,7 +1,8 @@
 //! The shared corpus comparator. Normalization is deliberately structural: a
 //! tool's arbitrary JSON is not a source of generated IDs or clock fields.
 
-use serde_json::{Map, Value, json};
+use pi_ai::utils::js_json::{quote, stringify};
+use pi_ai::utils::js_value::{JsObject as Map, JsString, JsValue as Value};
 use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Clone, Debug)]
@@ -10,8 +11,8 @@ pub struct GeneratedIdOptions {
     /// this for fixtures whose session IDs are intentionally scripted.
     pub discover_protocol_ids: bool,
     /// Additional known generated IDs, in corresponding generation order.
-    pub expected: Vec<String>,
-    pub actual: Vec<String>,
+    pub expected: Vec<JsString>,
+    pub actual: Vec<JsString>,
 }
 
 impl Default for GeneratedIdOptions {
@@ -33,7 +34,7 @@ pub struct CompareOptions {
     /// start are also recognized structurally. The last call's immediate end
     /// cannot be distinguished from an asynchronous no-update finish from
     /// events alone, so the scenario must declare it here.
-    pub immediate_tool_call_ids: Vec<String>,
+    pub immediate_tool_call_ids: Vec<JsString>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -98,8 +99,12 @@ pub fn compare_events(
 }
 
 fn is_envelope(value: &Value) -> bool {
-    value.get("seq").is_some_and(Value::is_u64)
-        && value.get("entries").is_some_and(Value::is_u64)
+    value
+        .get("seq")
+        .is_some_and(|value| value.as_u64().is_some())
+        && value
+            .get("entries")
+            .is_some_and(|value| value.as_u64().is_some())
         && value.get("type").is_some_and(Value::is_string)
         && value.get("data").is_some_and(Value::is_object)
 }
@@ -138,11 +143,11 @@ enum Context {
     Arbitrary,
 }
 
-fn child_context(context: Context, key: &str) -> Context {
+fn child_context(context: Context, key: &JsString) -> Context {
     if context == Context::Arbitrary || context == Context::Headers {
         return Context::Arbitrary;
     }
-    match key {
+    match key.as_str().unwrap_or("") {
         "options" => Context::Options,
         "headers" => Context::Headers,
         "message" | "messages" | "toolResults" | "partial" => Context::Message,
@@ -161,7 +166,7 @@ fn child_context(context: Context, key: &str) -> Context {
     }
 }
 
-fn contextual_child(parent: &Value, context: Context, key: &str) -> Context {
+fn contextual_child(parent: &Value, context: Context, key: &JsString) -> Context {
     if context == Context::Protocol && key == "data" && is_envelope(parent) {
         Context::Protocol
     } else {
@@ -203,27 +208,27 @@ fn is_message(value: &Value, context: Context) -> bool {
         )
 }
 
-fn is_affinity_header(key: &str) -> bool {
+fn is_affinity_header(key: &JsString) -> bool {
     matches!(
-        key.to_ascii_lowercase().as_str(),
+        key.as_str().unwrap_or("").to_ascii_lowercase().as_str(),
         "session_id" | "x-session-id" | "x-session-affinity" | "x-client-request-id"
     )
 }
 
-fn omitted_header(key: &str) -> bool {
-    let key = key.to_ascii_lowercase();
+fn omitted_header(key: &JsString) -> bool {
+    let key = key.as_str().unwrap_or("").to_ascii_lowercase();
     key.starts_with("x-stainless-") || matches!(key.as_str(), "idempotency-key" | "user-agent")
 }
 
 #[derive(Default)]
 struct Discoveries {
-    ids: BTreeMap<String, usize>,
+    ids: BTreeMap<JsString, usize>,
     times: Vec<f64>,
 }
 
 impl Discoveries {
     fn add_id(&mut self, value: &Value) {
-        if let Some(id) = value.as_str() {
+        if let Some(id) = value.as_js_str() {
             let next = self.ids.len();
             self.ids.entry(id.to_owned()).or_insert(next);
         }
@@ -287,10 +292,31 @@ impl Discoveries {
     }
 }
 
-fn sorted_keys(object: &Map<String, Value>) -> Vec<&str> {
-    let mut keys: Vec<_> = object.keys().map(String::as_str).collect();
-    keys.sort_unstable();
+fn sorted_keys(object: &Map) -> Vec<&JsString> {
+    let mut keys: Vec<_> = object.keys().collect();
+    keys.sort_unstable_by(|left, right| left.units().cmp(right.units()));
     keys
+}
+
+fn contains_prefix_text(value: &JsString, prefix: &str) -> bool {
+    if let Some(text) = value.as_str() {
+        return text.contains(prefix);
+    }
+    let needle: Vec<u16> = prefix.encode_utf16().collect();
+    if needle.is_empty() {
+        return true;
+    }
+    value
+        .as_utf16()
+        .windows(needle.len())
+        .any(|part| part == needle)
+}
+
+fn starts_with(value: &JsString, prefix: &str) -> bool {
+    let mut units = value.units();
+    prefix
+        .encode_utf16()
+        .all(|expected| units.next() == Some(expected))
 }
 
 fn iso_ms(value: &str) -> Option<f64> {
@@ -351,11 +377,11 @@ fn iso_ms(value: &str) -> Option<f64> {
 
 fn contains_prefix(value: &Value, prefix: &str) -> bool {
     match value {
-        Value::String(value) => value.contains(prefix),
+        Value::String(value) => contains_prefix_text(value, prefix),
         Value::Array(values) => values.iter().any(|value| contains_prefix(value, prefix)),
-        Value::Object(values) => values
-            .iter()
-            .any(|(key, value)| key.contains(prefix) || contains_prefix(value, prefix)),
+        Value::Object(values) => values.iter().any(|(key, value)| {
+            contains_prefix_text(key, prefix) || contains_prefix(value, prefix)
+        }),
         _ => false,
     }
 }
@@ -375,7 +401,7 @@ fn normalized_pair(
         }
         nonce += 1;
     };
-    let normalize = |value: &Value, seeds: &[String]| -> Result<Value, String> {
+    let normalize = |value: &Value, seeds: &[JsString]| -> Result<Value, String> {
         let mut discovered = Discoveries::default();
         for seed in seeds {
             discovered.add_id(&Value::String(seed.clone()));
@@ -408,7 +434,7 @@ fn normalize_value(
     match value {
         Value::String(value) if !scripted_id => Ok(discovered.ids.get(value).map_or_else(
             || Value::String(value.clone()),
-            |id| Value::String(format!("{prefix}id:{id}")),
+            |id| Value::String(format!("{prefix}id:{id}").into()),
         )),
         Value::Array(values) => values
             .iter()
@@ -438,7 +464,7 @@ fn normalize_value(
                             .expect("timestamp was discovered");
                         result.insert(
                             key.clone(),
-                            Value::String(format!("{prefix}time:number:{rank}")),
+                            Value::String(format!("{prefix}time:number:{rank}").into()),
                         );
                         continue;
                     }
@@ -450,7 +476,7 @@ fn normalize_value(
                             .expect("timestamp was discovered");
                         result.insert(
                             key.clone(),
-                            Value::String(format!("{prefix}time:iso:{rank}")),
+                            Value::String(format!("{prefix}time:iso:{rank}").into()),
                         );
                         continue;
                     }
@@ -459,7 +485,9 @@ fn normalize_value(
                     || (key == "id"
                         && (tool_call
                             || completion
-                            || child.as_str().is_some_and(|id| id.starts_with("chatcmpl"))));
+                            || child
+                                .as_js_str()
+                                .is_some_and(|id| starts_with(id, "chatcmpl"))));
                 result.insert(
                     key.clone(),
                     normalize_value(
@@ -474,11 +502,16 @@ fn normalize_value(
             }
             Ok(Value::Object(result))
         }
-        Value::Number(number) if !number.as_f64().is_some_and(f64::is_finite) => Err(format!(
+        Value::Number(number) if !number.is_finite() => Err(format!(
             "non-finite or unrepresentable JSON number: {number}"
         )),
         _ => Ok(value.clone()),
     }
+}
+
+/// Compare a function result without applying protocol/header normalization.
+pub fn compare_unmodified(expected: &Value, actual: &Value) -> Result<(), String> {
+    compare_value(expected, actual, "$")
 }
 
 fn compare_value(expected: &Value, actual: &Value, path: &str) -> Result<(), String> {
@@ -487,7 +520,11 @@ fn compare_value(expected: &Value, actual: &Value, path: &str) -> Result<(), Str
             if numbers_equal(left, right, path.ends_with("[\"timestamp\"]")) {
                 Ok(())
             } else {
-                Err(format!("{path}: expected {expected}, got {actual}"))
+                Err(format!(
+                    "{path}: expected {}, got {}",
+                    stringify(expected),
+                    stringify(actual)
+                ))
             }
         }
         (Value::Array(left), Value::Array(right)) => {
@@ -505,7 +542,7 @@ fn compare_value(expected: &Value, actual: &Value, path: &str) -> Result<(), Str
         }
         (Value::Object(left), Value::Object(right)) => {
             for key in sorted_keys(left) {
-                let child_path = format!("{path}[{}]", serde_json::to_string(key).unwrap());
+                let child_path = format!("{path}[{}]", quote(key));
                 let actual = right
                     .get(key)
                     .ok_or_else(|| format!("{child_path}: missing field"))?;
@@ -515,51 +552,29 @@ fn compare_value(expected: &Value, actual: &Value, path: &str) -> Result<(), Str
                 .into_iter()
                 .find(|key| !left.contains_key(*key))
             {
-                return Err(format!(
-                    "{path}[{}]: unexpected field",
-                    serde_json::to_string(extra).unwrap()
-                ));
+                return Err(format!("{path}[{}]: unexpected field", quote(extra)));
             }
             Ok(())
         }
         _ if expected == actual => Ok(()),
-        _ => Err(format!("{path}: expected {expected}, got {actual}")),
+        _ => Err(format!(
+            "{path}: expected {}, got {}",
+            stringify(expected),
+            stringify(actual)
+        )),
     }
 }
 
-fn numbers_equal(left: &serde_json::Number, right: &serde_json::Number, strict: bool) -> bool {
-    let Some(left_float) = left.as_f64().filter(|value| value.is_finite()) else {
+fn numbers_equal(left: &f64, right: &f64, strict: bool) -> bool {
+    if !left.is_finite() || !right.is_finite() {
         return false;
-    };
-    let Some(right_float) = right.as_f64().filter(|value| value.is_finite()) else {
-        return false;
-    };
-    let integer = |number: &serde_json::Number| {
-        number
-            .as_i64()
-            .map(i128::from)
-            .or_else(|| number.as_u64().map(i128::from))
-    };
-    let left_integer = integer(left);
-    let right_integer = integer(right);
-    if let (Some(left), Some(right)) = (left_integer, right_integer) {
+    }
+    // Both inputs have already crossed a lossless JavaScript-value boundary.
+    // Distinct integral binary64 values must never be hidden by tolerance.
+    if left.fract() == 0.0 && right.fract() == 0.0 {
         return left == right;
     }
-    if left_float.fract() == 0.0 && right_float.fract() == 0.0 {
-        // Float-to-integer conversion is exact in this range. Converting a
-        // u64 to f64 first would collapse MAX and MAX-1 to the same number.
-        let integer_float_equal = |integer: i128, float: f64| {
-            float >= i64::MIN as f64 && float <= u64::MAX as f64 && integer == float as i128
-        };
-        return match (left_integer, right_integer) {
-            (Some(integer), None) => integer_float_equal(integer, right_float),
-            (None, Some(integer)) => integer_float_equal(integer, left_float),
-            _ => left_float == right_float,
-        };
-    }
-    left_float == right_float
-        || (!strict
-            && (left_float - right_float).abs() <= left_float.abs().max(right_float.abs()) * 1e-12)
+    left == right || (!strict && (left - right).abs() <= left.abs().max(right.abs()) * 1e-12)
 }
 
 fn event_type(event: &Value) -> Option<&str> {
@@ -568,7 +583,9 @@ fn event_type(event: &Value) -> Option<&str> {
 
 fn event_field<'a>(event: &'a Value, key: &str) -> Option<&'a Value> {
     // Free-batch preparation already removed seq from validated envelopes.
-    if event.get("entries").is_some_and(Value::is_u64)
+    if event
+        .get("entries")
+        .is_some_and(|value| value.as_u64().is_some())
         && event.get("data").is_some_and(Value::is_object)
     {
         event.get("data")?.get(key)
@@ -577,9 +594,9 @@ fn event_field<'a>(event: &'a Value, key: &str) -> Option<&'a Value> {
     }
 }
 
-fn call_id(event: &Value) -> Result<&str, String> {
+fn call_id(event: &Value) -> Result<&JsString, String> {
     event_field(event, "toolCallId")
-        .and_then(Value::as_str)
+        .and_then(Value::as_js_str)
         .ok_or_else(|| {
             format!(
                 "{} has no string toolCallId",
@@ -597,15 +614,11 @@ fn is_result_start(event: &Value) -> bool {
 }
 
 fn canonical_batches(events: &[Value], options: &CompareOptions) -> Result<Vec<Value>, String> {
-    let declared: BTreeSet<&str> = options
-        .immediate_tool_call_ids
-        .iter()
-        .map(String::as_str)
-        .collect();
+    let declared: BTreeSet<&JsString> = options.immediate_tool_call_ids.iter().collect();
     let mut result = Vec::new();
     let mut position = 0;
     while position < events.len() {
-        if event_type(&events[position]).is_none() {
+        if !events[position].get("type").is_some_and(Value::is_string) {
             return Err(format!("event {position}: missing string event type"));
         }
         if event_type(&events[position]) != Some("tool_execution_start") {
@@ -628,7 +641,7 @@ fn canonical_batches(events: &[Value], options: &CompareOptions) -> Result<Vec<V
             .rposition(|event| event_type(event) == Some("tool_execution_start"))
             .unwrap();
         let mut starts = Vec::new();
-        let mut calls: BTreeMap<&str, Vec<Value>> = BTreeMap::new();
+        let mut calls: BTreeMap<&JsString, Vec<Value>> = BTreeMap::new();
         let mut ended = BTreeSet::new();
         let mut preflight = Vec::new();
         let mut running = false;
@@ -638,8 +651,9 @@ fn canonical_batches(events: &[Value], options: &CompareOptions) -> Result<Vec<V
                 Some("tool_execution_start") => {
                     if running || calls.contains_key(id) {
                         return Err(format!(
-                            "event {}: late or duplicate start for {id}",
-                            position + index
+                            "event {}: late or duplicate start for {}",
+                            position + index,
+                            quote(id)
                         ));
                     }
                     starts.push(id);
@@ -648,12 +662,13 @@ fn canonical_batches(events: &[Value], options: &CompareOptions) -> Result<Vec<V
                 }
                 Some("tool_execution_update" | "tool_execution_end") => {
                     let call = calls.get_mut(id).ok_or_else(|| {
-                        format!("event {}: {id} has not started", position + index)
+                        format!("event {}: {} has not started", position + index, quote(id))
                     })?;
                     if ended.contains(id) {
                         return Err(format!(
-                            "event {}: event after end for {id}",
-                            position + index
+                            "event {}: event after end for {}",
+                            position + index,
+                            quote(id)
                         ));
                     }
                     let is_end = event_type(event) == Some("tool_execution_end");
@@ -665,16 +680,18 @@ fn canonical_batches(events: &[Value], options: &CompareOptions) -> Result<Vec<V
                             || call_id(&segment[index - 1])? != id
                         {
                             return Err(format!(
-                                "event {}: preflight end for {id} is not adjacent to its start",
-                                position + index
+                                "event {}: preflight end for {} is not adjacent to its start",
+                                position + index,
+                                quote(id)
                             ));
                         }
                         preflight.push(event.clone());
                     } else {
                         if index < last_start || declared.contains(id) {
                             return Err(format!(
-                                "event {}: runnable event during preflight for {id}",
-                                position + index
+                                "event {}: runnable event during preflight for {}",
+                                position + index,
+                                quote(id)
                             ));
                         }
                         running = true;
@@ -701,7 +718,7 @@ fn canonical_batches(events: &[Value], options: &CompareOptions) -> Result<Vec<V
                 let event_index = end + index * 2 + offset;
                 let event = events
                     .get(event_index)
-                    .ok_or_else(|| format!("missing result event for {id}"))?;
+                    .ok_or_else(|| format!("missing result event for {}", quote(id)))?;
                 if event_type(event) != Some(kind)
                     || event_field(event, "message")
                         .and_then(|message| message.get("role"))
@@ -709,20 +726,32 @@ fn canonical_batches(events: &[Value], options: &CompareOptions) -> Result<Vec<V
                         != Some("toolResult")
                     || event_field(event, "message")
                         .and_then(|message| message.get("toolCallId"))
-                        .and_then(Value::as_str)
+                        .and_then(Value::as_js_str)
                         != Some(*id)
                 {
                     return Err(format!(
-                        "event {event_index}: result messages do not follow source order for {id}"
+                        "event {event_index}: result messages do not follow source order for {}",
+                        quote(id)
                     ));
                 }
             }
         }
         let per_call: Vec<_> = starts
             .iter()
-            .map(|id| json!({"toolCallId": id, "events": calls[id]}))
+            .map(|id| {
+                Value::Object(Map::from([
+                    ("toolCallId", Value::String((*id).clone())),
+                    ("events", Value::Array(calls[id].clone())),
+                ]))
+            })
             .collect();
-        result.push(json!({"freeBatch": {"preflight": preflight, "calls": per_call}}));
+        result.push(Value::Object(Map::from([(
+            "freeBatch",
+            Value::Object(Map::from([
+                ("preflight", Value::Array(preflight)),
+                ("calls", Value::Array(per_call)),
+            ])),
+        )])));
         result.extend_from_slice(&events[end..end + starts.len() * 2]);
         position = end + starts.len() * 2;
     }
@@ -732,6 +761,9 @@ fn canonical_batches(events: &[Value], options: &CompareOptions) -> Result<Vec<V
 #[cfg(test)]
 mod tests {
     use super::*;
+    macro_rules! json {
+        ($($json:tt)+) => { Value::try_from(serde_json::json!($($json)+)).expect("fixture must fit JavaScript exactly") };
+    }
 
     fn equal(expected: Value, actual: Value) -> bool {
         compare(&expected, &actual, &CompareOptions::default()).is_ok()
@@ -744,8 +776,14 @@ mod tests {
         assert!(!equal(json!(1.0), json!(1.0 + 2e-12)));
         assert!(!equal(json!(0), json!(1e-100)));
         assert!(!equal(json!(-1), json!(1)));
-        assert!(!equal(json!(u64::MAX), json!(u64::MAX - 1)));
-        assert!(!equal(json!(u64::MAX), json!(u64::MAX as f64)));
+        // Integers that would collapse at the new JS-value boundary fail
+        // conversion explicitly; distinct representable large integers stay exact.
+        assert!(Value::try_from(serde_json::json!(u64::MAX)).is_err());
+        assert!(Value::try_from(serde_json::json!(u64::MAX - 1)).is_err());
+        assert!(!equal(
+            json!(2.0_f64.powi(64)),
+            json!(2.0_f64.powi(64) - 2048.0)
+        ));
         assert!(!equal(
             json!(1_767_225_600_000_u64),
             json!(1_767_225_600_001_u64)
@@ -1164,5 +1202,210 @@ mod tests {
         );
         assert!(compare_events(&expected, &expected, &options, Concurrency::Free).is_ok());
         assert!(compare_events(&expected, &delayed, &options, Concurrency::Free).is_err());
+    }
+
+    fn raw(units: &[u16]) -> Value {
+        Value::String(JsString::from_utf16(units.to_vec()))
+    }
+
+    #[test]
+    fn raw_utf16_strings_and_keys_are_compared_without_replacement() {
+        assert!(equal(raw(&[0xd800]), raw(&[0xd800])));
+        assert!(!equal(raw(&[0xd800]), raw(&[0xdc00])));
+        assert!(!equal(raw(&[0xd800]), json!("�")));
+        assert!(equal(raw(&[0xd83d, 0xde48]), json!("🙈")));
+
+        let high = JsString::from_utf16(vec![0xd800]);
+        let low = JsString::from_utf16(vec![0xdc00]);
+        let expected = Value::Object(Map::from([(high.clone(), raw(&[0xd800]))]));
+        let actual = Value::Object(Map::from([(low, raw(&[0xd800]))]));
+        let error = compare(&expected, &actual, &CompareOptions::default()).unwrap_err();
+        assert_eq!(error, r#"$["\ud800"]: missing field"#);
+        assert!(equal(expected.clone(), expected));
+        let unexpected = Value::Object(Map::from([(high, Value::Null)]));
+        assert_eq!(
+            compare(&json!({}), &unexpected, &CompareOptions::default()).unwrap_err(),
+            r#"$["\ud800"]: unexpected field"#
+        );
+    }
+
+    #[test]
+    fn raw_generated_ids_keep_exact_references_and_scripted_positions() {
+        let high = JsString::from_utf16(vec![0xd800]);
+        let low = JsString::from_utf16(vec![0xdc00]);
+        let mut expected = json!({"type":"session","id":"a","state":{"selected":"a"}});
+        expected["id"] = Value::String(high.clone());
+        expected["state"]["selected"] = Value::String(high.clone());
+        let mut actual = json!({"type":"session","id":"b","state":{"selected":"b"}});
+        actual["id"] = Value::String(low.clone());
+        actual["state"]["selected"] = Value::String(low.clone());
+        assert!(equal(expected.clone(), actual.clone()));
+        actual["state"]["selected"] = raw(&[0xfffd]);
+        assert!(!equal(expected.clone(), actual));
+
+        expected["toolCallId"] = Value::String(high);
+        let mut actual = expected.clone();
+        actual["id"] = Value::String(low.clone());
+        actual["state"]["selected"] = Value::String(low.clone());
+        actual["toolCallId"] = Value::String(low);
+        assert!(!equal(expected, actual));
+
+        let completion = |suffix: u16| {
+            let mut id = JsString::from("chatcmpl");
+            id.push(&JsString::from_utf16(vec![suffix]));
+            Value::Object(Map::from([
+                (
+                    "options",
+                    Value::Object(Map::from([("sessionId", Value::String(id.clone()))])),
+                ),
+                ("id", Value::String(id)),
+            ]))
+        };
+        assert!(!equal(completion(0xd800), completion(0xdc00)));
+    }
+
+    #[test]
+    fn raw_strings_cannot_hide_normalization_token_prefixes() {
+        let mut value = JsString::from_utf16(vec![0xd800]);
+        value.push_str("\0pi-normalization:0:id:0");
+        assert!(contains_prefix(
+            &Value::String(value.clone()),
+            "\0pi-normalization:0:"
+        ));
+        assert!(contains_prefix(
+            &Value::Object(Map::from([(value, Value::Null)])),
+            "\0pi-normalization:0:"
+        ));
+        assert!(!contains_prefix(&raw(&[0xd800]), "\0pi-normalization:0:"));
+    }
+
+    #[test]
+    fn protocol_key_matching_does_not_coerce_invalid_utf16_names() {
+        let key = JsString::from_utf16(vec![0x69, 0x64, 0xd800]);
+        let expected = Value::Object(Map::from([(key.clone(), Value::String("old".into()))]));
+        let actual = Value::Object(Map::from([(key, Value::String("new".into()))]));
+        assert!(!equal(expected, actual));
+
+        let bad_header = JsString::from_utf16(vec![
+            0x75, 0x73, 0x65, 0x72, 0x2d, 0x61, 0x67, 0x65, 0x6e, 0x74, 0xd800,
+        ]);
+        let with_header = |text: &str| {
+            Value::Object(Map::from([(
+                "headers",
+                Value::Object(Map::from([(
+                    bad_header.clone(),
+                    Value::String(text.into()),
+                )])),
+            )]))
+        };
+        assert!(!equal(with_header("a"), with_header("b")));
+    }
+
+    fn replace_call_id(events: &mut [Value], old: &str, replacement: &JsString) {
+        for event in events {
+            if event.get("toolCallId").and_then(Value::as_str) == Some(old) {
+                event["toolCallId"] = Value::String(replacement.clone());
+            }
+            if event
+                .get("message")
+                .and_then(|message| message.get("toolCallId"))
+                .and_then(Value::as_str)
+                == Some(old)
+            {
+                event["message"]["toolCallId"] = Value::String(replacement.clone());
+            }
+        }
+    }
+
+    #[test]
+    fn free_batches_preserve_raw_call_ids_and_result_order() {
+        let mut expected = batch(
+            &[
+                ("start", "a", 0),
+                ("start", "b", 0),
+                ("end", "a", 1),
+                ("end", "b", 1),
+            ],
+            &["a", "b"],
+        );
+        let mut actual = batch(
+            &[
+                ("start", "a", 0),
+                ("start", "b", 0),
+                ("end", "b", 1),
+                ("end", "a", 1),
+            ],
+            &["a", "b"],
+        );
+        let high = JsString::from_utf16(vec![0xd800]);
+        let low = JsString::from_utf16(vec![0xdc00]);
+        for events in [&mut expected, &mut actual] {
+            replace_call_id(events, "a", &high);
+            replace_call_id(events, "b", &low);
+        }
+        let options = CompareOptions::default();
+        assert!(compare_events(&expected, &actual, &options, Concurrency::Free).is_ok());
+        assert!(compare_events(&expected, &actual, &options, Concurrency::Gated).is_err());
+        actual[4]["message"]["toolCallId"] = raw(&[0xfffd]);
+        assert!(compare_events(&actual, &actual, &options, Concurrency::Free).is_err());
+    }
+
+    #[test]
+    fn immediate_preflight_declarations_accept_exact_raw_call_ids() {
+        let mut events = batch(
+            &[
+                ("start", "a", 0),
+                ("start", "b", 0),
+                ("end", "b", 1),
+                ("end", "a", 1),
+            ],
+            &["a", "b"],
+        );
+        let raw_id = JsString::from_utf16(vec![0xd800]);
+        replace_call_id(&mut events, "b", &raw_id);
+        let options = CompareOptions {
+            immediate_tool_call_ids: vec![raw_id],
+            ..Default::default()
+        };
+        assert!(compare_events(&events, &events, &options, Concurrency::Free).is_ok());
+        events.swap(2, 3);
+        assert!(compare_events(&events, &events, &options, Concurrency::Free).is_err());
+    }
+
+    #[test]
+    fn nonfinite_numbers_must_cross_the_explicit_json_observation_boundary() {
+        for number in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let value = Value::Number(number);
+            assert!(compare(&value, &value, &CompareOptions::default()).is_err());
+            assert!(compare(&value, &Value::Null, &CompareOptions::default()).is_err());
+        }
+    }
+
+    #[test]
+    fn unrecognized_raw_event_types_remain_exact_strings() {
+        let event = Value::Object(Map::from([
+            ("type", raw(&[0xd800])),
+            ("data", raw(&[0xdc00])),
+        ]));
+        assert!(
+            compare_events(
+                std::slice::from_ref(&event),
+                std::slice::from_ref(&event),
+                &CompareOptions::default(),
+                Concurrency::Free
+            )
+            .is_ok()
+        );
+        let mut other = event.clone();
+        other["type"] = raw(&[0xfffd]);
+        assert!(
+            compare_events(
+                &[event],
+                &[other],
+                &CompareOptions::default(),
+                Concurrency::Free
+            )
+            .is_err()
+        );
     }
 }

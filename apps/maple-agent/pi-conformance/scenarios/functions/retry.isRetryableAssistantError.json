@@ -1,0 +1,530 @@
+{
+  "dsl": 1,
+  "id": "retry.isRetryableAssistantError",
+  "clock": {
+    "epochMs": 1767225600000
+  },
+  "cases": [
+    {
+      "case": "http-transient",
+      "input": {
+        "message": {
+          "role": "assistant",
+          "content": [],
+          "api": "faux",
+          "provider": "faux",
+          "model": "faux-1",
+          "usage": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "totalTokens": 0,
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0
+            }
+          },
+          "stopReason": "error",
+          "timestamp": 0,
+          "errorMessage": "503 Service Unavailable"
+        }
+      }
+    },
+    {
+      "case": "quota-exclusion-wins",
+      "input": {
+        "message": {
+          "role": "assistant",
+          "content": [],
+          "api": "faux",
+          "provider": "faux",
+          "model": "faux-1",
+          "usage": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "totalTokens": 0,
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0
+            }
+          },
+          "stopReason": "error",
+          "timestamp": 0,
+          "errorMessage": "429 insufficient_quota"
+        }
+      }
+    },
+    {
+      "case": "billing-exclusion-wins",
+      "input": {
+        "message": {
+          "role": "assistant",
+          "content": [],
+          "api": "faux",
+          "provider": "faux",
+          "model": "faux-1",
+          "usage": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "totalTokens": 0,
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0
+            }
+          },
+          "stopReason": "error",
+          "timestamp": 0,
+          "errorMessage": "500 billing temporarily unavailable"
+        }
+      }
+    },
+    {
+      "case": "monthly-limit-exclusion-wins",
+      "input": {
+        "message": {
+          "role": "assistant",
+          "content": [],
+          "api": "faux",
+          "provider": "faux",
+          "model": "faux-1",
+          "usage": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "totalTokens": 0,
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0
+            }
+          },
+          "stopReason": "error",
+          "timestamp": 0,
+          "errorMessage": "429 Monthly usage limit reached"
+        }
+      }
+    },
+    {
+      "case": "subscription-limit-exclusion-wins",
+      "input": {
+        "message": {
+          "role": "assistant",
+          "content": [],
+          "api": "faux",
+          "provider": "faux",
+          "model": "faux-1",
+          "usage": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "totalTokens": 0,
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0
+            }
+          },
+          "stopReason": "error",
+          "timestamp": 0,
+          "errorMessage": "503 subscription_sharing_usage_limit_exceeded"
+        }
+      }
+    },
+    {
+      "case": "subscription-data-unavailable",
+      "input": {
+        "message": {
+          "role": "assistant",
+          "content": [],
+          "api": "faux",
+          "provider": "faux",
+          "model": "faux-1",
+          "usage": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "totalTokens": 0,
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0
+            }
+          },
+          "stopReason": "error",
+          "timestamp": 0,
+          "errorMessage": "subscription_sharing_usage_unavailable"
+        }
+      }
+    },
+    {
+      "case": "provider-error-wrapper",
+      "input": {
+        "message": {
+          "role": "assistant",
+          "content": [],
+          "api": "faux",
+          "provider": "faux",
+          "model": "faux-1",
+          "usage": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "totalTokens": 0,
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0
+            }
+          },
+          "stopReason": "error",
+          "timestamp": 0,
+          "errorMessage": "Provider returned error"
+        }
+      }
+    },
+    {
+      "case": "dns-failure",
+      "input": {
+        "message": {
+          "role": "assistant",
+          "content": [],
+          "api": "faux",
+          "provider": "faux",
+          "model": "faux-1",
+          "usage": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "totalTokens": 0,
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0
+            }
+          },
+          "stopReason": "error",
+          "timestamp": 0,
+          "errorMessage": "getaddrinfo ENOTFOUND api.example.com"
+        }
+      }
+    },
+    {
+      "case": "stream-terminal-missing",
+      "input": {
+        "message": {
+          "role": "assistant",
+          "content": [],
+          "api": "faux",
+          "provider": "faux",
+          "model": "faux-1",
+          "usage": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "totalTokens": 0,
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0
+            }
+          },
+          "stopReason": "error",
+          "timestamp": 0,
+          "errorMessage": "Stream ended before a terminal response event"
+        }
+      }
+    },
+    {
+      "case": "explicit-retry-guidance",
+      "input": {
+        "message": {
+          "role": "assistant",
+          "content": [],
+          "api": "faux",
+          "provider": "faux",
+          "model": "faux-1",
+          "usage": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "totalTokens": 0,
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0
+            }
+          },
+          "stopReason": "error",
+          "timestamp": 0,
+          "errorMessage": "Please retry your request"
+        }
+      }
+    },
+    {
+      "case": "rate-single-code-unit-separator",
+      "input": {
+        "message": {
+          "role": "assistant",
+          "content": [],
+          "api": "faux",
+          "provider": "faux",
+          "model": "faux-1",
+          "usage": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "totalTokens": 0,
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0
+            }
+          },
+          "stopReason": "error",
+          "timestamp": 0,
+          "errorMessage": "rate-limit"
+        }
+      }
+    },
+    {
+      "case": "rate-two-code-unit-separator",
+      "input": {
+        "message": {
+          "role": "assistant",
+          "content": [],
+          "api": "faux",
+          "provider": "faux",
+          "model": "faux-1",
+          "usage": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "totalTokens": 0,
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0
+            }
+          },
+          "stopReason": "error",
+          "timestamp": 0,
+          "errorMessage": "rate\ud83d\ude00limit"
+        }
+      }
+    },
+    {
+      "case": "rate-newline-separator",
+      "input": {
+        "message": {
+          "role": "assistant",
+          "content": [],
+          "api": "faux",
+          "provider": "faux",
+          "model": "faux-1",
+          "usage": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "totalTokens": 0,
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0
+            }
+          },
+          "stopReason": "error",
+          "timestamp": 0,
+          "errorMessage": "rate\nlimit"
+        }
+      }
+    },
+    {
+      "case": "unrelated-error",
+      "input": {
+        "message": {
+          "role": "assistant",
+          "content": [],
+          "api": "faux",
+          "provider": "faux",
+          "model": "faux-1",
+          "usage": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "totalTokens": 0,
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0
+            }
+          },
+          "stopReason": "error",
+          "timestamp": 0,
+          "errorMessage": "Invalid tool parameters"
+        }
+      }
+    },
+    {
+      "case": "empty-error",
+      "input": {
+        "message": {
+          "role": "assistant",
+          "content": [],
+          "api": "faux",
+          "provider": "faux",
+          "model": "faux-1",
+          "usage": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "totalTokens": 0,
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0
+            }
+          },
+          "stopReason": "error",
+          "timestamp": 0,
+          "errorMessage": ""
+        }
+      }
+    },
+    {
+      "case": "absent-error",
+      "input": {
+        "message": {
+          "role": "assistant",
+          "content": [],
+          "api": "faux",
+          "provider": "faux",
+          "model": "faux-1",
+          "usage": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "totalTokens": 0,
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0
+            }
+          },
+          "stopReason": "error",
+          "timestamp": 0
+        }
+      }
+    },
+    {
+      "case": "aborted-transient",
+      "input": {
+        "message": {
+          "role": "assistant",
+          "content": [],
+          "api": "faux",
+          "provider": "faux",
+          "model": "faux-1",
+          "usage": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "totalTokens": 0,
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0
+            }
+          },
+          "stopReason": "aborted",
+          "timestamp": 0,
+          "errorMessage": "503 Service Unavailable"
+        }
+      }
+    },
+    {
+      "case": "successful-transient-text",
+      "input": {
+        "message": {
+          "role": "assistant",
+          "content": [],
+          "api": "faux",
+          "provider": "faux",
+          "model": "faux-1",
+          "usage": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "totalTokens": 0,
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0
+            }
+          },
+          "stopReason": "stop",
+          "timestamp": 0,
+          "errorMessage": "503 Service Unavailable"
+        }
+      }
+    }
+  ]
+}

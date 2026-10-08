@@ -133,7 +133,9 @@
       "class": "Adapt",
       "crate": "pi-ai",
       "rust_module": "crates/pi-ai/src/auth/types.rs",
-      "adaptations": [],
+      "adaptations": [
+        "Selected request-auth contracts use owned Rust values, async callback futures and explicit Result errors. Credential stores, login and provider auth implementations remain excluded."
+      ],
       "cut": [
         "ApiKeyCredential",
         "OAuthCredentials",
@@ -154,7 +156,7 @@
       ],
       "ranges": [],
       "keep": [],
-      "status": "pending",
+      "status": "adapted",
       "reason": "Keep the request-auth types `ModelAuth`, `AuthResult`, `AuthCheck`, `AuthType`, `AuthOperationOptions`; credential stores and login types go"
     },
     {
@@ -163,14 +165,16 @@
       "class": "Adapt",
       "crate": "pi-ai",
       "rust_module": "crates/pi-ai/src/models.rs",
-      "adaptations": [],
+      "adaptations": [
+        "Only the selected request-option contracts and pure chat-model helpers are implemented. ThinkingLevel makes invalid string levels unrepresentable; upstream catalog-dependent tests use frozen upstream model records."
+      ],
       "cut": [],
       "ranges": [],
       "keep": [
         "97-119",
         "1194-1261"
       ],
-      "status": "pending",
+      "status": "adapted",
       "reason": "Keep the request-option and refresh types (`ModelsRequestTransforms`, `ModelsSimpleStreamOptions`, ..., lines 97-119) and the pure helpers `calculateCost`, `getSupportedThinkingLevels`, `clampThinkingLevel`, `modelsAreEqual`, `hasApi` (lines 1194-1261); the `Models` registry, `Provider` and `createProvider` go"
     },
     {
@@ -179,13 +183,16 @@
       "class": "Adapt",
       "crate": "pi-ai",
       "rust_module": "crates/pi-ai/src/providers/faux.rs",
-      "adaptations": [],
+      "adaptations": [
+        "An explicit provider handle replaces the excluded createProvider registry wrapper. A single provider task, shared message/content handles and PiEnv timers preserve scripted events, shallow partial identity, cancellation and result caching.",
+        "Explicit FIFO yield boundaries model the tested JavaScript microtask observations; the port does not claim a general equivalence between Tokio and the JavaScript event loop."
+      ],
       "cut": [
         "fauxProvider"
       ],
       "ranges": [],
       "keep": [],
-      "status": "pending",
+      "status": "adapted",
       "reason": "Scripted provider for ported tests; `fauxProvider()` returns a handle without the excluded `createProvider` wrapper"
     },
     {
@@ -194,11 +201,13 @@
       "class": "Port",
       "crate": "pi-ai",
       "rust_module": "crates/pi-ai/src/session_resources.rs",
-      "adaptations": [],
+      "adaptations": [
+        "Cleanup callbacks return explicit errors and produce the ordered aggregate error. The registry preserves Set insertion, deduplication and mutation-during-cleanup behavior; independent registry instances isolate tests."
+      ],
       "cut": [],
       "ranges": [],
       "keep": [],
-      "status": "pending",
+      "status": "adapted",
       "reason": "Session-resource cleanup registry called from `AgentSession.dispose()`"
     },
     {
@@ -207,7 +216,10 @@
       "class": "Adapt",
       "crate": "pi-ai",
       "rust_module": "crates/pi-ai/src/types.rs",
-      "adaptations": [],
+      "adaptations": [
+        "Discriminated unions become typed Rust enums; callbacks own their inputs, return boxed futures and explicit errors, and cancellation uses CancellationToken. Unknown compatibility fields and JavaScript property order are retained.",
+        "JsValue, JsString and shared message/value handles preserve binary64 values, raw UTF-16, field presence and shallow event identity. The Rust-only utils/js_value.rs, utils/js_string.rs, utils/js_json.rs, utils/js_serde.rs, utils/js_deserialize.rs and utils/raw_message.rs support modules implement these representation, source-access and serialization contracts. SharedJsValue retains tool-argument aliases, RawMessage retains legacy fields and Usage retains missing totalTokens. Provider request/configuration DTOs use owned Rust inputs under the provisional owner-authorized ownership boundary recorded in deviations.toml."
+      ],
       "cut": [
         "KnownImageApi",
         "ImageApi",
@@ -249,7 +261,7 @@
         "10-11"
       ],
       "keep": [],
-      "status": "pending",
+      "status": "adapted",
       "reason": "Message, usage, event, model and tool contracts; cut other APIs' option/compat types, image and classifier types, `TelemetryContext`"
     },
     {
@@ -258,11 +270,13 @@
       "class": "Port",
       "crate": "pi-ai",
       "rust_module": "crates/pi-ai/src/utils/diagnostics.rs",
-      "adaptations": [],
+      "adaptations": [
+        "Thrown JavaScript values are represented by an explicit Rust enum; message formatting preserves UTF-16 strings and JavaScript value coercion."
+      ],
       "cut": [],
       "ranges": [],
       "keep": [],
-      "status": "pending",
+      "status": "adapted",
       "reason": "Assistant-message diagnostics"
     },
     {
@@ -271,11 +285,13 @@
       "class": "Port",
       "crate": "pi-ai",
       "rust_module": "crates/pi-ai/src/utils/estimate.rs",
-      "adaptations": [],
+      "adaptations": [
+        "Estimates use JavaScript UTF-16 length, ordered JSON serialization and binary64 arithmetic, retaining the usage anchor, timestamp invalidation and NaN behavior."
+      ],
       "cut": [],
       "ranges": [],
       "keep": [],
-      "status": "pending",
+      "status": "adapted",
       "reason": "Usage-anchored token estimate used by `simple-options` output clamping"
     },
     {
@@ -284,11 +300,13 @@
       "class": "Port",
       "crate": "pi-ai",
       "rust_module": "crates/pi-ai/src/utils/event_stream.rs",
-      "adaptations": [],
+      "adaptations": [
+        "A shared FIFO and final-result future preserve buffered draining, eager next registration and first-result resolution. Each Rust iterator borrows mutably for next(), making concurrent calls on that iterator unrepresentable."
+      ],
       "cut": [],
       "ranges": [],
       "keep": [],
-      "status": "pending",
+      "status": "adapted",
       "reason": "Event stream with a final result (Rust channel/`Stream`)"
     },
     {
@@ -297,11 +315,13 @@
       "class": "Port",
       "crate": "pi-ai",
       "rust_module": "crates/pi-ai/src/utils/hash.rs",
-      "adaptations": [],
+      "adaptations": [
+        "The short-hash loop consumes UTF-16 code units with explicit wrapping arithmetic and base-36 formatting."
+      ],
       "cut": [],
       "ranges": [],
       "keep": [],
-      "status": "pending",
+      "status": "adapted",
       "reason": "Short hashes used by the request builder"
     },
     {
@@ -310,11 +330,13 @@
       "class": "Port",
       "crate": "pi-ai",
       "rust_module": "crates/pi-ai/src/utils/headers.rs",
-      "adaptations": [],
+      "adaptations": [
+        "Header iterators and ordered Rust maps replace Headers and record inputs; optional values preserve JavaScript omission behavior."
+      ],
       "cut": [],
       "ranges": [],
       "keep": [],
-      "status": "pending",
+      "status": "adapted",
       "reason": "Response-header records for `onResponse`"
     },
     {
@@ -323,11 +345,13 @@
       "class": "Port",
       "crate": "pi-ai",
       "rust_module": "crates/pi-ai/src/utils/json_parse.rs",
-      "adaptations": [],
+      "adaptations": [
+        "The JavaScript JSON and streaming-repair algorithms operate on UTF-16 units and JsValue so lone surrogates, binary64 values, property order and partial primitive roots survive Rust serialization boundaries."
+      ],
       "cut": [],
       "ranges": [],
       "keep": [],
-      "status": "pending",
+      "status": "adapted",
       "reason": "Streaming/partial and repaired JSON for tool arguments"
     },
     {
@@ -336,7 +360,9 @@
       "class": "Adapt",
       "crate": "pi-ai",
       "rust_module": "crates/pi-ai/src/utils/model_operations.rs",
-      "adaptations": [],
+      "adaptations": [
+        "Only the selected chat-model type helpers remain. The Rust AnyModel alias is chat-only because image and classifier model operations are excluded."
+      ],
       "cut": [
         "assertChatModel",
         "assertImageModel",
@@ -348,7 +374,7 @@
         "1-14"
       ],
       "keep": [],
-      "status": "pending",
+      "status": "adapted",
       "reason": "Keep `getModelType`/`isModelType` (used by `modelsAreEqual`); image/classifier asserts go"
     },
     {
@@ -357,11 +383,13 @@
       "class": "Port",
       "crate": "pi-ai",
       "rust_module": "crates/pi-ai/src/utils/overflow.rs",
-      "adaptations": [],
+      "adaptations": [
+        "Provider error patterns use Rust regular expressions while binary64 comparison preserves JavaScript context-window and recoverable-length behavior."
+      ],
       "cut": [],
       "ranges": [],
       "keep": [],
-      "status": "pending",
+      "status": "adapted",
       "reason": "Context-overflow and recoverable-length classification"
     },
     {
@@ -386,11 +414,13 @@
       "class": "Port",
       "crate": "pi-ai",
       "rust_module": "crates/pi-ai/src/utils/retry.rs",
-      "adaptations": [],
+      "adaptations": [
+        "Retry operations and callbacks use Rust futures and Result values; cancellation and PiEnv timers replace AbortSignal and ambient timers while retaining attempts, callback order and delay policy."
+      ],
       "cut": [],
       "ranges": [],
       "keep": [],
-      "status": "pending",
+      "status": "adapted",
       "reason": "Assistant-turn retry policy and retryable-error patterns (`retryAssistantCall`)"
     },
     {
@@ -399,11 +429,13 @@
       "class": "Port",
       "crate": "pi-ai",
       "rust_module": "crates/pi-ai/src/utils/sanitize_unicode.rs",
-      "adaptations": [],
+      "adaptations": [
+        "UTF-16 input remains available through JsString; unpaired surrogates are removed only at the selected sanitization boundary."
+      ],
       "cut": [],
       "ranges": [],
       "keep": [],
-      "status": "pending",
+      "status": "adapted",
       "reason": "Unpaired-surrogate removal in request text"
     },
     {
@@ -412,11 +444,13 @@
       "class": "Port",
       "crate": "pi-ai",
       "rust_module": "crates/pi-ai/src/utils/text.rs",
-      "adaptations": [],
+      "adaptations": [
+        "Content variants use a shared Rust trait and JsString output, retaining UTF-16 text and JavaScript section-key enumeration."
+      ],
       "cut": [],
       "ranges": [],
       "keep": [],
-      "status": "pending",
+      "status": "adapted",
       "reason": "Content-text and system-message rendering helpers"
     },
     {
@@ -425,11 +459,13 @@
       "class": "Port",
       "crate": "pi-ai",
       "rust_module": "crates/pi-ai/src/utils/transcript.rs",
-      "adaptations": [],
+      "adaptations": [
+        "Ordered maps preserve JavaScript enumeration and Set replacement/deletion order. Shared content and argument handles retain message and argument identity. Tool definitions remain owned copies under the provisional owner-authorized boundary in deviations.toml; its paired function fixture checks the exact alias difference. Raw-aware access returns explicit errors and preserves unknown fields; declaration conversion performs the upstream JSON serialization copy."
+      ],
       "cut": [],
       "ranges": [],
       "keep": [],
-      "status": "pending",
+      "status": "adapted",
       "reason": "System-message replay, tool declarations, collapsing for endpoints without mid-conversation system messages"
     },
     {
@@ -438,11 +474,13 @@
       "class": "Port",
       "crate": "pi-ai",
       "rust_module": "crates/pi-ai/src/utils/uuid.rs",
-      "adaptations": [],
+      "adaptations": [
+        "The upstream UUIDv7 state machine is instance-owned and uses PiEnv clock/random inputs, preserving monotonic counters and overflow behavior instead of a generic UUID generator."
+      ],
       "cut": [],
       "ranges": [],
       "keep": [],
-      "status": "pending",
+      "status": "adapted",
       "reason": "Monotonic UUIDv7 for session and summary IDs (session-manager, compaction)"
     },
     {
@@ -451,11 +489,14 @@
       "class": "Port",
       "crate": "pi-ai",
       "rust_module": "crates/pi-ai/src/utils/validation.rs",
-      "adaptations": [],
+      "adaptations": [
+        "Owned Schema metadata records TypeBox kind information separately from serialized JSON. Tool validation retains conversion order, keyword errors, original arguments and JavaScript value semantics; JSON Schema evaluation disables network and filesystem retrieval.",
+        "The selected TypeBox 1.3.27 constructors, conversion and error formatting are translated locally alongside offline jsonschema evaluation. ECMAScript regular expressions, grapheme lengths and ordered UTF-16 values use Rust support libraries; attribution is in crates/pi-ai/THIRD-PARTY-NOTICES.md."
+      ],
       "cut": [],
       "ranges": [],
       "keep": [],
-      "status": "pending",
+      "status": "adapted",
       "reason": "Tool-argument coercion and validation before any hook"
     },
     {

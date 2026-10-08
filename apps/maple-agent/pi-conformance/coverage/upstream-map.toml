@@ -6315,163 +6315,212 @@ reason = "skip-module"
 id = "packages/ai/test/event-stream.test.ts > EventStream > delivers events to waiting consumers in registration order"
 file = "packages/ai/test/event-stream.test.ts"
 line = 44
-status = "pending"
+status = "ported"
+rust = "pi-ai::upstream::event_stream::event_stream::delivers_events_to_waiting_consumers_in_registration_order"
 
 [[test]]
 id = "packages/ai/test/event-stream.test.ts > EventStream > drains buffered events after end and resolves the explicit result"
 file = "packages/ai/test/event-stream.test.ts"
 line = 61
-status = "pending"
+status = "ported"
+rust = "pi-ai::upstream::event_stream::event_stream::drains_buffered_events_after_end_and_resolves_the_explicit_result"
 
 [[test]]
 id = "packages/ai/test/event-stream.test.ts > EventStream > drains buffered events in order and ignores events pushed after completion"
 file = "packages/ai/test/event-stream.test.ts"
 line = 6
-status = "pending"
+status = "ported"
+rust = "pi-ai::upstream::event_stream::event_stream::drains_buffered_events_in_order_and_ignores_events_pushed_after_completion"
 
 [[test]]
 id = "packages/ai/test/event-stream.test.ts > EventStream > preserves order when events arrive after buffered draining starts"
 file = "packages/ai/test/event-stream.test.ts"
 line = 25
-status = "pending"
+status = "ported"
+rust = "pi-ai::upstream::event_stream::event_stream::preserves_order_when_events_arrive_after_buffered_draining_starts"
 
 [[test]]
 id = "packages/ai/test/event-stream.test.ts > EventStream > wakes all waiting consumers when ended without a result"
 file = "packages/ai/test/event-stream.test.ts"
 line = 79
-status = "pending"
+status = "ported"
+rust = "pi-ai::upstream::event_stream::event_stream::wakes_all_waiting_consumers_when_ended_without_a_result"
 
 [[test]]
 id = "packages/ai/test/faux-provider.test.ts > faux provider > can replace and append queued responses"
 file = "packages/ai/test/faux-provider.test.ts"
 line = 138
-status = "pending"
+status = "adapted"
+adaptation = "Use the explicit faux handle instead of the excluded global provider registry; PiEnv supplies time and pacing, and factories return Result instead of throwing."
+rust = "pi-ai::upstream::faux_provider::faux_provider::can_replace_and_append_queued_responses"
 
 [[test]]
 id = "packages/ai/test/faux-provider.test.ts > faux provider > consumes queued responses in order and errors when exhausted"
 file = "packages/ai/test/faux-provider.test.ts"
 line = 117
-status = "pending"
+status = "adapted"
+adaptation = "Use the explicit faux handle instead of the excluded global provider registry; PiEnv supplies time and pacing, and factories return Result instead of throwing."
+rust = "pi-ai::upstream::faux_provider::faux_provider::consumes_queued_responses_in_order_and_errors_when_exhausted"
 
 [[test]]
 id = "packages/ai/test/faux-provider.test.ts > faux provider > does not share cache across sessions or requests without sessionId"
 file = "packages/ai/test/faux-provider.test.ts"
 line = 266
-status = "pending"
+status = "adapted"
+adaptation = "Use the explicit faux handle instead of the excluded global provider registry; PiEnv supplies time and pacing, and factories return Result instead of throwing."
+rust = "pi-ai::upstream::faux_provider::faux_provider::does_not_share_cache_across_sessions_or_requests_without_session_id"
 
 [[test]]
 id = "packages/ai/test/faux-provider.test.ts > faux provider > does not simulate caching when cacheRetention is none"
 file = "packages/ai/test/faux-provider.test.ts"
 line = 327
-status = "pending"
+status = "adapted"
+adaptation = "Use the explicit faux handle instead of the excluded global provider registry; PiEnv supplies time and pacing, and factories return Result instead of throwing."
+rust = "pi-ai::upstream::faux_provider::faux_provider::does_not_simulate_caching_when_cache_retention_is_none"
 
 [[test]]
 id = "packages/ai/test/faux-provider.test.ts > faux provider > emits an error when a response factory throws"
 file = "packages/ai/test/faux-provider.test.ts"
 line = 175
-status = "pending"
+status = "adapted"
+adaptation = "Use the explicit faux handle instead of the excluded global provider registry; PiEnv supplies time and pacing, and factories return Result instead of throwing."
+rust = "pi-ai::upstream::faux_provider::faux_provider::emits_an_error_when_a_response_factory_throws"
 
 [[test]]
 id = "packages/ai/test/faux-provider.test.ts > faux provider > estimates prompt and output tokens from serialized context"
 file = "packages/ai/test/faux-provider.test.ts"
 line = 214
-status = "pending"
+status = "adapted"
+adaptation = "Use the explicit faux handle instead of the excluded global provider registry; PiEnv supplies time and pacing, and factories return Result instead of throwing."
+rust = "pi-ai::upstream::faux_provider::faux_provider::estimates_prompt_and_output_tokens_from_serialized_context"
 
 [[test]]
 id = "packages/ai/test/faux-provider.test.ts > faux provider > registers a custom provider and estimates usage"
 file = "packages/ai/test/faux-provider.test.ts"
 line = 31
-status = "pending"
+status = "adapted"
+adaptation = "Use the explicit faux handle instead of the excluded global provider registry; PiEnv supplies time and pacing, and factories return Result instead of throwing."
+rust = "pi-ai::upstream::faux_provider::faux_provider::registers_a_custom_provider_and_estimates_usage"
 
 [[test]]
 id = "packages/ai/test/faux-provider.test.ts > faux provider > rejects a queued response without a terminal stop reason"
 file = "packages/ai/test/faux-provider.test.ts"
 line = 196
-status = "pending"
+status = "adapted"
+adaptation = "Use the explicit faux handle instead of the excluded global provider registry; PiEnv supplies time and pacing, and factories return Result instead of throwing."
+rust = "pi-ai::upstream::faux_provider::faux_provider::rejects_a_queued_response_without_a_terminal_stop_reason"
 
 [[test]]
 id = "packages/ai/test/faux-provider.test.ts > faux provider > rewrites api, provider, and model on returned messages"
 file = "packages/ai/test/faux-provider.test.ts"
 line = 99
-status = "pending"
+status = "adapted"
+adaptation = "Use the explicit faux handle instead of the excluded global provider registry; PiEnv supplies time and pacing, and factories return Result instead of throwing."
+rust = "pi-ai::upstream::faux_provider::faux_provider::rewrites_api_provider_and_model_on_returned_messages"
 
 [[test]]
 id = "packages/ai/test/faux-provider.test.ts > faux provider > simulates prompt caching per sessionId"
 file = "packages/ai/test/faux-provider.test.ts"
 line = 299
-status = "pending"
+status = "adapted"
+adaptation = "Use the explicit faux handle instead of the excluded global provider registry; PiEnv supplies time and pacing, and factories return Result instead of throwing."
+rust = "pi-ai::upstream::faux_provider::faux_provider::simulates_prompt_caching_per_session_id"
 
 [[test]]
 id = "packages/ai/test/faux-provider.test.ts > faux provider > streams an exact event order for fixed-size chunks"
 file = "packages/ai/test/faux-provider.test.ts"
 line = 382
-status = "pending"
+status = "adapted"
+adaptation = "Use the explicit faux handle instead of the excluded global provider registry; PiEnv supplies time and pacing, and factories return Result instead of throwing."
+rust = "pi-ai::upstream::faux_provider::faux_provider::streams_an_exact_event_order_for_fixed_size_chunks"
 
 [[test]]
 id = "packages/ai/test/faux-provider.test.ts > faux provider > streams an explicit assistant aborted message as a terminal error"
 file = "packages/ai/test/faux-provider.test.ts"
 line = 457
-status = "pending"
+status = "adapted"
+adaptation = "Use the explicit faux handle instead of the excluded global provider registry; PiEnv supplies time and pacing, and factories return Result instead of throwing."
+rust = "pi-ai::upstream::faux_provider::faux_provider::streams_an_explicit_assistant_aborted_message_as_a_terminal_error"
 
 [[test]]
 id = "packages/ai/test/faux-provider.test.ts > faux provider > streams an explicit assistant error message as a terminal error"
 file = "packages/ai/test/faux-provider.test.ts"
 line = 432
-status = "pending"
+status = "adapted"
+adaptation = "Use the explicit faux handle instead of the excluded global provider registry; PiEnv supplies time and pacing, and factories return Result instead of throwing."
+rust = "pi-ai::upstream::faux_provider::faux_provider::streams_an_explicit_assistant_error_message_as_a_terminal_error"
 
 [[test]]
 id = "packages/ai/test/faux-provider.test.ts > faux provider > streams multiple tool calls in one message"
 file = "packages/ai/test/faux-provider.test.ts"
 line = 411
-status = "pending"
+status = "adapted"
+adaptation = "Use the explicit faux handle instead of the excluded global provider registry; PiEnv supplies time and pacing, and factories return Result instead of throwing."
+rust = "pi-ai::upstream::faux_provider::faux_provider::streams_multiple_tool_calls_in_one_message"
 
 [[test]]
 id = "packages/ai/test/faux-provider.test.ts > faux provider > streams thinking, text, and partial tool call deltas"
 file = "packages/ai/test/faux-provider.test.ts"
 line = 347
-status = "pending"
+status = "adapted"
+adaptation = "Use the explicit faux handle instead of the excluded global provider registry; PiEnv supplies time and pacing, and factories return Result instead of throwing."
+rust = "pi-ai::upstream::faux_provider::faux_provider::streams_thinking_text_and_partial_tool_call_deltas"
 
 [[test]]
 id = "packages/ai/test/faux-provider.test.ts > faux provider > supports aborting before the first chunk"
 file = "packages/ai/test/faux-provider.test.ts"
 line = 482
-status = "pending"
+status = "adapted"
+adaptation = "Use the explicit faux handle instead of the excluded global provider registry; PiEnv supplies time and pacing, and factories return Result instead of throwing."
+rust = "pi-ai::upstream::faux_provider::faux_provider::supports_aborting_before_the_first_chunk"
 
 [[test]]
 id = "packages/ai/test/faux-provider.test.ts > faux provider > supports aborting mid-text stream when paced"
 file = "packages/ai/test/faux-provider.test.ts"
 line = 505
-status = "pending"
+status = "adapted"
+adaptation = "Use the explicit faux handle instead of the excluded global provider registry; PiEnv supplies time and pacing, and factories return Result instead of throwing."
+rust = "pi-ai::upstream::faux_provider::faux_provider::supports_aborting_mid_text_stream_when_paced"
 
 [[test]]
 id = "packages/ai/test/faux-provider.test.ts > faux provider > supports aborting mid-thinking stream when paced"
 file = "packages/ai/test/faux-provider.test.ts"
 line = 533
-status = "pending"
+status = "adapted"
+adaptation = "Use the explicit faux handle instead of the excluded global provider registry; PiEnv supplies time and pacing, and factories return Result instead of throwing."
+rust = "pi-ai::upstream::faux_provider::faux_provider::supports_aborting_mid_thinking_stream_when_paced"
 
 [[test]]
 id = "packages/ai/test/faux-provider.test.ts > faux provider > supports aborting mid-toolcall stream when paced"
 file = "packages/ai/test/faux-provider.test.ts"
 line = 566
-status = "pending"
+status = "adapted"
+adaptation = "Use the explicit faux handle instead of the excluded global provider registry; PiEnv supplies time and pacing, and factories return Result instead of throwing."
+rust = "pi-ai::upstream::faux_provider::faux_provider::supports_aborting_mid_toolcall_stream_when_paced"
 
 [[test]]
 id = "packages/ai/test/faux-provider.test.ts > faux provider > supports async response factories"
 file = "packages/ai/test/faux-provider.test.ts"
 line = 161
-status = "pending"
+status = "adapted"
+adaptation = "Use the explicit faux handle instead of the excluded global provider registry; PiEnv supplies time and pacing, and factories return Result instead of throwing."
+rust = "pi-ai::upstream::faux_provider::faux_provider::supports_async_response_factories"
 
 [[test]]
 id = "packages/ai/test/faux-provider.test.ts > faux provider > supports helper blocks for text, thinking, and tool calls"
 file = "packages/ai/test/faux-provider.test.ts"
 line = 49
-status = "pending"
+status = "adapted"
+adaptation = "Use the explicit faux handle instead of the excluded global provider registry; PiEnv supplies time and pacing, and factories return Result instead of throwing."
+rust = "pi-ai::upstream::faux_provider::faux_provider::supports_helper_blocks_for_text_thinking_and_tool_calls"
 
 [[test]]
 id = "packages/ai/test/faux-provider.test.ts > faux provider > supports multiple models with per-model reasoning and model-aware factories"
 file = "packages/ai/test/faux-provider.test.ts"
 line = 70
-status = "pending"
+status = "adapted"
+adaptation = "Use the explicit faux handle instead of the excluded global provider registry; PiEnv supplies time and pacing, and factories return Result instead of throwing."
+rust = "pi-ai::upstream::faux_provider::faux_provider::supports_multiple_models_with_per_model_reasoning_and_model_aware_factories"
 
 [[test]]
 id = "packages/ai/test/faux-provider.test.ts > faux provider > unregisters the provider"
@@ -11034,121 +11083,141 @@ reason = "skip-module"
 id = "packages/ai/test/overflow.test.ts > isContextOverflow > detects DS4 configured context size errors"
 file = "packages/ai/test/overflow.test.ts"
 line = 78
-status = "pending"
+status = "ported"
+rust = "pi-ai::upstream::overflow::is_context_overflow::detects_ds4_configured_context_size_errors"
 
 [[test]]
 id = "packages/ai/test/overflow.test.ts > isContextOverflow > detects LiteLLM-wrapped OpenAI maximum context length errors"
 file = "packages/ai/test/overflow.test.ts"
 line = 57
-status = "pending"
+status = "ported"
+rust = "pi-ai::upstream::overflow::is_context_overflow::detects_litellm_wrapped_openai_maximum_context_length_errors"
 
 [[test]]
 id = "packages/ai/test/overflow.test.ts > isContextOverflow > detects OpenAI-compatible parenthesized maximum context length errors"
 file = "packages/ai/test/overflow.test.ts"
 line = 64
-status = "pending"
+status = "ported"
+rust = "pi-ai::upstream::overflow::is_context_overflow::detects_openai_compatible_parenthesized_maximum_context_length_errors"
 
 [[test]]
 id = "packages/ai/test/overflow.test.ts > isContextOverflow > detects OpenRouter Poolside maximum allowed input length errors"
 file = "packages/ai/test/overflow.test.ts"
 line = 71
-status = "pending"
+status = "ported"
+rust = "pi-ai::upstream::overflow::is_context_overflow::detects_openrouter_poolside_maximum_allowed_input_length_errors"
 
 [[test]]
 id = "packages/ai/test/overflow.test.ts > isContextOverflow > detects Together AI context length errors"
 file = "packages/ai/test/overflow.test.ts"
 line = 50
-status = "pending"
+status = "ported"
+rust = "pi-ai::upstream::overflow::is_context_overflow::detects_together_ai_context_length_errors"
 
 [[test]]
 id = "packages/ai/test/overflow.test.ts > isContextOverflow > detects Xiaomi-style overflow (length stop with zero output and filled context)"
 file = "packages/ai/test/overflow.test.ts"
 line = 154
-status = "pending"
+status = "ported"
+rust = "pi-ai::upstream::overflow::is_context_overflow::detects_xiaomi_style_overflow_length_stop_with_zero_output_and_filled_context"
 
 [[test]]
 id = "packages/ai/test/overflow.test.ts > isContextOverflow > detects explicit Ollama prompt-too-long errors"
 file = "packages/ai/test/overflow.test.ts"
 line = 33
-status = "pending"
+status = "ported"
+rust = "pi-ai::upstream::overflow::is_context_overflow::detects_explicit_ollama_prompt_too_long_errors"
 
 [[test]]
 id = "packages/ai/test/overflow.test.ts > isContextOverflow > detects z.ai CN endpoint prompt-exceeds-max-length errors"
 file = "packages/ai/test/overflow.test.ts"
 line = 44
-status = "pending"
+status = "ported"
+rust = "pi-ai::upstream::overflow::is_context_overflow::detects_z_ai_cn_endpoint_prompt_exceeds_max_length_errors"
 
 [[test]]
 id = "packages/ai/test/overflow.test.ts > isContextOverflow > detects z.ai prompt-too-long errors"
 file = "packages/ai/test/overflow.test.ts"
 line = 38
-status = "pending"
+status = "ported"
+rust = "pi-ai::upstream::overflow::is_context_overflow::detects_z_ai_prompt_too_long_errors"
 
 [[test]]
 id = "packages/ai/test/overflow.test.ts > isContextOverflow > does not recover a length stop that reached the desired output limit"
 file = "packages/ai/test/overflow.test.ts"
 line = 178
-status = "pending"
+status = "ported"
+rust = "pi-ai::upstream::overflow::is_context_overflow::does_not_recover_a_length_stop_that_reached_the_desired_output_limit"
 
 [[test]]
 id = "packages/ai/test/overflow.test.ts > isContextOverflow > does not treat Bedrock service unavailable as overflow"
 file = "packages/ai/test/overflow.test.ts"
 line = 110
-status = "pending"
+status = "ported"
+rust = "pi-ai::upstream::overflow::is_context_overflow::does_not_treat_bedrock_service_unavailable_as_overflow"
 
 [[test]]
 id = "packages/ai/test/overflow.test.ts > isContextOverflow > does not treat Bedrock throttling 'Too many tokens' as overflow"
 file = "packages/ai/test/overflow.test.ts"
 line = 103
-status = "pending"
+status = "ported"
+rust = "pi-ai::upstream::overflow::is_context_overflow::does_not_treat_bedrock_throttling_too_many_tokens_as_overflow"
 
 [[test]]
 id = "packages/ai/test/overflow.test.ts > isContextOverflow > does not treat HTTP 429 style errors as overflow"
 file = "packages/ai/test/overflow.test.ts"
 line = 120
-status = "pending"
+status = "ported"
+rust = "pi-ai::upstream::overflow::is_context_overflow::does_not_treat_http_429_style_errors_as_overflow"
 
 [[test]]
 id = "packages/ai/test/overflow.test.ts > isContextOverflow > does not treat generic non-overflow Ollama errors as overflow"
 file = "packages/ai/test/overflow.test.ts"
 line = 90
-status = "pending"
+status = "ported"
+rust = "pi-ai::upstream::overflow::is_context_overflow::does_not_treat_generic_non_overflow_ollama_errors_as_overflow"
 
 [[test]]
 id = "packages/ai/test/overflow.test.ts > isContextOverflow > does not treat generic rate limit errors as overflow"
 file = "packages/ai/test/overflow.test.ts"
 line = 115
-status = "pending"
+status = "ported"
+rust = "pi-ai::upstream::overflow::is_context_overflow::does_not_treat_generic_rate_limit_errors_as_overflow"
 
 [[test]]
 id = "packages/ai/test/overflow.test.ts > isContextOverflow > does not treat normal length stops with output as context overflow"
 file = "packages/ai/test/overflow.test.ts"
 line = 188
-status = "pending"
+status = "ported"
+rust = "pi-ai::upstream::overflow::is_context_overflow::does_not_treat_normal_length_stops_with_output_as_context_overflow"
 
 [[test]]
 id = "packages/ai/test/overflow.test.ts > isContextOverflow > does not treat zero-output length stops far below context as context overflow"
 file = "packages/ai/test/overflow.test.ts"
 line = 193
-status = "pending"
+status = "ported"
+rust = "pi-ai::upstream::overflow::is_context_overflow::does_not_treat_zero_output_length_stops_far_below_context_as_context_overflow"
 
 [[test]]
 id = "packages/ai/test/overflow.test.ts > isContextOverflow > only treats bodyless 400 and 413 errors as overflow for Cerebras"
 file = "packages/ai/test/overflow.test.ts"
 line = 95
-status = "pending"
+status = "ported"
+rust = "pi-ai::upstream::overflow::is_context_overflow::only_treats_bodyless_400_and_413_errors_as_overflow_for_cerebras"
 
 [[test]]
 id = "packages/ai/test/overflow.test.ts > isContextOverflow > treats a length stop below the desired output limit as recoverable"
 file = "packages/ai/test/overflow.test.ts"
 line = 165
-status = "pending"
+status = "ported"
+rust = "pi-ai::upstream::overflow::is_context_overflow::treats_a_length_stop_below_the_desired_output_limit_as_recoverable"
 
 [[test]]
 id = "packages/ai/test/overflow.test.ts > isContextOverflow > treats zero-output length stops as recoverable without context metadata"
 file = "packages/ai/test/overflow.test.ts"
 line = 183
-status = "pending"
+status = "ported"
+rust = "pi-ai::upstream::overflow::is_context_overflow::treats_zero_output_length_stops_as_recoverable_without_context_metadata"
 
 [[test]]
 id = "packages/ai/test/pi-messages.test.ts > pi-messages > appends debug=1 and reports response headers via onResponse"
@@ -12282,163 +12351,200 @@ reason = "skip-module"
 id = "packages/ai/test/retry.test.ts > provider retry classification > classifies assistant error messages"
 file = "packages/ai/test/retry.test.ts"
 line = 109
-status = "pending"
+status = "ported"
+rust = "pi-ai::upstream::retry::provider_retry_classification::classifies_assistant_error_messages"
 
 [[test]]
 id = "packages/ai/test/retry.test.ts > provider retry classification > keeps provider limit errors non-retryable"
 file = "packages/ai/test/retry.test.ts"
 line = 88
-status = "pending"
+status = "ported"
+rust = "pi-ai::upstream::retry::provider_retry_classification::keeps_provider_limit_errors_non_retryable"
 
 [[test]]
 id = "packages/ai/test/retry.test.ts > provider retry classification > keeps the ChatGPT subscription usage limit non-retryable"
 file = "packages/ai/test/retry.test.ts"
 line = 96
-status = "pending"
+status = "ported"
+rust = "pi-ai::upstream::retry::provider_retry_classification::keeps_the_chatgpt_subscription_usage_limit_non_retryable"
 
 [[test]]
 id = "packages/ai/test/retry.test.ts > provider retry classification > matches Azure peak-load capacity errors"
 file = "packages/ai/test/retry.test.ts"
 line = 81
-status = "pending"
+status = "ported"
+rust = "pi-ai::upstream::retry::provider_retry_classification::matches_azure_peak_load_capacity_errors"
 
 [[test]]
 id = "packages/ai/test/retry.test.ts > provider retry classification > matches Bun fetch socket drop wording"
 file = "packages/ai/test/retry.test.ts"
 line = 37
-status = "pending"
+status = "ported"
+rust = "pi-ai::upstream::retry::provider_retry_classification::matches_bun_fetch_socket_drop_wording"
 
 [[test]]
 id = "packages/ai/test/retry.test.ts > provider retry classification > matches DNS transport failure wording: EAI_AGAIN api.example.com"
 file = "packages/ai/test/retry.test.ts"
 line = 61
-status = "pending"
+status = "ported"
+rust = "pi-ai::upstream::retry::provider_retry_classification::matches_dns_transport_failure_wording__eai_again_api_example_com"
 
 [[test]]
 id = "packages/ai/test/retry.test.ts > provider retry classification > matches DNS transport failure wording: The pending stream has been canceled (caused by: getaddrinfo ENOTFOUND bedrock-runtime.us-east-1.amazonaws.com)"
 file = "packages/ai/test/retry.test.ts"
 line = 61
-status = "pending"
+status = "ported"
+rust = "pi-ai::upstream::retry::provider_retry_classification::matches_dns_transport_failure_wording__the_pending_stream_has_been_canceled_caused_by_getaddrinfo_enotfound_bedrock_runtime_us_east_1_amazonaws_com"
 
 [[test]]
 id = "packages/ai/test/retry.test.ts > provider retry classification > matches DNS transport failure wording: connect ENOTFOUND api.example.com"
 file = "packages/ai/test/retry.test.ts"
 line = 61
-status = "pending"
+status = "ported"
+rust = "pi-ai::upstream::retry::provider_retry_classification::matches_dns_transport_failure_wording__connect_enotfound_api_example_com"
 
 [[test]]
 id = "packages/ai/test/retry.test.ts > provider retry classification > matches DNS transport failure wording: getaddrinfo failed for api.example.com"
 file = "packages/ai/test/retry.test.ts"
 line = 61
-status = "pending"
+status = "ported"
+rust = "pi-ai::upstream::retry::provider_retry_classification::matches_dns_transport_failure_wording__getaddrinfo_failed_for_api_example_com"
 
 [[test]]
 id = "packages/ai/test/retry.test.ts > provider retry classification > matches HTTP/2 pending stream cancellation: The pending stream has been canceled"
 file = "packages/ai/test/retry.test.ts"
 line = 65
-status = "pending"
+status = "ported"
+rust = "pi-ai::upstream::retry::provider_retry_classification::matches_http_2_pending_stream_cancellation__the_pending_stream_has_been_canceled"
 
 [[test]]
 id = "packages/ai/test/retry.test.ts > provider retry classification > matches HTTP/2 pending stream cancellation: The pending stream has been canceled (caused by: socket closed)"
 file = "packages/ai/test/retry.test.ts"
 line = 65
-status = "pending"
+status = "ported"
+rust = "pi-ai::upstream::retry::provider_retry_classification::matches_http_2_pending_stream_cancellation__the_pending_stream_has_been_canceled_caused_by_socket_closed"
 
 [[test]]
 id = "packages/ai/test/retry.test.ts > provider retry classification > matches OpenAI Responses streams that end before terminal events"
 file = "packages/ai/test/retry.test.ts"
 line = 73
-status = "pending"
+status = "ported"
+rust = "pi-ai::upstream::retry::provider_retry_classification::matches_openai_responses_streams_that_end_before_terminal_events"
 
 [[test]]
 id = "packages/ai/test/retry.test.ts > provider retry classification > matches explicit provider retry guidance"
 file = "packages/ai/test/retry.test.ts"
 line = 19
-status = "pending"
+status = "ported"
+rust = "pi-ai::upstream::retry::provider_retry_classification::matches_explicit_provider_retry_guidance"
 
 [[test]]
 id = "packages/ai/test/retry.test.ts > provider retry classification > matches upstream request buffer exhaustion wording"
 file = "packages/ai/test/retry.test.ts"
 line = 45
-status = "pending"
+status = "ported"
+rust = "pi-ai::upstream::retry::provider_retry_classification::matches_upstream_request_buffer_exhaustion_wording"
 
 [[test]]
 id = "packages/ai/test/retry.test.ts > provider retry classification > retries temporary ChatGPT subscription errors: subscription_sharing_usage_unavailable: Usage cannot be checked."
 file = "packages/ai/test/retry.test.ts"
 line = 105
-status = "pending"
+status = "ported"
+rust = "pi-ai::upstream::retry::provider_retry_classification::retries_temporary_chatgpt_subscription_errors__subscription_sharing_usage_unavailable_usage_cannot_be_checked"
 
 [[test]]
 id = "packages/ai/test/retry.test.ts > provider retry classification > retries temporary ChatGPT subscription errors: subscription_sharing_user_unavailable: User cannot be loaded."
 file = "packages/ai/test/retry.test.ts"
 line = 105
-status = "pending"
+status = "ported"
+rust = "pi-ai::upstream::retry::provider_retry_classification::retries_temporary_chatgpt_subscription_errors__subscription_sharing_user_unavailable_user_cannot_be_loaded"
 
 [[test]]
 id = "packages/ai/test/retry.test.ts > retryAssistantCall > aborts backoff sleep via signal, returns an aborted message, and emits onRetryFinished(false)"
 file = "packages/ai/test/retry.test.ts"
 line = 270
-status = "pending"
+status = "adapted"
+adaptation = "Rust futures and explicit Result callbacks run with an isolated VirtualEnv timer and CancellationToken in place of JavaScript fake timers and AbortSignal; retain attempt, delay, cancellation and callback-order assertions."
+rust = "pi-ai::upstream::retry::retry_assistant_call::aborts_backoff_sleep_via_signal_returns_an_aborted_message_and_emits_onretryfinished_false"
 
 [[test]]
 id = "packages/ai/test/retry.test.ts > retryAssistantCall > does not retry a non-retryable error (quota/billing)"
 file = "packages/ai/test/retry.test.ts"
 line = 157
-status = "pending"
+status = "adapted"
+adaptation = "Rust futures and explicit Result callbacks run with an isolated VirtualEnv timer and CancellationToken in place of JavaScript fake timers and AbortSignal; retain attempt, delay, cancellation and callback-order assertions."
+rust = "pi-ai::upstream::retry::retry_assistant_call::does_not_retry_a_non_retryable_error_quota_billing"
 
 [[test]]
 id = "packages/ai/test/retry.test.ts > retryAssistantCall > does not retry an aborted message"
 file = "packages/ai/test/retry.test.ts"
 line = 148
-status = "pending"
+status = "adapted"
+adaptation = "Rust futures and explicit Result callbacks run with an isolated VirtualEnv timer and CancellationToken in place of JavaScript fake timers and AbortSignal; retain attempt, delay, cancellation and callback-order assertions."
+rust = "pi-ai::upstream::retry::retry_assistant_call::does_not_retry_an_aborted_message"
 
 [[test]]
 id = "packages/ai/test/retry.test.ts > retryAssistantCall > does not retry when policy is disabled"
 file = "packages/ai/test/retry.test.ts"
 line = 228
-status = "pending"
+status = "adapted"
+adaptation = "Rust futures and explicit Result callbacks run with an isolated VirtualEnv timer and CancellationToken in place of JavaScript fake timers and AbortSignal; retain attempt, delay, cancellation and callback-order assertions."
+rust = "pi-ai::upstream::retry::retry_assistant_call::does_not_retry_when_policy_is_disabled"
 
 [[test]]
 id = "packages/ai/test/retry.test.ts > retryAssistantCall > emits onRetryAttemptStart after backoff before each retried call"
 file = "packages/ai/test/retry.test.ts"
 line = 239
-status = "pending"
+status = "adapted"
+adaptation = "Rust futures and explicit Result callbacks run with an isolated VirtualEnv timer and CancellationToken in place of JavaScript fake timers and AbortSignal; retain attempt, delay, cancellation and callback-order assertions."
+rust = "pi-ai::upstream::retry::retry_assistant_call::emits_onretryattemptstart_after_backoff_before_each_retried_call"
 
 [[test]]
 id = "packages/ai/test/retry.test.ts > retryAssistantCall > reports an aborted retried call as unsuccessful"
 file = "packages/ai/test/retry.test.ts"
 line = 213
-status = "pending"
+status = "adapted"
+adaptation = "Rust futures and explicit Result callbacks run with an isolated VirtualEnv timer and CancellationToken in place of JavaScript fake timers and AbortSignal; retain attempt, delay, cancellation and callback-order assertions."
+rust = "pi-ai::upstream::retry::retry_assistant_call::reports_an_aborted_retried_call_as_unsuccessful"
 
 [[test]]
 id = "packages/ai/test/retry.test.ts > retryAssistantCall > reports capped retry delays"
 file = "packages/ai/test/retry.test.ts"
 line = 181
-status = "pending"
+status = "adapted"
+adaptation = "Rust futures and explicit Result callbacks run with an isolated VirtualEnv timer and CancellationToken in place of JavaScript fake timers and AbortSignal; retain attempt, delay, cancellation and callback-order assertions."
+rust = "pi-ai::upstream::retry::retry_assistant_call::reports_capped_retry_delays"
 
 [[test]]
 id = "packages/ai/test/retry.test.ts > retryAssistantCall > retries a transient error up to maxRetries then returns the final error"
 file = "packages/ai/test/retry.test.ts"
 line = 170
-status = "pending"
+status = "adapted"
+adaptation = "Rust futures and explicit Result callbacks run with an isolated VirtualEnv timer and CancellationToken in place of JavaScript fake timers and AbortSignal; retain attempt, delay, cancellation and callback-order assertions."
+rust = "pi-ai::upstream::retry::retry_assistant_call::retries_a_transient_error_up_to_maxretries_then_returns_the_final_error"
 
 [[test]]
 id = "packages/ai/test/retry.test.ts > retryAssistantCall > returns a successful response immediately without retrying"
 file = "packages/ai/test/retry.test.ts"
 line = 141
-status = "pending"
+status = "adapted"
+adaptation = "Rust futures and explicit Result callbacks run with an isolated VirtualEnv timer and CancellationToken in place of JavaScript fake timers and AbortSignal; retain attempt, delay, cancellation and callback-order assertions."
+rust = "pi-ai::upstream::retry::retry_assistant_call::returns_a_successful_response_immediately_without_retrying"
 
 [[test]]
 id = "packages/ai/test/retry.test.ts > retryAssistantCall > stops retrying once a call succeeds"
 file = "packages/ai/test/retry.test.ts"
 line = 198
-status = "pending"
+status = "adapted"
+adaptation = "Rust futures and explicit Result callbacks run with an isolated VirtualEnv timer and CancellationToken in place of JavaScript fake timers and AbortSignal; retain attempt, delay, cancellation and callback-order assertions."
+rust = "pi-ai::upstream::retry::retry_assistant_call::stops_retrying_once_a_call_succeeds"
 
 [[test]]
 id = "packages/ai/test/retry.test.ts > retryDelayMs > caps agent retry delay"
 file = "packages/ai/test/retry.test.ts"
 line = 129
-status = "pending"
+status = "ported"
+rust = "pi-ai::upstream::retry::retry_delay_ms::caps_agent_retry_delay"
 
 [[test]]
 id = "packages/ai/test/sampling-options.test.ts > sampling params > applies model-level sampling params with request keys taking precedence for azure-openai-responses"
@@ -14203,81 +14309,91 @@ reason = "skip-module"
 id = "packages/ai/test/supports-xhigh.test.ts > getSupportedThinkingLevels > does not include xhigh or max for Claude Sonnet 4.5"
 file = "packages/ai/test/supports-xhigh.test.ts"
 line = 81
-status = "pending"
+status = "adapted"
 adaptation = "Use pinned upstream catalog model fixtures as input to the Rust getSupportedThinkingLevels helper; retain all level-array/membership assertions and the GPT-6.1 off=null input assertion. Do not port the global getModel registry merely for fixture lookup."
 note = "Selected getSupportedThinkingLevels is exercised on catalog-supplied reasoning/thinkingLevelMap input. Provider name/API in the title does not require the excluded provider transport. Source proof: packages/ai/test/supports-xhigh.test.ts:81; packages/ai/src/models.ts:1222-1231 retained by selection/classes.py keep 1194-1261"
+rust = "pi-ai::upstream::supports_xhigh::get_supported_thinking_levels::does_not_include_xhigh_or_max_for_claude_sonnet_4_5"
 
 [[test]]
 id = "packages/ai/test/supports-xhigh.test.ts > getSupportedThinkingLevels > does not support off for GPT-6.1 Sol"
 file = "packages/ai/test/supports-xhigh.test.ts"
 line = 113
-status = "pending"
+status = "adapted"
 adaptation = "Use pinned upstream catalog model fixtures as input to the Rust getSupportedThinkingLevels helper; retain all level-array/membership assertions and the GPT-6.1 off=null input assertion. Do not port the global getModel registry merely for fixture lookup."
 note = "Selected getSupportedThinkingLevels is exercised on catalog-supplied reasoning/thinkingLevelMap input. Provider name/API in the title does not require the excluded provider transport. Source proof: packages/ai/test/supports-xhigh.test.ts:113; packages/ai/src/models.ts:1222-1231 retained by selection/classes.py keep 1194-1261"
+rust = "pi-ai::upstream::supports_xhigh::get_supported_thinking_levels::does_not_support_off_for_gpt_6_1_sol"
 
 [[test]]
 id = "packages/ai/test/supports-xhigh.test.ts > getSupportedThinkingLevels > excludes thinking off for Moonshot Kimi K2.7 Code models"
 file = "packages/ai/test/supports-xhigh.test.ts"
 line = 196
-status = "pending"
+status = "adapted"
 adaptation = "Use pinned upstream catalog model fixtures as input to the Rust getSupportedThinkingLevels helper; retain all level-array/membership assertions and the GPT-6.1 off=null input assertion. Do not port the global getModel registry merely for fixture lookup."
 note = "Selected getSupportedThinkingLevels is exercised on catalog-supplied reasoning/thinkingLevelMap input. Provider name/API in the title does not require the excluded provider transport. Source proof: packages/ai/test/supports-xhigh.test.ts:196; packages/ai/src/models.ts:1222-1231 retained by selection/classes.py keep 1194-1261"
+rust = "pi-ai::upstream::supports_xhigh::get_supported_thinking_levels::excludes_thinking_off_for_moonshot_kimi_k2_7_code_models"
 
 [[test]]
 id = "packages/ai/test/supports-xhigh.test.ts > getSupportedThinkingLevels > includes Claude Opus 5.5 with its always-on effort levels and official pricing"
 file = "packages/ai/test/supports-xhigh.test.ts"
 line = 26
-status = "pending"
+status = "adapted"
 adaptation = "Use pinned upstream catalog model fixtures as input to the Rust getSupportedThinkingLevels helper; retain all level-array/membership assertions and the GPT-6.1 off=null input assertion. Do not port the global getModel registry merely for fixture lookup. This mixed test also asserts catalog cost/contextWindow/maxTokens/Anthropic compat: omit only those catalog-maintenance assertions (lines 28-38 or 44-55) with an explicit partial adaptation; preserve the getSupportedThinkingLevels equality assertion (line 39 or 56)."
 note = "Selected getSupportedThinkingLevels is exercised on catalog-supplied reasoning/thinkingLevelMap input. Provider name/API in the title does not require the excluded provider transport. Source proof: packages/ai/test/supports-xhigh.test.ts:26; packages/ai/src/models.ts:1222-1231 retained by selection/classes.py keep 1194-1261"
+rust = "pi-ai::upstream::supports_xhigh::get_supported_thinking_levels::includes_claude_opus_5_5_with_its_always_on_effort_levels_and_official_pricing"
 
 [[test]]
 id = "packages/ai/test/supports-xhigh.test.ts > getSupportedThinkingLevels > includes Claude Sonnet 5.5 with managed effort levels and official pricing"
 file = "packages/ai/test/supports-xhigh.test.ts"
 line = 42
-status = "pending"
+status = "adapted"
 adaptation = "Use pinned upstream catalog model fixtures as input to the Rust getSupportedThinkingLevels helper; retain all level-array/membership assertions and the GPT-6.1 off=null input assertion. Do not port the global getModel registry merely for fixture lookup. This mixed test also asserts catalog cost/contextWindow/maxTokens/Anthropic compat: omit only those catalog-maintenance assertions (lines 28-38 or 44-55) with an explicit partial adaptation; preserve the getSupportedThinkingLevels equality assertion (line 39 or 56)."
 note = "Selected getSupportedThinkingLevels is exercised on catalog-supplied reasoning/thinkingLevelMap input. Provider name/API in the title does not require the excluded provider transport. Source proof: packages/ai/test/supports-xhigh.test.ts:42; packages/ai/src/models.ts:1222-1231 retained by selection/classes.py keep 1194-1261"
+rust = "pi-ai::upstream::supports_xhigh::get_supported_thinking_levels::includes_claude_sonnet_5_5_with_managed_effort_levels_and_official_pricing"
 
 [[test]]
 id = "packages/ai/test/supports-xhigh.test.ts > getSupportedThinkingLevels > includes low/high/max plus off for DeepSeek V4 Flash on opencode-go"
 file = "packages/ai/test/supports-xhigh.test.ts"
 line = 178
-status = "pending"
+status = "adapted"
 adaptation = "Use pinned upstream catalog model fixtures as input to the Rust getSupportedThinkingLevels helper; retain all level-array/membership assertions and the GPT-6.1 off=null input assertion. Do not port the global getModel registry merely for fixture lookup."
 note = "Selected getSupportedThinkingLevels is exercised on catalog-supplied reasoning/thinkingLevelMap input. Provider name/API in the title does not require the excluded provider transport. Source proof: packages/ai/test/supports-xhigh.test.ts:178; packages/ai/src/models.ts:1222-1231 retained by selection/classes.py keep 1194-1261"
+rust = "pi-ai::upstream::supports_xhigh::get_supported_thinking_levels::includes_low_high_max_plus_off_for_deepseek_v4_flash_on_opencode_go"
 
 [[test]]
 id = "packages/ai/test/supports-xhigh.test.ts > getSupportedThinkingLevels > includes low/high/max plus off for DeepSeek V4.1 Flash on the DeepSeek provider"
 file = "packages/ai/test/supports-xhigh.test.ts"
 line = 172
-status = "pending"
+status = "adapted"
 adaptation = "Use pinned upstream catalog model fixtures as input to the Rust getSupportedThinkingLevels helper; retain all level-array/membership assertions and the GPT-6.1 off=null input assertion. Do not port the global getModel registry merely for fixture lookup."
 note = "Selected getSupportedThinkingLevels is exercised on catalog-supplied reasoning/thinkingLevelMap input. Provider name/API in the title does not require the excluded provider transport. Source proof: packages/ai/test/supports-xhigh.test.ts:172; packages/ai/src/models.ts:1222-1231 retained by selection/classes.py keep 1194-1261"
+rust = "pi-ai::upstream::supports_xhigh::get_supported_thinking_levels::includes_low_high_max_plus_off_for_deepseek_v4_1_flash_on_the_deepseek_provider"
 
 [[test]]
 id = "packages/ai/test/supports-xhigh.test.ts > getSupportedThinkingLevels > includes max but not xhigh for Anthropic Opus 4.6 on anthropic-messages API"
 file = "packages/ai/test/supports-xhigh.test.ts"
 line = 5
-status = "pending"
+status = "adapted"
 adaptation = "Use pinned upstream catalog model fixtures as input to the Rust getSupportedThinkingLevels helper; retain all level-array/membership assertions and the GPT-6.1 off=null input assertion. Do not port the global getModel registry merely for fixture lookup."
 note = "Selected getSupportedThinkingLevels is exercised on catalog-supplied reasoning/thinkingLevelMap input. Provider name/API in the title does not require the excluded provider transport. Source proof: packages/ai/test/supports-xhigh.test.ts:5; packages/ai/src/models.ts:1222-1231 retained by selection/classes.py keep 1194-1261"
+rust = "pi-ai::upstream::supports_xhigh::get_supported_thinking_levels::includes_max_but_not_xhigh_for_anthropic_opus_4_6_on_anthropic_messages_api"
 
 [[test]]
 id = "packages/ai/test/supports-xhigh.test.ts > getSupportedThinkingLevels > includes max but not xhigh for Anthropic Sonnet 4.6 on anthropic-messages API"
 file = "packages/ai/test/supports-xhigh.test.ts"
 line = 59
-status = "pending"
+status = "adapted"
 adaptation = "Use pinned upstream catalog model fixtures as input to the Rust getSupportedThinkingLevels helper; retain all level-array/membership assertions and the GPT-6.1 off=null input assertion. Do not port the global getModel registry merely for fixture lookup."
 note = "Selected getSupportedThinkingLevels is exercised on catalog-supplied reasoning/thinkingLevelMap input. Provider name/API in the title does not require the excluded provider transport. Source proof: packages/ai/test/supports-xhigh.test.ts:59; packages/ai/src/models.ts:1222-1231 retained by selection/classes.py keep 1194-1261"
+rust = "pi-ai::upstream::supports_xhigh::get_supported_thinking_levels::includes_max_but_not_xhigh_for_anthropic_sonnet_4_6_on_anthropic_messages_api"
 
 [[test]]
 id = "packages/ai/test/supports-xhigh.test.ts > getSupportedThinkingLevels > includes max but not xhigh for OpenRouter Opus 4.6 (openai-completions API)"
 file = "packages/ai/test/supports-xhigh.test.ts"
 line = 229
-status = "pending"
+status = "adapted"
 adaptation = "Use pinned upstream catalog model fixtures as input to the Rust getSupportedThinkingLevels helper; retain all level-array/membership assertions and the GPT-6.1 off=null input assertion. Do not port the global getModel registry merely for fixture lookup."
 note = "Selected getSupportedThinkingLevels is exercised on catalog-supplied reasoning/thinkingLevelMap input. Provider name/API in the title does not require the excluded provider transport. Source proof: packages/ai/test/supports-xhigh.test.ts:229; packages/ai/src/models.ts:1222-1231 retained by selection/classes.py keep 1194-1261"
+rust = "pi-ai::upstream::supports_xhigh::get_supported_thinking_levels::includes_max_but_not_xhigh_for_openrouter_opus_4_6_openai_completions_api"
 
 [[test]]
 id = "packages/ai/test/supports-xhigh.test.ts > getSupportedThinkingLevels > includes official metadata for OpenAI and Codex gpt-6-luna"
@@ -14307,287 +14423,326 @@ note = "Assertions test only getModel catalog metadata (input/cost/tiers/context
 id = "packages/ai/test/supports-xhigh.test.ts > getSupportedThinkingLevels > includes only high for OpenCode Grok Build"
 file = "packages/ai/test/supports-xhigh.test.ts"
 line = 217
-status = "pending"
+status = "adapted"
 adaptation = "Use pinned upstream catalog model fixtures as input to the Rust getSupportedThinkingLevels helper; retain all level-array/membership assertions and the GPT-6.1 off=null input assertion. Do not port the global getModel registry merely for fixture lookup."
 note = "Selected getSupportedThinkingLevels is exercised on catalog-supplied reasoning/thinkingLevelMap input. Provider name/API in the title does not require the excluded provider transport. Source proof: packages/ai/test/supports-xhigh.test.ts:217; packages/ai/src/models.ts:1222-1231 retained by selection/classes.py keep 1194-1261"
+rust = "pi-ai::upstream::supports_xhigh::get_supported_thinking_levels::includes_only_high_for_opencode_grok_build"
 
 [[test]]
 id = "packages/ai/test/supports-xhigh.test.ts > getSupportedThinkingLevels > includes only high/xhigh plus off for DeepSeek V4 Flash on OpenRouter"
 file = "packages/ai/test/supports-xhigh.test.ts"
 line = 223
-status = "pending"
+status = "adapted"
 adaptation = "Use pinned upstream catalog model fixtures as input to the Rust getSupportedThinkingLevels helper; retain all level-array/membership assertions and the GPT-6.1 off=null input assertion. Do not port the global getModel registry merely for fixture lookup."
 note = "Selected getSupportedThinkingLevels is exercised on catalog-supplied reasoning/thinkingLevelMap input. Provider name/API in the title does not require the excluded provider transport. Source proof: packages/ai/test/supports-xhigh.test.ts:223; packages/ai/src/models.ts:1222-1231 retained by selection/classes.py keep 1194-1261"
+rust = "pi-ai::upstream::supports_xhigh::get_supported_thinking_levels::includes_only_high_xhigh_plus_off_for_deepseek_v4_flash_on_openrouter"
 
 [[test]]
 id = "packages/ai/test/supports-xhigh.test.ts > getSupportedThinkingLevels > includes only low, high, max for Kimi Coding K3"
 file = "packages/ai/test/supports-xhigh.test.ts"
 line = 211
-status = "pending"
+status = "adapted"
 adaptation = "Use pinned upstream catalog model fixtures as input to the Rust getSupportedThinkingLevels helper; retain all level-array/membership assertions and the GPT-6.1 off=null input assertion. Do not port the global getModel registry merely for fixture lookup."
 note = "Selected getSupportedThinkingLevels is exercised on catalog-supplied reasoning/thinkingLevelMap input. Provider name/API in the title does not require the excluded provider transport. Source proof: packages/ai/test/supports-xhigh.test.ts:211; packages/ai/src/models.ts:1222-1231 retained by selection/classes.py keep 1194-1261"
+rust = "pi-ai::upstream::supports_xhigh::get_supported_thinking_levels::includes_only_low_high_max_for_kimi_coding_k3"
 
 [[test]]
 id = "packages/ai/test/supports-xhigh.test.ts > getSupportedThinkingLevels > includes only medium/high/xhigh for OpenAI GPT-5.5 Pro"
 file = "packages/ai/test/supports-xhigh.test.ts"
 line = 160
-status = "pending"
+status = "adapted"
 adaptation = "Use pinned upstream catalog model fixtures as input to the Rust getSupportedThinkingLevels helper; retain all level-array/membership assertions and the GPT-6.1 off=null input assertion. Do not port the global getModel registry merely for fixture lookup."
 note = "Selected getSupportedThinkingLevels is exercised on catalog-supplied reasoning/thinkingLevelMap input. Provider name/API in the title does not require the excluded provider transport. Source proof: packages/ai/test/supports-xhigh.test.ts:160; packages/ai/src/models.ts:1222-1231 retained by selection/classes.py keep 1194-1261"
+rust = "pi-ai::upstream::supports_xhigh::get_supported_thinking_levels::includes_only_medium_high_xhigh_for_openai_gpt_5_5_pro"
 
 [[test]]
 id = "packages/ai/test/supports-xhigh.test.ts > getSupportedThinkingLevels > includes only medium/high/xhigh for OpenRouter GPT-5.5 Pro"
 file = "packages/ai/test/supports-xhigh.test.ts"
 line = 166
-status = "pending"
+status = "adapted"
 adaptation = "Use pinned upstream catalog model fixtures as input to the Rust getSupportedThinkingLevels helper; retain all level-array/membership assertions and the GPT-6.1 off=null input assertion. Do not port the global getModel registry merely for fixture lookup."
 note = "Selected getSupportedThinkingLevels is exercised on catalog-supplied reasoning/thinkingLevelMap input. Provider name/API in the title does not require the excluded provider transport. Source proof: packages/ai/test/supports-xhigh.test.ts:166; packages/ai/src/models.ts:1222-1231 retained by selection/classes.py keep 1194-1261"
+rust = "pi-ai::upstream::supports_xhigh::get_supported_thinking_levels::includes_only_medium_high_xhigh_for_openrouter_gpt_5_5_pro"
 
 [[test]]
 id = "packages/ai/test/supports-xhigh.test.ts > getSupportedThinkingLevels > includes xhigh and max but not off for Anthropic Claude Fable 5 on anthropic-messages API"
 file = "packages/ai/test/supports-xhigh.test.ts"
 line = 73
-status = "pending"
+status = "adapted"
 adaptation = "Use pinned upstream catalog model fixtures as input to the Rust getSupportedThinkingLevels helper; retain all level-array/membership assertions and the GPT-6.1 off=null input assertion. Do not port the global getModel registry merely for fixture lookup."
 note = "Selected getSupportedThinkingLevels is exercised on catalog-supplied reasoning/thinkingLevelMap input. Provider name/API in the title does not require the excluded provider transport. Source proof: packages/ai/test/supports-xhigh.test.ts:73; packages/ai/src/models.ts:1222-1231 retained by selection/classes.py keep 1194-1261"
+rust = "pi-ai::upstream::supports_xhigh::get_supported_thinking_levels::includes_xhigh_and_max_but_not_off_for_anthropic_claude_fable_5_on_anthropic_messages_api"
 
 [[test]]
 id = "packages/ai/test/supports-xhigh.test.ts > getSupportedThinkingLevels > includes xhigh and max but not off for Bedrock Claude Fable 5"
 file = "packages/ai/test/supports-xhigh.test.ts"
 line = 249
-status = "pending"
+status = "adapted"
 adaptation = "Use pinned upstream catalog model fixtures as input to the Rust getSupportedThinkingLevels helper; retain all level-array/membership assertions and the GPT-6.1 off=null input assertion. Do not port the global getModel registry merely for fixture lookup."
 note = "Selected getSupportedThinkingLevels is exercised on catalog-supplied reasoning/thinkingLevelMap input. Provider name/API in the title does not require the excluded provider transport. Source proof: packages/ai/test/supports-xhigh.test.ts:249; packages/ai/src/models.ts:1222-1231 retained by selection/classes.py keep 1194-1261"
+rust = "pi-ai::upstream::supports_xhigh::get_supported_thinking_levels::includes_xhigh_and_max_but_not_off_for_bedrock_claude_fable_5"
 
 [[test]]
 id = "packages/ai/test/supports-xhigh.test.ts > getSupportedThinkingLevels > includes xhigh and max for Anthropic Opus 4.8 on anthropic-messages API"
 file = "packages/ai/test/supports-xhigh.test.ts"
 line = 12
-status = "pending"
+status = "adapted"
 adaptation = "Use pinned upstream catalog model fixtures as input to the Rust getSupportedThinkingLevels helper; retain all level-array/membership assertions and the GPT-6.1 off=null input assertion. Do not port the global getModel registry merely for fixture lookup."
 note = "Selected getSupportedThinkingLevels is exercised on catalog-supplied reasoning/thinkingLevelMap input. Provider name/API in the title does not require the excluded provider transport. Source proof: packages/ai/test/supports-xhigh.test.ts:12; packages/ai/src/models.ts:1222-1231 retained by selection/classes.py keep 1194-1261"
+rust = "pi-ai::upstream::supports_xhigh::get_supported_thinking_levels::includes_xhigh_and_max_for_anthropic_opus_4_8_on_anthropic_messages_api"
 
 [[test]]
 id = "packages/ai/test/supports-xhigh.test.ts > getSupportedThinkingLevels > includes xhigh and max for Anthropic Opus 5 on anthropic-messages API"
 file = "packages/ai/test/supports-xhigh.test.ts"
 line = 19
-status = "pending"
+status = "adapted"
 adaptation = "Use pinned upstream catalog model fixtures as input to the Rust getSupportedThinkingLevels helper; retain all level-array/membership assertions and the GPT-6.1 off=null input assertion. Do not port the global getModel registry merely for fixture lookup."
 note = "Selected getSupportedThinkingLevels is exercised on catalog-supplied reasoning/thinkingLevelMap input. Provider name/API in the title does not require the excluded provider transport. Source proof: packages/ai/test/supports-xhigh.test.ts:19; packages/ai/src/models.ts:1222-1231 retained by selection/classes.py keep 1194-1261"
+rust = "pi-ai::upstream::supports_xhigh::get_supported_thinking_levels::includes_xhigh_and_max_for_anthropic_opus_5_on_anthropic_messages_api"
 
 [[test]]
 id = "packages/ai/test/supports-xhigh.test.ts > getSupportedThinkingLevels > includes xhigh and max for Anthropic Sonnet 5 on anthropic-messages API"
 file = "packages/ai/test/supports-xhigh.test.ts"
 line = 66
-status = "pending"
+status = "adapted"
 adaptation = "Use pinned upstream catalog model fixtures as input to the Rust getSupportedThinkingLevels helper; retain all level-array/membership assertions and the GPT-6.1 off=null input assertion. Do not port the global getModel registry merely for fixture lookup."
 note = "Selected getSupportedThinkingLevels is exercised on catalog-supplied reasoning/thinkingLevelMap input. Provider name/API in the title does not require the excluded provider transport. Source proof: packages/ai/test/supports-xhigh.test.ts:66; packages/ai/src/models.ts:1222-1231 retained by selection/classes.py keep 1194-1261"
+rust = "pi-ai::upstream::supports_xhigh::get_supported_thinking_levels::includes_xhigh_and_max_for_anthropic_sonnet_5_on_anthropic_messages_api"
 
 [[test]]
 id = "packages/ai/test/supports-xhigh.test.ts > getSupportedThinkingLevels > includes xhigh and max for Bedrock Claude Opus 5"
 file = "packages/ai/test/supports-xhigh.test.ts"
 line = 236
-status = "pending"
+status = "adapted"
 adaptation = "Use pinned upstream catalog model fixtures as input to the Rust getSupportedThinkingLevels helper; retain all level-array/membership assertions and the GPT-6.1 off=null input assertion. Do not port the global getModel registry merely for fixture lookup."
 note = "Selected getSupportedThinkingLevels is exercised on catalog-supplied reasoning/thinkingLevelMap input. Provider name/API in the title does not require the excluded provider transport. Source proof: packages/ai/test/supports-xhigh.test.ts:236; packages/ai/src/models.ts:1222-1231 retained by selection/classes.py keep 1194-1261"
+rust = "pi-ai::upstream::supports_xhigh::get_supported_thinking_levels::includes_xhigh_and_max_for_bedrock_claude_opus_5"
 
 [[test]]
 id = "packages/ai/test/supports-xhigh.test.ts > getSupportedThinkingLevels > includes xhigh and max for OpenAI gpt-5.6-luna models"
 file = "packages/ai/test/supports-xhigh.test.ts"
 line = 103
-status = "pending"
+status = "adapted"
 adaptation = "Use pinned upstream catalog model fixtures as input to the Rust getSupportedThinkingLevels helper; retain all level-array/membership assertions and the GPT-6.1 off=null input assertion. Do not port the global getModel registry merely for fixture lookup."
 note = "Selected getSupportedThinkingLevels is exercised on catalog-supplied reasoning/thinkingLevelMap input. Provider name/API in the title does not require the excluded provider transport. Source proof: packages/ai/test/supports-xhigh.test.ts:103; packages/ai/src/models.ts:1222-1231 retained by selection/classes.py keep 1194-1261"
+rust = "pi-ai::upstream::supports_xhigh::get_supported_thinking_levels::includes_xhigh_and_max_for_openai_gpt_5_6_luna_models"
 
 [[test]]
 id = "packages/ai/test/supports-xhigh.test.ts > getSupportedThinkingLevels > includes xhigh and max for OpenAI gpt-5.6-sol models"
 file = "packages/ai/test/supports-xhigh.test.ts"
 line = 103
-status = "pending"
+status = "adapted"
 adaptation = "Use pinned upstream catalog model fixtures as input to the Rust getSupportedThinkingLevels helper; retain all level-array/membership assertions and the GPT-6.1 off=null input assertion. Do not port the global getModel registry merely for fixture lookup."
 note = "Selected getSupportedThinkingLevels is exercised on catalog-supplied reasoning/thinkingLevelMap input. Provider name/API in the title does not require the excluded provider transport. Source proof: packages/ai/test/supports-xhigh.test.ts:103; packages/ai/src/models.ts:1222-1231 retained by selection/classes.py keep 1194-1261"
+rust = "pi-ai::upstream::supports_xhigh::get_supported_thinking_levels::includes_xhigh_and_max_for_openai_gpt_5_6_sol_models"
 
 [[test]]
 id = "packages/ai/test/supports-xhigh.test.ts > getSupportedThinkingLevels > includes xhigh and max for OpenAI gpt-5.6-terra models"
 file = "packages/ai/test/supports-xhigh.test.ts"
 line = 103
-status = "pending"
+status = "adapted"
 adaptation = "Use pinned upstream catalog model fixtures as input to the Rust getSupportedThinkingLevels helper; retain all level-array/membership assertions and the GPT-6.1 off=null input assertion. Do not port the global getModel registry merely for fixture lookup."
 note = "Selected getSupportedThinkingLevels is exercised on catalog-supplied reasoning/thinkingLevelMap input. Provider name/API in the title does not require the excluded provider transport. Source proof: packages/ai/test/supports-xhigh.test.ts:103; packages/ai/src/models.ts:1222-1231 retained by selection/classes.py keep 1194-1261"
+rust = "pi-ai::upstream::supports_xhigh::get_supported_thinking_levels::includes_xhigh_and_max_for_openai_gpt_5_6_terra_models"
 
 [[test]]
 id = "packages/ai/test/supports-xhigh.test.ts > getSupportedThinkingLevels > includes xhigh and max for OpenAI gpt-6-luna models"
 file = "packages/ai/test/supports-xhigh.test.ts"
 line = 103
-status = "pending"
+status = "adapted"
 adaptation = "Use pinned upstream catalog model fixtures as input to the Rust getSupportedThinkingLevels helper; retain all level-array/membership assertions and the GPT-6.1 off=null input assertion. Do not port the global getModel registry merely for fixture lookup."
 note = "Selected getSupportedThinkingLevels is exercised on catalog-supplied reasoning/thinkingLevelMap input. Provider name/API in the title does not require the excluded provider transport. Source proof: packages/ai/test/supports-xhigh.test.ts:103; packages/ai/src/models.ts:1222-1231 retained by selection/classes.py keep 1194-1261"
+rust = "pi-ai::upstream::supports_xhigh::get_supported_thinking_levels::includes_xhigh_and_max_for_openai_gpt_6_luna_models"
 
 [[test]]
 id = "packages/ai/test/supports-xhigh.test.ts > getSupportedThinkingLevels > includes xhigh and max for OpenAI gpt-6-sol models"
 file = "packages/ai/test/supports-xhigh.test.ts"
 line = 103
-status = "pending"
+status = "adapted"
 adaptation = "Use pinned upstream catalog model fixtures as input to the Rust getSupportedThinkingLevels helper; retain all level-array/membership assertions and the GPT-6.1 off=null input assertion. Do not port the global getModel registry merely for fixture lookup."
 note = "Selected getSupportedThinkingLevels is exercised on catalog-supplied reasoning/thinkingLevelMap input. Provider name/API in the title does not require the excluded provider transport. Source proof: packages/ai/test/supports-xhigh.test.ts:103; packages/ai/src/models.ts:1222-1231 retained by selection/classes.py keep 1194-1261"
+rust = "pi-ai::upstream::supports_xhigh::get_supported_thinking_levels::includes_xhigh_and_max_for_openai_gpt_6_sol_models"
 
 [[test]]
 id = "packages/ai/test/supports-xhigh.test.ts > getSupportedThinkingLevels > includes xhigh but not off or max for xAI Grok 4.6"
 file = "packages/ai/test/supports-xhigh.test.ts"
 line = 243
-status = "pending"
+status = "adapted"
 adaptation = "Use pinned upstream catalog model fixtures as input to the Rust getSupportedThinkingLevels helper; retain all level-array/membership assertions and the GPT-6.1 off=null input assertion. Do not port the global getModel registry merely for fixture lookup."
 note = "Selected getSupportedThinkingLevels is exercised on catalog-supplied reasoning/thinkingLevelMap input. Provider name/API in the title does not require the excluded provider transport. Source proof: packages/ai/test/supports-xhigh.test.ts:243; packages/ai/src/models.ts:1222-1231 retained by selection/classes.py keep 1194-1261"
+rust = "pi-ai::upstream::supports_xhigh::get_supported_thinking_levels::includes_xhigh_but_not_off_or_max_for_xai_grok_4_6"
 
 [[test]]
 id = "packages/ai/test/supports-xhigh.test.ts > getSupportedThinkingLevels > includes xhigh for openai-codex gpt-5.5 models"
 file = "packages/ai/test/supports-xhigh.test.ts"
 line = 97
-status = "pending"
+status = "adapted"
 adaptation = "Use pinned upstream catalog model fixtures as input to the Rust getSupportedThinkingLevels helper; retain all level-array/membership assertions and the GPT-6.1 off=null input assertion. Do not port the global getModel registry merely for fixture lookup."
 note = "Selected getSupportedThinkingLevels is exercised on catalog-supplied reasoning/thinkingLevelMap input. Provider name/API in the title does not require the excluded provider transport. Source proof: packages/ai/test/supports-xhigh.test.ts:97; packages/ai/src/models.ts:1222-1231 retained by selection/classes.py keep 1194-1261"
+rust = "pi-ai::upstream::supports_xhigh::get_supported_thinking_levels::includes_xhigh_for_openai_codex_gpt_5_5_models"
 
 [[test]]
 id = "packages/ai/test/supports-xhigh.test.ts > getSupportedThinkingLevels > includes xhigh for openai-codex gpt-5.6-luna models"
 file = "packages/ai/test/supports-xhigh.test.ts"
 line = 97
-status = "pending"
+status = "adapted"
 adaptation = "Use pinned upstream catalog model fixtures as input to the Rust getSupportedThinkingLevels helper; retain all level-array/membership assertions and the GPT-6.1 off=null input assertion. Do not port the global getModel registry merely for fixture lookup."
 note = "Selected getSupportedThinkingLevels is exercised on catalog-supplied reasoning/thinkingLevelMap input. Provider name/API in the title does not require the excluded provider transport. Source proof: packages/ai/test/supports-xhigh.test.ts:97; packages/ai/src/models.ts:1222-1231 retained by selection/classes.py keep 1194-1261"
+rust = "pi-ai::upstream::supports_xhigh::get_supported_thinking_levels::includes_xhigh_for_openai_codex_gpt_5_6_luna_models"
 
 [[test]]
 id = "packages/ai/test/supports-xhigh.test.ts > getSupportedThinkingLevels > includes xhigh for openai-codex gpt-5.6-sol models"
 file = "packages/ai/test/supports-xhigh.test.ts"
 line = 97
-status = "pending"
+status = "adapted"
 adaptation = "Use pinned upstream catalog model fixtures as input to the Rust getSupportedThinkingLevels helper; retain all level-array/membership assertions and the GPT-6.1 off=null input assertion. Do not port the global getModel registry merely for fixture lookup."
 note = "Selected getSupportedThinkingLevels is exercised on catalog-supplied reasoning/thinkingLevelMap input. Provider name/API in the title does not require the excluded provider transport. Source proof: packages/ai/test/supports-xhigh.test.ts:97; packages/ai/src/models.ts:1222-1231 retained by selection/classes.py keep 1194-1261"
+rust = "pi-ai::upstream::supports_xhigh::get_supported_thinking_levels::includes_xhigh_for_openai_codex_gpt_5_6_sol_models"
 
 [[test]]
 id = "packages/ai/test/supports-xhigh.test.ts > getSupportedThinkingLevels > includes xhigh for openai-codex gpt-5.6-terra models"
 file = "packages/ai/test/supports-xhigh.test.ts"
 line = 97
-status = "pending"
+status = "adapted"
 adaptation = "Use pinned upstream catalog model fixtures as input to the Rust getSupportedThinkingLevels helper; retain all level-array/membership assertions and the GPT-6.1 off=null input assertion. Do not port the global getModel registry merely for fixture lookup."
 note = "Selected getSupportedThinkingLevels is exercised on catalog-supplied reasoning/thinkingLevelMap input. Provider name/API in the title does not require the excluded provider transport. Source proof: packages/ai/test/supports-xhigh.test.ts:97; packages/ai/src/models.ts:1222-1231 retained by selection/classes.py keep 1194-1261"
+rust = "pi-ai::upstream::supports_xhigh::get_supported_thinking_levels::includes_xhigh_for_openai_codex_gpt_5_6_terra_models"
 
 [[test]]
 id = "packages/ai/test/supports-xhigh.test.ts > getSupportedThinkingLevels > includes xhigh for openai-codex gpt-6-astra models"
 file = "packages/ai/test/supports-xhigh.test.ts"
 line = 97
-status = "pending"
+status = "adapted"
 adaptation = "Use pinned upstream catalog model fixtures as input to the Rust getSupportedThinkingLevels helper; retain all level-array/membership assertions and the GPT-6.1 off=null input assertion. Do not port the global getModel registry merely for fixture lookup."
 note = "Selected getSupportedThinkingLevels is exercised on catalog-supplied reasoning/thinkingLevelMap input. Provider name/API in the title does not require the excluded provider transport. Source proof: packages/ai/test/supports-xhigh.test.ts:97; packages/ai/src/models.ts:1222-1231 retained by selection/classes.py keep 1194-1261"
+rust = "pi-ai::upstream::supports_xhigh::get_supported_thinking_levels::includes_xhigh_for_openai_codex_gpt_6_astra_models"
 
 [[test]]
 id = "packages/ai/test/supports-xhigh.test.ts > getSupportedThinkingLevels > includes xhigh for openai-codex gpt-6-luna models"
 file = "packages/ai/test/supports-xhigh.test.ts"
 line = 97
-status = "pending"
+status = "adapted"
 adaptation = "Use pinned upstream catalog model fixtures as input to the Rust getSupportedThinkingLevels helper; retain all level-array/membership assertions and the GPT-6.1 off=null input assertion. Do not port the global getModel registry merely for fixture lookup."
 note = "Selected getSupportedThinkingLevels is exercised on catalog-supplied reasoning/thinkingLevelMap input. Provider name/API in the title does not require the excluded provider transport. Source proof: packages/ai/test/supports-xhigh.test.ts:97; packages/ai/src/models.ts:1222-1231 retained by selection/classes.py keep 1194-1261"
+rust = "pi-ai::upstream::supports_xhigh::get_supported_thinking_levels::includes_xhigh_for_openai_codex_gpt_6_luna_models"
 
 [[test]]
 id = "packages/ai/test/supports-xhigh.test.ts > getSupportedThinkingLevels > includes xhigh for openai-codex gpt-6-sol models"
 file = "packages/ai/test/supports-xhigh.test.ts"
 line = 97
-status = "pending"
+status = "adapted"
 adaptation = "Use pinned upstream catalog model fixtures as input to the Rust getSupportedThinkingLevels helper; retain all level-array/membership assertions and the GPT-6.1 off=null input assertion. Do not port the global getModel registry merely for fixture lookup."
 note = "Selected getSupportedThinkingLevels is exercised on catalog-supplied reasoning/thinkingLevelMap input. Provider name/API in the title does not require the excluded provider transport. Source proof: packages/ai/test/supports-xhigh.test.ts:97; packages/ai/src/models.ts:1222-1231 retained by selection/classes.py keep 1194-1261"
+rust = "pi-ai::upstream::supports_xhigh::get_supported_thinking_levels::includes_xhigh_for_openai_codex_gpt_6_sol_models"
 
 [[test]]
 id = "packages/ai/test/supports-xhigh.test.ts > getSupportedThinkingLevels > includes xhigh for openai-codex gpt-6.1-sol models"
 file = "packages/ai/test/supports-xhigh.test.ts"
 line = 97
-status = "pending"
+status = "adapted"
 adaptation = "Use pinned upstream catalog model fixtures as input to the Rust getSupportedThinkingLevels helper; retain all level-array/membership assertions and the GPT-6.1 off=null input assertion. Do not port the global getModel registry merely for fixture lookup."
 note = "Selected getSupportedThinkingLevels is exercised on catalog-supplied reasoning/thinkingLevelMap input. Provider name/API in the title does not require the excluded provider transport. Source proof: packages/ai/test/supports-xhigh.test.ts:97; packages/ai/src/models.ts:1222-1231 retained by selection/classes.py keep 1194-1261"
+rust = "pi-ai::upstream::supports_xhigh::get_supported_thinking_levels::includes_xhigh_for_openai_codex_gpt_6_1_sol_models"
 
 [[test]]
 id = "packages/ai/test/supports-xhigh.test.ts > getSupportedThinkingLevels > preserves low/high/max metadata for DeepSeek V4.1 Flash on OpenRouter"
 file = "packages/ai/test/supports-xhigh.test.ts"
 line = 184
-status = "pending"
+status = "adapted"
 adaptation = "Use pinned upstream catalog model fixtures as input to the Rust getSupportedThinkingLevels helper; retain all level-array/membership assertions and the GPT-6.1 off=null input assertion. Do not port the global getModel registry merely for fixture lookup."
 note = "Selected getSupportedThinkingLevels is exercised on catalog-supplied reasoning/thinkingLevelMap input. Provider name/API in the title does not require the excluded provider transport. Source proof: packages/ai/test/supports-xhigh.test.ts:184; packages/ai/src/models.ts:1222-1231 retained by selection/classes.py keep 1194-1261"
+rust = "pi-ai::upstream::supports_xhigh::get_supported_thinking_levels::preserves_low_high_max_metadata_for_deepseek_v4_1_flash_on_openrouter"
 
 [[test]]
 id = "packages/ai/test/supports-xhigh.test.ts > getSupportedThinkingLevels > preserves low/high/max metadata for DeepSeek V4.1 Flash on opencode-go"
 file = "packages/ai/test/supports-xhigh.test.ts"
 line = 190
-status = "pending"
+status = "adapted"
 adaptation = "Use pinned upstream catalog model fixtures as input to the Rust getSupportedThinkingLevels helper; retain all level-array/membership assertions and the GPT-6.1 off=null input assertion. Do not port the global getModel registry merely for fixture lookup."
 note = "Selected getSupportedThinkingLevels is exercised on catalog-supplied reasoning/thinkingLevelMap input. Provider name/API in the title does not require the excluded provider transport. Source proof: packages/ai/test/supports-xhigh.test.ts:190; packages/ai/src/models.ts:1222-1231 retained by selection/classes.py keep 1194-1261"
+rust = "pi-ai::upstream::supports_xhigh::get_supported_thinking_levels::preserves_low_high_max_metadata_for_deepseek_v4_1_flash_on_opencode_go"
 
 [[test]]
 id = "packages/ai/test/supports-xhigh.test.ts > getSupportedThinkingLevels > uses the verified effort options for moonshotai Kimi K3"
 file = "packages/ai/test/supports-xhigh.test.ts"
 line = 205
-status = "pending"
+status = "adapted"
 adaptation = "Use pinned upstream catalog model fixtures as input to the Rust getSupportedThinkingLevels helper; retain all level-array/membership assertions and the GPT-6.1 off=null input assertion. Do not port the global getModel registry merely for fixture lookup."
 note = "Selected getSupportedThinkingLevels is exercised on catalog-supplied reasoning/thinkingLevelMap input. Provider name/API in the title does not require the excluded provider transport. Source proof: packages/ai/test/supports-xhigh.test.ts:205; packages/ai/src/models.ts:1222-1231 retained by selection/classes.py keep 1194-1261"
+rust = "pi-ai::upstream::supports_xhigh::get_supported_thinking_levels::uses_the_verified_effort_options_for_moonshotai_kimi_k3"
 
 [[test]]
 id = "packages/ai/test/supports-xhigh.test.ts > getSupportedThinkingLevels > uses the verified effort options for moonshotai-cn Kimi K3"
 file = "packages/ai/test/supports-xhigh.test.ts"
 line = 205
-status = "pending"
+status = "adapted"
 adaptation = "Use pinned upstream catalog model fixtures as input to the Rust getSupportedThinkingLevels helper; retain all level-array/membership assertions and the GPT-6.1 off=null input assertion. Do not port the global getModel registry merely for fixture lookup."
 note = "Selected getSupportedThinkingLevels is exercised on catalog-supplied reasoning/thinkingLevelMap input. Provider name/API in the title does not require the excluded provider transport. Source proof: packages/ai/test/supports-xhigh.test.ts:205; packages/ai/src/models.ts:1222-1231 retained by selection/classes.py keep 1194-1261"
+rust = "pi-ai::upstream::supports_xhigh::get_supported_thinking_levels::uses_the_verified_effort_options_for_moonshotai_cn_kimi_k3"
 
 [[test]]
 id = "packages/ai/test/system-message-replay.test.ts > system message replay > a late full patch on a transcript without a leading message replays as the prompt"
 file = "packages/ai/test/system-message-replay.test.ts"
 line = 69
-status = "pending"
+status = "ported"
+rust = "pi-ai::upstream::system_message_replay::system_message_replay::a_late_full_patch_on_a_transcript_without_a_leading_message_replays_as_the_prompt"
 
 [[test]]
 id = "packages/ai/test/system-message-replay.test.ts > system message replay > collapse keeps only non-system messages after the replayed head"
 file = "packages/ai/test/system-message-replay.test.ts"
 line = 56
-status = "pending"
+status = "ported"
+rust = "pi-ai::upstream::system_message_replay::system_message_replay::collapse_keeps_only_non_system_messages_after_the_replayed_head"
 
 [[test]]
 id = "packages/ai/test/system-message-replay.test.ts > system message replay > compares tool declarations without executable or undefined fields"
 file = "packages/ai/test/system-message-replay.test.ts"
 line = 110
-status = "pending"
+status = "adapted"
+adaptation = "Executable fields live outside Rust Tool; compare stripped schema runtime identity as well as the original undefined and constrained-sampling cases."
+rust = "pi-ai::upstream::system_message_replay::system_message_replay::compares_tool_declarations_without_executable_or_undefined_fields"
 
 [[test]]
 id = "packages/ai/test/system-message-replay.test.ts > system message replay > detects non-additive tool history and redefinitions"
 file = "packages/ai/test/system-message-replay.test.ts"
 line = 126
-status = "pending"
+status = "ported"
+rust = "pi-ai::upstream::system_message_replay::system_message_replay::detects_non_additive_tool_history_and_redefinitions"
 
 [[test]]
 id = "packages/ai/test/system-message-replay.test.ts > system message replay > normalizes the legacy prompt and tool fields into a leading system message"
 file = "packages/ai/test/system-message-replay.test.ts"
 line = 100
-status = "pending"
+status = "ported"
+rust = "pi-ai::upstream::system_message_replay::system_message_replay::normalizes_the_legacy_prompt_and_tool_fields_into_a_leading_system_message"
 
 [[test]]
 id = "packages/ai/test/system-message-replay.test.ts > system message replay > renders complete prompts and framed updates"
 file = "packages/ai/test/system-message-replay.test.ts"
 line = 86
-status = "pending"
+status = "ported"
+rust = "pi-ai::upstream::system_message_replay::system_message_replay::renders_complete_prompts_and_framed_updates"
 
 [[test]]
 id = "packages/ai/test/system-message-replay.test.ts > system message replay > replay of a transcript without system messages is empty"
 file = "packages/ai/test/system-message-replay.test.ts"
 line = 62
-status = "pending"
+status = "ported"
+rust = "pi-ai::upstream::system_message_replay::system_message_replay::replay_of_a_transcript_without_system_messages_is_empty"
 
 [[test]]
 id = "packages/ai/test/system-message-replay.test.ts > system message replay > replays content, sections, and tools into one leading message"
 file = "packages/ai/test/system-message-replay.test.ts"
 line = 44
-status = "pending"
+status = "ported"
+rust = "pi-ai::upstream::system_message_replay::system_message_replay::replays_content_sections_and_tools_into_one_leading_message"
 
 [[test]]
 id = "packages/ai/test/system-message-replay.test.ts > system message replay > tool state changes treat changed definitions as removal plus addition"
 file = "packages/ai/test/system-message-replay.test.ts"
 line = 117
-status = "pending"
+status = "ported"
+rust = "pi-ai::upstream::system_message_replay::system_message_replay::tool_state_changes_treat_changed_definitions_as_removal_plus_addition"
 
 [[test]]
 id = "packages/ai/test/telemetry-options.test.ts > ProviderRequestOptions.telemetryContext > is inherited by every request option surface and simple-stream conversion"
@@ -14614,25 +14769,29 @@ reason = "skip-module"
 id = "packages/ai/test/text.test.ts > contentText > extracts assistant text blocks"
 file = "packages/ai/test/text.test.ts"
 line = 12
-status = "pending"
+status = "ported"
+rust = "pi-ai::upstream::text::content_text::extracts_assistant_text_blocks"
 
 [[test]]
 id = "packages/ai/test/text.test.ts > contentText > extracts text from tool-result content"
 file = "packages/ai/test/text.test.ts"
 line = 24
-status = "pending"
+status = "ported"
+rust = "pi-ai::upstream::text::content_text::extracts_text_from_tool_result_content"
 
 [[test]]
 id = "packages/ai/test/text.test.ts > contentText > passes string content through"
 file = "packages/ai/test/text.test.ts"
 line = 20
-status = "pending"
+status = "ported"
+rust = "pi-ai::upstream::text::content_text::passes_string_content_through"
 
 [[test]]
 id = "packages/ai/test/text.test.ts > contentText > supports custom separators"
 file = "packages/ai/test/text.test.ts"
 line = 16
-status = "pending"
+status = "ported"
+rust = "pi-ai::upstream::text::content_text::supports_custom_separators"
 
 [[test]]
 id = "packages/ai/test/together-models.test.ts > Together models > models Together reasoning controls from the Together API surface"
@@ -16172,109 +16331,138 @@ reason = "skip-module"
 id = "packages/ai/test/uuid.test.ts > uuidv7 > accepts timestamp boundary 0"
 file = "packages/ai/test/uuid.test.ts"
 line = 50
-status = "pending"
+status = "adapted"
+adaptation = "Instance-owned UUIDv7 state and deterministic PiEnv clock/random inputs replace module reset and ambient crypto/time mocks; retain the upstream format, ordering, timestamp and randomness assertions."
+rust = "pi-ai::upstream::uuid::uuidv7::accepts_timestamp_boundary_0"
 
 [[test]]
 id = "packages/ai/test/uuid.test.ts > uuidv7 > accepts timestamp boundary 281474976710655"
 file = "packages/ai/test/uuid.test.ts"
 line = 50
-status = "pending"
+status = "adapted"
+adaptation = "Instance-owned UUIDv7 state and deterministic PiEnv clock/random inputs replace module reset and ambient crypto/time mocks; retain the upstream format, ordering, timestamp and randomness assertions."
+rust = "pi-ai::upstream::uuid::uuidv7::accepts_timestamp_boundary_281474976710655"
 
 [[test]]
 id = "packages/ai/test/uuid.test.ts > uuidv7 > generates ordered UUIDv7s while preserving follower timestamps"
 file = "packages/ai/test/uuid.test.ts"
 line = 17
-status = "pending"
+status = "adapted"
+adaptation = "Instance-owned UUIDv7 state and deterministic PiEnv clock/random inputs replace module reset and ambient crypto/time mocks; retain the upstream format, ordering, timestamp and randomness assertions."
+rust = "pi-ai::upstream::uuid::uuidv7::generates_ordered_uuidv7s_while_preserving_follower_timestamps"
 
 [[test]]
 id = "packages/ai/test/uuid.test.ts > uuidv7 > rejects invalid timestamp -1"
 file = "packages/ai/test/uuid.test.ts"
 line = 54
-status = "pending"
+status = "adapted"
+adaptation = "Instance-owned UUIDv7 state and deterministic PiEnv clock/random inputs replace module reset and ambient crypto/time mocks; retain the upstream format, ordering, timestamp and randomness assertions."
+rust = "pi-ai::upstream::uuid::uuidv7::rejects_invalid_timestamp_1"
 
 [[test]]
 id = "packages/ai/test/uuid.test.ts > uuidv7 > rejects invalid timestamp 1.5"
 file = "packages/ai/test/uuid.test.ts"
 line = 54
-status = "pending"
+status = "adapted"
+adaptation = "Instance-owned UUIDv7 state and deterministic PiEnv clock/random inputs replace module reset and ambient crypto/time mocks; retain the upstream format, ordering, timestamp and randomness assertions."
+rust = "pi-ai::upstream::uuid::uuidv7::rejects_invalid_timestamp_1_5"
 
 [[test]]
 id = "packages/ai/test/uuid.test.ts > uuidv7 > rejects invalid timestamp 281474976710656"
 file = "packages/ai/test/uuid.test.ts"
 line = 54
-status = "pending"
+status = "adapted"
+adaptation = "Instance-owned UUIDv7 state and deterministic PiEnv clock/random inputs replace module reset and ambient crypto/time mocks; retain the upstream format, ordering, timestamp and randomness assertions."
+rust = "pi-ai::upstream::uuid::uuidv7::rejects_invalid_timestamp_281474976710656"
 
 [[test]]
 id = "packages/ai/test/uuid.test.ts > uuidv7 > rejects invalid timestamp Infinity"
 file = "packages/ai/test/uuid.test.ts"
 line = 54
-status = "pending"
+status = "adapted"
+adaptation = "Instance-owned UUIDv7 state and deterministic PiEnv clock/random inputs replace module reset and ambient crypto/time mocks; retain the upstream format, ordering, timestamp and randomness assertions."
+rust = "pi-ai::upstream::uuid::uuidv7::rejects_invalid_timestamp_infinity"
 
 [[test]]
 id = "packages/ai/test/uuid.test.ts > uuidv7 > rejects invalid timestamp NaN"
 file = "packages/ai/test/uuid.test.ts"
 line = 54
-status = "pending"
+status = "adapted"
+adaptation = "Instance-owned UUIDv7 state and deterministic PiEnv clock/random inputs replace module reset and ambient crypto/time mocks; retain the upstream format, ordering, timestamp and randomness assertions."
+rust = "pi-ai::upstream::uuid::uuidv7::rejects_invalid_timestamp_nan"
 
 [[test]]
 id = "packages/ai/test/uuid.test.ts > uuidv7 > uses fresh randomness for every UUID tail"
 file = "packages/ai/test/uuid.test.ts"
 line = 39
-status = "pending"
+status = "adapted"
+adaptation = "Instance-owned UUIDv7 state and deterministic PiEnv clock/random inputs replace module reset and ambient crypto/time mocks; retain the upstream format, ordering, timestamp and randomness assertions."
+rust = "pi-ai::upstream::uuid::uuidv7::uses_fresh_randomness_for_every_uuid_tail"
 
 [[test]]
 id = "packages/ai/test/validation.test.ts > validateToolArguments > accepts null for nullable array schemas with items"
 file = "packages/ai/test/validation.test.ts"
 line = 182
-status = "pending"
+status = "adapted"
+adaptation = "Rust uses the same offline compiled validator for both upstream generated and CSP-fallback paths; no JavaScript Function constructor exists."
+rust = "pi-ai::upstream::validation::validate_tool_arguments::accepts_null_for_nullable_array_schemas_with_items"
 
 [[test]]
 id = "packages/ai/test/validation.test.ts > validateToolArguments > coerces serialized plain JSON schemas with AJV-compatible primitive rules"
 file = "packages/ai/test/validation.test.ts"
 line = 64
-status = "pending"
+status = "ported"
+rust = "pi-ai::upstream::validation::validate_tool_arguments::coerces_serialized_plain_json_schemas_with_ajv_compatible_primitive_rules"
 
 [[test]]
 id = "packages/ai/test/validation.test.ts > validateToolArguments > preserves a value that already matches a nullable union arm"
 file = "packages/ai/test/validation.test.ts"
 line = 146
-status = "pending"
+status = "ported"
+rust = "pi-ai::upstream::validation::validate_tool_arguments::preserves_a_value_that_already_matches_a_nullable_union_arm"
 
 [[test]]
 id = "packages/ai/test/validation.test.ts > validateToolArguments > preserves a value that already matches a oneOf nullable union arm"
 file = "packages/ai/test/validation.test.ts"
 line = 164
-status = "pending"
+status = "ported"
+rust = "pi-ai::upstream::validation::validate_tool_arguments::preserves_a_value_that_already_matches_a_one_of_nullable_union_arm"
 
 [[test]]
 id = "packages/ai/test/validation.test.ts > validateToolArguments > preserves optional nulls whose referenced schema is nullable"
 file = "packages/ai/test/validation.test.ts"
 line = 126
-status = "pending"
+status = "ported"
+rust = "pi-ai::upstream::validation::validate_tool_arguments::preserves_optional_nulls_whose_referenced_schema_is_nullable"
 
 [[test]]
 id = "packages/ai/test/validation.test.ts > validateToolArguments > rejects invalid coercions for serialized plain JSON schemas"
 file = "packages/ai/test/validation.test.ts"
 line = 194
-status = "pending"
+status = "ported"
+rust = "pi-ai::upstream::validation::validate_tool_arguments::rejects_invalid_coercions_for_serialized_plain_json_schemas"
 
 [[test]]
 id = "packages/ai/test/validation.test.ts > validateToolArguments > still coerces nullable unions when the original value does not match any arm"
 file = "packages/ai/test/validation.test.ts"
 line = 173
-status = "pending"
+status = "ported"
+rust = "pi-ai::upstream::validation::validate_tool_arguments::still_coerces_nullable_unions_when_the_original_value_does_not_match_any_arm"
 
 [[test]]
 id = "packages/ai/test/validation.test.ts > validateToolArguments > still validates when Function constructor is unavailable"
 file = "packages/ai/test/validation.test.ts"
 line = 37
-status = "pending"
+status = "adapted"
+adaptation = "Rust uses the same offline compiled validator for both upstream generated and CSP-fallback paths; no JavaScript Function constructor exists."
+rust = "pi-ai::upstream::validation::validate_tool_arguments::still_validates_when_function_constructor_is_unavailable"
 
 [[test]]
 id = "packages/ai/test/validation.test.ts > validateToolArguments > treats null as omission for optional non-nullable properties"
 file = "packages/ai/test/validation.test.ts"
 line = 101
-status = "pending"
+status = "ported"
+rust = "pi-ai::upstream::validation::validate_tool_arguments::treats_null_as_omission_for_optional_non_nullable_properties"
 
 [[test]]
 id = "packages/ai/test/xai-oauth.test.ts > xAI OAuth device flow > assumes a one-hour lifetime when expires_in is missing"

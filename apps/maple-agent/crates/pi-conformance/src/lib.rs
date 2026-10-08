@@ -6,6 +6,7 @@
 pub mod compare;
 pub mod coverage;
 pub mod dependencies;
+mod functions;
 pub mod integrity;
 pub mod replay;
 pub mod selection;

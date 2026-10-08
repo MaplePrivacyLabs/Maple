@@ -748,6 +748,168 @@
       "input": {
         "partialJson": "{\"path\":\"C:\\q\"}"
       }
+    },
+    {
+      "case": "positive-exponent-overflow",
+      "input": {
+        "partialJson": "1e400"
+      }
+    },
+    {
+      "case": "negative-exponent-overflow",
+      "input": {
+        "partialJson": "-1e400"
+      }
+    },
+    {
+      "case": "partial-overflow-object",
+      "input": {
+        "partialJson": "{\"value\":1e400"
+      }
+    },
+    {
+      "case": "partial-overflow-array",
+      "input": {
+        "partialJson": "[1e400,-1e400"
+      }
+    },
+    {
+      "case": "negative-zero",
+      "input": {
+        "partialJson": "-0"
+      }
+    },
+    {
+      "case": "large-integer-binary64-rounding",
+      "input": {
+        "partialJson": "9007199254740993"
+      }
+    },
+    {
+      "case": "escaped-high-surrogate",
+      "input": {
+        "partialJson": "\"\\ud800\""
+      }
+    },
+    {
+      "case": "escaped-low-surrogate",
+      "input": {
+        "partialJson": "\"\\udc00\""
+      }
+    },
+    {
+      "case": "escaped-surrogate-key",
+      "input": {
+        "partialJson": "{\"\\ud800\":1}"
+      }
+    },
+    {
+      "case": "escaped-surrogate-key-partial",
+      "input": {
+        "partialJson": "{\"\\ud800\":1"
+      }
+    },
+    {
+      "case": "escaped-surrogate-string-partial",
+      "input": {
+        "partialJson": "{\"text\":\"\\ud800"
+      }
+    },
+    {
+      "case": "partial-nan",
+      "input": {
+        "partialJson": "NaN"
+      }
+    },
+    {
+      "case": "partial-infinity",
+      "input": {
+        "partialJson": "Infinity"
+      }
+    },
+    {
+      "case": "partial-negative-infinity",
+      "input": {
+        "partialJson": "-Infinity"
+      }
+    },
+    {
+      "case": "partial-prototype-key",
+      "input": {
+        "partialJson": "{\"__proto__\":{\"x\":1},\"ok\":2"
+      }
+    },
+    {
+      "case": "raw-high-surrogate-string",
+      "input": {
+        "utf16": [
+          34,
+          55296,
+          34
+        ]
+      }
+    },
+    {
+      "case": "raw-low-surrogate-string",
+      "input": {
+        "utf16": [
+          34,
+          56320,
+          34
+        ]
+      }
+    },
+    {
+      "case": "raw-surrogate-key",
+      "input": {
+        "utf16": [
+          123,
+          34,
+          55296,
+          34,
+          58,
+          49,
+          125
+        ]
+      }
+    },
+    {
+      "case": "raw-surrogate-partial-key",
+      "input": {
+        "utf16": [
+          123,
+          34,
+          55296,
+          34,
+          58,
+          49
+        ]
+      }
+    },
+    {
+      "case": "raw-surrogate-partial-string",
+      "input": {
+        "utf16": [
+          123,
+          34,
+          120,
+          34,
+          58,
+          34,
+          55296
+        ]
+      }
+    },
+    {
+      "case": "raw-surrogate-pair",
+      "input": {
+        "utf16": [
+          34,
+          55357,
+          56832,
+          34
+        ]
+      }
     }
   ]
 }

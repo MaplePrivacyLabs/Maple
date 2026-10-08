@@ -7,3 +7,11 @@
 {"case":"escaped","input":{"value":{"text":"line\nquote\"tab\t"}},"output":"{\"text\":\"line\\nquote\\\"tab\\t\"}"}
 {"case":"lone-surrogate","input":{"utf16":[55296]},"output":"\"\\ud800\""}
 {"case":"astral","input":{"value":"😀"},"output":"\"😀\""}
+{"case":"string-indent","input":{"value":{"x":[1,2]},"space":">>"},"output":"{\n>>\"x\": [\n>>>>1,\n>>>>2\n>>]\n}"}
+{"case":"tab-indent","input":{"value":[{"x":1}],"space":"\t"},"output":"[\n\t{\n\t\t\"x\": 1\n\t}\n]"}
+{"case":"indent-utf16-truncation","input":{"value":{"x":1},"space":"abcdefghi😀"},"output":"{\nabcdefghi\ud83d\"x\": 1\n}"}
+{"case":"empty-string-indent","input":{"value":{"x":[1]},"space":""},"output":"{\"x\":[1]}"}
+{"case":"nul-indent-with-nul-value","input":{"value":{"x":"\u0000"},"space":"\u0000"},"output":"{\n\"x\": \"\\u0000\"\n}"}
+{"case":"nul-terminates-indent-nested","input":{"value":{"a":{"b":1},"c":2},"space":"a\u0000b"},"output":"{\na\"a\": {\naa\"b\": 1\na},\na\"c\": 2\n}"}
+{"case":"nul-after-indent-limit","input":{"value":{"a":1},"space":"abcdefghij\u0000"},"output":"{\nabcdefghij\"a\": 1\n}"}
+{"case":"control-unit-indent","input":{"value":{"a":1},"space":"\u0001"},"output":"{\n\u0001\"a\": 1\n}"}

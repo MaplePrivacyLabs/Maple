@@ -82,7 +82,89 @@
     {
       "case": "astral",
       "input": {
-        "value": "\ud83d\ude00"
+        "value": "😀"
+      }
+    },
+    {
+      "case": "string-indent",
+      "input": {
+        "value": {
+          "x": [
+            1,
+            2
+          ]
+        },
+        "space": ">>"
+      }
+    },
+    {
+      "case": "tab-indent",
+      "input": {
+        "value": [
+          {
+            "x": 1
+          }
+        ],
+        "space": "\t"
+      }
+    },
+    {
+      "case": "indent-utf16-truncation",
+      "input": {
+        "value": {
+          "x": 1
+        },
+        "space": "abcdefghi😀"
+      }
+    },
+    {
+      "case": "empty-string-indent",
+      "input": {
+        "value": {
+          "x": [
+            1
+          ]
+        },
+        "space": ""
+      }
+    },
+    {
+      "case": "nul-indent-with-nul-value",
+      "input": {
+        "value": {
+          "x": "\u0000"
+        },
+        "space": "\u0000"
+      }
+    },
+    {
+      "case": "nul-terminates-indent-nested",
+      "input": {
+        "value": {
+          "a": {
+            "b": 1
+          },
+          "c": 2
+        },
+        "space": "a\u0000b"
+      }
+    },
+    {
+      "case": "nul-after-indent-limit",
+      "input": {
+        "value": {
+          "a": 1
+        },
+        "space": "abcdefghij\u0000"
+      }
+    },
+    {
+      "case": "control-unit-indent",
+      "input": {
+        "value": {
+          "a": 1
+        },
+        "space": "\u0001"
       }
     }
   ]
