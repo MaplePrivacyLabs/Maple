@@ -29,6 +29,7 @@ pub fn build_info() -> serde_json::Value {
         serde_json::from_slice(&MAPLE_AGENT_BUILD_INFO).expect("generated public build metadata");
     debug_assert_eq!(info["display_name"], DISPLAY_NAME);
     debug_assert_eq!(info["bundle_id"], BUNDLE_ID);
+    debug_assert_eq!(info["auth_origin"], serde_json::json!(AUTH_ORIGIN));
     debug_assert_eq!(info["pcr_environment"], PCR_ENVIRONMENT);
     debug_assert_eq!(info["update_tag_prefix"], UPDATE_TAG_PREFIX);
     debug_assert_eq!(info["prerelease"], PRERELEASE);
@@ -87,6 +88,7 @@ mod tests {
         assert_eq!(info["display_name"], DISPLAY_NAME);
         assert_eq!(info["billing_api_url"], BILLING_API_URL);
         assert_eq!(info["web_url"], WEB_URL);
+        assert_eq!(info["auth_origin"], serde_json::json!(AUTH_ORIGIN));
         assert_eq!(info["client_id"], CLIENT_ID);
         assert_eq!(info["update_tag_prefix"], UPDATE_TAG_PREFIX);
         assert_eq!(info["prerelease"], PRERELEASE);

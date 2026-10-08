@@ -431,4 +431,36 @@ describe("hosted authentication entry", () => {
       expect(readTransportV2DesktopOAuth("github")).toEqual(replacement);
     });
   }
+
+  for (const provider of ["github", "google"] as const) {
+    test(`keeps the full Agent target through ${provider} initiation and callback`, async () => {
+      const params = new URLSearchParams({
+        provider,
+        transport: "v2",
+        native_session_id: nativeSessionId,
+        native_request_id: nativeRequestId,
+        return_port: "43123",
+        return_state: "12".repeat(16)
+      });
+      await renderAt(`${authOrigin}/agent/start?${params}`);
+      const target = readTransportV2DesktopOAuth(provider);
+      expect(target).toMatchObject({
+        provider,
+        nativeApp: "agent",
+        nativeSessionId,
+        nativeRequestId,
+        returnPort: 43123,
+        returnState: "12".repeat(16),
+        environment: authEnvironment()
+      });
+      expect(window.location.href).toBe(providerUrl);
+      await act(async () => renderer?.unmount());
+      renderer = null;
+      await renderAt(callbackUrl(provider));
+      expect(renderer!.root.findByType(HostedNativeSignInConfirmation).props.target).toEqual(
+        target
+      );
+      expect(mintNativeHandoffGrant).not.toHaveBeenCalled();
+    });
+  }
 });

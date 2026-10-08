@@ -5776,6 +5776,7 @@ dependencies = [
  "env_logger",
  "gpui",
  "gpui_platform",
+ "httparse",
  "image 0.25.10",
  "log",
  "maple-agent",
@@ -5786,6 +5787,7 @@ dependencies = [
  "parking_lot",
  "percent-encoding",
  "pulldown-cmark",
+ "rand 0.8.7",
  "reqwest 0.13.4",
  "rodio",
  "rpassword",
@@ -5800,6 +5802,7 @@ dependencies = [
  "uuid",
  "wayland-client",
  "webbrowser",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

@@ -716,6 +716,7 @@
           } ''
             cd "$src"
             python3 scripts/ci/test_select_xcode.py
+            python3 scripts/ci/test_research_dev_profile.py
             touch "$out"
           '';
 

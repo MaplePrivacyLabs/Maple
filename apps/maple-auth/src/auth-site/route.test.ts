@@ -265,3 +265,107 @@ describe("native application profile admission", () => {
     }
   });
 });
+
+describe("Agent loopback admission", () => {
+  for (const environment of ["development", "production"] as const) {
+    const agentParams = (provider = "github") => {
+      const params = startParams(provider);
+      params.set("return_port", "43123");
+      params.set("return_state", "12".repeat(16));
+      return params;
+    };
+    const parseAgent = (params: URLSearchParams) =>
+      parseAuthSiteRoute(
+        {
+          pathname: "/agent/start",
+          search: `?${params}`
+        },
+        environment
+      );
+
+    for (const provider of providers) {
+      test(`${environment} ${provider} stores a fixed Agent destination`, () => {
+        expect(parseAgent(agentParams(provider))).toEqual({
+          kind: "start",
+          nativeApp: "agent",
+          provider,
+          nativeSessionId,
+          nativeRequestId,
+          returnPort: 43123,
+          returnState: "12".repeat(16),
+          environment
+        });
+      });
+    }
+
+    test(`${environment} accepts only canonical bounded decimal ports`, () => {
+      for (const port of ["1", "65535"]) {
+        const params = agentParams();
+        params.set("return_port", port);
+        expect(parseAgent(params)).toMatchObject({ kind: "start", returnPort: Number(port) });
+      }
+      for (const port of [
+        "",
+        "0",
+        "65536",
+        "01",
+        "0043",
+        "-1",
+        "+1",
+        "80.0",
+        "8e1",
+        "0x50",
+        "80 ",
+        "80\n",
+        "127.0.0.1:80"
+      ]) {
+        const params = agentParams();
+        params.set("return_port", port);
+        expect(parseAgent(params)).toEqual({ kind: "invalid" });
+      }
+    });
+
+    test(`${environment} rejects ambiguous fields, foreign targets and query-selected environments`, () => {
+      for (const key of agentParams().keys()) {
+        const missing = agentParams();
+        missing.delete(key);
+        expect(parseAgent(missing)).toEqual({ kind: "invalid" });
+        const duplicate = agentParams();
+        duplicate.append(key, duplicate.get(key)!);
+        expect(parseAgent(duplicate)).toEqual({ kind: "invalid" });
+      }
+      for (const state of [
+        "",
+        "AA".repeat(16),
+        "12".repeat(15),
+        "12".repeat(17),
+        "xyz",
+        "12".repeat(16) + " "
+      ]) {
+        const params = agentParams();
+        params.set("return_state", state);
+        expect(parseAgent(params)).toEqual({ kind: "invalid" });
+      }
+      for (const key of [
+        "return_url",
+        "return_host",
+        "return_path",
+        "environment",
+        "api_url",
+        "native_app_variant",
+        "native_app"
+      ]) {
+        const params = agentParams();
+        params.set(key, "dev");
+        expect(parseAgent(params)).toEqual({ kind: "invalid" });
+      }
+      const researchParams = agentParams();
+      if (environment === "development") researchParams.set("native_app_variant", "dev");
+      for (const pathname of ["/start", "/desktop-auth", "/agent/start/", "/agent"]) {
+        expect(parseAuthSiteRoute({ pathname, search: `?${researchParams}` }, environment)).toEqual(
+          { kind: "invalid" }
+        );
+      }
+    });
+  }
+});

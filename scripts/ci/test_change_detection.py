@@ -168,6 +168,14 @@ class ChangeDetectionTests(unittest.TestCase):
                 self.assert_routes([path], "macos", "ios", "ios_onnx")
                 self.assertIn(path, IOS_ONNX_INPUTS)
 
+    def test_research_dev_packaging_scripts_select_macos(self) -> None:
+        for path in (
+            "scripts/ci/research-dev-desktop.sh",
+            "scripts/ci/research-dev-profile.py",
+        ):
+            with self.subTest(path=path):
+                self.assert_routes([path], "macos")
+
     def test_mixed_changes_union_their_routes(self) -> None:
         self.assert_routes(
             ["sdk/src/lib/index.ts", "apps/maple-research/frontend/src/routes/index.tsx", "apps/maple-research/frontend/src-tauri/gen/android/build.gradle.kts"],

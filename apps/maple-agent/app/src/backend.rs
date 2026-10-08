@@ -35,6 +35,8 @@ use tokio::runtime::Runtime;
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
+use crate::hosted_oauth::{ATTEMPT_TIMEOUT, HandoffListener};
+
 #[derive(Debug, Clone)]
 pub struct PendingQuestion {
     pub session_id: String,
@@ -97,7 +99,7 @@ pub struct AgentBackend {
     auth: MapleApiAuthState,
     api_url: String,
     persisted_auth: Arc<PersistedAuthStore>,
-    pending_oauth: PendingOAuthStore,
+    pending_oauth: Arc<PendingOAuthStore>,
     client_id: Uuid,
     event_rx: tokio::sync::Mutex<Option<mpsc::UnboundedReceiver<AgentServiceEvent>>>,
     billing: crate::billing::BillingClient,
@@ -257,6 +259,12 @@ struct PendingOAuth {
     attempt: Arc<OAuthAttempt>,
     state: Option<String>,
     completing: bool,
+    handoff: Option<HostedHandoff>,
+}
+
+struct HostedHandoff {
+    listener: HandoffListener,
+    prepared: maple_sdk::PreparedNativeOAuthHandoff,
 }
 
 #[derive(Default)]
@@ -274,6 +282,7 @@ impl PendingOAuthStore {
             attempt: Arc::clone(&attempt),
             state: None,
             completing: false,
+            handoff: None,
         }) {
             previous.attempt.cancelled.send_replace(true);
         }
@@ -298,12 +307,68 @@ impl PendingOAuthStore {
                 flow.attempt.provider == provider
                     && flow.state.as_deref() == Some(state)
                     && !flow.completing
+                    && flow.handoff.is_none()
             })
             .ok_or_else(|| {
                 "This callback does not match the pending sign in. Start again.".to_string()
             })?;
         flow.completing = true;
         Ok(Arc::clone(&flow.attempt))
+    }
+
+    fn set_handoff(
+        self: &Arc<Self>,
+        attempt: &Arc<OAuthAttempt>,
+        handoff: HostedHandoff,
+    ) -> Result<(), String> {
+        let mut pending = self.0.lock().expect("pending OAuth lock");
+        let flow = pending
+            .as_mut()
+            .filter(|flow| Arc::ptr_eq(&flow.attempt, attempt))
+            .ok_or_else(|| OAUTH_CANCELLED_MESSAGE.to_string())?;
+        flow.handoff = Some(handoff);
+        drop(pending);
+        self.expire_handoff_after(attempt, ATTEMPT_TIMEOUT);
+        Ok(())
+    }
+
+    fn expire_handoff_after(
+        self: &Arc<Self>,
+        attempt: &Arc<OAuthAttempt>,
+        timeout: std::time::Duration,
+    ) {
+        // Expire even if the UI is closed or never begins waiting. Weak
+        // references cannot keep a backend or completed attempt alive.
+        let store = Arc::downgrade(self);
+        let weak_attempt = Arc::downgrade(attempt);
+        let mut cancelled = attempt.cancelled.subscribe();
+        tokio::spawn(async move {
+            tokio::select! {
+                _ = cancelled.changed() => {},
+                _ = tokio::time::sleep(timeout) => {
+                    if let (Some(store), Some(attempt)) = (store.upgrade(), weak_attempt.upgrade()) {
+                        store.clear(&attempt);
+                    }
+                }
+            }
+        });
+    }
+
+    fn take_handoff(
+        &self,
+        provider: OAuthProvider,
+    ) -> Result<(Arc<OAuthAttempt>, HostedHandoff), String> {
+        let mut pending = self.0.lock().expect("pending OAuth lock");
+        let flow = pending
+            .as_mut()
+            .filter(|flow| flow.attempt.provider == provider && !flow.completing)
+            .ok_or_else(|| OAUTH_CANCELLED_MESSAGE.to_string())?;
+        let handoff = flow
+            .handoff
+            .take()
+            .ok_or_else(|| OAUTH_CANCELLED_MESSAGE.to_string())?;
+        flow.completing = true;
+        Ok((Arc::clone(&flow.attempt), handoff))
     }
 
     fn clear(&self, attempt: &Arc<OAuthAttempt>) {
@@ -601,7 +666,7 @@ impl PersistedAuthStore {
         Some(record)
     }
 
-    fn claim_and_persist(&self, snapshot: &MapleApiAuthSnapshot) {
+    fn claim_and_persist(&self, snapshot: &MapleApiAuthSnapshot) -> bool {
         let mut state = self
             .state
             .lock()
@@ -615,10 +680,10 @@ impl PersistedAuthStore {
                 "ignoring stale persisted auth claim (revision {})",
                 snapshot.revision
             );
-            return;
+            return false;
         }
         state.owner = Some(PersistedAuthOwner::from_snapshot(snapshot));
-        self.write_locked(&PersistedAuthRecord::from_snapshot(&self.api_url, snapshot));
+        self.write_locked(&PersistedAuthRecord::from_snapshot(&self.api_url, snapshot))
     }
 
     fn persist_rotation(&self, snapshot: &MapleApiAuthSnapshot) {
@@ -682,13 +747,15 @@ impl PersistedAuthStore {
         self.remove_locked();
     }
 
-    fn write_locked(&self, record: &PersistedAuthRecord) {
+    fn write_locked(&self, record: &PersistedAuthRecord) -> bool {
         if let Err(error) = maple_agent::private_file::write_private_json(&self.path, record) {
             log::error!(
                 "Cannot save credentials to {}: {error}. Sign in is needed again at the next start.",
                 self.path.display()
             );
+            return false;
         }
+        true
     }
 
     fn remove_locked(&self) {
@@ -752,7 +819,7 @@ impl AgentBackend {
             auth: MapleApiAuthState::new(),
             api_url,
             persisted_auth,
-            pending_oauth: PendingOAuthStore::default(),
+            pending_oauth: Arc::new(PendingOAuthStore::default()),
             client_id: configured_client_id(),
             event_rx: tokio::sync::Mutex::new(Some(event_rx)),
             billing,
@@ -847,8 +914,8 @@ impl AgentBackend {
         local_data_root().join("auth.json")
     }
 
-    fn persist_auth(&self, snapshot: &MapleApiAuthSnapshot) {
-        self.persisted_auth.claim_and_persist(snapshot);
+    fn persist_auth(&self, snapshot: &MapleApiAuthSnapshot) -> bool {
+        self.persisted_auth.claim_and_persist(snapshot)
     }
 
     /// The sink the runtime calls when the SDK rotates the token pair
@@ -1013,6 +1080,17 @@ impl AgentBackend {
         access_token: String,
         refresh_token: Option<String>,
     ) -> Result<AuthSession, String> {
+        self.publish_session_with_persistence(user_id, access_token, refresh_token)
+            .await
+            .map(|(session, _)| session)
+    }
+
+    async fn publish_session_with_persistence(
+        &self,
+        user_id: String,
+        access_token: String,
+        refresh_token: Option<String>,
+    ) -> Result<(AuthSession, bool), String> {
         self.auth
             .set_auth(
                 self.auth_sink(),
@@ -1031,11 +1109,18 @@ impl AgentBackend {
                 "Sign in failed. Try again.".to_string()
             })
             .map(|snapshot| {
-                self.persist_auth(&snapshot);
-                AuthSession {
-                    user_id: snapshot.user_id.clone(),
-                }
+                let persisted = self.persist_auth(&snapshot);
+                (
+                    AuthSession {
+                        user_id: snapshot.user_id.clone(),
+                    },
+                    persisted,
+                )
             })
+    }
+
+    pub fn uses_hosted_oauth(&self) -> bool {
+        crate::profile::AUTH_ORIGIN.is_some()
     }
     /// Begin an OAuth flow: returns the authorization URL to open in a
     /// browser (also opens it via the system browser).
@@ -1047,6 +1132,39 @@ impl AgentBackend {
             retain: false,
         };
         let client = &attempt.client;
+        if let Some(origin) = crate::profile::AUTH_ORIGIN {
+            let auth_url = attempt
+                .while_active(async {
+                    let prepared = client
+                        .prepare_native_oauth_handoff()
+                        .await
+                        .map_err(|_| "Could not prepare browser sign-in. Try again.".to_string())?;
+                    let listener = HandoffListener::bind()?;
+                    let provider_name = match provider {
+                        OAuthProvider::Github => "github",
+                        OAuthProvider::Google => "google",
+                        OAuthProvider::Apple => "apple",
+                    };
+                    let url = listener.start_url(
+                        origin,
+                        provider_name,
+                        prepared.session_id(),
+                        prepared.request_id(),
+                    );
+                    self.pending_oauth
+                        .set_handoff(&attempt, HostedHandoff { listener, prepared })?;
+                    Ok(url)
+                })
+                .await?;
+            if webbrowser::open(&auth_url).is_err() {
+                return Err(
+                    "Could not open your browser. Check your default browser and try again."
+                        .to_string(),
+                );
+            }
+            guard.retain = true;
+            return Ok(auth_url);
+        }
         let client_id = self.client_id;
         let (auth_url, state) = attempt
             .while_active(async {
@@ -1086,6 +1204,53 @@ impl AgentBackend {
 
     pub fn cancel_oauth(&self) {
         self.pending_oauth.cancel();
+    }
+
+    /// Wait on the existing listener and consume exactly the SDK handle that
+    /// created the advertised target. Cancellation closes the listener/socket;
+    /// malformed callbacks leave it available until the attempt deadline.
+    pub async fn oauth_wait_for_handoff(
+        &self,
+        provider: OAuthProvider,
+    ) -> Result<AuthSession, String> {
+        let (attempt, handoff) = self.pending_oauth.take_handoff(provider)?;
+        let _guard = OAuthAttemptGuard {
+            store: &self.pending_oauth,
+            attempt: &attempt,
+            retain: false,
+        };
+        attempt
+            .while_active(async {
+                let HostedHandoff { listener, prepared } = handoff;
+                let (grant, browser) = listener.receive(&prepared).await?;
+                let outcome = async {
+                    let response = attempt
+                        .client
+                        .redeem_native_oauth_handoff(prepared, grant)
+                        .await
+                        .map_err(|_| {
+                            "Browser sign-in failed or expired. Start again.".to_string()
+                        })?;
+                    self.publish_session_with_persistence(
+                        response.id.to_string(),
+                        response.access_token,
+                        Some(response.refresh_token),
+                    )
+                    .await
+                }
+                .await;
+                drop(listener);
+                browser.finish(
+                    outcome
+                        .as_ref()
+                        .map(|(_, persisted)| *persisted)
+                        .map_err(|_| ()),
+                );
+                // No await after native publication: a late Back or failed browser
+                // response must not hide an already committed account from the UI.
+                outcome.map(|(session, _)| session)
+            })
+            .await
     }
 
     /// Complete an OAuth flow from the redirected URL (pasted by the user or
@@ -2445,6 +2610,41 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn hosted_deadline_cancels_its_attempt_but_not_a_replacement() {
+        let store = Arc::new(PendingOAuthStore::default());
+        let expired = store.begin(OAuthProvider::Google, oauth_test_client());
+        store.expire_handoff_after(&expired, std::time::Duration::from_millis(10));
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            expired.while_active(std::future::pending::<Result<(), String>>()),
+        )
+        .await
+        .unwrap();
+        assert_eq!(result, Err(OAUTH_CANCELLED_MESSAGE.to_string()));
+        assert!(store.0.lock().unwrap().is_none());
+
+        let old = store.begin(OAuthProvider::Google, oauth_test_client());
+        store.expire_handoff_after(&old, std::time::Duration::from_millis(10));
+        let replacement = store.begin(OAuthProvider::Apple, oauth_test_client());
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        assert!(!*replacement.cancelled.borrow());
+        assert!(Arc::ptr_eq(
+            &store.0.lock().unwrap().as_ref().unwrap().attempt,
+            &replacement
+        ));
+        // Waiting on the hosted path cannot claim or consume a legacy attempt.
+        assert!(store.take_handoff(OAuthProvider::Apple).is_err());
+        store
+            .set_state(&replacement, "fixture-state".to_string())
+            .unwrap();
+        assert!(
+            store
+                .complete(OAuthProvider::Apple, "fixture-state")
+                .is_ok()
+        );
+    }
+
+    #[tokio::test]
     async fn oauth_replacement_rejects_late_start_and_preserves_new_attempt_during_old_cleanup() {
         let store = PendingOAuthStore::default();
         let old = store.begin(OAuthProvider::Github, oauth_test_client());
@@ -2581,6 +2781,29 @@ mod tests {
             !path.exists(),
             "a rotation published after sign-out must not recreate auth.json"
         );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn persistence_reports_write_failure_and_successful_restore() {
+        let root = std::env::temp_dir().join(format!("maple-auth-persistence-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("auth.json");
+        let store = PersistedAuthStore::new(path.clone(), "https://api.example".to_string());
+        let snapshot = auth_snapshot("fixture-user", "fixture-session", 1, "fixture-token");
+        std::fs::create_dir(&path).unwrap();
+        assert!(
+            !store.claim_and_persist(&snapshot),
+            "a directory cannot be replaced by credentials"
+        );
+        assert!(store.load().is_none());
+        std::fs::remove_dir(&path).unwrap();
+        assert!(store.claim_and_persist(&snapshot));
+        let restored = PersistedAuthStore::new(path, "https://api.example".to_string())
+            .load()
+            .unwrap();
+        assert_eq!(restored.user_id, snapshot.user_id);
+        assert_eq!(restored.access_token, snapshot.access_token);
         std::fs::remove_dir_all(root).unwrap();
     }
 

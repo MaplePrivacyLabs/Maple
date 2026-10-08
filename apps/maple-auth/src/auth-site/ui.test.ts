@@ -6,7 +6,7 @@ const appDirectory = fileURLToPath(new URL("../..", import.meta.url));
 describe("hosted auth UI with the real SDK context", () => {
   for (const environment of ["production", "development"]) {
     for (const [fixture, cases] of [
-      ["AuthSite", 25],
+      ["AuthSite", 27],
       ["HostedAppleSignIn", 15]
     ] as const) {
       test(`${environment} ${fixture} runs every case without shared module mocks`, () => {

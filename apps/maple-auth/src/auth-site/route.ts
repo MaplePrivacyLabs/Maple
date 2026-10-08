@@ -1,23 +1,30 @@
-import { isTransportV2PublicId, type DesktopOAuthProvider } from "@/services/desktopOAuthTransport";
+import {
+  isAgentReturnPort,
+  isTransportV2PublicId,
+  type DesktopOAuthProvider,
+  type NativeOAuthInput
+} from "@/services/desktopOAuthTransport";
 
 import {
   authEnvironment,
   isNativeAppVariantAllowed,
-  type AuthEnvironment,
-  type NativeAppVariant
+  type AuthEnvironment
 } from "@/config/authEnvironment";
 
 export type AuthSiteRoute =
-  | {
-      kind: "start";
-      provider: DesktopOAuthProvider;
-      nativeSessionId: string;
-      nativeRequestId: string;
-      nativeAppVariant?: NativeAppVariant;
-    }
+  | ({ kind: "start" } & NativeOAuthInput)
   | { kind: "callback"; provider: DesktopOAuthProvider; code: string; state: string }
   | { kind: "complete" }
   | { kind: "invalid" };
+
+const AGENT_START_PARAMETERS = new Set([
+  "transport",
+  "provider",
+  "native_session_id",
+  "native_request_id",
+  "return_port",
+  "return_state"
+]);
 
 const START_PARAMETERS = new Set([
   "transport",
@@ -42,7 +49,12 @@ export function parseAuthSiteRoute(
   environment: AuthEnvironment = authEnvironment()
 ): AuthSiteRoute {
   const params = new URLSearchParams(location.search);
-  if (location.pathname === "/start" || location.pathname === "/desktop-auth") {
+  if (
+    location.pathname === "/start" ||
+    location.pathname === "/desktop-auth" ||
+    location.pathname === "/agent/start"
+  ) {
+    const agent = location.pathname === "/agent/start";
     const provider = singleParameter(params, "provider");
     const nativeSessionId = singleParameter(params, "native_session_id");
     const nativeRequestId = singleParameter(params, "native_request_id");
@@ -50,14 +62,37 @@ export function parseAuthSiteRoute(
       ? singleParameter(params, "native_app_variant")
       : undefined;
     if (
-      [...params.keys()].some((key) => !START_PARAMETERS.has(key)) ||
+      [...params.keys()].some(
+        (key) => !(agent ? AGENT_START_PARAMETERS : START_PARAMETERS).has(key)
+      ) ||
       singleParameter(params, "transport") !== "v2" ||
       (provider !== "github" && provider !== "google" && provider !== "apple") ||
       !isTransportV2PublicId(nativeSessionId) ||
       !isTransportV2PublicId(nativeRequestId) ||
-      !isNativeAppVariantAllowed(nativeAppVariant, environment)
+      (!agent && !isNativeAppVariantAllowed(nativeAppVariant, environment))
     ) {
       return { kind: "invalid" };
+    }
+    if (agent) {
+      const port = singleParameter(params, "return_port");
+      const returnState = singleParameter(params, "return_state");
+      if (
+        !port ||
+        !/^[1-9][0-9]{0,4}$/u.test(port) ||
+        !isAgentReturnPort(Number(port)) ||
+        !isTransportV2PublicId(returnState)
+      )
+        return { kind: "invalid" };
+      return {
+        kind: "start",
+        provider,
+        nativeSessionId,
+        nativeRequestId,
+        nativeApp: "agent",
+        returnPort: Number(port),
+        returnState,
+        environment
+      };
     }
     return {
       kind: "start",

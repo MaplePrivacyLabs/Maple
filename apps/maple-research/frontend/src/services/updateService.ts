@@ -7,6 +7,7 @@ export interface UpdaterPreferences {
 
 export type UpdateCheckResult =
   | { status: "automatic_updates_disabled" }
+  | { status: "updates_disabled_for_profile" }
   | { status: "up_to_date" }
   | { status: "ready_to_restart"; version: string }
   | {

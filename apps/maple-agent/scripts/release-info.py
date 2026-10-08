@@ -14,7 +14,7 @@ import tarfile
 
 COMPONENT = Path(__file__).resolve().parent.parent
 PUBLIC_FIELDS = (
-    "display_name", "bundle_id", "data_namespace", "api_url", "billing_api_url", "web_url",
+    "display_name", "bundle_id", "data_namespace", "api_url", "billing_api_url", "web_url", "auth_origin",
     "client_id", "pcr_environment", "update_tag_prefix", "prerelease",
 )
 BUILD_FIELDS = set(PUBLIC_FIELDS) | {"profile", "version", "git_revision", "source_sha"}
@@ -37,7 +37,9 @@ def validate_info(profile, info, source_sha=None):
             raise ValueError(f"binary {field} does not match the checked-in release profile")
     if not isinstance(info["prerelease"], bool):
         raise ValueError("binary prerelease marker must be a boolean")
-    if any(not isinstance(info[field], str) for field in BUILD_FIELDS - {"prerelease"}):
+    if info["auth_origin"] is not None and not isinstance(info["auth_origin"], str):
+        raise ValueError("public auth origin must be a string or null")
+    if any(not isinstance(info[field], str) for field in BUILD_FIELDS - {"prerelease", "auth_origin"}):
         raise ValueError("public build identity fields must be strings")
     if not re.fullmatch(r"[0-9a-f]{40}", info["source_sha"]):
         raise ValueError("release binary must record a full source commit")

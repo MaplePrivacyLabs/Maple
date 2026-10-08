@@ -5,8 +5,10 @@ import {
   claimTransportV2DesktopOAuthInitiation,
   clearDesktopOAuthTarget,
   isNativeOAuthRedirect,
+  isCurrentDesktopOAuthTarget,
+  type NativeOAuthInput,
   markTransportV2DesktopOAuth,
-  mintTransportV2NativeAuthDeepLink,
+  mintTransportV2NativeAuthReturn,
   readTransportV2DesktopOAuth,
   type TransportV2DesktopOAuthState
 } from "./desktopOAuthTransport";
@@ -149,7 +151,7 @@ for (const environment of ["production", "development"] as const) {
       markTransportV2DesktopOAuth(state, 1_000);
       const calls: string[][] = [];
 
-      const deepLink = await mintTransportV2NativeAuthDeepLink(
+      const deepLink = await mintTransportV2NativeAuthReturn(
         { ...state, startedAt: 1_000 },
         async (sessionId, requestId) => {
           calls.push([sessionId, requestId]);
@@ -160,7 +162,7 @@ for (const environment of ["production", "development"] as const) {
       );
 
       expect(calls).toEqual([[nativeSessionId, nativeRequestId]]);
-      expect(new URL(deepLink).search).toBe("?handoff_grant=head.payload.c2ln");
+      expect(new URL(deepLink.url).search).toBe("?handoff_grant=head.payload.c2ln");
       expect(readTransportV2DesktopOAuth("github", 1_002)).toBeNull();
       expect(isNativeOAuthRedirect()).toBe(false);
     });
@@ -170,7 +172,7 @@ for (const environment of ["production", "development"] as const) {
       let calls = 0;
 
       await expect(
-        mintTransportV2NativeAuthDeepLink(
+        mintTransportV2NativeAuthReturn(
           { ...state, provider: "google", startedAt: 1_000 },
           async () => {
             calls += 1;
@@ -194,14 +196,14 @@ for (const environment of ["production", "development"] as const) {
           resolve = done;
         });
       };
-      const first = mintTransportV2NativeAuthDeepLink(
+      const first = mintTransportV2NativeAuthReturn(
         target,
         mint,
         () => true,
         () => 1_001
       );
       await expect(
-        mintTransportV2NativeAuthDeepLink(
+        mintTransportV2NativeAuthReturn(
           target,
           mint,
           () => true,
@@ -220,7 +222,7 @@ for (const environment of ["production", "development"] as const) {
         let resolve!: (result: { grant: string }) => void;
         let ownsAccount = true;
         let now = 1_001;
-        const pending = mintTransportV2NativeAuthDeepLink(
+        const pending = mintTransportV2NativeAuthReturn(
           target,
           () =>
             new Promise<{ grant: string }>((done) => {
@@ -255,7 +257,7 @@ for (const environment of ["production", "development"] as const) {
         throw new Error("network lost");
       };
       await expect(
-        mintTransportV2NativeAuthDeepLink(
+        mintTransportV2NativeAuthReturn(
           target,
           mint,
           () => true,
@@ -263,7 +265,7 @@ for (const environment of ["production", "development"] as const) {
         )
       ).rejects.toThrow("network lost");
       await expect(
-        mintTransportV2NativeAuthDeepLink(
+        mintTransportV2NativeAuthReturn(
           target,
           mint,
           () => true,
@@ -296,7 +298,7 @@ for (const environment of ["production", "development"] as const) {
       sessionStorage.setItem("maple_desktop_oauth_pending_v2", JSON.stringify(target));
       let calls = 0;
       await expect(
-        mintTransportV2NativeAuthDeepLink(
+        mintTransportV2NativeAuthReturn(
           target,
           async () => {
             calls += 1;
@@ -320,6 +322,163 @@ for (const environment of ["production", "development"] as const) {
         markTransportV2DesktopOAuth({ ...state, nativeAppVariant: wrongVariant }, 1_001)
       ).toThrow("does not match");
       expect(readTransportV2DesktopOAuth("github", 1_001)).toEqual({ ...state, startedAt: 1_000 });
+    });
+
+    const agent: NativeOAuthInput = {
+      provider: "github",
+      nativeSessionId,
+      nativeRequestId,
+      nativeApp: "agent",
+      returnPort: 43123,
+      returnState: "12".repeat(16),
+      environment
+    };
+
+    test("persists the complete Agent target and claims it only once", () => {
+      markTransportV2DesktopOAuth(agent, 1_000);
+      expect(readTransportV2DesktopOAuth("github", 1_001)).toEqual({ ...agent, startedAt: 1_000 });
+      expect(claimTransportV2DesktopOAuthInitiation(agent, 1_001)).toBe(true);
+      markTransportV2DesktopOAuth(agent, 1_002);
+      expect(claimTransportV2DesktopOAuthInitiation(agent, 1_003)).toBe(false);
+      expect(readTransportV2DesktopOAuth("github", 1_003)?.startedAt).toBe(1_000);
+    });
+
+    test("returns only the fixed Agent URL and caps it at issuer expiry", async () => {
+      markTransportV2DesktopOAuth(agent, 1_000);
+      const target = readTransportV2DesktopOAuth("github", 1_001)!;
+      localStorage.setItem("fixture-credentials", "retained");
+      const calls: string[][] = [];
+      const result = await mintTransportV2NativeAuthReturn(
+        target,
+        async (...pair) => {
+          calls.push(pair);
+          return { grant: "head.payload.c2ln", expires_at: 61 };
+        },
+        () => true,
+        () => 1_001
+      );
+      expect(result).toEqual({
+        url:
+          "http://127.0.0.1:43123/auth/callback?handoff_grant=head.payload.c2ln&return_state=" +
+          "12".repeat(16),
+        expiresAt: 61_000
+      });
+      expect(calls).toEqual([[nativeSessionId, nativeRequestId]]);
+      expect(readTransportV2DesktopOAuth("github", 1_002)).toBeNull();
+      expect(localStorage.getItem("fixture-credentials")).toBe("retained");
+    });
+
+    test("keeps an explicit port throughout the accepted range", async () => {
+      for (const returnPort of [1, 80, 65535]) {
+        const input = { ...agent, returnPort };
+        markTransportV2DesktopOAuth(input, 1_000);
+        const result = await mintTransportV2NativeAuthReturn(
+          { ...input, startedAt: 1_000 },
+          async () => ({
+            grant: "head.payload.c2ln",
+            expires_at: 61
+          }),
+          () => true,
+          () => 1_001
+        );
+        expect(result.url).toBe(
+          `http://127.0.0.1:${returnPort}/auth/callback?handoff_grant=head.payload.c2ln&return_state=${agent.returnState}`
+        );
+      }
+    });
+
+    test("caps Agent return at the pending attempt's deadline", async () => {
+      markTransportV2DesktopOAuth(agent, 1_000);
+      const result = await mintTransportV2NativeAuthReturn(
+        { ...agent, startedAt: 1_000 },
+        async () => ({
+          grant: "head.payload.c2ln",
+          expires_at: 9_000
+        }),
+        () => true,
+        () => 1_001
+      );
+      expect(result.expiresAt).toBe(1_000 + TRANSPORT_V2_PENDING_TTL_MS);
+    });
+
+    for (const replacement of [
+      { ...agent, returnPort: 43124 },
+      { ...agent, returnState: "34".repeat(16) },
+      state
+    ] as NativeOAuthInput[]) {
+      test(`rejects a late mint after replacing Agent with ${replacement.nativeApp === "agent" ? replacement.returnPort + ":" + replacement.returnState : "Research"}`, async () => {
+        markTransportV2DesktopOAuth(agent, 1_000);
+        const target = readTransportV2DesktopOAuth("github", 1_001)!;
+        let resolve!: (value: { grant: string; expires_at: number }) => void;
+        const mint = mintTransportV2NativeAuthReturn(
+          target,
+          () =>
+            new Promise((done) => {
+              resolve = done;
+            }),
+          () => true,
+          () => 1_003
+        );
+        markTransportV2DesktopOAuth(replacement, 1_002);
+        expect(isCurrentDesktopOAuthTarget(target, 1_003)).toBe(false);
+        expect(() => claimTransportV2DesktopOAuthInitiation(agent, 1_003)).toThrow("state changed");
+        clearDesktopOAuthTarget(target);
+        resolve({ grant: "head.payload.c2ln", expires_at: 61 });
+        await expect(mint).rejects.toThrow("changed or expired");
+        expect(readTransportV2DesktopOAuth("github", 1_004)).toEqual({
+          ...replacement,
+          startedAt: 1_002
+        });
+      });
+    }
+
+    test("rejects malformed, mixed-app and wrong-environment stored Agent targets", () => {
+      for (const alteration of [
+        { returnPort: 0 },
+        { returnPort: 65536 },
+        { returnPort: "43123" },
+        { returnPort: 1.5 },
+        { returnState: "AA".repeat(16) },
+        { returnState: "12" },
+        { nativeApp: "unknown" },
+        { nativeApp: undefined },
+        { nativeAppVariant: "dev" },
+        { environment: environment === "development" ? "production" : "development" }
+      ]) {
+        sessionStorage.setItem(
+          "maple_desktop_oauth_pending_v2",
+          JSON.stringify({ ...agent, startedAt: 1_000, ...alteration })
+        );
+        expect(readTransportV2DesktopOAuth("github", 1_001)).toBeNull();
+      }
+    });
+
+    test("does not expose an Agent return without a live safe issuer expiry", async () => {
+      for (const expiry of [
+        undefined,
+        0,
+        1,
+        1.5,
+        Number.NaN,
+        Number.POSITIVE_INFINITY,
+        Number.MAX_SAFE_INTEGER
+      ]) {
+        markTransportV2DesktopOAuth(agent, 1_000);
+        let calls = 0;
+        await expect(
+          mintTransportV2NativeAuthReturn(
+            { ...agent, startedAt: 1_000 },
+            async () => {
+              calls += 1;
+              return { grant: "head.payload.c2ln", expires_at: expiry };
+            },
+            () => true,
+            () => 1_001
+          )
+        ).rejects.toThrow();
+        expect(calls).toBe(1);
+        expect(readTransportV2DesktopOAuth("github", 1_002)).toBeNull();
+      }
     });
   });
 }

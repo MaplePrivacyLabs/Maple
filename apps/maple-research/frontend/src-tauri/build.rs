@@ -2,6 +2,7 @@
 mod ios_app_variant;
 
 fn main() {
+    validate_desktop_dev_profile();
     println!("cargo:rerun-if-env-changed=VITE_OPEN_SECRET_PCR_ENVIRONMENT");
     println!("cargo:rerun-if-env-changed=MAPLE_IOS_VARIANT");
     println!("cargo:rerun-if-env-changed=VITE_MAPLE_APP_VARIANT");
@@ -26,6 +27,58 @@ fn main() {
     if target_os == "ios" {
         ensure_ios_custom_url_scheme();
     }
+}
+
+// A standalone Dev package must not silently mix the production native identity
+// with a Dev renderer (or inherit an operator's iOS/TestFlight origin).
+fn validate_desktop_dev_profile() {
+    println!("cargo:rerun-if-env-changed=MAPLE_DESKTOP_VARIANT");
+    println!("cargo:rerun-if-env-changed=VITE_MAPLE_DESKTOP_VARIANT");
+    println!("cargo:rerun-if-env-changed=TAURI_CONFIG");
+    println!("cargo:rerun-if-changed=desktop-dev-profile.json");
+    let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
+    let config: serde_json::Value = std::env::var("TAURI_CONFIG")
+        .ok()
+        .map(|value| serde_json::from_str(&value).expect("invalid Tauri configuration overlay"))
+        .unwrap_or_default();
+    if std::env::var("MAPLE_DESKTOP_VARIANT").is_err() {
+        assert!(
+            std::env::var("VITE_MAPLE_DESKTOP_VARIANT").is_err(),
+            "use the Research Dev desktop build script"
+        );
+        if target_os == "macos" {
+            assert_ne!(
+                config["identifier"], "cloud.opensecret.maple.dev",
+                "use the Research Dev desktop build script for this bundle"
+            );
+        }
+        return;
+    }
+    assert_eq!(
+        target_os, "macos",
+        "Research Dev desktop packaging currently supports macOS"
+    );
+    let profile: serde_json::Value =
+        serde_json::from_str(include_str!("desktop-dev-profile.json")).unwrap();
+    for (key, expected) in profile["environment"].as_object().unwrap() {
+        println!("cargo:rerun-if-env-changed={key}");
+        assert_eq!(
+            std::env::var(key).ok().as_deref(),
+            expected.as_str(),
+            "Research Dev desktop environment mismatch: {key}"
+        );
+    }
+    assert_eq!(config["identifier"], profile["identifier"]);
+    assert_eq!(config["productName"], profile["productName"]);
+    assert_eq!(
+        config["plugins"]["deep-link"]["desktop"]["schemes"],
+        serde_json::json!([profile["scheme"]])
+    );
+    assert_eq!(
+        config["plugins"]["updater"]["endpoints"],
+        serde_json::json!([])
+    );
+    assert_eq!(config["bundle"]["createUpdaterArtifacts"], false);
 }
 
 #[allow(dead_code)]

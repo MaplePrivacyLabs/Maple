@@ -45,6 +45,8 @@ gpui = { version = "0.2.2", git = "https://github.com/zed-industries/zed", rev =
 gpui-platform = { package = "gpui_platform", version = "0.1.0", git = "https://github.com/zed-industries/zed", rev = "cc053a4a6fa2fd0e8793201ed9099466af1be0b1", features = ["font-kit", "wayland", "x11"], optional = true }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"], optional = true }
 base64 = "0.22"
+httparse = "1"
+rand = "0.8.6"
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -75,6 +77,9 @@ tower-http = { version = "0.6", features = ["cors"], optional = true }
 # `ui::decorations`. gpui cannot answer that question.
 [target.'cfg(target_os = "linux")'.dependencies]
 wayland-client = { version = "0.31", optional = true }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Networking_WinSock"] }
 
 [dev-dependencies]
 parking_lot = "0.12"

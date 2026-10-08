@@ -11,9 +11,18 @@ ID, or PCR trust environment.
 | Dev | Maple Agent Dev | `cloud.opensecret.maple.agent.dev` | `maple-agent-dev` | Hosted Dev API and billing; development PCR |
 | Prod | Maple Agent | `cloud.opensecret.maple.agent` | `maple-agent-prod` | Hosted Prod API and billing; production PCR |
 
-The public endpoints and client ID match `scripts/ci/_common.sh`'s existing
+The API endpoints and client ID match `scripts/ci/_common.sh`'s existing
 Research Dev and Prod service selection. Billing browser pricing and checkout
-return pages retain the existing `https://trymaple.ai` destinations.
+return pages use the unchanged `web_url`: `https://app-dev.trymaple.ai` for Dev
+and `https://trymaple.ai` for Prod.
+
+Packaged Dev selects the separate compiled `auth_origin`,
+`https://auth-dev.maple.ai`, for hosted native sign-in with a loopback return.
+The app waits for browser completion and allows cancellation; no callback URL
+needs to be pasted. Prod and unpackaged builds have `auth_origin: null` and
+retain their existing provider callback paste flow. Hosted sign-in cannot be
+enabled or redirected through an inherited environment variable. Activating
+it for production requires a separately reviewed profile change.
 
 Packaged builds ignore inherited `MAPLE_API_URL`, `MAPLE_BILLING_API_URL`,
 `MAPLE_CLIENT_ID`, and `MAPLE_UPDATE_REPO` overrides. A build fails if a supplied
@@ -37,7 +46,7 @@ Debug. Release packaging accepts only Dev or Prod metadata.
 `maple-agent --build-info` prints one JSON object and exits before changing the
 environment, initializing a GUI/backend, logging, or accessing state. Fields
 are `profile`, `display_name`, `bundle_id`, `data_namespace`, `api_url`,
-`billing_api_url`, `web_url`, `client_id`, `pcr_environment`, `version`, `git_revision`,
+`billing_api_url`, `web_url`, `auth_origin`, `client_id`, `pcr_environment`, `version`, `git_revision`,
 `source_sha`, `update_tag_prefix`, and `prerelease`. `git_revision` is the short
 revision with a possible `-dirty` suffix; `source_sha` is the full source commit.
 Tarball/pure Nix builds without Git report `unknown` for unavailable revisions.

@@ -1,5 +1,7 @@
 import {
+  authEnvironment,
   isNativeAppVariantAllowed,
+  type AuthEnvironment,
   nativeAuthReturnUrl,
   type NativeAppVariant
 } from "@/config/authEnvironment";
@@ -20,18 +22,65 @@ const TRANSPORT_V2_ID_PATTERN = /^[0-9a-f]{32}$/u;
 const COMPACT_GRANT_PATTERN = /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/u;
 const MAX_HANDOFF_GRANT_LENGTH = 4096;
 
-export interface TransportV2DesktopOAuthState {
+type NativeDestination =
+  | {
+      nativeApp?: undefined;
+      nativeAppVariant?: NativeAppVariant;
+      returnPort?: never;
+      returnState?: never;
+      environment?: never;
+    }
+  | {
+      nativeApp: "agent";
+      nativeAppVariant?: never;
+      returnPort: number;
+      returnState: string;
+      environment: AuthEnvironment;
+    };
+
+export type NativeOAuthInput = NativeDestination & {
   provider: DesktopOAuthProvider;
   nativeSessionId: string;
   nativeRequestId: string;
-  nativeAppVariant?: NativeAppVariant;
-  startedAt: number;
-}
+};
+
+export type TransportV2DesktopOAuthState = NativeOAuthInput & { startedAt: number };
+export type NativeAuthReturn = { url: string; expiresAt?: number };
 
 type NativeHandoffGrantIssuer = (
   nativeSessionId: string,
   nativeRequestId: string
-) => Promise<{ grant: string }>;
+) => Promise<{ grant: string; expires_at?: number }>;
+
+export function isAgentReturnPort(value: unknown): value is number {
+  return typeof value === "number" && Number.isInteger(value) && value >= 1 && value <= 65535;
+}
+
+/** Stored destinations are untrusted and must still match this compiled environment. */
+export function isNativeTargetAllowed(value: unknown): boolean {
+  if (!value || typeof value !== "object") return false;
+  const target = value as Record<string, unknown>;
+  if (target.nativeApp === "agent") {
+    return (
+      target.nativeAppVariant === undefined &&
+      target.environment === authEnvironment() &&
+      isAgentReturnPort(target.returnPort) &&
+      isTransportV2PublicId(target.returnState)
+    );
+  }
+  return (
+    target.nativeApp === undefined &&
+    target.returnPort === undefined &&
+    target.returnState === undefined &&
+    target.environment === undefined &&
+    isNativeAppVariantAllowed(target.nativeAppVariant)
+  );
+}
+
+export function nativeAppLabel(target: TransportV2DesktopOAuthState): string {
+  if (target.nativeApp !== "agent") return "Maple";
+  return authEnvironment() === "development" ? "Maple Agent Dev" : "Maple Agent";
+}
 
 function isDesktopOAuthProvider(value: unknown): value is DesktopOAuthProvider {
   return value === "github" || value === "google" || value === "apple";
@@ -47,8 +96,11 @@ function assertTransportV2PublicId(value: unknown, label: string): asserts value
   }
 }
 
-function pendingClaim(state: TransportV2DesktopOAuthState): string {
-  return `${state.provider}:${state.nativeSessionId}:${state.nativeRequestId}${state.nativeAppVariant ? `:${state.nativeAppVariant}` : ""}`;
+function pendingClaim(state: NativeOAuthInput): string {
+  const identity = `${state.provider}:${state.nativeSessionId}:${state.nativeRequestId}`;
+  return state.nativeApp === "agent"
+    ? `${identity}:agent:${state.environment}:${state.returnPort}:${state.returnState}`
+    : `${identity}${state.nativeAppVariant ? `:${state.nativeAppVariant}` : ""}`;
 }
 
 function hasValidTimestamp(startedAt: unknown, now: number): startedAt is number {
@@ -72,14 +124,11 @@ function removeTransportV2PendingState(): void {
   sessionStorage.removeItem(TRANSPORT_V2_MINT_CLAIM_KEY);
 }
 
-export function markTransportV2DesktopOAuth(
-  state: Omit<TransportV2DesktopOAuthState, "startedAt">,
-  now = Date.now()
-): void {
+export function markTransportV2DesktopOAuth(state: NativeOAuthInput, now = Date.now()): void {
   if (!isDesktopOAuthProvider(state.provider)) {
     throw new Error("Desktop authentication provider is missing or invalid");
   }
-  if (!isNativeAppVariantAllowed(state.nativeAppVariant)) {
+  if (!isNativeTargetAllowed(state)) {
     throw new Error("Native application does not match this authentication environment");
   }
   assertTransportV2PublicId(state.nativeSessionId, "native session");
@@ -91,10 +140,7 @@ export function markTransportV2DesktopOAuth(
   const existing = readTransportV2DesktopOAuth(undefined, now);
   const nextState: TransportV2DesktopOAuthState = {
     ...state,
-    startedAt:
-      existing && pendingClaim(existing) === pendingClaim({ ...state, startedAt: now })
-        ? existing.startedAt
-        : now
+    startedAt: existing && pendingClaim(existing) === pendingClaim(state) ? existing.startedAt : now
   };
 
   if (!existing || pendingClaim(existing) !== pendingClaim(nextState)) {
@@ -117,7 +163,7 @@ export function readTransportV2DesktopOAuth(
     const parsed = JSON.parse(encoded) as Partial<TransportV2DesktopOAuthState>;
     if (
       !isDesktopOAuthProvider(parsed.provider) ||
-      !isNativeAppVariantAllowed(parsed.nativeAppVariant) ||
+      !isNativeTargetAllowed(parsed) ||
       !isTransportV2PublicId(parsed.nativeSessionId) ||
       !isTransportV2PublicId(parsed.nativeRequestId) ||
       !hasValidTimestamp(parsed.startedAt, now)
@@ -134,16 +180,11 @@ export function readTransportV2DesktopOAuth(
 }
 
 export function claimTransportV2DesktopOAuthInitiation(
-  expected: Omit<TransportV2DesktopOAuthState, "startedAt">,
+  expected: NativeOAuthInput,
   now = Date.now()
 ): boolean {
   const current = readTransportV2DesktopOAuth(expected.provider, now);
-  if (
-    !current ||
-    current.nativeSessionId !== expected.nativeSessionId ||
-    current.nativeRequestId !== expected.nativeRequestId ||
-    current.nativeAppVariant !== expected.nativeAppVariant
-  ) {
+  if (!current || pendingClaim(current) !== pendingClaim(expected)) {
     throw new Error("Desktop authentication state changed before initiation");
   }
 
@@ -162,10 +203,7 @@ export function isNativeOAuthRedirect(): boolean {
   );
 }
 
-export function buildTransportV2NativeAuthDeepLink(
-  handoffGrant: string,
-  nativeAppVariant?: NativeAppVariant
-): string {
+function assertHandoffGrant(handoffGrant: string): void {
   const grantSegments = handoffGrant.split(".");
   if (
     handoffGrant.length === 0 ||
@@ -176,7 +214,13 @@ export function buildTransportV2NativeAuthDeepLink(
   ) {
     throw new Error("The desktop authentication grant is missing or invalid");
   }
+}
 
+export function buildTransportV2NativeAuthDeepLink(
+  handoffGrant: string,
+  nativeAppVariant?: NativeAppVariant
+): string {
+  assertHandoffGrant(handoffGrant);
   const deepLink = new URL(nativeAuthReturnUrl(nativeAppVariant));
   deepLink.searchParams.set("handoff_grant", handoffGrant);
   return deepLink.toString();
@@ -211,12 +255,12 @@ export function clearDesktopOAuthTarget(expected: TransportV2DesktopOAuthState):
   sessionStorage.removeItem(REDIRECT_TO_NATIVE_KEY);
 }
 
-export async function mintTransportV2NativeAuthDeepLink(
+export async function mintTransportV2NativeAuthReturn(
   handoffTarget: TransportV2DesktopOAuthState,
   mintGrant: NativeHandoffGrantIssuer,
   ownsConfirmation: () => boolean,
   now: () => number = Date.now
-): Promise<string> {
+): Promise<NativeAuthReturn> {
   if (!isCurrentDesktopOAuthTarget(handoffTarget, now()) || !ownsConfirmation()) {
     throw new Error("Native sign-in changed or expired; please restart login in Maple.");
   }
@@ -227,11 +271,39 @@ export async function mintTransportV2NativeAuthDeepLink(
   }
   sessionStorage.setItem(TRANSPORT_V2_MINT_CLAIM_KEY, claim);
   try {
-    const { grant } = await mintGrant(handoffTarget.nativeSessionId, handoffTarget.nativeRequestId);
+    const { grant, expires_at } = await mintGrant(
+      handoffTarget.nativeSessionId,
+      handoffTarget.nativeRequestId
+    );
     if (!isCurrentDesktopOAuthTarget(handoffTarget, now()) || !ownsConfirmation()) {
       throw new Error("Native sign-in changed or expired; please restart login in Maple.");
     }
-    return buildTransportV2NativeAuthDeepLink(grant, handoffTarget.nativeAppVariant);
+    if (handoffTarget.nativeApp === "agent") {
+      assertHandoffGrant(grant);
+      // The SDK reports Unix seconds. Cap the manual return at both the grant
+      // expiry and the pending attempt's deadline; never persist its URL.
+      if (
+        typeof expires_at !== "number" ||
+        !Number.isSafeInteger(expires_at) ||
+        !Number.isSafeInteger(expires_at * 1000)
+      ) {
+        throw new Error("Native authentication grant has no valid expiry");
+      }
+      const expiresAt = Math.min(
+        expires_at * 1000,
+        handoffTarget.startedAt + TRANSPORT_V2_PENDING_TTL_MS
+      );
+      if (expiresAt <= now()) throw new Error("Native authentication grant expired");
+      const query = new URLSearchParams({
+        handoff_grant: grant,
+        return_state: handoffTarget.returnState
+      });
+      return {
+        url: `http://127.0.0.1:${handoffTarget.returnPort}/auth/callback?${query}`,
+        expiresAt
+      };
+    }
+    return { url: buildTransportV2NativeAuthDeepLink(grant, handoffTarget.nativeAppVariant) };
   } finally {
     clearDesktopOAuthTarget(handoffTarget);
   }

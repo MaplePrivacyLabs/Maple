@@ -1,6 +1,7 @@
 /// <reference types="vite/client" />
 
 interface ImportMetaEnv {
+  readonly VITE_MAPLE_DESKTOP_VARIANT?: "dev";
   readonly VITE_MAPLE_APP_VARIANT?: "production" | "dev";
   readonly VITE_MAPLE_DEV_AUTH_ORIGIN?: string;
   readonly VITE_STOREKIT_EXPERIMENT?: string;

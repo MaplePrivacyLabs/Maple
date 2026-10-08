@@ -74,6 +74,11 @@ just desktop-dev  # Tauri desktop, including Agent Mode and native features
 pinned ONNX Runtime and applies a local Tauri configuration overlay when one is
 present.
 
+For a separately installed macOS package targeting the standalone Auth Dev site,
+use the [Research Dev desktop package](docs/research-dev-desktop.md). It has its
+own bundle identity, callback scheme, storage, and disabled updater; the ordinary
+Local workflow and iOS Dev TestFlight profile remain separate.
+
 ## API configuration
 
 `apps/maple-research/frontend/.env.example` documents Maple's public configuration surface:

@@ -1,0 +1,16 @@
+{
+  "identifier": "cloud.opensecret.maple.dev",
+  "productName": "Maple Research Dev",
+  "scheme": "cloud.opensecret.maple.dev",
+  "environment": {
+    "MAPLE_DESKTOP_VARIANT": "dev",
+    "VITE_MAPLE_DESKTOP_VARIANT": "dev",
+    "VITE_MAPLE_APP_VARIANT": "dev",
+    "VITE_MAPLE_DEV_AUTH_ORIGIN": "https://auth-dev.maple.ai",
+    "VITE_OPEN_SECRET_API_URL": "https://enclave.secretgpt.ai",
+    "VITE_OPEN_SECRET_PCR_ENVIRONMENT": "development",
+    "VITE_CLIENT_ID": "ba5a14b5-d915-47b1-b7b1-afda52bc5fc6",
+    "VITE_OS_FLAGS_BASE_URL": "https://flags-dev.opensecret.cloud",
+    "VITE_MAPLE_BILLING_API_URL": "https://billing-dev.opensecret.cloud"
+  }
+}

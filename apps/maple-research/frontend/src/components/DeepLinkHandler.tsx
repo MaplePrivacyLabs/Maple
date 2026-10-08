@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useOpenSecret } from "@mapleai/sdk";
 import { isTauri } from "@/utils/platform";
 import { listen } from "@tauri-apps/api/event";
+import { getCurrent } from "@tauri-apps/plugin-deep-link";
 import { getSafeInternalRedirect } from "@/utils/internalRedirect";
 import {
   authorizeNativeOAuthCallback,
@@ -23,8 +24,9 @@ import {
 
 export function DeepLinkHandler({
   tauri = isTauri(),
-  appVariant = mapleAppVariant()
-}: { tauri?: boolean; appVariant?: MapleAppVariant } = {}) {
+  appVariant = mapleAppVariant(),
+  desktopDev = import.meta.env.VITE_MAPLE_DESKTOP_VARIANT === "dev"
+}: { tauri?: boolean; appVariant?: MapleAppVariant; desktopDev?: boolean } = {}) {
   const os = useOpenSecret();
   const { showNotification } = useNotification();
   const isAuthenticatedRef = useRef(false);
@@ -71,10 +73,8 @@ export function DeepLinkHandler({
         if (tauri) {
           console.log("[Deep Link] Setting up handler for Tauri app");
 
-          // Listen for the custom event we emit from Rust
-          unlisten = await listen<string>("deep-link-received", async (event) => {
+          const handleUrl = async (url: string) => {
             if (disposed) return;
-            const url = event.payload;
             let isAuthenticationCallback = false;
             console.log("[Deep Link] Received callback");
 
@@ -212,13 +212,23 @@ export function DeepLinkHandler({
                 console.error("[Deep Link] Failed to process deep link", error);
               }
             }
-          });
+          };
+          // Subscribe before reading the launch URL so callbacks during startup
+          // use the same account/attempt fence as already-running returns.
+          unlisten = await listen<string>("deep-link-received", (event) =>
+            handleUrl(event.payload)
+          );
 
           if (disposed) {
             unlisten();
             return;
           }
 
+          if (desktopDev && appVariant === "dev") {
+            for (const url of (await getCurrent()) ?? []) {
+              await handleUrl(url);
+            }
+          }
           console.log("[Deep Link] Handler setup complete");
         }
       } catch (error) {
@@ -237,7 +247,7 @@ export function DeepLinkHandler({
       resolveConfirmation(false);
       if (unlisten) unlisten();
     };
-  }, [appVariant, confirmAccount, resolveConfirmation, showNotification, tauri]);
+  }, [appVariant, confirmAccount, desktopDev, resolveConfirmation, showNotification, tauri]);
 
   return confirmation ? (
     <NativeOAuthAccountConfirmation account={confirmation} onDecision={resolveConfirmation} />

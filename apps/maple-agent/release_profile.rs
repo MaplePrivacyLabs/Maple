@@ -13,6 +13,7 @@ pub struct ReleaseProfile {
     pub api_url: String,
     pub billing_api_url: String,
     pub web_url: String,
+    pub auth_origin: Option<String>,
     pub client_id: String,
     pub pcr_environment: String,
     pub update_tag_prefix: String,
@@ -61,6 +62,12 @@ pub fn profiles() -> Result<BTreeMap<String, ReleaseProfile>, String> {
                 } else {
                     "https://trymaple.ai"
                 }
+            || profile.auth_origin.as_deref()
+                != if channel == "dev" {
+                    Some("https://auth-dev.maple.ai")
+                } else {
+                    None
+                }
             || profile.client_id != "ba5a14b5-d915-47b1-b7b1-afda52bc5fc6"
         {
             return Err(format!(
@@ -99,6 +106,9 @@ pub fn select_profile(
         profile.display_name = "Maple Agent Debug".into();
         profile.bundle_id = "cloud.opensecret.maple.agent.debug".into();
         profile.data_namespace = "maple-agent".into();
+        // Hosted return is admitted only by the packaged Dev profile. Local
+        // environment overrides must not opt an unpackaged client into it.
+        profile.auth_origin = None;
         // Local/MDE builds keep the existing explicit PCR override. Invalid
         // values still fail runtime validation rather than being normalized.
         if let Some(pcr) = configured_pcr {
@@ -157,6 +167,16 @@ pub fn emit(manifest_path: &str, helper_path: &str, app: bool) {
         let literal = serde_json::to_string(value).expect("profile string");
         constants.push_str(&format!("pub const {name}: &str = {literal};\n"));
     }
+    let auth_origin = match profile.auth_origin.as_deref() {
+        Some(origin) => format!(
+            "Some({})",
+            serde_json::to_string(origin).expect("profile auth origin")
+        ),
+        None => "None".to_string(),
+    };
+    constants.push_str(&format!(
+        "pub const AUTH_ORIGIN: Option<&str> = {auth_origin};\n"
+    ));
     constants.push_str(&format!(
         "pub const PRERELEASE: bool = {};\n",
         profile.prerelease
@@ -183,6 +203,11 @@ mod tests {
         assert_ne!(dev.billing_api_url, prod.billing_api_url);
         assert_eq!(dev.web_url, "https://app-dev.trymaple.ai");
         assert_eq!(prod.web_url, "https://trymaple.ai");
+        assert_eq!(
+            dev.auth_origin.as_deref(),
+            Some("https://auth-dev.maple.ai")
+        );
+        assert_eq!(prod.auth_origin, None);
         assert_ne!(dev.pcr_environment, prod.pcr_environment);
         assert_ne!(dev.update_tag_prefix, prod.update_tag_prefix);
         assert!(dev.prerelease);
@@ -212,5 +237,6 @@ mod tests {
         assert_eq!(profile.data_namespace, "maple-agent");
         assert_eq!(profile.pcr_environment, "development");
         assert_eq!(profile.bundle_id, "cloud.opensecret.maple.agent.debug");
+        assert_eq!(profile.auth_origin, None);
     }
 }
