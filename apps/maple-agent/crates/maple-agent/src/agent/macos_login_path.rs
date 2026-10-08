@@ -399,7 +399,12 @@ for raw_line in sys.stdin:
             "negative control unexpectedly resolved the fixture from launchd PATH"
         );
 
-        let recovered = resolve_login_shell_search_paths().await;
+        // This checks Goose resolution, not shell startup latency; allow for busy CI runners
+        // as the direct resolution test above does.
+        let recovered =
+            query_login_shell_search_paths(&selected_login_shell(), Duration::from_secs(10))
+                .await
+                .expect("the fixture login shell should report its PATH");
         assert_eq!(recovered[0], command_bin.to_string_lossy());
         assert_eq!(recovered[1], interpreter_bin.to_string_lossy());
         crate::agent::configure_embedded_goose(
