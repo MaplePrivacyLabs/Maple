@@ -82,6 +82,31 @@ function getAppleAuthorizationNonce(authUrl: string): string {
   return nonce;
 }
 
+function getAppleAuthorizationClientId(authUrl: string): string {
+  const invalid = () => new Error("Apple authorization response did not contain a valid client ID");
+  let url: URL;
+  try {
+    url = new URL(authUrl);
+  } catch {
+    throw invalid();
+  }
+  const clientIds = url.searchParams.getAll("client_id");
+  const clientId = clientIds[0];
+  if (
+    url.origin !== "https://appleid.apple.com" ||
+    url.pathname !== "/auth/authorize" ||
+    url.username ||
+    url.password ||
+    url.hash ||
+    clientIds.length !== 1 ||
+    !clientId ||
+    !/^[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+$/u.test(clientId)
+  ) {
+    throw invalid();
+  }
+  return clientId;
+}
+
 export function AppleAuthProvider({
   onSuccess,
   onError,
@@ -142,6 +167,7 @@ export function AppleAuthProvider({
     const initiateResult = await os.initiateAppleAuth(inviteCode || "");
     if (!active.current || (target && !isCurrentDesktopOAuthTarget(target))) return;
     const nonce = getAppleAuthorizationNonce(initiateResult.auth_url);
+    const clientId = getAppleAuthorizationClientId(initiateResult.auth_url);
 
     const state = initiateResult.state || "";
     sessionStorage.setItem("apple_auth_state", state);
@@ -151,7 +177,7 @@ export function AppleAuthProvider({
     }
 
     window.AppleID.auth.init({
-      clientId: "cloud.opensecret.maple.services",
+      clientId,
       scope: "name email",
       redirectURI: window.location.origin + "/auth/apple/callback",
       state,

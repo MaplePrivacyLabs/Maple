@@ -120,7 +120,7 @@ describe("hosted Apple popup and shared native confirmation", () => {
       Object.defineProperty(globalThis, key, { configurable: true, writable: true, value });
     initiate = mock(async () => ({
       state: `fixture-state-${++stateNumber}`,
-      auth_url: `https://appleid.apple.com/auth/authorize?nonce=${"aa".repeat(32)}`
+      auth_url: `https://appleid.apple.com/auth/authorize?client_id=cloud.opensecret.maple.services&nonce=${"aa".repeat(32)}`
     }));
     callback = mock(async () => {});
     mint = mock(async () => ({ grant: "aaa.bbb.ccc", expires_at: 42 }));
@@ -185,6 +185,46 @@ describe("hosted Apple popup and shared native confirmation", () => {
     expect(callback).not.toHaveBeenCalled();
     expect(mint).not.toHaveBeenCalled();
   });
+
+  test("uses the backend's Dev Services ID without changing the callback or native target", async () => {
+    initiate.mockImplementationOnce(async () => ({
+      state: "fixture-state-1",
+      auth_url: `https://appleid.apple.com/auth/authorize?client_id=cloud.opensecret.maple.dev.services&nonce=${"aa".repeat(32)}`
+    }));
+    await renderApple();
+    expect(init).toHaveBeenCalledWith({
+      clientId: "cloud.opensecret.maple.dev.services",
+      scope: "name email",
+      redirectURI: "https://auth.example.test/auth/apple/callback",
+      state: "fixture-state-1",
+      nonce: "aa".repeat(32),
+      usePopup: true
+    });
+    expect(readTransportV2DesktopOAuth("apple")).toEqual(target);
+    act(() => button("Sign in with Apple").props.onClick());
+    expect(signIn).toHaveBeenCalledTimes(1);
+  });
+
+  for (const authUrl of [
+    "not a URL",
+    `https://example.test/auth/authorize?client_id=cloud.opensecret.maple.services&nonce=${"aa".repeat(32)}`,
+    `https://appleid.apple.com/auth/authorize?nonce=${"aa".repeat(32)}`,
+    `https://appleid.apple.com/auth/authorize?client_id=cloud.maple&client_id=cloud.maple&nonce=${"aa".repeat(32)}`,
+    `https://appleid.apple.com/auth/authorize?client_id=cloud%20maple&nonce=${"aa".repeat(32)}`
+  ]) {
+    test(`rejects invalid Apple popup configuration: ${authUrl}`, async () => {
+      initiate.mockImplementationOnce(async () => ({
+        state: "fixture-state-1",
+        auth_url: authUrl
+      }));
+      await renderApple();
+      expect(button("Try again")).toBeDefined();
+      expect(init).not.toHaveBeenCalled();
+      expect(signIn).not.toHaveBeenCalled();
+      expect(callback).not.toHaveBeenCalled();
+      expect(mint).not.toHaveBeenCalled();
+    });
+  }
 
   for (const error of [
     "popup_blocked_by_browser",

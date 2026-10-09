@@ -7,7 +7,7 @@ describe("hosted auth UI with the real SDK context", () => {
   for (const environment of ["production", "development"]) {
     for (const [fixture, cases] of [
       ["AuthSite", 25],
-      ["HostedAppleSignIn", 9]
+      ["HostedAppleSignIn", 15]
     ] as const) {
       test(`${environment} ${fixture} runs every case without shared module mocks`, () => {
         // Keep global DOM and storage fixtures isolated while making every real-context

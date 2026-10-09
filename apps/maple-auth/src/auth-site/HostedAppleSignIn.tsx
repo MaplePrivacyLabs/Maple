@@ -3,6 +3,7 @@ import { useOpenSecret } from "@mapleai/sdk";
 import { Button } from "@/components/ui/button";
 import { HostedNativeSignInConfirmation } from "@/components/HostedNativeSignInConfirmation";
 import {
+  getAppleAuthorizationClientId,
   getAppleAuthorizationNonce,
   getAppleAuthError,
   isAppleAuthCancellation
@@ -63,7 +64,7 @@ export function HostedAppleSignIn({ target }: { target: TransportV2DesktopOAuthS
       const apple = window.AppleID;
       if (!apple) throw new Error("Apple sign-in did not load");
       apple.auth.init({
-        clientId: "cloud.opensecret.maple.services",
+        clientId: getAppleAuthorizationClientId(response.auth_url),
         scope: "name email",
         redirectURI,
         state: response.state,

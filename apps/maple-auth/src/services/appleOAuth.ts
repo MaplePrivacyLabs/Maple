@@ -52,3 +52,28 @@ export function getAppleAuthorizationNonce(authUrl: string): string {
   }
   return nonce;
 }
+
+export function getAppleAuthorizationClientId(authUrl: string): string {
+  const invalid = () => new Error("Apple authorization response did not contain a valid client ID");
+  let url: URL;
+  try {
+    url = new URL(authUrl);
+  } catch {
+    throw invalid();
+  }
+  const clientIds = url.searchParams.getAll("client_id");
+  const clientId = clientIds[0];
+  if (
+    url.origin !== "https://appleid.apple.com" ||
+    url.pathname !== "/auth/authorize" ||
+    url.username ||
+    url.password ||
+    url.hash ||
+    clientIds.length !== 1 ||
+    !clientId ||
+    !/^[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+$/u.test(clientId)
+  ) {
+    throw invalid();
+  }
+  return clientId;
+}
