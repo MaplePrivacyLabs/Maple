@@ -203,6 +203,33 @@ pub enum Delivery {
     NextTurn,
 }
 
+/// Token totals of a session.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct TokenTotals {
+    pub input: u64,
+    pub output: u64,
+    pub cache_read: u64,
+    pub cache_write: u64,
+    /// The four above together.
+    pub total: u64,
+}
+
+/// What a session holds, over every entry and branch, as Pi's session stats count it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SessionStats {
+    pub session_file: Option<PathBuf>,
+    pub session_id: String,
+    pub user_messages: usize,
+    pub assistant_messages: usize,
+    pub tool_calls: usize,
+    pub tool_results: usize,
+    pub total_messages: usize,
+    /// Every response's usage, a tool's own and summaries' included.
+    pub tokens: TokenTotals,
+    pub cost: f64,
+    pub context_usage: Option<ContextUsage>,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ContextUsage {
     pub tokens: u64,
@@ -891,6 +918,70 @@ impl AgentSession {
         } else {
             self.core.append_now(message);
         }
+    }
+
+    /// Message counts and token and cost totals over the whole session.
+    pub fn session_stats(&self) -> SessionStats {
+        let mut stats = SessionStats {
+            session_file: None,
+            session_id: self.session_id(),
+            user_messages: 0,
+            assistant_messages: 0,
+            tool_calls: 0,
+            tool_results: 0,
+            total_messages: 0,
+            tokens: TokenTotals::default(),
+            cost: 0.0,
+            context_usage: self.context_usage(),
+        };
+        fn add(usage: &pi_ai::Usage, stats: &mut SessionStats) {
+            stats.tokens.input += usage.input;
+            stats.tokens.output += usage.output;
+            stats.tokens.cache_read += usage.cache_read;
+            stats.tokens.cache_write += usage.cache_write;
+            stats.cost += usage.cost.total;
+        }
+        self.with_session(|session| {
+            stats.session_file = session.session_file().map(Path::to_path_buf);
+            for entry in session.entries() {
+                let message = match &entry.kind {
+                    EntryKind::Compaction {
+                        usage: Some(usage), ..
+                    }
+                    | EntryKind::BranchSummary {
+                        usage: Some(usage), ..
+                    } => {
+                        add(usage, &mut stats);
+                        continue;
+                    }
+                    // The prompt is kept in the transcript here, not counted as Pi's.
+                    EntryKind::Message {
+                        message: SessionMessage::Llm(Message::System(_)),
+                    } => continue,
+                    EntryKind::Message { message } => message,
+                    _ => continue,
+                };
+                stats.total_messages += 1;
+                match message {
+                    SessionMessage::Llm(Message::User(_)) => stats.user_messages += 1,
+                    SessionMessage::Llm(Message::Assistant(assistant)) => {
+                        stats.assistant_messages += 1;
+                        stats.tool_calls += assistant.tool_calls().count();
+                        add(&assistant.usage, &mut stats);
+                    }
+                    SessionMessage::Llm(Message::ToolResult(result)) => {
+                        stats.tool_results += 1;
+                        if let Some(usage) = &result.usage {
+                            add(usage, &mut stats);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        });
+        let tokens = &mut stats.tokens;
+        tokens.total = tokens.input + tokens.output + tokens.cache_read + tokens.cache_write;
+        stats
     }
 
     /// Stop the user shell commands that are running.

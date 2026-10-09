@@ -36,7 +36,8 @@ pub mod trust;
 
 pub use agent_session::{
     AgentSession, AgentSessionError, AgentSessionEvent, AgentSessionOptions, BashCommandOptions,
-    CompactionReason, ContextUsage, Delivery, PromptOptions, PromptOutcome, StreamingBehavior,
+    CompactionReason, ContextUsage, Delivery, PromptOptions, PromptOutcome, SessionStats,
+    StreamingBehavior, TokenTotals,
 };
 pub use bash_executor::BashResult;
 pub use messages::SessionMessage;

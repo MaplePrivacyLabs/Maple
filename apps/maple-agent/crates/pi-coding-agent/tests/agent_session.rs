@@ -895,3 +895,58 @@ async fn images_a_tool_returns_are_made_to_fit_before_the_model_sees_them() {
     assert_eq!(sent.width(), 2000);
     assert!(pi_ai::content_text(&result.content).contains("[Image: original 3000x10"));
 }
+
+#[tokio::test]
+async fn session_stats_count_messages_and_add_up_usage() {
+    let harness = Harness::new();
+    let usage = |input, output, cost| pi_ai::Usage {
+        input,
+        output,
+        cache_read: 5,
+        cost: pi_ai::Cost {
+            total: cost,
+            ..pi_ai::Cost::default()
+        },
+        ..pi_ai::Usage::default()
+    };
+    let mut call = faux_message(vec![pi_ai::faux::faux_tool_call(
+        "echo",
+        json!({ "text": "hi" }),
+    )]);
+    call.usage = usage(100, 10, 0.5);
+    let mut reply = faux_message(vec![AssistantContent::text("done")]);
+    reply.usage = usage(120, 20, 0.25);
+    harness.faux.push_reply(call);
+    harness.faux.push_reply(reply);
+    let session = harness
+        .session_with(|options| options.tools = vec![echo_tool(true)])
+        .await;
+    session
+        .prompt("say hi", PromptOptions::default())
+        .await
+        .unwrap();
+
+    let stats = session.session_stats();
+    assert_eq!(stats.session_id, session.session_id());
+    assert_eq!(
+        (
+            stats.user_messages,
+            stats.assistant_messages,
+            stats.tool_calls,
+            stats.tool_results,
+            stats.total_messages
+        ),
+        (1, 2, 1, 1, 4)
+    );
+    assert_eq!(
+        stats.tokens,
+        pi_coding_agent::TokenTotals {
+            input: 220,
+            output: 30,
+            cache_read: 10,
+            cache_write: 0,
+            total: 260,
+        }
+    );
+    assert!((stats.cost - 0.75).abs() < 1e-9);
+}
