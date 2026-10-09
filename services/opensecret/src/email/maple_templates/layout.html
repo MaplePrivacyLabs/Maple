@@ -13,6 +13,7 @@
   body { margin:0; padding:0; -webkit-font-smoothing:antialiased; -webkit-text-size-adjust:100%; }
   a { text-decoration:none; }
   img { border:0; outline:none; }
+  .code-lg { font-size:34px !important; letter-spacing:9px !important; }
   @media (max-width:600px) {
     .card  { padding:24px 20px !important; border-radius:20px !important; }
     .outer { padding:20px 10px 0 !important; }
@@ -62,6 +63,9 @@
   <table role="presentation" class="bg" width="100%" cellpadding="0" cellspacing="0" border="0" bgcolor="#efeeed" style="background:#efeeed;">
     <tr>
       <td class="outer" align="center" style="padding:36px 16px 0;">
+        <!--[if mso]>
+        <table role="presentation" align="center" width="600" cellpadding="0" cellspacing="0" border="0"><tr><td width="600">
+        <![endif]-->
         <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="width:100%;max-width:600px;">
 
           <tr><td style="padding:0 4px 18px;">
@@ -83,13 +87,16 @@
           </td></tr>
 
           <tr><td style="padding:0;line-height:0;font-size:0;">
-            <img class="wm-light" src="{{ASSET_BASE}}footer-watermark-light.png" width="100%" alt="" style="display:block;width:100%;max-width:600px;height:auto;">
+            <img class="wm-light" src="{{ASSET_BASE}}footer-watermark-light.png" width="600" alt="" style="display:block;width:100%;max-width:600px;height:auto;">
             <div class="wm-dark" style="display:none;max-height:0;overflow:hidden;mso-hide:all;">
-              <img src="{{ASSET_BASE}}footer-watermark-dark.png" width="100%" alt="" style="display:block;width:100%;max-width:600px;height:auto;">
+              <img src="{{ASSET_BASE}}footer-watermark-dark.png" width="600" alt="" style="display:block;width:100%;max-width:600px;height:auto;">
             </div>
           </td></tr>
 
         </table>
+        <!--[if mso]>
+        </td></tr></table>
+        <![endif]-->
       </td>
     </tr>
   </table>
