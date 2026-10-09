@@ -109,10 +109,10 @@ reports an EIF input or approval JSON edit, as routed to the respective job.
 This intentionally trusts same-repository PR code to write the
 FlakeHub cache; it does not grant signing or deployment authority.
 Trusted jobs use the organization-configured GitHub-hosted runner
-`ubuntu-24.04-arm64-8core` (Ubuntu 24.04 ARM64, 8 CPU, 32 GB RAM) and allow
+`ubuntu-24.04-arm64-8core-v2` (Ubuntu 24.04 ARM64, 8 CPU, 32 GB RAM) and allow
 180 minutes for cold kernel builds. Its runner group must allow the public
 Maple repository, with capacity for both dev/prod jobs. The existing
-`ubuntu-latest-8-cores` runner is x86-64, not a substitute. Unprivileged jobs
+`ubuntu-latest-8-cores-v2` runner is x86-64, not a substitute. Unprivileged jobs
 retain the standard `ubuntu-24.04-arm` runner and their 90-minute limit.
 
 The trusted job also explicitly enables the GitHub cache and `diff-store: true`,
