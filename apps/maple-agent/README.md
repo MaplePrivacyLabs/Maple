@@ -102,7 +102,9 @@ has an independent dependency graph.
 - Message queue: Enter during a run queues the message for the next turn,
   Ctrl+Enter (Cmd+Enter) steers it into the current turn. Queued messages
   can be sent now, edited in the composer (the message keeps its place in
-  the queue), or removed.
+  the queue), or removed. Queued messages are kept on the host and survive
+  its restart; a client that disconnects mid-edit releases its hold on the
+  queue.
 - Sidebar search filters tasks and projects by name; Escape clears it.
 - Up and Down in an empty composer recall prompts sent in this window.
 - Optional composer-only Vim editing provides Normal, Insert, and characterwise

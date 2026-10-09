@@ -358,7 +358,14 @@ sockets, and nothing survives a dropped socket. Permission answers go
 straight to the runtime, which removes the pending request on the first
 answer; a second answer to the same request fails as a host error ("No
 pending Agent Mode permission request found"). Queue edits and steering
-are last write wins with the host authoritative.
+are last write wins with the host authoritative. A queued-message edit the
+client began and did not end is ended when its socket closes, so the task's
+queue promotes again; the runtime also drops a hold older than ten minutes.
+Queued messages themselves are kept on the host: each account's queues are
+mirrored to `<local data>/agent/accounts/<scope>/desktop_queue.json` after
+every change, loaded when the account's runtime starts, and promoted at the
+next run end, so they survive the host restarting. Edit holds are not
+mirrored; a loaded queue starts with none.
 
 ### Handshakes
 
@@ -621,6 +628,7 @@ at once. At launch, hosting starts when the setting is on.
 | `<local data>/remote/accounts/<scope>/devices.json` | host | Devices paired into this account on this host |
 | `<local data>/remote/accounts/<scope>/pending_pairing.json` | host | The pairing code published for this account, until used or expired, 0600 |
 | `<local data>/agent/accounts/<scope>/hosts.json` | client | Hosts this account paired with: key, name, addresses |
+| `<local data>/agent/accounts/<scope>/desktop_queue.json` | host | Messages queued per task, mirrored from memory on every change so they survive a host restart; absent when nothing is queued, 0600 |
 | `<config>/agent/accounts/<scope>/config.json` | host | Existing `AgentConfig`, including session defaults |
 | `<config>/settings.json` | client | Client settings, including `allow_remote_connections`, `last_task_host`, and per-host UI state under `hosts` |
 
@@ -773,6 +781,9 @@ Pairing codes and private keys are never logged.
 | Stream credit | 16 initial, 8 refill | `streams::INITIAL_CREDIT`, `CREDIT_REFILL` |
 | Kept snapshots per connection | 8 | `server::MAX_KEPT_SNAPSHOTS` |
 | Watched roots per connection | 64 | `server::MAX_WATCHED_ROOTS` |
+| Open queued edits per connection | 64 | `server::MAX_OPEN_QUEUE_EDITS` |
+| Queued edit hold | 10 min | `MAX_DESKTOP_QUEUE_EDIT_HOLD` in `maple-agent` `agent.rs` |
+| Mirrored queue file | 64 tasks, 64 MiB | `MAX_PERSISTED_DESKTOP_QUEUE_SESSIONS`, `MAX_DESKTOP_QUEUE_FILE_BYTES` in `maple-agent` `agent.rs` |
 | Timeline page | 200 items, 1 MiB | `HostServerConfig` |
 | Close flush | 2 s | `server::CLOSE_FLUSH_TIMEOUT` |
 | Lease | 45 s, checked every 10 s | `HostServerConfig` |

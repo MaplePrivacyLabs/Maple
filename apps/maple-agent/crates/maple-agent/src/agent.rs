@@ -275,6 +275,17 @@ const MAX_DESKTOP_QUEUE_TEXT_BYTES: usize = 32 * 1024;
 /// stuck mid-edit, a desktop window that never answered), so a stale hold
 /// cannot strand the queue for the rest of the run.
 const MAX_DESKTOP_QUEUE_EDIT_HOLD: Duration = Duration::from_secs(10 * 60);
+/// File below an account's local data directory mirroring its desktop
+/// queues, so queued messages survive a host restart.
+const DESKTOP_QUEUE_FILE_NAME: &str = "desktop_queue.json";
+const DESKTOP_QUEUE_FILE_VERSION: u32 = 1;
+/// Tasks whose queue the account file keeps. Beyond this the tasks with
+/// the most recently staged messages win.
+const MAX_PERSISTED_DESKTOP_QUEUE_SESSIONS: usize = 64;
+/// Largest account queue file read back. Every item is bounded by
+/// `MAX_DESKTOP_QUEUE_TEXT_BYTES` and every task by `MAX_DESKTOP_QUEUE_ITEMS`,
+/// so a file past this was not written by this code.
+const MAX_DESKTOP_QUEUE_FILE_BYTES: u64 = 64 * 1024 * 1024;
 const MAPLE_IMAGE_ATTACHMENTS_OPERATION: &str = "mapleImageAttachments";
 
 /// Maple's context-limit rule: both fields present and equal is the value,
@@ -385,6 +396,288 @@ fn empty_desktop_queue_snapshot() -> AgentDesktopQueueSnapshot {
     AgentDesktopQueueSnapshot {
         revision: 0,
         items: Vec::new(),
+    }
+}
+
+/// The desktop message queues of every task, keyed by account scope and
+/// task id. The map is the working copy. Each account's non-empty queues
+/// are mirrored to a private file under its local data directory after
+/// every change to the items, so a queued message survives the host
+/// restarting; edit holds are not mirrored, so a loaded queue starts with
+/// none.
+struct DesktopQueues {
+    paths: AgentPathLayout,
+    map: Mutex<DesktopQueueMap>,
+}
+
+type DesktopQueueMap = HashMap<(String, String), DesktopSessionQueue>;
+
+impl DesktopQueues {
+    fn new(paths: AgentPathLayout) -> Self {
+        Self {
+            paths,
+            map: Mutex::new(HashMap::new()),
+        }
+    }
+
+    fn account_dir(&self, account_scope: &str) -> PathBuf {
+        self.paths
+            .local_data_root
+            .join("accounts")
+            .join(account_scope)
+    }
+
+    fn file_path(&self, account_scope: &str) -> PathBuf {
+        self.account_dir(account_scope)
+            .join(DESKTOP_QUEUE_FILE_NAME)
+    }
+
+    /// Mirror the account's queues to disk. Called with the map locked, so
+    /// the file always reflects one consistent state and two writers never
+    /// race. An account with nothing queued has no file. A failed write is
+    /// logged: the in-memory queue stays correct for this process.
+    fn persist_account(&self, map: &DesktopQueueMap, account_scope: &str) {
+        let file = persisted_desktop_queue_file(map, account_scope);
+        let path = self.file_path(account_scope);
+        let result = if file.sessions.is_empty() {
+            match fs::remove_file(&path) {
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                other => other,
+            }
+        } else {
+            let account_dir = self.account_dir(account_scope);
+            fs::create_dir_all(&account_dir).and_then(|()| {
+                set_owner_only_dir_permissions(&account_dir);
+                crate::private_file::write_private_json(&path, &file)
+            })
+        };
+        if let Err(error) = result {
+            log::warn!(
+                "Queued Agent messages were not saved to {}: {error}",
+                path.display()
+            );
+        }
+    }
+
+    /// Bring the account's mirrored queues into the map, for tasks that
+    /// have nothing queued in memory. Each message is rebuilt from its text
+    /// and attachments; an attachment whose image is gone is kept by name
+    /// only. No hold is restored.
+    async fn load_account(&self, account_scope: &str) {
+        let path = self.file_path(account_scope);
+        let file = match read_persisted_desktop_queue_file(&path) {
+            Ok(Some(file)) => file,
+            Ok(None) => return,
+            Err(error) => {
+                log::warn!(
+                    "Queued Agent messages were not loaded from {}: {error}",
+                    path.display()
+                );
+                return;
+            }
+        };
+        let store = AgentAttachmentStore::new(self.account_dir(account_scope));
+        let mut map = self.map.lock().await;
+        for session in file
+            .sessions
+            .into_iter()
+            .take(MAX_PERSISTED_DESKTOP_QUEUE_SESSIONS)
+        {
+            if session.session_id.is_empty() {
+                continue;
+            }
+            let key = desktop_queue_key(account_scope, &session.session_id);
+            if map.get(&key).is_some_and(|queue| !queue.items.is_empty()) {
+                continue;
+            }
+            let items = session
+                .items
+                .into_iter()
+                .filter(|item| {
+                    !item.queue_id.is_empty()
+                        && !item.message_id.is_empty()
+                        && item.text.len() <= MAX_DESKTOP_QUEUE_TEXT_BYTES
+                })
+                .take(MAX_DESKTOP_QUEUE_ITEMS)
+                .map(|item| restore_persisted_queue_item(&store, &session.session_id, item))
+                .collect::<VecDeque<_>>();
+            if items.is_empty() {
+                continue;
+            }
+            let queue = map.entry(key).or_insert_with(|| DesktopSessionQueue {
+                revision: 0,
+                items: VecDeque::new(),
+                editing: None,
+            });
+            queue.items = items;
+            queue.editing = None;
+            queue.revision = queue.revision.saturating_add(1);
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PersistedDesktopQueueFile {
+    version: u32,
+    sessions: Vec<PersistedDesktopSessionQueue>,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PersistedDesktopSessionQueue {
+    session_id: String,
+    items: Vec<PersistedDesktopQueueItem>,
+}
+
+/// One queued message as kept on disk: what the client shows, plus what
+/// is needed to rebuild the provider message. The message itself is not
+/// stored; `restore_persisted_queue_item` rebuilds it.
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PersistedDesktopQueueItem {
+    queue_id: String,
+    message_id: String,
+    text: String,
+    #[serde(default)]
+    attachments: Vec<AgentImageAttachment>,
+    created_ms: u128,
+    /// Whether the message was built for a vision model, with the image
+    /// bytes inline. Meaningless without attachments.
+    #[serde(default)]
+    vision_capable: bool,
+}
+
+fn persisted_desktop_queue_file(
+    map: &DesktopQueueMap,
+    account_scope: &str,
+) -> PersistedDesktopQueueFile {
+    let mut sessions = map
+        .iter()
+        .filter(|((scope, _), queue)| scope == account_scope && !queue.items.is_empty())
+        .map(|((_, session_id), queue)| {
+            let newest = queue
+                .items
+                .iter()
+                .map(|item| item.created_ms)
+                .max()
+                .unwrap_or_default();
+            (
+                newest,
+                PersistedDesktopSessionQueue {
+                    session_id: session_id.clone(),
+                    items: queue
+                        .items
+                        .iter()
+                        .map(persisted_desktop_queue_item)
+                        .collect(),
+                },
+            )
+        })
+        .collect::<Vec<_>>();
+    // Newest staging first, so the tasks dropped by the cap are the ones
+    // whose queue has waited longest; ties stay deterministic by task id.
+    sessions.sort_by(|(a_newest, a), (b_newest, b)| {
+        b_newest
+            .cmp(a_newest)
+            .then_with(|| a.session_id.cmp(&b.session_id))
+    });
+    sessions.truncate(MAX_PERSISTED_DESKTOP_QUEUE_SESSIONS);
+    PersistedDesktopQueueFile {
+        version: DESKTOP_QUEUE_FILE_VERSION,
+        sessions: sessions.into_iter().map(|(_, session)| session).collect(),
+    }
+}
+
+fn persisted_desktop_queue_item(item: &AgentQueuedMessage) -> PersistedDesktopQueueItem {
+    PersistedDesktopQueueItem {
+        queue_id: item.queue_id.clone(),
+        message_id: item.message_id.clone(),
+        text: item.text.clone(),
+        attachments: item.attachments.clone(),
+        created_ms: item.created_ms,
+        vision_capable: item
+            .message
+            .metadata
+            .operation_note(MAPLE_IMAGE_ATTACHMENTS_OPERATION, "visionCapable")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+    }
+}
+
+fn read_persisted_desktop_queue_file(
+    path: &Path,
+) -> Result<Option<PersistedDesktopQueueFile>, String> {
+    let metadata = match fs::metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.to_string()),
+    };
+    if metadata.len() > MAX_DESKTOP_QUEUE_FILE_BYTES {
+        return Err(format!(
+            "the file is {} bytes, over the {MAX_DESKTOP_QUEUE_FILE_BYTES} byte limit",
+            metadata.len()
+        ));
+    }
+    let json = fs::read_to_string(path).map_err(|error| error.to_string())?;
+    let file: PersistedDesktopQueueFile =
+        serde_json::from_str(&json).map_err(|error| error.to_string())?;
+    if file.version != DESKTOP_QUEUE_FILE_VERSION {
+        return Err(format!("unsupported queue file version {}", file.version));
+    }
+    Ok(Some(file))
+}
+
+/// Rebuild a queued message from its persisted record. With attachments
+/// the image bytes come back from the account's attachment store; one that
+/// cannot be read leaves the message naming its attachments without inline
+/// images, the same shape a non-vision model gets.
+fn restore_persisted_queue_item(
+    store: &AgentAttachmentStore,
+    session_id: &str,
+    item: PersistedDesktopQueueItem,
+) -> AgentQueuedMessage {
+    let mut message = if item.attachments.is_empty() {
+        user_message_from_prompt(&item.text)
+    } else {
+        use base64::Engine;
+        let mut vision_capable = item.vision_capable;
+        let images = item
+            .attachments
+            .iter()
+            .map(|attachment| {
+                let bytes = attachments::attachment_id_from_source(&attachment.source)
+                    .ok_or_else(|| "Agent image attachment has no stored id".to_string())
+                    .and_then(|id| store.read(session_id, id));
+                let base64_data = match bytes {
+                    Ok(bytes) => base64::engine::general_purpose::STANDARD.encode(bytes),
+                    Err(error) => {
+                        log::warn!(
+                            "Queued Agent message {} keeps attachment {} by name only: {error}",
+                            item.queue_id,
+                            attachment.name
+                        );
+                        vision_capable = false;
+                        String::new()
+                    }
+                };
+                PreparedAgentImage {
+                    attachment: attachment.clone(),
+                    base64_data,
+                }
+            })
+            .collect::<Vec<_>>();
+        user_message_with_images(&item.text, &images, vision_capable)
+    };
+    message.id = Some(item.message_id.clone());
+    AgentQueuedMessage {
+        queue_id: item.queue_id,
+        message_id: item.message_id,
+        session_id: session_id.to_string(),
+        text: item.text,
+        attachments: item.attachments,
+        created_ms: item.created_ms,
+        message,
     }
 }
 
@@ -897,7 +1190,7 @@ pub struct MapleAgentService {
     /// Subagents per task. A background subagent outlives the run that
     /// started it, so this cannot live inside one run.
     subagents: SessionSubagents,
-    desktop_queues: Arc<Mutex<HashMap<(String, String), DesktopSessionQueue>>>,
+    desktop_queues: Arc<DesktopQueues>,
     run_changed: Arc<tokio::sync::Notify>,
     admission: Arc<AtomicU8>,
     /// The question broker this service installed as the process global.
@@ -976,6 +1269,7 @@ impl LiveTimeline {
 impl MapleAgentService {
     pub fn new(host: MapleAgentHostResources) -> Self {
         let questions = questions::init_global(host.events.clone());
+        let desktop_queues = Arc::new(DesktopQueues::new(host.paths.clone()));
         Self {
             host,
             questions,
@@ -989,7 +1283,7 @@ impl MapleAgentService {
             pending_permissions: Arc::new(Mutex::new(HashMap::new())),
             live_timelines: Arc::new(Mutex::new(HashMap::new())),
             subagents: Arc::new(Mutex::new(HashMap::new())),
-            desktop_queues: Arc::new(Mutex::new(HashMap::new())),
+            desktop_queues,
             run_changed: Arc::new(tokio::sync::Notify::new()),
             admission: Arc::new(AtomicU8::new(AGENT_SERVICE_OPEN)),
         }
@@ -2144,7 +2438,9 @@ async fn stop_runtime_inner(
         installed.context.revoke();
     }
     {
-        let mut queues = state.desktop_queues.lock().await;
+        // Only the working copy goes; the mirrored file stays for the next
+        // start of this account's runtime.
+        let mut queues = state.desktop_queues.map.lock().await;
         match requested_scope {
             Some(account_scope) => {
                 queues.retain(|(scope, _), _| scope != account_scope);
@@ -2464,6 +2760,13 @@ async fn start_runtime_for_user(
     };
     let status = runtime.desktop_status();
 
+    // Messages queued before the last stop of this account's runtime come
+    // back before the runtime is visible, so the first task load shows them
+    // and the first run end promotes them.
+    state
+        .desktop_queues
+        .load_account(&runtime.account_scope)
+        .await;
     {
         let mut guard = state.inner.lock().await;
         *guard = Some(runtime);
@@ -10586,6 +10889,7 @@ async fn snapshot_desktop_queue(
 ) -> AgentDesktopQueueSnapshot {
     state
         .desktop_queues
+        .map
         .lock()
         .await
         .get(&desktop_queue_key(account_scope, session_id))
@@ -10634,13 +10938,13 @@ async fn persist_leading_user_messages(
 /// head of the desktop queue, in their original order, so the chips reappear
 /// ahead of anything the user staged in the meantime.
 async fn restore_unpersisted_desktop_queue_messages(
-    queues: &Mutex<HashMap<(String, String), DesktopSessionQueue>>,
+    queues: &DesktopQueues,
     account_scope: &str,
     session_id: &str,
     messages: &[Message],
 ) -> AgentDesktopQueueSnapshot {
-    let mut queues = queues.lock().await;
-    let queue = queues
+    let mut map = queues.map.lock().await;
+    let queue = map
         .entry(desktop_queue_key(account_scope, session_id))
         .or_insert_with(|| DesktopSessionQueue {
             revision: 0,
@@ -10662,7 +10966,9 @@ async fn restore_unpersisted_desktop_queue_messages(
         });
     }
     queue.revision = queue.revision.saturating_add(1);
-    queue.snapshot()
+    let snapshot = queue.snapshot();
+    queues.persist_account(&map, account_scope);
+    snapshot
 }
 
 async fn emit_promoted_queue_items(
@@ -10786,8 +11092,8 @@ async fn enqueue_desktop_queue_message(
         created_ms: unix_ms(),
         message,
     };
-    let mut queues = state.desktop_queues.lock().await;
-    let queue = queues
+    let mut map = state.desktop_queues.map.lock().await;
+    let queue = map
         .entry(desktop_queue_key(account_scope, session_id))
         .or_insert_with(|| DesktopSessionQueue {
             revision: 0,
@@ -10799,7 +11105,9 @@ async fn enqueue_desktop_queue_message(
     }
     queue.revision = queue.revision.saturating_add(1);
     queue.items.push_back(queued.clone());
-    Ok((queued, queue.snapshot()))
+    let snapshot = queue.snapshot();
+    state.desktop_queues.persist_account(&map, account_scope);
+    Ok((queued, snapshot))
 }
 
 async fn remove_desktop_queue_item(
@@ -10808,8 +11116,8 @@ async fn remove_desktop_queue_item(
     session_id: &str,
     queue_id: &str,
 ) -> Result<(AgentQueuedMessage, AgentDesktopQueueSnapshot), String> {
-    let mut queues = state.desktop_queues.lock().await;
-    let Some(queue) = queues.get_mut(&desktop_queue_key(account_scope, session_id)) else {
+    let mut map = state.desktop_queues.map.lock().await;
+    let Some(queue) = map.get_mut(&desktop_queue_key(account_scope, session_id)) else {
         return Err("Queued Agent message is no longer available".to_string());
     };
     let Some(index) = queue
@@ -10825,7 +11133,9 @@ async fn remove_desktop_queue_item(
         .expect("queue index was just resolved");
     queue.end_edit_of(&removed.queue_id);
     queue.revision = queue.revision.saturating_add(1);
-    Ok((removed, queue.snapshot()))
+    let snapshot = queue.snapshot();
+    state.desktop_queues.persist_account(&map, account_scope);
+    Ok((removed, snapshot))
 }
 
 async fn update_desktop_queue_item(
@@ -10842,8 +11152,8 @@ async fn update_desktop_queue_item(
     if text.len() > MAX_DESKTOP_QUEUE_TEXT_BYTES {
         return Err("Queued Agent message is too large".to_string());
     }
-    let mut queues = state.desktop_queues.lock().await;
-    let Some(queue) = queues.get_mut(&desktop_queue_key(account_scope, session_id)) else {
+    let mut map = state.desktop_queues.map.lock().await;
+    let Some(queue) = map.get_mut(&desktop_queue_key(account_scope, session_id)) else {
         return Err("Queued Agent message is no longer available".to_string());
     };
     let Some(item) = queue
@@ -10860,7 +11170,9 @@ async fn update_desktop_queue_item(
     // another chip must keep holding promotion off.
     queue.end_edit_of(queue_id);
     queue.revision = queue.revision.saturating_add(1);
-    Ok((updated, queue.snapshot()))
+    let snapshot = queue.snapshot();
+    state.desktop_queues.persist_account(&map, account_scope);
+    Ok((updated, snapshot))
 }
 
 async fn begin_desktop_queue_edit(
@@ -10869,8 +11181,8 @@ async fn begin_desktop_queue_edit(
     session_id: &str,
     queue_id: &str,
 ) -> Result<(), String> {
-    let mut queues = state.desktop_queues.lock().await;
-    let Some(queue) = queues.get_mut(&desktop_queue_key(account_scope, session_id)) else {
+    let mut map = state.desktop_queues.map.lock().await;
+    let Some(queue) = map.get_mut(&desktop_queue_key(account_scope, session_id)) else {
         return Err("Queued Agent message is no longer available".to_string());
     };
     if !queue.items.iter().any(|item| item.queue_id == queue_id) {
@@ -10889,8 +11201,8 @@ async fn end_desktop_queue_edit(
     session_id: &str,
     queue_id: &str,
 ) -> Result<(), String> {
-    let mut queues = state.desktop_queues.lock().await;
-    let Some(queue) = queues.get_mut(&desktop_queue_key(account_scope, session_id)) else {
+    let mut map = state.desktop_queues.map.lock().await;
+    let Some(queue) = map.get_mut(&desktop_queue_key(account_scope, session_id)) else {
         return Ok(());
     };
     queue.end_edit_of(queue_id);
@@ -10898,19 +11210,21 @@ async fn end_desktop_queue_edit(
 }
 
 async fn take_all_desktop_queue_items_from_map(
-    queues: &Mutex<HashMap<(String, String), DesktopSessionQueue>>,
+    queues: &DesktopQueues,
     account_scope: &str,
     session_id: &str,
 ) -> Option<(Vec<AgentQueuedMessage>, AgentDesktopQueueSnapshot)> {
-    let mut queues = queues.lock().await;
+    let mut map = queues.map.lock().await;
     let key = desktop_queue_key(account_scope, session_id);
-    let queue = queues.get_mut(&key)?;
+    let queue = map.get_mut(&key)?;
     if queue.items.is_empty() || queue.holds_promotion() {
         return None;
     }
     let items: Vec<AgentQueuedMessage> = queue.items.drain(..).collect();
     queue.revision = queue.revision.saturating_add(1);
-    Some((items, queue.snapshot()))
+    let snapshot = queue.snapshot();
+    queues.persist_account(&map, account_scope);
+    Some((items, snapshot))
 }
 
 async fn clear_desktop_queue(
@@ -10922,16 +11236,17 @@ async fn clear_desktop_queue(
 }
 
 async fn clear_desktop_queue_in_map(
-    queues: &Mutex<HashMap<(String, String), DesktopSessionQueue>>,
+    queues: &DesktopQueues,
     account_scope: &str,
     session_id: &str,
 ) -> AgentDesktopQueueSnapshot {
-    let mut queues = queues.lock().await;
-    let Some(mut queue) = queues.remove(&desktop_queue_key(account_scope, session_id)) else {
+    let mut map = queues.map.lock().await;
+    let Some(mut queue) = map.remove(&desktop_queue_key(account_scope, session_id)) else {
         return empty_desktop_queue_snapshot();
     };
     queue.revision = queue.revision.saturating_add(1);
     queue.items.clear();
+    queues.persist_account(&map, account_scope);
     queue.snapshot()
 }
 
@@ -13066,7 +13381,7 @@ mod tests {
         // Age the hold past the bound, as if the editing client never came
         // back to end it.
         {
-            let mut queues = state.desktop_queues.lock().await;
+            let mut queues = state.desktop_queues.map.lock().await;
             let hold = queues
                 .get_mut(&desktop_queue_key(&account_scope, session_id))
                 .and_then(|queue| queue.editing.as_mut())
@@ -13092,11 +13407,349 @@ mod tests {
         assert!(
             state
                 .desktop_queues
+                .map
                 .lock()
                 .await
                 .get(&desktop_queue_key(&account_scope, session_id))
                 .is_some_and(|queue| queue.editing.is_none()),
             "the stale hold is dropped, not kept for the next turn"
+        );
+
+        let _ = fs::remove_dir_all(test_root);
+    }
+
+    const PERSISTED_QUEUE_PNG_1X1: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
+
+    #[tokio::test]
+    async fn desktop_queue_survives_a_fresh_service_over_the_same_roots() {
+        let sink = Arc::new(RecordingAgentEventSink::default());
+        let (test_root, paths, state) =
+            agent_service_test_context("desktop-queue-persist-reload", sink);
+        let user_id = "desktop-queue-persist-user";
+        let account_scope = account_scope(user_id).unwrap();
+        let session_id = "session-persist-reload";
+
+        enqueue_desktop_queue_item(&state, &account_scope, session_id, "first")
+            .await
+            .unwrap();
+        let images = account_attachment_store(&paths, user_id)
+            .unwrap()
+            .store_uploads(
+                session_id,
+                &[AgentImageUpload {
+                    name: "dot.png".to_string(),
+                    data_url: format!("data:image/png;base64,{PERSISTED_QUEUE_PNG_1X1}"),
+                }],
+            )
+            .unwrap();
+        let with_image = user_message_with_images("look at this", &images, true);
+        let (queued_image, _) = enqueue_desktop_queue_message(
+            &state,
+            &account_scope,
+            session_id,
+            "look at this",
+            with_image,
+        )
+        .await
+        .unwrap();
+        assert_eq!(queued_image.attachments.len(), 1);
+        let before = snapshot_desktop_queue(&state, &account_scope, session_id).await;
+        // An edit held open when the host goes away must not come back.
+        begin_desktop_queue_edit(
+            &state,
+            &account_scope,
+            session_id,
+            &before.items[0].queue_id,
+        )
+        .await
+        .unwrap();
+
+        let file = state.desktop_queues.file_path(&account_scope);
+        assert!(
+            file.is_file(),
+            "the queue is mirrored at {}",
+            file.display()
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = fs::metadata(&file).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600, "the mirror is private");
+        }
+        let json = fs::read_to_string(&file).unwrap();
+        assert!(
+            !json.contains(PERSISTED_QUEUE_PNG_1X1),
+            "the file keeps attachment records, not image bytes"
+        );
+
+        // The host restarts: a fresh service over the same roots, empty
+        // until its runtime loads the account.
+        let fresh = MapleAgentService::new(MapleAgentHostResources::new(
+            paths.clone(),
+            Arc::new(RecordingAgentEventSink::default()),
+            AgentToolContextSpec::default(),
+            "You are a test agent.".to_string(),
+        ));
+        assert!(
+            snapshot_desktop_queue(&fresh, &account_scope, session_id)
+                .await
+                .items
+                .is_empty()
+        );
+        fresh.desktop_queues.load_account(&account_scope).await;
+        let loaded = snapshot_desktop_queue(&fresh, &account_scope, session_id).await;
+        assert!(loaded.revision > 0, "a loaded queue is a visible change");
+        assert_eq!(
+            loaded
+                .items
+                .iter()
+                .map(|item| (
+                    item.queue_id.as_str(),
+                    item.message_id.as_str(),
+                    item.text.as_str(),
+                    item.created_ms,
+                ))
+                .collect::<Vec<_>>(),
+            before
+                .items
+                .iter()
+                .map(|item| (
+                    item.queue_id.as_str(),
+                    item.message_id.as_str(),
+                    item.text.as_str(),
+                    item.created_ms,
+                ))
+                .collect::<Vec<_>>(),
+            "items come back in order with their identity and text"
+        );
+        assert_eq!(loaded.items[1].attachments, before.items[1].attachments);
+        let plain = queued_user_message(&loaded.items[0]);
+        assert_eq!(
+            plain.id.as_deref(),
+            Some(before.items[0].message_id.as_str())
+        );
+        assert_eq!(plain.as_concat_text(), "first");
+        let imaged = queued_user_message(&loaded.items[1]);
+        assert_eq!(
+            imaged.id.as_deref(),
+            Some(before.items[1].message_id.as_str())
+        );
+        assert!(
+            imaged
+                .content
+                .iter()
+                .any(|content| matches!(content, MessageContent::Image(_))),
+            "the stored image is back inline for the vision model"
+        );
+        assert_eq!(
+            message_image_attachments(&imaged),
+            before.items[1].attachments
+        );
+        assert_eq!(
+            message_original_user_text(&imaged).as_deref(),
+            Some("look at this")
+        );
+
+        // No hold survives, so the next run end promotes everything.
+        let (promoted, after) = take_all_desktop_queue_items_from_map(
+            &fresh.desktop_queues,
+            &account_scope,
+            session_id,
+        )
+        .await
+        .expect("a loaded queue starts without an edit hold");
+        assert_eq!(promoted.len(), 2);
+        assert!(after.items.is_empty());
+        assert!(
+            !file.exists(),
+            "promoting the last items removes the account's mirror"
+        );
+
+        let _ = fs::remove_dir_all(test_root);
+    }
+
+    #[tokio::test]
+    async fn desktop_queue_mirror_follows_removal_promotion_and_deletion() {
+        let sink = Arc::new(RecordingAgentEventSink::default());
+        let (test_root, paths, state) =
+            agent_service_test_context("desktop-queue-persist-mirror", sink);
+        let other_scope = account_scope("desktop-queue-mirror-other-user").unwrap();
+        let account_scope = account_scope("desktop-queue-mirror-user").unwrap();
+        let session_a = "session-mirror-a";
+        let session_b = "session-mirror-b";
+
+        let read_sessions = |path: &Path| -> Vec<(String, Vec<String>)> {
+            let file = read_persisted_desktop_queue_file(path)
+                .unwrap()
+                .expect("the mirror exists");
+            let mut sessions = file
+                .sessions
+                .into_iter()
+                .map(|session| {
+                    (
+                        session.session_id,
+                        session
+                            .items
+                            .into_iter()
+                            .map(|item| item.text)
+                            .collect::<Vec<_>>(),
+                    )
+                })
+                .collect::<Vec<_>>();
+            sessions.sort();
+            sessions
+        };
+
+        enqueue_desktop_queue_item(&state, &account_scope, session_a, "a1")
+            .await
+            .unwrap();
+        let (a2, _) = enqueue_desktop_queue_item(&state, &account_scope, session_a, "a2")
+            .await
+            .unwrap();
+        enqueue_desktop_queue_item(&state, &account_scope, session_b, "b1")
+            .await
+            .unwrap();
+        // Another account's queue is mirrored on its own.
+        enqueue_desktop_queue_item(&state, &other_scope, session_a, "other")
+            .await
+            .unwrap();
+        let file = state.desktop_queues.file_path(&account_scope);
+        let other_file = state.desktop_queues.file_path(&other_scope);
+        assert_ne!(file, other_file);
+        assert_eq!(
+            read_sessions(&file),
+            vec![
+                (
+                    session_a.to_string(),
+                    vec!["a1".to_string(), "a2".to_string()]
+                ),
+                (session_b.to_string(), vec!["b1".to_string()]),
+            ]
+        );
+        assert_eq!(
+            read_sessions(&other_file),
+            vec![(session_a.to_string(), vec!["other".to_string()])]
+        );
+
+        remove_desktop_queue_item(&state, &account_scope, session_a, &a2.queue_id)
+            .await
+            .unwrap();
+        assert_eq!(
+            read_sessions(&file),
+            vec![
+                (session_a.to_string(), vec!["a1".to_string()]),
+                (session_b.to_string(), vec!["b1".to_string()]),
+            ]
+        );
+
+        update_desktop_queue_item(&state, &account_scope, session_b, "", "unused")
+            .await
+            .expect_err("an unknown chip is not updated");
+        let b1_id = snapshot_desktop_queue(&state, &account_scope, session_b)
+            .await
+            .items[0]
+            .queue_id
+            .clone();
+        update_desktop_queue_item(&state, &account_scope, session_b, &b1_id, "b1 revised")
+            .await
+            .unwrap();
+        assert_eq!(
+            read_sessions(&file),
+            vec![
+                (session_a.to_string(), vec!["a1".to_string()]),
+                (session_b.to_string(), vec!["b1 revised".to_string()]),
+            ]
+        );
+
+        take_all_desktop_queue_items_from_map(&state.desktop_queues, &account_scope, session_a)
+            .await
+            .expect("session a promotes");
+        assert_eq!(
+            read_sessions(&file),
+            vec![(session_b.to_string(), vec!["b1 revised".to_string()])]
+        );
+
+        // Deleting the task clears its queue and, as the last one, the file.
+        clear_desktop_queue(&state, &account_scope, session_b).await;
+        assert!(!file.exists(), "nothing queued, no file");
+        assert!(other_file.is_file(), "the other account is untouched");
+
+        let fresh = MapleAgentService::new(MapleAgentHostResources::new(
+            paths.clone(),
+            Arc::new(RecordingAgentEventSink::default()),
+            AgentToolContextSpec::default(),
+            "You are a test agent.".to_string(),
+        ));
+        fresh.desktop_queues.load_account(&account_scope).await;
+        assert!(
+            snapshot_desktop_queue(&fresh, &account_scope, session_b)
+                .await
+                .items
+                .is_empty()
+        );
+        fresh.desktop_queues.load_account(&other_scope).await;
+        assert_eq!(
+            snapshot_desktop_queue(&fresh, &other_scope, session_a)
+                .await
+                .items
+                .iter()
+                .map(|item| item.text.as_str())
+                .collect::<Vec<_>>(),
+            vec!["other"]
+        );
+
+        let _ = fs::remove_dir_all(test_root);
+    }
+
+    #[tokio::test]
+    async fn desktop_queue_load_keeps_the_working_copy_and_refuses_bad_files() {
+        let sink = Arc::new(RecordingAgentEventSink::default());
+        let (test_root, _paths, state) =
+            agent_service_test_context("desktop-queue-persist-guard", sink);
+        let account_scope = account_scope("desktop-queue-guard-user").unwrap();
+        let session_id = "session-guard";
+
+        enqueue_desktop_queue_item(&state, &account_scope, session_id, "in memory")
+            .await
+            .unwrap();
+        // Loading over a task that already has items in memory changes
+        // nothing: memory is the working copy, the file its mirror.
+        state.desktop_queues.load_account(&account_scope).await;
+        let snapshot = snapshot_desktop_queue(&state, &account_scope, session_id).await;
+        assert_eq!(snapshot.items.len(), 1);
+
+        let file = state.desktop_queues.file_path(&account_scope);
+        fs::write(&file, "{\"version\": 99, \"sessions\": []}").unwrap();
+        take_all_desktop_queue_items_from_map(&state.desktop_queues, &account_scope, session_id)
+            .await
+            .unwrap();
+        fs::write(&file, "not json").unwrap();
+        state.desktop_queues.load_account(&account_scope).await;
+        assert!(
+            snapshot_desktop_queue(&state, &account_scope, session_id)
+                .await
+                .items
+                .is_empty(),
+            "a corrupt mirror loads nothing and does not panic"
+        );
+        fs::write(
+            &file,
+            format!(
+                "{{\"version\": {DESKTOP_QUEUE_FILE_VERSION}, \"sessions\": [{{\"sessionId\": \"{session_id}\", \"items\": [{{\"queueId\": \"q\", \"messageId\": \"m\", \"text\": \"{}\", \"createdMs\": 1}}, {{\"queueId\": \"q2\", \"messageId\": \"m2\", \"text\": \"fits\", \"createdMs\": 2}}]}}]}}",
+                "x".repeat(MAX_DESKTOP_QUEUE_TEXT_BYTES + 1)
+            ),
+        )
+        .unwrap();
+        state.desktop_queues.load_account(&account_scope).await;
+        assert_eq!(
+            snapshot_desktop_queue(&state, &account_scope, session_id)
+                .await
+                .items
+                .iter()
+                .map(|item| item.text.as_str())
+                .collect::<Vec<_>>(),
+            vec!["fits"],
+            "an oversized item is skipped, the rest load"
         );
 
         let _ = fs::remove_dir_all(test_root);
