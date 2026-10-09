@@ -35,6 +35,7 @@ tempfile = "3"
 maple-sdk = { workspace = true }
 maple-proxy = { workspace = true }
 pulldown-cmark = { version = "0.13", default-features = false }
+image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp"] }
 pi-ai = { path = "../pi-ai", default-features = false }
 pi-agent-core = { path = "../pi-agent-core" }
 pi-coding-agent = { path = "../pi-coding-agent" }

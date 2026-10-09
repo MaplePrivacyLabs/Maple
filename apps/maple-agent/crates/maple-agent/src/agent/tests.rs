@@ -80,7 +80,7 @@ impl pi_ai::StreamFn for SplitStream {
         context: pi_ai::Context,
         options: pi_ai::StreamOptions,
     ) -> pi_ai::AssistantMessageStream {
-        if model.id == side_models::SIDE_MODEL {
+        if side_models::SIDE_MODELS.contains(&model.id.as_str()) {
             self.side.stream(model, context, options)
         } else {
             self.task.stream(model, context, options)

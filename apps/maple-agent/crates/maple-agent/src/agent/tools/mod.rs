@@ -6,14 +6,16 @@
 //! and with the task's tool context, so the ACP bridge's variables stay out.
 //! `MAPLE_SHELL` names the bash to run.
 //!
-//! Maple's own tools join these: desktop tasks get the plan the user
-//! watches (`todo_write`) and questions the user answers
-//! (`request_user_input`), and every task gets `web_search` and `open_url`
-//! while its web switch is on. The others join as they move to the Pi
-//! runtime.
+//! Maple's own tools join these: every task gets `read_image`, desktop tasks
+//! get the plan the user watches (`todo_write`) and questions the user
+//! answers (`request_user_input`), and every task gets `web_search` and
+//! `open_url` while its web switch is on.
 
 mod desktop;
+mod read_image;
 pub(crate) mod web;
+
+pub(crate) use read_image::ReadImageFor;
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -55,6 +57,7 @@ pub(crate) struct TaskToolsFor {
     pub(crate) web: Arc<dyn MapleWebTransport>,
     /// The task's web switch.
     pub(crate) web_enabled: bool,
+    pub(crate) read_image: ReadImageFor,
 }
 
 /// A task's tools.
@@ -82,13 +85,13 @@ pub(crate) fn task_tools(task: TaskToolsFor) -> TaskTools {
             .iter()
             .map(|name| name.to_string())
             .collect(),
-        maple: match task.kind {
-            TaskKind::Desktop => desktop::desktop_tools(&task.session_id, task.questions),
-            TaskKind::Acp => Vec::new(),
-        }
-        .into_iter()
-        .chain(web::web_tools(task.web, task.web_enabled))
-        .collect(),
+        maple: std::iter::once(read_image::read_image_tool(task.read_image))
+            .chain(match task.kind {
+                TaskKind::Desktop => desktop::desktop_tools(&task.session_id, task.questions),
+                TaskKind::Acp => Vec::new(),
+            })
+            .chain(web::web_tools(task.web, task.web_enabled))
+            .collect(),
     }
 }
 

@@ -7,12 +7,12 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use pi_agent_core::QueueMode;
-use pi_ai::{Model, ThinkingLevel};
+use pi_ai::{InputModality, Model, ThinkingLevel};
 use pi_coding_agent::settings::{RetrySettings, Settings};
 use pi_coding_agent::{AgentSession, AgentSessionOptions, ModelRegistry};
 use tokio_util::sync::CancellationToken;
 
-use super::config::path_string;
+use super::config::{account_attachment_store, path_string};
 use super::provider::{CatalogEntry, maple_model, maple_model_registry};
 use super::questions::QuestionBroker;
 use super::runs::{Failures, Runs};
@@ -286,10 +286,13 @@ impl AgentRuntime {
         let manager = tokio::task::spawn_blocking(move || store.open_session(&id, &cwd))
             .await
             .map_err(|error| format!("Failed to read the Agent task: {error}"))??;
+        // A model that cannot see images gets them described.
+        let describer = (!model.input.contains(&InputModality::Image)).then(|| self.models.clone());
         let mut options =
             AgentSessionOptions::new(&row.project_root, APP_NAME, manager, self.models.clone());
         options.model = Some(model);
         options.settings = self.settings();
+        let attachments = Arc::new(account_attachment_store(&self.host.paths, &self.user_id)?);
         let tools = tools::task_tools(tools::TaskToolsFor {
             session_id: row.id.clone(),
             kind: row.kind,
@@ -298,6 +301,12 @@ impl AgentRuntime {
             questions: self.questions.clone(),
             web: self.api.clone(),
             web_enabled: row.web_enabled,
+            read_image: tools::ReadImageFor {
+                session_id: row.id.clone(),
+                cwd: PathBuf::from(&row.project_root),
+                attachments,
+                describer,
+            },
         });
         options.tool_options = tools.options;
         options.builtin_tools = Some(tools.builtin);

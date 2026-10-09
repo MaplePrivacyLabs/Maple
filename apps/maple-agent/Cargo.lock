@@ -4280,6 +4280,7 @@ dependencies = [
  "http",
  "httpdate",
  "icu_properties",
+ "image",
  "libc",
  "log",
  "maple-proxy",

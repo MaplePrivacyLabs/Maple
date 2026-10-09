@@ -51,6 +51,14 @@ fn task(kind: TaskKind, tool_context: SharedAgentToolContext) -> TaskToolsFor {
         questions: broker(),
         web: Arc::new(NoWeb),
         web_enabled: true,
+        read_image: ReadImageFor {
+            session_id: "task-1".to_string(),
+            cwd: PathBuf::from("/work"),
+            attachments: Arc::new(crate::agent::attachments::AgentAttachmentStore::new(
+                std::env::temp_dir().join("maple-tools-tests"),
+            )),
+            describer: None,
+        },
     }
 }
 
@@ -158,11 +166,12 @@ fn maple_tool_names(tools: &TaskTools) -> Vec<(String, bool)> {
 }
 
 #[test]
-fn desktop_tasks_also_get_the_plan_and_questions_and_every_task_the_web() {
+fn every_task_reads_images_and_the_web_and_desktop_tasks_plan_and_ask() {
     let on = |name: &str| (name.to_string(), true);
     assert_eq!(
         maple_tool_names(&desktop_tools()),
         [
+            on("read_image"),
             on("todo_write"),
             on("request_user_input"),
             on("web_search"),
@@ -176,6 +185,7 @@ fn desktop_tasks_also_get_the_plan_and_questions_and_every_task_the_web() {
     assert_eq!(
         maple_tool_names(&acp),
         [
+            on("read_image"),
             ("web_search".to_string(), false),
             ("open_url".to_string(), false)
         ]
