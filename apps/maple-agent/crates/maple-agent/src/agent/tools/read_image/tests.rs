@@ -34,7 +34,9 @@ impl Fixture {
             session_id: "task-1".to_string(),
             cwd: self.dir.path().to_path_buf(),
             attachments: Arc::clone(&self.attachments),
-            describer,
+            describe: describer.is_some(),
+            models: describer
+                .unwrap_or_else(|| ModelRegistry::new(Arc::new(StaticKeys::default()))),
         })
         .tool
     }

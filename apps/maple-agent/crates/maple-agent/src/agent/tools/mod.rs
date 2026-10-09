@@ -11,7 +11,8 @@
 //! Maple's own tools join these: every task gets `read_image`, desktop tasks
 //! get the plan the user watches (`todo_write`) and questions the user
 //! answers (`request_user_input`), and every task gets `web_search` and
-//! `open_url` while its web switch is on.
+//! `open_url` while its web switch is on. For an image, `read` sends a model
+//! that cannot see images to `read_image`, which describes it.
 
 mod desktop;
 mod read_image;
@@ -25,7 +26,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use pi_coding_agent::AgentSession;
-use pi_coding_agent::extensions::RegisteredTool;
+use pi_coding_agent::extensions::{Extension, RegisteredTool};
 use pi_coding_agent::tools::{
     BashSpawnContext, BashSpawnHook, PowerShellToolOptions, ToolsOptions, set_env_var,
 };
@@ -45,6 +46,8 @@ pub(crate) struct TaskTools {
     pub(crate) builtin: Vec<String>,
     /// Maple's own tools.
     pub(crate) maple: Vec<RegisteredTool>,
+    /// Keeps the images the model meets consistent with what it can see.
+    pub(crate) extension: Arc<dyn Extension>,
 }
 
 /// What a task's tools are set up from.
@@ -88,6 +91,7 @@ pub(crate) fn task_tools(task: TaskToolsFor) -> TaskTools {
             .iter()
             .map(|name| name.to_string())
             .collect(),
+        extension: read_image::read_image_extension(task.read_image.clone()),
         maple: std::iter::once(read_image::read_image_tool(task.read_image))
             .chain(match task.kind {
                 TaskKind::Desktop => desktop::desktop_tools(&task.session_id, task.questions),

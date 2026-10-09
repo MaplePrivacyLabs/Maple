@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
 use pi_agent_core::QueueMode;
-use pi_ai::{InputModality, Model, ThinkingLevel};
+use pi_ai::{Model, ThinkingLevel};
 use pi_coding_agent::resources::Resources;
 use pi_coding_agent::settings::{RetrySettings, Settings};
 use pi_coding_agent::{AgentSession, AgentSessionOptions, ModelRegistry};
@@ -581,7 +581,7 @@ impl AgentRuntime {
             .await
             .map_err(|error| format!("Failed to read the Agent task: {error}"))??;
         // A model that cannot see images gets them described.
-        let describer = (!model.input.contains(&InputModality::Image)).then(|| self.models.clone());
+        let describe = !model.supports_images();
         let mut options =
             AgentSessionOptions::new(&row.project_root, APP_NAME, manager, self.models.clone());
         options.model = Some(model);
@@ -602,12 +602,14 @@ impl AgentRuntime {
                 session_id: row.id.clone(),
                 cwd: PathBuf::from(&row.project_root),
                 attachments,
-                describer,
+                models: self.models.clone(),
+                describe,
             },
         });
         options.tool_options = tools.options;
         options.builtin_tools = Some(tools.builtin);
         options.tools = tools.maple;
+        options.extensions.push(tools.extension);
         // External agents work for tasks in the desktop app.
         let agents = TaskProviders::default();
         if kind == TaskKind::Desktop {

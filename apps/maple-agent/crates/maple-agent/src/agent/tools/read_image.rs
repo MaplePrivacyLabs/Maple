@@ -6,21 +6,30 @@
 //!
 //! The image's size for the model is then fitted as Pi fits every tool
 //! result's images.
+//!
+//! A Pi extension of the task's session keeps images consistent for a model
+//! that cannot see them: `read_image` describes exactly while the session's
+//! model cannot see images, whichever model the session moves to, and Pi's
+//! `read` answers such a model for an image as Goose's runtime did, with
+//! the way to `read_image`, instead of leaving the image out.
 
 use std::io::{Cursor, Read};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use async_trait::async_trait;
 use base64::Engine;
 use image::GenericImageView;
-use pi_agent_core::{AgentTool, AgentToolResult, ToolError, ToolInvocation};
+use pi_agent_core::{AfterToolCallResult, AgentTool, AgentToolResult, ToolError, ToolInvocation};
 use pi_ai::{Content, Tool};
 use pi_coding_agent::ModelRegistry;
-use pi_coding_agent::extensions::{RegisteredTool, ToolPrompt};
+use pi_coding_agent::extensions::{
+    Extension, ExtensionContext, ModelSelect, RegisteredTool, ToolPrompt, ToolResult, extension,
+};
 use serde::{Deserialize, Serialize};
-use serde_json::json;
+use serde_json::{Value, json};
 use tokio_util::sync::CancellationToken;
 
 use crate::agent::attachments::{AgentAttachmentStore, attachment_id_from_source};
@@ -32,35 +41,90 @@ const UNSUPPORTED_FORMAT: &str =
     "unsupported image format; supported formats are png, jpeg, gif, and webp";
 
 /// What `read_image` reads with.
+#[derive(Clone)]
 pub(crate) struct ReadImageFor {
     /// The task, whose attachments it may read.
     pub(crate) session_id: String,
     /// Where relative paths start.
     pub(crate) cwd: PathBuf,
     pub(crate) attachments: Arc<AgentAttachmentStore>,
-    /// For a model that cannot see images: the models a description comes
-    /// from.
-    pub(crate) describer: Option<ModelRegistry>,
+    /// The models a description comes from.
+    pub(crate) models: ModelRegistry,
+    /// Whether the task's model cannot see images, so they are described.
+    pub(crate) describe: bool,
 }
 
+/// Goose's guidance, for a model that cannot see images.
+const INSPECT_GUIDELINE: &str = "Use read_image when you need to inspect an image.";
+
 pub(super) fn read_image_tool(setup: ReadImageFor) -> RegisteredTool {
-    let snippet = if setup.describer.is_some() {
-        "Describe an image from an attachment, a file or a URL"
+    let (snippet, guidelines) = if setup.describe {
+        (
+            "Describe an image from an attachment, a file or a URL",
+            vec![INSPECT_GUIDELINE.to_string()],
+        )
     } else {
-        "Read an image from an attachment, a file or a URL"
+        (
+            "Read an image from an attachment, a file or a URL",
+            Vec::new(),
+        )
     };
     RegisteredTool {
         tool: Arc::new(ReadImage {
-            declaration: declaration(setup.describer.is_some()),
+            declaration: declaration(setup.describe),
             setup,
         }),
         prompt: ToolPrompt {
             snippet: Some(snippet.to_string()),
-            guidelines: Vec::new(),
+            guidelines,
         },
         active: true,
         extension: None,
     }
+}
+
+/// The extension that keeps images consistent for the session's model.
+pub(super) fn read_image_extension(setup: ReadImageFor) -> Arc<dyn Extension> {
+    let describing = Arc::new(AtomicBool::new(setup.describe));
+    extension("maple-read-image", move |api| {
+        let (setup, describing) = (setup.clone(), Arc::clone(&describing));
+        // A session loaded for a side question or `/compact` gets the
+        // vision of the model its next run brings.
+        api.on(move |event: ModelSelect, context: ExtensionContext| {
+            let describe = !event.model.supports_images();
+            if describing.swap(describe, Ordering::SeqCst) != describe {
+                let tool = read_image_tool(ReadImageFor {
+                    describe,
+                    ..setup.clone()
+                });
+                context.register_tool(tool.tool, tool.prompt, tool.active);
+            }
+            async { Ok(()) }
+        });
+        api.on(|event: ToolResult, context: ExtensionContext| async move {
+            let blind = context
+                .model()
+                .is_some_and(|model| !model.supports_images());
+            let image = event
+                .content
+                .iter()
+                .any(|block| matches!(block, Content::Image(_)));
+            if event.tool_name != "read" || event.is_error || !blind || !image {
+                return Ok(None);
+            }
+            let path = event
+                .input
+                .get("path")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            Ok(Some(AfterToolCallResult {
+                content: Some(vec![Content::text(format!(
+                    "{path} is an image. Use read_image to inspect it."
+                ))]),
+                ..AfterToolCallResult::default()
+            }))
+        });
+    })
 }
 
 fn declaration(describes: bool) -> Tool {
@@ -151,12 +215,13 @@ impl AgentTool for ReadImage {
 
 impl ReadImage {
     async fn read(&self, params: ReadImageParams, cancel: CancellationToken) -> AgentToolResult {
-        let context = match &self.setup.describer {
-            Some(_) => match description_context(params.context.as_deref()) {
+        let context = if self.setup.describe {
+            match description_context(params.context.as_deref()) {
                 Ok(context) => Some(context),
                 Err(message) => return AgentToolResult::error(message),
-            },
-            None => None,
+            }
+        } else {
+            None
         };
         let (source, crop) = (params.source, params.crop);
         let image = match self.load_image(&source, crop, cancel.clone()).await {
@@ -174,7 +239,7 @@ impl ReadImage {
             "originalHeight": image.original_height,
             "crop": crop,
         });
-        let (Some(models), Some(context)) = (&self.setup.describer, context) else {
+        let Some(context) = context else {
             return AgentToolResult {
                 content: vec![
                     Content::text(summary),
@@ -185,7 +250,7 @@ impl ReadImage {
             };
         };
         match describe_image(
-            models,
+            &self.setup.models,
             &self.setup.session_id,
             &source,
             &context,
@@ -245,8 +310,9 @@ impl ReadImage {
                 _ => {}
             }
         }
+        // As `read` finds a file, macOS screenshot names included.
         read_file(
-            pi_coding_agent::tools::resolve_to_cwd(source, &self.setup.cwd),
+            pi_coding_agent::tools::resolve_read_path(source, &self.setup.cwd).await,
             cancel,
         )
         .await

@@ -1128,6 +1128,113 @@ async fn attached_images_reach_the_model_and_show_with_their_message() {
     );
 }
 
+/// The first tool result the model got in `request`.
+fn first_tool_result(request: &pi_ai::faux::FauxRequest) -> pi_ai::ToolResultMessage {
+    request
+        .context
+        .messages
+        .iter()
+        .find_map(|message| match message {
+            pi_ai::Message::ToolResult(result) => Some(result.clone()),
+            _ => None,
+        })
+        .unwrap()
+}
+
+#[tokio::test]
+async fn a_model_without_vision_looks_at_images_through_read_image() {
+    use base64::Engine as _;
+
+    let harness = Harness::new().await;
+    let png = base64::engine::general_purpose::STANDARD
+        .decode(PNG_1X1)
+        .unwrap();
+    std::fs::write(harness.project.path().join("shot.png"), png).unwrap();
+    for _ in 0..2 {
+        harness
+            .faux
+            .push_message(vec![faux_tool_call("read", json!({"path": "shot.png"}))]);
+        harness.faux.push_text("Seen.");
+    }
+    let blind = harness.create_task().await;
+    let mut run = harness.send(&blind, "What is in shot.png?").await;
+    assert_eq!(finished(&mut run).await, AgentRunTerminal::Completed);
+    let sighted = harness.create_task().await;
+    let mut request = harness.request(&sighted, "What is in shot.png?");
+    request.vision_capable = true;
+    let mut run = harness.handle.send_message(request).await.unwrap();
+    assert_eq!(finished(&mut run).await, AgentRunTerminal::Completed);
+
+    // Without vision, `read` sends the model to read_image for an image, as
+    // Goose's runtime did, and the prompt says to look at images with it.
+    let requests = harness.faux.requests();
+    assert_eq!(requests.len(), 4);
+    let result = first_tool_result(&requests[1]);
+    assert_eq!(
+        pi_ai::content_text(&result.content),
+        "shot.png is an image. Use read_image to inspect it."
+    );
+    assert!(
+        result
+            .content
+            .iter()
+            .all(|block| matches!(block, pi_ai::Content::Text(_)))
+    );
+    let guideline = "Use read_image when you need to inspect an image.";
+    let prompt = |request: &pi_ai::faux::FauxRequest| {
+        serde_json::to_string(&request.context.messages).unwrap()
+    };
+    assert!(prompt(&requests[0]).contains(guideline));
+    // With vision, `read` gives the image, as Pi's does.
+    let result = first_tool_result(&requests[3]);
+    assert!(
+        result
+            .content
+            .iter()
+            .any(|block| matches!(block, pi_ai::Content::Image(_)))
+    );
+    assert!(!prompt(&requests[2]).contains(guideline));
+}
+
+#[tokio::test]
+async fn read_image_describes_exactly_while_the_runs_model_cannot_see() {
+    let harness = Harness::new().await;
+    let runtime = harness.runtime().await;
+    let task = harness.create_task().await;
+    // Loaded without vision first, as a side question or `/compact` loads
+    // a task.
+    let row = runtime.store.get(&task).unwrap().unwrap();
+    runtime
+        .task_session(&row, runtime.pi_model(&runtime.model, None, false))
+        .await
+        .unwrap();
+    harness.faux.push_text("Seen.");
+    harness.faux.push_text("Seen again.");
+    for vision in [true, false] {
+        let mut request = harness.request(&task, "Look.");
+        request.vision_capable = vision;
+        let mut run = harness.handle.send_message(request).await.unwrap();
+        assert_eq!(finished(&mut run).await, AgentRunTerminal::Completed);
+    }
+
+    // A run whose model sees images gets them from read_image; one whose
+    // model cannot gets descriptions, focused by a context it must give.
+    let required: Vec<serde_json::Value> = harness
+        .faux
+        .requests()
+        .iter()
+        .map(|request| {
+            pi_ai::transcript::current_tools(&request.context.messages)
+                .into_iter()
+                .find(|tool| tool.name == "read_image")
+                .unwrap()
+                .parameters["required"]
+                .clone()
+        })
+        .collect();
+    assert_eq!(required, [json!(["source"]), json!(["source", "context"])]);
+}
+
 #[tokio::test]
 async fn a_failed_reply_fails_the_run_and_shows_its_error() {
     let harness = Harness::new().await;

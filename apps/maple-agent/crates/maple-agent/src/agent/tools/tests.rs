@@ -57,7 +57,10 @@ fn task(kind: TaskKind, tool_context: SharedAgentToolContext) -> TaskToolsFor {
             attachments: Arc::new(crate::agent::attachments::AgentAttachmentStore::new(
                 std::env::temp_dir().join("maple-tools-tests"),
             )),
-            describer: None,
+            models: pi_coding_agent::ModelRegistry::new(Arc::new(
+                pi_coding_agent::StaticKeys::default(),
+            )),
+            describe: false,
         },
     }
 }
