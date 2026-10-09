@@ -10,7 +10,7 @@ export CARGO_TERM_COLOR := "always"
 # incompatible toolchains in separate caches.
 export CARGO_BUILD_BUILD_DIR := `if [ -n "${CARGO_BUILD_BUILD_DIR:-}" ]; then printf "%s" "$CARGO_BUILD_BUILD_DIR"; elif [ -n "${CI:-}" ] || [ "${MAPLE_DISABLE_SHARED_CARGO_BUILD_DIR:-0}" = "1" ]; then printf target; elif command -v rustc >/dev/null 2>&1; then printf "%s/.cache/cargo-build/maple-agent/%s/rust-%s" "$HOME" "$(rustc -vV | awk '/^host:/{print $2}')" "$(rustc --version | awk '{print $2}')"; else printf target; fi`
 
-headless := "--no-default-features --features acp,proxy"
+headless := "--no-default-features --features acp,proxy,serve"
 
 # List the recipes.
 default:

@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 pub(super) const MAX_AGENT_IMAGE_BYTES: usize = 10 * 1024 * 1024;
 pub(super) const MAX_AGENT_IMAGES_PER_MESSAGE: usize = 10;
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AgentImageUpload {
     pub name: String,

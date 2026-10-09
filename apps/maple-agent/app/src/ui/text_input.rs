@@ -86,6 +86,9 @@ type KeyHandler = Box<
     dyn Fn(&gpui::KeyDownEvent, &SharedString, &mut Window, &mut Context<TextInput>) -> bool
         + 'static,
 >;
+/// Called for the up (-1) and down (1) arrows; returning true consumes
+/// the arrow instead of moving the caret.
+type VerticalHandler = Box<dyn Fn(isize, &mut Window, &mut Context<TextInput>) -> bool + 'static>;
 
 #[derive(Clone)]
 struct ImeBaseline {
@@ -146,6 +149,9 @@ pub struct TextInput {
     on_paste_image: Option<PasteImageHandler>,
     /// First look at every key press; returning true consumes the key.
     on_key: Option<KeyHandler>,
+    /// The up and down arrows are actions of this input, so the key hook
+    /// never sees them; a list above the input takes them here.
+    on_vertical: Option<VerticalHandler>,
     /// Underline words the dictionary rejects (composer only).
     spell_check: bool,
     /// Byte ranges of misspelled words, refreshed on every content change
@@ -246,6 +252,17 @@ impl TextInput {
         self
     }
 
+    /// Take the up and down arrows before they move the caret, for an
+    /// input that drives a list. The handler runs inside this entity's
+    /// update: defer any write back to the input.
+    pub fn on_vertical(
+        mut self,
+        handler: impl Fn(isize, &mut Window, &mut Context<TextInput>) -> bool + 'static,
+    ) -> Self {
+        self.on_vertical = Some(Box::new(handler));
+        self
+    }
+
     pub fn new(placeholder: &str, cx: &mut Context<Self>) -> Self {
         Self {
             focus_handle: cx.focus_handle(),
@@ -273,6 +290,7 @@ impl TextInput {
             on_enter: None,
             on_paste_image: None,
             on_key: None,
+            on_vertical: None,
             spell_check: false,
             misspelled: Vec::new(),
             spell_generation: 0,
@@ -1382,9 +1400,22 @@ impl TextInput {
         }
     }
 
+    /// Offer an arrow to the vertical hook; true when it took it.
+    fn take_vertical(&mut self, delta: isize, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        let Some(on_vertical) = self.on_vertical.take() else {
+            return false;
+        };
+        let consumed = on_vertical(delta, window, cx);
+        self.on_vertical = Some(on_vertical);
+        consumed
+    }
+
     fn up(&mut self, _: &Up, window: &mut Window, cx: &mut Context<Self>) {
         if matches!(self.vim_mode(), Some(VimMode::Normal | VimMode::Visual)) {
             self.execute_vim_command(VimCommand::Motion(Motion::Up), cx);
+            return;
+        }
+        if self.take_vertical(-1, window, cx) {
             return;
         }
         self.ensure_navigation_layout(window);
@@ -1404,6 +1435,9 @@ impl TextInput {
     fn down(&mut self, _: &Down, window: &mut Window, cx: &mut Context<Self>) {
         if matches!(self.vim_mode(), Some(VimMode::Normal | VimMode::Visual)) {
             self.execute_vim_command(VimCommand::Motion(Motion::Down), cx);
+            return;
+        }
+        if self.take_vertical(1, window, cx) {
             return;
         }
         self.ensure_navigation_layout(window);

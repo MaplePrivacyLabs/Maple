@@ -20,21 +20,29 @@ use crate::ui::popup::{Menu, MenuItem, Placement, Popup};
 use crate::ui::text_input::TextInput;
 
 use crate::backend::AgentBackend;
-use crate::settings::{self, AppSettings, PermissionMode, UsageSummary};
+use crate::remote::host::{HostingController, HostingStatus};
+use crate::settings::{self, AppSettings, PermissionMode};
 use crate::shortcuts::{
     ShortcutConflict, ShortcutConflictKind, ShortcutContextOverlap, ShortcutOverrides,
     ShortcutSnapshot,
 };
 use crate::ui::theme;
 use crate::ui::widgets;
+use maple_agent::host::{HostBackend, HostId, HostSessionDefaults, UsageSummary};
+use maple_remote::devices::PairedDevice;
+use maple_remote::hosts::SavedHost;
+use maple_remote::manager::{HostManager, HostVersion};
+use maple_remote::pairing::PairingCode;
 
 mod account;
 mod api_keys;
 mod billing;
+mod hosts;
 mod navigation;
 use self::account::AccountState;
 use self::api_keys::ApiKeysState;
 use self::billing::BillingState;
+use self::hosts::HostRow;
 use self::navigation::{GeneralTarget, SettingsApplicationVimState, SettingsTarget};
 
 /// Emitted when the user leaves settings.
@@ -56,8 +64,18 @@ pub enum Section {
     Shortcuts,
     Prompt,
     Integrations,
+    Hosts,
     Usage,
     About,
+}
+
+/// One connected host the settings screen can point its host-scoped
+/// sections at.
+#[derive(Clone)]
+pub struct SettingsHost {
+    pub id: HostId,
+    pub name: String,
+    pub backend: Arc<dyn HostBackend>,
 }
 
 impl Section {
@@ -70,12 +88,13 @@ impl Section {
             Self::Shortcuts => "Keyboard Shortcuts",
             Self::Prompt => "System prompt",
             Self::Integrations => "Integrations",
+            Self::Hosts => "Hosts",
             Self::Usage => "Usage",
             Self::About => "About",
         }
     }
 
-    const ALL: [Self; 9] = [
+    const ALL: [Self; 10] = [
         Self::General,
         Self::Account,
         Self::Billing,
@@ -83,15 +102,27 @@ impl Section {
         Self::Shortcuts,
         Self::Prompt,
         Self::Integrations,
+        Self::Hosts,
         Self::Usage,
         Self::About,
     ];
+
+    /// Sections whose content belongs to one host and follow the host
+    /// selector.
+    fn is_host_scoped(self) -> bool {
+        matches!(
+            self,
+            Self::General | Self::Prompt | Self::Integrations | Self::Usage
+        )
+    }
 }
 
 /// One multi-value General row that selects from a dropdown instead of
 /// toggling.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum SettingMenu {
+    /// Which connected host the host-scoped sections show.
+    Host,
     Permission,
     Appearance,
     ChatFont,
@@ -104,6 +135,7 @@ impl SettingMenu {
     /// Stable id fragment for the popup panel and its rows.
     fn id(self) -> &'static str {
         match self {
+            Self::Host => "host",
             Self::Permission => "permission",
             Self::Appearance => "appearance",
             Self::ChatFont => "chat-font",
@@ -124,8 +156,40 @@ pub struct SettingsScreen {
     /// [`crate::ui::task::call`].
     bridged_tasks: std::cell::RefCell<Vec<gpui::Task<()>>>,
     backend: Arc<AgentBackend>,
+    /// The host whose integrations, MCP servers, usage, and session
+    /// defaults the host-scoped sections show.
+    host: Arc<dyn HostBackend>,
+    /// Every connected host, for the selector; local first.
+    hosts: Vec<SettingsHost>,
+    /// Pairs, renames, and removes hosts. Absent in tests.
+    manager: Option<Arc<HostManager>>,
+    /// This window's host role. Absent in tests.
+    hosting: Option<Arc<HostingController>>,
+    hosting_status: HostingStatus,
+    /// The pairing code this window published, shown until it expires.
+    pairing_code: Option<(String, u64)>,
+    /// Devices paired with this machine as a host.
+    paired_devices: Vec<PairedDevice>,
+    /// The saved host list the Hosts section shows.
+    saved_hosts: Vec<SavedHost>,
+    /// `saved_hosts` as rendered: connection state, version, and how it
+    /// compares with this app. Rebuilt when the list or a host's state
+    /// changes, not in render.
+    host_rows: Vec<HostRow>,
+    /// Bumped each time the Hosts section starts polling the manager, so
+    /// a stale poll loop stops instead of running beside the new one.
+    hosts_watch: u64,
+    /// The add-host form.
+    host_address: Entity<TextInput>,
+    host_code: Entity<TextInput>,
+    host_name: Entity<TextInput>,
+    pairing: bool,
+    hosts_notice: Option<String>,
     user_id: String,
     settings: AppSettings,
+    /// The host's defaults for new tasks; the built-in defaults until the
+    /// host answers.
+    defaults: HostSessionDefaults,
     /// `settings.theme` parsed once; render only reads the label.
     theme: theme::Preference,
     section: Section,
@@ -236,15 +300,46 @@ impl EventEmitter<AccountDeleted> for SettingsScreen {}
 impl EventEmitter<ShortcutSettingsRequested> for SettingsScreen {}
 
 impl SettingsScreen {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         backend: Arc<AgentBackend>,
+        host: Arc<dyn HostBackend>,
+        hosts: Vec<SettingsHost>,
+        manager: Option<Arc<HostManager>>,
+        hosting: Option<Arc<HostingController>>,
         user_id: String,
         settings: AppSettings,
         shortcut_snapshot: ShortcutSnapshot,
         section: Section,
         cx: &mut Context<Self>,
     ) -> Self {
-        let prompt_text = settings.effective_harness_instructions();
+        let defaults = HostSessionDefaults::default();
+        let hosting_status = hosting
+            .as_ref()
+            .map(|hosting| hosting.status())
+            .unwrap_or(HostingStatus::Off);
+        let host_field = |placeholder: &str, index: isize, cx: &mut Context<Self>| {
+            let application_vim_enabled = settings.application_vim_enabled;
+            let placeholder = placeholder.to_string();
+            cx.new(move |cx| {
+                TextInput::new(&placeholder, cx)
+                    .with_tab_index(index)
+                    .application_vim(application_vim_enabled)
+            })
+        };
+        let host_address = host_field("100.64.0.7:7130", 6, cx);
+        let host_code = host_field("XXXX-XXXX-XXXX-XXXX", 7, cx);
+        let host_name = host_field("Workstation (optional)", 8, cx);
+        let saved_hosts = manager
+            .as_ref()
+            .and_then(|manager| manager.store().list().ok())
+            .unwrap_or_default();
+        let host_rows = hosts::rows(&saved_hosts, &Self::app_version(), latest_release(), |id| {
+            manager
+                .as_ref()
+                .and_then(|manager| manager.host_version(id))
+        });
+        let prompt_text = defaults.effective_harness_instructions();
         let application_vim_enabled = settings.application_vim_enabled;
         let application_focus = cx.focus_handle();
         let prompt_application_focus = application_focus.clone();
@@ -283,12 +378,28 @@ impl SettingsScreen {
         let application_anchor = ScrollAnchor::for_handle(pane_scroll.clone());
         let application_vim = SettingsApplicationVimState::new(section);
         let application_focus_pending = settings.application_vim_enabled;
-        let this = Self {
+        let mut this = Self {
             bridged_tasks: std::cell::RefCell::new(Vec::new()),
             backend,
+            host,
+            hosts,
+            manager,
+            hosting,
+            hosting_status,
+            pairing_code: None,
+            paired_devices: Vec::new(),
+            saved_hosts,
+            host_rows,
+            hosts_watch: 0,
+            host_address,
+            host_code,
+            host_name,
+            pairing: false,
+            hosts_notice: None,
             user_id,
             theme: theme::Preference::parse(&settings.theme),
             settings,
+            defaults,
             section,
             popup: Popup::new(|this| &mut this.popup, cx),
             account: AccountState::new(application_vim_enabled, application_focus.clone(), cx),
@@ -323,11 +434,27 @@ impl SettingsScreen {
         this.load_account(cx);
         this.load_billing(cx);
         this.load_api_keys(cx);
+        this.load_session_defaults(cx);
         this.load_usage(cx);
         this.load_plan(cx);
         this.load_mcp_servers(cx);
         this.load_integrations(cx);
+        this.load_paired_devices(cx);
+        if matches!(this.hosting_status, HostingStatus::Starting) {
+            this.watch_hosting_start(cx);
+        }
+        if this.section == Section::Hosts {
+            this.watch_hosts(cx);
+        }
         this
+    }
+
+    /// What this app would announce in its own hello.
+    fn app_version() -> HostVersion {
+        HostVersion {
+            version: crate::env::APP_VERSION.to_string(),
+            build: crate::env::build_hash().map(str::to_string),
+        }
     }
 
     fn load_plan(&self, cx: &mut Context<Self>) {
@@ -359,10 +486,9 @@ impl SettingsScreen {
     }
 
     fn load_mcp_servers(&self, cx: &mut Context<Self>) {
-        let backend = self.backend.clone();
-        let user_id = self.user_id.clone();
+        let host = self.host.clone();
         self.call(
-            async move { backend.list_mcp_servers(&user_id).await },
+            async move { host.list_mcp_servers().await },
             cx,
             |this, result, cx| {
                 match result {
@@ -378,10 +504,9 @@ impl SettingsScreen {
     }
 
     fn load_integrations(&self, cx: &mut Context<Self>) {
-        let backend = self.backend.clone();
-        let user_id = self.user_id.clone();
+        let host = self.host.clone();
         self.call(
-            async move { backend.list_integrations(&user_id).await },
+            async move { host.list_integrations().await },
             cx,
             |this, result, cx| {
                 match result {
@@ -434,13 +559,11 @@ impl SettingsScreen {
         self.integration_notice = None;
         cx.notify();
 
-        let backend = self.backend.clone();
-        let user_id = self.user_id.clone();
+        let host = self.host.clone();
         let request_id = id.clone();
         self.call(
             async move {
-                backend
-                    .set_integration_enabled(&user_id, &request_id, enabled)
+                host.set_integration_enabled(request_id.clone(), enabled)
                     .await
             },
             cx,
@@ -490,13 +613,14 @@ impl SettingsScreen {
         cx.notify();
 
         let backend = self.backend.clone();
-        let user_id = self.user_id.clone();
+        let host = self.host.clone();
         let request_id = id.clone();
         self.call(
             async move {
                 backend
-                    .setup_integration(&user_id, &request_id, permissions)
-                    .await
+                    .open_integration_setup_settings(&permissions)
+                    .await?;
+                host.setup_integration(request_id).await
             },
             cx,
             move |this, result, cx| {
@@ -532,10 +656,9 @@ impl SettingsScreen {
         self.mcp_saving = true;
         self.mcp_notice = None;
         cx.notify();
-        let backend = self.backend.clone();
-        let user_id = self.user_id.clone();
+        let host = self.host.clone();
         self.call(
-            async move { backend.save_mcp_servers(&user_id, servers).await },
+            async move { host.save_mcp_servers(servers).await },
             cx,
             |this, result, cx| {
                 this.mcp_saving = false;
@@ -709,22 +832,727 @@ impl SettingsScreen {
         self.save_mcp_servers(servers, cx);
     }
 
-    fn load_usage(&self, cx: &mut Context<Self>) {
-        let (spawn_backend, usage_backend) = (self.backend.clone(), self.backend.clone());
-        let user_id = self.user_id.clone();
-        let task = spawn_backend.spawn(async move {
-            let scope = usage_backend.account_scope(&user_id);
-            scope.map(|scope| settings::load_usage(&scope))
+    fn current_host_name(&self) -> String {
+        self.hosts
+            .iter()
+            .find(|host| host.id == *self.host.id())
+            .map(|host| host.name.clone())
+            .unwrap_or_else(|| "This computer".to_string())
+    }
+
+    /// Point the host-scoped sections at another connected host and
+    /// re-read everything they show.
+    fn select_host(&mut self, host: SettingsHost, cx: &mut Context<Self>) {
+        if host.id == *self.host.id() {
+            return;
+        }
+        self.host = host.backend;
+        self.mcp_servers = None;
+        self.mcp_editor = None;
+        self.integrations = None;
+        self.usage = None;
+        self.load_session_defaults(cx);
+        self.load_usage(cx);
+        self.load_mcp_servers(cx);
+        self.load_integrations(cx);
+        cx.notify();
+    }
+
+    /// Whether a host is connected right now. The manager is the live
+    /// answer; `self.hosts` is the snapshot taken at open and would keep a
+    /// host that dropped since looking online.
+    fn host_is_online(&self, id: &str) -> bool {
+        self.manager
+            .as_ref()
+            .is_some_and(|manager| manager.is_online(id))
+    }
+
+    /// What a host's live connection announced, or `None` while offline.
+    fn host_version(&self, id: &str) -> Option<HostVersion> {
+        self.manager
+            .as_ref()
+            .and_then(|manager| manager.host_version(id))
+    }
+
+    /// Recompute the Hosts rows from the saved list and the manager's
+    /// live state. Returns whether anything shown changed.
+    fn rebuild_host_rows(&mut self) -> bool {
+        let rows = hosts::rows(
+            &self.saved_hosts,
+            &Self::app_version(),
+            latest_release(),
+            |id| self.host_version(id),
+        );
+        if rows == self.host_rows {
+            return false;
+        }
+        self.host_rows = rows;
+        true
+    }
+
+    /// Poll the manager once a second while the Hosts section is shown,
+    /// so a host that connects or drops updates its row; nothing pushes
+    /// status changes to this screen. Re-renders only when a row changed.
+    /// A flipped connection state re-reads the saved list too, since the
+    /// hello that just completed rewrote that host's last seen version.
+    fn watch_hosts(&mut self, cx: &mut Context<Self>) {
+        self.hosts_watch = self.hosts_watch.wrapping_add(1);
+        let generation = self.hosts_watch;
+        let task = cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor()
+                    .timer(std::time::Duration::from_secs(1))
+                    .await;
+                let keep_going = this.update(cx, |this, cx| {
+                    if this.section != Section::Hosts || this.hosts_watch != generation {
+                        return false;
+                    }
+                    let flipped = this
+                        .host_rows
+                        .iter()
+                        .any(|row| this.host_is_online(&row.id) != row.online);
+                    if flipped {
+                        this.reload_saved_hosts();
+                        cx.notify();
+                    } else if this.rebuild_host_rows() {
+                        cx.notify();
+                    }
+                    true
+                });
+                if !matches!(keep_going, Ok(true)) {
+                    return;
+                }
+            }
         });
-        cx.spawn(async move |this, cx| {
-            let usage = task.await.ok().flatten().unwrap_or_default();
-            this.update(cx, |this, cx| {
-                this.usage = Some(usage);
+        crate::ui::task::retain(&self.bridged_tasks, task);
+    }
+
+    /// Re-render shortly, so a host that connects after pairing shows as
+    /// online without the user leaving the screen.
+    fn refresh_hosts_soon(&self, cx: &mut Context<Self>) {
+        let task = cx.spawn(async move |this, cx| {
+            for _ in 0..4 {
+                cx.background_executor()
+                    .timer(std::time::Duration::from_millis(750))
+                    .await;
+                if this
+                    .update(cx, |this, cx| {
+                        this.reload_saved_hosts();
+                        cx.notify();
+                    })
+                    .is_err()
+                {
+                    return;
+                }
+            }
+        });
+        crate::ui::task::retain(&self.bridged_tasks, task);
+    }
+
+    fn reload_saved_hosts(&mut self) {
+        if let Some(manager) = &self.manager
+            && let Ok(hosts) = manager.store().list()
+        {
+            self.saved_hosts = hosts;
+        }
+        self.rebuild_host_rows();
+    }
+
+    /// Pair with the host in the form. The manager saves it and connects;
+    /// it appears in the sidebar once online.
+    fn pair_host(&mut self, cx: &mut Context<Self>) {
+        if self.pairing {
+            return;
+        }
+        let Some(manager) = self.manager.clone() else {
+            self.hosts_notice = Some("Hosts are unavailable in this session.".to_string());
+            cx.notify();
+            return;
+        };
+        let address = self.host_address.read(cx).text().trim().to_string();
+        let code = match PairingCode::parse(&self.host_code.read(cx).text()) {
+            Ok(code) => code,
+            Err(message) => {
+                self.hosts_notice = Some(message);
                 cx.notify();
-            })
-            .ok();
-        })
-        .detach();
+                return;
+            }
+        };
+        if address.is_empty() {
+            self.hosts_notice = Some("Enter the host's address, like 100.64.0.7:7130.".to_string());
+            cx.notify();
+            return;
+        }
+        let name =
+            Some(self.host_name.read(cx).text().trim().to_string()).filter(|name| !name.is_empty());
+        self.pairing = true;
+        self.hosts_notice = Some("Pairing…".to_string());
+        cx.notify();
+        self.call(
+            async move { manager.pair(&address, code, name).await },
+            cx,
+            |this, result, cx| {
+                this.pairing = false;
+                match result {
+                    Ok(host) => {
+                        this.hosts_notice = Some(format!(
+                            "Paired with {}. Its tasks appear in the sidebar once it is connected.",
+                            host.name
+                        ));
+                        for input in [&this.host_address, &this.host_code, &this.host_name] {
+                            input.update(cx, |input, cx| input.set_text("", cx));
+                        }
+                        this.reload_saved_hosts();
+                        this.refresh_hosts_soon(cx);
+                    }
+                    Err(message) => this.hosts_notice = Some(message),
+                }
+                cx.notify();
+            },
+        );
+    }
+
+    fn remove_host(&mut self, id: &str, cx: &mut Context<Self>) {
+        let Some(manager) = &self.manager else {
+            return;
+        };
+        self.hosts_notice = manager.remove(id).err();
+        self.reload_saved_hosts();
+        cx.notify();
+    }
+
+    /// Turn this window's host role on or off. Off persists at once. On
+    /// starts the host on the backend runtime and persists only once it
+    /// listens, so a failed start does not come back at the next launch.
+    fn toggle_remote_connections(&mut self, cx: &mut Context<Self>) {
+        let Some(hosting) = self.hosting.clone() else {
+            return;
+        };
+        let on = self.settings.allow_remote_connections
+            || matches!(self.hosting_status, HostingStatus::Starting);
+        if on {
+            self.edit_setting(|settings| settings.allow_remote_connections = false, cx);
+            hosting.stop();
+            self.hosting_status = HostingStatus::Off;
+            cx.notify();
+            return;
+        }
+        self.hosting_status = HostingStatus::Starting;
+        cx.notify();
+        self.call(
+            async move { Ok(hosting.start(crate::remote::DEFAULT_LISTEN).await) },
+            cx,
+            |this, result, cx| {
+                let status = result.unwrap_or_else(HostingStatus::Failed);
+                if matches!(status, HostingStatus::Listening { .. }) {
+                    this.edit_setting(|settings| settings.allow_remote_connections = true, cx);
+                }
+                this.hosting_status = status;
+                cx.notify();
+            },
+        );
+    }
+
+    /// Re-read the controller until a start in flight resolves, so a
+    /// screen opened during the launch-time start shows the outcome.
+    fn watch_hosting_start(&self, cx: &mut Context<Self>) {
+        let Some(hosting) = self.hosting.clone() else {
+            return;
+        };
+        let task = cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor()
+                    .timer(std::time::Duration::from_millis(500))
+                    .await;
+                let status = hosting.status();
+                let settled = !matches!(status, HostingStatus::Starting);
+                let alive = this
+                    .update(cx, |this, cx| {
+                        if settled {
+                            this.hosting_status = status;
+                            cx.notify();
+                        }
+                    })
+                    .is_ok();
+                if settled || !alive {
+                    return;
+                }
+            }
+        });
+        crate::ui::task::retain(&self.bridged_tasks, task);
+    }
+
+    fn load_paired_devices(&self, cx: &mut Context<Self>) {
+        if self.hosting.is_none() {
+            return;
+        }
+        let user_id = self.user_id.clone();
+        self.call(
+            async move { crate::remote::host::list_devices(&user_id) },
+            cx,
+            |this, result, cx| {
+                match result {
+                    Ok(devices) => this.paired_devices = devices,
+                    Err(message) => this.hosts_notice = Some(message),
+                }
+                cx.notify();
+            },
+        );
+    }
+
+    /// Publish a code for the running host. Only a listening host can
+    /// accept it, so the button is inert otherwise.
+    fn generate_pairing_code(&mut self, cx: &mut Context<Self>) {
+        if !matches!(self.hosting_status, HostingStatus::Listening { .. }) {
+            return;
+        }
+        let user_id = self.user_id.clone();
+        self.call(
+            async move { crate::remote::host::publish_pairing_code(&user_id) },
+            cx,
+            |this, result, cx| {
+                match result {
+                    Ok((code, pending)) => {
+                        this.pairing_code = Some((code.display(), pending.expires_ms));
+                        this.hosts_notice = None;
+                        this.watch_pairing_code(cx);
+                    }
+                    Err(message) => this.hosts_notice = Some(message),
+                }
+                cx.notify();
+            },
+        );
+    }
+
+    /// Keep the shown code honest: it goes when the host consumed it (a
+    /// device paired, so the list is re-read) or it expired.
+    fn watch_pairing_code(&self, cx: &mut Context<Self>) {
+        let backend = self.backend.clone();
+        let user_id = self.user_id.clone();
+        let task = cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor()
+                    .timer(std::time::Duration::from_secs(2))
+                    .await;
+                let user_id = user_id.clone();
+                let pending = backend
+                    .spawn(async move { crate::remote::host::pending_pairing_code(&user_id) })
+                    .await;
+                let valid = matches!(pending, Ok(Ok(Some(_))));
+                let keep = this.update(cx, |this, cx| {
+                    if this.pairing_code.is_none() {
+                        return false;
+                    }
+                    if valid {
+                        return true;
+                    }
+                    this.pairing_code = None;
+                    this.load_paired_devices(cx);
+                    cx.notify();
+                    false
+                });
+                if !matches!(keep, Ok(true)) {
+                    return;
+                }
+            }
+        });
+        crate::ui::task::retain(&self.bridged_tasks, task);
+    }
+
+    fn revoke_device(&mut self, key: &str, cx: &mut Context<Self>) {
+        let user_id = self.user_id.clone();
+        let key = key.to_string();
+        self.call(
+            async move { crate::remote::host::revoke_device(&user_id, &key) },
+            cx,
+            |this, result, cx| {
+                if let Err(message) = result {
+                    this.hosts_notice = Some(message);
+                }
+                this.load_paired_devices(cx);
+            },
+        );
+    }
+
+    /// This machine's host role: the toggle, where it listens, the pairing
+    /// code, and the paired devices.
+    fn render_remote_access(&self, cx: &mut Context<Self>) -> Div {
+        let mut pane = div()
+            .flex()
+            .flex_col()
+            .gap_4()
+            .child(section_title("Remote access"))
+            .child(toggle_row(
+                "Allow remote connections",
+                "Serve this machine's tasks to paired devices on the LAN or a Tailscale \
+                 network. Pairing is the only gate; traffic is end-to-end encrypted.",
+                self.settings.allow_remote_connections
+                    || matches!(self.hosting_status, HostingStatus::Starting),
+                cx.listener(|this, _event, _window, cx| {
+                    this.toggle_remote_connections(cx);
+                }),
+            ));
+        let listening = matches!(self.hosting_status, HostingStatus::Listening { .. });
+        let status = match &self.hosting_status {
+            HostingStatus::Off => "Not listening.".to_string(),
+            HostingStatus::Starting => "Starting\u{2026}".to_string(),
+            HostingStatus::Listening {
+                listen,
+                host_id,
+                name,
+            } => {
+                let short: String = host_id.chars().take(10).collect();
+                match listen.parse::<std::net::SocketAddr>() {
+                    // Every interface: no single address to show.
+                    Ok(address) if address.ip().is_unspecified() => format!(
+                        "Listening on port {} as \"{name}\" (key {short}\u{2026}). Devices \
+                         reach it at this machine's LAN or Tailscale address and that port.",
+                        address.port()
+                    ),
+                    _ => format!("Listening on {listen} as \"{name}\" (key {short}\u{2026})."),
+                }
+            }
+            HostingStatus::Failed(error) => format!("Not listening: {error}"),
+        };
+        pane = pane.child(
+            div()
+                .text_sm()
+                .text_color(gpui::rgb(theme::text_muted()))
+                .child(status),
+        );
+        if self.settings.allow_remote_connections
+            || matches!(self.hosting_status, HostingStatus::Starting)
+        {
+            pane = pane.child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_3()
+                    .child(
+                        widgets::secondary_button("generate-pairing-code")
+                            .when(!listening, |button| button.opacity(0.5))
+                            .when(listening, |button| {
+                                button.on_click(cx.listener(|this, _event, _window, cx| {
+                                    this.generate_pairing_code(cx);
+                                }))
+                            })
+                            .child("Generate pairing code"),
+                    )
+                    .when_some(self.pairing_code.as_ref(), |row, (code, _)| {
+                        // The code is read across the room or copied into
+                        // another machine: large, monospaced, and selectable
+                        // by a copy button rather than a drag.
+                        let code: gpui::SharedString = code.clone().into();
+                        row.child(
+                            div()
+                                .px_3()
+                                .py_1p5()
+                                .rounded(theme::RADIUS_MD)
+                                .bg(gpui::rgb(theme::bg_input()))
+                                .border_1()
+                                .border_color(gpui::rgb(theme::border()))
+                                .font_family(crate::assets::FONT_MONO)
+                                .text_lg()
+                                .font_weight(gpui::FontWeight::SEMIBOLD)
+                                .text_color(gpui::rgb(theme::text_primary()))
+                                .child(code.clone()),
+                        )
+                        .child(widgets::copy_button(
+                            "copy-pairing-code",
+                            code,
+                            None,
+                            Some(cx.entity_id()),
+                        ))
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(gpui::rgb(theme::text_muted()))
+                                .child("valid for 5 minutes, one device"),
+                        )
+                    }),
+            );
+        }
+        pane = pane.child(section_title("Paired devices"));
+        if self.paired_devices.is_empty() {
+            pane = pane.child(
+                div()
+                    .text_sm()
+                    .text_color(gpui::rgb(theme::text_muted()))
+                    .child("No devices have paired with this machine."),
+            );
+        }
+        for device in &self.paired_devices {
+            let key = device.public_key.clone();
+            let short: String = device.public_key.chars().take(10).collect();
+            pane = pane.child(
+                widgets::card_row()
+                    .id(gpui::SharedString::from(format!(
+                        "device-{}",
+                        device.public_key
+                    )))
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .gap_4()
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .min_w_0()
+                            .child(
+                                div()
+                                    .font_weight(gpui::FontWeight::MEDIUM)
+                                    .text_color(gpui::rgb(theme::text_primary()))
+                                    .child(device.name.clone()),
+                            )
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(gpui::rgb(theme::text_muted()))
+                                    .child(format!(
+                                        "key {short}\u{2026}{}",
+                                        device
+                                            .user_id
+                                            .as_deref()
+                                            .map(|user| format!(" \u{b7} account {user}"))
+                                            .unwrap_or_default()
+                                    )),
+                            ),
+                    )
+                    .child(
+                        widgets::ghost_button(gpui::SharedString::from(format!(
+                            "revoke-device-{}",
+                            device.public_key
+                        )))
+                        .on_click(cx.listener(move |this, _event, _window, cx| {
+                            this.revoke_device(&key, cx);
+                        }))
+                        .child("Revoke"),
+                    ),
+            );
+        }
+        pane
+    }
+
+    fn render_hosts_pane(&self, cx: &mut Context<Self>) -> Div {
+        let mut pane = div()
+            .flex()
+            .flex_col()
+            .gap_4()
+            .child(section_title("Hosts"))
+            .child(
+                div()
+                    .text_sm()
+                    .text_color(gpui::rgb(theme::text_muted()))
+                    .child(
+                        "A host is another machine running `maple-agent serve`. Its tasks join \
+                         the sidebar and run there. Pair once with the code the host prints; \
+                         later connections need no code.",
+                    ),
+            );
+        if self.saved_hosts.is_empty() {
+            pane = pane.child(
+                div()
+                    .text_sm()
+                    .text_color(gpui::rgb(theme::text_muted()))
+                    .child("No hosts yet."),
+            );
+        }
+        for row in &self.host_rows {
+            let online = row.online;
+            let id = row.id.clone();
+            let mut column = div()
+                .flex()
+                .flex_col()
+                .min_w_0()
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .child(
+                            div()
+                                .font_weight(gpui::FontWeight::MEDIUM)
+                                .text_color(gpui::rgb(theme::text_primary()))
+                                .child(row.name.clone()),
+                        )
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(gpui::rgb(if online {
+                                    theme::accent()
+                                } else {
+                                    theme::text_muted()
+                                }))
+                                .child(if online { "online" } else { "offline" }),
+                        )
+                        .when_some(row.version.clone(), |line, version| {
+                            line.child(
+                                div()
+                                    .text_xs()
+                                    .text_color(gpui::rgb(theme::text_muted()))
+                                    .child(version),
+                            )
+                        }),
+                )
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(gpui::rgb(theme::text_muted()))
+                        .line_clamp(1)
+                        .text_ellipsis()
+                        .child(row.detail.clone()),
+                );
+            for note in &row.notes {
+                column = column.child(
+                    div()
+                        .text_xs()
+                        .text_color(gpui::rgb(theme::text_primary()))
+                        .child(note.clone()),
+                );
+            }
+            pane = pane.child(
+                widgets::card_row()
+                    .id(gpui::SharedString::from(format!("host-{}", row.id)))
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .gap_4()
+                    .child(column)
+                    .child(
+                        widgets::ghost_button(gpui::SharedString::from(format!(
+                            "remove-host-{}",
+                            row.id
+                        )))
+                        .on_click(cx.listener(move |this, _event, _window, cx| {
+                            this.remove_host(&id, cx);
+                        }))
+                        .child("Remove"),
+                    ),
+            );
+        }
+        pane = pane
+            .child(section_title("Add a host"))
+            .child(
+                div()
+                    .text_sm()
+                    .text_color(gpui::rgb(theme::text_muted()))
+                    .child(
+                        "On the host, run `maple-agent serve pair` and enter its address and \
+                         the code here within five minutes.",
+                    ),
+            )
+            .child(labeled_input("Address", self.host_address.clone()))
+            .child(labeled_input("Pairing code", self.host_code.clone()))
+            .child(labeled_input("Name", self.host_name.clone()))
+            .child(
+                div().flex().items_center().gap_3().child(
+                    widgets::primary_button("pair-host")
+                        .on_click(cx.listener(|this, _event, _window, cx| {
+                            this.pair_host(cx);
+                        }))
+                        .child(if self.pairing { "Pairing…" } else { "Pair" }),
+                ),
+            );
+        if let Some(notice) = &self.hosts_notice {
+            pane = pane.child(
+                div()
+                    .text_sm()
+                    .text_color(gpui::rgb(theme::text_muted()))
+                    .child(notice.clone()),
+            );
+        }
+        pane.child(self.render_remote_access(cx))
+    }
+
+    /// The host selector row, shown on host-scoped sections when more than
+    /// one host is connected.
+    fn render_host_selector(
+        &self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<gpui::Stateful<Div>> {
+        if self.hosts.len() <= 1 {
+            return None;
+        }
+        Some(self.setting_menu_row(
+            "Host",
+            "Which host these settings belong to.",
+            SettingMenu::Host,
+            window,
+            cx,
+        ))
+    }
+
+    fn load_usage(&self, cx: &mut Context<Self>) {
+        let host = self.host.clone();
+        self.call(
+            async move { host.usage_summary().await },
+            cx,
+            |this, result, cx| {
+                this.usage = Some(result.unwrap_or_else(|error| {
+                    log::debug!("usage summary unavailable: {error}");
+                    UsageSummary::default()
+                }));
+                cx.notify();
+            },
+        );
+    }
+
+    /// Read the host's defaults for new tasks and show them.
+    fn load_session_defaults(&self, cx: &mut Context<Self>) {
+        let host = self.host.clone();
+        self.call(
+            async move { host.session_defaults().await },
+            cx,
+            |this, result, cx| {
+                match result {
+                    Ok(defaults) => this.apply_session_defaults(defaults, cx),
+                    Err(message) => this.prompt_notice = Some(message),
+                }
+                cx.notify();
+            },
+        );
+    }
+
+    fn apply_session_defaults(&mut self, defaults: HostSessionDefaults, cx: &mut Context<Self>) {
+        let prompt_text = defaults.effective_harness_instructions();
+        self.prompt_editor.update(cx, |input, cx| {
+            if input.text() != prompt_text {
+                input.set_text(&prompt_text, cx);
+            }
+        });
+        self.defaults = defaults;
+    }
+
+    /// The host's permission default as the UI's mode.
+    fn permission_default(&self) -> PermissionMode {
+        PermissionMode::parse(&self.defaults.permission_mode)
+    }
+
+    /// Change the host's session defaults: apply to the local copy, hand
+    /// the whole record to the host, and re-render. A rejected save puts
+    /// the host's answer back.
+    fn edit_session_defaults(
+        &mut self,
+        update: impl FnOnce(&mut HostSessionDefaults),
+        cx: &mut Context<Self>,
+    ) {
+        update(&mut self.defaults);
+        let host = self.host.clone();
+        let defaults = self.defaults.clone();
+        self.call(
+            async move { host.set_session_defaults(defaults).await },
+            cx,
+            |this, result, cx| {
+                if let Err(message) = result {
+                    this.prompt_notice = Some(message);
+                    this.load_session_defaults(cx);
+                }
+                cx.notify();
+            },
+        );
+        cx.notify();
     }
 
     /// Change one setting: apply it to the local copy, queue the write
@@ -768,11 +1596,19 @@ impl SettingsScreen {
     /// share this order, so an index means the same option in both.
     fn menu_options(&self, menu: SettingMenu) -> Vec<SettingOption> {
         match menu {
+            SettingMenu::Host => self
+                .hosts
+                .iter()
+                .map(|host| SettingOption {
+                    label: host.name.clone(),
+                    current: host.id == *self.host.id(),
+                })
+                .collect(),
             SettingMenu::Permission => [PermissionMode::SmartApprove, PermissionMode::Auto]
                 .iter()
                 .map(|&mode| SettingOption {
                     label: mode.label().to_string(),
-                    current: self.settings.default_permission_mode == mode,
+                    current: self.permission_default() == mode,
                 })
                 .collect(),
             SettingMenu::Appearance => [
@@ -824,7 +1660,8 @@ impl SettingsScreen {
     /// The saved value shown on the dropdown's trigger button.
     fn menu_value(&self, menu: SettingMenu) -> String {
         match menu {
-            SettingMenu::Permission => self.settings.default_permission_mode.label().to_string(),
+            SettingMenu::Host => self.current_host_name(),
+            SettingMenu::Permission => self.permission_default().label().to_string(),
             SettingMenu::Appearance => self.theme.label().to_string(),
             SettingMenu::ChatFont => {
                 crate::ui::typography::ChatFontFamily::parse(&self.settings.chat_font_family)
@@ -944,13 +1781,18 @@ impl SettingsScreen {
         cx: &mut Context<Self>,
     ) {
         match menu {
+            SettingMenu::Host => {
+                if let Some(host) = self.hosts.get(index).cloned() {
+                    self.select_host(host, cx);
+                }
+            }
             SettingMenu::Permission => {
                 let Some(mode) = [PermissionMode::SmartApprove, PermissionMode::Auto].get(index)
                 else {
                     return;
                 };
-                let mode = *mode;
-                self.edit_setting(move |settings| settings.default_permission_mode = mode, cx);
+                let mode = mode.as_str().to_string();
+                self.edit_session_defaults(move |defaults| defaults.permission_mode = mode, cx);
             }
             SettingMenu::Appearance => {
                 let Some(preference) = [
@@ -995,8 +1837,8 @@ impl SettingsScreen {
     }
 
     fn toggle_web_default(&mut self, cx: &mut Context<Self>) {
-        let next = !self.settings.default_web_enabled;
-        self.edit_setting(move |settings| settings.default_web_enabled = next, cx);
+        let next = !self.defaults.web_enabled;
+        self.edit_session_defaults(move |defaults| defaults.web_enabled = next, cx);
     }
 
     fn choose_theme(&mut self, preference: theme::Preference, cx: &mut Context<Self>) {
@@ -1140,20 +1982,20 @@ impl SettingsScreen {
         self.set_application_vim_enabled(next, cx);
     }
 
-    /// Persist the editor text as the harness instructions and hand it to
-    /// the running backend. Text equal to the default is saved as empty so
-    /// a future default change still applies.
+    /// Persist the editor text as the host's harness instructions. Text
+    /// equal to the default is saved as empty so a future default change
+    /// still applies.
     fn save_prompt(&mut self, cx: &mut Context<Self>) {
         let text = self.prompt_editor.read(cx).text().trim().to_string();
-        self.settings.harness_instructions = if text == settings::DEFAULT_HARNESS_INSTRUCTIONS {
+        let instructions = if text == settings::DEFAULT_HARNESS_INSTRUCTIONS {
             String::new()
         } else {
             text
         };
-        let instructions = self.settings.harness_instructions.clone();
-        settings::update_settings_in_background(move |s| s.harness_instructions = instructions);
-        self.backend
-            .set_harness_instructions(self.settings.effective_harness_instructions());
+        self.edit_session_defaults(
+            move |defaults| defaults.harness_instructions = instructions,
+            cx,
+        );
         self.prompt_notice = Some("Saved. New tasks use this prompt.".to_string());
         cx.notify();
     }
@@ -1327,7 +2169,14 @@ impl SettingsScreen {
         }
         // A dropdown belongs to the pane that opened it.
         self.close_setting_menu(cx);
+        let entering_hosts = section == Section::Hosts && self.section != Section::Hosts;
         self.section = section;
+        if entering_hosts {
+            // The list is a snapshot from open; hosts may have connected
+            // or recorded a version since.
+            self.reload_saved_hosts();
+            self.watch_hosts(cx);
+        }
         if self.settings.application_vim_enabled {
             self.application_vim.section = section;
             self.reconcile_application_vim_target();
@@ -1339,6 +2188,11 @@ impl SettingsScreen {
         self.stop_shortcut_recording();
         cx.emit(SettingsClosed(self.settings.clone()));
     }
+}
+
+/// The newest Agent release the update check found, for the Hosts rows.
+fn latest_release() -> Option<&'static str> {
+    crate::update::available().map(|update| update.version.as_str())
 }
 
 fn merge_shortcut_overrides(settings: &mut AppSettings, shortcut_overrides: ShortcutOverrides) {
@@ -1532,12 +2386,20 @@ impl SettingsScreen {
             .p_6()
             .track_scroll(&self.pane_scroll)
             .overflow_y_scroll();
+        if self.section.is_host_scoped()
+            && let Some(selector) = self.render_host_selector(window, cx)
+        {
+            pane = pane.child(selector);
+        }
         match self.section {
+            Section::Hosts => {
+                pane = pane.child(self.render_hosts_pane(cx));
+            }
             Section::General => {
                 pane = pane
                     .child(section_title("Defaults"))
                     .child({
-                        let mode = self.settings.default_permission_mode;
+                        let mode = self.permission_default();
                         self.application_target(
                             || SettingsTarget::General(GeneralTarget::Permission),
                             self.setting_menu_row(
@@ -1555,7 +2417,7 @@ impl SettingsScreen {
                             "New tasks can use the web",
                             "Offers web_search and open_url to the model. Each task can \
                              switch web access on or off from its composer.",
-                            self.settings.default_web_enabled,
+                            self.defaults.web_enabled,
                             cx.listener(|this, _event, _window, cx| {
                                 this.toggle_web_default(cx);
                             }),
@@ -3163,6 +4025,23 @@ fn toggle_row(
         ))
 }
 
+/// A label above a text input, for short forms. The input frame carries
+/// the themed text and background colors; a bare input inherits none.
+fn labeled_input(label: &str, input: Entity<TextInput>) -> Div {
+    div()
+        .flex()
+        .flex_col()
+        .gap_1()
+        .child(
+            div()
+                .text_xs()
+                .font_weight(gpui::FontWeight::MEDIUM)
+                .text_color(gpui::rgb(theme::text_secondary()))
+                .child(label.to_string()),
+        )
+        .child(widgets::input_frame().text_sm().child(input))
+}
+
 fn info_row(label: &str, value: String) -> Div {
     widgets::card_row()
         .flex()
@@ -3203,7 +4082,7 @@ fn stat(label: &str, value: String) -> Div {
         )
 }
 
-fn usage_table(title: &str, rows: &[crate::settings::UsageRow]) -> Div {
+fn usage_table(title: &str, rows: &[maple_agent::host::UsageRow]) -> Div {
     let mut table = div().flex().flex_col().gap_2().child(
         div()
             .text_sm()
@@ -3341,8 +4220,8 @@ mod tests {
     #[test]
     fn shortcut_result_preserves_unrelated_general_setting() {
         let mut settings = AppSettings::default();
-        settings.default_web_enabled = !settings.default_web_enabled;
-        let expected_web_enabled = settings.default_web_enabled;
+        settings.tool_details = !settings.tool_details;
+        let expected_tool_details = settings.tool_details;
         settings
             .shortcut_overrides
             .insert("chat.focus_search".into(), None);
@@ -3353,7 +4232,7 @@ mod tests {
 
         merge_shortcut_overrides(&mut settings, overrides.clone());
 
-        assert_eq!(settings.default_web_enabled, expected_web_enabled);
+        assert_eq!(settings.tool_details, expected_tool_details);
         assert_eq!(settings.shortcut_overrides, overrides);
     }
 
