@@ -53,7 +53,7 @@ use crate::system_prompt::{
 };
 use crate::tools::{
     BashOperations, DEFAULT_TOOL_NAMES, LocalShellOperations, ToolContext, ToolsOptions,
-    create_all_tools, expand_path,
+    create_all_tools, expand_path, normalize_tool_result_images,
 };
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -1762,19 +1762,33 @@ impl AgentHooks<SessionMessage> for SessionHooks {
         let Some(core) = self.core.upgrade() else {
             return Ok(None);
         };
-        if !core.runner.has::<ToolResult>() {
-            return Ok(None);
-        }
-        let event = ToolResult {
-            tool_call_id: call.tool_call.id.clone(),
-            tool_name: call.tool_call.name.clone(),
-            input: call.args.clone(),
-            content: call.result.content.clone(),
-            details: call.result.details.clone(),
-            is_error: call.is_error,
-            usage: call.result.usage,
+        let rewrite = if core.runner.has::<ToolResult>() {
+            let event = ToolResult {
+                tool_call_id: call.tool_call.id.clone(),
+                tool_name: call.tool_call.name.clone(),
+                input: call.args.clone(),
+                content: call.result.content.clone(),
+                details: call.result.details.clone(),
+                is_error: call.is_error,
+                usage: call.result.usage,
+            };
+            core.runner.tool_result(event, &self.core).await
+        } else {
+            None
         };
-        Ok(core.runner.tool_result(event, &self.core).await)
+        // After the extensions, so images they add or replace fit too.
+        let content = rewrite
+            .as_ref()
+            .and_then(|rewrite| rewrite.content.as_deref())
+            .unwrap_or(&call.result.content);
+        let auto_resize = lock(&core.settings).images.auto_resize;
+        let Some(content) = normalize_tool_result_images(content, auto_resize).await else {
+            return Ok(rewrite);
+        };
+        Ok(Some(AfterToolCallResult {
+            content: Some(content),
+            ..rewrite.unwrap_or_default()
+        }))
     }
 
     async fn finalize_message(&self, message: SessionMessage) -> SessionMessage {

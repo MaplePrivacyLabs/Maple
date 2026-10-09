@@ -836,3 +836,62 @@ async fn system_md_and_append_system_md_shape_the_prompt_unless_the_host_does() 
     assert!(prompt.contains("Answer in Dutch."), "{prompt}");
     assert!(!prompt.contains("pull requests") && !prompt.contains("French"));
 }
+
+#[tokio::test]
+async fn images_a_tool_returns_are_made_to_fit_before_the_model_sees_them() {
+    use base64::Engine;
+    use base64::engine::general_purpose::STANDARD as BASE64;
+    use pi_agent_core::{AgentToolResult, FnTool};
+    use pi_ai::{Content, Tool};
+    use pi_coding_agent::extensions::{RegisteredTool, ToolPrompt};
+
+    let mut png = Vec::new();
+    image::DynamicImage::ImageRgb8(image::RgbImage::new(3000, 10))
+        .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+        .unwrap();
+    let data = BASE64.encode(png);
+    let screenshot = FnTool::new(
+        Tool::new("shot", "Take a screenshot", json!({ "type": "object" })),
+        move |_| {
+            let data = data.clone();
+            async move {
+                Ok(AgentToolResult {
+                    content: vec![Content::image(data, "image/png")],
+                    ..AgentToolResult::default()
+                })
+            }
+        },
+    );
+    let harness = Harness::new();
+    harness.faux.push_tool_call("shot", json!({}));
+    harness.faux.push_text("A dark strip.");
+    let session = harness
+        .session_with(|options| {
+            options.tools = vec![RegisteredTool {
+                tool: screenshot.shared(),
+                prompt: ToolPrompt::default(),
+                active: true,
+                extension: None,
+            }];
+        })
+        .await;
+    session
+        .prompt("look", PromptOptions::default())
+        .await
+        .unwrap();
+
+    let result = session
+        .messages()
+        .into_iter()
+        .find_map(|message| match message {
+            SessionMessage::Llm(Message::ToolResult(result)) => Some(result),
+            _ => None,
+        })
+        .unwrap();
+    let Content::Image(image) = &result.content[0] else {
+        panic!("{:?}", result.content);
+    };
+    let sent = image::load_from_memory(&BASE64.decode(&image.data).unwrap()).unwrap();
+    assert_eq!(sent.width(), 2000);
+    assert!(pi_ai::content_text(&result.content).contains("[Image: original 3000x10"));
+}

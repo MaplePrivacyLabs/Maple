@@ -47,7 +47,7 @@ pub use find::{
 pub use grep::{GREP_SNIPPET, GrepOperations, GrepTool, GrepToolOptions, LocalGrepOperations};
 pub use image::{
     ImageResizeOptions, ProcessedImage, ResizedImage, detect_supported_image_mime_type,
-    process_image, resize_image,
+    normalize_tool_result_images, process_image, resize_image,
 };
 pub use ls::{LS_SNIPPET, LocalLsOperations, LsOperations, LsTool, LsToolOptions};
 pub use mutation_queue::with_file_mutation_queue;

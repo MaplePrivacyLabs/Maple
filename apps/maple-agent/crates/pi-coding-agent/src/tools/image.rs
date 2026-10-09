@@ -10,6 +10,7 @@ use image::codecs::jpeg::JpegEncoder;
 use image::imageops::FilterType;
 use image::metadata::Orientation;
 use image::{DynamicImage, ImageDecoder, ImageFormat, ImageReader};
+use pi_ai::Content;
 use tokio::io::AsyncReadExt;
 
 /// Enough of a file to recognize its image type.
@@ -364,12 +365,94 @@ pub fn process_image(
     })
 }
 
+/// The images in a tool's result made to fit inline limits, as `read` makes its own.
+/// Tools that make images themselves (extensions, screenshots, MCP servers) hand back
+/// whatever they have, and an image a provider rejects fails every later request, so
+/// they are processed once, as they enter the conversation. An image that cannot be
+/// processed is kept as it is. `None` when nothing changed.
+pub async fn normalize_tool_result_images(
+    content: &[Content],
+    auto_resize: bool,
+) -> Option<Vec<Content>> {
+    if !content
+        .iter()
+        .any(|block| matches!(block, Content::Image(_)))
+    {
+        return None;
+    }
+    let content = content.to_vec();
+    tokio::task::spawn_blocking(move || normalize_images(&content, auto_resize))
+        .await
+        .ok()
+        .flatten()
+}
+
+fn normalize_images(content: &[Content], auto_resize: bool) -> Option<Vec<Content>> {
+    let options = ImageResizeOptions::default();
+    let mut changed = false;
+    let mut normalized = Vec::with_capacity(content.len());
+    for block in content {
+        let Content::Image(image) = block else {
+            normalized.push(block.clone());
+            continue;
+        };
+        let processed = BASE64
+            .decode(&image.data)
+            .map_err(|error| error.to_string())
+            .and_then(|bytes| process_image(&bytes, &image.mime_type, auto_resize, &options));
+        match processed {
+            Ok(processed)
+                if processed.data != image.data
+                    || processed.mime_type != image.mime_type
+                    || !processed.hints.is_empty() =>
+            {
+                normalized.push(Content::image(processed.data, processed.mime_type));
+                if !processed.hints.is_empty() {
+                    normalized.push(Content::text(processed.hints.join("\n")));
+                }
+                changed = true;
+            }
+            _ => normalized.push(block.clone()),
+        }
+    }
+    changed.then_some(normalized)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use image::{Rgb, RgbImage};
 
     pub(crate) const PNG_1X1: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNgYGD4DwABBAEAX+XDSwAAAABJRU5ErkJggg==";
+
+    #[tokio::test]
+    async fn tool_result_images_are_made_to_fit_and_others_left_alone() {
+        let small = vec![Content::text("shot"), Content::image(PNG_1X1, "image/png")];
+        assert_eq!(normalize_tool_result_images(&small, true).await, None);
+        assert_eq!(
+            normalize_tool_result_images(&[Content::text("no images")], true).await,
+            None
+        );
+        // What cannot be decoded is passed on as the tool gave it.
+        let broken = vec![Content::image("not base64!", "image/png")];
+        assert_eq!(normalize_tool_result_images(&broken, true).await, None);
+
+        let wide = DynamicImage::ImageRgb8(RgbImage::from_pixel(3000, 10, Rgb([9, 9, 9])));
+        let data = BASE64.encode(encode_png(&wide).unwrap());
+        let normalized = normalize_tool_result_images(&[Content::image(data, "image/png")], true)
+            .await
+            .unwrap();
+        let [Content::Image(image), Content::Text(hint)] = normalized.as_slice() else {
+            panic!("{normalized:?}");
+        };
+        let resized = image::load_from_memory(&BASE64.decode(&image.data).unwrap()).unwrap();
+        assert_eq!(resized.width(), 2000);
+        assert!(
+            hint.text.starts_with("[Image: original 3000x10"),
+            "{}",
+            hint.text
+        );
+    }
 
     pub(crate) fn tiny_bmp() -> Vec<u8> {
         let mut bytes = vec![0u8; 58];
