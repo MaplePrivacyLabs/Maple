@@ -9,7 +9,8 @@
 //! - [`resources`]: context files, skills and prompt templates from folders the host names;
 //! - [`system_prompt`]: the prompt as named sections the transcript can patch;
 //! - [`extensions`]: a plugin API of typed events, tools, commands and providers;
-//! - [`tools`]: Pi's built-in tools, `read`, `bash`, `edit` and `write`, and `powershell`;
+//! - [`tools`]: Pi's built-in tools, `read`, `bash`, `edit`, `write`, `grep`, `find` and
+//!   `ls`, and `powershell`;
 //! - [`AgentSession`]: an agent over a session with all of the above, plus retry.
 //!
 //! A session gets the built-in tools for its folder; hosts configure them, add their

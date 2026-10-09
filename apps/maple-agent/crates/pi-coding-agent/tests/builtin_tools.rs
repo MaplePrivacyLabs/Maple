@@ -35,6 +35,17 @@ async fn a_session_starts_with_read_bash_edit_and_write() {
         "- You can inspect MAPLE_* environment variables for current model and session details."
     ));
 
+    // grep, find and ls are there to turn on; with them, the shell rule goes.
+    for name in ["grep", "find", "ls"] {
+        assert!(session.tool_names().contains(&name.to_string()), "{name}");
+    }
+    session.set_active_tools(&["read", "bash", "grep", "find", "ls"].map(String::from));
+    let prompt = session.extension_context().next_system_prompt();
+    assert!(prompt.contains("- grep: Search file contents for patterns (respects .gitignore)"));
+    assert!(prompt.contains("- find: Find files by glob pattern (respects .gitignore)"));
+    assert!(prompt.contains("- ls: List directory contents"));
+    assert!(!prompt.contains("Use bash for file operations"), "{prompt}");
+
     let none = harness
         .session_with(|options| options.builtin_tools = Some(Vec::new()))
         .await;

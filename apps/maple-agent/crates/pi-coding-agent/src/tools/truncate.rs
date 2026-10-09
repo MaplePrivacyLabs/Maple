@@ -7,6 +7,8 @@ use serde::{Deserialize, Serialize};
 
 pub const DEFAULT_MAX_LINES: usize = 2000;
 pub const DEFAULT_MAX_BYTES: usize = 50 * 1024;
+/// The characters `grep` shows of a matching line.
+pub const GREP_MAX_LINE_LENGTH: usize = 500;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -188,6 +190,14 @@ pub fn truncate_tail(content: &str, max_lines: usize, max_bytes: usize) -> Trunc
     }
 }
 
+/// `line` cut to `max_chars` characters, marked when it was cut, and whether it was.
+pub fn truncate_line(line: &str, max_chars: usize) -> (String, bool) {
+    match line.char_indices().nth(max_chars) {
+        Some((end, _)) => (format!("{}... [truncated]", &line[..end]), true),
+        None => (line.to_string(), false),
+    }
+}
+
 /// The last `max_bytes` bytes of `text`, starting at a character boundary.
 fn tail_at_char_boundary(text: &str, max_bytes: usize) -> &str {
     if text.len() <= max_bytes {
@@ -246,6 +256,15 @@ mod tests {
         assert!(long_last.last_line_partial);
         assert_eq!(long_last.content, "€xyz");
         assert_eq!(long_last.truncated_by, Some(TruncatedBy::Bytes));
+    }
+
+    #[test]
+    fn long_lines_are_cut_at_a_character() {
+        assert_eq!(truncate_line("short", 5), ("short".to_string(), false));
+        assert_eq!(
+            truncate_line("héllo world", 5),
+            ("héllo... [truncated]".to_string(), true)
+        );
     }
 
     #[test]

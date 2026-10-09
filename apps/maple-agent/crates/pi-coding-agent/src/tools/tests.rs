@@ -2,6 +2,7 @@
 
 use std::fs;
 use std::path::Path;
+use std::sync::Arc;
 
 use base64::Engine;
 use pi_agent_core::{AgentTool, AgentToolResult, ToolInvocation, ToolUpdates};
@@ -586,7 +587,10 @@ fn every_built_in_tool_is_created_with_the_defaults_active() {
             ("bash", true),
             ("powershell", false),
             ("edit", true),
-            ("write", true)
+            ("write", true),
+            ("grep", false),
+            ("find", false),
+            ("ls", false)
         ]
     );
     let bash = &tools[1].prompt;
@@ -598,4 +602,389 @@ fn every_built_in_tool_is_created_with_the_defaults_active() {
         bash.guidelines,
         ["You can inspect TEST_* environment variables for current model and session details."]
     );
+}
+
+fn grep_tool(dir: &Path) -> GrepTool {
+    GrepTool::new(dir, GrepToolOptions::default(), context())
+}
+
+fn find_tool(dir: &Path) -> FindTool {
+    FindTool::new(dir, FindToolOptions::default(), context())
+}
+
+fn ls_tool(dir: &Path) -> LsTool {
+    LsTool::new(dir, LsToolOptions::default(), context())
+}
+
+fn path_arg(path: &Path) -> &str {
+    path.to_str().unwrap()
+}
+
+#[tokio::test]
+async fn grep_names_the_file_it_searched() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("example.txt");
+    fs::write(&file, "first line\nmatch line\nlast line").unwrap();
+    let result = call(
+        &grep_tool(dir.path()),
+        json!({"pattern": "match", "path": path_arg(&file)}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(text(&result), "example.txt:2: match line");
+    assert!(result.details.is_none());
+}
+
+#[tokio::test]
+async fn grep_stops_at_the_limit_and_shows_context() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::write(
+        dir.path().join("context.txt"),
+        "before\nmatch one\nafter\nmiddle\nmatch two\nafter two",
+    )
+    .unwrap();
+    let result = call(
+        &grep_tool(dir.path()),
+        json!({"pattern": "match", "path": "context.txt", "limit": 1, "context": 1}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        text(&result),
+        "context.txt-1- before\ncontext.txt:2: match one\ncontext.txt-3- after\n\n\
+         [1 matches limit reached. Use limit=2 for more, or refine pattern]"
+    );
+    assert_eq!(result.details.unwrap()["matchLimitReached"], 1);
+}
+
+#[tokio::test]
+async fn grep_takes_flag_like_patterns_as_text() {
+    let dir = tempfile::tempdir().unwrap();
+    let marker = dir.path().join("grep-injection-marker");
+    let payload = dir.path().join("payload.sh");
+    fs::write(
+        &payload,
+        format!(
+            "#!/bin/sh\necho executed > {}\ncat \"$1\"\n",
+            marker.display()
+        ),
+    )
+    .unwrap();
+    fs::write(dir.path().join("target.txt"), "target\n").unwrap();
+    let tool = grep_tool(dir.path());
+    // The payload's name, not its path: a Windows path is not a valid pattern.
+    let result = call(&tool, json!({"pattern": "--pre=payload.sh"}))
+        .await
+        .unwrap();
+    assert_eq!(text(&result), "No matches found");
+    assert!(!marker.exists());
+
+    fs::write(dir.path().join("flags.txt"), "run with --verbose\n").unwrap();
+    let result = call(&tool, json!({"pattern": "--verbose"})).await.unwrap();
+    assert_eq!(text(&result), "flags.txt:1: run with --verbose");
+}
+
+#[tokio::test]
+async fn grep_searches_a_folder_by_ripgreps_rules() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    for folder in [".git", ".hidden", "build", "src"] {
+        fs::create_dir(root.join(folder)).unwrap();
+    }
+    fs::write(root.join(".git/config"), "needle").unwrap();
+    fs::write(root.join(".gitignore"), "ignored.txt\nbuild/\n").unwrap();
+    fs::write(root.join("ignored.txt"), "needle").unwrap();
+    fs::write(root.join("build/out.txt"), "needle").unwrap();
+    fs::write(root.join(".hidden/secret.txt"), "needle").unwrap();
+    fs::write(root.join("binary.bin"), b"\0binary\nneedle\n").unwrap();
+    fs::write(root.join("src/main.rs"), "fn main() {}\n// needle here\n").unwrap();
+    fs::write(root.join("src/lib.rs"), "pub fn needle() {}\r\n").unwrap();
+    let tool = grep_tool(root);
+
+    let result = call(&tool, json!({"pattern": "needle"})).await.unwrap();
+    assert_eq!(
+        text(&result),
+        ".hidden/secret.txt:1: needle\nsrc/lib.rs:1: pub fn needle() {}\nsrc/main.rs:2: // needle here"
+    );
+
+    let only_rust = call(&tool, json!({"pattern": "needle", "glob": "*.rs"}))
+        .await
+        .unwrap();
+    assert_eq!(
+        text(&only_rust),
+        "src/lib.rs:1: pub fn needle() {}\nsrc/main.rs:2: // needle here"
+    );
+    let one_file = call(&tool, json!({"pattern": "needle", "glob": "**/main.rs"}))
+        .await
+        .unwrap();
+    assert_eq!(text(&one_file), "src/main.rs:2: // needle here");
+
+    // A file named directly is searched even when ignored.
+    let named = call(&tool, json!({"pattern": "needle", "path": "ignored.txt"}))
+        .await
+        .unwrap();
+    assert_eq!(text(&named), "ignored.txt:1: needle");
+}
+
+#[tokio::test]
+async fn grep_respects_gitignore_outside_a_repository() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::write(dir.path().join(".gitignore"), "ignored.txt\n").unwrap();
+    fs::write(dir.path().join("ignored.txt"), "needle").unwrap();
+    fs::write(dir.path().join("kept.txt"), "needle").unwrap();
+    let result = call(&grep_tool(dir.path()), json!({"pattern": "needle"}))
+        .await
+        .unwrap();
+    assert_eq!(text(&result), "kept.txt:1: needle");
+}
+
+#[tokio::test]
+async fn grep_takes_literal_and_case_options_and_reports_bad_input() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::write(dir.path().join("file.txt"), "a.c\nabc\nA.C\n").unwrap();
+    let tool = grep_tool(dir.path());
+    let regex = call(&tool, json!({"pattern": "a.c"})).await.unwrap();
+    assert_eq!(text(&regex), "file.txt:1: a.c\nfile.txt:2: abc");
+    let literal = call(&tool, json!({"pattern": "a.c", "literal": true}))
+        .await
+        .unwrap();
+    assert_eq!(text(&literal), "file.txt:1: a.c");
+    let any_case = call(
+        &tool,
+        json!({"pattern": "a.c", "literal": true, "ignoreCase": true}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(text(&any_case), "file.txt:1: a.c\nfile.txt:3: A.C");
+
+    let bad = call(&tool, json!({"pattern": "("})).await.unwrap_err();
+    assert!(bad.contains("regex parse error"), "{bad}");
+    let missing = call(&tool, json!({"pattern": "x", "path": "missing"}))
+        .await
+        .unwrap_err();
+    assert_eq!(
+        missing,
+        format!("Path not found: {}", dir.path().join("missing").display())
+    );
+}
+
+#[tokio::test]
+async fn grep_cuts_long_lines_and_says_so() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::write(dir.path().join("long.txt"), "x".repeat(600) + "needle").unwrap();
+    let result = call(&grep_tool(dir.path()), json!({"pattern": "needle"}))
+        .await
+        .unwrap();
+    assert_eq!(
+        text(&result),
+        format!(
+            "long.txt:1: {}... [truncated]\n\n\
+             [Some lines truncated to 500 chars. Use read tool to see full lines]",
+            "x".repeat(500)
+        )
+    );
+    assert_eq!(result.details.unwrap()["linesTruncated"], true);
+}
+
+#[tokio::test]
+async fn find_includes_hidden_files_that_are_not_ignored() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::create_dir(dir.path().join(".secret")).unwrap();
+    fs::write(dir.path().join(".secret/hidden.txt"), "hidden").unwrap();
+    fs::write(dir.path().join("visible.txt"), "visible").unwrap();
+    let result = call(
+        &find_tool(dir.path()),
+        json!({"pattern": "**/*.txt", "path": path_arg(dir.path())}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(text(&result), ".secret/hidden.txt\nvisible.txt");
+}
+
+#[tokio::test]
+async fn find_respects_gitignore_outside_a_repository() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::write(dir.path().join(".gitignore"), "ignored.txt\n").unwrap();
+    fs::write(dir.path().join("ignored.txt"), "ignored").unwrap();
+    fs::write(dir.path().join("kept.txt"), "kept").unwrap();
+    let result = call(&find_tool(dir.path()), json!({"pattern": "**/*.txt"}))
+        .await
+        .unwrap();
+    assert_eq!(text(&result), "kept.txt");
+}
+
+#[tokio::test]
+async fn find_keeps_a_nested_repository_apart_from_its_parent() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    fs::create_dir_all(root.join(".git")).unwrap();
+    fs::create_dir_all(root.join("sub/.git")).unwrap();
+    fs::write(root.join(".gitignore"), "*.dat\n").unwrap();
+    fs::write(root.join("a.dat"), "").unwrap();
+    fs::write(root.join("sub/b.dat"), "").unwrap();
+    let result = call(&find_tool(root), json!({"pattern": "*.dat"}))
+        .await
+        .unwrap();
+    assert_eq!(text(&result), "sub/b.dat");
+}
+
+#[tokio::test]
+async fn find_reports_glob_errors_and_takes_flags_as_patterns() {
+    let dir = tempfile::tempdir().unwrap();
+    let tool = find_tool(dir.path());
+    let error = call(&tool, json!({"pattern": "["})).await.unwrap_err();
+    assert!(error.contains("error parsing glob"), "{error}");
+    let flag = call(&tool, json!({"pattern": "--help"})).await.unwrap();
+    assert_eq!(text(&flag), "No files found matching pattern");
+    let missing = call(&tool, json!({"pattern": "*", "path": "missing"}))
+        .await
+        .unwrap_err();
+    assert_eq!(
+        missing,
+        format!("Path not found: {}", dir.path().join("missing").display())
+    );
+}
+
+#[tokio::test]
+async fn find_matches_names_paths_and_folders_like_fd() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    for folder in ["crates/a/src", "docs", "node_modules/pkg", "src"] {
+        fs::create_dir_all(root.join(folder)).unwrap();
+    }
+    for file in [
+        "README.md",
+        "docs/readme.txt",
+        "crates/a/src/lib.rs",
+        "node_modules/pkg/index.js",
+        "src/main.rs",
+    ] {
+        fs::write(root.join(file), "").unwrap();
+    }
+    let tool = find_tool(root);
+    let found = |pattern: &'static str| {
+        let tool = &tool;
+        async move { text(&call(tool, json!({ "pattern": pattern })).await.unwrap()) }
+    };
+    assert_eq!(found("*.rs").await, "crates/a/src/lib.rs\nsrc/main.rs");
+    assert_eq!(found("src/*.rs").await, "crates/a/src/lib.rs\nsrc/main.rs");
+    assert_eq!(found("./*.md").await, "README.md");
+    assert_eq!(found("crates/**/lib.rs").await, "crates/a/src/lib.rs");
+    assert_eq!(found("src").await, "crates/a/src/\nsrc/");
+    assert_eq!(found("readme*").await, "README.md\ndocs/readme.txt");
+    assert_eq!(found("README*").await, "README.md");
+    assert_eq!(found("*.js").await, "No files found matching pattern");
+
+    let limited = call(&tool, json!({"pattern": "*", "limit": 2}))
+        .await
+        .unwrap();
+    assert_eq!(
+        text(&limited),
+        "README.md\ncrates/\n\n[2 results limit reached. Use limit=4 for more, or refine pattern]"
+    );
+    assert_eq!(limited.details.unwrap()["resultLimitReached"], 2);
+}
+
+#[tokio::test]
+async fn find_relativizes_what_custom_operations_return() {
+    struct Listed {
+        results: Vec<String>,
+        asked: std::sync::Mutex<Option<FindGlobOptions>>,
+    }
+
+    #[async_trait::async_trait]
+    impl FindOperations for Listed {
+        async fn exists(&self, _path: &Path) -> bool {
+            true
+        }
+
+        async fn glob(
+            &self,
+            _pattern: &str,
+            _search_path: &Path,
+            options: &FindGlobOptions,
+        ) -> std::io::Result<Vec<String>> {
+            *self.asked.lock().unwrap() = Some(options.clone());
+            Ok(self.results.clone())
+        }
+    }
+
+    let root = std::env::temp_dir().join("remote-root");
+    let operations = Arc::new(Listed {
+        results: vec![
+            format!("{}", root.join("src").join("a.rs").display()),
+            format!("{}/", root.join("src").display()),
+            "rel/b.rs".to_string(),
+        ],
+        asked: std::sync::Mutex::new(None),
+    });
+    let tool = FindTool::new(
+        &root,
+        FindToolOptions {
+            operations: Some(operations.clone()),
+        },
+        context(),
+    );
+    let result = call(&tool, json!({"pattern": "*.rs", "limit": 10}))
+        .await
+        .unwrap();
+    assert_eq!(text(&result), "src/a.rs\nsrc/\nrel/b.rs");
+    let asked = operations.asked.lock().unwrap().clone().unwrap();
+    assert_eq!(asked.ignore, ["**/node_modules/**", "**/.git/**"]);
+    assert_eq!(asked.limit, 10);
+}
+
+#[tokio::test]
+async fn ls_lists_dotfiles_and_folders_sorted() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::write(dir.path().join(".hidden-file"), "secret").unwrap();
+    fs::create_dir(dir.path().join(".hidden-dir")).unwrap();
+    fs::write(dir.path().join("B.txt"), "").unwrap();
+    fs::write(dir.path().join("a.txt"), "").unwrap();
+    fs::create_dir(dir.path().join("c")).unwrap();
+    let result = call(&ls_tool(dir.path()), json!({})).await.unwrap();
+    assert_eq!(
+        text(&result),
+        ".hidden-dir/\n.hidden-file\na.txt\nB.txt\nc/"
+    );
+    assert!(result.details.is_none());
+}
+
+#[tokio::test]
+async fn ls_stops_at_the_limit_and_names_bad_paths() {
+    let dir = tempfile::tempdir().unwrap();
+    for name in ["a", "b", "c"] {
+        fs::write(dir.path().join(name), "").unwrap();
+    }
+    fs::create_dir(dir.path().join("empty")).unwrap();
+    let tool = ls_tool(dir.path());
+    let limited = call(&tool, json!({"limit": 2})).await.unwrap();
+    assert_eq!(
+        text(&limited),
+        "a\nb\n\n[2 entries limit reached. Use limit=4 for more]"
+    );
+    assert_eq!(limited.details.unwrap()["entryLimitReached"], 2);
+
+    let empty = call(&tool, json!({"path": "empty"})).await.unwrap();
+    assert_eq!(text(&empty), "(empty directory)");
+    let file = call(&tool, json!({"path": "a"})).await.unwrap_err();
+    assert_eq!(
+        file,
+        format!("Not a directory: {}", dir.path().join("a").display())
+    );
+    let missing = call(&tool, json!({"path": "missing"})).await.unwrap_err();
+    assert_eq!(
+        missing,
+        format!("Path not found: {}", dir.path().join("missing").display())
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn ls_leaves_out_broken_links() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::write(dir.path().join("real.txt"), "").unwrap();
+    std::os::unix::fs::symlink(dir.path().join("gone"), dir.path().join("broken")).unwrap();
+    let result = call(&ls_tool(dir.path()), json!({})).await.unwrap();
+    assert_eq!(text(&result), "real.txt");
 }

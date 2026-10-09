@@ -1,4 +1,5 @@
-//! Pi's built-in tools: `read`, `bash`, `edit` and `write`, and `powershell` for Windows.
+//! Pi's built-in tools: `read`, `bash`, `edit` and `write`, `grep`, `find` and `ls`, and
+//! `powershell` for Windows.
 //!
 //! As in Pi, an [`AgentSession`](crate::AgentSession) creates them for its folder and
 //! gives the model `read`, `bash`, `edit` and `write`; the others stay registered and can
@@ -9,13 +10,17 @@
 mod bash;
 mod edit;
 mod edit_diff;
+mod find;
+mod grep;
 mod image;
+mod ls;
 mod mutation_queue;
 mod output;
 mod path_utils;
 mod read;
 mod shell;
 mod truncate;
+mod walk;
 mod write;
 
 use std::path::{Path, PathBuf};
@@ -36,10 +41,15 @@ pub use edit::{
 pub use edit_diff::{
     Edit, apply_edits_to_normalized_content, generate_diff_string, generate_unified_patch,
 };
+pub use find::{
+    FIND_SNIPPET, FindGlobOptions, FindOperations, FindTool, FindToolOptions, LocalFindOperations,
+};
+pub use grep::{GREP_SNIPPET, GrepOperations, GrepTool, GrepToolOptions, LocalGrepOperations};
 pub use image::{
     ImageResizeOptions, ProcessedImage, ResizedImage, detect_supported_image_mime_type,
     process_image, resize_image,
 };
+pub use ls::{LS_SNIPPET, LocalLsOperations, LsOperations, LsTool, LsToolOptions};
 pub use mutation_queue::with_file_mutation_queue;
 pub use output::{OutputAccumulator, OutputSnapshot};
 pub use path_utils::{expand_path, resolve_read_path, resolve_to_cwd};
@@ -51,8 +61,8 @@ pub use shell::{
     powershell_config, set_env_var, shell_config, shell_env,
 };
 pub use truncate::{
-    DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, TruncatedBy, TruncationResult, format_size,
-    truncate_head, truncate_tail,
+    DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, GREP_MAX_LINE_LENGTH, TruncatedBy, TruncationResult,
+    format_size, truncate_head, truncate_line, truncate_tail,
 };
 pub use write::{
     LocalWriteOperations, WRITE_GUIDELINES, WRITE_SNIPPET, WriteOperations, WriteTool,
@@ -62,8 +72,20 @@ pub use write::{
 /// The built-in tools the model gets unless the host chooses others.
 pub const DEFAULT_TOOL_NAMES: [&str; 4] = ["read", "bash", "edit", "write"];
 
+/// The built-in tools that only read: Pi's read-only set.
+pub const READ_ONLY_TOOL_NAMES: [&str; 4] = ["read", "grep", "find", "ls"];
+
 /// Every built-in tool, in Pi's order.
-pub const ALL_TOOL_NAMES: [&str; 5] = ["read", "bash", "powershell", "edit", "write"];
+pub const ALL_TOOL_NAMES: [&str; 8] = [
+    "read",
+    "bash",
+    "powershell",
+    "edit",
+    "write",
+    "grep",
+    "find",
+    "ls",
+];
 
 /// How the built-in tools are set up.
 #[derive(Clone, Default)]
@@ -73,6 +95,9 @@ pub struct ToolsOptions {
     pub powershell: PowerShellToolOptions,
     pub edit: EditToolOptions,
     pub write: WriteToolOptions,
+    pub grep: GrepToolOptions,
+    pub find: FindToolOptions,
+    pub ls: LsToolOptions,
 }
 
 /// What a built-in tool reads from the session that runs it, as Pi's tools read their
@@ -233,6 +258,24 @@ pub fn create_tool(
             strings(&WRITE_GUIDELINES),
             active,
         ),
+        "grep" => registered(
+            GrepTool::new(cwd, options.grep.clone(), context),
+            GREP_SNIPPET,
+            Vec::new(),
+            active,
+        ),
+        "find" => registered(
+            FindTool::new(cwd, options.find.clone(), context),
+            FIND_SNIPPET,
+            Vec::new(),
+            active,
+        ),
+        "ls" => registered(
+            LsTool::new(cwd, options.ls.clone(), context),
+            LS_SNIPPET,
+            Vec::new(),
+            active,
+        ),
         _ => return None,
     })
 }
@@ -265,6 +308,18 @@ pub fn create_coding_tools(
     context: &ToolContext,
 ) -> Vec<RegisteredTool> {
     DEFAULT_TOOL_NAMES
+        .iter()
+        .filter_map(|name| create_tool(name, cwd, options, context, true))
+        .collect()
+}
+
+/// `read`, `grep`, `find` and `ls` for `cwd`, all active.
+pub fn create_read_only_tools(
+    cwd: &Path,
+    options: &ToolsOptions,
+    context: &ToolContext,
+) -> Vec<RegisteredTool> {
+    READ_ONLY_TOOL_NAMES
         .iter()
         .filter_map(|name| create_tool(name, cwd, options, context, true))
         .collect()
