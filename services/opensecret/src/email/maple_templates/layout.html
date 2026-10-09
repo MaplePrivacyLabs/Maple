@@ -21,6 +21,14 @@
     .stack { display:block !important; width:100% !important; }
     .stack-gap { padding:0 0 14px !important; }
   }
+  @media (max-width:480px) {
+    .card  { padding:20px 16px !important; }
+    .outer { padding:16px 8px 0 !important; }
+    .h1 { font-size:24px !important; }
+    .hero-tile { font-size:22px !important; line-height:1.3 !important; }
+    .code-lg { font-size:24px !important; letter-spacing:4px !important; }
+    .stack { display:block !important; width:100% !important; padding:0 0 14px !important; box-sizing:border-box !important; }
+  }
   @media (prefers-color-scheme: dark) {
     .bg      { background:#0f0d0c !important; }
     .card    { background:#1a1716 !important; border-color:#2a2422 !important; }
@@ -54,7 +62,7 @@
   <table role="presentation" class="bg" width="100%" cellpadding="0" cellspacing="0" border="0" bgcolor="#efeeed" style="background:#efeeed;">
     <tr>
       <td class="outer" align="center" style="padding:36px 16px 0;">
-        <table role="presentation" width="600" cellpadding="0" cellspacing="0" border="0" style="width:100%;max-width:600px;">
+        <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="width:100%;max-width:600px;">
 
           <tr><td style="padding:0 4px 18px;">
             <a href="https://www.trymaple.ai"><img src="{{ASSET_BASE}}wordmark.png" width="103" height="20" alt="Maple" style="display:block;width:103px;height:20px;font-family:Manrope,-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;font-size:16px;font-weight:700;color:#9c9dab;"></a>
@@ -75,9 +83,9 @@
           </td></tr>
 
           <tr><td style="padding:0;line-height:0;font-size:0;">
-            <img class="wm-light" src="{{ASSET_BASE}}footer-watermark-light.png" width="600" alt="" style="display:block;width:100%;max-width:600px;height:auto;">
+            <img class="wm-light" src="{{ASSET_BASE}}footer-watermark-light.png" width="100%" alt="" style="display:block;width:100%;max-width:600px;height:auto;">
             <div class="wm-dark" style="display:none;max-height:0;overflow:hidden;mso-hide:all;">
-              <img src="{{ASSET_BASE}}footer-watermark-dark.png" width="600" alt="" style="display:block;width:100%;max-width:600px;height:auto;">
+              <img src="{{ASSET_BASE}}footer-watermark-dark.png" width="100%" alt="" style="display:block;width:100%;max-width:600px;height:auto;">
             </div>
           </td></tr>
 
