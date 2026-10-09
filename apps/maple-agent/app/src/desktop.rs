@@ -47,13 +47,19 @@ struct MapleApp {
 
 impl MapleApp {
     /// Forward a batch of backend service events to the chat screen when
-    /// one exists. One batch is one render, however many events arrived.
+    /// one exists, parked behind Settings included, so a run that ends
+    /// meanwhile shows ended on return. One batch is one render, however
+    /// many events arrived.
     fn handle_service_events(
         &mut self,
         events: Vec<maple_agent::agent::AgentServiceEvent>,
         cx: &mut Context<Self>,
     ) {
-        if let Screen::Chat(chat) = &self.screen {
+        let chat = match &self.screen {
+            Screen::Chat(chat) => Some(chat.clone()),
+            _ => self.parked_chat.clone(),
+        };
+        if let Some(chat) = chat {
             chat.update(cx, |chat, cx| chat.handle_service_events(events, cx));
         }
     }
