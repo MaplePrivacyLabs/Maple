@@ -1,4 +1,4 @@
-# Custom labels also cover organization-configured GitHub-hosted larger runners.
+# Custom labels for managed runners used by GitHub Actions.
 self-hosted-runner:
   labels:
-    - ubuntu-24.04-arm64-8core
+    - blacksmith-16vcpu-ubuntu-2404-arm
