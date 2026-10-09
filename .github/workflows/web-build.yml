@@ -32,7 +32,7 @@ on:
 jobs:
   build-web:
     if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest-8-cores
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # was v4
         with:
@@ -66,7 +66,7 @@ jobs:
 
   build-web-master:
     if: github.event_name == 'push'
-    runs-on: ubuntu-latest-8-cores
+    runs-on: ubuntu-latest
     permissions:
       contents: read
       id-token: write
@@ -116,7 +116,7 @@ jobs:
   verify-web-master-artifact:
     if: github.event_name == 'push'
     needs: build-web-master
-    runs-on: ubuntu-latest-8-cores
+    runs-on: ubuntu-latest
     permissions:
       contents: read
     steps:
