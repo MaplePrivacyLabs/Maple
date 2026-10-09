@@ -15,7 +15,7 @@ mod grep;
 mod image;
 mod ls;
 mod mutation_queue;
-mod output;
+pub(crate) mod output;
 mod path_utils;
 mod read;
 mod shell;
@@ -185,7 +185,7 @@ impl ToolContext {
     }
 
     /// The name output files of `tool` start with: `maple-bash` for Maple's `bash`.
-    fn output_file_prefix(&self, tool: &str) -> String {
+    pub(crate) fn output_file_prefix(&self, tool: &str) -> String {
         let app: String = self
             .app_name
             .chars()

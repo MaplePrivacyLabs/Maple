@@ -30,6 +30,7 @@ use serde_json::Value;
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 
+use crate::bash_executor::{BashResult, OnChunk, execute_bash_with_operations};
 use crate::compaction::{
     CompactionResult, Summarizer, compact, estimate_context_tokens, prepare_compaction,
     should_compact, summarize_branch,
@@ -41,7 +42,7 @@ use crate::extensions::{
     SessionBeforeTree, SessionCompact, SessionShutdown, SessionStart, SessionStartReason,
     SessionTree, ThinkingLevelSelect, ToolCall, ToolResult,
 };
-use crate::messages::{CustomMessage, SessionMessage, convert_to_llm};
+use crate::messages::{BashExecutionMessage, CustomMessage, SessionMessage, convert_to_llm};
 use crate::models::ModelRegistry;
 use crate::resources::{Resources, expand_prompt_template, expand_skill_command};
 use crate::session::{EntryKind, SessionError, SessionManager};
@@ -50,7 +51,10 @@ use crate::store::SessionStore;
 use crate::system_prompt::{
     SystemPromptOptions, ToolPromptInfo, build_prompt_state, diff_sections, render,
 };
-use crate::tools::{DEFAULT_TOOL_NAMES, ToolContext, ToolsOptions, create_all_tools, expand_path};
+use crate::tools::{
+    BashOperations, DEFAULT_TOOL_NAMES, LocalShellOperations, ToolContext, ToolsOptions,
+    create_all_tools, expand_path,
+};
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex
@@ -139,6 +143,12 @@ pub enum AgentSessionEvent {
     ExtensionError(ExtensionErrorReport),
     /// Writing the session failed; the conversation goes on in memory.
     PersistenceError(String),
+    /// Output of a shell command the user runs, cleaned, as it comes.
+    BashExecutionUpdate {
+        /// The identifier the command was started with.
+        id: Option<String>,
+        delta: String,
+    },
     /// The run, its retries and compactions are over.
     Settled,
 }
@@ -317,6 +327,8 @@ struct RunState {
     next_turn_messages: Vec<SessionMessage>,
     /// Extension messages waiting for the current turn to end.
     pending_custom: Vec<SessionMessage>,
+    /// User shell commands that ended during the run, added when it ends.
+    pending_bash: Vec<SessionMessage>,
     steering_texts: Vec<String>,
     follow_up_texts: Vec<String>,
 }
@@ -338,6 +350,9 @@ pub(crate) struct SessionCore {
     next_listener: AtomicU64,
     activity: watch::Sender<Activity>,
     run: Mutex<RunState>,
+    /// User shell commands running now, by a key of their own.
+    bash_runs: Mutex<Vec<(u64, CancellationToken)>>,
+    next_bash: AtomicU64,
     weak: Weak<SessionCore>,
 }
 
@@ -489,6 +504,8 @@ impl AgentSession {
                 next_listener: AtomicU64::new(1),
                 activity: watch::channel(Activity::Idle).0,
                 run: Mutex::new(RunState::default()),
+                bash_runs: Mutex::new(Vec::new()),
+                next_bash: AtomicU64::new(1),
                 weak: weak.clone(),
             }
         });
@@ -760,12 +777,136 @@ impl AgentSession {
 
     /// Tell extensions the session is ending.
     pub async fn shutdown(&self) {
+        self.abort_bash();
         self.core.abort();
         self.wait_for_idle().await;
         self.core
             .runner
             .emit(&SessionShutdown, &self.core.weak)
             .await;
+    }
+}
+
+/// How [`AgentSession::execute_bash`] runs a command.
+#[derive(Clone, Default)]
+pub struct BashCommandOptions {
+    /// Keep the command and its output out of the model's context (`!!command`).
+    pub exclude_from_context: bool,
+    /// An identifier repeated in the command's [`AgentSessionEvent::BashExecutionUpdate`]s.
+    pub id: Option<String>,
+    /// Where to run it; this machine's bash, as the settings choose it, when `None`.
+    pub operations: Option<Arc<dyn BashOperations>>,
+}
+
+/// Forgets a user shell command when it ends, also when the future running it is dropped.
+struct BashRunGuard<'a> {
+    core: &'a SessionCore,
+    key: u64,
+}
+
+impl Drop for BashRunGuard<'_> {
+    fn drop(&mut self) {
+        lock(&self.core.bash_runs).retain(|(key, _)| *key != self.key);
+    }
+}
+
+impl AgentSession {
+    /// Run a shell command for the user (`!command`) in the session's folder, with the
+    /// settings' shell and command prefix, and add it and its output to the conversation;
+    /// with `exclude_from_context` (`!!command`) the model does not see it. During a run it
+    /// is added when the run ends, so it cannot come between a tool call and its result.
+    pub async fn execute_bash(
+        &self,
+        command: &str,
+        options: BashCommandOptions,
+    ) -> Result<BashResult, AgentSessionError> {
+        let core = &self.core;
+        let settings = lock(&core.settings).clone();
+        let resolved = match settings.shell_command_prefix.as_deref() {
+            Some(prefix) if !prefix.is_empty() => format!("{prefix}\n{command}"),
+            _ => command.to_string(),
+        };
+        let operations = options.operations.clone().unwrap_or_else(|| {
+            let shell_path = settings
+                .shell_path
+                .as_ref()
+                .map(|path| expand_path(&path.to_string_lossy()));
+            Arc::new(LocalShellOperations::bash(shell_path))
+        });
+        let file_prefix =
+            ToolContext::new(&lock(&core.prompt_base).app_name).output_file_prefix("bash");
+        let on_chunk: OnChunk = {
+            let weak = core.weak.clone();
+            let id = options.id.clone();
+            Arc::new(move |delta: &str| {
+                if let Some(core) = weak.upgrade() {
+                    core.emit(AgentSessionEvent::BashExecutionUpdate {
+                        id: id.clone(),
+                        delta: delta.to_string(),
+                    });
+                }
+            })
+        };
+        let cancel = CancellationToken::new();
+        let key = core.next_bash.fetch_add(1, Ordering::Relaxed);
+        lock(&core.bash_runs).push((key, cancel.clone()));
+        let _running = BashRunGuard { core, key };
+        let result = execute_bash_with_operations(
+            &resolved,
+            &core.cwd,
+            operations.as_ref(),
+            &file_prefix,
+            Some(on_chunk),
+            cancel,
+        )
+        .await
+        .map_err(AgentSessionError::Failed)?;
+        self.record_bash_result(command, &result, options.exclude_from_context);
+        Ok(result)
+    }
+
+    /// Add a shell command's result to the conversation, as [`Self::execute_bash`] does,
+    /// for hosts and extensions that run commands themselves.
+    pub fn record_bash_result(
+        &self,
+        command: &str,
+        result: &BashResult,
+        exclude_from_context: bool,
+    ) {
+        let message = SessionMessage::BashExecution(BashExecutionMessage {
+            command: command.to_string(),
+            output: result.output.clone(),
+            exit_code: result.exit_code,
+            cancelled: result.cancelled,
+            truncated: result.truncated,
+            full_output_path: result
+                .full_output_path
+                .as_ref()
+                .map(|path| path.to_string_lossy().into_owned()),
+            timestamp: now_ms(),
+            exclude_from_context,
+        });
+        if self.core.activity() == Activity::Prompt {
+            lock(&self.core.run).pending_bash.push(message);
+        } else {
+            self.core.append_now(message);
+        }
+    }
+
+    /// Stop the user shell commands that are running.
+    pub fn abort_bash(&self) {
+        for (_, cancel) in lock(&self.core.bash_runs).iter() {
+            cancel.cancel();
+        }
+    }
+
+    pub fn is_bash_running(&self) -> bool {
+        !lock(&self.core.bash_runs).is_empty()
+    }
+
+    /// Whether user shell command results wait for the current run to end.
+    pub fn has_pending_bash_messages(&self) -> bool {
+        !lock(&self.core.run).pending_bash.is_empty()
     }
 }
 
@@ -1103,6 +1244,7 @@ impl SessionCore {
             Ok(()) => self.after_run().await,
             Err(error) => Err(error.into()),
         };
+        self.flush_pending_bash();
         self.flush_pending_custom();
         self.end_retry();
         lock(&self.run).forced_prompt = None;
@@ -1263,6 +1405,13 @@ impl SessionCore {
         self.rebuild_messages();
     }
 
+    fn flush_pending_bash(&self) {
+        let pending = std::mem::take(&mut lock(&self.run).pending_bash);
+        for message in pending {
+            self.append_now(message);
+        }
+    }
+
     fn flush_pending_custom(&self) {
         let pending = std::mem::take(&mut lock(&self.run).pending_custom);
         for message in pending {
@@ -1284,7 +1433,7 @@ impl SessionCore {
         {
             let mut session = lock(&self.session);
             match message {
-                SessionMessage::Llm(_) => {
+                SessionMessage::Llm(_) | SessionMessage::BashExecution(_) => {
                     session.append_message(message.clone());
                 }
                 SessionMessage::Custom(custom) => {

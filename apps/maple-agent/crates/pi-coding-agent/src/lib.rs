@@ -13,12 +13,14 @@
 //! - [`extensions`]: a plugin API of typed events, tools, commands and providers;
 //! - [`tools`]: Pi's built-in tools, `read`, `bash`, `edit`, `write`, `grep`, `find` and
 //!   `ls`, and `powershell`;
-//! - [`AgentSession`]: an agent over a session with all of the above, plus retry.
+//! - [`AgentSession`]: an agent over a session with all of the above, plus retry and the
+//!   user's own shell commands ([`bash_executor`]).
 //!
 //! A session gets the built-in tools for its folder; hosts configure them, add their
 //! own, and replace one by registering a tool with its name.
 
 pub mod agent_session;
+pub mod bash_executor;
 pub mod compaction;
 pub mod extensions;
 mod ids;
@@ -33,8 +35,9 @@ pub mod tools;
 pub mod trust;
 
 pub use agent_session::{
-    AgentSession, AgentSessionError, AgentSessionEvent, AgentSessionOptions, CompactionReason,
-    ContextUsage, Delivery, PromptOptions, PromptOutcome, StreamingBehavior,
+    AgentSession, AgentSessionError, AgentSessionEvent, AgentSessionOptions, BashCommandOptions,
+    CompactionReason, ContextUsage, Delivery, PromptOptions, PromptOutcome, StreamingBehavior,
 };
+pub use bash_executor::BashResult;
 pub use messages::SessionMessage;
 pub use models::{ApiKeySource, ModelRegistry, StaticKeys};

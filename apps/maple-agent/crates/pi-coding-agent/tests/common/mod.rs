@@ -135,6 +135,7 @@ pub fn record(session: &AgentSession) -> Arc<Mutex<Vec<String>>> {
                 format!("extension_error:{}:{}", report.extension, report.event)
             }
             AgentSessionEvent::PersistenceError(_) => "persistence_error".into(),
+            AgentSessionEvent::BashExecutionUpdate { delta, .. } => format!("bash:{delta}"),
             AgentSessionEvent::Settled => "settled".into(),
         };
         sink.lock().unwrap().push(name);

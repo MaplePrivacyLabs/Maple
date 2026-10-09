@@ -234,7 +234,7 @@ impl OutputAccumulator {
 /// Decode the complete characters in `pending`, leaving an incomplete one at its end
 /// for the next chunk. Invalid bytes, and an incomplete character at the end of the
 /// output, become U+FFFD.
-fn decode_available(pending: &mut Vec<u8>, finish: bool) -> String {
+pub(crate) fn decode_available(pending: &mut Vec<u8>, finish: bool) -> String {
     let mut text = String::new();
     let mut rest: &[u8] = pending;
     loop {
