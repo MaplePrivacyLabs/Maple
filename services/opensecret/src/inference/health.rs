@@ -1214,7 +1214,11 @@ mod tests {
             ],
             [
                 route(ProviderId::Tinfoil, "glm-5-3", "glm-5-3"),
-                route(ProviderId::Tinfoil, "glm-5-3-flash", "glm-5-3-flash"),
+                route(
+                    ProviderId::Tinfoil,
+                    "deepseek-v4-1-flash",
+                    "deepseek-v4-1-flash",
+                ),
             ],
         ];
 
@@ -1712,11 +1716,10 @@ mod tests {
     }
 
     #[test]
-    fn glm_models_probe_and_recover_independently_on_each_provider() {
-        for (provider, base_model, flash_model) in [
-            (ProviderId::Tinfoil, "glm-5-3", "glm-5-3-flash"),
-            (ProviderId::Continuum, "glm-5.3", "glm-5.3-flash"),
-        ] {
+    fn continuum_glm_models_probe_and_recover_independently() {
+        for (provider, base_model, flash_model) in
+            [(ProviderId::Continuum, "glm-5.3", "glm-5.3-flash")]
+        {
             let state = ShadowHealthState::with_policy(test_policy());
             let start = Instant::now();
             let base = route(provider, "glm-5-3", base_model);
@@ -1788,10 +1791,7 @@ mod tests {
 
     #[test]
     fn glm_flash_route_health_fences_sends_and_recovers_through_one_probe() {
-        for (provider, provider_model) in [
-            (ProviderId::Tinfoil, "glm-5-3-flash"),
-            (ProviderId::Continuum, "glm-5.3-flash"),
-        ] {
+        for (provider, provider_model) in [(ProviderId::Continuum, "glm-5.3-flash")] {
             for kind in [
                 AttemptFailureKind::ResponseStartTimeout,
                 AttemptFailureKind::Transport,
@@ -1872,10 +1872,7 @@ mod tests {
 
     #[test]
     fn glm_flash_caller_errors_remain_neutral_and_success_resets_failure_streak() {
-        for (provider, provider_model) in [
-            (ProviderId::Tinfoil, "glm-5-3-flash"),
-            (ProviderId::Continuum, "glm-5.3-flash"),
-        ] {
+        for (provider, provider_model) in [(ProviderId::Continuum, "glm-5.3-flash")] {
             let state = ShadowHealthState::with_policy(test_policy());
             let now = Instant::now();
             let flash = route(provider, "glm-5-3-flash", provider_model);

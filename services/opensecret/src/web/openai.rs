@@ -4916,22 +4916,9 @@ mod tests {
     }
 
     #[test]
-    fn image_flash_probe_loser_replans_to_same_model_on_either_provider() {
+    fn image_flash_probe_loser_cannot_use_retired_tinfoil() {
         let proxy_router = probe_test_proxy_router();
-        for (bucket, first_provider, alternate, alternate_model) in [
-            (
-                0,
-                ProviderId::Continuum,
-                ProviderId::Tinfoil,
-                "glm-5-3-flash",
-            ),
-            (
-                99,
-                ProviderId::Tinfoil,
-                ProviderId::Continuum,
-                "glm-5.3-flash",
-            ),
-        ] {
+        for bucket in [0, 99] {
             let provider_router = ProviderRouter::default();
             let model = crate::web::responses::image_describer::IMAGE_DESCRIPTION_CANDIDATES[0]
                 .public_model_id;
@@ -4946,17 +4933,14 @@ mod tests {
             let route = provider_router
                 .select_active_completion_route(&proxy_router, &intent)
                 .expect("initial image route");
-            assert_eq!(route.provider, first_provider);
+            assert_eq!(route.provider, ProviderId::Continuum);
             let winning_probe = open_and_claim_probe_at_boundary(&provider_router, &intent, &route);
             let pinned = PinnedCompletionRequest::new(intent, route);
 
-            let claimed = claim_completion_turn(&provider_router, &proxy_router, &pinned)
-                .expect("image helper can use the same-model alternate before sending");
-            assert_eq!(claimed.route.public_model_id, model);
-            assert_eq!(claimed.route.response_model_id, model);
-            assert_eq!(claimed.route.provider, alternate);
-            assert_eq!(claimed.route.provider_model_id, alternate_model);
-            assert!(claimed.probe.is_none());
+            let error = claim_completion_turn(&provider_router, &proxy_router, &pinned)
+                .expect_err("image helper has no same-model provider fallback");
+            assert!(matches!(error, ApiError::InferenceCapacity { .. }));
+            assert!(pinned.finalized_route.get().is_none());
             drop(winning_probe);
         }
     }
@@ -8025,7 +8009,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn auto_quick_exhausts_glm_providers_before_deepseek_without_replaying() {
+    async fn auto_quick_uses_deepseek_after_continuum_flash_fails_without_replaying() {
         use crate::inference::auto_model::{AutoCandidateRejection, AutoModelReason};
         use crate::inference::sticky_routes::StickyRoute;
         use crate::model_config::{
@@ -8052,7 +8036,6 @@ mod tests {
         // only the following request can use another provider or public model.
         for (index, (expected_model, expected_provider)) in [
             (GLM_5_3_FLASH_MODEL_ID, ProviderId::Continuum),
-            (GLM_5_3_FLASH_MODEL_ID, ProviderId::Tinfoil),
             (DEEPSEEK_V4_1_FLASH_MODEL_ID, ProviderId::Tinfoil),
         ]
         .into_iter()
@@ -8070,13 +8053,13 @@ mod tests {
             assert_eq!(resolved.public_model_id(), expected_model);
             let decision = resolved.auto_decision().expect("Auto decision");
             assert_eq!(decision.preferred_model_id, GLM_5_3_FLASH_MODEL_ID);
-            let expected_reason = if index < 2 {
+            let expected_reason = if index == 0 {
                 AutoModelReason::Primary
             } else {
                 AutoModelReason::HealthFallback
             };
             assert_eq!(decision.reason, expected_reason);
-            if index == 2 {
+            if index == 1 {
                 assert!(matches!(
                     decision.rejected.as_slice(),
                     [(model, AutoCandidateRejection::Unavailable { retry_after })]
@@ -8127,7 +8110,7 @@ mod tests {
             let attempt = intent
                 .begin_execution()
                 .begin_attempt(claim.route.identity());
-            if index < 2 {
+            if index == 0 {
                 let error = match trace.result {
                     Err(error) => error,
                     Ok(_) => panic!("mock GLM Flash unexpectedly succeeded"),
@@ -8179,8 +8162,7 @@ mod tests {
             );
             let expected_tinfoil: &[&str] = match index {
                 0 => &[],
-                1 => &[GLM_5_3_FLASH_MODEL_ID],
-                _ => &[GLM_5_3_FLASH_MODEL_ID, DEEPSEEK_V4_1_FLASH_MODEL_ID],
+                _ => &[DEEPSEEK_V4_1_FLASH_MODEL_ID],
             };
             assert_eq!(
                 tinfoil_sends.lock().expect("Tinfoil sends").as_slice(),
@@ -8188,7 +8170,7 @@ mod tests {
             );
         }
 
-        // Both GLM providers are open. Explicit Flash remains Flash and makes
+        // The sole GLM Flash provider is open. Explicit Flash remains Flash and makes
         // zero additional sends even though the Auto alternate is healthy.
         let explicit = resolve_for_test(
             &provider_router,
@@ -8225,7 +8207,7 @@ mod tests {
             }
         ));
         assert_eq!(continuum_sends.lock().expect("Continuum sends").len(), 1);
-        assert_eq!(tinfoil_sends.lock().expect("Tinfoil sends").len(), 2);
+        assert_eq!(tinfoil_sends.lock().expect("Tinfoil sends").len(), 1);
 
         let retained = resolve_for_test(
             &provider_router,
@@ -8414,12 +8396,6 @@ mod tests {
         );
         open(
             GLM_5_3_FLASH_MODEL_ID,
-            GLM_5_3_FLASH_MODEL_ID,
-            ProviderId::Tinfoil,
-            50,
-        );
-        open(
-            GLM_5_3_FLASH_MODEL_ID,
             "glm-5.3-flash",
             ProviderId::Continuum,
             70,
@@ -8442,7 +8418,7 @@ mod tests {
                 client_replay_safe,
             } => {
                 assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
-                assert_eq!(retry_after, Some(Duration::from_secs(50)));
+                assert_eq!(retry_after, Some(Duration::from_secs(70)));
                 assert!(client_replay_safe);
             }
             other => panic!("unexpected error {other:?}"),
@@ -8456,7 +8432,7 @@ mod tests {
             response.headers()[crate::ERROR_CODE_HEADER],
             crate::INFERENCE_CAPACITY_ERROR_CODE
         );
-        assert_eq!(response.headers()[header::RETRY_AFTER], "50");
+        assert_eq!(response.headers()[header::RETRY_AFTER], "70");
         assert_eq!(
             provider_router.sticky_routes().len(),
             0,

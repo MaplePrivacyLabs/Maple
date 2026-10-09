@@ -298,9 +298,9 @@ mod tests {
         assert_eq!(plan.selected.public_model_id, GLM_5_3_FLASH_MODEL_ID);
         assert_eq!(plan.selected.provider_model_id, "glm-5.3-flash");
         assert_eq!(plan.selected.provider, ProviderId::Continuum);
-        assert_eq!(plan.selected.bucket, Some(73));
-        assert_eq!(plan.decision, PlanDecision::StaticBucket);
-        assert_eq!(plan.eligible_routes.len(), 2);
+        assert_eq!(plan.selected.bucket, None);
+        assert_eq!(plan.decision, PlanDecision::FixedRoute);
+        assert_eq!(plan.eligible_routes.len(), 1);
     }
 
     #[test]
@@ -388,7 +388,7 @@ mod tests {
     }
 
     #[test]
-    fn flash_is_a_distinct_dual_provider_model_not_a_glm_5_3_fallback() {
+    fn flash_is_a_distinct_continuum_only_model_not_a_glm_5_3_fallback() {
         let intent = intent(GLM_5_3_FLASH_MODEL_ID, GLM_5_3_FLASH_MODEL_ID);
         let plan = plan_completion_route(
             &PROVIDER_REGISTRY,
@@ -401,16 +401,13 @@ mod tests {
         .expect("Flash route");
 
         assert_eq!(plan.selected.public_model_id, GLM_5_3_FLASH_MODEL_ID);
-        assert_eq!(plan.eligible_routes.len(), 2);
+        assert_eq!(plan.eligible_routes.len(), 1);
         assert_eq!(
             plan.eligible_routes
                 .iter()
                 .map(|route| (route.provider, route.provider_model_id.as_str()))
                 .collect::<Vec<_>>(),
-            vec![
-                (ProviderId::Continuum, "glm-5.3-flash"),
-                (ProviderId::Tinfoil, GLM_5_3_FLASH_MODEL_ID),
-            ]
+            vec![(ProviderId::Continuum, "glm-5.3-flash")]
         );
         assert!(plan
             .eligible_routes
@@ -419,7 +416,7 @@ mod tests {
     }
 
     #[test]
-    fn glm_and_flash_send_seventy_five_percent_of_accounts_to_continuum_on_every_surface() {
+    fn glm_preserves_its_split_and_flash_uses_continuum_on_every_surface() {
         use crate::inference::{InferenceSurface, WorkloadClass};
         for model in [GLM_5_3_MODEL_ID, GLM_5_3_FLASH_MODEL_ID] {
             for (surface, workload) in [
@@ -450,7 +447,7 @@ mod tests {
                         },
                     )
                     .expect("weighted GLM or Flash plan");
-                    let expected = if bucket < 75 {
+                    let expected = if model == GLM_5_3_FLASH_MODEL_ID || bucket < 75 {
                         continuum_count += 1;
                         ProviderId::Continuum
                     } else {
@@ -460,13 +457,43 @@ mod tests {
                         plan.selected.provider, expected,
                         "{model}, bucket {bucket}, {surface:?}"
                     );
-                    assert_eq!(plan.selected.bucket, Some(bucket));
-                    assert_eq!(plan.decision, PlanDecision::StaticBucket);
+                    if model == GLM_5_3_FLASH_MODEL_ID {
+                        assert_eq!(plan.selected.bucket, None);
+                        assert_eq!(plan.decision, PlanDecision::FixedRoute);
+                    } else {
+                        assert_eq!(plan.selected.bucket, Some(bucket));
+                        assert_eq!(plan.decision, PlanDecision::StaticBucket);
+                    }
                     assert_eq!(plan.selected.public_model_id, model);
                 }
-                assert_eq!(continuum_count, 75);
+                assert_eq!(
+                    continuum_count,
+                    if model == GLM_5_3_FLASH_MODEL_ID {
+                        100
+                    } else {
+                        75
+                    }
+                );
             }
         }
+    }
+
+    #[test]
+    fn flash_ignores_a_remembered_retired_tinfoil_route() {
+        let intent = intent(GLM_5_3_FLASH_MODEL_ID, GLM_5_3_FLASH_MODEL_ID);
+        let plan = plan_completion_route(
+            &PROVIDER_REGISTRY,
+            RoutePlanningInput {
+                intent: &intent,
+                configured_providers: ConfiguredProviders::all(),
+                remembered_provider: Some(ProviderId::Tinfoil),
+            },
+        )
+        .expect("Flash moves to its only configured route");
+        assert_eq!(plan.selected.provider, ProviderId::Continuum);
+        assert_eq!(plan.selected.provider_model_id, "glm-5.3-flash");
+        assert_eq!(plan.eligible_routes.len(), 1);
+        assert_eq!(plan.decision, PlanDecision::FixedRoute);
     }
 
     #[test]
