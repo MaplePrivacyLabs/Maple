@@ -208,7 +208,7 @@ jobs:
     name: Linux AppImage (${{ matrix.variant }})
     needs: changes
     if: ${{ always() && !cancelled() && ((github.event_name == 'pull_request' && (needs.changes.result != 'success' || needs.changes.outputs.agent != 'false')) || (github.repository == 'MaplePrivacyLabs/Maple' && github.ref == 'refs/heads/master' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch'))) }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-latest-8-cores-v2
     timeout-minutes: 120
     strategy:
       fail-fast: false

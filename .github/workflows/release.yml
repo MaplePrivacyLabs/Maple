@@ -140,7 +140,7 @@ jobs:
           - platform: macos-26-xlarge
             nix_shell: ci
             artifact_prefix: macos
-          - platform: ubuntu-latest-8-cores
+          - platform: ubuntu-latest-8-cores-v2
             nix_shell: desktop-linux
             artifact_prefix: linux
 
@@ -172,7 +172,7 @@ jobs:
       # Ubuntu 24.04 restricts unprivileged user namespaces by default; linuxdeploy/AppImage
       # packaging uses bubblewrap and otherwise fails with "bwrap: setting up uid map: Permission denied".
       - name: Allow bubblewrap user namespaces
-        if: matrix.platform == 'ubuntu-latest-8-cores'
+        if: matrix.platform == 'ubuntu-latest-8-cores-v2'
         run: |
           set -euo pipefail
           if [ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
@@ -185,8 +185,8 @@ jobs:
       - name: Build Tauri desktop app
         run: nix develop --no-update-lock-file .#${{ matrix.nix_shell }} -c ./scripts/ci/desktop-release.sh
         env:
-          APPIMAGE_EXTRACT_AND_RUN: ${{ matrix.platform == 'ubuntu-latest-8-cores' && '1' || '' }}
-          NO_STRIP: ${{ matrix.platform == 'ubuntu-latest-8-cores' && 'true' || '' }}
+          APPIMAGE_EXTRACT_AND_RUN: ${{ matrix.platform == 'ubuntu-latest-8-cores-v2' && '1' || '' }}
+          NO_STRIP: ${{ matrix.platform == 'ubuntu-latest-8-cores-v2' && 'true' || '' }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
@@ -382,7 +382,7 @@ jobs:
   build-android:
     environment: android-signing
     needs: classify-app-release
-    runs-on: ubuntu-latest-8-cores
+    runs-on: ubuntu-latest-8-cores-v2
     permissions:
       contents: write
       id-token: write
@@ -570,7 +570,7 @@ jobs:
 
   build-web:
     needs: classify-app-release
-    runs-on: ubuntu-latest-8-cores
+    runs-on: ubuntu-latest-8-cores-v2
     permissions:
       contents: write
       id-token: write
@@ -764,7 +764,7 @@ jobs:
     needs:
       - classify-app-release
       - build-android
-    runs-on: ubuntu-latest-8-cores
+    runs-on: ubuntu-latest-8-cores-v2
     permissions:
       contents: read
     steps:
@@ -795,7 +795,7 @@ jobs:
     needs:
       - classify-app-release
       - build-tauri
-    runs-on: ubuntu-latest-8-cores
+    runs-on: ubuntu-latest-8-cores-v2
     permissions:
       contents: read
     steps:
@@ -856,7 +856,7 @@ jobs:
     needs:
       - classify-app-release
       - build-windows
-    runs-on: ubuntu-latest-8-cores
+    runs-on: ubuntu-latest-8-cores-v2
     permissions:
       contents: read
     steps:
