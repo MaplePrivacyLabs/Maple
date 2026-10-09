@@ -67,27 +67,44 @@ pub fn is_context_overflow(message: &AssistantMessage, context_window: Option<u6
     }
 }
 
+/// Account limits: an exhausted quota, budget or balance, or a usage limit that resets
+/// after hours. Retrying cannot help, even when the provider answers with a 429.
+static ACCOUNT_LIMIT: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(concat!(
+        r"(?i)GoUsageLimitError|FreeUsageLimitError|Monthly usage limit reached|available balance",
+        r"|insufficient_quota|out of budget|quota exceeded|billing",
+        r"|subscription_sharing_usage_limit_exceeded",
+    ))
+    .expect("pattern compiles")
+});
+
 static RETRYABLE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(concat!(
         r"(?i)overloaded|high demand|at capacity|rate.?limit|too many requests",
         r"|\b(?:429|500|502|503|504|520|524)\b|service.?unavailable|server.?error|internal.?error",
-        r"|provider.?returned.?error|network.?error|connection.?(?:error|refused|lost|reset)",
+        r"|provider.?returned.?error|exceeded request buffer limit while retrying upstream",
+        r"|network.?error|connection.?(?:error|refused|lost|reset)",
         r"|other side closed|fetch failed|getaddrinfo|ENOTFOUND|EAI_AGAIN|upstream.?connect",
         r"|reset before headers|socket hang up|socket connection was closed|timed? ?out",
-        r"|terminated|ended without|stream ended|retry your request|try your request again",
+        r"|terminated|websocket.?(?:closed|error)",
+        r"|ended without|stream ended|http2 request did not get a response",
+        r"|pending stream has been canceled|retry delay",
+        r"|retry your request|try your request again|ResourceExhausted",
+        r"|subscription_sharing_(?:usage|user)_unavailable",
         r"|error sending request|error decoding response body|broken pipe",
     ))
     .expect("pattern compiles")
 });
 
 /// Whether a failed response looks like a transient provider or transport error that
-/// retrying the same request may fix. Handle context overflow before asking this.
+/// retrying the same request may fix. An exhausted quota, budget or balance never is.
+/// Handle context overflow before asking this.
 pub fn is_retryable_error(message: &AssistantMessage) -> bool {
     message.stop_reason == StopReason::Error
         && message
             .error_message
             .as_deref()
-            .is_some_and(|error| RETRYABLE.is_match(error))
+            .is_some_and(|error| !ACCOUNT_LIMIT.is_match(error) && RETRYABLE.is_match(error))
 }
 
 /// Exponential backoff: `base_ms * 2^(attempt - 1)`, capped at `max_ms`.
@@ -171,6 +188,26 @@ mod tests {
         }
         for error in ["401 invalid api key", "400 bad request: unknown field"] {
             assert!(!is_retryable_error(&failed(error)), "{error}");
+        }
+    }
+
+    #[test]
+    fn exhausted_quotas_are_not_retried_even_as_429s() {
+        for error in [
+            "429 You exceeded your current quota (insufficient_quota)",
+            "429 Monthly usage limit reached",
+            "Rate limit: quota exceeded for this key",
+            "402 billing hard limit reached",
+            "subscription_sharing_usage_limit_exceeded",
+        ] {
+            assert!(!is_retryable_error(&failed(error)), "{error}");
+        }
+        for error in [
+            "websocket closed",
+            "ResourceExhausted: try again",
+            "subscription_sharing_usage_unavailable",
+        ] {
+            assert!(is_retryable_error(&failed(error)), "{error}");
         }
     }
 
