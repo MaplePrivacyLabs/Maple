@@ -18,6 +18,46 @@ fn broker() -> QuestionBroker {
     QuestionBroker::new(AgentEventDispatcher::new(Arc::new(NullSink)))
 }
 
+/// A web provider no test reaches.
+struct NoWeb;
+
+#[async_trait::async_trait]
+impl MapleWebTransport for NoWeb {
+    async fn web_search(
+        self: Arc<Self>,
+        _request: maple_sdk::WebSearchRequest,
+        _cancel_token: CancellationToken,
+    ) -> maple_sdk::Result<maple_sdk::WebSearchResponse> {
+        Err(maple_sdk::Error::Other("no web in tests".to_string()))
+    }
+
+    async fn web_extract(
+        self: Arc<Self>,
+        _request: maple_sdk::WebExtractRequest,
+        _cancel_token: CancellationToken,
+    ) -> maple_sdk::Result<maple_sdk::WebExtractResponse> {
+        Err(maple_sdk::Error::Other("no web in tests".to_string()))
+    }
+}
+
+/// A task of `kind`: no login PATH, a broker nobody answers, and the web
+/// switch on.
+fn task(kind: TaskKind, tool_context: SharedAgentToolContext) -> TaskToolsFor {
+    TaskToolsFor {
+        session_id: "task-1".to_string(),
+        kind,
+        tool_context,
+        login_path: None,
+        questions: broker(),
+        web: Arc::new(NoWeb),
+        web_enabled: true,
+    }
+}
+
+fn default_context() -> SharedAgentToolContext {
+    SharedAgentToolContext::new(AgentToolContextSpec::default())
+}
+
 fn spawn(env: &[(&str, &str)]) -> BashSpawnContext {
     BashSpawnContext {
         command: "true".to_string(),
@@ -39,13 +79,10 @@ fn commands_get_the_login_path_the_task_id_and_its_tool_context() {
         )
         .unwrap(),
     );
-    let tools = task_tools(
-        "task-1",
-        TaskKind::Desktop,
-        context,
-        Some("/login/bin:/usr/bin".to_string()),
-        &broker(),
-    );
+    let tools = task_tools(TaskToolsFor {
+        login_path: Some("/login/bin:/usr/bin".to_string()),
+        ..task(TaskKind::Desktop, context)
+    });
     let hook = tools.options.bash.spawn_hook.unwrap();
     let started = hook(spawn(&[
         ("PATH", "/usr/bin"),
@@ -81,13 +118,7 @@ fn a_revoked_context_stops_adding_its_values_but_keeps_scrubbing() {
         )
         .unwrap(),
     );
-    let tools = task_tools(
-        "task-1",
-        TaskKind::Desktop,
-        context.clone(),
-        None,
-        &broker(),
-    );
+    let tools = task_tools(task(TaskKind::Desktop, context.clone()));
     context.revoke();
     let started = tools.options.bash.spawn_hook.unwrap()(spawn(&[("TOKEN", "inherited")]));
     assert!(!started.env.contains_key("TOKEN"));
@@ -95,13 +126,7 @@ fn a_revoked_context_stops_adding_its_values_but_keeps_scrubbing() {
 
 #[test]
 fn the_model_gets_read_a_shell_edit_and_write() {
-    let tools = task_tools(
-        "task-1",
-        TaskKind::Desktop,
-        SharedAgentToolContext::new(AgentToolContextSpec::default()),
-        None,
-        &broker(),
-    );
+    let tools = task_tools(task(TaskKind::Desktop, default_context()));
     let shell = if cfg!(windows) {
         tools.builtin[1].as_str()
     } else {
@@ -121,31 +146,40 @@ fn tool(tools: &TaskTools, name: &str) -> Arc<dyn pi_agent_core::AgentTool> {
 }
 
 fn desktop_tools() -> TaskTools {
-    task_tools(
-        "task-1",
-        TaskKind::Desktop,
-        SharedAgentToolContext::new(AgentToolContextSpec::default()),
-        None,
-        &broker(),
-    )
+    task_tools(task(TaskKind::Desktop, default_context()))
+}
+
+fn maple_tool_names(tools: &TaskTools) -> Vec<(String, bool)> {
+    tools
+        .maple
+        .iter()
+        .map(|tool| (tool.tool.name().to_string(), tool.active))
+        .collect()
 }
 
 #[test]
-fn desktop_tasks_get_the_plan_and_questions_and_acp_tasks_do_not() {
-    let names: Vec<String> = desktop_tools()
-        .maple
-        .iter()
-        .map(|tool| tool.tool.name().to_string())
-        .collect();
-    assert_eq!(names, ["todo_write", "request_user_input"]);
-    let acp = task_tools(
-        "task-1",
-        TaskKind::Acp,
-        SharedAgentToolContext::new(AgentToolContextSpec::default()),
-        None,
-        &broker(),
+fn desktop_tasks_also_get_the_plan_and_questions_and_every_task_the_web() {
+    let on = |name: &str| (name.to_string(), true);
+    assert_eq!(
+        maple_tool_names(&desktop_tools()),
+        [
+            on("todo_write"),
+            on("request_user_input"),
+            on("web_search"),
+            on("open_url")
+        ]
     );
-    assert!(acp.maple.is_empty());
+    let acp = task_tools(TaskToolsFor {
+        web_enabled: false,
+        ..task(TaskKind::Acp, default_context())
+    });
+    assert_eq!(
+        maple_tool_names(&acp),
+        [
+            ("web_search".to_string(), false),
+            ("open_url".to_string(), false)
+        ]
+    );
 }
 
 #[tokio::test]
@@ -238,13 +272,10 @@ fn questions_are_deduplicated_capped_and_defaulted() {
 #[tokio::test]
 async fn an_unanswered_question_is_taken_back_when_the_run_stops() {
     let questions = broker();
-    let tools = task_tools(
-        "task-1",
-        TaskKind::Desktop,
-        SharedAgentToolContext::new(AgentToolContextSpec::default()),
-        None,
-        &questions,
-    );
+    let tools = task_tools(TaskToolsFor {
+        questions: questions.clone(),
+        ..task(TaskKind::Desktop, default_context())
+    });
     let ask = tool(&tools, "request_user_input");
     let cancel = CancellationToken::new();
     let call = {

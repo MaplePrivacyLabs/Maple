@@ -438,6 +438,55 @@ async fn the_model_shows_its_plan_and_asks_the_user() {
 }
 
 #[tokio::test]
+async fn the_web_tools_follow_the_tasks_web_switch() {
+    let harness = Harness::new().await;
+    let task = harness.create_task().await;
+    let declared = |request: &pi_ai::faux::FauxRequest| -> Vec<String> {
+        pi_ai::transcript::current_tools(&request.context.messages)
+            .into_iter()
+            .map(|tool| tool.name)
+            .collect()
+    };
+    let switch = |enabled| AgentSetSessionWebRequest {
+        session_id: task.clone(),
+        enabled,
+    };
+    for (enabled, reply) in [(true, "On."), (false, "Off."), (true, "On again.")] {
+        harness
+            .handle
+            .set_session_web_enabled(switch(enabled))
+            .await
+            .unwrap();
+        harness.faux.push_text(reply);
+        let mut run = harness.send(&task, "Look it up").await;
+        assert_eq!(finished(&mut run).await, AgentRunTerminal::Completed);
+    }
+    let requests = harness.faux.requests();
+    let tools: Vec<Vec<String>> = requests.iter().map(declared).collect();
+    for name in ["todo_write", "request_user_input"] {
+        assert!(
+            tools
+                .iter()
+                .all(|tools| tools.iter().any(|tool| tool == name))
+        );
+    }
+    let has_web = |tools: &[String]| {
+        ["web_search", "open_url"]
+            .iter()
+            .all(|name| tools.iter().any(|tool| tool == name))
+    };
+    assert!(has_web(&tools[0]), "{:?}", tools[0]);
+    assert!(
+        !tools[1]
+            .iter()
+            .any(|tool| tool == "web_search" || tool == "open_url"),
+        "{:?}",
+        tools[1]
+    );
+    assert!(has_web(&tools[2]), "{:?}", tools[2]);
+}
+
+#[tokio::test]
 async fn stop_keeps_the_reply_so_far_and_says_it_was_stopped() {
     let harness =
         Harness::with_faux(FauxProvider::new().with_chunk_delay(Duration::from_millis(20))).await;

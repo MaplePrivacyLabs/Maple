@@ -202,6 +202,8 @@ impl AgentRuntime {
                 self.models.register_models([model.clone()]);
                 session.set_model(model).await;
             }
+            // The web switch may have changed since the last run.
+            tools::sync_web_tools(session, row.web_enabled);
             return Ok(session.clone());
         }
         // Registered first, so a resumed session finds the model it names.
@@ -215,13 +217,15 @@ impl AgentRuntime {
             AgentSessionOptions::new(&row.project_root, APP_NAME, manager, self.models.clone());
         options.model = Some(model);
         options.settings = self.settings();
-        let tools = tools::task_tools(
-            &row.id,
-            row.kind,
-            SharedAgentToolContext::new(self.host.default_tool_context.clone()),
-            search_path,
-            &self.questions,
-        );
+        let tools = tools::task_tools(tools::TaskToolsFor {
+            session_id: row.id.clone(),
+            kind: row.kind,
+            tool_context: SharedAgentToolContext::new(self.host.default_tool_context.clone()),
+            login_path: search_path,
+            questions: self.questions.clone(),
+            web: self.api.clone(),
+            web_enabled: row.web_enabled,
+        });
         options.tool_options = tools.options;
         options.builtin_tools = Some(tools.builtin);
         options.tools = tools.maple;

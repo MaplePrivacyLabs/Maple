@@ -34,6 +34,7 @@ sha2 = "0.10"
 tempfile = "3"
 maple-sdk = { workspace = true }
 maple-proxy = { workspace = true }
+pulldown-cmark = { version = "0.13", default-features = false }
 pi-ai = { path = "../pi-ai", default-features = false }
 pi-agent-core = { path = "../pi-agent-core" }
 pi-coding-agent = { path = "../pi-coding-agent" }
