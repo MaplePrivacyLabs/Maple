@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="en" xmlns="http://www.w3.org/1999/xhtml">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="x-apple-disable-message-reformatting">
+<meta name="color-scheme" content="light dark">
+<meta name="supported-color-schemes" content="light dark">
+<title>{{TITLE}}</title>
+<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root { color-scheme: light dark; supported-color-schemes: light dark; }
+  body { margin:0; padding:0; -webkit-font-smoothing:antialiased; -webkit-text-size-adjust:100%; }
+  a { text-decoration:none; }
+  img { border:0; outline:none; }
+  @media (max-width:600px) {
+    .card  { padding:24px 20px !important; border-radius:20px !important; }
+    .outer { padding:20px 10px 0 !important; }
+    .h1    { font-size:26px !important; }
+    .code-lg { font-size:28px !important; letter-spacing:6px !important; }
+    .stack { display:block !important; width:100% !important; }
+    .stack-gap { padding:0 0 14px !important; }
+  }
+  @media (prefers-color-scheme: dark) {
+    .bg      { background:#0f0d0c !important; }
+    .card    { background:#1a1716 !important; border-color:#2a2422 !important; }
+    .ink     { color:#f4efed !important; }
+    .body    { color:#cfc7c4 !important; }
+    .muted   { color:#a0918c !important; }
+    .faint   { color:#7d716d !important; }
+    .rule    { border-color:#2c2624 !important; }
+    .codebox { background:#241f1d !important; border-color:#342d2a !important; }
+    .link    { color:#ff9771 !important; }
+    .danger  { color:#ff8a65 !important; }
+    .wm-light { display:none !important; }
+    .wm-dark  { display:block !important; max-height:none !important; overflow:visible !important; }
+  }
+    [data-ogsc] .bg      { background:#0f0d0c !important; }
+    [data-ogsc] .card    { background:#1a1716 !important; border-color:#2a2422 !important; }
+    [data-ogsc] .ink     { color:#f4efed !important; }
+    [data-ogsc] .body    { color:#cfc7c4 !important; }
+    [data-ogsc] .muted   { color:#a0918c !important; }
+    [data-ogsc] .faint   { color:#7d716d !important; }
+    [data-ogsc] .rule    { border-color:#2c2624 !important; }
+    [data-ogsc] .codebox { background:#241f1d !important; border-color:#342d2a !important; }
+    [data-ogsc] .link    { color:#ff9771 !important; }
+    [data-ogsc] .danger  { color:#ff8a65 !important; }
+    [data-ogsc] .wm-light { display:none !important; }
+    [data-ogsc] .wm-dark  { display:block !important; max-height:none !important; overflow:visible !important; }
+</style>
+</head>
+<body class="bg" style="margin:0;padding:0;background:#efeeed;">
+  <div style="display:none;max-height:0;overflow:hidden;mso-hide:all;font-size:1px;line-height:1px;color:#efeeed;">{{PREHEADER}}&#8199;&#65279;&#847;&#8199;&#65279;&#847;&#8199;&#65279;&#847;&#8199;&#65279;&#847;&#8199;&#65279;&#847;&#8199;&#65279;&#847;</div>
+  <table role="presentation" class="bg" width="100%" cellpadding="0" cellspacing="0" border="0" bgcolor="#efeeed" style="background:#efeeed;">
+    <tr>
+      <td class="outer" align="center" style="padding:36px 16px 0;">
+        <table role="presentation" width="600" cellpadding="0" cellspacing="0" border="0" style="width:100%;max-width:600px;">
+
+          <tr><td style="padding:0 4px 18px;">
+            <a href="https://www.trymaple.ai"><img src="{{ASSET_BASE}}wordmark.png" width="103" height="20" alt="Maple" style="display:block;width:103px;height:20px;font-family:Manrope,-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;font-size:16px;font-weight:700;color:#9c9dab;"></a>
+          </td></tr>
+
+{{BLOCKS}}
+
+          <tr><td style="padding:22px 4px 0;font-family:Manrope,-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;font-size:13px;line-height:1.65;color:#857c79;" class="muted">
+            Questions? Reach us at <a class="link" href="mailto:{{SUPPORT}}" style="color:#e8633d;font-weight:600;">{{SUPPORT}}</a>.<br>
+            <a class="muted" href="https://www.trymaple.ai" style="color:#857c79;">trymaple.ai</a>
+            &nbsp;&middot;&nbsp; <a class="muted" href="https://www.trymaple.ai/privacy" style="color:#857c79;">Privacy</a>
+            &nbsp;&middot;&nbsp; <a class="muted" href="https://x.com/trymapleai" style="color:#857c79;">X</a>
+            &nbsp;&middot;&nbsp; <a class="muted" href="https://github.com/OpenSecretCloud/Maple" style="color:#857c79;">GitHub</a>
+          </td></tr>
+          <tr><td class="faint" style="padding:10px 4px 28px;font-family:Manrope,-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;font-size:12px;line-height:1.6;color:#a59d9a;">
+            &copy; {{YEAR}} Maple Privacy Labs Inc.<br>
+            601 Congress Ave, Suite 250, Austin, TX 78701
+          </td></tr>
+
+          <tr><td style="padding:0;line-height:0;font-size:0;">
+            <img class="wm-light" src="{{ASSET_BASE}}footer-watermark-light.png" width="600" alt="" style="display:block;width:100%;max-width:600px;height:auto;">
+            <div class="wm-dark" style="display:none;max-height:0;overflow:hidden;mso-hide:all;">
+              <img src="{{ASSET_BASE}}footer-watermark-dark.png" width="600" alt="" style="display:block;width:100%;max-width:600px;height:auto;">
+            </div>
+          </td></tr>
+
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>
