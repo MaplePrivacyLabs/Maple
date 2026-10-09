@@ -3,8 +3,10 @@
 //! Pi's session gives every task `read`, `bash`, `edit` and `write`, or
 //! `powershell` in place of `bash` on Windows without Git Bash. Maple sets up
 //! how their commands start: from the login shell's PATH, with the task's id,
-//! and with the task's tool context, so the ACP bridge's variables stay out.
-//! `MAPLE_SHELL` names the bash to run.
+//! and with the task's tool context, so the ACP bridge's variables reach only
+//! the tasks of its sessions. A command that gets the bridge's credentials
+//! ends everything it started when it ends. `MAPLE_SHELL` names the bash to
+//! run.
 //!
 //! Maple's own tools join these: every task gets `read_image`, desktop tasks
 //! get the plan the user watches (`todo_write`) and questions the user
@@ -117,7 +119,8 @@ pub(crate) fn sync_web_tools(session: &AgentSession, web_enabled: bool) {
 }
 
 /// How every command of the task starts: the login PATH, the task's id, and
-/// the task's tool context, read when the command starts.
+/// the task's tool context, read when the command starts. Nothing a command
+/// started outlives it with the context's credentials.
 fn spawn_hook(
     session_id: String,
     tool_context: SharedAgentToolContext,
@@ -135,6 +138,7 @@ fn spawn_hook(
         for (key, value) in &context.values {
             set_env_var(&mut spawn.env, key, value.clone());
         }
+        spawn.contain = context.ephemeral;
         spawn
     })
 }

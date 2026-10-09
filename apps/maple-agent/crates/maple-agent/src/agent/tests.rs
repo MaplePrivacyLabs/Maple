@@ -1187,6 +1187,22 @@ async fn tasks_rename_archive_and_delete_with_their_files() {
         .await
         .unwrap();
     assert_eq!(renamed.title, "Greeting");
+    // Signed out, the session renames nothing.
+    let signed_out = test_maple_api_session(USER);
+    signed_out.invalidate_for_test().await;
+    let refused = harness
+        .handle
+        .rename_session(
+            signed_out,
+            AgentRenameSessionRequest {
+                session_id: task.clone(),
+                title: "Other".to_string(),
+            },
+        )
+        .await
+        .err()
+        .unwrap();
+    assert!(refused.contains("no longer active"), "{refused}");
     let archived = harness
         .handle
         .set_session_state(task.clone(), AgentTaskState::Archived)

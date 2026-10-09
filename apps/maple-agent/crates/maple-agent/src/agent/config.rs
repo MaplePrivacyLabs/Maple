@@ -812,15 +812,6 @@ pub(super) fn write_device_local_json_file<T: Serialize + ?Sized>(
 }
 
 #[cfg(unix)]
-pub(super) fn set_owner_only_permissions(path: &Path) {
-    use std::os::unix::fs::PermissionsExt;
-    let _ = fs::set_permissions(path, fs::Permissions::from_mode(0o600));
-}
-
-#[cfg(not(unix))]
-pub(super) fn set_owner_only_permissions(_path: &Path) {}
-
-#[cfg(unix)]
 pub(super) fn set_owner_only_dir_permissions(path: &Path) {
     use std::os::unix::fs::PermissionsExt;
     let _ = fs::set_permissions(path, fs::Permissions::from_mode(0o700));

@@ -8,10 +8,6 @@
 //! [`agent::AgentEventSink`] and drives it through [`agent::AgentRuntimeHandle`]
 //! method calls.
 
-// Phase 2 moves Maple's features onto Pi one part at a time, and some of
-// what the later parts use is already here. This goes once they all are.
-#![allow(dead_code)]
-
 #[cfg(feature = "acp")]
 pub mod acp;
 pub mod agent;

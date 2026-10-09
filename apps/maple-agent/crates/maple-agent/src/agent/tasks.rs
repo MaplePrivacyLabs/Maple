@@ -292,6 +292,8 @@ impl AgentRuntimeHandle {
             return Err("Agent task rename requires a task ID".to_string());
         }
         let title = normalize_user_provided_session_title(&request.title)?;
+        // A rename is the signed-in user's: not once they signed out.
+        let _signed_in = maple_api_session.active_lease().await?;
         let row = self
             .store()?
             .update(&session_id, |row| {

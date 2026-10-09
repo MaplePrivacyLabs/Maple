@@ -142,10 +142,6 @@ impl SharedAgentToolContext {
         }
     }
 
-    pub(crate) fn lifetime_token(&self) -> CancellationToken {
-        self.revoked.clone()
-    }
-
     pub(crate) fn revoke(&self) {
         // Linearize revocation with command construction and spawn. Once this
         // method returns, no snapshot taken before revocation can launch a new
@@ -163,21 +159,6 @@ impl SharedAgentToolContext {
         state.ephemeral = false;
         // Retain inherited-key scrubbing after revocation. A removed explicit
         // credential must never reveal a same-named ambient process value.
-    }
-
-    pub(crate) fn cancel_run(&self, run: &CancellationToken) {
-        // A run cancellation and a tool launch share the same fence. Once this
-        // method returns, a snapshot from this context cannot cross the launch
-        // boundary for that run.
-        let _launch = self
-            .launch_gate
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        run.cancel();
-    }
-
-    pub(crate) fn ptr_eq(&self, other: &Self) -> bool {
-        Arc::ptr_eq(&self.state, &other.state)
     }
 
     pub(crate) fn is_revoked(&self) -> bool {
@@ -260,24 +241,23 @@ mod tests {
     }
 
     #[test]
-    fn run_cancellation_returns_only_after_the_process_launch_fence() {
+    fn revocation_returns_only_after_a_launch_in_progress() {
         let context = SharedAgentToolContext::new(AgentToolContextSpec::default());
         let snapshot = context.snapshot();
         let run = CancellationToken::new();
         let launch = snapshot.begin_process_launch(&run).unwrap();
-        let cancellation_context = context.clone();
-        let cancellation_run = run.clone();
+        let revoking = context.clone();
         let (started_tx, started_rx) = std::sync::mpsc::channel();
         let (finished_tx, finished_rx) = std::sync::mpsc::channel();
         let task = std::thread::spawn(move || {
             started_tx.send(()).unwrap();
-            cancellation_context.cancel_run(&cancellation_run);
+            revoking.revoke();
             finished_tx.send(()).unwrap();
         });
 
         started_rx
             .recv_timeout(std::time::Duration::from_secs(1))
-            .expect("cancellation thread should start");
+            .expect("the revoking thread starts");
         assert!(
             finished_rx
                 .recv_timeout(std::time::Duration::from_millis(50))
@@ -286,10 +266,10 @@ mod tests {
         drop(launch);
         finished_rx
             .recv_timeout(std::time::Duration::from_secs(1))
-            .expect("cancellation should finish after launch releases the fence");
+            .expect("revocation finishes once the launch releases the fence");
         task.join().unwrap();
 
-        assert!(run.is_cancelled());
+        assert!(context.is_revoked());
         assert!(snapshot.begin_process_launch(&run).is_err());
     }
 }

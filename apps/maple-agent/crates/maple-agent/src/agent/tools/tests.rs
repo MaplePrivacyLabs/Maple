@@ -74,6 +74,7 @@ fn spawn(env: &[(&str, &str)]) -> BashSpawnContext {
             .iter()
             .map(|(key, value)| (key.to_string(), value.to_string()))
             .collect(),
+        contain: false,
     }
 }
 
@@ -114,6 +115,31 @@ fn commands_get_the_login_path_the_task_id_and_its_tool_context() {
         Some("/home/me")
     );
     assert!(!started.env.contains_key("BUZZ_AUTH_TAG"));
+    // Nothing credential-bearing: a background job may outlive the command.
+    assert!(!started.contain);
+}
+
+#[test]
+fn a_command_with_the_bridges_credentials_ends_everything_it_started() {
+    let context = SharedAgentToolContext::new(
+        AgentToolContextSpec::try_new(
+            BTreeMap::from([("BUZZ_PRIVATE_KEY".to_string(), "secret".to_string())]),
+            BTreeSet::from(["BUZZ_PRIVATE_KEY".to_string()]),
+            true,
+        )
+        .unwrap(),
+    );
+    let tools = task_tools(task(TaskKind::Acp, context.clone()));
+    let hook = tools.options.bash.spawn_hook.unwrap();
+    let started = hook(spawn(&[]));
+    assert_eq!(
+        started.env.get("BUZZ_PRIVATE_KEY").map(String::as_str),
+        Some("secret")
+    );
+    assert!(started.contain);
+    // Revoked, the context gives nothing to contain.
+    context.revoke();
+    assert!(!hook(spawn(&[])).contain);
 }
 
 #[test]

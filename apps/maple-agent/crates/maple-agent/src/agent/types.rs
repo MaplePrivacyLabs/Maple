@@ -278,28 +278,6 @@ pub struct AgentSetupIntegrationRequest {
     pub id: String,
 }
 
-/// An MCP server supplied by an external Agent surface for one leased session.
-///
-/// Unlike [`AgentMcpServer`], this type is never serialized into Maple's user
-/// configuration or a task's session file. It may contain short-lived bearer
-/// headers owned by the calling surface, so the lease that installs it also
-/// owns its removal.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct AgentTransientMcpServer {
-    pub(crate) name: String,
-    pub(crate) description: String,
-    pub(crate) timeout_seconds: u64,
-    pub(crate) transport: AgentTransientMcpTransport,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum AgentTransientMcpTransport {
-    StreamableHttp {
-        url: String,
-        headers: Vec<AgentMcpKeyValue>,
-    },
-}
-
 pub(super) fn default_mcp_timeout_seconds() -> u64 {
     DEFAULT_MCP_TIMEOUT_SECONDS
 }
@@ -632,22 +610,6 @@ pub struct AgentRunUsage {
     pub(crate) total_tokens: u64,
     pub(crate) cached_read_tokens: u64,
     pub(crate) cached_write_tokens: u64,
-}
-
-impl AgentRunUsage {
-    pub(super) fn saturating_delta(self, before: Self) -> Self {
-        Self {
-            input_tokens: self.input_tokens.saturating_sub(before.input_tokens),
-            output_tokens: self.output_tokens.saturating_sub(before.output_tokens),
-            total_tokens: self.total_tokens.saturating_sub(before.total_tokens),
-            cached_read_tokens: self
-                .cached_read_tokens
-                .saturating_sub(before.cached_read_tokens),
-            cached_write_tokens: self
-                .cached_write_tokens
-                .saturating_sub(before.cached_write_tokens),
-        }
-    }
 }
 
 #[derive(Debug, Clone)]
