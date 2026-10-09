@@ -7,22 +7,14 @@
 //! is empty.
 
 use super::{
-    AgentIntegration, AgentIntegrationPermissions, AgentPathLayout, AgentRuntimeHandle,
-    AgentSessionMcpServer, AgentSetIntegrationEnabledRequest, AgentSetSessionMcpServerRequest,
-    AgentSetupIntegrationRequest, AgentSlashCommand, AgentSubagent, SideQuestionTurn,
+    AgentPathLayout, AgentRuntimeHandle, AgentSessionMcpServer, AgentSetSessionMcpServerRequest,
+    AgentSlashCommand, AgentSubagent, SideQuestionTurn,
 };
 
 const UNAVAILABLE: &str = "This feature is not available in this build of Maple yet";
 
 fn unavailable<T>() -> Result<T, String> {
     Err(UNAVAILABLE.to_string())
-}
-
-/// Start the host-owned setup of a built-in integration.
-pub fn begin_integration_setup(
-    _request: &AgentSetupIntegrationRequest,
-) -> Result<AgentIntegrationPermissions, String> {
-    unavailable()
 }
 
 /// Slash commands from skills.
@@ -44,26 +36,6 @@ pub(super) fn resolve_slash_command(
 }
 
 impl AgentRuntimeHandle {
-    /// Maple-curated integrations found on this device.
-    pub async fn list_integrations(&self) -> Result<Vec<AgentIntegration>, String> {
-        self.verify_generation().await?;
-        Ok(Vec::new())
-    }
-
-    pub async fn set_integration_enabled(
-        &self,
-        _request: AgentSetIntegrationEnabledRequest,
-    ) -> Result<Vec<AgentIntegration>, String> {
-        unavailable()
-    }
-
-    pub async fn setup_integration(
-        &self,
-        _request: AgentSetupIntegrationRequest,
-    ) -> Result<Vec<AgentIntegration>, String> {
-        unavailable()
-    }
-
     /// A task's MCP servers and integrations.
     pub async fn list_session_mcp_servers(
         &self,

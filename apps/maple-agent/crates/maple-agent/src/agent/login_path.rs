@@ -193,11 +193,22 @@ mod probe {
     }
 }
 
+static LOGIN_SEARCH_PATH: tokio::sync::OnceCell<Option<String>> =
+    tokio::sync::OnceCell::const_new();
+
 /// The login shell's search path, joined, or `None` when it could not be
 /// read (or on Windows, where processes inherit the user's PATH).
 pub(crate) async fn login_search_path() -> Option<String> {
-    static PATH: tokio::sync::OnceCell<Option<String>> = tokio::sync::OnceCell::const_new();
-    PATH.get_or_init(resolve_login_search_path).await.clone()
+    LOGIN_SEARCH_PATH
+        .get_or_init(resolve_login_search_path)
+        .await
+        .clone()
+}
+
+/// The login shell's search path if it has been read already, without
+/// waiting for it.
+pub(crate) fn known_login_search_path() -> Option<String> {
+    LOGIN_SEARCH_PATH.get().cloned().flatten()
 }
 
 #[cfg(windows)]

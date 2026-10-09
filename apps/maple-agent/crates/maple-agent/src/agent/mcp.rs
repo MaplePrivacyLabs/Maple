@@ -5,16 +5,13 @@
 use std::collections::HashSet;
 
 use super::config::{load_agent_config_inner, save_agent_config_inner};
+use super::integrations::validate_new_mcp_integration_collisions;
 use super::{AgentMcpKeyValue, AgentMcpServer, AgentMcpTransport, AgentRuntimeHandle};
 
 const MAX_MCP_SERVER_NAME_CHARS: usize = 64;
 
 /// Keys of Maple's own tool groups, which a server cannot take.
 const RESERVED_KEYS: [&str; 2] = ["developer", "maple-skills-extension"];
-
-/// Every spelling of the computer use integration's name.
-const CUA_NAME: &str = "Computer use (CUA)";
-const CUA_NAMES: [&str; 4] = ["cua-driver", CUA_NAME, "Cua Driver", "cua_driver"];
 
 /// Variables a server's environment cannot set: they change how programs and
 /// libraries are found and loaded.
@@ -226,37 +223,6 @@ pub(super) fn normalize_mcp_servers(
         }
     }
     Ok(servers)
-}
-
-fn is_cua_identity(name: &str) -> bool {
-    let key = name_to_key(name.trim());
-    CUA_NAMES
-        .iter()
-        .any(|candidate| name_to_key(candidate) == key)
-}
-
-/// Refuse a server newly added under the computer use integration's name. A
-/// name an earlier release accepted stays saveable, so one old entry cannot
-/// make every unrelated change fail.
-pub(super) fn validate_new_mcp_integration_collisions(
-    previous: &[AgentMcpServer],
-    next: &[AgentMcpServer],
-) -> Result<(), String> {
-    let existing: HashSet<String> = previous
-        .iter()
-        .map(|server| name_to_key(&server.name))
-        .collect();
-    match next
-        .iter()
-        .filter(|server| !existing.contains(&name_to_key(&server.name)))
-        .find(|server| is_cua_identity(&server.name))
-    {
-        Some(server) => Err(format!(
-            "Custom MCP server '{}' conflicts with the {CUA_NAME} integration. Rename or remove the custom server before enabling the integration.",
-            server.name
-        )),
-        None => Ok(()),
-    }
 }
 
 impl AgentRuntimeHandle {

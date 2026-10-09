@@ -154,17 +154,6 @@ pub struct AgentIntegration {
     pub detail: Option<String>,
 }
 
-/// The integrations that hand a task's work to another coding agent: the
-/// Codex and Claude Code command lines.
-const EXTERNAL_AGENT_INTEGRATION_IDS: [&str; 2] = ["codex", "claude"];
-
-impl AgentIntegration {
-    /// Whether this card is an external coding agent.
-    pub fn is_external_agent(&self) -> bool {
-        EXTERNAL_AGENT_INTEGRATION_IDS.contains(&self.id.as_str())
-    }
-}
-
 /// The implementation behind a curated integration. Only Maple's own
 /// embedded backend remains; tasks saved with the retired standalone driver
 /// read as having no backend.

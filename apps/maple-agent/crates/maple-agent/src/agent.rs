@@ -14,6 +14,7 @@ mod attachments;
 mod bounded_process;
 mod catalog;
 mod config;
+mod integrations;
 mod login_path;
 mod mcp;
 mod placeholders;
@@ -42,7 +43,7 @@ pub use config::{
     include_default_maple_workspace, is_default_maple_workspace, maple_workspace_directory,
     startup_project_root,
 };
-pub use placeholders::begin_integration_setup;
+pub use integrations::begin_integration_setup;
 pub use runs::AgentRunHandle;
 use runtime::AgentRuntime;
 use store::TaskStore;

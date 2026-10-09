@@ -672,6 +672,46 @@ async fn mcp_servers_are_saved_apart_from_the_other_settings() {
 }
 
 #[tokio::test]
+async fn integrations_list_and_refuse_what_cannot_be_enabled() {
+    let harness = Harness::new().await;
+    let cards = harness.handle.list_integrations().await.unwrap();
+    let ids: Vec<&str> = cards.iter().map(|card| card.id.as_str()).collect();
+    assert_eq!(ids, ["cua-driver", "codex", "claude"]);
+    assert_eq!(
+        cards[0].availability,
+        AgentIntegrationAvailability::NotDetected
+    );
+    assert_eq!(cards[0].backend, None);
+
+    let error = harness
+        .handle
+        .set_integration_enabled(AgentSetIntegrationEnabledRequest {
+            id: "cua-driver".into(),
+            enabled: true,
+        })
+        .await
+        .unwrap_err();
+    assert!(error.contains("permissions"), "{error}");
+    let error = harness
+        .handle
+        .set_integration_enabled(AgentSetIntegrationEnabledRequest {
+            id: "elsewhere".into(),
+            enabled: true,
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(error, "Unknown integration 'elsewhere'");
+    let cards = harness
+        .handle
+        .setup_integration(AgentSetupIntegrationRequest {
+            id: "cua-driver".into(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(cards[0].backend, None, "setup cannot finish in this build");
+}
+
+#[tokio::test]
 async fn answers_reach_the_question_broker_of_the_service() {
     let harness = Harness::new().await;
     let broker = harness.service.question_broker();
