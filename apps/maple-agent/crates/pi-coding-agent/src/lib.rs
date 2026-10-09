@@ -6,7 +6,9 @@
 //!   [`store::SessionStore`] (JSONL files here; any other store fits behind the trait);
 //! - [`compaction`]: older context is summarized when it nears the window, and the
 //!   branch being left can be summarized when moving in the tree;
-//! - [`resources`]: context files, skills and prompt templates from folders the host names;
+//! - [`resources`]: context files, skills, prompt templates, `SYSTEM.md` and
+//!   `APPEND_SYSTEM.md` from folders the host names;
+//! - [`trust`]: whether a project's own resources may load, decided once per folder;
 //! - [`system_prompt`]: the prompt as named sections the transcript can patch;
 //! - [`extensions`]: a plugin API of typed events, tools, commands and providers;
 //! - [`tools`]: Pi's built-in tools, `read`, `bash`, `edit`, `write`, `grep`, `find` and
@@ -28,6 +30,7 @@ pub mod settings;
 pub mod store;
 pub mod system_prompt;
 pub mod tools;
+pub mod trust;
 
 pub use agent_session::{
     AgentSession, AgentSessionError, AgentSessionEvent, AgentSessionOptions, CompactionReason,

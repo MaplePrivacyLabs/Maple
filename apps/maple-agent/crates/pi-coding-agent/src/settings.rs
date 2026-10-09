@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::compaction::CompactionSettings;
+use crate::trust::DefaultProjectTrust;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
@@ -57,7 +58,7 @@ pub struct Settings {
     pub skills: Vec<PathBuf>,
     /// Extra prompt template folders.
     pub prompts: Vec<PathBuf>,
-    /// Text added to the system prompt.
+    /// Text added to the system prompt, in place of `APPEND_SYSTEM.md`.
     pub append_system_prompt: Option<String>,
     /// The shell `bash` runs instead of the one it finds; a leading `~` is the home
     /// folder.
@@ -65,6 +66,9 @@ pub struct Settings {
     /// Run before every `bash` command, for example `shopt -s expand_aliases`.
     pub shell_command_prefix: Option<String>,
     pub images: ImageSettings,
+    /// What to do with a project that has resources of its own and no decision yet.
+    /// Only the user's settings can set it.
+    pub default_project_trust: DefaultProjectTrust,
 }
 
 /// Overlay `overlay` onto `base`: objects merge key by key, anything else replaces.
@@ -102,8 +106,13 @@ impl Settings {
     /// file that does not parse is an error rather than silently ignored.
     pub fn load(user: Option<&Path>, project: Option<&Path>) -> io::Result<Self> {
         let mut merged = serde_json::to_value(Settings::default())?;
-        for path in [user, project].into_iter().flatten() {
-            if let Some(value) = read_json(path)? {
+        for (path, is_project) in [(user, false), (project, true)] {
+            let Some(path) = path else { continue };
+            if let Some(mut value) = read_json(path)? {
+                if is_project && let Some(object) = value.as_object_mut() {
+                    // A project cannot decide how far it is trusted.
+                    object.remove("defaultProjectTrust");
+                }
                 merge_json(&mut merged, value);
             }
         }
@@ -137,6 +146,23 @@ mod tests {
         assert_eq!(settings.steering_mode, QueueMode::All);
         assert_eq!(settings.default_thinking_level, Some(ThinkingLevel::High));
         assert_eq!(settings.retry, RetrySettings::default());
+    }
+
+    #[test]
+    fn only_the_user_sets_the_default_project_trust() {
+        let dir = tempfile::tempdir().unwrap();
+        let user = dir.path().join("user.json");
+        let project = dir.path().join("project.json");
+        fs::write(&user, json!({ "defaultProjectTrust": "never" }).to_string()).unwrap();
+        fs::write(
+            &project,
+            json!({ "defaultProjectTrust": "always" }).to_string(),
+        )
+        .unwrap();
+        let settings = Settings::load(Some(&user), Some(&project)).unwrap();
+        assert_eq!(settings.default_project_trust, DefaultProjectTrust::Never);
+        let settings = Settings::load(None, Some(&project)).unwrap();
+        assert_eq!(settings.default_project_trust, DefaultProjectTrust::Ask);
     }
 
     #[test]

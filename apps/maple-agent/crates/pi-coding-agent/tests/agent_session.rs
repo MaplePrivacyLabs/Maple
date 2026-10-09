@@ -503,9 +503,11 @@ async fn templates_and_skills_expand_before_sending() {
                     &pi_coding_agent::resources::ResourcePaths {
                         agent_dir: dir.path().join("none"),
                         project_dir_name: ".maple".into(),
+                        home_dir: None,
                     },
                     std::slice::from_ref(&skill),
                     &[],
+                    true,
                 )
             };
             options.skill_load_hint = Some("Use the read tool to load a skill's file".into());
@@ -802,4 +804,35 @@ async fn stopping_cancels_a_branch_summary() {
     );
     session.wait_for_idle().await;
     assert_eq!(last_assistant_text(&session), "second answer");
+}
+
+#[tokio::test]
+async fn system_md_and_append_system_md_shape_the_prompt_unless_the_host_does() {
+    let harness = Harness::new();
+    let file = |name: &str, content: &str| {
+        Some(pi_coding_agent::resources::ContextFile {
+            path: name.into(),
+            content: content.into(),
+        })
+    };
+    let with_files = |options: &mut pi_coding_agent::AgentSessionOptions| {
+        options.resources.system_prompt = file("SYSTEM.md", "You review pull requests.");
+        options.resources.append_system_prompt = file("APPEND_SYSTEM.md", "Answer in French.");
+    };
+    let session = harness.session_with(with_files).await;
+    let prompt = session.extension_context().next_system_prompt();
+    assert!(prompt.starts_with("You review pull requests."), "{prompt}");
+    assert!(prompt.contains("Answer in French."), "{prompt}");
+
+    let session = harness
+        .session_with(|options| {
+            with_files(options);
+            options.custom_prompt = Some("You write tests.".into());
+            options.settings.append_system_prompt = Some("Answer in Dutch.".into());
+        })
+        .await;
+    let prompt = session.extension_context().next_system_prompt();
+    assert!(prompt.starts_with("You write tests."), "{prompt}");
+    assert!(prompt.contains("Answer in Dutch."), "{prompt}");
+    assert!(!prompt.contains("pull requests") && !prompt.contains("French"));
 }

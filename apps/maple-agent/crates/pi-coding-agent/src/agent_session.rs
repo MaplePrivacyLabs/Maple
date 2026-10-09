@@ -222,7 +222,7 @@ pub struct AgentSessionOptions {
     pub tools: Vec<RegisteredTool>,
     pub extensions: Vec<Arc<dyn Extension>>,
     pub ui: Arc<dyn ExtensionUi>,
-    /// Replaces the default preamble, tool list and rules.
+    /// Replaces the default preamble, tool list and rules, and `SYSTEM.md`.
     pub custom_prompt: Option<String>,
     /// How the model reads skill files. Without it, `read` or else `bash` does, and
     /// with neither, skills are left out of the prompt.
@@ -382,13 +382,21 @@ impl AgentSession {
         let thinking_level = model.as_ref().map_or(ThinkingLevel::Off, |model| {
             model.clamp_thinking_level(requested_thinking_level)
         });
+        // The host's prompt and appended text win over SYSTEM.md and APPEND_SYSTEM.md.
+        let resource_text = |file: &Option<crate::resources::ContextFile>| {
+            file.as_ref().map(|file| file.content.clone())
+        };
         let prompt_base = SystemPromptOptions {
             app_name: options.app_name.clone(),
-            custom_prompt: options.custom_prompt.clone(),
+            custom_prompt: options
+                .custom_prompt
+                .clone()
+                .or_else(|| resource_text(&options.resources.system_prompt)),
             append: options
                 .settings
                 .append_system_prompt
                 .clone()
+                .or_else(|| resource_text(&options.resources.append_system_prompt))
                 .unwrap_or_default(),
             cwd: options.cwd.to_string_lossy().into_owned(),
             context_files: options.resources.context_files.clone(),

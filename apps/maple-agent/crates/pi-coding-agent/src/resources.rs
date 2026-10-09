@@ -1,6 +1,8 @@
-//! Instructions and reusable prompts found on disk: context files (`AGENTS.md`), skills
-//! and prompt templates. Folder names come from the host, so nothing here is tied to
-//! one application's layout.
+//! Instructions and reusable prompts found on disk: context files (`AGENTS.md`), skills,
+//! prompt templates, and `SYSTEM.md` and `APPEND_SYSTEM.md`. Folder names come from the
+//! host, so nothing here is tied to one application's layout. A project's own resources
+//! load only when the project is trusted (see [`trust`](crate::trust)); context files
+//! always do, as in Pi.
 
 use std::collections::HashSet;
 use std::fs;
@@ -17,11 +19,27 @@ pub struct ResourcePaths {
     pub agent_dir: PathBuf,
     /// The project-level folder name looked up in the working directory, such as `.maple`.
     pub project_dir_name: String,
+    /// The user's home folder, where `~/.agents/skills` is; `None` leaves those out.
+    pub home_dir: Option<PathBuf>,
 }
 
 impl ResourcePaths {
+    /// Paths for `agent_dir` and `project_dir_name`, with this user's home folder.
+    pub fn new(agent_dir: impl Into<PathBuf>, project_dir_name: &str) -> Self {
+        Self {
+            agent_dir: agent_dir.into(),
+            project_dir_name: project_dir_name.to_string(),
+            home_dir: std::env::home_dir(),
+        }
+    }
+
     pub fn project_dir(&self, cwd: &Path) -> PathBuf {
         cwd.join(&self.project_dir_name)
+    }
+
+    /// `~/.agents/skills`, the skills every agent on this computer shares.
+    fn user_agents_skills(&self) -> Option<PathBuf> {
+        Some(self.home_dir.as_ref()?.join(".agents").join("skills"))
     }
 }
 
@@ -219,11 +237,21 @@ fn load_skill(
     })
 }
 
+/// Which Markdown files other than `SKILL.md` can be skills.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum LooseSkills {
+    /// Those directly in the skills folder, as in the agent's own `skills` folders.
+    TopLevel,
+    /// Those in its subfolders, as in `.agents/skills`.
+    Nested,
+}
+
 /// A folder's `SKILL.md` makes the folder a skill; otherwise its subfolders are searched,
-/// and at the top level other Markdown files with a description count too.
+/// and other Markdown files with a description count too, where `loose` says.
 fn scan_skills(
     dir: &Path,
     source: ResourceSource,
+    loose: LooseSkills,
     top: bool,
     skills: &mut Vec<Skill>,
     diagnostics: &mut Vec<Diagnostic>,
@@ -245,37 +273,88 @@ fn scan_skills(
             continue;
         }
         if path.is_dir() {
-            scan_skills(&path, source, false, skills, diagnostics);
-        } else if top && name.ends_with(".md") {
-            skills.extend(load_skill(&path, source, diagnostics));
+            scan_skills(&path, source, loose, false, skills, diagnostics);
+        } else if name.ends_with(".md") {
+            let counts = match loose {
+                LooseSkills::TopLevel => top,
+                LooseSkills::Nested => !top,
+            };
+            if counts {
+                skills.extend(load_skill(&path, source, diagnostics));
+            }
         }
     }
 }
 
-/// Skills from the project and user folders and any extra paths. The first skill with a
-/// name wins, so a project's skill overrides the user's; later ones are reported as
-/// collisions.
+/// `.agents/skills` in `cwd` and each folder above it, up to the repository root when
+/// there is one. The user's own `~/.agents/skills` is not a project's.
+fn project_agents_skill_dirs(cwd: &Path, paths: &ResourcePaths) -> Vec<PathBuf> {
+    let repo_root = cwd.ancestors().find(|dir| dir.join(".git").exists());
+    let user = paths.user_agents_skills();
+    let mut dirs = Vec::new();
+    for dir in cwd.ancestors() {
+        let skills = dir.join(".agents").join("skills");
+        if Some(&skills) != user.as_ref() {
+            dirs.push(skills);
+        }
+        if Some(dir) == repo_root {
+            break;
+        }
+    }
+    dirs
+}
+
+/// Skills from the project's and the user's folders and any extra paths, in that order:
+/// the project folder's `skills` and `.agents/skills` from the working directory up
+/// (only for a trusted project), the agent folder's `skills`, `~/.agents/skills`, then
+/// the extra paths. The first skill with a name wins, so a project's skill overrides the
+/// user's; later ones are reported as collisions.
 pub fn load_skills(
     cwd: &Path,
     paths: &ResourcePaths,
     extra: &[PathBuf],
+    project_trusted: bool,
 ) -> (Vec<Skill>, Vec<Diagnostic>) {
     let mut found = Vec::new();
     let mut diagnostics = Vec::new();
-    scan_skills(
-        &paths.project_dir(cwd).join("skills"),
-        ResourceSource::Project,
-        true,
-        &mut found,
-        &mut diagnostics,
-    );
+    if project_trusted {
+        scan_skills(
+            &paths.project_dir(cwd).join("skills"),
+            ResourceSource::Project,
+            LooseSkills::TopLevel,
+            true,
+            &mut found,
+            &mut diagnostics,
+        );
+        for dir in project_agents_skill_dirs(cwd, paths) {
+            scan_skills(
+                &dir,
+                ResourceSource::Project,
+                LooseSkills::Nested,
+                true,
+                &mut found,
+                &mut diagnostics,
+            );
+        }
+    }
     scan_skills(
         &paths.agent_dir.join("skills"),
         ResourceSource::User,
+        LooseSkills::TopLevel,
         true,
         &mut found,
         &mut diagnostics,
     );
+    if let Some(dir) = paths.user_agents_skills() {
+        scan_skills(
+            &dir,
+            ResourceSource::User,
+            LooseSkills::Nested,
+            true,
+            &mut found,
+            &mut diagnostics,
+        );
+    }
     for path in extra {
         let path = if path.is_absolute() {
             path.clone()
@@ -286,6 +365,7 @@ pub fn load_skills(
             scan_skills(
                 &path,
                 ResourceSource::Path,
+                LooseSkills::TopLevel,
                 true,
                 &mut found,
                 &mut diagnostics,
@@ -460,22 +540,25 @@ fn load_templates_in(
     }
 }
 
-/// Templates from the project and user `prompts` folders and any extra folders. The
-/// first template with a name wins, so a project's template overrides the user's; later
-/// ones are reported as collisions.
+/// Templates from the project's (only when trusted) and the user's `prompts` folders and
+/// any extra folders. The first template with a name wins, so a project's template
+/// overrides the user's; later ones are reported as collisions.
 pub fn load_prompt_templates(
     cwd: &Path,
     paths: &ResourcePaths,
     extra: &[PathBuf],
+    project_trusted: bool,
 ) -> (Vec<PromptTemplate>, Vec<Diagnostic>) {
     let mut templates = Vec::new();
     let mut diagnostics = Vec::new();
-    load_templates_in(
-        &paths.project_dir(cwd).join("prompts"),
-        ResourceSource::Project,
-        &mut templates,
-        &mut diagnostics,
-    );
+    if project_trusted {
+        load_templates_in(
+            &paths.project_dir(cwd).join("prompts"),
+            ResourceSource::Project,
+            &mut templates,
+            &mut diagnostics,
+        );
+    }
     load_templates_in(
         &paths.agent_dir.join("prompts"),
         ResourceSource::User,
@@ -606,30 +689,77 @@ pub fn expand_prompt_template(text: &str, templates: &[PromptTemplate]) -> Strin
     }
 }
 
+/// `name` from the project folder when the project is trusted and has it, else from the
+/// agent folder.
+fn load_prompt_file(
+    cwd: &Path,
+    paths: &ResourcePaths,
+    name: &str,
+    project_trusted: bool,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<ContextFile> {
+    let project = project_trusted.then(|| paths.project_dir(cwd).join(name));
+    let path = project
+        .into_iter()
+        .chain([paths.agent_dir.join(name)])
+        .find(|path| path.is_file())?;
+    match fs::read_to_string(&path) {
+        Ok(content) => Some(ContextFile {
+            content: content
+                .strip_prefix('\u{feff}')
+                .unwrap_or(&content)
+                .to_string(),
+            path,
+        }),
+        Err(error) => {
+            diagnostics.push(diagnostic(&path, error.to_string()));
+            None
+        }
+    }
+}
+
 /// Everything loaded for a working directory.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Resources {
     pub context_files: Vec<ContextFile>,
     pub skills: Vec<Skill>,
     pub prompt_templates: Vec<PromptTemplate>,
+    /// `SYSTEM.md`: replaces the default preamble, tool list and rules.
+    pub system_prompt: Option<ContextFile>,
+    /// `APPEND_SYSTEM.md`: added after the rest of the prompt's text.
+    pub append_system_prompt: Option<ContextFile>,
     pub diagnostics: Vec<Diagnostic>,
 }
 
 impl Resources {
+    /// The resources for `cwd`. A project that is not trusted contributes only its
+    /// context files.
     pub fn load(
         cwd: &Path,
         paths: &ResourcePaths,
         skill_paths: &[PathBuf],
         prompt_paths: &[PathBuf],
+        project_trusted: bool,
     ) -> Self {
-        let (skills, mut diagnostics) = load_skills(cwd, paths, skill_paths);
+        let (skills, mut diagnostics) = load_skills(cwd, paths, skill_paths, project_trusted);
         let (prompt_templates, template_diagnostics) =
-            load_prompt_templates(cwd, paths, prompt_paths);
+            load_prompt_templates(cwd, paths, prompt_paths, project_trusted);
         diagnostics.extend(template_diagnostics);
+        let system_prompt =
+            load_prompt_file(cwd, paths, "SYSTEM.md", project_trusted, &mut diagnostics);
+        let append_system_prompt = load_prompt_file(
+            cwd,
+            paths,
+            "APPEND_SYSTEM.md",
+            project_trusted,
+            &mut diagnostics,
+        );
         Self {
             context_files: load_context_files(cwd, &paths.agent_dir),
             skills,
             prompt_templates,
+            system_prompt,
+            append_system_prompt,
             diagnostics,
         }
     }
@@ -651,6 +781,7 @@ mod tests {
         let paths = ResourcePaths {
             agent_dir: root.path().join("home/agent"),
             project_dir_name: ".maple".into(),
+            home_dir: Some(root.path().join("home")),
         };
         (root, cwd, paths)
     }
@@ -712,7 +843,7 @@ mod tests {
             "---\ndescription: Write a commit message\n---\n",
         );
 
-        let (skills, diagnostics) = load_skills(&cwd, &paths, &[]);
+        let (skills, diagnostics) = load_skills(&cwd, &paths, &[], true);
         let names: Vec<&str> = skills.iter().map(|skill| skill.name.as_str()).collect();
         assert_eq!(names, ["commit", "Deploy_It", "review"]);
         // The project's skill overrides the user's.
@@ -741,7 +872,7 @@ mod tests {
             &paths.project_dir(&cwd).join("skills/review/SKILL.md"),
             "---\ndescription: Review\n---\nCheck the diff.\n",
         );
-        let (skills, _) = load_skills(&cwd, &paths, &[]);
+        let (skills, _) = load_skills(&cwd, &paths, &[], true);
         let expanded = expand_skill_command("/skill:review src/lib.rs", &skills);
         assert!(expanded.starts_with("<skill name=\"review\""));
         assert!(expanded.contains("Check the diff.\n</skill>\n\nsrc/lib.rs"));
@@ -783,7 +914,7 @@ mod tests {
             &paths.project_dir(&cwd).join("prompts/explain.md"),
             "Explain $@ in detail",
         );
-        let (templates, diagnostics) = load_prompt_templates(&cwd, &paths, &[]);
+        let (templates, diagnostics) = load_prompt_templates(&cwd, &paths, &[], true);
         let names: Vec<&str> = templates
             .iter()
             .map(|template| template.name.as_str())
@@ -801,5 +932,86 @@ mod tests {
             expand_prompt_template("/unknown x", &templates),
             "/unknown x"
         );
+    }
+
+    #[test]
+    fn agents_skills_load_from_the_project_up_to_its_repository_and_from_home() {
+        let (root, cwd, paths) = layout();
+        fs::create_dir_all(root.path().join("repo/.git")).unwrap();
+        let skill = |description: &str| format!("---\ndescription: {description}\n---\n");
+        let agents = cwd.join(".agents/skills");
+        write(&agents.join("near/SKILL.md"), &skill("Near"));
+        // Loose files count below the top level of .agents/skills, not at it.
+        write(&agents.join("group/nested.md"), &skill("Nested"));
+        write(&agents.join("loose.md"), &skill("Loose"));
+        write(
+            &root.path().join("repo/.agents/skills/far/SKILL.md"),
+            &skill("Far"),
+        );
+        // Above the repository: not this project's.
+        write(
+            &root.path().join(".agents/skills/outside/SKILL.md"),
+            &skill("Outside"),
+        );
+        write(
+            &root.path().join("home/.agents/skills/mine/SKILL.md"),
+            &skill("Mine"),
+        );
+
+        let (skills, _) = load_skills(&cwd, &paths, &[], true);
+        let found: Vec<(&str, ResourceSource)> = skills
+            .iter()
+            .map(|skill| (skill.name.as_str(), skill.source))
+            .collect();
+        assert_eq!(
+            found,
+            [
+                ("nested", ResourceSource::Project),
+                ("near", ResourceSource::Project),
+                ("far", ResourceSource::Project),
+                ("mine", ResourceSource::User),
+            ]
+        );
+        let (skills, _) = load_skills(&cwd, &paths, &[], false);
+        let names: Vec<&str> = skills.iter().map(|skill| skill.name.as_str()).collect();
+        assert_eq!(names, ["mine"]);
+    }
+
+    #[test]
+    fn an_untrusted_project_keeps_only_its_context_files() {
+        let (_root, cwd, paths) = layout();
+        let project = paths.project_dir(&cwd);
+        write(
+            &project.join("skills/x/SKILL.md"),
+            "---\ndescription: X\n---\n",
+        );
+        write(&project.join("prompts/p.md"), "Do it");
+        write(&project.join("SYSTEM.md"), "\u{feff}Project system");
+        write(&cwd.join("AGENTS.md"), "Context");
+        write(&paths.agent_dir.join("SYSTEM.md"), "User system");
+        write(&paths.agent_dir.join("APPEND_SYSTEM.md"), "User append");
+
+        let trusted = Resources::load(&cwd, &paths, &[], &[], true);
+        let text = |file: &Option<ContextFile>| file.as_ref().map(|file| file.content.clone());
+        assert_eq!(
+            text(&trusted.system_prompt).as_deref(),
+            Some("Project system")
+        );
+        assert_eq!(
+            text(&trusted.append_system_prompt).as_deref(),
+            Some("User append")
+        );
+        assert_eq!(trusted.skills.len(), 1);
+        assert_eq!(trusted.prompt_templates.len(), 1);
+
+        let untrusted = Resources::load(&cwd, &paths, &[], &[], false);
+        assert_eq!(
+            text(&untrusted.system_prompt).as_deref(),
+            Some("User system")
+        );
+        assert!(untrusted.skills.is_empty());
+        assert!(untrusted.prompt_templates.is_empty());
+        assert_eq!(untrusted.context_files.len(), 1);
+        assert_eq!(untrusted.context_files[0].content, "Context");
     }
 }
