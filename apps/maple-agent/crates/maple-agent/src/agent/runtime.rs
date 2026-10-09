@@ -8,6 +8,7 @@ use std::sync::{Arc, Mutex};
 
 use pi_agent_core::QueueMode;
 use pi_ai::{InputModality, Model, ThinkingLevel};
+use pi_coding_agent::resources::Resources;
 use pi_coding_agent::settings::{RetrySettings, Settings};
 use pi_coding_agent::{AgentSession, AgentSessionOptions, ModelRegistry};
 use tokio_util::sync::CancellationToken;
@@ -255,14 +256,18 @@ impl AgentRuntime {
         maple_model(model_id, Some(&entry), context_limit_override())
     }
 
-    /// The task's Pi session, built on first use, on `model`.
+    /// The task's Pi session, built on first use, on `model`. Its skills
+    /// and instruction files are read again each time, so a change shows
+    /// from the next run.
     pub(super) async fn task_session(
         &self,
         row: &TaskRow,
         model: Model,
     ) -> Result<AgentSession, String> {
-        // Read before the sessions are locked: the first read asks a shell.
+        // Read before the sessions are locked: the first read asks a shell,
+        // and the resources come from disk.
         let search_path = login_path::login_search_path().await;
+        let resources = self.resources(&row.project_root).await;
         let mut sessions = self.sessions.lock().await;
         // Shutdown closes the loaded sessions; none is built after it.
         if self.lifetime.is_cancelled() {
@@ -277,6 +282,9 @@ impl AgentRuntime {
             }
             // The web switch may have changed since the last run.
             tools::sync_web_tools(session, row.web_enabled);
+            if let Some(resources) = resources {
+                session.set_resources(resources);
+            }
             return Ok(session.clone());
         }
         // Registered first, so a resumed session finds the model it names.
@@ -292,6 +300,7 @@ impl AgentRuntime {
             AgentSessionOptions::new(&row.project_root, APP_NAME, manager, self.models.clone());
         options.model = Some(model);
         options.settings = self.settings();
+        options.resources = resources.unwrap_or_default();
         let attachments = Arc::new(account_attachment_store(&self.host.paths, &self.user_id)?);
         let tools = tools::task_tools(tools::TaskToolsFor {
             session_id: row.id.clone(),
@@ -316,6 +325,28 @@ impl AgentRuntime {
             .map_err(|error| format!("Failed to start the Agent task: {error}"))?;
         sessions.insert(row.id.clone(), session.clone());
         Ok(session)
+    }
+
+    /// The skills, prompt templates and instruction files of a task in
+    /// `cwd`, or `None` when they cannot be read.
+    async fn resources(&self, cwd: &str) -> Option<Resources> {
+        let (layout, user_id, cwd) = (
+            self.host.paths.clone(),
+            self.user_id.clone(),
+            PathBuf::from(cwd),
+        );
+        let loaded =
+            tokio::task::spawn_blocking(move || super::resources::load(&layout, &user_id, &cwd))
+                .await
+                .map_err(|error| error.to_string())
+                .and_then(|loaded| loaded);
+        match loaded {
+            Ok(resources) => Some(resources),
+            Err(error) => {
+                log::warn!("Failed to read the task's skills and instructions: {error}");
+                None
+            }
+        }
     }
 
     /// The settings of every session: Maple's retry budget, queued messages

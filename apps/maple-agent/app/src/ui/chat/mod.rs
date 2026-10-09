@@ -3881,6 +3881,7 @@ impl ChatScreen {
                     return true;
                 };
                 let backend = self.backend.clone();
+                let user_id = self.user_id.clone();
                 let working_dir = self.project_root.clone();
                 let command = name.to_string();
                 let arguments = args.to_string();
@@ -3889,7 +3890,7 @@ impl ChatScreen {
                 self.call(
                     async move {
                         backend
-                            .resolve_slash_command(working_dir, command, arguments)
+                            .resolve_slash_command(&user_id, working_dir, command, arguments)
                             .await
                     },
                     cx,

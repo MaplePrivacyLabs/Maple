@@ -90,7 +90,10 @@ impl pi_ai::StreamFn for SplitStream {
 
 fn service(data: &Path, recorder: Arc<Recorder>) -> MapleAgentService {
     MapleAgentService::new(MapleAgentHostResources::new(
-        AgentPathLayout::from_app_roots(data.join("config"), data.join("local")),
+        // A home of its own, so no skill or instruction file of the real
+        // one reaches the tasks.
+        AgentPathLayout::from_app_roots(data.join("config"), data.join("local"))
+            .with_home(Some(data.join("home"))),
         recorder,
         AgentToolContextSpec::default(),
         "You are Maple.".to_string(),
@@ -513,6 +516,77 @@ async fn the_web_tools_follow_the_tasks_web_switch() {
         tools[1]
     );
     assert!(has_web(&tools[2]), "{:?}", tools[2]);
+}
+
+#[tokio::test]
+async fn skills_reach_the_model_once_the_project_is_trusted_and_as_they_change() {
+    let harness = Harness::new().await;
+    let project = harness.project.path().canonicalize().unwrap();
+    let root = project.to_string_lossy().into_owned();
+    let write = |path: PathBuf, text: &str| {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, text).unwrap();
+    };
+    let skill = |name: &str| {
+        write(
+            project.join(".agents/skills").join(name).join("SKILL.md"),
+            &format!("---\ndescription: The {name} skill\n---\nDo {name}."),
+        )
+    };
+    write(project.join("AGENTS.md"), "Use tabs.");
+    skill("build");
+
+    let status = harness
+        .handle
+        .get_project_trust(root.clone())
+        .await
+        .unwrap();
+    assert_eq!(status.decision, None);
+    assert_eq!(
+        status.protected_features,
+        [AgentProjectTrustFeature::Skills]
+    );
+    let task = harness.create_task().await;
+    let runtime = harness.service.state.runtime.lock().await.clone().unwrap();
+    let mut prompts = Vec::new();
+    for (index, reply) in ["One.", "Two.", "Three."].into_iter().enumerate() {
+        match index {
+            // Trusting opens the project's skills to its tasks and the `/` list.
+            1 => {
+                let status = harness
+                    .handle
+                    .set_project_trust(root.clone(), true)
+                    .await
+                    .unwrap();
+                assert_eq!(status.decision, Some(true));
+                let commands = harness.service.list_slash_commands(Some(USER), Some(&root));
+                assert!(commands.iter().any(|command| command.name == "build"));
+                let expanded = harness
+                    .service
+                    .resolve_slash_command(Some(USER), Some(&root), "build", "now")
+                    .unwrap()
+                    .unwrap();
+                assert!(
+                    expanded.contains("Do build.\n</skill>\n\nnow"),
+                    "{expanded}"
+                );
+            }
+            // A skill added while the task is loaded shows from its next run.
+            2 => skill("test"),
+            _ => {}
+        }
+        harness.faux.push_text(reply);
+        let mut run = harness.send(&task, "Go").await;
+        assert_eq!(finished(&mut run).await, AgentRunTerminal::Completed);
+        let session = runtime.loaded_session(&task).await.unwrap();
+        prompts.push(session.system_prompt());
+    }
+    // Instruction files load whatever the decision.
+    assert!(prompts.iter().all(|prompt| prompt.contains("Use tabs.")));
+    let listed = |prompt: &String, name: &str| prompt.contains(&format!("<name>{name}</name>"));
+    assert!(!listed(&prompts[0], "build"), "{}", prompts[0]);
+    assert!(listed(&prompts[1], "build") && !listed(&prompts[1], "test"));
+    assert!(listed(&prompts[2], "build") && listed(&prompts[2], "test"));
 }
 
 #[tokio::test]

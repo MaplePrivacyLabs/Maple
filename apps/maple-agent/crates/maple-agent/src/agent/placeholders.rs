@@ -7,32 +7,13 @@
 //! is empty.
 
 use super::{
-    AgentPathLayout, AgentRuntimeHandle, AgentSessionMcpServer, AgentSetSessionMcpServerRequest,
-    AgentSlashCommand, AgentSubagent,
+    AgentRuntimeHandle, AgentSessionMcpServer, AgentSetSessionMcpServerRequest, AgentSubagent,
 };
 
 const UNAVAILABLE: &str = "This feature is not available in this build of Maple yet";
 
 fn unavailable<T>() -> Result<T, String> {
     Err(UNAVAILABLE.to_string())
-}
-
-/// Slash commands from skills.
-pub(super) fn slash_commands(
-    _paths: &AgentPathLayout,
-    _user_id: Option<&str>,
-    _working_dir: Option<&str>,
-) -> Vec<AgentSlashCommand> {
-    Vec::new()
-}
-
-/// The prompt of a skill's slash command.
-pub(super) fn resolve_slash_command(
-    _working_dir: Option<&str>,
-    _command: &str,
-    _args: &str,
-) -> Result<Option<String>, String> {
-    Ok(None)
 }
 
 impl AgentRuntimeHandle {

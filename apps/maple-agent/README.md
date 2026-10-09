@@ -65,7 +65,15 @@ Goose, with an independent dependency graph.
   approval.
 - Slash commands in the composer: `/btw` asks a side question the task
   never sees, plus `/compact`, `/new`, `/pin`, `/web`, `/model`, and
-  `/help`. The account's skills appear in the same list.
+  `/help`. Skills and prompt templates appear in the same list.
+- Instructions and skills, as in Pi: `AGENTS.md` (or `CLAUDE.md`) files
+  from the project folder and the folders above it, `~/.agents/AGENTS.md`,
+  and the account's own. Skills come from the account, `~/.agents/skills`,
+  `~/.claude/skills` and `~/.config/agents/skills`, and in a trusted
+  project from `.maple/skills`, `.agents/skills`, `.claude/skills` and
+  `.goose/skills`; the model sees each skill's description and reads the
+  skill when a task needs it. Prompt templates come from the account's
+  `prompts` folder and a trusted project's `.maple/prompts`.
 - The task's latest todo list stays pinned above the composer.
 - External agents: a task can hand work to Codex or Claude Code installed on
   this computer with the `agent_start`, `agent_send`, `agent_status`,
@@ -101,8 +109,8 @@ Goose, with an independent dependency graph.
 - Projects (working directories) with pinned and recent roots, rename,
   open in the file manager, and remove. The home directory and the
   directory the app was launched from are trusted by default. Other
-  projects that provide skills ask once for a trust decision before
-  their guidance loads.
+  projects that provide skills, prompt templates, or a `.maple/SYSTEM.md`
+  or `APPEND_SYSTEM.md` ask once for a trust decision before those load.
 - Sessions grouped by project, with rename, archive, and restore.
 - Settings: General (web tools, appearance, tool call details, desktop
   notifications, tool call summaries, composer Vim, application Vim, and the
@@ -174,7 +182,7 @@ alongside CUA and custom MCP servers. Each task must select Codex explicitly;
 that choice survives relaunches but only applies while Settings enables Codex.
 Selecting it gives that task the external-agent tools. Enabling it in Settings
 installs the `handoff`, `committee`, and `advisor` skills into the
-account's Goose skills directory; disabling removes only the files Maple
+account's skills folder; disabling removes only the files Maple
 wrote. Codex needs version 0.143 or newer. See
 [`docs/external-agents.md`](docs/external-agents.md).
 
@@ -458,11 +466,10 @@ shows unpackaged builds; packaged Dev and Prod append `maple-agent-dev` and
 | --- | --- |
 | `<config>/settings.json` | App settings. |
 | `<config>/agent/accounts/<scope>/config.json` | Per-account agent configuration (default root, model, custom MCP servers, project trust). May roam between machines. |
-| `<config>/agent/accounts/<scope>/goose/config/skills/` | Skills the account's tasks can load, including the delegation skills Maple installs while any external agent is enabled. |
-| `<config>/agent/goose-runtime/` | Goose process configuration. |
+| `<config>/agent/accounts/<scope>/AGENTS.md`, `skills/`, `prompts/`, `SYSTEM.md`, `APPEND_SYSTEM.md` | The account's own instructions, skills and prompt templates, as Pi's agent folder holds them. |
 | `<local data>/auth.json` | Sign-in credentials (mode 0600). Device-local; never in a roaming profile. |
 | `<local data>/agent/accounts/<scope>/integrations.json` | Per-account defaults for the integrations on this device. |
-| `<local data>/agent/accounts/<scope>/goose/data/sessions/sessions.db` | Goose session history and usage ledger (SQLite, WAL). |
+| `<local data>/agent/accounts/<scope>/sessions/` | One session file (JSONL) per task, and `tasks.db`, the task index (SQLite, WAL). |
 | `<local data>/agent/accounts/<scope>/tool_summaries.db` | Model-written one-line summaries of tool calls (SQLite, WAL). |
 | `<local data>/agent/accounts/<scope>/attachments/` | Image attachments. |
 | `<local data>/agent/acp/accounts/<scope>/config.json` | ACP configuration. |
@@ -477,7 +484,7 @@ over in place. Packaged profiles never adopt legacy or Research state.
 written atomically (temp file, sync, rename) with owner-only permissions.
 
 These directories are separate from the Tauri app's directories. The two
-apps must not share Goose session storage.
+apps must not share session storage.
 
 ## Tests
 

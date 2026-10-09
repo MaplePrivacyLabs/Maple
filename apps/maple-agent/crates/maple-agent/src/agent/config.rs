@@ -477,65 +477,31 @@ pub(super) fn implicitly_trusted_project_root(
     maple_workspace.is_some_and(|workspace| project_root == workspace)
 }
 
+/// The trust status of an existing project: the user's decision, and what
+/// trusting the project adds to its tasks.
 pub(super) fn project_trust_status(
     config: &AgentConfig,
     project_root: &Path,
-    available: bool,
+    protected_features: Vec<AgentProjectTrustFeature>,
 ) -> AgentProjectTrustStatus {
+    AgentProjectTrustStatus {
+        path: path_string(project_root),
+        decision: project_trust_decision(config, project_root),
+        available: true,
+        protected_features,
+    }
+}
+
+/// The decision saved for `project_root`, else the implicit trust of home,
+/// the launch folder and the Maple workspace.
+pub(super) fn project_trust_decision(config: &AgentConfig, project_root: &Path) -> Option<bool> {
     let path = path_string(project_root);
-    let decision = config
+    config
         .project_trust
         .iter()
         .find(|entry| entry.path == path)
         .map(|entry| entry.trusted)
-        .or_else(|| is_implicitly_trusted_project_root(project_root).then_some(true));
-    AgentProjectTrustStatus {
-        path,
-        decision,
-        available,
-        protected_features: if available {
-            project_trust_features(project_root)
-        } else {
-            Vec::new()
-        },
-    }
-}
-
-pub(super) fn project_trust_features(project_root: &Path) -> Vec<AgentProjectTrustFeature> {
-    const MAX_SKILL_ENTRIES: usize = 4_096;
-    let skills_root = project_root.join(".agents").join("skills");
-    let mut pending = vec![skills_root];
-    let mut visited = 0usize;
-    while let Some(directory) = pending.pop() {
-        if visited >= MAX_SKILL_ENTRIES {
-            break;
-        }
-        let Ok(entries) = fs::read_dir(directory) else {
-            continue;
-        };
-        for entry in entries.flatten() {
-            if visited >= MAX_SKILL_ENTRIES {
-                break;
-            }
-            visited += 1;
-            let Ok(file_type) = entry.file_type() else {
-                continue;
-            };
-            if file_type.is_symlink() {
-                continue;
-            }
-            let path = entry.path();
-            if file_type.is_file()
-                && path.file_name().and_then(|name| name.to_str()) == Some("SKILL.md")
-            {
-                return vec![AgentProjectTrustFeature::Skills];
-            }
-            if file_type.is_dir() {
-                pending.push(path);
-            }
-        }
-    }
-    Vec::new()
+        .or_else(|| is_implicitly_trusted_project_root(project_root).then_some(true))
 }
 
 pub(super) fn apply_project_trust(config: &mut AgentConfig, project_root: &Path, trusted: bool) {

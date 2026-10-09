@@ -2134,17 +2134,19 @@ impl AgentBackend {
         .map_err(|error| format!("Slash command scan failed: {error}"))
     }
 
-    /// Expand `/command args` into the skill prompt; `None` when the command
-    /// matches no skill.
+    /// Expand `/command args` into the skill or prompt template's prompt;
+    /// `None` when the command matches neither.
     pub async fn resolve_slash_command(
         &self,
+        user_id: &str,
         working_dir: Option<String>,
         command: String,
         args: String,
     ) -> Result<Option<String>, String> {
         let service = self.service.clone();
+        let user_id = user_id.to_string();
         tokio::task::spawn_blocking(move || {
-            service.resolve_slash_command(working_dir.as_deref(), &command, &args)
+            service.resolve_slash_command(Some(&user_id), working_dir.as_deref(), &command, &args)
         })
         .await
         .map_err(|error| format!("Slash command resolve failed: {error}"))?

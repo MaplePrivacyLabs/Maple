@@ -20,6 +20,7 @@ mod mcp;
 mod placeholders;
 pub(crate) mod provider;
 mod questions;
+mod resources;
 mod runs;
 mod runtime;
 mod side_models;
@@ -66,10 +67,13 @@ const RUNTIME_NOT_RUNNING_ERROR: &str = "Agent runtime is not running";
 
 /// Where the runtime keeps its files: the account configuration below the
 /// app's config root, and device-local task data below its local data root.
+/// The user's home folder holds the skills and instructions every agent on
+/// the computer shares.
 #[derive(Clone)]
 pub struct AgentPathLayout {
     config_root: PathBuf,
     local_data_root: PathBuf,
+    home: Option<PathBuf>,
 }
 
 impl AgentPathLayout {
@@ -77,7 +81,20 @@ impl AgentPathLayout {
         Self {
             config_root: app_config_root.join("agent"),
             local_data_root: app_local_data_root.join("agent"),
+            home: config::home_dir(),
         }
+    }
+
+    pub(crate) fn home(&self) -> Option<&Path> {
+        self.home.as_deref()
+    }
+
+    /// The same layout with another home folder, so a test reads none of
+    /// the real one's.
+    #[cfg(test)]
+    pub(crate) fn with_home(mut self, home: Option<PathBuf>) -> Self {
+        self.home = home;
+        self
     }
 }
 
@@ -236,24 +253,38 @@ impl MapleAgentService {
         }
     }
 
-    /// Slash commands available in `working_dir`.
+    /// The slash commands of `user_id`'s skills and prompt templates in
+    /// `working_dir`. Reads the disk.
     pub fn list_slash_commands(
         &self,
         user_id: Option<&str>,
         working_dir: Option<&str>,
     ) -> Vec<AgentSlashCommand> {
-        placeholders::slash_commands(&self.host.paths, user_id, working_dir)
+        let Some(user_id) = user_id else {
+            return Vec::new();
+        };
+        resources::slash_commands(&self.host.paths, user_id, working_dir.map(Path::new))
     }
 
     /// Expand `/command args` into the prompt that runs the command. `None`
-    /// when no command has that name.
+    /// when no skill or prompt template has that name. Reads the disk.
     pub fn resolve_slash_command(
         &self,
+        user_id: Option<&str>,
         working_dir: Option<&str>,
         command: &str,
         args: &str,
     ) -> Result<Option<String>, String> {
-        placeholders::resolve_slash_command(working_dir, command, args)
+        let Some(user_id) = user_id else {
+            return Ok(None);
+        };
+        resources::resolve_slash_command(
+            &self.host.paths,
+            user_id,
+            working_dir.map(Path::new),
+            command,
+            args,
+        )
     }
 
     /// Stop admitting new work before the host tears down. Work in progress
@@ -610,10 +641,22 @@ impl AgentRuntimeHandle {
             });
         }
         let project_root = normalize_project_root(requested)?;
-        let _settings = self.lock_settings().await;
-        let config =
-            load_agent_config_inner(self.paths(), &self.user_id).map_err(|e| e.to_string())?;
-        Ok(project_trust_status(&config, &project_root, true))
+        let config = {
+            let _settings = self.lock_settings().await;
+            load_agent_config_inner(self.paths(), &self.user_id).map_err(|e| e.to_string())?
+        };
+        Ok(self.project_trust_status(&config, &project_root))
+    }
+
+    /// The trust status of `project_root`, with what trusting it would add
+    /// to its tasks.
+    fn project_trust_status(
+        &self,
+        config: &AgentConfig,
+        project_root: &Path,
+    ) -> AgentProjectTrustStatus {
+        let features = resources::protected_features(self.paths(), &self.user_id, project_root);
+        project_trust_status(config, project_root, features)
     }
 
     pub async fn set_project_trust(
@@ -653,7 +696,7 @@ impl AgentRuntimeHandle {
         if let Some(runtime) = runtime {
             runtime.unload_project_tasks(&root).await;
         }
-        Ok(project_trust_status(&config, &project_root, true))
+        Ok(self.project_trust_status(&config, &project_root))
     }
 
     pub async fn save_project_root_order(
@@ -690,7 +733,7 @@ impl AgentRuntimeHandle {
         args: &str,
     ) -> Result<Option<String>, String> {
         self.service
-            .resolve_slash_command(working_dir, command, args)
+            .resolve_slash_command(Some(&self.user_id), working_dir, command, args)
     }
 }
 

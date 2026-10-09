@@ -47,7 +47,7 @@ sends back.
 ## Skills
 
 Enabling the integration installs three skills into
-`<config>/agent/accounts/<scope>/goose/config/skills/`:
+`<config>/agent/accounts/<scope>/skills/`:
 
 - `/handoff` writes a self-contained briefing and starts an agent in the
   background.

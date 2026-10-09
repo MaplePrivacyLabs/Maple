@@ -76,6 +76,9 @@ pub struct AgentProjectTrust {
 #[serde(rename_all = "snake_case")]
 pub enum AgentProjectTrustFeature {
     Skills,
+    PromptTemplates,
+    /// `SYSTEM.md` or `APPEND_SYSTEM.md` in the project's `.maple` folder.
+    SystemPrompt,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
