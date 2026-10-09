@@ -300,6 +300,67 @@ async fn a_task_runs_saves_and_comes_back_after_a_restart() {
     );
 }
 
+#[cfg(unix)]
+#[tokio::test]
+async fn bash_runs_commands_in_the_task_folder() {
+    let harness = Harness::new().await;
+    harness.faux.push_message(vec![faux_tool_call(
+        "bash",
+        json!({"command": "pwd; printf '%s' \"$AGENT_SESSION_ID\"", "timeout": 5}),
+    )]);
+    harness.faux.push_message(vec![faux_tool_call(
+        "bash",
+        json!({"command": "printf oops >&2; exit 4"}),
+    )]);
+    harness.faux.push_text("Done.");
+    let task = harness.create_task().await;
+    let mut run = harness.send(&task, "Where am I?").await;
+    assert_eq!(finished(&mut run).await, AgentRunTerminal::Completed);
+
+    // The model reads each command's output, and whether it failed.
+    let requests = harness.faux.requests();
+    assert_eq!(requests.len(), 3);
+    let results: Vec<(String, bool)> = requests[2]
+        .context
+        .messages
+        .iter()
+        .filter_map(|message| match message {
+            pi_ai::Message::ToolResult(result) => {
+                Some((pi_ai::content_text(&result.content), result.is_error))
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(results.len(), 2);
+    let (output, failed) = &results[0];
+    assert!(!failed, "{output}");
+    let mut lines = output.lines();
+    let folder = std::fs::canonicalize(lines.next().unwrap()).unwrap();
+    assert_eq!(
+        folder,
+        std::fs::canonicalize(harness.project.path()).unwrap()
+    );
+    assert_eq!(lines.next(), Some(task.as_str()));
+    let (output, failed) = &results[1];
+    assert!(failed);
+    assert_eq!(output, "oops\n\nCommand exited with code 4");
+
+    // The task's rows show each command and how it ended.
+    let detail = harness.handle.load_session(task).await.unwrap();
+    let tools: Vec<&AgentTimelineItem> = detail
+        .timeline
+        .iter()
+        .filter(|row| row.item_type == "tool")
+        .collect();
+    assert_eq!(tools.len(), 2);
+    assert_eq!(tools[0].status.as_deref(), Some("completed"));
+    assert_eq!(
+        tools[0].title.as_deref(),
+        Some("Terminal: pwd; printf '%s' \"$AGENT_SESSION_ID\"")
+    );
+    assert_eq!(tools[1].status.as_deref(), Some("failed"));
+}
+
 #[tokio::test]
 async fn stop_keeps_the_reply_so_far_and_says_it_was_stopped() {
     let harness =

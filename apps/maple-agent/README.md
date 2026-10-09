@@ -447,7 +447,7 @@ ignored. See [build profiles](docs/release-profiles.md).
 | `MAPLE_CLIENT_ID` | OpenSecret client id (UUID). | Maple's id |
 | `MAPLE_MODEL` | Model to select at start. | Runtime default |
 | `MAPLE_CONTEXT_LIMIT` | Context window size in tokens, when the model catalog does not report one. | Catalog value |
-| `GOOSE_SHELL` | Shell for the agent's shell tool. | `bash` (Windows: `cmd`) |
+| `MAPLE_SHELL` | The bash the agent's `bash` tool runs. | `/bin/bash`, else `bash` on PATH (Windows: Git Bash; without it, the `powershell` tool) |
 | `MAPLE_UPDATE_REPO` | GitHub `owner/repo` containing stable `maple-agent-vX.Y.Z` releases. | `MaplePrivacyLabs/Maple` |
 | `MAPLE_DISABLE_UPDATE_CHECK` | `1` turns the release check off. | unset |
 | `RUST_LOG` | Log filter. | `info,goose=warn` |

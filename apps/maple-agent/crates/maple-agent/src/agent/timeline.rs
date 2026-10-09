@@ -601,12 +601,12 @@ pub(crate) fn skill_load_title<T: Serialize>(tool_name: &str, arguments: &T) -> 
     ))
 }
 
-/// Friendly display label for a tool name, e.g. `shell` -> "Terminal".
+/// Friendly display label for a tool name, e.g. `bash` -> "Terminal".
 /// Falls back to the mechanically-cleaned name for anything unmapped.
 pub(crate) fn friendly_tool_label(name: &str) -> String {
     let bare = name.rsplit("__").next().unwrap_or(name);
     match bare {
-        "shell" => "Terminal".to_string(),
+        "bash" | "powershell" | "shell" => "Terminal".to_string(),
         "text_editor" | "str_replace_editor" | "str_replace_based_edit_tool" => {
             "Editor".to_string()
         }
@@ -630,10 +630,10 @@ pub(crate) fn descriptive_tool_title<T: Serialize>(
         return Some(skill);
     }
     let arguments = serde_json::to_value(arguments).ok()?;
-    // Most-descriptive argument per tool, in priority order. Only the shell
+    // Most-descriptive argument per tool, in priority order. Only a shell
     // is described by its command; an editor call is about the file.
     let bare_name = tool_name.rsplit("__").next().unwrap_or(tool_name);
-    let keys: &[&str] = if bare_name == "shell" {
+    let keys: &[&str] = if matches!(bare_name, "bash" | "powershell" | "shell") {
         &[
             "command",
             "path",

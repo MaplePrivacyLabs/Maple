@@ -40,6 +40,7 @@ pi-coding-agent = { path = "../pi-coding-agent" }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+process-wrap = { version = "=9.1.0", default-features = false, features = ["tokio1", "process-session"] }
 
 [dev-dependencies]
 chacha20poly1305 = "0.10"

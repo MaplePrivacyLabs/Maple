@@ -5747,6 +5747,7 @@ dependencies = [
  "pi-agent-core",
  "pi-ai",
  "pi-coding-agent",
+ "process-wrap 9.1.0",
  "rand 0.8.7",
  "reqwest 0.13.4",
  "rusqlite",

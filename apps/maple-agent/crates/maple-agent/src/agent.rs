@@ -14,6 +14,7 @@ mod attachments;
 mod bounded_process;
 mod catalog;
 mod config;
+mod login_path;
 mod mcp;
 mod placeholders;
 pub(crate) mod provider;

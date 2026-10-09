@@ -16,7 +16,8 @@ use super::config::path_string;
 use super::provider::{CatalogEntry, maple_model, maple_model_registry};
 use super::runs::{Failures, Runs};
 use super::store::{TaskRow, TaskStore};
-use super::{AgentRuntimeStatus, MapleAgentHostResources, tools};
+use super::tool_context::SharedAgentToolContext;
+use super::{AgentRuntimeStatus, MapleAgentHostResources, login_path, tools};
 use crate::maple_api::MapleApiSession;
 
 /// The product name Pi's default system prompt names.
@@ -65,6 +66,11 @@ pub(super) struct AgentRuntime {
 impl AgentRuntime {
     pub(super) fn new(parts: RuntimeParts) -> Self {
         let models = maple_model_registry(parts.api.clone(), []);
+        // Ask the login shell for its PATH now, so the first task does not
+        // wait for it.
+        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            runtime.spawn(login_path::login_search_path());
+        }
         Self {
             account_scope: parts.account_scope,
             user_id: parts.user_id,
@@ -177,6 +183,8 @@ impl AgentRuntime {
         row: &TaskRow,
         model: Model,
     ) -> Result<AgentSession, String> {
+        // Read before the sessions are locked: the first read asks a shell.
+        let search_path = login_path::login_search_path().await;
         let mut sessions = self.sessions.lock().await;
         // Shutdown closes the loaded sessions; none is built after it.
         if self.lifetime.is_cancelled() {
@@ -202,7 +210,14 @@ impl AgentRuntime {
             AgentSessionOptions::new(&row.project_root, APP_NAME, manager, self.models.clone());
         options.model = Some(model);
         options.settings = self.settings();
-        options.tools = tools::maple_tools(PathBuf::from(&row.project_root));
+        let tools = tools::task_tools(
+            &row.id,
+            SharedAgentToolContext::new(self.host.default_tool_context.clone()),
+            search_path,
+        );
+        options.tool_options = tools.options;
+        options.builtin_tools = Some(tools.builtin);
+        options.tools = tools.maple;
         let session = AgentSession::new(options)
             .await
             .map_err(|error| format!("Failed to start the Agent task: {error}"))?;

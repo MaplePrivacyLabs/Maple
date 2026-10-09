@@ -194,7 +194,7 @@ fn notices_and_compactions_have_their_own_rows() {
 #[test]
 fn tool_titles_name_what_the_call_is_about() {
     assert_eq!(
-        descriptive_tool_title("shell", &json!({"command": "ls -la\nmore"})).as_deref(),
+        descriptive_tool_title("bash", &json!({"command": "ls -la\nmore"})).as_deref(),
         Some("Terminal: ls -la")
     );
     assert_eq!(
