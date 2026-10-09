@@ -84,8 +84,8 @@ Goose, with an independent dependency graph.
   card. Its progress streams into the tool call's row, and its row above
   the composer shows how long it has worked, with a Stop button. A
   background agent keeps its row after the turn ends, and Maple tells the
-  task when it finishes, with a bounded result in the running turn or a new
-  turn Maple starts automatically. Three skills, `/handoff`, `/committee`,
+  task when it finishes, with a bounded result the model reads after the
+  running turn or in a turn Maple starts. Three skills, `/handoff`, `/committee`,
   and `/advisor`, teach the task when and how to delegate. See
   [`docs/external-agents.md`](docs/external-agents.md).
 - Voice: dictate a message with the microphone button, and read any

@@ -26,11 +26,12 @@ use serde_json::Value;
 use tokio::sync::Notify;
 
 use super::super::config::{account_config_dir_path, load_agent_config_file};
+use super::super::external_agents;
 use super::super::integrations::is_cua_identity;
-use super::super::store::TaskRow;
+use super::super::store::{TaskKind, TaskRow};
 use super::super::timeline::bounded_timeline_text;
 use super::super::{
-    AgentMcpServer, AgentMcpTransport, AgentPathLayout, AgentRuntimeHandle,
+    AgentIntegration, AgentMcpServer, AgentMcpTransport, AgentPathLayout, AgentRuntimeHandle,
     AgentSessionIntegrationKind, AgentSessionMcpServer, AgentSetSessionMcpServerRequest,
 };
 use super::connection::{Listing, McpServer, ToolsChanged};
@@ -59,8 +60,8 @@ const FAILURES_PREFIX: &str = "Some MCP servers could not connect:";
 /// first; the servers of tasks idle longer stop until they run again.
 pub(in crate::agent) const MAX_IDLE_TASKS_WITH_SERVERS: usize = 4;
 
-/// What a switch on a task's MCP row is refused with, until external
-/// agents and computer use run in tasks.
+/// What a switch on a task's computer use row is refused with, until
+/// computer use runs in tasks.
 const NOT_AVAILABLE_YET: &str = "This feature is not available in this build of Maple yet";
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -758,7 +759,11 @@ impl AgentRuntimeHandle {
             .get(session_id)?
             .ok_or_else(|| format!("Failed to find Agent task {session_id}"))?;
         let saved = self.list_mcp_servers().await?;
-        Ok(session_rows(&saved, &row))
+        let cards = match row.kind {
+            TaskKind::Desktop => self.external_agent_cards().await?,
+            TaskKind::Acp => Vec::new(),
+        };
+        Ok(menu_rows(&saved, &cards, &row))
     }
 
     /// Switch an MCP server on or off for a task. A task whose session is
@@ -775,7 +780,14 @@ impl AgentRuntimeHandle {
             return Err("Agent task ID cannot be empty".to_string());
         }
         let name = request.name.trim();
-        if request.kind == AgentSessionIntegrationKind::ExternalAgent || is_cua_identity(name) {
+        if request.kind == AgentSessionIntegrationKind::ExternalAgent {
+            let (row, cards) = self
+                .set_task_external_agent(&session_id, name, request.enabled)
+                .await?;
+            let saved = self.list_mcp_servers().await?;
+            return Ok(menu_rows(&saved, &cards, &row));
+        }
+        if is_cua_identity(name) {
             if request.enabled {
                 return Err(NOT_AVAILABLE_YET.to_string());
             }
@@ -830,8 +842,24 @@ impl AgentRuntimeHandle {
             row
         };
         let row = row.ok_or_else(|| format!("Failed to find Agent task {session_id}"))?;
-        Ok(session_rows(&saved, &row))
+        let cards = match row.kind {
+            TaskKind::Desktop => self.external_agent_cards().await?,
+            TaskKind::Acp => Vec::new(),
+        };
+        Ok(menu_rows(&saved, &cards, &row))
     }
+}
+
+/// A task's whole MCP menu: its servers, then the external agents switched
+/// on in Settings.
+fn menu_rows(
+    saved: &[AgentMcpServer],
+    agent_cards: &[AgentIntegration],
+    row: &TaskRow,
+) -> Vec<AgentSessionMcpServer> {
+    let mut rows = session_rows(saved, row);
+    rows.extend(external_agents::session_rows(agent_cards, row));
+    rows
 }
 
 #[cfg(test)]

@@ -20,8 +20,8 @@ its selection. CUA and custom MCP servers have independent switches.
 An integration enabled in Settings but unavailable on the device remains
 visible in the composer and links to Settings for setup.
 The runtime checks installation before enabling a provider and again when
-launching it. External agents are desktop capabilities: an ACP caller cannot
-acquire them by resuming a desktop task.
+launching it. External agents work in the desktop app's tasks; a task
+started over ACP does not get them.
 
 The tools are:
 
@@ -79,8 +79,8 @@ Codex's own shape; an asynchronous answer that arrives after the turn
 ended starts a follow-up turn on the same thread.
 
 The child runs in the requested project directory, on the user's login PATH, with the same
-environment scrubbing as the shell tool, in its own process group or job
-so teardown reaches every descendant. It is killed when the runtime stops,
+environment scrubbing as the shell tool, in its own process group (on
+Windows, its process tree) so teardown reaches every descendant. It is killed when the runtime stops,
 on logout, and when its task is deleted. Threads are not ephemeral, so
 `codex resume` works from a terminal afterwards.
 
@@ -157,18 +157,21 @@ or starting inference; runtime broker tests cover delivery of the answer.
 ## Transcript
 
 The tool call's row streams the agent's text, its commands with exit
-status, the files it changed, and its todo list. While a turn runs, the
+status, the files it changed, and its todo list. A task reopened while a
+turn runs shows the row as the agent left it. While a turn runs, the
 agent also has a row above the composer with a Stop button. A background
-turn that ends after the tool returned writes two notices into the session
-history: one the transcript projects back onto the same row, so a reopened
-task still shows what the agent did, and one plain line saying the agent
-finished. Maple delivers a bounded result snapshot directly into the task's
-context, in the running turn or a new turn it starts automatically if idle.
-The task can use that result immediately; `agent_status` remains available for
-inspecting the agent again, rather than being required after every completion.
-A completion that arrives as a turn ends is carried into the next turn. If the
-task cannot be resumed, the notice asks you to send a message instead. Stopping
-the runtime or signing out prevents pending completions from starting work.
+turn that ends after the tool returned writes two entries into the task's
+session: one the transcript projects back onto the same row, so a reopened
+task still shows what the agent did, and a notice saying the agent
+finished. Maple hands the model a bounded result snapshot as a message the
+user does not see: behind the task's running turn, as a turn of its own, or
+in a run it starts when the task is idle. The task can use that result
+immediately; `agent_status` remains available for inspecting the agent
+again, rather than being required after every completion. If the user stops
+the run before the result went, the result stays in the task's history,
+where the model reads it with the next message. If the task cannot be
+resumed, a second notice asks you to send a message instead. Deleting the
+task, stopping the runtime, or signing out ends its agents without a report.
 
 Stopping an agent, from its row or with `agent_cancel`, sends
 `turn/interrupt` (translated to Claude’s native `interrupt` control request), waits
@@ -178,7 +181,9 @@ so the kill is what guarantees nothing keeps running.
 
 ## Limits
 
-- One task may run at most four external agents at once.
+- One task may start at most four external agents. An agent whose command
+  could not start does not count; the others last until the task is deleted
+  or the runtime stops, as they did on the Goose runtime.
 - Flatpak builds report external agents as unsupported.
 - Codex 0.143 or newer is required.
 - Maple cannot sign Codex in. The Integrations card says when a sign-in is
@@ -188,16 +193,16 @@ so the kill is what guarantees nothing keeps running.
 
 ## Adding a provider
 
-Register its stable ID, label, description, and Settings projection in
-`EXTERNAL_AGENT_INTEGRATIONS` in `agent/integrations.rs`, then add discovery
-to `IntegrationDetections` and a transport adapter under `agent/external_agents/`.
+Add it to the `ExternalAgent` catalog in `agent/integrations.rs` (its
+stable ID, label, description, and card detail), add discovery to
+`integrations/detect.rs` and `Detections`, list its ID in `PROVIDERS` in
+`agent/external_agents/mod.rs`, and add a transport adapter there.
 Settings gates, composer rows, and task choices use this catalog.
 No provider-specific composer branch or database migration is needed.
 
-Task overrides live in the versioned `maple_integrations` extension data,
-keyed by provider ID. Missing entries mean disabled. A true entry grants access
-only while Settings also enables that provider. CUA keeps its per-task state
-in its own `maple_cua` metadata.
+A task's choices live with the task in the task index, as the
+`externalAgents` list of provider IDs in its settings. A provider missing
+from it is off; a listed one is on only while Settings also enables it.
 
 The selector carries a typed `kind` alongside `name` and `displayName`.
 MCP names and external provider IDs are separate domains; a custom MCP
@@ -206,14 +211,15 @@ without `kind` continue to mean MCP.
 
 Provider transport adapters still own their protocol, discovery, progress,
 approval replies, and cancellation. Extend `ExternalAgentRegistry` dispatch and
-provider listing when adding an adapter. The developer client passes only
-the task's selected provider IDs and rejects calls for any other provider.
-Keep listing filtered by that same selection when more adapters are added.
+provider listing when adding an adapter. Every desktop task's Pi session has
+the five tools; each run declares them to the model only while the task may
+use a provider, and the tools reject calls for any other provider. Keep
+listing filtered by that same selection when more adapters are added.
 
-`resumed_task_refreshes_external_tools_on_every_run` exercises the actual
-run configuration and Goose tool cache with old persisted extension state,
-warm reuse, cold restore, explicit overrides, and a desktop task leased to
-ACP. Extend that regression with each adapter's admission behavior.
+The `external_agents::tests::end_to_end` tests run the runtime with a
+scripted model and the fake Codex: which tasks declare the tools, a
+background result reaching the model and the call's row, and agents ending
+with their task. Extend them with each adapter's admission behavior.
 
 The `claude_native_*` tests exercise the Rust transport against a deterministic
 fake CLI, without network requests. Both providers' fixtures re-execute the

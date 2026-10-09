@@ -25,6 +25,7 @@ use serde::Serialize;
 use serde_json::{Value, json};
 
 use super::attachments::split_image_prompt;
+use super::external_agents;
 use super::types::AgentTimelineItem;
 
 pub(crate) const MAX_AGENT_SESSION_TITLE_CHARS: usize = 80;
@@ -50,6 +51,23 @@ fn reply_row_id(timestamp: Timestamp, part: &str) -> String {
 
 fn tool_row_id(reply_timestamp: Timestamp, call_id: &str) -> String {
     format!("a{reply_timestamp}-{call_id}")
+}
+
+/// The row of the tool call `call_id` in a stored session: that of the
+/// latest reply that made it, which the session stores before the call runs.
+pub(crate) fn stored_tool_row_id(session: &SessionManager, call_id: &str) -> Option<String> {
+    session
+        .branch()
+        .iter()
+        .rev()
+        .find_map(|entry| match &entry.kind {
+            EntryKind::Message {
+                message: SessionMessage::Llm(Message::Assistant(reply)),
+            } if reply.tool_calls().any(|call| call.id == call_id) => {
+                Some(tool_row_id(reply.timestamp, call_id))
+            }
+            _ => None,
+        })
 }
 
 fn created_ms(timestamp: Timestamp) -> u128 {
@@ -134,6 +152,17 @@ pub(crate) fn session_timeline(session: &SessionManager) -> Vec<AgentTimelineIte
                         text,
                         entry.timestamp,
                     ));
+                }
+            }
+            // An external agent's turn that ended after its tool call did
+            // leaves what it did on the call's row.
+            EntryKind::Custom {
+                custom_type,
+                data: Some(data),
+            } if custom_type == external_agents::TURN_END_ENTRY => {
+                if let Some(item) = external_agents::turn_end_row(data, created_ms(entry.timestamp))
+                {
+                    merge_into(&mut items, item);
                 }
             }
             EntryKind::Compaction { .. } => {
@@ -715,6 +744,9 @@ pub(crate) fn merged_tool_title(
 }
 
 pub(crate) fn format_tool_title(name: &str) -> String {
+    if let Some(title) = external_agents::tool_title(name) {
+        return title.to_string();
+    }
     // An MCP tool, `mcp__<server>__<tool>`, reads as "server: tool".
     let name = name.strip_prefix("mcp__").unwrap_or(name);
     let normalized = name.replace("__", ": ").replace('_', " ");

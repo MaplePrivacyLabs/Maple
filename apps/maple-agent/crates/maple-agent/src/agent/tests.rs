@@ -16,7 +16,7 @@ use crate::maple_api::test_maple_api_session;
 const USER: &str = "slice@example.com";
 
 #[derive(Default)]
-struct Recorder {
+pub(super) struct Recorder {
     events: Mutex<Vec<AgentServiceEvent>>,
 }
 
@@ -27,6 +27,11 @@ impl AgentEventSink for Recorder {
 }
 
 impl Recorder {
+    /// Every event so far, in order.
+    pub(super) fn events(&self) -> Vec<AgentServiceEvent> {
+        self.events.lock().unwrap().clone()
+    }
+
     /// The events of one run, in order.
     fn run_events(&self, run_id: &str) -> Vec<AgentRunEvent> {
         self.events
@@ -54,17 +59,19 @@ impl Recorder {
     }
 }
 
-struct Harness {
-    service: MapleAgentService,
-    handle: AgentRuntimeHandle,
-    recorder: Arc<Recorder>,
+/// A running runtime whose tasks' model is scripted. Other modules' tests
+/// use it too.
+pub(super) struct Harness {
+    pub(super) service: MapleAgentService,
+    pub(super) handle: AgentRuntimeHandle,
+    pub(super) recorder: Arc<Recorder>,
     /// The tasks' model.
-    faux: FauxProvider,
+    pub(super) faux: FauxProvider,
     /// The side model of titles and summaries, scripted apart so a task's
     /// script does not depend on when they are asked.
     side: FauxProvider,
     data: tempfile::TempDir,
-    project: tempfile::TempDir,
+    pub(super) project: tempfile::TempDir,
 }
 
 /// Side-model requests to their own script, the rest to the task's.
@@ -101,7 +108,7 @@ fn service(data: &Path, recorder: Arc<Recorder>) -> MapleAgentService {
 }
 
 impl Harness {
-    async fn new() -> Self {
+    pub(super) async fn new() -> Self {
         Self::with_faux(FauxProvider::new()).await
     }
 
@@ -150,7 +157,12 @@ impl Harness {
         self.handle = self.service.handle_for_user(USER).await.unwrap();
     }
 
-    async fn create_task(&self) -> String {
+    /// The running runtime.
+    pub(super) async fn runtime(&self) -> Arc<AgentRuntime> {
+        self.service.state.runtime.lock().await.clone().unwrap()
+    }
+
+    pub(super) async fn create_task(&self) -> String {
         self.handle.create_session(None).await.unwrap().session.id
     }
 
@@ -167,7 +179,7 @@ impl Harness {
         }
     }
 
-    async fn send(&self, session_id: &str, text: &str) -> AgentRunHandle {
+    pub(super) async fn send(&self, session_id: &str, text: &str) -> AgentRunHandle {
         self.handle
             .send_message(self.request(session_id, text))
             .await
@@ -175,7 +187,7 @@ impl Harness {
     }
 }
 
-async fn finished(run: &mut AgentRunHandle) -> AgentRunTerminal {
+pub(super) async fn finished(run: &mut AgentRunHandle) -> AgentRunTerminal {
     let terminal = tokio::time::timeout(
         Duration::from_secs(10),
         run.terminal.wait_for(Option::is_some),
@@ -187,7 +199,7 @@ async fn finished(run: &mut AgentRunHandle) -> AgentRunTerminal {
 }
 
 /// Wait until `condition` holds, checking every few milliseconds.
-async fn eventually(mut condition: impl FnMut() -> bool) {
+pub(super) async fn eventually(mut condition: impl FnMut() -> bool) {
     tokio::time::timeout(Duration::from_secs(10), async {
         while !condition() {
             tokio::time::sleep(Duration::from_millis(5)).await;
@@ -212,7 +224,7 @@ fn shown(items: &[AgentTimelineItem]) -> Vec<(String, String, Option<String>, Op
         .collect()
 }
 
-fn last_user_text(request: &pi_ai::faux::FauxRequest) -> String {
+pub(super) fn last_user_text(request: &pi_ai::faux::FauxRequest) -> String {
     request
         .context
         .messages
@@ -858,6 +870,91 @@ async fn a_message_sent_during_a_run_waits_as_a_chip_and_follows() {
 }
 
 #[tokio::test]
+async fn a_hidden_message_reaches_the_model_but_not_the_timeline() {
+    let harness =
+        Harness::with_faux(FauxProvider::new().with_chunk_delay(Duration::from_millis(10))).await;
+    let runtime = harness.service.state.runtime.lock().await.clone().unwrap();
+    let task = harness.create_task().await;
+    harness.faux.push_text("Hello.");
+    let mut run = harness.send(&task, "Hi").await;
+    assert_eq!(finished(&mut run).await, AgentRunTerminal::Completed);
+
+    // With no run, it starts one of its own.
+    harness.faux.push_text("Thanks for the result.");
+    runtime
+        .deliver_hidden(&task, "maple.test", "the agent finished".to_string())
+        .await
+        .unwrap();
+    eventually(|| harness.faux.requests().len() == 2 && !runtime.runs.is_running(&task)).await;
+    assert_eq!(
+        last_user_text(&harness.faux.requests()[1]),
+        "the agent finished"
+    );
+
+    // During a run, it waits out of sight, then follows on its own turn.
+    harness
+        .faux
+        .push_text("A long answer, streamed slowly enough to deliver behind it.");
+    harness.faux.push_text("Noted.");
+    let mut run = harness.send(&task, "More").await;
+    runtime
+        .deliver_hidden(&task, "maple.test", "another result".to_string())
+        .await
+        .unwrap();
+    assert!(runtime.runs.queue_snapshot(&task).items.is_empty());
+    assert_eq!(finished(&mut run).await, AgentRunTerminal::Completed);
+    let requests = harness.faux.requests();
+    assert_eq!(requests.len(), 4);
+    assert_eq!(last_user_text(&requests[3]), "another result");
+
+    let detail = harness.handle.load_session(task.clone()).await.unwrap();
+    let texts: Vec<&str> = detail
+        .timeline
+        .iter()
+        .filter_map(|item| item.text.as_deref())
+        .collect();
+    assert_eq!(
+        texts,
+        [
+            "Hi",
+            "Hello.",
+            "Thanks for the result.",
+            "More",
+            "A long answer, streamed slowly enough to deliver behind it.",
+            "Noted."
+        ]
+    );
+
+    // Stopped before it went, it stays in the history the next prompt
+    // reads, without a turn of its own.
+    harness
+        .faux
+        .push_text("Counting slowly: one two three four five six seven eight nine ten.");
+    let mut run = harness.send(&task, "Count").await;
+    runtime
+        .deliver_hidden(&task, "maple.test", "a stopped result".to_string())
+        .await
+        .unwrap();
+    let run_id = run.run_id.clone();
+    eventually(|| {
+        harness.recorder.live_rows(&run_id).iter().any(|row| {
+            row.role.as_deref() == Some("assistant")
+                && row.text.as_deref().is_some_and(|text| !text.is_empty())
+        })
+    })
+    .await;
+    harness.handle.cancel_desktop_run(run_id).await.unwrap();
+    assert_eq!(finished(&mut run).await, AgentRunTerminal::Cancelled);
+    harness.faux.push_text("Done.");
+    let mut run = harness.send(&task, "Go on").await;
+    assert_eq!(finished(&mut run).await, AgentRunTerminal::Completed);
+    let requests = harness.faux.requests();
+    assert_eq!(requests.len(), 6);
+    let sent = user_texts(&requests[5]);
+    assert_eq!(sent[sent.len() - 2..], ["a stopped result", "Go on"]);
+}
+
+#[tokio::test]
 async fn chips_can_be_cancelled_and_several_go_as_one_turn() {
     let harness =
         Harness::with_faux(FauxProvider::new().with_chunk_delay(Duration::from_millis(10))).await;
@@ -1465,13 +1562,23 @@ async fn a_server_that_cannot_connect_is_reported_once_and_cannot_be_switched_on
         .await
         .unwrap();
     assert_eq!(mcp_rows(&rows), [("Broken", false, true)]);
-    // Integrations that do not run in tasks yet cannot be switched on.
+    // An external agent is switched on in Settings first, and computer use
+    // does not run in tasks yet.
     let error = harness
         .handle
         .set_session_mcp_server_enabled(AgentSetSessionMcpServerRequest {
             kind: AgentSessionIntegrationKind::ExternalAgent,
             ..switch(&task, "codex", true)
         })
+        .await
+        .unwrap_err();
+    assert!(
+        error.starts_with("Enable this integration in Settings"),
+        "{error}"
+    );
+    let error = harness
+        .handle
+        .set_session_mcp_server_enabled(switch(&task, "cua-driver", true))
         .await
         .unwrap_err();
     assert_eq!(

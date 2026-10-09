@@ -14,10 +14,10 @@ mod attachments;
 mod bounded_process;
 mod catalog;
 mod config;
+mod external_agents;
 mod integrations;
 mod login_path;
 mod mcp;
-mod placeholders;
 pub(crate) mod provider;
 mod questions;
 mod resources;
@@ -446,7 +446,7 @@ impl AgentRuntimeHandle {
         let model = request
             .model
             .unwrap_or_else(|| config.default_model.clone());
-        let runtime = Arc::new(AgentRuntime::new(runtime::RuntimeParts {
+        let runtime = AgentRuntime::new(runtime::RuntimeParts {
             account_scope: self.account_scope.to_string(),
             user_id: self.user_id.to_string(),
             api: maple_api_session,
@@ -455,8 +455,12 @@ impl AgentRuntimeHandle {
             questions: self.service.state.questions.clone(),
             project_root: project_root.clone(),
             model: model.clone(),
-        }));
+        });
         let status = runtime.desktop_status();
+        // The delegation skills follow the external agents in Settings.
+        if let Err(error) = integrations::sync_external_agent_skills(self.paths(), &self.user_id) {
+            log::warn!("Failed to update the external agent skills: {error}");
+        }
         *self.service.state.runtime.lock().await = Some(runtime);
 
         // Starting is project use, not a folder the user added, so the

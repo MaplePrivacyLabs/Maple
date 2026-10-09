@@ -3,10 +3,10 @@
 //! joins what Maple finds on the device with the choice saved for new tasks
 //! in the account's device-local `integrations.json`.
 //!
-//! The catalog, saved choices and detection are Goose's. What a choice does
-//! in a task moves with embedded CUA and external agents; until then CUA
-//! reads as not available, and an external agent switched on for new tasks
-//! is not offered to them yet.
+//! The catalog, saved choices and detection are Goose's. An external agent
+//! switched on here can be switched on for a desktop task, and while one is
+//! on the account has the skills that teach a task to delegate. Embedded
+//! CUA reads as not available until it runs in tasks.
 
 mod detect;
 
@@ -27,7 +27,9 @@ use super::{
     AgentSetIntegrationEnabledRequest, AgentSetupIntegrationRequest,
 };
 use detect::CliDetection;
-pub(super) use detect::find_executable;
+pub(super) use detect::{
+    CLAUDE_SIGN_IN_HINT, CODEX_SIGN_IN_HINT, detect_claude, detect_codex, find_executable,
+};
 
 const CUA_INTEGRATION_ID: &str = "cua-driver";
 /// The integration's name in errors.
@@ -457,7 +459,40 @@ fn set_external_agent_default(
         }),
         None => {}
     }
-    save_stored_integrations(paths, user_id, &stored)
+    save_stored_integrations(paths, user_id, &stored)?;
+    let any_on = ExternalAgent::ALL
+        .into_iter()
+        .any(|agent| stored.entry(agent.id()).is_some_and(|entry| entry.enabled));
+    if let Err(error) = super::external_agents::sync_skills(paths, user_id, any_on) {
+        log::warn!("Failed to update the external agent skills: {error}");
+    }
+    Ok(())
+}
+
+/// The external agents switched on in Settings. Read where a task must
+/// keep working, so an unusable file reads as all off.
+pub(super) fn external_agents_on(paths: &AgentPathLayout, user_id: &str) -> Vec<String> {
+    match load_stored_integrations(paths, user_id) {
+        Ok(stored) => ExternalAgent::ALL
+            .into_iter()
+            .filter(|agent| stored.entry(agent.id()).is_some_and(|entry| entry.enabled))
+            .map(|agent| agent.id().to_string())
+            .collect(),
+        Err(error) => {
+            log::warn!("{error}; external agents read as off");
+            Vec::new()
+        }
+    }
+}
+
+/// Install the delegation skills while an external agent is switched on in
+/// Settings, and remove Maple's copies while none is.
+pub(super) fn sync_external_agent_skills(
+    paths: &AgentPathLayout,
+    user_id: &str,
+) -> Result<(), String> {
+    let any_on = !external_agents_on(paths, user_id).is_empty();
+    super::external_agents::sync_skills(paths, user_id, any_on)
 }
 
 fn set_cua_default(
@@ -534,6 +569,20 @@ impl AgentRuntimeHandle {
         self.verify_generation().await?;
         let search_path = super::login_path::known_login_search_path();
         Ok(Detections::find(search_path.as_deref()).await)
+    }
+
+    /// The cards of the external agents switched on in Settings. Nothing
+    /// is detected while none is.
+    pub(super) async fn external_agent_cards(&self) -> Result<Vec<AgentIntegration>, String> {
+        if external_agents_on(self.paths(), &self.user_id).is_empty() {
+            return Ok(Vec::new());
+        }
+        Ok(self
+            .list_integrations()
+            .await?
+            .into_iter()
+            .filter(|card| card.is_external_agent() && card.enabled_for_new_tasks)
+            .collect())
     }
 
     /// Maple-curated integrations found on this device.

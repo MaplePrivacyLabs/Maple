@@ -1,0 +1,1150 @@
+//! Driver tests against fake Codex and Claude Code CLIs, and the runtime
+//! end to end with them.
+//!
+//! Each fixture is this test binary re-executed as an ignored test. Shell
+//! shims on a private PATH forward to them, so the driver resolves and
+//! spawns it exactly as it would the real CLI. Unix only until a `.cmd`
+//! shim exists for Windows.
+
+#![cfg(unix)]
+
+use std::fs;
+use std::future::Future;
+use std::io::{BufRead, Write};
+use std::os::fd::FromRawFd;
+use std::os::unix::fs::PermissionsExt;
+use std::sync::Mutex as StdMutex;
+
+use pi_ai::content_text;
+
+use super::*;
+use crate::agent::AgentEventSink;
+use crate::agent::tool_context::{SharedAgentToolContext, default_tool_context_spec};
+
+mod claude_fixture;
+mod end_to_end;
+
+const FIXTURE_MARKER: &str = "MAPLE_FAKE_AGENT";
+const FIXTURE_ARGS: &str = "MAPLE_FAKE_AGENT_ARGS";
+const FIXTURE_MODE: &str = "MAPLE_FAKE_AGENT_MODE";
+const FIXTURE_PID_FILE: &str = "MAPLE_FAKE_AGENT_PID_FILE";
+const FIXTURE_LOG: &str = "MAPLE_FAKE_AGENT_LOG";
+const WAIT: Duration = Duration::from_secs(20);
+
+#[derive(Default)]
+struct RecordingSink {
+    events: StdMutex<Vec<AgentServiceEvent>>,
+}
+
+impl AgentEventSink for RecordingSink {
+    fn emit(&self, event: &AgentServiceEvent) {
+        self.events
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(event.clone());
+    }
+}
+
+impl RecordingSink {
+    fn events(&self) -> Vec<AgentServiceEvent> {
+        self.events
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+}
+
+/// Fake CLIs on a private PATH, where they log what they get.
+struct Fixtures {
+    _temp: tempfile::TempDir,
+    root: PathBuf,
+    shim_dir: PathBuf,
+    pid_file: PathBuf,
+    log_file: PathBuf,
+}
+
+impl Fixtures {
+    fn new(mode: &str) -> Self {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().to_path_buf();
+        let shim_dir = root.join("bin");
+        fs::create_dir_all(&shim_dir).unwrap();
+        let fixtures = Self {
+            pid_file: root.join("agent.pid"),
+            log_file: root.join("agent.log"),
+            _temp: temp,
+            root,
+            shim_dir,
+        };
+        fixtures.install("codex", mode);
+        fixtures.install("claude", mode);
+        fixtures
+    }
+
+    fn install(&self, provider: &str, mode: &str) {
+        let test = match provider {
+            "codex" => "fake_codex_app_server",
+            "claude" => "claude_fixture::run",
+            _ => panic!("unknown fixture provider"),
+        };
+        // Keep libtest's status output off both protocol pipes. Its output
+        // can race the fixture, so inserting a newline is not sufficient.
+        let shim = format!(
+            "#!/bin/sh\nexport {FIXTURE_MARKER}=1\nexport {FIXTURE_MODE}='{mode}'\nexport {FIXTURE_PID_FILE}='{}'\nexport {FIXTURE_LOG}='{}'\nexport {FIXTURE_ARGS}=\"$*\"\nexec '{}' 'agent::external_agents::tests::{test}' --exact --ignored --nocapture --test-threads=1 3>&1 1>/dev/null\n",
+            self.pid_file.display(),
+            self.log_file.display(),
+            std::env::current_exe().unwrap().display(),
+        );
+        let path = self.shim_dir.join(provider);
+        fs::write(&path, shim).unwrap();
+        fs::set_permissions(path, fs::Permissions::from_mode(0o700)).unwrap();
+    }
+
+    fn search_path(&self) -> String {
+        self.shim_dir.to_string_lossy().into_owned()
+    }
+
+    async fn fixture_pid(&self) -> i32 {
+        wait_for(|| {
+            fs::read_to_string(&self.pid_file)
+                .ok()
+                .and_then(|pid| pid.trim().parse::<i32>().ok())
+        })
+        .await
+    }
+
+    fn log(&self) -> String {
+        fs::read_to_string(&self.log_file).unwrap_or_default()
+    }
+}
+
+/// A registry with no runtime behind it, as the driver tests need.
+struct Harness {
+    fixtures: Fixtures,
+    project: PathBuf,
+    sink: Arc<RecordingSink>,
+    questions: QuestionBroker,
+    host: ExternalAgentHost,
+    registry: Arc<ExternalAgentRegistry>,
+}
+
+impl Harness {
+    fn new(mode: &str) -> Self {
+        let fixtures = Fixtures::new(mode);
+        let project = fixtures.root.join("project");
+        fs::create_dir_all(&project).unwrap();
+        let sink = Arc::new(RecordingSink::default());
+        let events = AgentEventDispatcher::new(sink.clone());
+        let questions = QuestionBroker::new(events.clone());
+        let host = ExternalAgentHost {
+            events,
+            questions: questions.clone(),
+            runtime: Weak::new(),
+            lifetime: CancellationToken::new(),
+        };
+        let registry = Arc::new(ExternalAgentRegistry::new(host.clone()));
+        Self {
+            fixtures,
+            project,
+            sink,
+            questions,
+            host,
+            registry,
+        }
+    }
+
+    fn call(&self, session_id: &str, row_id: &str) -> ExternalAgentCall {
+        ExternalAgentCall {
+            session_id: session_id.to_string(),
+            working_dir: self.project.clone(),
+            row_id: Some(row_id.to_string()),
+            login_path: Some(self.fixtures.search_path()),
+            tool_context: SharedAgentToolContext::new(default_tool_context_spec().unwrap())
+                .snapshot(),
+            cancel_token: CancellationToken::new(),
+        }
+    }
+
+    fn install_fixture(&self, provider: &str, mode: &str) {
+        self.fixtures.install(provider, mode);
+    }
+
+    async fn fixture_pid(&self) -> i32 {
+        self.fixtures.fixture_pid().await
+    }
+
+    fn log(&self) -> String {
+        self.fixtures.log()
+    }
+
+    fn remove_pid_file(&self) {
+        fs::remove_file(&self.fixtures.pid_file).unwrap();
+    }
+
+    fn child_pid_file(&self) -> PathBuf {
+        self.fixtures.pid_file.with_extension("pid.child")
+    }
+}
+
+#[track_caller]
+fn wait_for<T>(mut probe: impl FnMut() -> Option<T>) -> impl Future<Output = T> {
+    let caller = std::panic::Location::caller();
+    async move {
+        let deadline = Instant::now() + WAIT;
+        loop {
+            if let Some(value) = probe() {
+                return value;
+            }
+            assert!(Instant::now() < deadline, "timed out waiting at {caller}");
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    }
+}
+
+/// What the model reads of a call: the result's text, or the error.
+fn result_text(result: &Result<AgentToolResult, String>) -> String {
+    match result {
+        Ok(result) => content_text(&result.content),
+        Err(error) => error.clone(),
+    }
+}
+
+/// The activity a call's row shows.
+fn activity_of(result: &Result<AgentToolResult, String>) -> Value {
+    result
+        .as_ref()
+        .unwrap_or_else(|error| panic!("{error}"))
+        .details
+        .as_ref()
+        .unwrap_or_else(|| panic!("no activity: {}", result_text(result)))[ACTIVITY_KEY]
+        .clone()
+}
+
+fn process_alive(pid: i32) -> bool {
+    // SAFETY: signal 0 only checks whether the process can be signalled.
+    unsafe { libc::kill(pid, 0) == 0 }
+}
+
+fn fixture_output() -> fs::File {
+    // SAFETY: the fixture's shim duplicates the protocol pipe to fd 3
+    // before redirecting libtest stdout. Each fixture calls this once and
+    // this File is the sole owner of that descriptor in the child process.
+    unsafe { fs::File::from_raw_fd(3) }
+}
+
+fn codex_start(prompt: &str, background: bool) -> AgentStartParams {
+    AgentStartParams {
+        provider: "codex".into(),
+        prompt: prompt.into(),
+        background,
+        model: None,
+        effort: None,
+        cwd: None,
+    }
+}
+
+/// The fake app-server. It answers the handshake, starts a thread, and
+/// on `turn/start` plays a short turn that asks for one command approval
+/// and reports what decision it got in its final message. In `slow` mode
+/// it waits for `turn/interrupt` instead.
+#[test]
+#[ignore = "fake codex app-server run by the driver tests"]
+fn fake_codex_app_server() {
+    if std::env::var_os(FIXTURE_MARKER).is_none() {
+        return;
+    }
+    let mut out = fixture_output();
+    let args = std::env::var(FIXTURE_ARGS).unwrap_or_default();
+    if args.contains("--version") {
+        writeln!(out, "codex-cli 0.150.0").unwrap();
+        out.flush().unwrap();
+        return;
+    }
+    if let Ok(pid_file) = std::env::var(FIXTURE_PID_FILE) {
+        fs::write(pid_file, std::process::id().to_string()).unwrap();
+    }
+    let mode = std::env::var(FIXTURE_MODE).unwrap_or_default();
+    let log = std::env::var(FIXTURE_LOG).ok();
+    let stdin = std::io::stdin();
+    let mut lines = stdin.lock().lines();
+    let mut send = |value: Value| {
+        // Reproduce libtest status text arriving after fixture startup,
+        // without a newline. It must not corrupt a protocol response.
+        print!("fixture status");
+        std::io::stdout().flush().unwrap();
+        writeln!(out, "{value}").unwrap();
+        out.flush().unwrap();
+    };
+    let append_log = |text: &str| {
+        if let Some(log) = &log {
+            let mut file = fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(log)
+                .unwrap();
+            writeln!(file, "{text}").unwrap();
+        }
+    };
+    while let Some(Ok(line)) = lines.next() {
+        append_log(&format!("<- {line}"));
+        let Ok(message) = serde_json::from_str::<Value>(&line) else {
+            continue;
+        };
+        let id = message.get("id").cloned();
+        let method = message
+            .get("method")
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        match (id, method.as_deref()) {
+            (Some(id), Some("initialize")) => send(json!({ "id": id, "result": {} })),
+            (Some(id), Some("thread/start")) => {
+                send(json!({ "id": id, "result": { "thread": { "id": "thread-1" } } }));
+                send(
+                    json!({ "method": "thread/started", "params": { "thread": { "id": "thread-1" } } }),
+                );
+            }
+            (Some(id), Some("thread/resume")) => {
+                send(
+                    json!({ "id": id, "result": { "thread": { "id": message["params"]["threadId"] } } }),
+                );
+            }
+            (Some(id), Some("turn/start")) => {
+                append_log(&message["params"].to_string());
+                send(json!({ "id": id, "result": { "turn": { "id": "turn-1" } } }));
+                send(
+                    json!({ "method": "turn/started", "params": { "threadId": "thread-1", "turn": { "id": "turn-1" } } }),
+                );
+                if mode == "async-question" {
+                    let prompt = message["params"]["input"][0]["text"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .to_string();
+                    if prompt.starts_with("Answers to your questions") {
+                        let last = prompt.lines().last().unwrap_or_default().to_string();
+                        send(
+                            json!({ "method": "item/completed", "params": { "threadId": "thread-1", "item": { "id": "msg-a", "type": "agentMessage", "text": format!("Got: {last}") } } }),
+                        );
+                    } else {
+                        send(
+                            json!({ "method": "item/completed", "params": { "threadId": "thread-1", "item": { "id": "aq-1", "type": "agentMessage", "text": "Tabs or spaces?", "delivery": "async",
+                            "questions": [{ "title": "Tabs or spaces?", "options": ["Tabs", "Spaces"] }] } } }),
+                        );
+                    }
+                    send(
+                        json!({ "method": "turn/completed", "params": { "threadId": "thread-1", "turn": { "id": "turn-1", "status": "completed" } } }),
+                    );
+                    continue;
+                }
+                if mode == "question" {
+                    send(
+                        json!({ "id": 200, "method": "item/tool/requestUserInput", "params": { "itemId": "q-1", "threadId": "thread-1", "turnId": "turn-1",
+                        "questions": [{ "id": "style", "header": "Style", "question": "Tabs or spaces?", "options": [{ "label": "Tabs", "description": "t" }, { "label": "Spaces", "description": "s" }] }] } }),
+                    );
+                    let mut chosen = String::from("none");
+                    for line in lines.by_ref().map_while(Result::ok) {
+                        let Ok(message) = serde_json::from_str::<Value>(&line) else {
+                            continue;
+                        };
+                        if message.get("id").and_then(Value::as_u64) == Some(200) {
+                            chosen = message["result"]["answers"]["style"]["answers"][0]
+                                .as_str()
+                                .unwrap_or("none")
+                                .to_string();
+                            break;
+                        }
+                    }
+                    send(
+                        json!({ "method": "item/completed", "params": { "threadId": "thread-1", "item": { "id": "msg-q", "type": "agentMessage", "text": format!("Chosen: {chosen}") } } }),
+                    );
+                    send(
+                        json!({ "method": "turn/completed", "params": { "threadId": "thread-1", "turn": { "id": "turn-1", "status": "completed" } } }),
+                    );
+                    continue;
+                }
+                if mode == "slow" {
+                    for line in lines.by_ref().map_while(Result::ok) {
+                        let Ok(message) = serde_json::from_str::<Value>(&line) else {
+                            continue;
+                        };
+                        if message.get("method").and_then(Value::as_str) == Some("turn/interrupt") {
+                            send(json!({ "id": message["id"], "result": {} }));
+                            send(
+                                json!({ "method": "turn/completed", "params": { "threadId": "thread-1", "turn": { "id": "turn-1", "status": "interrupted" } } }),
+                            );
+                            break;
+                        }
+                    }
+                    continue;
+                }
+                send(
+                    json!({ "method": "item/started", "params": { "threadId": "thread-1", "item": { "id": "cmd-1", "type": "commandExecution", "command": ["cargo", "test"] } } }),
+                );
+                send(
+                    json!({ "id": 100, "method": "item/commandExecution/requestApproval", "params": { "itemId": "cmd-1", "threadId": "thread-1", "turnId": "turn-1", "command": "cargo test", "cwd": "." } }),
+                );
+                let mut decision = String::from("none");
+                for line in lines.by_ref().map_while(Result::ok) {
+                    let Ok(message) = serde_json::from_str::<Value>(&line) else {
+                        continue;
+                    };
+                    if message.get("id").and_then(Value::as_u64) == Some(100) {
+                        decision = message["result"]["decision"]
+                            .as_str()
+                            .unwrap_or("none")
+                            .to_string();
+                        break;
+                    }
+                }
+                let exit_code = if decision == "accept" { 0 } else { 1 };
+                send(
+                    json!({ "method": "item/completed", "params": { "threadId": "thread-1", "item": { "id": "cmd-1", "type": "commandExecution", "command": ["cargo", "test"], "exitCode": exit_code } } }),
+                );
+                send(
+                    json!({ "method": "item/completed", "params": { "threadId": "thread-1", "item": { "id": "fc-1", "type": "fileChange", "status": "completed", "changes": [{ "path": "src/lib.rs", "kind": "update" }] } } }),
+                );
+                send(
+                    json!({ "method": "item/agentMessage/delta", "params": { "threadId": "thread-1", "itemId": "msg-1", "delta": "Done: " } }),
+                );
+                send(
+                    json!({ "method": "item/agentMessage/delta", "params": { "threadId": "thread-1", "itemId": "msg-1", "delta": decision } }),
+                );
+                send(
+                    json!({ "method": "item/completed", "params": { "threadId": "thread-1", "item": { "id": "msg-1", "type": "agentMessage", "text": format!("Done: {decision}") } } }),
+                );
+                send(
+                    json!({ "method": "turn/completed", "params": { "threadId": "thread-1", "turn": { "id": "turn-1", "status": "completed" } } }),
+                );
+            }
+            (Some(id), Some("turn/interrupt")) => {
+                send(json!({ "id": id, "result": {} }));
+            }
+            (Some(id), Some(method)) => {
+                send(
+                    json!({ "id": id, "error": { "code": -32601, "message": format!("{method} unsupported") } }),
+                );
+            }
+            _ => {}
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn external_agent_approvals_are_accepted_without_a_card() {
+    let harness = Harness::new("approve");
+
+    let result = harness
+        .registry
+        .start(
+            harness.call("session-1", "row-1"),
+            AgentStartParams {
+                model: Some("gpt-5.4".into()),
+                ..codex_start("Fix the parser", false)
+            },
+        )
+        .await;
+    let text = result_text(&result);
+    assert!(
+        text.starts_with(
+            "Status: completed\nProvider: codex\nAgent ID: codex-1\nThread ID: thread-1\n"
+        ),
+        "{text}"
+    );
+    assert!(text.contains("Files changed (1): src/lib.rs"), "{text}");
+    assert!(text.contains("Commands run: 1 (0 failed)"), "{text}");
+    assert!(
+        text.contains("<agent-response>\nDone: accept\n</agent-response>"),
+        "{text}"
+    );
+    assert!(text.contains(AGENT_SEND_TOOL), "{text}");
+    let activity = activity_of(&result);
+    assert_eq!(activity["status"], "completed");
+    assert_eq!(activity["commands"][0]["exitCode"], 0);
+
+    let log = harness.log();
+    // Maple sends no policy; Codex's configuration decides.
+    assert!(!log.contains("approvalPolicy"), "{log}");
+    assert!(!log.contains("sandboxPolicy"), "{log}");
+    assert!(log.contains("\"model\":\"gpt-5.4\""), "{log}");
+    assert!(log.contains("Fix the parser"), "{log}");
+
+    let events = harness.sink.events();
+    assert!(events.iter().any(|event| matches!(
+        event,
+        AgentServiceEvent::Run { session_id, run_id, event: AgentRunEvent::SubagentStarted { id, background: false, external: Some(external), .. } }
+            if session_id == "session-1" && run_id == "external-codex-1" && id == "external-agent-codex-1" && external.agent_id == "codex-1"
+    )));
+    assert!(events.iter().any(|event| matches!(
+        event,
+        AgentServiceEvent::Run { event: AgentRunEvent::SubagentFinished { id }, .. } if id == "external-agent-codex-1"
+    )));
+    let rows = events
+        .iter()
+        .filter_map(|event| match event {
+            AgentServiceEvent::TimelineItem { item, .. } if item.id == "row-1" => Some(item),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        rows.iter()
+            .any(|row| row.status.as_deref() == Some("running"))
+    );
+    let last = rows.last().unwrap();
+    assert_eq!(last.status.as_deref(), Some("completed"));
+    assert_eq!(
+        last.output.as_ref().unwrap()["structuredContent"][ACTIVITY_KEY]["fileChanges"][0]["path"],
+        "src/lib.rs"
+    );
+    // The approval was accepted at once: no card, no waiting label.
+    assert!(!events.iter().any(|event| matches!(
+        event,
+        AgentServiceEvent::TimelineItem { item, .. } if item.item_type == "permission"
+    )));
+    assert!(!rows.iter().any(|row| {
+        row.output.as_ref().unwrap()["structuredContent"][ACTIVITY_KEY]["pendingPermission"]
+            .is_string()
+    }));
+
+    harness.registry.shutdown_all(Duration::from_secs(5)).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cancelling_the_run_interrupts_the_turn_and_shutdown_kills_the_process() {
+    let harness = Harness::new("slow");
+    let registry = Arc::clone(&harness.registry);
+    let call = harness.call("session-3", "row-3");
+    let cancel = call.cancel_token.clone();
+    let mut turn = tokio::spawn(async move {
+        registry
+            .start(call, codex_start("Take your time", false))
+            .await
+    });
+    let pid = tokio::select! {
+        pid = harness.fixture_pid() => pid,
+        result = &mut turn => panic!("Codex fixture stopped before startup: {}", result_text(&result.unwrap())),
+    };
+    // The initial timeline row precedes turn/start. Wait for the actual
+    // turn ID instead of guessing when the notification has been consumed.
+    let agent = harness
+        .registry
+        .agent("session-3", "codex-1")
+        .await
+        .unwrap();
+    wait_for(|| {
+        agent
+            .state
+            .try_lock()
+            .ok()
+            .and_then(|state| state.turn.as_ref()?.turn_id.as_ref().map(|_| ()))
+    })
+    .await;
+    cancel.cancel();
+    let result = turn.await.unwrap();
+    let text = result_text(&result);
+    assert!(text.starts_with("Status: cancelled"), "{text}");
+    assert!(text.contains(AGENT_SEND_TOOL), "{text}");
+    // A stop reclaims the process: Codex does not always end a sandboxed
+    // command on interrupt, so the process group goes with the turn.
+    wait_for(|| (!process_alive(pid)).then_some(())).await;
+    let status = harness
+        .registry
+        .status(
+            &harness.call("session-3", "row-3b"),
+            AgentRefParams {
+                provider: "codex".into(),
+                agent_id: "codex-1".into(),
+            },
+        )
+        .await;
+    assert!(result_text(&status).starts_with("Status: cancelled"));
+
+    // The agent is still there: the next send starts a fresh process and
+    // resumes the same thread.
+    harness.remove_pid_file();
+    let follow_up = harness
+        .registry
+        .send(
+            harness.call("session-3", "row-3c"),
+            AgentSendParams {
+                provider: "codex".into(),
+                agent_id: "codex-1".into(),
+                prompt: "Carry on".into(),
+                background: true,
+                model: None,
+                effort: None,
+            },
+        )
+        .await;
+    assert!(result_text(&follow_up).starts_with("Status: running"));
+    let second_pid = harness.fixture_pid().await;
+    assert_ne!(second_pid, pid);
+    assert!(process_alive(second_pid));
+    let log = harness.log();
+    assert!(log.contains("\"threadId\":\"thread-1\""), "{log}");
+    // A working agent shows above the composer of a task opened again.
+    let rows = harness.registry.snapshot("session-3").await;
+    assert_eq!(rows.len(), 1);
+    assert!(rows[0].background);
+    assert_eq!(rows[0].external.as_ref().unwrap().agent_id, "codex-1");
+    let live = harness.registry.live_rows("session-3").await;
+    assert_eq!(live.len(), 1);
+    assert_eq!(live[0].id, "row-3c");
+    assert_eq!(live[0].status.as_deref(), Some("running"));
+
+    // Stop from the row kills that process too.
+    harness
+        .registry
+        .cancel("session-3", "codex-1")
+        .await
+        .unwrap();
+    wait_for(|| (!process_alive(second_pid)).then_some(())).await;
+    harness.registry.shutdown_all(Duration::from_secs(5)).await;
+    wait_for(|| (!process_alive(pid)).then_some(())).await;
+    assert!(harness.registry.snapshot("session-3").await.is_empty());
+}
+
+#[tokio::test]
+async fn registry_rejects_unknown_providers_bad_cwd_and_too_many_agents() {
+    let harness = Harness::new("approve");
+    let call = harness.call("session-5", "row-5");
+    let unknown = harness
+        .registry
+        .start(
+            harness.call("session-5", "r"),
+            AgentStartParams {
+                provider: "unknown".into(),
+                ..codex_start("x", false)
+            },
+        )
+        .await;
+    assert!(result_text(&unknown).contains("Unknown agent provider"));
+
+    fs::create_dir_all(harness.project.join("sub")).unwrap();
+    let outside = ExternalAgentRegistry::resolve_cwd(&call, Some(".."));
+    assert!(outside.unwrap_err().contains("outside the project root"));
+    let inside = ExternalAgentRegistry::resolve_cwd(&call, Some("sub")).unwrap();
+    assert!(inside.ends_with("sub"));
+
+    let empty = harness
+        .registry
+        .start(harness.call("session-5", "r"), codex_start("   ", false))
+        .await;
+    assert!(result_text(&empty).contains("prompt must not be empty"));
+
+    // An agent whose command is missing never worked, and keeps no place.
+    let mut missing_cli = harness.call("session-5", "r");
+    missing_cli.login_path = Some(harness.project.to_string_lossy().into_owned());
+    let missing = harness
+        .registry
+        .start(missing_cli, codex_start("x", false))
+        .await;
+    assert!(result_text(&missing).contains("Codex is not installed"));
+    assert!(
+        harness
+            .registry
+            .sessions
+            .lock()
+            .await
+            .get("session-5")
+            .is_none_or(|session| session.agents.is_empty())
+    );
+
+    {
+        let mut sessions = harness.registry.sessions.lock().await;
+        let session = sessions.entry("session-5".to_string()).or_default();
+        for index in 0..MAX_AGENTS_PER_SESSION {
+            let agent_id = format!("codex-{index}");
+            session.agents.insert(
+                agent_id.clone(),
+                Arc::new(ExternalAgent::new(
+                    "codex".into(),
+                    agent_id,
+                    "session-5".into(),
+                    "idle".into(),
+                    harness.project.clone(),
+                    harness.host.clone(),
+                )),
+            );
+        }
+    }
+    let full = harness
+        .registry
+        .start(harness.call("session-5", "r"), codex_start("x", false))
+        .await;
+    assert!(result_text(&full).contains("already has 4 external agents"));
+    let missing = harness
+        .registry
+        .status(
+            &call,
+            AgentRefParams {
+                provider: "codex".into(),
+                agent_id: "codex-9".into(),
+            },
+        )
+        .await;
+    assert!(result_text(&missing).contains("No external agent 'codex-9'"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_question_from_the_agent_goes_through_the_question_card() {
+    let harness = Harness::new("question");
+    let registry = Arc::clone(&harness.registry);
+    let call = harness.call("session-6", "row-6");
+    let turn = tokio::spawn(async move {
+        registry
+            .start(call, codex_start("Ask me something", false))
+            .await
+    });
+    let sink = Arc::clone(&harness.sink);
+    let (request_id, questions) = wait_for(|| {
+        sink.events().iter().find_map(|event| match event {
+            AgentServiceEvent::Question {
+                session_id,
+                request_id,
+                questions,
+            } if session_id == "session-6" => Some((request_id.clone(), questions.clone())),
+            _ => None,
+        })
+    })
+    .await;
+    assert_eq!(questions.len(), 1);
+    assert_eq!(questions[0].id, "style");
+    assert_eq!(questions[0].options[1].label, "Spaces");
+    assert!(
+        harness
+            .questions
+            .answer(
+                &request_id,
+                r#"{"answers":{"style":{"answers":["Spaces"]}}}"#.to_string(),
+            )
+            .await
+    );
+    let result = turn.await.unwrap();
+    let text = result_text(&result);
+    assert!(text.contains("Chosen: Spaces"), "{text}");
+    let log = harness.log();
+    assert!(log.contains("default_mode_request_user_input"), "{log}");
+    harness.registry.shutdown_all(Duration::from_secs(5)).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_async_question_is_answered_in_a_turn_of_maples_own() {
+    let harness = Harness::new("async-question");
+    let result = harness
+        .registry
+        .start(
+            harness.call("session-7", "row-7"),
+            codex_start("Ask me something", false),
+        )
+        .await;
+    let text = result_text(&result);
+    assert!(text.starts_with("Status: completed"), "{text}");
+    // The turn ended, but the question is still open.
+    assert!(
+        text.contains("Waiting for the user to decide: answer a question"),
+        "{text}"
+    );
+
+    let sink = Arc::clone(&harness.sink);
+    let request_id = wait_for(|| {
+        sink.events().iter().find_map(|event| match event {
+            AgentServiceEvent::Question {
+                session_id,
+                request_id,
+                questions,
+            } if session_id == "session-7" && questions[0].question == "Tabs or spaces?" => {
+                Some(request_id.clone())
+            }
+            _ => None,
+        })
+    })
+    .await;
+    assert!(
+        harness
+            .questions
+            .answer(
+                &request_id,
+                r#"{"answers":{"q0":{"answers":["Tabs"]}}}"#.to_string()
+            )
+            .await
+    );
+    // The answer starts a turn of Maple's own, with its own row.
+    let sink = Arc::clone(&harness.sink);
+    let row = wait_for(|| {
+        sink.events().iter().find_map(|event| match event {
+            AgentServiceEvent::TimelineItem { item, .. }
+                if item.id == "external-codex-1-turn-2"
+                    && item.status.as_deref() == Some("completed") =>
+            {
+                Some(item.clone())
+            }
+            _ => None,
+        })
+    })
+    .await;
+    assert_eq!(row.title.as_deref(), Some(SYNTHETIC_TURN_TITLE));
+    assert!(
+        row.output.as_ref().unwrap()["structuredContent"][ACTIVITY_KEY]["text"]
+            .as_str()
+            .unwrap()
+            .contains("Got: Tabs")
+    );
+    let log = harness.log();
+    assert!(log.contains("Answers to your questions"), "{log}");
+    let status = harness
+        .registry
+        .status(
+            &harness.call("session-7", "row-7b"),
+            AgentRefParams {
+                provider: "codex".into(),
+                agent_id: "codex-1".into(),
+            },
+        )
+        .await;
+    let status_text = result_text(&status);
+    assert!(
+        !status_text.contains("Waiting for the user"),
+        "{status_text}"
+    );
+    harness.registry.shutdown_all(Duration::from_secs(5)).await;
+}
+
+fn claude_start(background: bool) -> AgentStartParams {
+    AgentStartParams {
+        provider: "claude".into(),
+        prompt: "Fix the fixture".into(),
+        background,
+        model: Some("sonnet".into()),
+        effort: Some("high".into()),
+        cwd: Some("sub".into()),
+    }
+}
+
+#[tokio::test]
+async fn claude_detection_distinguishes_sign_in_from_probe_failures() {
+    for (mode, expected) in [
+        ("auth-in", Some(true)),
+        ("auth-out", Some(false)),
+        ("auth-error", None),
+        ("auth-inconsistent", None),
+        ("auth-missing", None),
+        ("auth-oversized", None),
+        ("auth-timeout", None),
+    ] {
+        let harness = Harness::new(mode);
+        let detection =
+            crate::agent::integrations::detect_claude(Some(&harness.fixtures.search_path())).await;
+        assert_eq!(detection.signed_in, expected, "{mode}");
+        assert!(detection.version.is_some(), "{mode}");
+        assert!(detection.problem.is_none(), "{mode}");
+        assert!(!format!("{detection:?}").contains("secret-canary"));
+        let pid = harness.fixture_pid().await;
+        assert!(
+            !process_alive(pid),
+            "{mode}: authentication probe left running"
+        );
+    }
+}
+
+/// Exercises the native Rust transport against a deterministic CLI, with no inference.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn claude_native_streams_resumes_and_binds_the_provider() {
+    let harness = Harness::new("approve");
+    fs::create_dir(harness.project.join("sub")).unwrap();
+    let result = harness
+        .registry
+        .start(harness.call("claude-task", "r1"), claude_start(false))
+        .await;
+    let activity = activity_of(&result);
+    assert_eq!(activity["status"], "completed", "{activity}");
+    assert_eq!(activity["provider"], "claude");
+    assert_eq!(activity["text"], "Allowed");
+    assert_eq!(activity["commands"][0]["status"], "completed");
+    assert_eq!(activity["fileChanges"][0]["path"], "src/lib.rs");
+    assert_eq!(activity["todos"][0]["completed"], true);
+    let agent_id = activity["agentId"].as_str().unwrap().to_string();
+    let thread_id = activity["threadId"].as_str().unwrap().to_string();
+    let result = harness
+        .registry
+        .send(
+            harness.call("claude-task", "r2"),
+            AgentSendParams {
+                provider: "claude".into(),
+                agent_id: agent_id.clone(),
+                prompt: "Continue".into(),
+                background: false,
+                model: None,
+                effort: None,
+            },
+        )
+        .await;
+    assert!(
+        result_text(&result).contains("Status: completed"),
+        "{}",
+        result_text(&result)
+    );
+    let log = harness.log();
+    assert!(log.contains("--resume"));
+    assert!(
+        log.contains("stdin_closed"),
+        "completed CLI should exit before resumption"
+    );
+    assert!(log.contains(&thread_id));
+    assert!(log.contains("--effort"));
+    assert!(log.contains(&harness.project.join("sub").to_string_lossy().into_owned()));
+    assert!(!log.contains("dangerously-skip-permissions"));
+    for provider in ["codex", "unknown"] {
+        let result = harness
+            .registry
+            .cancel_tool(
+                &harness.call("claude-task", "r3"),
+                AgentRefParams {
+                    provider: provider.into(),
+                    agent_id: agent_id.clone(),
+                },
+            )
+            .await;
+        assert!(result.is_err());
+    }
+    let result = harness
+        .registry
+        .status(
+            &harness.call("another-task", "r4"),
+            AgentRefParams {
+                provider: "claude".into(),
+                agent_id,
+            },
+        )
+        .await;
+    assert!(result.is_err());
+    let providers = harness
+        .registry
+        .list_providers(&harness.call("claude-task", "list"), &["claude".into()])
+        .await;
+    let providers = content_text(&providers.content);
+    assert!(providers.contains("- claude:"), "{providers}");
+    assert!(!providers.contains("- codex:"), "{providers}");
+    harness.registry.shutdown_all(Duration::from_secs(5)).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn claude_native_retries_only_resume_confirmed_sessions() {
+    for (mode, confirmed) in [
+        ("pre-init-error", false),
+        ("pre-init-eof", false),
+        ("error", true),
+        ("no-init-success", true),
+    ] {
+        let harness = Harness::new(mode);
+        fs::create_dir(harness.project.join("sub")).unwrap();
+        let result = harness
+            .registry
+            .start(harness.call("retry", "r1"), claude_start(false))
+            .await;
+        let activity = activity_of(&result);
+        assert_eq!(
+            activity["threadId"].is_string(),
+            confirmed,
+            "{mode}: {activity}"
+        );
+        assert_eq!(
+            activity["status"],
+            if mode == "no-init-success" {
+                "completed"
+            } else {
+                "failed"
+            }
+        );
+        let agent_id = activity["agentId"].as_str().unwrap().to_string();
+        harness.install_fixture("claude", "approve");
+        for row in ["r2", "r3"] {
+            let result = harness
+                .registry
+                .send(
+                    harness.call("retry", row),
+                    AgentSendParams {
+                        provider: "claude".into(),
+                        agent_id: agent_id.clone(),
+                        prompt: "Try again".into(),
+                        background: false,
+                        model: None,
+                        effort: None,
+                    },
+                )
+                .await;
+            assert_eq!(activity_of(&result)["status"], "completed");
+        }
+        let args: Vec<Value> = harness
+            .log()
+            .lines()
+            .map(|line| {
+                serde_json::from_str::<Value>(line)
+                    .unwrap_or_else(|error| panic!("{mode}: invalid fixture log record: {error}"))
+            })
+            .filter_map(|value| value.get("args").cloned())
+            .collect();
+        assert_eq!(args.len(), 3);
+        let session = |args: &Value| {
+            args.as_array()
+                .unwrap()
+                .windows(2)
+                .find_map(|pair| {
+                    (pair[0] == "--session-id" || pair[0] == "--resume").then(|| pair[1].clone())
+                })
+                .unwrap()
+        };
+        assert!(args[0].as_array().unwrap().contains(&json!("--session-id")));
+        assert!(args[1].as_array().unwrap().contains(&json!(if confirmed {
+            "--resume"
+        } else {
+            "--session-id"
+        })));
+        assert_eq!(session(&args[0]) == session(&args[1]), confirmed);
+        assert!(args[2].as_array().unwrap().contains(&json!("--resume")));
+        assert_eq!(session(&args[1]), session(&args[2]));
+        harness.registry.shutdown_all(Duration::from_secs(5)).await;
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn claude_native_cancellation_kills_cli_and_descendants() {
+    let harness = Harness::new("slow");
+    fs::create_dir(harness.project.join("sub")).unwrap();
+    let result = harness
+        .registry
+        .start(harness.call("claude-stop", "r1"), claude_start(true))
+        .await;
+    assert!(
+        result_text(&result).contains("claude-1"),
+        "{}",
+        result_text(&result)
+    );
+    let pid = harness.fixture_pid().await;
+    let child_pid_file = harness.child_pid_file();
+    let child_pid = wait_for(|| {
+        fs::read_to_string(&child_pid_file)
+            .ok()
+            .and_then(|pid| pid.parse::<i32>().ok())
+    })
+    .await;
+    let activity = harness
+        .registry
+        .cancel("claude-stop", "claude-1")
+        .await
+        .unwrap();
+    assert_eq!(activity.status, "cancelled");
+    wait_for(|| (!process_alive(pid)).then_some(())).await;
+    // A killed orphan can briefly remain a zombie before PID 1 reaps it.
+    wait_for(|| {
+        (!process_alive(child_pid)
+            || fs::read_to_string(format!("/proc/{child_pid}/stat"))
+                .is_ok_and(|stat| stat.contains(") Z ")))
+        .then_some(())
+    })
+    .await;
+    // Reconnect through a new CLI process and resume the session saved before Stop.
+    harness.install_fixture("claude", "approve");
+    let result = harness
+        .registry
+        .send(
+            harness.call("claude-stop", "r2"),
+            AgentSendParams {
+                provider: "claude".into(),
+                agent_id: "claude-1".into(),
+                prompt: "Resume".into(),
+                background: false,
+                model: None,
+                effort: None,
+            },
+        )
+        .await;
+    assert!(
+        result_text(&result).contains("Status: completed"),
+        "{}",
+        result_text(&result)
+    );
+    assert_eq!(
+        activity_of(&result)["threadId"].as_str(),
+        activity.thread_id.as_deref()
+    );
+    harness.registry.shutdown_all(Duration::from_secs(5)).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn claude_questions_still_use_the_question_card() {
+    for mode in ["approve", "question", "multi-question"] {
+        let harness = Harness::new(mode);
+        fs::create_dir(harness.project.join("sub")).unwrap();
+        let registry = harness.registry.clone();
+        let call = harness.call("claude-input", "r1");
+        let turn = tokio::spawn(async move { registry.start(call, claude_start(false)).await });
+        if mode != "approve" {
+            let (request_id, questions) = wait_for(|| {
+                harness.sink.events().iter().find_map(|event| match event {
+                    AgentServiceEvent::Question {
+                        session_id,
+                        request_id,
+                        questions,
+                    } if session_id == "claude-input" => {
+                        Some((request_id.clone(), questions.clone()))
+                    }
+                    _ => None,
+                })
+            })
+            .await;
+            assert_eq!(questions[0].question, "Tabs or spaces?");
+            assert_eq!(questions[0].multi_select, mode == "multi-question");
+            assert!(
+                harness
+                    .questions
+                    .answer(
+                        &request_id,
+                        if mode == "multi-question" {
+                            r#"{"answers":{"q0":{"answers":["Spaces","Tabs"]}}}"#
+                        } else {
+                            r#"{"answers":{"q0":{"answers":["Spaces"]}}}"#
+                        }
+                        .into()
+                    )
+                    .await
+            );
+        }
+        let result = tokio::time::timeout(WAIT, turn).await.unwrap().unwrap();
+        let text = result_text(&result);
+        assert!(
+            text.contains(if mode == "approve" {
+                // The approval request was accepted without asking.
+                "Allowed"
+            } else if mode == "multi-question" {
+                "Spaces, Tabs"
+            } else {
+                "Spaces"
+            }),
+            "{text}"
+        );
+        if mode == "approve" {
+            assert!(harness.log().contains("\"behavior\":\"allow\""));
+        }
+        harness.registry.shutdown_all(Duration::from_secs(5)).await;
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn claude_native_failures_are_not_success_or_unsanitized_output() {
+    for mode in ["eof", "error", "init-error", "malformed", "oversized"] {
+        let harness = Harness::new(mode);
+        fs::create_dir(harness.project.join("sub")).unwrap();
+        let result = harness
+            .registry
+            .start(harness.call("claude-fail", "r1"), claude_start(false))
+            .await;
+        let text = result_text(&result);
+        assert!(
+            text.contains("Status: failed") || result.is_err(),
+            "{mode}: {text}"
+        );
+        assert!(!text.contains("secret-canary"));
+        let pid = harness.fixture_pid().await;
+        wait_for(|| (!process_alive(pid)).then_some(())).await;
+        harness.registry.shutdown_all(Duration::from_secs(5)).await;
+    }
+}

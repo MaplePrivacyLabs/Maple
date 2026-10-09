@@ -13,8 +13,13 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
-use pi_ai::{ImageContent, Message, StopReason};
-use pi_coding_agent::{AgentSession, AgentSessionEvent, PromptOptions, SessionMessage};
+use pi_ai::{Content, ImageContent, Message, StopReason};
+use pi_coding_agent::Delivery;
+use pi_coding_agent::extensions::CustomMessageDraft;
+use pi_coding_agent::{
+    AgentSession, AgentSessionError, AgentSessionEvent, PromptOptions, PromptOutcome,
+    SessionMessage,
+};
 use tokio::sync::{Notify, mpsc, watch};
 use tokio_util::sync::CancellationToken;
 
@@ -70,12 +75,25 @@ struct Outgoing {
     text: String,
     attachments: Vec<AgentImageAttachment>,
     images: Vec<ImageContent>,
+    /// Set for a message to the model alone, such as a background agent's
+    /// result: Pi gets it as a custom message of this type, which the
+    /// timeline does not show. It is never a chip the user sees, and goes
+    /// to the model on its own.
+    hidden: Option<&'static str>,
 }
 
 impl Outgoing {
     fn text(text: impl Into<String>) -> Self {
         Self {
             text: text.into(),
+            ..Self::default()
+        }
+    }
+
+    fn hidden(custom_type: &'static str, text: String) -> Self {
+        Self {
+            text,
+            hidden: Some(custom_type),
             ..Self::default()
         }
     }
@@ -87,7 +105,7 @@ impl Outgoing {
             Some((text, attachments)) => Self {
                 text,
                 attachments,
-                images: Vec::new(),
+                ..Self::default()
             },
             None => Self::text(prompt),
         }
@@ -106,7 +124,21 @@ impl Outgoing {
         )
     }
 
+    /// A hidden message as the custom message Pi gets; `None` for a
+    /// message the user sent.
+    fn custom_draft(&self) -> Option<CustomMessageDraft> {
+        Some(CustomMessageDraft {
+            custom_type: self.hidden?.to_string(),
+            content: vec![Content::text(self.text.clone())],
+            display: false,
+            details: None,
+        })
+    }
+
+    /// Steer a message the user sent into the session's turn. A hidden
+    /// message never is: it goes to the model as a turn of its own.
     fn steer(&self, session: &AgentSession) {
+        debug_assert!(self.hidden.is_none(), "a hidden message is not steered");
         let (text, images) = self.prompt();
         session.steer(&text, images);
     }
@@ -247,11 +279,13 @@ impl ActiveRun {
 }
 
 /// A message waiting behind a run, with the images it shows a model that
-/// sees them.
+/// sees them. A hidden message waits the same way, but the user never sees
+/// it in the queue.
 #[derive(Clone)]
 struct Chip {
     message: AgentQueuedMessage,
     images: Vec<ImageContent>,
+    hidden: Option<&'static str>,
 }
 
 impl Chip {
@@ -267,6 +301,7 @@ impl Chip {
                 created_ms: unix_ms(),
             },
             images: message.images,
+            hidden: message.hidden,
         }
     }
 
@@ -275,6 +310,7 @@ impl Chip {
             text: self.message.text,
             attachments: self.message.attachments,
             images: self.images,
+            hidden: self.hidden,
         }
     }
 }
@@ -291,7 +327,12 @@ impl DesktopQueue {
     fn snapshot(&self) -> AgentDesktopQueueSnapshot {
         AgentDesktopQueueSnapshot {
             revision: self.revision,
-            items: self.items.iter().map(|chip| chip.message.clone()).collect(),
+            items: self
+                .items
+                .iter()
+                .filter(|chip| chip.hidden.is_none())
+                .map(|chip| chip.message.clone())
+                .collect(),
         }
     }
 
@@ -370,6 +411,37 @@ impl RunsState {
         }
         let items = queue.items.drain(..).collect();
         Some((items, queue.changed()))
+    }
+
+    /// The hidden messages waiting behind a run, which leave the queue.
+    fn take_hidden_chips(&mut self, session_id: &str) -> Vec<Chip> {
+        let Some(queue) = self.queues.get_mut(session_id) else {
+            return Vec::new();
+        };
+        let (hidden, visible): (VecDeque<Chip>, VecDeque<Chip>) = queue
+            .items
+            .drain(..)
+            .partition(|chip| chip.hidden.is_some());
+        queue.items = visible;
+        hidden.into()
+    }
+
+    /// Every chip the user sees, unless one is being edited; hidden
+    /// messages stay queued.
+    fn take_visible_chips(
+        &mut self,
+        session_id: &str,
+    ) -> Option<(Vec<Chip>, AgentDesktopQueueSnapshot)> {
+        let queue = self.queues.get_mut(session_id)?;
+        if queue.editing.is_some() || queue.items.iter().all(|chip| chip.hidden.is_some()) {
+            return None;
+        }
+        let (hidden, visible): (VecDeque<Chip>, VecDeque<Chip>) = queue
+            .items
+            .drain(..)
+            .partition(|chip| chip.hidden.is_some());
+        queue.items = hidden;
+        Some((visible.into(), queue.changed()))
     }
 }
 
@@ -643,6 +715,7 @@ impl AgentRuntime {
             text,
             attachments: stored.into_iter().map(|image| image.attachment).collect(),
             images,
+            hidden: None,
         })
     }
 
@@ -676,7 +749,7 @@ impl AgentRuntime {
                     steered.push(removed.outgoing());
                     Some(snapshot)
                 } else if message.is_empty() {
-                    let Some((items, snapshot)) = state.take_chips(session_id) else {
+                    let Some((items, snapshot)) = state.take_visible_chips(session_id) else {
                         return Err(if state.snapshot(session_id).items.is_empty() {
                             EMPTY_PROMPT_ERROR.to_string()
                         } else {
@@ -767,6 +840,19 @@ impl AgentRuntime {
                 (prompts, consumed)
             }
         };
+        Ok(Plan::Start(
+            self.register_run(&mut state, session_id, prompts, consumed),
+        ))
+    }
+
+    /// Register a desktop run for `session_id`, to start with `prompts`.
+    fn register_run(
+        &self,
+        state: &mut RunsState,
+        session_id: &str,
+        prompts: Vec<Outgoing>,
+        consumed: Vec<String>,
+    ) -> NewRun {
         let run_id = next_run_id();
         let (events, receiver) = RunEvents::new(
             self.host.events.clone(),
@@ -789,14 +875,14 @@ impl AgentRuntime {
                 task: None,
             },
         );
-        Ok(Plan::Start(NewRun {
+        NewRun {
             run_id,
             prompts,
             consumed,
             stopped,
             receiver,
             events,
-        }))
+        }
     }
 
     /// Set up a registered run and start it.
@@ -804,6 +890,125 @@ impl AgentRuntime {
         self: &Arc<Self>,
         request: &AgentSendMessageRequest,
         run: NewRun,
+    ) -> Result<AgentRunHandle, String> {
+        match self
+            .prepare_run_session(request, &run.prompts, &run.events)
+            .await
+        {
+            Ok(session) => self.launch_run(&request.session_id, run, session),
+            Err(error) => {
+                self.forget_run(&run.run_id);
+                Err(error)
+            }
+        }
+    }
+
+    /// Drop a registered run that could not start.
+    fn forget_run(&self, run_id: &str) {
+        self.runs.state().runs.remove(run_id);
+        self.runs.finished.notify_waiters();
+    }
+
+    /// Hand the model a message the user does not see, such as a background
+    /// agent's result: behind the task's run, as its next turn, or in a run
+    /// of its own. The task must be loaded.
+    pub(super) async fn deliver_hidden(
+        self: &Arc<Self>,
+        session_id: &str,
+        custom_type: &'static str,
+        text: String,
+    ) -> Result<(), String> {
+        let message = Outgoing::hidden(custom_type, text);
+        loop {
+            let finished = self.runs.finished.notified();
+            tokio::pin!(finished);
+            finished.as_mut().enable();
+            let plan = {
+                let mut state = self.runs.state();
+                match state.run_of(session_id) {
+                    Some((run_id, run)) if run.stageable() => {
+                        let run_id = run_id.clone();
+                        state
+                            .queue(session_id)
+                            .items
+                            .push_back(Chip::new(session_id, message.clone()));
+                        let queue = state.snapshot(session_id);
+                        Plan::Joined(AgentRunHandle::joined(run_id, None, queue))
+                    }
+                    Some((_, run)) if run.surface != AgentRunSurface::Desktop => {
+                        return Err(
+                            "This Agent task is controlled by another Agent surface".to_string()
+                        );
+                    }
+                    Some(_) => Plan::Wait,
+                    // Chips left from an earlier run wait for the user's
+                    // next send; the message goes alone.
+                    None => Plan::Start(self.register_run(
+                        &mut state,
+                        session_id,
+                        vec![message.clone()],
+                        Vec::new(),
+                    )),
+                }
+            };
+            match plan {
+                Plan::Joined(_) => return Ok(()),
+                Plan::Wait => {
+                    tokio::select! {
+                        _ = &mut finished => {}
+                        _ = self.lifetime.cancelled() => {
+                            return Err(super::RUNTIME_NOT_RUNNING_ERROR.to_string());
+                        }
+                    }
+                }
+                Plan::Start(run) => {
+                    let session = match self.loaded_session(session_id).await {
+                        Some(session) => session,
+                        None => {
+                            self.forget_run(&run.run_id);
+                            return Err(format!("Agent task {session_id} is not open"));
+                        }
+                    };
+                    if let Err(error) = self.wake(session_id) {
+                        self.forget_run(&run.run_id);
+                        return Err(error);
+                    }
+                    return self.launch_run(session_id, run, session).map(|_| ());
+                }
+            }
+        }
+    }
+
+    /// A run is new activity: it wakes a settled task, which stays active
+    /// until it is settled again by hand.
+    fn wake(&self, session_id: &str) -> Result<(), String> {
+        let settled = self
+            .store
+            .get(session_id)?
+            .is_some_and(|row| row.state == AgentTaskState::Settled);
+        if settled
+            && let Some(woken) = self
+                .store
+                .update(session_id, |row| row.state = AgentTaskState::Active)?
+        {
+            emit_agent_event(
+                &self.host.events,
+                AgentServiceEvent::SessionUpdated {
+                    session_id: session_id.to_string(),
+                    run_id: None,
+                    session: woken.summary(),
+                },
+            );
+        }
+        Ok(())
+    }
+
+    /// Start a registered run on the task's session.
+    fn launch_run(
+        self: &Arc<Self>,
+        session_id: &str,
+        run: NewRun,
+        session: AgentSession,
     ) -> Result<AgentRunHandle, String> {
         let NewRun {
             run_id,
@@ -813,15 +1018,6 @@ impl AgentRuntime {
             receiver,
             events,
         } = run;
-        let session_id = request.session_id.as_str();
-        let session = match self.prepare_run_session(request, &prompts, &events).await {
-            Ok(session) => session,
-            Err(error) => {
-                self.runs.state().runs.remove(&run_id);
-                self.runs.finished.notify_waiters();
-                return Err(error);
-            }
-        };
 
         let (terminal_tx, terminal) = watch::channel(None);
         let (usage_tx, usage) = watch::channel(None);
@@ -905,27 +1101,13 @@ impl AgentRuntime {
         );
         let session = self.task_session(&row, model).await?;
         self.failures.clear(session_id);
-
-        // A run is new activity: it wakes a settled task, which stays
-        // active until it is settled again by hand.
-        if row.state == AgentTaskState::Settled
-            && let Some(woken) = self
-                .store
-                .update(session_id, |row| row.state = AgentTaskState::Active)?
-        {
-            emit_agent_event(
-                &self.host.events,
-                AgentServiceEvent::SessionUpdated {
-                    session_id: session_id.to_string(),
-                    run_id: None,
-                    session: woken.summary(),
-                },
-            );
-        }
-        // Named from the first message with text: images alone say nothing.
+        self.wake(session_id)?;
+        // Named from the first message with text: images alone say nothing,
+        // and a hidden message is not the user's.
         if super::tasks::names_from_prompt(&row)
             && let Some(first) = prompts
                 .iter()
+                .filter(|message| message.hidden.is_none())
                 .map(|message| message.text.as_str())
                 .find(|text| !text.is_empty())
         {
@@ -969,22 +1151,40 @@ impl AgentRuntime {
         let mut failure = None;
         let mut prompted = false;
         while !stopped.is_cancelled() {
-            let Some((first, rest)) = prompts.split_first() else {
-                break;
+            // Messages the user sent go together, as one turn; a hidden
+            // message goes on its own.
+            let batch = match prompts.iter().position(|message| message.hidden.is_some()) {
+                Some(0) => 1,
+                Some(index) => index,
+                None => prompts.len(),
             };
+            if batch == 0 {
+                break;
+            }
+            let mut sending: Vec<Outgoing> = prompts.drain(..batch).collect();
+            let first = sending.remove(0);
             // Steering queued before the prompt joins its first turn, so
             // several messages make one turn.
-            for message in rest {
+            for message in &sending {
                 message.steer(&session);
             }
             prompted = true;
-            let (text, images) = first.prompt();
-            let options = PromptOptions {
-                images,
-                expand: false,
-                ..PromptOptions::default()
+            let result = match first.custom_draft() {
+                Some(draft) => {
+                    until_stopped(&session, &stopped, session.send_custom_message(draft)).await
+                }
+                None => {
+                    let (text, images) = first.prompt();
+                    let options = PromptOptions {
+                        images,
+                        expand: false,
+                        ..PromptOptions::default()
+                    };
+                    until_stopped(&session, &stopped, session.prompt(&text, options)).await
+                }
             };
-            if let Err(error) = prompt_until_stopped(&session, &text, options, &stopped).await {
+            if let Err(error) = result {
+                // What was not sent yet goes back to the queue below.
                 failure = Some(error.to_string());
                 break;
             }
@@ -992,9 +1192,12 @@ impl AgentRuntime {
                 break;
             }
             // A message steered in after Pi's last look would wait for the
-            // task's next prompt; send it now with the queued chips.
+            // task's next prompt; send it now, before the messages still
+            // waiting and the queued chips.
             let (stranded, _) = session.clear_queue();
+            let waiting = std::mem::take(&mut prompts);
             prompts = stranded.into_iter().map(Outgoing::from_prompt).collect();
+            prompts.extend(waiting);
             match self.take_chips_or_close(&run_id, &session_id) {
                 Some((chips, snapshot)) => {
                     events.publish(AgentRunEvent::QueueChanged(snapshot));
@@ -1008,14 +1211,22 @@ impl AgentRuntime {
 
         let cancelled = stopped.is_cancelled();
         if cancelled {
-            // Steering the session never took goes back to the queue.
+            // Steering the session never took, and messages the run did not
+            // send yet, go back to the queue.
             let (stranded, _) = session.clear_queue();
-            let unsent = if prompted {
-                stranded.into_iter().map(Outgoing::from_prompt).collect()
+            let mut unsent = if prompted {
+                let mut unsent: Vec<Outgoing> =
+                    stranded.into_iter().map(Outgoing::from_prompt).collect();
+                unsent.extend(std::mem::take(&mut prompts));
+                unsent
             } else {
-                prompts
+                std::mem::take(&mut prompts)
             };
-            self.requeue(&session_id, unsent, &events);
+            // Hidden messages still waiting go into the history with the
+            // rest; the user's chips wait for their next send.
+            let waiting = self.runs.state().take_hidden_chips(&session_id);
+            unsent.extend(waiting.into_iter().map(Chip::outgoing));
+            self.requeue(&session, &session_id, unsent, &events);
             if prompted {
                 let id = format!("stopped-{}", pi_ai::now_ms());
                 session.extension_context().append_entry(
@@ -1029,6 +1240,10 @@ impl AgentRuntime {
                     pi_ai::now_ms(),
                 )));
             }
+        }
+        if failure.is_some() && !prompts.is_empty() {
+            // A failed prompt leaves the messages after it for the next send.
+            self.requeue(&session, &session_id, std::mem::take(&mut prompts), &events);
         }
         let terminal_state = if cancelled {
             AgentRunTerminal::Cancelled
@@ -1079,7 +1294,22 @@ impl AgentRuntime {
     }
 
     /// Put messages a stopped run never sent back at the head of the queue.
-    fn requeue(&self, session_id: &str, messages: Vec<Outgoing>, events: &RunEvents) {
+    fn requeue(
+        &self,
+        session: &AgentSession,
+        session_id: &str,
+        messages: Vec<Outgoing>,
+        events: &RunEvents,
+    ) {
+        // A hidden message is not the user's to send again: it goes into
+        // the task's history, where the model reads it with the next prompt.
+        let (hidden, messages): (Vec<Outgoing>, Vec<Outgoing>) = messages
+            .into_iter()
+            .partition(|message| message.hidden.is_some());
+        let context = session.extension_context();
+        for draft in hidden.iter().filter_map(Outgoing::custom_draft) {
+            context.send_message(draft, Delivery::Append);
+        }
         if messages.is_empty() {
             return;
         }
@@ -1098,13 +1328,11 @@ impl AgentRuntime {
 /// Run one prompt. Stop aborts it, and keeps aborting until the prompt
 /// returns: an abort that lands while Pi is still setting the run up would
 /// otherwise be forgotten when the run starts.
-async fn prompt_until_stopped(
+async fn until_stopped(
     session: &AgentSession,
-    text: &str,
-    options: PromptOptions,
     stopped: &CancellationToken,
-) -> Result<pi_coding_agent::PromptOutcome, pi_coding_agent::AgentSessionError> {
-    let prompt = session.prompt(text, options);
+    prompt: impl std::future::Future<Output = Result<PromptOutcome, AgentSessionError>>,
+) -> Result<PromptOutcome, AgentSessionError> {
     tokio::pin!(prompt);
     if let Some(result) = tokio::select! {
         biased;

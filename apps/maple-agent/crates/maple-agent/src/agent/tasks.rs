@@ -16,7 +16,7 @@ use super::config::{
 };
 use super::mcp::{normalize_mcp_servers, servers_for_new_task, set_chosen_servers};
 use super::store::{TaskKind, TaskRow};
-use super::timeline::{MAX_AGENT_SESSION_TITLE_CHARS, session_timeline};
+use super::timeline::{MAX_AGENT_SESSION_TITLE_CHARS, merge_into, session_timeline};
 use super::{
     AgentCreateSessionRequest, AgentRenameSessionRequest, AgentRuntimeHandle, AgentServiceEvent,
     AgentSessionDetail, AgentSessionSummary, AgentSetSessionWebRequest, AgentTaskState,
@@ -187,6 +187,11 @@ impl AgentRuntimeHandle {
         };
         let queue = match &runtime {
             Some(runtime) => {
+                // An external agent's turn in progress is on its row only
+                // once it ends; until then the row is as the agent left it.
+                for row in runtime.external_agents.live_rows(&session_id).await {
+                    merge_into(&mut timeline, row);
+                }
                 if let Some(failure) = runtime.failures.get(&session_id) {
                     timeline.push(failure);
                 }
@@ -339,6 +344,8 @@ impl AgentRuntimeHandle {
                 return Err("Stop the running agent before deleting this task".to_string());
             }
             runtime.unload_task(&session_id).await;
+            // Its external agents end with it, before its history goes.
+            runtime.external_agents.shutdown_session(&session_id).await;
             runtime.runs.clear_queue(&session_id);
             runtime.failures.clear(&session_id);
         }

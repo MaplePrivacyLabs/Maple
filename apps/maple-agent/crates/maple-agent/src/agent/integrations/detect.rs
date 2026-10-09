@@ -11,9 +11,9 @@ use serde::Deserialize;
 
 use crate::agent::bounded_process::read_bounded_stdout;
 
-pub(super) const CODEX_SIGN_IN_HINT: &str =
+pub(in crate::agent) const CODEX_SIGN_IN_HINT: &str =
     "Codex is not signed in. Run `codex login` in a terminal, then try again.";
-pub(super) const CLAUDE_SIGN_IN_HINT: &str =
+pub(in crate::agent) const CLAUDE_SIGN_IN_HINT: &str =
     "Claude Code is not signed in. Run `claude auth login` in a terminal, then try again.";
 
 /// The oldest Codex whose app-server speaks the methods Maple uses.
@@ -27,17 +27,17 @@ const MAX_AUTH_BYTES: usize = 16 * 1024;
 
 /// What Maple found out about one command line.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub(super) struct CliDetection {
-    pub(super) executable: Option<PathBuf>,
-    pub(super) version: Option<String>,
+pub(in crate::agent) struct CliDetection {
+    pub(in crate::agent) executable: Option<PathBuf>,
+    pub(in crate::agent) version: Option<String>,
     /// `None` when Maple could not tell.
-    pub(super) signed_in: Option<bool>,
+    pub(in crate::agent) signed_in: Option<bool>,
     /// Why the installation cannot be used, if it cannot.
-    pub(super) problem: Option<String>,
+    pub(in crate::agent) problem: Option<String>,
 }
 
 /// Find `codex`, read its version, and see whether a sign-in exists.
-pub(super) async fn detect_codex(search_path: Option<&str>) -> CliDetection {
+pub(in crate::agent) async fn detect_codex(search_path: Option<&str>) -> CliDetection {
     let Some(executable) = find_executable("codex", search_path) else {
         return CliDetection::default();
     };
@@ -70,7 +70,7 @@ pub(super) async fn detect_codex(search_path: Option<&str>) -> CliDetection {
 }
 
 /// Find `claude`, read its version, and ask it whether it is signed in.
-pub(super) async fn detect_claude(search_path: Option<&str>) -> CliDetection {
+pub(in crate::agent) async fn detect_claude(search_path: Option<&str>) -> CliDetection {
     let Some(executable) = find_executable("claude", search_path) else {
         return CliDetection::default();
     };

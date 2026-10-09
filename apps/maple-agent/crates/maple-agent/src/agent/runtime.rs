@@ -5,6 +5,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use pi_agent_core::QueueMode;
 use pi_ai::{InputModality, Model, ThinkingLevel};
@@ -14,13 +15,18 @@ use pi_coding_agent::{AgentSession, AgentSessionOptions, ModelRegistry};
 use tokio_util::sync::CancellationToken;
 
 use super::config::{account_attachment_store, path_string};
+use super::external_agents::{
+    ExternalAgentHost, ExternalAgentRegistry, ExternalAgentToolsFor, TaskProviders,
+    external_agent_tools, sync_external_agent_tools, task_providers,
+};
+use super::integrations::external_agents_on;
 use super::mcp::{
     MAX_IDLE_TASKS_WITH_SERVERS, STARTUP_WAIT, TaskMcp, read_saved_servers, task_servers,
 };
 use super::provider::{CatalogEntry, maple_model, maple_model_registry};
 use super::questions::QuestionBroker;
 use super::runs::{Failures, Runs};
-use super::store::{TaskRow, TaskStore};
+use super::store::{TaskKind, TaskRow, TaskStore};
 use super::tool_context::SharedAgentToolContext;
 use super::{
     AgentRuntimeStatus, AgentServiceEvent, MapleAgentHostResources, emit_agent_event, login_path,
@@ -54,10 +60,15 @@ pub(super) struct RuntimeParts {
     pub(super) model: String,
 }
 
-/// A task's loaded session, and the MCP servers that live with it.
+/// How long a stopping runtime gives its external agents to end.
+const EXTERNAL_AGENTS_SHUTDOWN: Duration = Duration::from_secs(10);
+
+/// A task's loaded session, the MCP servers that live with it, and the
+/// external agents its tools may use.
 struct LoadedTask {
     session: AgentSession,
     mcp: Arc<TaskMcp>,
+    agents: TaskProviders,
 }
 
 pub(super) struct AgentRuntime {
@@ -78,17 +89,26 @@ pub(super) struct AgentRuntime {
     sessions: tokio::sync::Mutex<HashMap<String, LoadedTask>>,
     pub(super) runs: Runs,
     pub(super) failures: Failures,
+    /// The external agents of the account's tasks.
+    pub(super) external_agents: Arc<ExternalAgentRegistry>,
 }
 
 impl AgentRuntime {
-    pub(super) fn new(parts: RuntimeParts) -> Self {
+    pub(super) fn new(parts: RuntimeParts) -> Arc<Self> {
         let models = maple_model_registry(parts.api.clone(), []);
         // Ask the login shell for its PATH now, so the first task does not
         // wait for it.
         if let Ok(runtime) = tokio::runtime::Handle::try_current() {
             runtime.spawn(login_path::login_search_path());
         }
-        Self {
+        let lifetime = CancellationToken::new();
+        Arc::new_cyclic(|runtime| Self {
+            external_agents: Arc::new(ExternalAgentRegistry::new(ExternalAgentHost {
+                events: parts.host.events.clone(),
+                questions: parts.questions.clone(),
+                runtime: runtime.clone(),
+                lifetime: lifetime.clone(),
+            })),
             account_scope: parts.account_scope,
             user_id: parts.user_id,
             api: parts.api,
@@ -98,11 +118,11 @@ impl AgentRuntime {
             models,
             project_root: Mutex::new(parts.project_root),
             model: parts.model,
-            lifetime: CancellationToken::new(),
+            lifetime,
             sessions: tokio::sync::Mutex::new(HashMap::new()),
             runs: Runs::default(),
             failures: Failures::default(),
-        }
+        })
     }
 
     pub(super) fn ensure_account(&self, account_scope: &str) -> Result<(), String> {
@@ -341,20 +361,26 @@ impl AgentRuntime {
         // and the resources come from disk.
         let search_path = login_path::login_search_path().await;
         let resources = self.resources(&row.project_root).await;
+        let providers = task_providers(&external_agents_on(&self.host.paths, &self.user_id), row);
         let mut sessions = self.sessions.lock().await;
         // Shutdown closes the loaded sessions; none is built after it.
         if self.lifetime.is_cancelled() {
             return Err(super::RUNTIME_NOT_RUNNING_ERROR.to_string());
         }
-        if let Some(LoadedTask { session, .. }) = sessions.get(&row.id) {
+        if let Some(LoadedTask {
+            session, agents, ..
+        }) = sessions.get(&row.id)
+        {
             // A new context window or vision flag for the same model, or
             // another model for a task that has not started.
             if session.model().as_ref() != Some(&model) {
                 self.models.register_models([model.clone()]);
                 session.set_model(model).await;
             }
-            // The web switch may have changed since the last run.
+            // The web switch and the external agents may have changed since
+            // the last run.
             tools::sync_web_tools(session, row.web_enabled);
+            sync_external_agent_tools(session, agents, providers);
             if let Some(resources) = resources {
                 session.set_resources(resources);
             }
@@ -375,10 +401,11 @@ impl AgentRuntime {
         options.settings = self.settings();
         options.resources = resources.unwrap_or_default();
         let attachments = Arc::new(account_attachment_store(&self.host.paths, &self.user_id)?);
+        let tool_context = SharedAgentToolContext::new(self.host.default_tool_context.clone());
         let tools = tools::task_tools(tools::TaskToolsFor {
             session_id: row.id.clone(),
             kind: row.kind,
-            tool_context: SharedAgentToolContext::new(self.host.default_tool_context.clone()),
+            tool_context: tool_context.clone(),
             login_path: search_path.clone(),
             questions: self.questions.clone(),
             web: self.api.clone(),
@@ -393,16 +420,32 @@ impl AgentRuntime {
         options.tool_options = tools.options;
         options.builtin_tools = Some(tools.builtin);
         options.tools = tools.maple;
+        // External agents work for tasks in the desktop app.
+        let agents = TaskProviders::default();
+        if row.kind == TaskKind::Desktop {
+            options
+                .tools
+                .extend(external_agent_tools(ExternalAgentToolsFor {
+                    registry: Arc::clone(&self.external_agents),
+                    session_id: row.id.clone(),
+                    working_dir: PathBuf::from(&row.project_root),
+                    login_path: search_path.clone(),
+                    tool_context,
+                    providers: agents.clone(),
+                }));
+        }
         let mcp = TaskMcp::new(Path::new(&row.project_root), search_path);
         options.extensions.push(mcp.extension());
         let session = AgentSession::new(options)
             .await
             .map_err(|error| format!("Failed to start the Agent task: {error}"))?;
+        sync_external_agent_tools(&session, &agents, providers);
         sessions.insert(
             row.id.clone(),
             LoadedTask {
                 session: session.clone(),
                 mcp,
+                agents,
             },
         );
         Ok(session)
@@ -453,10 +496,14 @@ impl AgentRuntime {
         self.models.register_api(super::provider::MAPLE_API, stream);
     }
 
-    /// Stop every run, end detached work and close the loaded sessions.
+    /// Stop every run, end detached work and external agents, and close the
+    /// loaded sessions.
     pub(super) async fn shutdown(&self) {
         self.lifetime.cancel();
         self.runs.stop_all().await;
+        self.external_agents
+            .shutdown_all(EXTERNAL_AGENTS_SHUTDOWN)
+            .await;
         let tasks: Vec<LoadedTask> = self
             .sessions
             .lock()

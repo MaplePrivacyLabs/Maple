@@ -244,7 +244,7 @@ fn text_field(object: &Map<String, Value>, key: &str) -> String {
 /// header for each, at most [`MAX_QUESTIONS`] with at most [`MAX_OPTIONS`]
 /// options each. A `multiSelect` flag, which external agents' questions
 /// carry, lets the user pick several options.
-pub(super) fn parse_user_questions(entries: &[Value]) -> Vec<AgentQuestion> {
+pub(in crate::agent) fn parse_user_questions(entries: &[Value]) -> Vec<AgentQuestion> {
     let mut questions = Vec::new();
     let mut seen_ids = HashSet::new();
     for (index, entry) in entries.iter().enumerate() {

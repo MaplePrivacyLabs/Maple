@@ -15,6 +15,7 @@ mod desktop;
 mod read_image;
 pub(crate) mod web;
 
+pub(super) use desktop::parse_user_questions;
 pub(crate) use read_image::ReadImageFor;
 
 use std::collections::BTreeMap;
