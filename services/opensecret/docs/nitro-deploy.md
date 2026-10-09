@@ -108,24 +108,25 @@ repository's full name equals `github.repository` and the successful selector
 reports an EIF input or approval JSON edit, as routed to the respective job.
 This intentionally trusts same-repository PR code to write the
 FlakeHub cache; it does not grant signing or deployment authority.
-The unsigned same-repository PR candidate builds use
+Trusted EIF builds, approval comparisons, and release builders use
 `blacksmith-16vcpu-ubuntu-2404-arm` (Ubuntu 24.04 ARM64, 16 CPU, 48 GB RAM,
-750 GB disk) to evaluate managed runners. This job builds dev/prod candidates
-without signing, publication, or deployment; the provider executes the PR code
-and receives its existing GitHub OIDC/cache access.
-Trusted approval comparison and release jobs use the organization-configured
-GitHub-hosted runner
-`ubuntu-24.04-arm64-8core` (Ubuntu 24.04 ARM64, 8 CPU, 32 GB RAM) and allow
-180 minutes for cold kernel builds. Its runner group must allow the public
-Maple repository, with capacity for both dev/prod jobs. The existing
-`ubuntu-latest-8-cores` runner is x86-64, not a substitute. Unprivileged jobs
-retain the standard `ubuntu-24.04-arm` runner and their 90-minute limit.
+750 GB disk), replacing the original GitHub-hosted 8 CPU / 32 GB / 300 GB
+builder. They retain the 180-minute limit and independent dev/prod inputs.
+The provider executes build code and receives the job's existing OIDC/cache
+permissions; the release builder also attests its output. PR candidate builds
+do not upload artifacts, sign approvals, or deploy. PCR signing remains on
+standard `ubuntu-latest` behind its protected environment. The runner group
+must allow the public Maple repository, with capacity for both dev/prod jobs.
+Unprivileged jobs retain standard `ubuntu-24.04-arm` and their 90-minute limit.
 
-The trusted job also explicitly enables the GitHub cache and `diff-store: true`,
-so paths fetched from FlakeHub, not just locally built paths, populate that
-cache. Master runs warm the default-branch cache. GitHub permits reads from the
-default/base-branch cache, but PR writes are confined to the PR merge ref and
-cannot populate master's GitHub cache, even for same-repository PRs. The cache
+Trusted jobs retain `diff-store: true` and the action's default Actions cache
+fallback: FlakeHub is used when it initializes successfully; otherwise the
+Actions cache is available. Do not force both backends to upload the same
+substituted store paths. These jobs no longer guarantee warming the GitHub
+cache used by GitHub-hosted forks. Keep Blacksmith's Actions cache branch
+protection enabled for fallback jobs: PR writes must not populate master's
+cache. Blacksmith can redirect Actions cache requests to its own backend.
+The cache
 action's post step can run after an expected PCR mismatch; the comparison still
 fails and approvals stay unchanged.
 
@@ -141,11 +142,12 @@ authenticate to it. Restoring the action does not grant Maple access to
 GitHub cache may need operator-approved access or a trusted cache-warming run.
 Never assume the old cache's visibility transferred with the source import.
 
-After a cache change, inspect fresh hosted ARM64 master and same-repository PR
+After a cache change, inspect fresh ARM64 master and same-repository PR
 runs for successful FlakeHub authentication, actual substitution of the expected
 custom kernel store path, build duration, and the eventual measurement comparison.
-Then verify that an unprivileged fork run can reuse the GitHub cache warmed by
-master. A warm local store, a skipped PR EIF job, or passing workflow unit tests
+Check GitHub-hosted fork runs separately for cache misses and cold-build
+duration; retain their unprivileged boundary. A warm local store, a skipped PR
+EIF job, or passing workflow unit tests
 does not prove this.
 Diagnose missing cache access separately from PCR mismatch. A longer timeout
 provides cold-build headroom, not proof of working cache access or reuse.

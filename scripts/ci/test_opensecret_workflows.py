@@ -91,7 +91,7 @@ class OpenSecretWorkflowBoundaryTests(unittest.TestCase):
                         expected_runner = {
                             "eif-candidate": "blacksmith-16vcpu-ubuntu-2404-arm",
                             "eif": "ubuntu-24.04-arm",
-                            "eif-trusted": "ubuntu-24.04-arm64-8core",
+                            "eif-trusted": "blacksmith-16vcpu-ubuntu-2404-arm",
                         }[job_name]
                     elif (name, job_name) == ("opensecret-ci.yml", "helpers"):
                         expected_runner = "ubuntu-24.04-arm"
@@ -114,7 +114,7 @@ class OpenSecretWorkflowBoundaryTests(unittest.TestCase):
             check=True, capture_output=True, text=True,
         )
         self.assertEqual(json.loads(result.stdout), {
-            "self-hosted-runner": {"labels": ["ubuntu-24.04-arm64-8core", "blacksmith-16vcpu-ubuntu-2404-arm"]},
+            "self-hosted-runner": {"labels": ["blacksmith-16vcpu-ubuntu-2404-arm"]},
         })
 
     def test_ordinary_backend_ci_does_not_publish_or_build_eifs(self):
@@ -172,11 +172,9 @@ class OpenSecretWorkflowBoundaryTests(unittest.TestCase):
                 "use-gha-cache": "enabled",
             }, False),
             ("eif-trusted", "DeterminateSystems/flakehub-cache-action@1f9a51a2959d3e26c7838c6f3bf9f48acae525ea", {
-                "use-gha-cache": "enabled",
                 "diff-store": True,
             }, True),
             ("eif-candidate", "DeterminateSystems/flakehub-cache-action@1f9a51a2959d3e26c7838c6f3bf9f48acae525ea", {
-                "use-gha-cache": "enabled",
                 "diff-store": True,
             }, True),
         ):
@@ -416,7 +414,7 @@ class EifReleaseWorkflowTests(unittest.TestCase):
     def test_build_job_is_the_trusted_read_only_builder(self):
         job = workflow(self.NAME)["jobs"]["build"]
         self.assertEqual(job["if"], "github.ref == 'refs/heads/master'")
-        self.assertEqual(job["runs-on"], "ubuntu-24.04-arm64-8core")
+        self.assertEqual(job["runs-on"], "blacksmith-16vcpu-ubuntu-2404-arm")
         self.assertEqual(job["timeout-minutes"], 180)
         self.assertEqual(job["permissions"], {"contents": "read", "id-token": "write", "attestations": "write"})
         self.assertNotIn("environment", job)
@@ -432,7 +430,7 @@ class EifReleaseWorkflowTests(unittest.TestCase):
             "actions/attest@281a49d4cbb0a72c9575a50d18f6deb515a11deb",
         ])
         self.assertEqual(steps[1]["with"], {"determinate": True, "github-token": ""})
-        self.assertEqual(steps[2]["with"], {"use-gha-cache": "enabled", "diff-store": True})
+        self.assertEqual(steps[2]["with"], {"diff-store": True})
         self.assertEqual(steps[3]["run"], 'bash scripts/ci/build_opensecret_eif.sh "$EIF_MODE" eif-artifact')
         self.assertEqual(steps[4]["with"]["path"], "eif-artifact")
         self.assertEqual(steps[4]["with"]["if-no-files-found"], "error")
