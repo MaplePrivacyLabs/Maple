@@ -1087,7 +1087,7 @@ mod tests {
         assert!(!welcome.html.contains("research#download"));
         assert!(!welcome.html.contains("research#pricing"));
         assert!(!welcome.html.contains("OpenSecretCloud/Maple"));
-        assert!(welcome.html.contains("class=\"ink\" src=\"https://img.maple.ai/research-laptop.jpg\" width=\"536\" alt=\"Maple Research open on a laptop\""));
+        assert!(welcome.html.contains("class=\"ink\" src=\"https://img.maple.ai/email/research-laptop.jpg\" width=\"536\" alt=\"Maple Research open on a laptop\""));
         assert!(welcome
             .html
             .contains("app-icon.png\" width=\"48\" height=\"48\" alt=\"\""));
@@ -1102,7 +1102,7 @@ mod tests {
             .contains("601 Congress Ave, Suite 250, Austin, TX 78701"));
         assert!(welcome
             .html
-            .contains("https://img.maple.ai/tile-welcome.png"));
+            .contains("https://img.maple.ai/email/tile-welcome.png"));
         assert!(!welcome.html.contains("tracking"));
 
         for (kind, campaign, tag_count) in [
