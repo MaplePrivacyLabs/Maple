@@ -110,7 +110,7 @@ Goose, with an independent dependency graph.
   open in the file manager, and remove. The home directory and the
   directory the app was launched from are trusted by default. Other
   projects that provide skills, prompt templates, or a `.maple/SYSTEM.md`
-  or `APPEND_SYSTEM.md` ask once for a trust decision before those load.
+  ask once for a trust decision before those load.
 - Sessions grouped by project, with rename, archive, and restore.
 - Settings: General (web tools, appearance, tool call details, desktop
   notifications, tool call summaries, composer Vim, application Vim, and the
@@ -466,7 +466,7 @@ shows unpackaged builds; packaged Dev and Prod append `maple-agent-dev` and
 | --- | --- |
 | `<config>/settings.json` | App settings. |
 | `<config>/agent/accounts/<scope>/config.json` | Per-account agent configuration (default root, model, custom MCP servers, project trust). May roam between machines. |
-| `<config>/agent/accounts/<scope>/AGENTS.md`, `skills/`, `prompts/`, `SYSTEM.md`, `APPEND_SYSTEM.md` | The account's own instructions, skills and prompt templates, as Pi's agent folder holds them. |
+| `<config>/agent/accounts/<scope>/AGENTS.md`, `skills/`, `prompts/`, `SYSTEM.md` | The account's own instructions, skills and prompt templates, as Pi's agent folder holds them, and a `SYSTEM.md` that replaces Pi's default prompt ahead of Maple's opening instructions. |
 | `<local data>/auth.json` | Sign-in credentials (mode 0600). Device-local; never in a roaming profile. |
 | `<local data>/agent/accounts/<scope>/integrations.json` | Per-account defaults for the integrations on this device. |
 | `<local data>/agent/accounts/<scope>/sessions/` | One session file (JSONL) per task, and `tasks.db`, the task index (SQLite, WAL). |

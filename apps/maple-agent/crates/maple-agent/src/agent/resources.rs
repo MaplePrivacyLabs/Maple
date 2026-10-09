@@ -282,8 +282,9 @@ pub(super) fn resolve_slash_command(
 }
 
 /// What trusting the project in `root` would add to its tasks: skills and
-/// prompt templates that load only then, and its `SYSTEM.md` or
-/// `APPEND_SYSTEM.md`.
+/// prompt templates that load only then, and its `SYSTEM.md`. Its
+/// `APPEND_SYSTEM.md` would add nothing, since Maple's opening
+/// instructions always take that place.
 pub(super) fn protected_features(
     layout: &AgentPathLayout,
     user_id: &str,
@@ -322,11 +323,7 @@ pub(super) fn protected_features(
     {
         features.push(AgentProjectTrustFeature::PromptTemplates);
     }
-    let project_dir = root.join(PROJECT_DIR_NAME);
-    if ["SYSTEM.md", "APPEND_SYSTEM.md"]
-        .iter()
-        .any(|name| project_dir.join(name).is_file())
-    {
+    if root.join(PROJECT_DIR_NAME).join("SYSTEM.md").is_file() {
         features.push(AgentProjectTrustFeature::SystemPrompt);
     }
     features

@@ -231,7 +231,16 @@ fn the_trust_prompt_names_what_trust_would_add() {
     fixture.skill(project.join(".agents/skills"), "review");
     assert_eq!(fixture.features(), [AgentProjectTrustFeature::Skills]);
     fixture.write(project.join(".maple/prompts/ship.md"), "Ship it.");
+    // Maple's opening instructions take APPEND_SYSTEM.md's place.
     fixture.write(project.join(".maple/APPEND_SYSTEM.md"), "Be brief.");
+    assert_eq!(
+        fixture.features(),
+        [
+            AgentProjectTrustFeature::Skills,
+            AgentProjectTrustFeature::PromptTemplates,
+        ]
+    );
+    fixture.write(project.join(".maple/SYSTEM.md"), "You ship releases.");
     assert_eq!(
         fixture.features(),
         [

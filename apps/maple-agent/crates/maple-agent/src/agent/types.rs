@@ -77,7 +77,7 @@ pub struct AgentProjectTrust {
 pub enum AgentProjectTrustFeature {
     Skills,
     PromptTemplates,
-    /// `SYSTEM.md` or `APPEND_SYSTEM.md` in the project's `.maple` folder.
+    /// `SYSTEM.md` in the project's `.maple` folder.
     SystemPrompt,
 }
 
