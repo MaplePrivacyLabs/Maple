@@ -109,6 +109,9 @@ pub struct FakeHost {
     pub unwatched: std::sync::Mutex<Vec<String>>,
     /// Every request passed to `send_message`, in order.
     pub sent: std::sync::Mutex<Vec<AgentSendMessageRequest>>,
+    /// Every queued-edit call, in order: `("begin" | "end" | "cancel",
+    /// session_id, queue_id)`.
+    pub queue_edits: std::sync::Mutex<Vec<(&'static str, String, String)>>,
 }
 
 pub fn summary(id: &str) -> AgentSessionSummary {
@@ -152,6 +155,7 @@ impl FakeHost {
             loads: AtomicUsize::new(0),
             unwatched: std::sync::Mutex::new(Vec::new()),
             sent: std::sync::Mutex::new(Vec::new()),
+            queue_edits: std::sync::Mutex::new(Vec::new()),
         })
     }
 
@@ -323,16 +327,42 @@ impl HostBackend for FakeHost {
     }
     async fn cancel_queued_message(
         &self,
-        _: String,
-        _: String,
+        session_id: String,
+        queue_id: String,
     ) -> Result<AgentDesktopQueueSnapshot, String> {
-        unsupported()
+        self.queue_edits
+            .lock()
+            .unwrap()
+            .push(("cancel", session_id, queue_id));
+        Ok(AgentDesktopQueueSnapshot {
+            revision: 1,
+            items: Vec::new(),
+        })
     }
-    async fn begin_queued_message_edit(&self, _: String, _: String) -> Result<(), String> {
-        unsupported()
+    async fn begin_queued_message_edit(
+        &self,
+        session_id: String,
+        queue_id: String,
+    ) -> Result<(), String> {
+        if queue_id == "missing" {
+            return Err("Queued Agent message has already been sent".to_string());
+        }
+        self.queue_edits
+            .lock()
+            .unwrap()
+            .push(("begin", session_id, queue_id));
+        Ok(())
     }
-    async fn end_queued_message_edit(&self, _: String, _: String) -> Result<(), String> {
-        unsupported()
+    async fn end_queued_message_edit(
+        &self,
+        session_id: String,
+        queue_id: String,
+    ) -> Result<(), String> {
+        self.queue_edits
+            .lock()
+            .unwrap()
+            .push(("end", session_id, queue_id));
+        Ok(())
     }
     async fn answer_question(&self, _: String, _: String) -> Result<bool, String> {
         Ok(true)

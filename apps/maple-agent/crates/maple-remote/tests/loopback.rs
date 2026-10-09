@@ -15,7 +15,7 @@ use maple_remote::carrier::{Carrier, FrameSink, FrameStream, in_process_pair};
 use maple_remote::client::RemoteHostBackend;
 use maple_remote::frame::{CONTROL_CHANNEL, Frame, FrameKind};
 use maple_remote::rpc::{self, Message, Response};
-use maple_remote::server::{HostServer, HostServerConfig, MAX_WATCHED_ROOTS};
+use maple_remote::server::{HostServer, HostServerConfig, MAX_OPEN_QUEUE_EDITS, MAX_WATCHED_ROOTS};
 use maple_remote::streams::{StreamClose, StreamOpen, UPLOAD_PURPOSE};
 use maple_remote::uploads::MAX_UPLOAD_BYTES;
 use maple_remote::wire::{EventEnvelope, HostHello, PROTOCOL_VERSION};
@@ -476,6 +476,114 @@ async fn integration_setup_is_not_a_wire_method() {
     .await;
     let error = response.error.expect("refused");
     assert_eq!(error.code, rpc::code::METHOD_NOT_FOUND);
+}
+
+#[tokio::test]
+async fn queued_edits_left_open_are_ended_when_the_connection_ends() {
+    let host = FakeHost::new(0);
+    let (client, serving) = connect(Arc::clone(&host), HostServerConfig::default()).await;
+    let session = "task-1".to_string();
+    // Held through teardown.
+    client
+        .begin_queued_message_edit(session.clone(), "q-held".to_string())
+        .await
+        .unwrap();
+    // Ended by the client: nothing left to release.
+    client
+        .begin_queued_message_edit(session.clone(), "q-ended".to_string())
+        .await
+        .unwrap();
+    client
+        .end_queued_message_edit(session.clone(), "q-ended".to_string())
+        .await
+        .unwrap();
+    // Cancelled while held: the item is gone, so is the hold.
+    client
+        .begin_queued_message_edit(session.clone(), "q-cancelled".to_string())
+        .await
+        .unwrap();
+    client
+        .cancel_queued_message(session.clone(), "q-cancelled".to_string())
+        .await
+        .unwrap();
+    // Refused by the host: never held here.
+    let error = client
+        .begin_queued_message_edit(session.clone(), "missing".to_string())
+        .await
+        .unwrap_err();
+    assert!(error.contains("already been sent"), "{error}");
+    // A second task with its own hold.
+    client
+        .begin_queued_message_edit("task-2".to_string(), "q-other".to_string())
+        .await
+        .unwrap();
+    let ended_before_close = host
+        .queue_edits
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|(call, _, _)| *call == "end")
+        .count();
+    assert_eq!(
+        ended_before_close, 1,
+        "only the client's own end was forwarded"
+    );
+
+    client.close().await;
+    tokio::time::timeout(Duration::from_secs(5), serving)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    let mut released = host
+        .queue_edits
+        .lock()
+        .unwrap()
+        .iter()
+        .skip_while(|(call, _, queue_id)| !(*call == "cancel" && queue_id == "q-cancelled"))
+        .skip(1)
+        .filter(|(call, _, _)| *call == "end")
+        .map(|(_, session_id, queue_id)| (session_id.clone(), queue_id.clone()))
+        .collect::<Vec<_>>();
+    released.sort();
+    assert_eq!(
+        released,
+        vec![
+            ("task-1".to_string(), "q-held".to_string()),
+            ("task-2".to_string(), "q-other".to_string()),
+        ],
+        "every hold still open at teardown was ended, and nothing else"
+    );
+}
+
+#[tokio::test]
+async fn open_queued_edits_per_connection_are_capped() {
+    let host = FakeHost::new(0);
+    let (client, _serving) = connect(Arc::clone(&host), HostServerConfig::default()).await;
+    for index in 0..MAX_OPEN_QUEUE_EDITS {
+        client
+            .begin_queued_message_edit("task".to_string(), format!("q-{index}"))
+            .await
+            .unwrap();
+    }
+    // Re-beginning a held edit is not a new hold.
+    client
+        .begin_queued_message_edit("task".to_string(), "q-0".to_string())
+        .await
+        .unwrap();
+    let error = client
+        .begin_queued_message_edit("task".to_string(), "one-too-many".to_string())
+        .await
+        .unwrap_err();
+    assert!(error.contains(&MAX_OPEN_QUEUE_EDITS.to_string()), "{error}");
+    client
+        .end_queued_message_edit("task".to_string(), "q-0".to_string())
+        .await
+        .unwrap();
+    client
+        .begin_queued_message_edit("task".to_string(), "one-more-fits".to_string())
+        .await
+        .unwrap();
 }
 
 #[tokio::test]

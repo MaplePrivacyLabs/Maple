@@ -11,7 +11,7 @@
 //! is a plain `match` over its domain's request enum; it never grows past
 //! that domain.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -89,6 +89,11 @@ pub const MAX_KEPT_SNAPSHOTS: usize = 8;
 /// Project roots one connection may watch at once.
 pub const MAX_WATCHED_ROOTS: usize = 64;
 
+/// Queued-message edits one connection may hold open at once. A hold
+/// keeps the host from promoting that task's queue, so a client that
+/// opens them without end is bounded here.
+pub const MAX_OPEN_QUEUE_EDITS: usize = 64;
+
 /// How long a closing connection waits for its queued frames (a refusal,
 /// an error answer) to reach the peer before the writer is abandoned.
 const CLOSE_FLUSH_TIMEOUT: Duration = Duration::from_secs(2);
@@ -149,6 +154,7 @@ impl HostServer {
             client_features: OnceLock::new(),
             snapshots: Mutex::new(Vec::new()),
             watched_roots: Mutex::new(HashMap::new()),
+            queue_edits: Mutex::new(HashSet::new()),
             ready: AtomicBool::new(false),
             ready_notify: Notify::new(),
             last_activity: std::sync::Mutex::new(Instant::now()),
@@ -247,6 +253,7 @@ impl HostServer {
             writer.abort();
         }
         connection.release_watches().await;
+        connection.release_queue_edits().await;
         log::debug!("host connection ended: {reason}");
         Ok(())
     }
@@ -270,6 +277,10 @@ struct Connection {
     /// Project roots this connection asked the host to watch, with how
     /// many times each, so teardown can balance every watch.
     watched_roots: Mutex<HashMap<String, usize>>,
+    /// Queued-message edits this connection began and has not ended, as
+    /// `(session_id, queue_id)`. A hold blocks promotion of that task's
+    /// queue, so teardown ends every hold the client left open.
+    queue_edits: Mutex<HashSet<(String, String)>>,
     ready: AtomicBool,
     ready_notify: Notify,
     last_activity: std::sync::Mutex<Instant>,
@@ -328,6 +339,23 @@ impl Connection {
                 if let Err(error) = self.host().unwatch_project_root(root.clone()).await {
                     log::debug!("cannot unwatch {root} at teardown: {error}");
                 }
+            }
+        }
+    }
+
+    /// The connection is gone: end every queued-message edit it still
+    /// held, so the host promotes those queues again.
+    async fn release_queue_edits(&self) {
+        let held = std::mem::take(&mut *self.queue_edits.lock().await);
+        for (session_id, queue_id) in held {
+            if let Err(error) = self
+                .host()
+                .end_queued_message_edit(session_id.clone(), queue_id.clone())
+                .await
+            {
+                log::debug!(
+                    "cannot end queued edit {queue_id} of {session_id} at teardown: {error}"
+                );
             }
         }
     }
@@ -726,15 +754,44 @@ impl Connection {
             RunRequest::CancelQueued {
                 session_id,
                 queue_id,
-            } => Self::ok(host.cancel_queued_message(session_id, queue_id).await),
+            } => {
+                // A cancelled item has no hold left to release.
+                self.queue_edits
+                    .lock()
+                    .await
+                    .remove(&(session_id.clone(), queue_id.clone()));
+                Self::ok(host.cancel_queued_message(session_id, queue_id).await)
+            }
             RunRequest::BeginQueuedEdit {
                 session_id,
                 queue_id,
-            } => Self::ok(host.begin_queued_message_edit(session_id, queue_id).await),
+            } => {
+                let mut held = self.queue_edits.lock().await;
+                let key = (session_id.clone(), queue_id.clone());
+                if !held.contains(&key) && held.len() >= MAX_OPEN_QUEUE_EDITS {
+                    return Err(RpcError::new(
+                        code::INVALID_REQUEST,
+                        format!(
+                            "a connection may hold at most {MAX_OPEN_QUEUE_EDITS} queued edits"
+                        ),
+                    ));
+                }
+                host.begin_queued_message_edit(session_id, queue_id)
+                    .await
+                    .map_err(RpcError::host)?;
+                held.insert(key);
+                Self::ok(Ok(()))
+            }
             RunRequest::EndQueuedEdit {
                 session_id,
                 queue_id,
-            } => Self::ok(host.end_queued_message_edit(session_id, queue_id).await),
+            } => {
+                self.queue_edits
+                    .lock()
+                    .await
+                    .remove(&(session_id.clone(), queue_id.clone()));
+                Self::ok(host.end_queued_message_edit(session_id, queue_id).await)
+            }
             RunRequest::AnswerQuestion { request_id, answer } => {
                 Self::ok(host.answer_question(request_id, answer).await)
             }

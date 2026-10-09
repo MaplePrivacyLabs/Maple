@@ -84,7 +84,7 @@ use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
 use std::sync::{Arc, Weak};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 pub use timeline::*;
 use tokio::sync::{Mutex, mpsc, oneshot, watch};
 use tokio_util::sync::CancellationToken;
@@ -269,6 +269,12 @@ const MAX_DESKTOP_QUEUE_ITEMS: usize = 16;
 const QUEUED_MESSAGE_ATTACHMENTS_ERROR: &str =
     "New images cannot be added while sending a queued message";
 const MAX_DESKTOP_QUEUE_TEXT_BYTES: usize = 32 * 1024;
+/// How long one queued-message edit may hold a task's queue back from
+/// promotion. A client normally ends its edit, and the host ends the holds
+/// of a connection that drops; this bound covers whatever is left (a client
+/// stuck mid-edit, a desktop window that never answered), so a stale hold
+/// cannot strand the queue for the rest of the run.
+const MAX_DESKTOP_QUEUE_EDIT_HOLD: Duration = Duration::from_secs(10 * 60);
 const MAPLE_IMAGE_ATTACHMENTS_OPERATION: &str = "mapleImageAttachments";
 
 /// Maple's context-limit rule: both fields present and equal is the value,
@@ -326,7 +332,14 @@ struct ActiveAgentRun {
 struct DesktopSessionQueue {
     revision: u64,
     items: VecDeque<AgentQueuedMessage>,
-    editing_queue_id: Option<String>,
+    /// The chip open in a composer. While held, run end does not promote
+    /// the queue, so the edited text is what gets sent.
+    editing: Option<DesktopQueueEditHold>,
+}
+
+struct DesktopQueueEditHold {
+    queue_id: String,
+    since: Instant,
 }
 
 impl DesktopSessionQueue {
@@ -334,6 +347,36 @@ impl DesktopSessionQueue {
         AgentDesktopQueueSnapshot {
             revision: self.revision,
             items: self.items.iter().cloned().collect(),
+        }
+    }
+
+    fn is_editing(&self, queue_id: &str) -> bool {
+        self.editing
+            .as_ref()
+            .is_some_and(|hold| hold.queue_id == queue_id)
+    }
+
+    fn end_edit_of(&mut self, queue_id: &str) {
+        if self.is_editing(queue_id) {
+            self.editing = None;
+        }
+    }
+
+    /// Whether an edit still holds promotion back. A hold past
+    /// [`MAX_DESKTOP_QUEUE_EDIT_HOLD`] is dropped here instead.
+    fn holds_promotion(&mut self) -> bool {
+        match &self.editing {
+            None => false,
+            Some(hold) if hold.since.elapsed() < MAX_DESKTOP_QUEUE_EDIT_HOLD => true,
+            Some(hold) => {
+                log::warn!(
+                    "Releasing a queued-message edit of {} held for over {:?}",
+                    hold.queue_id,
+                    MAX_DESKTOP_QUEUE_EDIT_HOLD
+                );
+                self.editing = None;
+                false
+            }
         }
     }
 }
@@ -10602,7 +10645,7 @@ async fn restore_unpersisted_desktop_queue_messages(
         .or_insert_with(|| DesktopSessionQueue {
             revision: 0,
             items: VecDeque::new(),
-            editing_queue_id: None,
+            editing: None,
         });
     for message in messages.iter().rev() {
         let Some(message_id) = message.id.clone() else {
@@ -10749,7 +10792,7 @@ async fn enqueue_desktop_queue_message(
         .or_insert_with(|| DesktopSessionQueue {
             revision: 0,
             items: VecDeque::new(),
-            editing_queue_id: None,
+            editing: None,
         });
     if queue.items.len() >= MAX_DESKTOP_QUEUE_ITEMS {
         return Err("Agent task already has too many queued messages".to_string());
@@ -10780,9 +10823,7 @@ async fn remove_desktop_queue_item(
         .items
         .remove(index)
         .expect("queue index was just resolved");
-    if queue.editing_queue_id.as_deref() == Some(removed.queue_id.as_str()) {
-        queue.editing_queue_id = None;
-    }
+    queue.end_edit_of(&removed.queue_id);
     queue.revision = queue.revision.saturating_add(1);
     Ok((removed, queue.snapshot()))
 }
@@ -10814,13 +10855,12 @@ async fn update_desktop_queue_item(
     };
     item.text = text.to_string();
     replace_queued_message_text(&mut item.message, text);
+    let updated = item.clone();
     // Only the chip being updated leaves edit mode; an edit in progress on
     // another chip must keep holding promotion off.
-    if queue.editing_queue_id.as_deref() == Some(queue_id) {
-        queue.editing_queue_id = None;
-    }
+    queue.end_edit_of(queue_id);
     queue.revision = queue.revision.saturating_add(1);
-    Ok((item.clone(), queue.snapshot()))
+    Ok((updated, queue.snapshot()))
 }
 
 async fn begin_desktop_queue_edit(
@@ -10836,7 +10876,10 @@ async fn begin_desktop_queue_edit(
     if !queue.items.iter().any(|item| item.queue_id == queue_id) {
         return Err("Queued Agent message has already been sent".to_string());
     }
-    queue.editing_queue_id = Some(queue_id.to_string());
+    queue.editing = Some(DesktopQueueEditHold {
+        queue_id: queue_id.to_string(),
+        since: Instant::now(),
+    });
     Ok(())
 }
 
@@ -10850,9 +10893,7 @@ async fn end_desktop_queue_edit(
     let Some(queue) = queues.get_mut(&desktop_queue_key(account_scope, session_id)) else {
         return Ok(());
     };
-    if queue.editing_queue_id.as_deref() == Some(queue_id) {
-        queue.editing_queue_id = None;
-    }
+    queue.end_edit_of(queue_id);
     Ok(())
 }
 
@@ -10864,7 +10905,7 @@ async fn take_all_desktop_queue_items_from_map(
     let mut queues = queues.lock().await;
     let key = desktop_queue_key(account_scope, session_id);
     let queue = queues.get_mut(&key)?;
-    if queue.items.is_empty() || queue.editing_queue_id.is_some() {
+    if queue.items.is_empty() || queue.holds_promotion() {
         return None;
     }
     let items: Vec<AgentQueuedMessage> = queue.items.drain(..).collect();
@@ -12984,6 +13025,78 @@ mod tests {
                 .map(|item| item.text.as_str())
                 .collect::<Vec<_>>(),
             vec!["kept revised", "also"]
+        );
+
+        let _ = fs::remove_dir_all(test_root);
+    }
+
+    #[tokio::test]
+    async fn desktop_queue_stale_edit_hold_no_longer_blocks_promotion() {
+        let sink = Arc::new(RecordingAgentEventSink::default());
+        let (test_root, _paths, state) =
+            agent_service_test_context("desktop-queue-stale-hold", sink);
+        let account_scope = account_scope("desktop-queue-stale-hold-user").unwrap();
+        let session_id = "session-stale-hold";
+
+        enqueue_desktop_queue_item(&state, &account_scope, session_id, "first")
+            .await
+            .unwrap();
+        enqueue_desktop_queue_item(&state, &account_scope, session_id, "second")
+            .await
+            .unwrap();
+        let first_id = snapshot_desktop_queue(&state, &account_scope, session_id)
+            .await
+            .items[0]
+            .queue_id
+            .clone();
+        begin_desktop_queue_edit(&state, &account_scope, session_id, &first_id)
+            .await
+            .unwrap();
+        assert!(
+            take_all_desktop_queue_items_from_map(
+                &state.desktop_queues,
+                &account_scope,
+                session_id,
+            )
+            .await
+            .is_none(),
+            "a fresh edit holds the queue"
+        );
+
+        // Age the hold past the bound, as if the editing client never came
+        // back to end it.
+        {
+            let mut queues = state.desktop_queues.lock().await;
+            let hold = queues
+                .get_mut(&desktop_queue_key(&account_scope, session_id))
+                .and_then(|queue| queue.editing.as_mut())
+                .expect("the edit hold is open");
+            hold.since = Instant::now()
+                .checked_sub(MAX_DESKTOP_QUEUE_EDIT_HOLD + Duration::from_secs(1))
+                .expect("the clock has run long enough to back-date the hold");
+        }
+        let (items, _) = take_all_desktop_queue_items_from_map(
+            &state.desktop_queues,
+            &account_scope,
+            session_id,
+        )
+        .await
+        .expect("a stale hold must not strand the queue");
+        assert_eq!(
+            items
+                .iter()
+                .map(|item| item.text.as_str())
+                .collect::<Vec<_>>(),
+            vec!["first", "second"]
+        );
+        assert!(
+            state
+                .desktop_queues
+                .lock()
+                .await
+                .get(&desktop_queue_key(&account_scope, session_id))
+                .is_some_and(|queue| queue.editing.is_none()),
+            "the stale hold is dropped, not kept for the next turn"
         );
 
         let _ = fs::remove_dir_all(test_root);
