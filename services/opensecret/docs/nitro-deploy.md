@@ -108,7 +108,13 @@ repository's full name equals `github.repository` and the successful selector
 reports an EIF input or approval JSON edit, as routed to the respective job.
 This intentionally trusts same-repository PR code to write the
 FlakeHub cache; it does not grant signing or deployment authority.
-Trusted jobs use the organization-configured GitHub-hosted runner
+The unsigned same-repository PR candidate builds use
+`blacksmith-16vcpu-ubuntu-2404-arm` (Ubuntu 24.04 ARM64, 16 CPU, 48 GB RAM,
+750 GB disk) to evaluate managed runners. This job builds dev/prod candidates
+without signing, publication, or deployment; the provider executes the PR code
+and receives its existing GitHub OIDC/cache access.
+Trusted approval comparison and release jobs use the organization-configured
+GitHub-hosted runner
 `ubuntu-24.04-arm64-8core` (Ubuntu 24.04 ARM64, 8 CPU, 32 GB RAM) and allow
 180 minutes for cold kernel builds. Its runner group must allow the public
 Maple repository, with capacity for both dev/prod jobs. The existing

@@ -2,3 +2,4 @@
 self-hosted-runner:
   labels:
     - ubuntu-24.04-arm64-8core
+    - blacksmith-16vcpu-ubuntu-2404-arm

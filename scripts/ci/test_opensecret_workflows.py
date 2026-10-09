@@ -89,7 +89,7 @@ class OpenSecretWorkflowBoundaryTests(unittest.TestCase):
                     expected_runner = "ubuntu-latest"
                     if name == "opensecret-eif.yml":
                         expected_runner = {
-                            "eif-candidate": "ubuntu-24.04-arm64-8core",
+                            "eif-candidate": "blacksmith-16vcpu-ubuntu-2404-arm",
                             "eif": "ubuntu-24.04-arm",
                             "eif-trusted": "ubuntu-24.04-arm64-8core",
                         }[job_name]
@@ -114,7 +114,7 @@ class OpenSecretWorkflowBoundaryTests(unittest.TestCase):
             check=True, capture_output=True, text=True,
         )
         self.assertEqual(json.loads(result.stdout), {
-            "self-hosted-runner": {"labels": ["ubuntu-24.04-arm64-8core"]},
+            "self-hosted-runner": {"labels": ["ubuntu-24.04-arm64-8core", "blacksmith-16vcpu-ubuntu-2404-arm"]},
         })
 
     def test_ordinary_backend_ci_does_not_publish_or_build_eifs(self):
