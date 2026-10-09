@@ -14,6 +14,7 @@ use super::config::{
     account_attachment_store, ensure_session_project_root_is_visible, load_agent_config_inner,
     normalize_project_root, path_string,
 };
+use super::mcp::{normalize_mcp_servers, servers_for_new_task, set_chosen_servers};
 use super::store::{TaskKind, TaskRow};
 use super::timeline::{MAX_AGENT_SESSION_TITLE_CHARS, session_timeline};
 use super::{
@@ -108,6 +109,10 @@ impl AgentRuntimeHandle {
             load_agent_config_inner(self.paths(), &self.user_id)
                 .map_err(|error| error.to_string())?
         };
+        let mcp_servers = servers_for_new_task(
+            &normalize_mcp_servers(config.mcp_servers.clone())?,
+            request.mcp_server_names.as_deref(),
+        )?;
         let root = match request.project_root.as_deref() {
             Some(path) if !path.trim().is_empty() => normalize_project_root(Path::new(path))?,
             _ => runtime.project_root(),
@@ -118,7 +123,7 @@ impl AgentRuntimeHandle {
             .filter(|value| !value.trim().is_empty())
             .unwrap_or_else(|| DEFAULT_AGENT_SESSION_TITLE.to_string());
         let model = request.model.unwrap_or_else(|| runtime.model.clone());
-        let row = TaskRow::new(
+        let mut row = TaskRow::new(
             pi_coding_agent::session::SessionManager::new_id(),
             title,
             path_string(&root),
@@ -126,6 +131,7 @@ impl AgentRuntimeHandle {
             Some(model),
             pi_ai::now_ms(),
         );
+        set_chosen_servers(&mut row, mcp_servers);
         runtime.store.insert(&row)?;
         let summary = row.summary();
         emit_agent_event(

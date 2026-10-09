@@ -27,6 +27,7 @@ use super::{
     AgentSetIntegrationEnabledRequest, AgentSetupIntegrationRequest,
 };
 use detect::CliDetection;
+pub(super) use detect::find_executable;
 
 const CUA_INTEGRATION_ID: &str = "cua-driver";
 /// The integration's name in errors.

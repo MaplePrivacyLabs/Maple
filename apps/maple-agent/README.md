@@ -161,6 +161,26 @@ configuration that may roam between devices.
 The embedded design, migration rules, privacy boundary, and preview limits are
 documented in [`docs/embedded-cua.md`](docs/embedded-cua.md).
 
+#### Custom MCP servers
+
+Settings > Integrations also keeps custom MCP servers: a command Maple starts
+(stdio) or a Streamable HTTP endpoint, each with environment variables,
+headers, and a per-request timeout. A server switched on in Settings is on for
+new tasks, and the composer's menu switches servers on or off for one task.
+A task's servers start when it runs; its first prompt waits up to ten seconds
+for them, and a server that connects later joins from the next prompt. Their
+tools reach the model as `mcp__<server>__<tool>`, and their instructions join
+the system prompt. A server that fails to connect is named once in a notice
+and tried again at the task's next run. Changes in Settings apply from a
+task's next run.
+
+A stdio server runs in the task's folder with the login shell's PATH, in its
+own process group; it is stopped by closing its input, then SIGTERM, then
+SIGKILL. For an HTTP server, `$NAME` and `${NAME}` in the URL and in header
+values are filled in from the server's environment variables, and redirects
+are not followed. Sign-in to servers (OAuth), and MCP resources and prompts,
+are not supported yet.
+
 #### Claude Code
 
 Settings > Integrations lists Claude Code (`claude`) alongside Codex, with the

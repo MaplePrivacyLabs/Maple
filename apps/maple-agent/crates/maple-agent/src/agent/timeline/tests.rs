@@ -206,9 +206,14 @@ fn tool_titles_name_what_the_call_is_about() {
         Some("Loading skill: deploy")
     );
     assert_eq!(descriptive_tool_title("todo_write", &json!({})), None);
+    // An MCP tool reads as its server's.
     assert_eq!(
         format_tool_title("mcp__github__list_issues"),
-        "mcp: github: list issues"
+        "github: list issues"
+    );
+    assert_eq!(
+        descriptive_tool_title("mcp__github__get_file", &json!({"path": "README.md"})).as_deref(),
+        Some("github: get file: README.md")
     );
 }
 

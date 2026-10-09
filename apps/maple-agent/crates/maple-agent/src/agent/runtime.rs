@@ -3,7 +3,7 @@
 //! account comes from.
 
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use pi_agent_core::QueueMode;
@@ -14,6 +14,9 @@ use pi_coding_agent::{AgentSession, AgentSessionOptions, ModelRegistry};
 use tokio_util::sync::CancellationToken;
 
 use super::config::{account_attachment_store, path_string};
+use super::mcp::{
+    MAX_IDLE_TASKS_WITH_SERVERS, STARTUP_WAIT, TaskMcp, read_saved_servers, task_servers,
+};
 use super::provider::{CatalogEntry, maple_model, maple_model_registry};
 use super::questions::QuestionBroker;
 use super::runs::{Failures, Runs};
@@ -51,6 +54,12 @@ pub(super) struct RuntimeParts {
     pub(super) model: String,
 }
 
+/// A task's loaded session, and the MCP servers that live with it.
+struct LoadedTask {
+    session: AgentSession,
+    mcp: Arc<TaskMcp>,
+}
+
 pub(super) struct AgentRuntime {
     pub(super) account_scope: String,
     pub(super) user_id: String,
@@ -66,7 +75,7 @@ pub(super) struct AgentRuntime {
     /// Cancelled when the runtime stops; detached work ends with it.
     pub(super) lifetime: CancellationToken,
     /// The tasks whose sessions are loaded.
-    sessions: tokio::sync::Mutex<HashMap<String, AgentSession>>,
+    sessions: tokio::sync::Mutex<HashMap<String, LoadedTask>>,
     pub(super) runs: Runs,
     pub(super) failures: Failures,
 }
@@ -141,34 +150,98 @@ impl AgentRuntime {
     /// built again with what changed.
     pub(super) async fn unload_project_tasks(&self, project_root: &str) {
         let running = self.running_task_ids();
-        let unloaded: Vec<AgentSession> = {
+        let unloaded: Vec<LoadedTask> = {
             let mut sessions = self.sessions.lock().await;
             let ids: Vec<String> = sessions
                 .iter()
-                .filter(|(id, session)| {
+                .filter(|(id, task)| {
                     !running.contains(*id)
-                        && session.with_session(|manager| manager.cwd() == project_root)
+                        && task
+                            .session
+                            .with_session(|manager| manager.cwd() == project_root)
                 })
                 .map(|(id, _)| id.clone())
                 .collect();
             ids.iter().filter_map(|id| sessions.remove(id)).collect()
         };
-        for session in unloaded {
-            session.shutdown().await;
-        }
+        futures_util::future::join_all(unloaded.iter().map(|task| task.session.shutdown())).await;
     }
 
-    /// Forget a task's loaded session.
+    /// Forget a task's loaded session, which stops its MCP servers.
     pub(super) async fn unload_task(&self, session_id: &str) {
-        let session = self.sessions.lock().await.remove(session_id);
-        if let Some(session) = session {
-            session.shutdown().await;
+        let task = self.sessions.lock().await.remove(session_id);
+        if let Some(task) = task {
+            task.session.shutdown().await;
         }
     }
 
     /// A task's loaded session, if it is loaded.
     pub(super) async fn loaded_session(&self, session_id: &str) -> Option<AgentSession> {
-        self.sessions.lock().await.get(session_id).cloned()
+        self.sessions
+            .lock()
+            .await
+            .get(session_id)
+            .map(|task| task.session.clone())
+    }
+
+    /// A loaded task's MCP servers.
+    pub(super) async fn loaded_mcp(&self, session_id: &str) -> Option<Arc<TaskMcp>> {
+        self.sessions
+            .lock()
+            .await
+            .get(session_id)
+            .map(|task| Arc::clone(&task.mcp))
+    }
+
+    /// Run the task's MCP servers as it has them now and the account saves
+    /// them, and wait a little for those connecting, unless the run stops.
+    /// Returns the notice of servers that failed or are still connecting.
+    pub(super) async fn start_task_mcp(
+        &self,
+        session_id: &str,
+        stopped: &CancellationToken,
+    ) -> Option<String> {
+        let mcp = self.loaded_mcp(session_id).await?;
+        let row = self.store.get(session_id).ok().flatten()?;
+        let (paths, user_id) = (self.host.paths.clone(), self.user_id.clone());
+        let saved = tokio::task::spawn_blocking(move || read_saved_servers(&paths, &user_id))
+            .await
+            .map_err(|error| error.to_string())
+            .and_then(|saved| saved);
+        match saved {
+            Ok(saved) => mcp.sync(task_servers(&saved, &row)),
+            Err(error) => log::warn!("Failed to read the account's MCP servers: {error}"),
+        }
+        self.stop_idle_task_servers(session_id).await;
+        tokio::select! {
+            _ = mcp.wait(STARTUP_WAIT) => {}
+            _ = stopped.cancelled() => return None,
+        }
+        mcp.take_notice()
+    }
+
+    /// Stop the MCP servers of the tasks idle longest, beyond the few
+    /// most recently used. They start again when the task runs. They are
+    /// taken under the sessions' lock, which a run takes before it starts
+    /// its servers, so a task that starts running keeps its own.
+    async fn stop_idle_task_servers(&self, current: &str) {
+        let sessions = self.sessions.lock().await;
+        let running = self.running_task_ids();
+        let mut idle: Vec<(std::time::Instant, &Arc<TaskMcp>)> = sessions
+            .iter()
+            .filter(|(id, _)| id.as_str() != current && !running.contains(*id))
+            .filter_map(|(_, task)| Some((task.mcp.last_used()?, &task.mcp)))
+            .collect();
+        idle.sort_by_key(|(used, _)| std::cmp::Reverse(*used));
+        let stopped: Vec<_> = idle
+            .into_iter()
+            .skip(MAX_IDLE_TASKS_WITH_SERVERS)
+            .flat_map(|(_, mcp)| mcp.take_all())
+            .collect();
+        drop(sessions);
+        for server in stopped {
+            tokio::spawn(async move { server.shutdown().await });
+        }
     }
 
     /// The models the runtime serves, side models included.
@@ -273,7 +346,7 @@ impl AgentRuntime {
         if self.lifetime.is_cancelled() {
             return Err(super::RUNTIME_NOT_RUNNING_ERROR.to_string());
         }
-        if let Some(session) = sessions.get(&row.id) {
+        if let Some(LoadedTask { session, .. }) = sessions.get(&row.id) {
             // A new context window or vision flag for the same model, or
             // another model for a task that has not started.
             if session.model().as_ref() != Some(&model) {
@@ -306,7 +379,7 @@ impl AgentRuntime {
             session_id: row.id.clone(),
             kind: row.kind,
             tool_context: SharedAgentToolContext::new(self.host.default_tool_context.clone()),
-            login_path: search_path,
+            login_path: search_path.clone(),
             questions: self.questions.clone(),
             web: self.api.clone(),
             web_enabled: row.web_enabled,
@@ -320,10 +393,18 @@ impl AgentRuntime {
         options.tool_options = tools.options;
         options.builtin_tools = Some(tools.builtin);
         options.tools = tools.maple;
+        let mcp = TaskMcp::new(Path::new(&row.project_root), search_path);
+        options.extensions.push(mcp.extension());
         let session = AgentSession::new(options)
             .await
             .map_err(|error| format!("Failed to start the Agent task: {error}"))?;
-        sessions.insert(row.id.clone(), session.clone());
+        sessions.insert(
+            row.id.clone(),
+            LoadedTask {
+                session: session.clone(),
+                mcp,
+            },
+        );
         Ok(session)
     }
 
@@ -376,11 +457,14 @@ impl AgentRuntime {
     pub(super) async fn shutdown(&self) {
         self.lifetime.cancel();
         self.runs.stop_all().await;
-        let sessions: Vec<AgentSession> =
-            self.sessions.lock().await.drain().map(|(_, s)| s).collect();
-        for session in sessions {
-            session.shutdown().await;
-        }
+        let tasks: Vec<LoadedTask> = self
+            .sessions
+            .lock()
+            .await
+            .drain()
+            .map(|(_, task)| task)
+            .collect();
+        futures_util::future::join_all(tasks.iter().map(|task| task.session.shutdown())).await;
     }
 }
 

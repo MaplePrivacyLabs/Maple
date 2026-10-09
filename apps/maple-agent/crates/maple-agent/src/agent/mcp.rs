@@ -1,12 +1,23 @@
-//! The account's MCP server settings, normalized and checked before they are
-//! saved: names, commands, endpoints, environment variables and headers.
-//! Running the servers moves to the Pi runtime with MCP itself.
+//! The account's MCP servers: their settings, normalized and checked before
+//! they are saved (names, commands, endpoints, environment variables and
+//! headers), and the servers each task runs, over rmcp, by Pi's conventions.
 
 use std::collections::HashSet;
 
 use super::config::{load_agent_config_inner, save_agent_config_inner};
 use super::integrations::validate_new_mcp_integration_collisions;
 use super::{AgentMcpKeyValue, AgentMcpServer, AgentMcpTransport, AgentRuntimeHandle};
+
+mod connection;
+#[cfg(test)]
+pub(super) mod fake_server;
+mod task;
+mod tool;
+
+pub(super) use task::{
+    MAX_IDLE_TASKS_WITH_SERVERS, STARTUP_WAIT, TaskMcp, read_saved_servers, servers_for_new_task,
+    set_chosen_servers, task_servers,
+};
 
 const MAX_MCP_SERVER_NAME_CHARS: usize = 64;
 

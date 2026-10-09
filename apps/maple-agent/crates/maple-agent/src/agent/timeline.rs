@@ -715,6 +715,8 @@ pub(crate) fn merged_tool_title(
 }
 
 pub(crate) fn format_tool_title(name: &str) -> String {
+    // An MCP tool, `mcp__<server>__<tool>`, reads as "server: tool".
+    let name = name.strip_prefix("mcp__").unwrap_or(name);
     let normalized = name.replace("__", ": ").replace('_', " ");
     normalized
         .split_whitespace()

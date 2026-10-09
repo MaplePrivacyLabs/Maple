@@ -121,7 +121,7 @@ fn codex_home() -> Option<PathBuf> {
 }
 
 /// The first `name` on `search_path`, or else on the process's PATH.
-pub(super) fn find_executable(name: &str, search_path: Option<&str>) -> Option<PathBuf> {
+pub(in crate::agent) fn find_executable(name: &str, search_path: Option<&str>) -> Option<PathBuf> {
     let path = match search_path {
         Some(path) => OsString::from(path),
         None => std::env::var_os("PATH")?,

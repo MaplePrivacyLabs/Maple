@@ -1170,6 +1170,297 @@ async fn mcp_servers_are_saved_apart_from_the_other_settings() {
     assert!(error.contains("conflicts with another"), "{error}");
 }
 
+fn http_mcp_server(name: &str, url: &str, enabled: bool) -> AgentMcpServer {
+    AgentMcpServer {
+        name: name.into(),
+        description: format!("{name} tools"),
+        enabled,
+        timeout_seconds: 30,
+        transport: AgentMcpTransport::StreamableHttp {
+            url: url.into(),
+            environment: Vec::new(),
+            headers: Vec::new(),
+        },
+    }
+}
+
+fn switch(task: &str, name: &str, enabled: bool) -> AgentSetSessionMcpServerRequest {
+    AgentSetSessionMcpServerRequest {
+        session_id: task.to_string(),
+        kind: AgentSessionIntegrationKind::Mcp,
+        name: name.to_string(),
+        enabled,
+    }
+}
+
+fn mcp_rows(rows: &[AgentSessionMcpServer]) -> Vec<(&str, bool, bool)> {
+    rows.iter()
+        .map(|row| (row.name.as_str(), row.enabled, row.available))
+        .collect()
+}
+
+#[tokio::test]
+async fn a_tasks_mcp_servers_give_the_model_their_tools() {
+    let harness = Harness::new().await;
+    let fake = mcp::fake_server::FakeServer::start(Some("Echo before you answer.")).await;
+    harness
+        .handle
+        .save_mcp_servers(vec![
+            http_mcp_server("Fake", &fake.url, true),
+            http_mcp_server("Spare", &fake.url, false),
+        ])
+        .await
+        .unwrap();
+
+    // A new task gets the servers switched on for new tasks.
+    let task = harness.create_task().await;
+    let rows = harness
+        .handle
+        .list_session_mcp_servers(task.clone())
+        .await
+        .unwrap();
+    assert_eq!(
+        mcp_rows(&rows),
+        [("Fake", true, true), ("Spare", false, true)]
+    );
+
+    harness.faux.push_message(vec![faux_tool_call(
+        "mcp__fake__echo",
+        json!({"text": "from the server"}),
+    )]);
+    harness.faux.push_text("It echoed.");
+    let mut run = harness.send(&task, "Echo something").await;
+    assert_eq!(finished(&mut run).await, AgentRunTerminal::Completed);
+
+    // The first request declared the server's tools and carried its
+    // instructions; the call reached the server and its answer the model.
+    let requests = harness.faux.requests();
+    let declared: Vec<String> = pi_ai::transcript::current_tools(&requests[0].context.messages)
+        .into_iter()
+        .map(|tool| tool.name)
+        .collect();
+    for name in ["mcp__fake__echo", "mcp__fake__fail", "read", "bash"] {
+        assert!(declared.contains(&name.to_string()), "{declared:?}");
+    }
+    let system = pi_ai::transcript::current_system_prompt(&requests[0].context.messages);
+    assert!(
+        system.contains("## Fake (mcp__fake__*)\nEcho before you answer."),
+        "{system}"
+    );
+    assert_eq!(
+        fake.calls(),
+        [("echo".to_string(), json!({"text": "from the server"}))]
+    );
+    let tool_result = requests[1]
+        .context
+        .messages
+        .iter()
+        .find_map(|message| match message {
+            pi_ai::Message::ToolResult(result) => Some(pi_ai::content_text(&result.content)),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(tool_result, "from the server");
+    let live = harness.recorder.live_rows(&run.run_id);
+    let tool_row = live.iter().find(|row| row.item_type == "tool").unwrap();
+    assert_eq!(tool_row.title.as_deref(), Some("fake: echo"));
+
+    // Switched off, its tools leave the task's next prompt.
+    let rows = harness
+        .handle
+        .set_session_mcp_server_enabled(switch(&task, "Fake", false))
+        .await
+        .unwrap();
+    assert_eq!(
+        mcp_rows(&rows),
+        [("Fake", false, true), ("Spare", false, true)]
+    );
+    harness.faux.push_text("No tools now.");
+    let mut run = harness.send(&task, "Again").await;
+    assert_eq!(finished(&mut run).await, AgentRunTerminal::Completed);
+    let last = harness.faux.requests().pop().unwrap();
+    let declared = pi_ai::transcript::current_tools(&last.context.messages);
+    assert!(
+        !declared.iter().any(|tool| tool.name.starts_with("mcp__")),
+        "{declared:?}"
+    );
+    assert!(
+        !pi_ai::transcript::current_system_prompt(&last.context.messages)
+            .contains("Echo before you answer.")
+    );
+
+    // Switched on, a server connects at once. One removed from Settings
+    // stays switched on but cannot run, and cannot be switched on again.
+    let rows = harness
+        .handle
+        .set_session_mcp_server_enabled(switch(&task, "Spare", true))
+        .await
+        .unwrap();
+    assert_eq!(mcp_rows(&rows)[1], ("Spare", true, true));
+    harness
+        .handle
+        .save_mcp_servers(vec![http_mcp_server("Fake", &fake.url, true)])
+        .await
+        .unwrap();
+    let rows = harness
+        .handle
+        .list_session_mcp_servers(task.clone())
+        .await
+        .unwrap();
+    assert_eq!(
+        mcp_rows(&rows),
+        [("Fake", false, true), ("Spare", true, false)]
+    );
+    let rows = harness
+        .handle
+        .set_session_mcp_server_enabled(switch(&task, "Fake", true))
+        .await
+        .unwrap();
+    assert_eq!(
+        mcp_rows(&rows),
+        [("Fake", true, true), ("Spare", true, false)]
+    );
+    let error = harness
+        .handle
+        .set_session_mcp_server_enabled(switch(&task, "Gone", true))
+        .await
+        .unwrap_err();
+    assert_eq!(
+        error,
+        "MCP server 'Gone' is no longer configured and cannot be enabled"
+    );
+    let rows = harness
+        .handle
+        .set_session_mcp_server_enabled(switch(&task, "Spare", false))
+        .await
+        .unwrap();
+    assert_eq!(mcp_rows(&rows), [("Fake", true, true)]);
+}
+
+#[tokio::test]
+async fn only_the_idle_tasks_used_last_keep_their_servers() {
+    let harness = Harness::new().await;
+    let fake = mcp::fake_server::FakeServer::start(None).await;
+    harness
+        .handle
+        .save_mcp_servers(vec![http_mcp_server("Fake", &fake.url, true)])
+        .await
+        .unwrap();
+    let runtime = harness.service.state.runtime.lock().await.clone().unwrap();
+    let mut tasks = Vec::new();
+    for _ in 0..=mcp::MAX_IDLE_TASKS_WITH_SERVERS + 1 {
+        let task = harness.create_task().await;
+        harness.faux.push_text("Done.");
+        let mut run = harness.send(&task, "Hello").await;
+        assert_eq!(finished(&mut run).await, AgentRunTerminal::Completed);
+        tasks.push(task);
+    }
+    let initialized = || {
+        fake.methods()
+            .iter()
+            .filter(|method| *method == "initialize")
+            .count()
+    };
+    assert_eq!(initialized(), tasks.len());
+    let has_servers = |mcp: Option<Arc<mcp::TaskMcp>>| mcp.unwrap().last_used().is_some();
+    // The task idle longest stopped its servers when the last one ran.
+    assert!(!has_servers(runtime.loaded_mcp(&tasks[0]).await));
+    for task in &tasks[1..] {
+        assert!(has_servers(runtime.loaded_mcp(task).await));
+    }
+
+    // Run again, it starts them anew, and the next idlest stops its own.
+    harness.faux.push_text("Back.");
+    let mut run = harness.send(&tasks[0], "Again").await;
+    assert_eq!(finished(&mut run).await, AgentRunTerminal::Completed);
+    assert_eq!(initialized(), tasks.len() + 1);
+    assert!(has_servers(runtime.loaded_mcp(&tasks[0]).await));
+    assert!(!has_servers(runtime.loaded_mcp(&tasks[1]).await));
+}
+
+#[tokio::test]
+async fn a_server_that_cannot_connect_is_reported_once_and_cannot_be_switched_on() {
+    let harness = Harness::new().await;
+    let broken = AgentMcpServer {
+        name: "Broken".into(),
+        description: String::new(),
+        enabled: true,
+        timeout_seconds: 30,
+        transport: AgentMcpTransport::Stdio {
+            command: "maple-test-no-such-mcp-server".into(),
+            environment: Vec::new(),
+        },
+    };
+    harness.handle.save_mcp_servers(vec![broken]).await.unwrap();
+    let task = harness.create_task().await;
+    harness.faux.push_text("Fine without it.");
+    let mut run = harness.send(&task, "Hello").await;
+    assert_eq!(finished(&mut run).await, AgentRunTerminal::Completed);
+    let warnings: Vec<String> = harness
+        .recorder
+        .run_events(&run.run_id)
+        .into_iter()
+        .filter_map(|event| match event {
+            AgentRunEvent::SetupWarning(warning) => Some(warning),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert!(
+        warnings[0].starts_with(
+            "Some MCP servers could not connect: Broken: could not start maple-test-no-such-mcp-server"
+        ),
+        "{warnings:?}"
+    );
+
+    // The next run tries again quietly.
+    harness.faux.push_text("Still fine.");
+    let mut run = harness.send(&task, "Again").await;
+    assert_eq!(finished(&mut run).await, AgentRunTerminal::Completed);
+    assert!(
+        !harness
+            .recorder
+            .run_events(&run.run_id)
+            .iter()
+            .any(|event| matches!(event, AgentRunEvent::SetupWarning(_)))
+    );
+
+    // Switched off and on again, it is tried at once, and stays off.
+    harness
+        .handle
+        .set_session_mcp_server_enabled(switch(&task, "Broken", false))
+        .await
+        .unwrap();
+    let error = harness
+        .handle
+        .set_session_mcp_server_enabled(switch(&task, "Broken", true))
+        .await
+        .unwrap_err();
+    assert!(
+        error.starts_with("Failed to connect MCP server 'Broken': could not start"),
+        "{error}"
+    );
+    let rows = harness
+        .handle
+        .list_session_mcp_servers(task.clone())
+        .await
+        .unwrap();
+    assert_eq!(mcp_rows(&rows), [("Broken", false, true)]);
+    // Integrations that do not run in tasks yet cannot be switched on.
+    let error = harness
+        .handle
+        .set_session_mcp_server_enabled(AgentSetSessionMcpServerRequest {
+            kind: AgentSessionIntegrationKind::ExternalAgent,
+            ..switch(&task, "codex", true)
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(
+        error,
+        "This feature is not available in this build of Maple yet"
+    );
+}
+
 #[tokio::test]
 async fn integrations_list_and_refuse_what_cannot_be_enabled() {
     let harness = Harness::new().await;

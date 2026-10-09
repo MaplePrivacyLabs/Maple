@@ -960,6 +960,12 @@ impl AgentRuntime {
             move |event| watch.observe(event, &live, &events)
         });
 
+        // The task's MCP servers start with its run, which waits a little
+        // for them, as Pi's first prompt does.
+        if let Some(notice) = self.start_task_mcp(&session_id, &stopped).await {
+            events.publish(AgentRunEvent::SetupWarning(notice));
+        }
+
         let mut failure = None;
         let mut prompted = false;
         while !stopped.is_cancelled() {
