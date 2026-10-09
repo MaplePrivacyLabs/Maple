@@ -140,23 +140,24 @@ because Mutter exposes no window geometry or screen capture to an ordinary
 client; Settings reports it as an unmet requirement until it is installed and
 the session has been restarted once.
 
-CUA keeps its native screenshot defaults. Every model receives full
-accessibility text plus a bounded projection of exact structured grounding
-data such as window IDs and element tokens. Vision models retain the canonical
-image blocks; text-only models instead receive a CUA-specific description from
-Maple's existing Gemma image helper, with raw screenshot blocks removed before
-the primary-model request. Maple owns the task-scoped session lifecycle and
-prevents models from mixing standalone CLI or other MCP session identities into
-the embedded transport.
+A desktop task with CUA on gets its tools as `cua-driver__<tool>`, bound
+anew at each run. CUA keeps its native screenshot defaults. Every model
+receives full accessibility text plus a bounded projection of exact structured
+grounding data such as window IDs and element tokens. Vision models retain the
+image blocks, fitted like every tool image; text-only models instead receive a
+CUA-specific description from Maple's existing Gemma image helper, with raw
+screenshot blocks removed before the primary-model request. Maple owns the
+task-scoped session lifecycle and prevents models from mixing standalone CLI or
+other MCP session identities into the embedded transport.
 
-Enabling an integration sets a device-local default for new tasks. Existing
-tasks keep their frozen integration choice and expose CUA as an independent
-per-task switch in the composer. A task that never chose a backend adopts the
-device default only when it can actually run it. Maple no longer looks for a
-separately installed CuaDriver application: a task saved with its stdio entry
-loses that entry on its next run, and a device setting that selected it reads
-as not set up. Custom STDIO and Streamable HTTP MCP servers remain account
-configuration that may roam between devices.
+Enabling an integration sets a device-local default for new tasks. A new task
+records its own CUA choice once CUA is set up on the device, and keeps it as an
+independent per-task switch in the composer; a task with no choice has it off.
+Maple no longer looks for a separately installed CuaDriver application: a
+custom server under one of CUA's names never runs for a task, and a device
+setting that selected the external backend reads as not set up. Custom STDIO
+and Streamable HTTP MCP servers remain account configuration that may roam
+between devices.
 
 The embedded design, migration rules, privacy boundary, and preview limits are
 documented in [`docs/embedded-cua.md`](docs/embedded-cua.md).

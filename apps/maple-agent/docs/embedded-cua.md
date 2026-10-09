@@ -1,7 +1,7 @@
 # Embedded CUA developer preview
 
-Maple can expose the Cua Driver tool catalog to its embedded Goose agent
-without launching a Cua Driver daemon or an MCP child process. The macOS and
+Maple can give a desktop task the Cua Driver tool catalog without launching a
+Cua Driver daemon or an MCP child process. The macOS and
 Linux builds pin Cua's `cua-driver-sdk` source at the trycua/cua commit that
 landed Xcode 26.5 linker compatibility, self-process window restoration on the
 AppKit main queue, and the ashpd `async-io` backend (`trycua/cua#3687`) and
@@ -20,18 +20,22 @@ general integration marketplace, or a sandbox for computer-use actions.
 ## Architecture
 
 There is one lazily-created CUA runtime for the Maple process. Each enabled
-desktop task receives its own standard-mode trusted CUA session and a native
-Goose MCP client. Its public and transport identities are stable, opaque hashes
-of the account scope and Maple task ID, so replacing the ephemeral client at a
-run boundary reconnects to the same isolated lifecycle without colliding across
-accounts. Maple starts or revives that lifecycle before exposing tools; the
-model cannot name, end, or enumerate sessions. The client uses the SDK's
-canonical `list_tools_json` and `call_tool` surfaces, so Maple does not maintain
-a second copy of CUA's tool definitions or run an in-process network protocol.
+desktop task receives its own standard-mode trusted CUA session, and each run
+binds the task to it anew, which renews the session's authorization. Its
+public and transport identities are stable, opaque hashes of the account scope
+and Maple task ID, so a new binding reconnects to the same isolated lifecycle
+without colliding across accounts. Maple starts or revives that lifecycle
+before exposing tools; the model cannot name, end, or enumerate sessions. The
+binding uses the SDK's canonical `list_tools_json` and `call_tool` surfaces, so
+Maple does not maintain a second copy of CUA's tool definitions or run an
+in-process network protocol.
 
-Goose still owns tool discovery, namespacing, and dispatch. Every CUA call
-runs without asking for approval, like every other tool call in a Maple
-task; CUA's published schemas and annotations reach the model unaltered.
+The tools join the task's Pi session as `cua-driver__<tool>`, and the
+instructions below join its system prompt, while the task is bound. Every CUA
+call runs without asking for approval, like every other tool call in a Maple
+task; CUA's published schemas and descriptions reach the model unaltered. A
+binding that fails is named in the run's notice beside the MCP servers', as
+`Computer use (CUA): <reason>`, and the run goes on without the tools.
 
 CUA's action schemas and screenshot defaults remain canonical. Maple adapts the
 general-purpose catalog only at the bound-session boundary: it hides CUA's six
@@ -42,33 +46,32 @@ tokens into it, observe before acting, and treat controlled-app content as
 untrusted data.
 
 Every primary model receives the original accessibility text and a bounded,
-image-free projection of CUA's structured grounding fields. This is necessary
-because Goose's current OpenAI formatter otherwise preserves that field without
-showing its exact window IDs, element tokens, coordinate frames, and refusal
-details to the primary model. Vision-capable models also retain the canonical
-raw image blocks, but a request carries only the newest few tool-produced
-images as pixels and replaces older ones with a short marker; the stored
-transcript keeps every screenshot, so this bounds what one request uploads
-rather than what the task remembers. For a text-only primary model, Maple
-instead sends each returned screenshot through the same fixed, tool-free Gemma
-perception helper used by `read_image`, removes the raw image blocks, and
-appends a factual CUA-specific description. The original non-image content,
-structured metadata, protocol metadata, and error state remain intact. The
-helper is instructed to report controls, state, layout,
-coordinate-space-aware approximate positions, and discrepancies from the
-accessibility tree without selecting actions or inventing element identifiers.
-Helper usage is recorded outside the primary context ledger.
+image-free projection of CUA's structured grounding fields, since a tool
+result's structured content does not otherwise reach the model: its exact
+window IDs, element tokens, coordinate frames, and refusal details. Image
+payloads in it are redacted. Vision-capable models also retain the raw image
+blocks, which Pi fits like every tool image: one larger than 2000 pixels on a
+side or 4.5MB is scaled down, with a note that tells the model how to map its
+coordinates back. A request carries only the newest three tool-produced images
+as pixels and replaces older ones with a short marker; the stored transcript
+keeps every screenshot, so this bounds what one request uploads rather than
+what the task remembers. For a text-only primary model, Maple instead sends
+each returned screenshot through the same fixed, tool-free Gemma perception
+helper used by `read_image`, removes the raw image blocks, and appends a
+factual CUA-specific description. The original non-image content and error
+state remain intact. The helper is instructed to report controls, state,
+layout, coordinate-space-aware approximate positions, and discrepancies from
+the accessibility tree without selecting actions or inventing element
+identifiers. Whether a model sees images is taken from the model each run
+uses. Helper usage is not recorded.
 
-The native client is ephemeral. Goose must not serialize a Rust object as an
-ordinary MCP transport, so its extension snapshot excludes the client. Maple
-stores only versioned logical task metadata: whether CUA is enabled for the
-task, and the embedded backend it uses. On cold load or a new
-turn Maple recreates its trusted connection and rejoins the stable account/task
-CUA lifecycle.
+The binding lives with the task's loaded session and closes when the session
+does. Maple stores only whether CUA is on for the task, in the task's
+settings; each run binds anew and rejoins the stable account/task CUA
+lifecycle.
 
-Embedded CUA is attached only while a user task is controlled by the desktop
-app. ACP and other headless surfaces do not inherit the host's interactive
-desktop authority.
+Built-in CUA binds only desktop tasks. A task started over ACP never has it,
+so headless surfaces do not inherit the host's interactive desktop authority.
 
 ## Setup and existing installations
 
@@ -149,15 +152,17 @@ on GNOME, so actions use `delivery_mode: "foreground"`, which activates the
 target window and restores the previous one afterwards.
 
 Maple no longer detects or runs a separately installed `CuaDriver.app`, so no
-foreign binary is ever executed. A task saved by the first integrations preview
-with that driver's stdio entry loses the entry before any agent is built for
-it, and a device setting that selected the external backend is ignored on
-load; both read as "not set up" until the user enables built-in CUA. Nothing
-is migrated or rewritten beyond that.
+foreign binary is ever executed. A custom server saved under any of CUA's
+names never runs for a task, and a device setting that selected the external
+backend is ignored on load, so it reads as "not set up" until the user enables
+built-in CUA. Nothing is migrated or rewritten beyond that.
 
-Enabling the card changes the default for newly-created tasks. Existing tasks
-retain an independent switch in the composer. Changing tools while a task is
-running or leased to another agent surface remains disallowed.
+Enabling the card changes the default for newly-created tasks. A new desktop
+task records its own choice once CUA is set up on the device: on when the
+composer names it, or, when the composer names no servers, the default. The
+task keeps that switch in the composer independently of the card. Switching
+it on for a loaded task binds at once and keeps it off, with the reason, when
+binding fails. Changing it while the task runs is refused.
 
 ## macOS development bundle
 

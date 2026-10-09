@@ -15,11 +15,12 @@ use pi_coding_agent::{AgentSession, AgentSessionOptions, ModelRegistry};
 use tokio_util::sync::CancellationToken;
 
 use super::config::{account_attachment_store, path_string};
+use super::cua::{self, TaskCua};
 use super::external_agents::{
     ExternalAgentHost, ExternalAgentRegistry, ExternalAgentToolsFor, TaskProviders,
     external_agent_tools, sync_external_agent_tools, task_providers,
 };
-use super::integrations::external_agents_on;
+use super::integrations::{CUA_NAME, external_agents_on};
 use super::mcp::{
     MAX_IDLE_TASKS_WITH_SERVERS, STARTUP_WAIT, TaskMcp, read_saved_servers, task_servers,
 };
@@ -63,11 +64,12 @@ pub(super) struct RuntimeParts {
 /// How long a stopping runtime gives its external agents to end.
 const EXTERNAL_AGENTS_SHUTDOWN: Duration = Duration::from_secs(10);
 
-/// A task's loaded session, the MCP servers that live with it, and the
-/// external agents its tools may use.
+/// A task's loaded session, the MCP servers and built-in CUA that live with
+/// it, and the external agents its tools may use.
 struct LoadedTask {
     session: AgentSession,
     mcp: Arc<TaskMcp>,
+    cua: Arc<TaskCua>,
     agents: TaskProviders,
 }
 
@@ -213,12 +215,23 @@ impl AgentRuntime {
             .map(|task| Arc::clone(&task.mcp))
     }
 
+    /// A loaded task's built-in CUA.
+    pub(super) async fn loaded_cua(&self, session_id: &str) -> Option<Arc<TaskCua>> {
+        self.sessions
+            .lock()
+            .await
+            .get(session_id)
+            .map(|task| Arc::clone(&task.cua))
+    }
+
     /// Run the task's MCP servers as it has them now and the account saves
-    /// them, and wait a little for those connecting, unless the run stops.
-    /// Returns the notice of servers that failed or are still connecting.
-    pub(super) async fn start_task_mcp(
+    /// them, and bind its built-in CUA anew for a model with or without
+    /// `vision`, waiting a little for servers connecting, unless the run
+    /// stops. Returns the notice of what failed or is still connecting.
+    pub(super) async fn start_task_integrations(
         &self,
         session_id: &str,
+        vision: bool,
         stopped: &CancellationToken,
     ) -> Option<String> {
         let mcp = self.loaded_mcp(session_id).await?;
@@ -233,11 +246,28 @@ impl AgentRuntime {
             Err(error) => log::warn!("Failed to read the account's MCP servers: {error}"),
         }
         self.stop_idle_task_servers(session_id).await;
-        tokio::select! {
-            _ = mcp.wait(STARTUP_WAIT) => {}
+        let started =
+            futures_util::future::join(mcp.wait(STARTUP_WAIT), self.start_task_cua(&row, vision));
+        let cua_failure = tokio::select! {
+            (_, failure) = started => failure,
             _ = stopped.cancelled() => return None,
+        };
+        mcp.take_notice(cua_failure.map(|error| (CUA_NAME.to_string(), error)))
+    }
+
+    /// Bind a desktop task that has built-in CUA on, which renews its
+    /// authorization, or take CUA from one that has it off. Returns why the
+    /// binding failed, if it did.
+    async fn start_task_cua(&self, row: &TaskRow, vision: bool) -> Option<String> {
+        let task_cua = self.loaded_cua(&row.id).await?;
+        if row.kind == TaskKind::Desktop && cua::task_choice(row) == Some(true) {
+            task_cua.bind(vision).await.err()
+        } else {
+            if task_cua.is_bound() {
+                task_cua.unbind().await;
+            }
+            None
         }
-        mcp.take_notice()
     }
 
     /// Stop the MCP servers of the tasks idle longest, beyond the few
@@ -436,6 +466,8 @@ impl AgentRuntime {
         }
         let mcp = TaskMcp::new(Path::new(&row.project_root), search_path);
         options.extensions.push(mcp.extension());
+        let task_cua = TaskCua::new(&self.account_scope, &row.id, self.models.clone());
+        options.extensions.push(task_cua.extension());
         let session = AgentSession::new(options)
             .await
             .map_err(|error| format!("Failed to start the Agent task: {error}"))?;
@@ -445,6 +477,7 @@ impl AgentRuntime {
             LoadedTask {
                 session: session.clone(),
                 mcp,
+                cua: task_cua,
                 agents,
             },
         );

@@ -5,8 +5,9 @@
 //!
 //! The catalog, saved choices and detection are Goose's. An external agent
 //! switched on here can be switched on for a desktop task, and while one is
-//! on the account has the skills that teach a task to delegate. Embedded
-//! CUA reads as not available until it runs in tasks.
+//! on the account has the skills that teach a task to delegate. Built-in CUA
+//! is set up here, by granting its permissions, and a new desktop task takes
+//! the default saved here.
 
 mod detect;
 
@@ -31,13 +32,14 @@ pub(super) use detect::{
     CLAUDE_SIGN_IN_HINT, CODEX_SIGN_IN_HINT, detect_claude, detect_codex, find_executable,
 };
 
-const CUA_INTEGRATION_ID: &str = "cua-driver";
+pub(in crate::agent) const CUA_INTEGRATION_ID: &str = "cua-driver";
 /// The integration's name in errors.
-const CUA_NAME: &str = "Computer use (CUA)";
+pub(in crate::agent) const CUA_NAME: &str = "Computer use (CUA)";
 /// Every spelling of the integration's name a custom server could take.
 const CUA_NAMES: [&str; 4] = [CUA_INTEGRATION_ID, CUA_NAME, "Cua Driver", "cua_driver"];
-const CUA_CARD_NAME: &str = "Cua";
-const CUA_CARD_DESCRIPTION: &str = "Let Maple see and control apps on this computer.";
+pub(in crate::agent) const CUA_CARD_NAME: &str = "Cua";
+pub(in crate::agent) const CUA_CARD_DESCRIPTION: &str =
+    "Let Maple see and control apps on this computer.";
 
 /// An external coding agent a task can hand work to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -146,12 +148,17 @@ fn require_known_integration(id: &str) -> Result<(), String> {
     }
 }
 
-/// Start the host-owned setup of a built-in integration.
+/// Start the explicit, host-owned setup flow for a curated integration.
+///
+/// Desktop callers must invoke this directly from the user's UI action rather
+/// than a backend worker so macOS can attribute and present its privacy UI in
+/// the host application context. Persisting the selected backend remains a
+/// separate asynchronous operation after the OS reports both grants.
 pub fn begin_integration_setup(
     request: &AgentSetupIntegrationRequest,
 ) -> Result<AgentIntegrationPermissions, String> {
     require_known_integration(&request.id)?;
-    Err("Built-in CUA setup is not available in this build of Maple yet".to_string())
+    super::cua::request_permissions()
 }
 
 /// Whether a server name is one of the computer use integration's.
@@ -340,7 +347,26 @@ impl CuaDetection {
             availability: AgentIntegrationAvailability::NotDetected,
             permissions: None,
             setup_available: false,
-            detail: Some("Built-in CUA is not available in this build of Maple yet.".to_string()),
+            detail: Some("Built-in CUA is not available on this operating system yet.".to_string()),
+        }
+    }
+
+    /// Built-in CUA as this device has it: available once every permission
+    /// it needs is granted. The card says what is left to do in terms of the
+    /// step, not the requirement's name.
+    fn find() -> Self {
+        match super::cua::readiness() {
+            Some(readiness) => Self {
+                availability: if readiness.permissions.ready() {
+                    AgentIntegrationAvailability::Available
+                } else {
+                    AgentIntegrationAvailability::SetupRequired
+                },
+                permissions: Some(readiness.permissions),
+                setup_available: readiness.setup_available,
+                detail: readiness.detail,
+            },
+            None => Self::not_available(),
         }
     }
 
@@ -357,7 +383,10 @@ impl CuaDetection {
             description: CUA_CARD_DESCRIPTION.to_string(),
             availability: self.availability,
             backend: stored.map(StoredIntegration::backend),
-            version: None,
+            version: self
+                .permissions
+                .is_some()
+                .then(|| super::cua::CUA_VERSION.to_string()),
             permissions: self.permissions.clone(),
             setup_available: self.setup_available,
             enabled_for_new_tasks: stored.is_some_and(|entry| entry.enabled),
@@ -382,7 +411,7 @@ impl Detections {
             detect::detect_claude(search_path)
         );
         Self {
-            cua: CuaDetection::not_available(),
+            cua: CuaDetection::find(),
             codex,
             claude,
         }
@@ -467,6 +496,19 @@ fn set_external_agent_default(
         log::warn!("Failed to update the external agent skills: {error}");
     }
     Ok(())
+}
+
+/// Built-in CUA's default for new tasks, once it is set up on this device.
+/// Read where a task must keep working, so an unusable file reads as not set
+/// up.
+pub(in crate::agent) fn cua_default(paths: &AgentPathLayout, user_id: &str) -> Option<bool> {
+    match load_stored_integrations(paths, user_id) {
+        Ok(stored) => stored.entry(CUA_INTEGRATION_ID).map(|entry| entry.enabled),
+        Err(error) => {
+            log::warn!("{error}; built-in CUA reads as not set up");
+            None
+        }
+    }
 }
 
 /// The external agents switched on in Settings. Read where a task must
@@ -615,6 +657,10 @@ impl AgentRuntimeHandle {
         request: AgentSetupIntegrationRequest,
     ) -> Result<Vec<AgentIntegration>, String> {
         require_known_integration(&request.id)?;
+        self.verify_generation().await?;
+        // A desktop that needs a compositor helper gets one here, before
+        // detection runs, so the cards the caller receives reflect it.
+        super::cua::install_desktop_helper().await?;
         let detections = self.detect_integrations().await?;
         let _settings = self.lock_settings().await;
         self.verify_generation().await?;

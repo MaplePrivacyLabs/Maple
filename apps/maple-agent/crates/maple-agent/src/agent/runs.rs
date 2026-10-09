@@ -1142,9 +1142,15 @@ impl AgentRuntime {
             move |event| watch.observe(event, &live, &events)
         });
 
-        // The task's MCP servers start with its run, which waits a little
-        // for them, as Pi's first prompt does.
-        if let Some(notice) = self.start_task_mcp(&session_id, &stopped).await {
+        // The task's MCP servers and built-in CUA start with its run, which
+        // waits a little for them, as Pi's first prompt does.
+        let vision = session
+            .model()
+            .is_some_and(|model| model.input.contains(&pi_ai::InputModality::Image));
+        if let Some(notice) = self
+            .start_task_integrations(&session_id, vision, &stopped)
+            .await
+        {
             events.publish(AgentRunEvent::SetupWarning(notice));
         }
 

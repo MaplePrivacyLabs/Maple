@@ -46,6 +46,25 @@ pi-coding-agent = { path = "../pi-coding-agent" }
 libc = "0.2"
 process-wrap = { version = "=9.1.0", default-features = false, features = ["tokio1", "process-session"] }
 
+[target.'cfg(target_os = "macos")'.dependencies]
+# CUA's native SDK is not published to crates.io yet. Pin the trycua/cua
+# commit that landed the Xcode 26.5 linker compatibility, embedded-host
+# main-thread restoration, and ashpd async-io backend (trycua/cua#3687)
+# so Maple's embedded runtime remains reproducible.
+cua-driver-sdk = { git = "https://github.com/trycua/cua.git", rev = "2dbc1c2cfbee5d25c9cea2dc37db80b98d4f9b00", package = "cua-driver-sdk" }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# Ask the session bus whether the GNOME compositor helper is loaded. It is
+# already in the dependency tree through the SDK, so this adds no build cost.
+zbus = { version = "5.19", default-features = false, features = ["blocking-api", "tokio"] }
+# The same pinned revision supplies the Linux backend: AT-SPI over D-Bus for
+# the accessibility tree, the desktop portal for screenshots, and libei for
+# input. `portal-input` is pure Rust plus libxkbcommon, which the Linux build
+# already links, so it stays on by default. PipeWire per-window capture needs
+# libpipewire and libspa headers at build time and is deliberately left off;
+# full-screen portal screenshots do not need it.
+cua-driver-sdk = { git = "https://github.com/trycua/cua.git", rev = "2dbc1c2cfbee5d25c9cea2dc37db80b98d4f9b00", package = "cua-driver-sdk", features = ["portal-input"] }
+
 [dev-dependencies]
 chacha20poly1305 = "0.10"
 hkdf = "0.12"

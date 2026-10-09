@@ -14,6 +14,7 @@ mod attachments;
 mod bounded_process;
 mod catalog;
 mod config;
+mod cua;
 mod external_agents;
 mod integrations;
 mod login_path;

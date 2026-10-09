@@ -132,6 +132,14 @@ impl AgentRuntimeHandle {
             pi_ai::now_ms(),
         );
         set_chosen_servers(&mut row, mcp_servers);
+        // Built-in CUA set up on this device is on for the task when the
+        // composer asks for it, or by the default for new tasks.
+        if let Some(cua_on) = super::cua::choice_for_new_task(
+            super::integrations::cua_default(self.paths(), &self.user_id),
+            request.mcp_server_names.as_deref(),
+        ) {
+            super::cua::set_task_choice(&mut row, cua_on);
+        }
         runtime.store.insert(&row)?;
         let summary = row.summary();
         emit_agent_event(

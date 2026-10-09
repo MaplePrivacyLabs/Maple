@@ -136,14 +136,14 @@ async fn servers_connect_and_failures_are_reported_once() {
         stdio("Broken", MISSING_COMMAND, true),
     ]);
     assert!(mcp.wait(STARTUP_WAIT).await);
-    let notice = mcp.take_notice().unwrap();
+    let notice = mcp.take_notice(None).unwrap();
     assert!(
         notice.starts_with(&format!(
             "Some MCP servers could not connect: Broken: could not start {MISSING_COMMAND}"
         )),
         "{notice}"
     );
-    assert_eq!(mcp.take_notice(), None);
+    assert_eq!(mcp.take_notice(None), None);
     assert!(mcp.last_used().is_some());
 
     // A later run tries the failed server again without waiting for it,
@@ -154,7 +154,7 @@ async fn servers_connect_and_failures_are_reported_once() {
     ]);
     assert!(mcp.wait(Duration::ZERO).await);
     tokio::time::sleep(Duration::from_millis(200)).await;
-    assert_eq!(mcp.take_notice(), None);
+    assert_eq!(mcp.take_notice(None), None);
 
     // Unchosen servers stop; the docs server connected only once.
     mcp.sync(Vec::new());
@@ -180,7 +180,11 @@ async fn a_server_switched_on_connects_at_once() {
         .unwrap_err();
     assert!(error.starts_with("could not start"), "{error}");
     // The failure was the switch's to report, not the next run's.
-    assert!(mcp.take_notice().is_none(), "{:?}", mcp.take_notice());
+    assert!(
+        mcp.take_notice(None).is_none(),
+        "{:?}",
+        mcp.take_notice(None)
+    );
     mcp.disable("broken").await;
     mcp.stop_all().await;
     assert!(mcp.last_used().is_none());

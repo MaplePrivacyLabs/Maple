@@ -26,8 +26,9 @@ use serde_json::Value;
 use tokio::sync::Notify;
 
 use super::super::config::{account_config_dir_path, load_agent_config_file};
+use super::super::cua;
 use super::super::external_agents;
-use super::super::integrations::is_cua_identity;
+use super::super::integrations::{cua_default, is_cua_identity};
 use super::super::store::{TaskKind, TaskRow};
 use super::super::timeline::bounded_timeline_text;
 use super::super::{
@@ -59,10 +60,6 @@ const FAILURES_PREFIX: &str = "Some MCP servers could not connect:";
 /// The idle tasks that keep their servers running, most recently run
 /// first; the servers of tasks idle longer stop until they run again.
 pub(in crate::agent) const MAX_IDLE_TASKS_WITH_SERVERS: usize = 4;
-
-/// What a switch on a task's computer use row is refused with, until
-/// computer use runs in tasks.
-const NOT_AVAILABLE_YET: &str = "This feature is not available in this build of Maple yet";
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex
@@ -544,10 +541,11 @@ impl TaskMcp {
     }
 
     /// The notice for a run: servers that failed and were not reported yet,
-    /// and, when the wait ran out, those still connecting.
-    pub(crate) fn take_notice(&self) -> Option<String> {
+    /// with `also_failed` beside them, such as computer use, and, when the
+    /// wait ran out, those still connecting.
+    pub(crate) fn take_notice(&self, also_failed: Option<(String, String)>) -> Option<String> {
         let mut servers = self.servers();
-        let mut failed: Vec<(String, String)> = Vec::new();
+        let mut failed: Vec<(String, String)> = also_failed.into_iter().collect();
         let mut connecting: Vec<String> = Vec::new();
         for entry in servers.values_mut() {
             match &entry.status {
@@ -758,12 +756,7 @@ impl AgentRuntimeHandle {
             .store()?
             .get(session_id)?
             .ok_or_else(|| format!("Failed to find Agent task {session_id}"))?;
-        let saved = self.list_mcp_servers().await?;
-        let cards = match row.kind {
-            TaskKind::Desktop => self.external_agent_cards().await?,
-            TaskKind::Acp => Vec::new(),
-        };
-        Ok(menu_rows(&saved, &cards, &row))
+        self.menu_rows(&row).await
     }
 
     /// Switch an MCP server on or off for a task. A task whose session is
@@ -785,13 +778,11 @@ impl AgentRuntimeHandle {
                 .set_task_external_agent(&session_id, name, request.enabled)
                 .await?;
             let saved = self.list_mcp_servers().await?;
-            return Ok(menu_rows(&saved, &cards, &row));
+            return Ok(self.menu_rows_with(&saved, &cards, &row));
         }
         if is_cua_identity(name) {
-            if request.enabled {
-                return Err(NOT_AVAILABLE_YET.to_string());
-            }
-            return self.list_session_mcp_servers(session_id).await;
+            let row = self.set_task_cua(&session_id, request.enabled).await?;
+            return self.menu_rows(&row).await;
         }
         let key = name_to_key(name);
         if key.is_empty() || RESERVED_KEYS.contains(&key.as_str()) {
@@ -846,20 +837,36 @@ impl AgentRuntimeHandle {
             TaskKind::Desktop => self.external_agent_cards().await?,
             TaskKind::Acp => Vec::new(),
         };
-        Ok(menu_rows(&saved, &cards, &row))
+        Ok(self.menu_rows_with(&saved, &cards, &row))
     }
-}
 
-/// A task's whole MCP menu: its servers, then the external agents switched
-/// on in Settings.
-fn menu_rows(
-    saved: &[AgentMcpServer],
-    agent_cards: &[AgentIntegration],
-    row: &TaskRow,
-) -> Vec<AgentSessionMcpServer> {
-    let mut rows = session_rows(saved, row);
-    rows.extend(external_agents::session_rows(agent_cards, row));
-    rows
+    /// A task's whole MCP menu, read now.
+    async fn menu_rows(&self, row: &TaskRow) -> Result<Vec<AgentSessionMcpServer>, String> {
+        let saved = self.list_mcp_servers().await?;
+        let cards = match row.kind {
+            TaskKind::Desktop => self.external_agent_cards().await?,
+            TaskKind::Acp => Vec::new(),
+        };
+        Ok(self.menu_rows_with(&saved, &cards, row))
+    }
+
+    /// A task's whole MCP menu: its servers, then the external agents
+    /// switched on in Settings, then built-in CUA.
+    fn menu_rows_with(
+        &self,
+        saved: &[AgentMcpServer],
+        agent_cards: &[AgentIntegration],
+        row: &TaskRow,
+    ) -> Vec<AgentSessionMcpServer> {
+        let mut rows = session_rows(saved, row);
+        rows.extend(external_agents::session_rows(agent_cards, row));
+        if row.kind == TaskKind::Desktop {
+            let device = cua_default(self.paths(), &self.user_id);
+            let ready = (device.is_some() || cua::task_choice(row).is_some()) && cua::ready();
+            rows.extend(cua::session_row(row, device, ready));
+        }
+        rows
+    }
 }
 
 #[cfg(test)]
