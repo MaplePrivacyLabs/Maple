@@ -93,10 +93,6 @@ pub struct AgentBackend {
     billing: crate::billing::BillingClient,
     /// Cached billing JWT per user id. Replaced after a 401.
     billing_tokens: tokio::sync::Mutex<HashMap<String, String>>,
-    /// Open handle to the usage ledger DB; the context ring polls it every
-    /// second during a run, so it is not reopened per query. Shared with
-    /// the blocking task that runs each query.
-    usage_db: Arc<std::sync::Mutex<Option<(PathBuf, rusqlite::Connection)>>>,
     /// Open handle to the app-owned tool summary store; keyed by account
     /// scope path so a user switch reopens it.
     summary_db: std::sync::Mutex<Option<(PathBuf, rusqlite::Connection)>>,
@@ -403,42 +399,6 @@ impl AgentBackend {
 /// App configuration root (XDG-style), also used by the settings store.
 pub fn app_config_root() -> PathBuf {
     config_root()
-}
-
-/// Path to the goose sessions database for one account scope. The agent
-/// runtime owns and writes this file; the app only reads it.
-pub fn account_session_db(account_scope: &str) -> PathBuf {
-    local_data_root()
-        .join("agent")
-        .join("accounts")
-        .join(account_scope)
-        .join("goose")
-        .join("data")
-        .join("sessions")
-        .join("sessions.db")
-}
-
-/// Open the goose sessions database for reading. Returns `None` when the
-/// file does not exist yet (read-only open never creates it). The busy
-/// timeout covers the short locks goose takes for WAL checkpoints.
-pub fn open_session_db_read_only(path: &std::path::Path) -> Option<rusqlite::Connection> {
-    use rusqlite::OpenFlags;
-    let flags = OpenFlags::SQLITE_OPEN_READ_ONLY
-        | OpenFlags::SQLITE_OPEN_NO_MUTEX
-        | OpenFlags::SQLITE_OPEN_URI;
-    let conn = match rusqlite::Connection::open_with_flags(path, flags) {
-        Ok(conn) => conn,
-        Err(error) => {
-            if path.exists() {
-                log::warn!("Cannot open session db {}: {error}", path.display());
-            }
-            return None;
-        }
-    };
-    if let Err(error) = conn.busy_timeout(std::time::Duration::from_secs(5)) {
-        log::warn!("Cannot set busy timeout on {}: {error}", path.display());
-    }
-    Some(conn)
 }
 
 /// Path to the app-owned store of model-written tool call summaries for
@@ -812,7 +772,6 @@ impl AgentBackend {
             event_rx: tokio::sync::Mutex::new(Some(event_rx)),
             billing,
             billing_tokens: tokio::sync::Mutex::new(HashMap::new()),
-            usage_db: Arc::new(std::sync::Mutex::new(None)),
             summary_db: std::sync::Mutex::new(None),
             restore_pending: tokio::sync::watch::channel(false),
         })
@@ -2254,59 +2213,36 @@ impl AgentBackend {
         })
     }
 
-    /// Latest context usage for a session from the goose usage ledger:
-    /// (context tokens, context limit). The limit comes from the model
-    /// catalog for the selected model; MAPLE_CONTEXT_LIMIT is a manual
-    /// override; 200k is the fallback when the catalog lacks the model.
+    /// A session's context usage: (context tokens, context limit). The
+    /// tokens are the runtime's count of the task's context; the limit comes
+    /// from the model catalog for the selected model; MAPLE_CONTEXT_LIMIT is
+    /// a manual override; 200k is the fallback when the catalog lacks the
+    /// model.
     pub async fn context_usage(
         &self,
         user_id: &str,
         session_id: &str,
         model: Option<&str>,
     ) -> Result<Option<(i64, i64)>, String> {
-        let Some(scope) = self.account_scope(user_id) else {
+        if self.account_scope(user_id).is_none() {
             return Ok(None);
-        };
+        }
+        let handle = self.service.handle_for_user(user_id).await?;
         let limit: i64 = match std::env::var("MAPLE_CONTEXT_LIMIT")
             .ok()
             .and_then(|value| value.parse().ok())
         {
             Some(limit) if limit > 0 => limit,
             _ => match model {
-                Some(model) => self
-                    .service
-                    .handle_for_user(user_id)
-                    .await?
+                Some(model) => handle
                     .context_limit_for_model(model)
                     .await?
                     .unwrap_or(200_000),
                 None => 200_000,
             },
         };
-        // SQLite is synchronous; keep it off the async workers.
-        let db = crate::backend::account_session_db(&scope);
-        let usage_db = self.usage_db.clone();
-        let session_id = session_id.to_string();
-        let tokens = tokio::task::spawn_blocking(move || {
-            let mut guard = usage_db.lock().unwrap_or_else(|e| e.into_inner());
-            if guard.as_ref().map(|(path, _)| path != &db).unwrap_or(true) {
-                let conn = crate::backend::open_session_db_read_only(&db)?;
-                *guard = Some((db, conn));
-            }
-            let conn = &guard.as_ref().expect("usage db opened above").1;
-            conn.query_row(
-                "SELECT COALESCE(input_tokens,0) + COALESCE(cache_read_tokens,0) \
-                 + COALESCE(cache_write_tokens,0) FROM usage_ledger \
-                 WHERE session_id = ?1 AND is_compaction = 0 \
-                 ORDER BY id DESC LIMIT 1",
-                [session_id],
-                |row| row.get::<_, i64>(0),
-            )
-            .ok()
-        })
-        .await
-        .map_err(|error| format!("Context usage query failed: {error}"))?;
-        Ok(tokens.map(|tokens| (tokens, limit)))
+        let tokens = handle.session_context_tokens(session_id).await?;
+        Ok(tokens.map(|tokens| (i64::try_from(tokens).unwrap_or(i64::MAX), limit)))
     }
 
     /// Deliver the user's answer to an ask_user question. Returns false

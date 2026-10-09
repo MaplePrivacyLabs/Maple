@@ -308,12 +308,31 @@ async fn a_task_runs_saves_and_comes_back_after_a_restart() {
     assert_eq!(listed[0].message_count, 3);
     assert_eq!(listed[0].model.as_deref(), Some("glm-5-3"));
 
+    // The context ring reads Pi's count of the task's context.
+    let context = harness
+        .handle
+        .session_context_tokens(&task)
+        .await
+        .unwrap()
+        .expect("the task has context");
+    let empty = harness.create_task().await;
+    assert_eq!(
+        harness.handle.session_context_tokens(&empty).await.unwrap(),
+        None
+    );
+    harness.handle.delete_session(empty).await.unwrap();
+
     // After a restart the task lists and reads the same while stopped.
     harness.restart().await;
     let listed = harness.handle.list_sessions(None).await.unwrap();
     assert_eq!(listed[0].id, task);
     let detail = harness.handle.load_session(task.clone()).await.unwrap();
     assert_eq!(shown(&detail.timeline), shown(&live));
+    assert_eq!(
+        harness.handle.session_context_tokens(&task).await.unwrap(),
+        Some(context),
+        "the stored task counts the same"
+    );
 
     // A follow-up continues with the earlier context.
     harness.start().await;

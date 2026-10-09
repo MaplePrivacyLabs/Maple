@@ -205,6 +205,31 @@ impl AgentRuntimeHandle {
         })
     }
 
+    /// How many tokens of its model's context a task fills, as Pi counts
+    /// them: the last reply's reported usage, plus an estimate of what came
+    /// after it. `None` for a task with nothing in it yet.
+    pub async fn session_context_tokens(&self, session_id: &str) -> Result<Option<u64>, String> {
+        let runtime = self.current_runtime().await?;
+        let loaded = match &runtime {
+            Some(runtime) => runtime.loaded_session(session_id).await,
+            None => None,
+        };
+        let tokens = match loaded {
+            Some(session) => session.context_usage().map_or(0, |usage| usage.tokens),
+            None => {
+                let store = self.store()?;
+                if store.get(session_id)?.is_none() {
+                    return Err(format!("Failed to find Agent task {session_id}"));
+                }
+                let path = store.session_path(session_id);
+                tokio::task::spawn_blocking(move || stored_context_tokens(&path))
+                    .await
+                    .map_err(|error| format!("Failed to read the Agent task: {error}"))??
+            }
+        };
+        Ok(Some(tokens).filter(|tokens| *tokens > 0))
+    }
+
     /// The task's current title, or `None` when it does not exist.
     pub async fn session_display_title(&self, session_id: &str) -> Result<Option<String>, String> {
         self.verify_generation().await?;
@@ -379,6 +404,25 @@ impl AgentRuntimeHandle {
             );
         }
         Ok(())
+    }
+}
+
+/// The context size of a task's session file, as Pi estimates it; zero when
+/// it has none yet.
+fn stored_context_tokens(path: &Path) -> Result<u64, String> {
+    match JsonlStore::load(path) {
+        Ok(Some((header, entries))) => {
+            let manager = pi_coding_agent::session::SessionManager::open(
+                header,
+                entries,
+                Box::new(pi_coding_agent::store::MemoryStore),
+            );
+            Ok(pi_coding_agent::compaction::estimate_context_tokens(
+                &manager.projection().messages,
+            ))
+        }
+        Ok(None) => Ok(0),
+        Err(error) => Err(format!("Failed to read the Agent task's history: {error}")),
     }
 }
 
