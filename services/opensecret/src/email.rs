@@ -1069,13 +1069,34 @@ mod tests {
             "",
         );
         assert_eq!(welcome.subject, "Welcome to Maple");
-        assert!(welcome.html.contains("https://www.trymaple.ai/docs/proxy"));
+        assert!(welcome.html.contains("href=\"https://trymaple.ai\""));
         assert!(welcome
             .html
-            .contains("https://www.trymaple.ai/research#download"));
+            .contains("<a href=\"https://www.trymaple.ai\"><img"));
+        for href in [
+            "https://www.trymaple.ai/pricing?utm_source=email&amp;utm_medium=email&amp;utm_campaign=welcome&amp;utm_content=see-plans",
+            "https://www.trymaple.ai/downloads?utm_source=email&amp;utm_medium=email&amp;utm_campaign=welcome&amp;utm_content=download-app",
+            "https://www.trymaple.ai/research?utm_source=email&amp;utm_medium=email&amp;utm_campaign=welcome&amp;utm_content=details",
+            "https://www.trymaple.ai/docs/proxy?utm_source=email&amp;utm_medium=email&amp;utm_campaign=welcome&amp;utm_content=proxy-docs",
+        ] {
+            assert!(welcome.html.contains(&format!("href=\"{href}\"")), "{href}");
+        }
         assert!(welcome
             .html
-            .contains("https://www.trymaple.ai/research#pricing"));
+            .contains("href=\"https://github.com/MaplePrivacyLabs/Maple\""));
+        assert!(!welcome.html.contains("research#download"));
+        assert!(!welcome.html.contains("research#pricing"));
+        assert!(!welcome.html.contains("OpenSecretCloud/Maple"));
+        assert!(welcome.html.contains("class=\"ink\" src=\"https://www.trymaple.ai/email/research-laptop.jpg\" width=\"536\" alt=\"Maple Research open on a laptop\""));
+        assert!(welcome
+            .html
+            .contains("app-icon.png\" width=\"48\" height=\"48\" alt=\"\""));
+        assert!(welcome
+            .html
+            .contains("footer-watermark-light.png\" width=\"600\" alt=\"\""));
+        assert!(welcome
+            .html
+            .contains("footer-watermark-dark.png\" width=\"600\" alt=\"\""));
         assert!(welcome
             .html
             .contains("601 Congress Ave, Suite 250, Austin, TX 78701"));
@@ -1083,6 +1104,35 @@ mod tests {
             .html
             .contains("https://www.trymaple.ai/email/tile-welcome.png"));
         assert!(!welcome.html.contains("tracking"));
+
+        for (kind, campaign, tag_count) in [
+            (Kind::Welcome, "welcome", 6),
+            (Kind::Verification, "verify-email", 2),
+            (Kind::PasswordReset, "password-reset", 2),
+            (Kind::PasswordResetConfirmation, "password-changed", 2),
+            (Kind::AccountDeletion, "delete-account", 2),
+            (Kind::AccountDeletionConfirmation, "account-deleted", 2),
+        ] {
+            let message = maple_templates::render(
+                kind,
+                "Maple",
+                "Maple",
+                "support@trymaple.ai",
+                "CODE",
+                "https://trymaple.ai/verify-email/CODE",
+            );
+            for (path, content) in [("", "footer-home"), ("/privacy", "footer-privacy")] {
+                let href = format!(
+                    "href=\"https://www.trymaple.ai{path}?utm_source=email&amp;utm_medium=email&amp;utm_campaign={campaign}&amp;utm_content={content}\""
+                );
+                assert!(message.html.contains(&href), "{href}");
+            }
+            assert_eq!(message.html.matches("utm_campaign=").count(), tag_count);
+            assert!(!message.html.contains("mailto:support@trymaple.ai?utm_"));
+            assert!(!message.html.contains("x.com/trymapleai?utm_"));
+            assert!(!message.html.contains("MaplePrivacyLabs/Maple?utm_"));
+            assert!(!message.html.contains("verify-email/CODE?utm_"));
+        }
     }
 
     #[test]

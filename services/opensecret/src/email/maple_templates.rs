@@ -103,6 +103,14 @@ pub(super) fn render(
             include_str!("maple_templates/account-deletion-confirmation.html"),
         ),
     };
+    let campaign = match kind {
+        Kind::Welcome => "welcome",
+        Kind::Verification => "verify-email",
+        Kind::PasswordReset => "password-reset",
+        Kind::PasswordResetConfirmation => "password-changed",
+        Kind::AccountDeletion => "delete-account",
+        Kind::AccountDeletionConfirmation => "account-deleted",
+    };
 
     let project = escape_html(project);
     let team = escape_html(team);
@@ -131,6 +139,7 @@ pub(super) fn render(
             ("BLOCKS", &blocks),
             ("SUPPORT", &support),
             ("YEAR", &year),
+            ("CAMPAIGN", campaign),
             ("ASSET_BASE", ASSET_BASE),
         ],
     );
