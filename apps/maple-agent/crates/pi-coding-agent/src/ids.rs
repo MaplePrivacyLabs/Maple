@@ -7,7 +7,7 @@ use pi_ai::now_ms;
 static COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// 64 unpredictable bits from the standard library's randomly keyed hasher.
-fn random_u64() -> u64 {
+pub(crate) fn random_u64() -> u64 {
     let mut hasher = RandomState::new().build_hasher();
     hasher.write_u64(COUNTER.fetch_add(1, Ordering::Relaxed));
     hasher.write_i64(now_ms());

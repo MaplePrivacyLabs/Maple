@@ -38,8 +38,48 @@ pub struct SystemPromptOptions {
     pub cwd: String,
     pub context_files: Vec<ContextFile>,
     pub skills: Vec<Skill>,
-    /// How the model reads a skill file. Without a way to read files, skills are left out.
+    /// How the model reads a skill file, for example "Use the read tool to load a skill's
+    /// file". Without one it follows from the tools: `read`, else `bash`; with neither,
+    /// skills are left out.
     pub skill_load_hint: Option<String>,
+}
+
+fn has_tool(options: &SystemPromptOptions, name: &str) -> bool {
+    options.tools.iter().any(|tool| tool.name == name)
+}
+
+/// How a skill file is loaded with the active tools, as Pi words it.
+fn skill_load_hint(options: &SystemPromptOptions) -> Option<String> {
+    if let Some(hint) = &options.skill_load_hint {
+        return Some(hint.clone());
+    }
+    if has_tool(options, "read") {
+        Some("Use the read tool to load a skill's file".to_string())
+    } else if has_tool(options, "bash") {
+        Some("Use bash to load a skill's file".to_string())
+    } else {
+        None
+    }
+}
+
+/// With a shell but no tool for listing or searching files, the shell does that.
+fn shell_rule(options: &SystemPromptOptions) -> Option<&'static str> {
+    let bash = has_tool(options, "bash");
+    let powershell = has_tool(options, "powershell");
+    let file_tools = ["grep", "find", "ls"]
+        .iter()
+        .any(|name| has_tool(options, name));
+    match (bash, powershell) {
+        _ if file_tools => None,
+        (true, true) => Some(
+            "Use bash or PowerShell for file operations like listing, searching, and finding files",
+        ),
+        (false, true) => {
+            Some("Use PowerShell for file operations like listing, searching, and finding files")
+        }
+        (true, false) => Some("Use bash for file operations like ls, rg, find"),
+        (false, false) => None,
+    }
 }
 
 fn valid_section_name(name: &str) -> bool {
@@ -51,12 +91,16 @@ fn valid_section_name(name: &str) -> bool {
 
 fn rules(options: &SystemPromptOptions) -> String {
     let mut rules: Vec<&str> = Vec::new();
-    let all = options
-        .tools
-        .iter()
-        .flat_map(|tool| tool.guidelines.iter())
-        .chain(&options.guidelines)
-        .map(|rule| rule.trim())
+    let all = shell_rule(options)
+        .into_iter()
+        .chain(
+            options
+                .tools
+                .iter()
+                .flat_map(|tool| tool.guidelines.iter())
+                .chain(&options.guidelines)
+                .map(|rule| rule.trim()),
+        )
         .chain([
             "Be concise in your responses",
             "Show file paths clearly when working with files",
@@ -139,8 +183,8 @@ pub fn build_sections(options: &SystemPromptOptions) -> Result<IndexMap<String, 
             ),
         );
     }
-    if let Some(hint) = &options.skill_load_hint {
-        let skills = format_skills_for_prompt(&options.skills, hint);
+    if let Some(hint) = skill_load_hint(options) {
+        let skills = format_skills_for_prompt(&options.skills, &hint);
         if !skills.is_empty() {
             raw.insert("skills".into(), skills);
         }

@@ -39,6 +39,8 @@ impl Harness {
         );
         options.model = Some(self.faux.model());
         options.settings.retry.base_delay_ms = 1;
+        // These tests use the host's tools alone; the built-in tools have their own.
+        options.builtin_tools = Some(Vec::new());
         options
     }
 

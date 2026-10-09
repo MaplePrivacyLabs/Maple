@@ -370,7 +370,8 @@ async fn extensions_register_tools_and_providers() {
         );
     });
     let session = harness.session_with_extensions(vec![tools]).await;
-    assert_eq!(session.tool_names(), ["lookup"]);
+    // The built-in tools stay registered, turned off.
+    assert!(session.tool_names().contains(&"lookup".to_string()));
     assert_eq!(session.active_tools(), ["lookup"]);
 
     session.set_model(provider.model()).await;

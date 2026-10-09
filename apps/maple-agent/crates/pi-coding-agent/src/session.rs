@@ -9,6 +9,7 @@
 use std::collections::HashMap;
 use std::fmt;
 use std::io;
+use std::path::Path;
 
 use pi_agent_core::AgentMessage;
 use pi_ai::transcript::current_system_message;
@@ -456,6 +457,11 @@ impl SessionManager {
 
     pub fn cwd(&self) -> &str {
         &self.header.cwd
+    }
+
+    /// The file the session is kept in, when its store keeps one.
+    pub fn session_file(&self) -> Option<&Path> {
+        self.store.file()
     }
 
     pub fn entries(&self) -> &[SessionEntry] {

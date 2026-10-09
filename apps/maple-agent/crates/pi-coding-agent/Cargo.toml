@@ -13,10 +13,17 @@ serde_json = { workspace = true }
 serde_yaml = "0.9"
 indexmap = { version = "2", features = ["serde"] }
 regex = "1"
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["fs"] }
 tokio-util = { workspace = true }
 futures-util = { workspace = true }
 async-trait = { workspace = true }
+base64 = "0.22"
+image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp"] }
+similar = "2"
+unicode-normalization = "0.1"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 
 [dev-dependencies]
 tempfile = "3"

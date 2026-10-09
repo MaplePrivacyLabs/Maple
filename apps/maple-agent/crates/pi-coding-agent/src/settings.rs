@@ -30,6 +30,19 @@ impl Default for RetrySettings {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct ImageSettings {
+    /// Resize images the `read` tool sends so they fit inline image limits.
+    pub auto_resize: bool,
+}
+
+impl Default for ImageSettings {
+    fn default() -> Self {
+        Self { auto_resize: true }
+    }
+}
+
 /// Session behaviour. User settings are overlaid by project settings, key by key.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
@@ -46,6 +59,12 @@ pub struct Settings {
     pub prompts: Vec<PathBuf>,
     /// Text added to the system prompt.
     pub append_system_prompt: Option<String>,
+    /// The shell `bash` runs instead of the one it finds; a leading `~` is the home
+    /// folder.
+    pub shell_path: Option<PathBuf>,
+    /// Run before every `bash` command, for example `shopt -s expand_aliases`.
+    pub shell_command_prefix: Option<String>,
+    pub images: ImageSettings,
 }
 
 /// Overlay `overlay` onto `base`: objects merge key by key, anything else replaces.

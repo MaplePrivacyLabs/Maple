@@ -9,9 +9,11 @@
 //! - [`resources`]: context files, skills and prompt templates from folders the host names;
 //! - [`system_prompt`]: the prompt as named sections the transcript can patch;
 //! - [`extensions`]: a plugin API of typed events, tools, commands and providers;
+//! - [`tools`]: Pi's built-in tools, `read`, `bash`, `edit` and `write`, and `powershell`;
 //! - [`AgentSession`]: an agent over a session with all of the above, plus retry.
 //!
-//! It ships no tools of its own: hosts register theirs.
+//! A session gets the built-in tools for its folder; hosts configure them, add their
+//! own, and replace one by registering a tool with its name.
 
 pub mod agent_session;
 pub mod compaction;
@@ -24,6 +26,7 @@ pub mod session;
 pub mod settings;
 pub mod store;
 pub mod system_prompt;
+pub mod tools;
 
 pub use agent_session::{
     AgentSession, AgentSessionError, AgentSessionEvent, AgentSessionOptions, CompactionReason,

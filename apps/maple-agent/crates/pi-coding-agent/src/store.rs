@@ -16,6 +16,10 @@ pub trait SessionStore: Send {
     fn write_all(&mut self, header: &SessionHeader, entries: &[SessionEntry]) -> io::Result<()>;
     /// Append one entry after an earlier `write_all`.
     fn append(&mut self, entry: &SessionEntry) -> io::Result<()>;
+    /// The file the session is kept in, for a store that keeps one.
+    fn file(&self) -> Option<&Path> {
+        None
+    }
 }
 
 /// A store that keeps nothing, for ephemeral sessions and tests.
@@ -101,6 +105,10 @@ fn entry_line(entry: &SessionEntry) -> io::Result<Vec<u8>> {
 }
 
 impl SessionStore for JsonlStore {
+    fn file(&self) -> Option<&Path> {
+        Some(&self.path)
+    }
+
     fn write_all(&mut self, header: &SessionHeader, entries: &[SessionEntry]) -> io::Result<()> {
         if let Some(parent) = self.path.parent() {
             fs::create_dir_all(parent)?;

@@ -9,7 +9,7 @@
 //! context near its limit is compacted.
 
 use std::fmt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use std::time::Duration;
@@ -50,6 +50,7 @@ use crate::store::SessionStore;
 use crate::system_prompt::{
     SystemPromptOptions, ToolPromptInfo, build_prompt_state, diff_sections, render,
 };
+use crate::tools::{DEFAULT_TOOL_NAMES, ToolContext, ToolsOptions, create_all_tools, expand_path};
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex
@@ -210,13 +211,21 @@ pub struct AgentSessionOptions {
     pub model: Option<Model>,
     pub settings: Settings,
     pub resources: Resources,
-    /// The host's tools.
+    /// How Pi's built-in tools are set up. The settings' shell path, command prefix and
+    /// image resizing fill in what these leave open.
+    pub tool_options: ToolsOptions,
+    /// The built-in tools the model gets at the start: `read`, `bash`, `edit` and
+    /// `write` when `None`, none for an empty list. The rest stay registered and can be
+    /// turned on.
+    pub builtin_tools: Option<Vec<String>>,
+    /// The host's tools. One with a built-in tool's name replaces it.
     pub tools: Vec<RegisteredTool>,
     pub extensions: Vec<Arc<dyn Extension>>,
     pub ui: Arc<dyn ExtensionUi>,
     /// Replaces the default preamble, tool list and rules.
     pub custom_prompt: Option<String>,
-    /// How the model reads skill files; without it, skills are left out of the prompt.
+    /// How the model reads skill files. Without it, `read` or else `bash` does, and
+    /// with neither, skills are left out of the prompt.
     pub skill_load_hint: Option<String>,
 }
 
@@ -235,6 +244,8 @@ impl AgentSessionOptions {
             model: None,
             settings: Settings::default(),
             resources: Resources::default(),
+            tool_options: ToolsOptions::default(),
+            builtin_tools: None,
             tools: Vec::new(),
             extensions: Vec::new(),
             ui: Arc::new(crate::extensions::NoUi),
@@ -403,8 +414,51 @@ impl AgentSession {
                 session_id: Some(session_id),
                 ..StreamOptions::default()
             };
-            let mut tools = options.tools;
-            tools.extend(runner.tools().iter().cloned());
+            let context = ExtensionContext {
+                core: weak.clone(),
+                extension: Arc::from("builtin"),
+            };
+            let mut tool_options = options.tool_options;
+            tool_options.bash.shell_path = tool_options.bash.shell_path.or_else(|| {
+                options
+                    .settings
+                    .shell_path
+                    .as_ref()
+                    .map(|path| expand_path(&path.to_string_lossy()))
+            });
+            tool_options.bash.command_prefix = tool_options
+                .bash
+                .command_prefix
+                .or_else(|| options.settings.shell_command_prefix.clone());
+            tool_options.read.auto_resize_images &= options.settings.images.auto_resize;
+            let builtin_active = options.builtin_tools.unwrap_or_else(|| {
+                DEFAULT_TOOL_NAMES
+                    .iter()
+                    .map(|name| name.to_string())
+                    .collect()
+            });
+            let mut tools = create_all_tools(
+                &options.cwd,
+                &tool_options,
+                &ToolContext::for_session(&options.app_name, context),
+                &builtin_active,
+            );
+            let builtin_count = tools.len();
+            for tool in options
+                .tools
+                .into_iter()
+                .chain(runner.tools().iter().cloned())
+            {
+                // A host or extension tool with a built-in tool's name replaces it, as
+                // in Pi.
+                match tools[..builtin_count]
+                    .iter()
+                    .position(|builtin| builtin.tool.name() == tool.tool.name())
+                {
+                    Some(index) => tools[index] = tool,
+                    None => tools.push(tool),
+                }
+            }
             let active = tools
                 .iter()
                 .filter(|tool| tool.active)
@@ -1692,6 +1746,11 @@ impl ExtensionContext {
 
     pub fn session_id(&self) -> Option<String> {
         Some(self.core()?.session_id())
+    }
+
+    /// The file the session is kept in, when its store keeps one.
+    pub fn session_file(&self) -> Option<PathBuf> {
+        self.read_session(|session| session.session_file().map(Path::to_path_buf))?
     }
 
     pub fn model(&self) -> Option<Model> {
