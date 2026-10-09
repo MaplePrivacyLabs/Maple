@@ -24,6 +24,9 @@ enum OAuthFlow {
         provider: OAuthProvider,
         auth_url: String,
     },
+    Hosted {
+        provider: OAuthProvider,
+    },
 }
 
 pub struct LoginScreen {
@@ -36,6 +39,9 @@ pub struct LoginScreen {
     /// Backend-call bridges retained for thread-affinity; see
     /// [`crate::ui::task::call`].
     bridged_tasks: std::cell::RefCell<Vec<gpui::Task<()>>>,
+    /// Abort backend work when this screen is destroyed, including an OAuth
+    /// start that has been scheduled but has not created its native attempt.
+    backend_tasks: std::cell::RefCell<Vec<tokio::task::AbortHandle>>,
     error: Option<String>,
     busy: bool,
 }
@@ -83,6 +89,7 @@ impl LoginScreen {
         });
         Self {
             bridged_tasks: std::cell::RefCell::new(Vec::new()),
+            backend_tasks: std::cell::RefCell::new(Vec::new()),
             backend,
             email_input: email,
             password_input: password,
@@ -133,12 +140,27 @@ impl LoginScreen {
         T: Send + 'static,
         F: std::future::Future<Output = Result<T, String>> + Send + 'static,
     {
-        // Retained for the same thread-affinity reason as ChatScreen's
-        // bridges; see ui::task::call.
-        let bridge = crate::ui::task::call(&self.backend, future, cx, |this, result, cx| {
-            this.busy = false;
-            then(this, result, cx);
-            cx.notify();
+        let task = self.backend.spawn(future);
+        let mut tasks = self.backend_tasks.borrow_mut();
+        if tasks.len() >= 16 {
+            tasks.retain(|task| !task.is_finished());
+        }
+        tasks.push(task.abort_handle());
+        drop(tasks);
+        // Keep the same thread-affinity bridge as ui::task::call, with an
+        // abort handle owned by this login screen. cx.spawn receives only a
+        // WeakEntity; waiting for the browser cannot keep the screen alive.
+        let bridge = cx.spawn(async move |this, cx| {
+            let result = task.await.unwrap_or_else(|error| {
+                log::debug!("backend task failed: {error:?}");
+                Err("The task was cancelled".to_string())
+            });
+            this.update(cx, |this, cx| {
+                this.busy = false;
+                then(this, result, cx);
+                cx.notify();
+            })
+            .ok();
         });
         crate::ui::task::retain(&self.bridged_tasks, bridge);
     }
@@ -162,7 +184,16 @@ impl LoginScreen {
         self.call(
             async move { backend.oauth_start(provider).await },
             cx,
-            move |this, result, _cx| match result {
+            move |this, result, cx| match result {
+                Ok(_) if this.backend.uses_hosted_oauth() => {
+                    this.oauth = OAuthFlow::Hosted { provider };
+                    let backend = this.begin(cx);
+                    this.call(
+                        async move { backend.oauth_wait_for_handoff(provider).await },
+                        cx,
+                        Self::oauth_completed,
+                    );
+                }
                 Ok(auth_url) => this.oauth = OAuthFlow::Pending { provider, auth_url },
                 Err(message) => this.error = Some(message),
             },
@@ -192,8 +223,8 @@ impl LoginScreen {
 
     fn oauth_completed(&mut self, result: Result<AuthSession, String>, cx: &mut Context<Self>) {
         match result {
-            // Success means native authentication is already installed and
-            // persisted. If Back raced with its queued UI receipt, follow
+            // Success means native authentication is already installed. If
+            // Back raced with its queued UI receipt, follow
             // that committed account instead of leaving a signed-out form
             // over a live session. `busy` prevents another sign-in until
             // this completion is delivered.
@@ -212,6 +243,19 @@ impl LoginScreen {
     }
 }
 
+impl Drop for LoginScreen {
+    fn drop(&mut self) {
+        // The screen owns the native attempt, including any loopback socket.
+        // The bridge holds only a weak view handle while awaiting it.
+        self.backend.cancel_oauth();
+        // Dropping a Tokio JoinHandle merely detaches it. Abort explicitly
+        // so a not-yet-polled start cannot open a browser after cancellation.
+        for task in self.backend_tasks.get_mut() {
+            task.abort();
+        }
+    }
+}
+
 impl EventEmitter<LoginSucceeded> for LoginScreen {}
 
 impl Render for LoginScreen {
@@ -227,7 +271,10 @@ impl Render for LoginScreen {
             .bg(gpui::rgb(theme::bg_elevated()))
             .border_1()
             .border_color(gpui::rgb(theme::border()))
-            .when(busy, |container| container.opacity(0.7))
+            .when(
+                busy && !matches!(self.oauth, OAuthFlow::Hosted { .. }),
+                |container| container.opacity(0.7),
+            )
             .tab_group()
             .child(
                 div()
@@ -321,6 +368,7 @@ impl Render for LoginScreen {
                     .child(field("", self.callback_input.clone()))
                     .child(
                         widgets::primary_button("oauth-confirm")
+                            .debug_selector(|| "oauth-confirm".to_string())
                             .w_full()
                             .when(busy, |el| el.bg(gpui::rgb(theme::bg_sidebar_pill())))
                             .when(!busy, |el| {
@@ -336,6 +384,39 @@ impl Render for LoginScreen {
                     )
                     .child(
                         widgets::ghost_button("oauth-cancel")
+                            .debug_selector(|| "oauth-cancel".to_string())
+                            .w_full()
+                            .on_click(cx.listener(|this, _event, _window, cx| {
+                                this.cancel_oauth(cx);
+                            }))
+                            .child("Back to email sign in"),
+                    );
+            }
+            OAuthFlow::Hosted { provider } => {
+                card = card
+                    .child(
+                        div()
+                            .text_sm()
+                            .text_color(gpui::rgb(theme::text_primary()))
+                            .child(format!("Finish signing in with {}", provider.label())),
+                    )
+                    .child(
+                        div()
+                            .text_sm()
+                            .text_color(gpui::rgb(theme::text_secondary()))
+                            .child("Continue in your browser. Maple will sign in automatically when you finish."),
+                    )
+                    .when(busy, |card| {
+                        card.child(
+                            div()
+                                .text_sm()
+                                .text_color(gpui::rgb(theme::text_muted()))
+                                .child("Waiting for your browser…"),
+                        )
+                    })
+                    .child(
+                        widgets::ghost_button("oauth-cancel")
+                            .debug_selector(|| "oauth-cancel".to_string())
                             .w_full()
                             .on_click(cx.listener(|this, _event, _window, cx| {
                                 this.cancel_oauth(cx);
@@ -480,6 +561,26 @@ mod tests {
 
     #[gpui::test]
     fn oauth_committed_success_is_delivered_when_back_precedes_ui_receipt(cx: &mut TestAppContext) {
+        assert_committed_success_after_back(
+            OAuthFlow::Pending {
+                provider: OAuthProvider::Github,
+                auth_url: "https://example.com/authorize".to_string(),
+            },
+            cx,
+        );
+    }
+
+    #[gpui::test]
+    fn hosted_oauth_committed_success_is_delivered_after_back(cx: &mut TestAppContext) {
+        assert_committed_success_after_back(
+            OAuthFlow::Hosted {
+                provider: OAuthProvider::Github,
+            },
+            cx,
+        );
+    }
+
+    fn assert_committed_success_after_back(flow: OAuthFlow, cx: &mut TestAppContext) {
         cx.executor().allow_parking();
         let backend =
             Arc::new(AgentBackend::new("http://127.0.0.1:9".to_string(), String::new()).unwrap());
@@ -498,10 +599,7 @@ mod tests {
             user_id: "oauth-account-fixture".to_string(),
         });
         screen.update(cx, |this, cx| {
-            this.oauth = OAuthFlow::Pending {
-                provider: OAuthProvider::Github,
-                auth_url: "https://example.com/authorize".to_string(),
-            };
+            this.oauth = flow;
             this.busy = true;
             this.cancel_oauth(cx);
             assert!(
@@ -525,5 +623,78 @@ mod tests {
             );
         });
         assert_eq!(signed_in.borrow().len(), 1);
+    }
+
+    #[gpui::test]
+    fn hosted_wait_has_no_paste_step_and_back_remains_usable(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        let backend =
+            Arc::new(AgentBackend::new("http://127.0.0.1:9".to_string(), String::new()).unwrap());
+        let screen = cx.new(|cx| LoginScreen::new(backend, cx));
+        screen.update(cx, |this, cx| {
+            this.oauth = OAuthFlow::Hosted {
+                provider: OAuthProvider::Google,
+            };
+            this.busy = true;
+            cx.notify();
+        });
+        let (_host, cx) = cx.add_window_view(|_window, _cx| LoginHost {
+            screen: screen.clone(),
+        });
+        cx.simulate_resize(size(px(900.), px(700.)));
+        assert!(cx.debug_bounds("oauth-confirm").is_none());
+        let back = cx
+            .debug_bounds("oauth-cancel")
+            .expect("cancel while waiting");
+        cx.simulate_click(back.center(), gpui::Modifiers::default());
+        screen.update(cx, |this, cx| {
+            assert!(matches!(this.oauth, OAuthFlow::Idle));
+            assert!(this.busy, "wait result must settle before another sign-in");
+            this.submit_values(String::new(), String::new(), cx);
+            this.start_oauth(OAuthProvider::Apple, cx);
+            assert!(this.error.is_none());
+            assert!(matches!(this.oauth, OAuthFlow::Idle));
+            assert!(this.busy);
+            this.busy = false;
+            this.oauth_completed(Err("Sign in was cancelled. Start again.".to_string()), cx);
+            assert!(this.error.is_none());
+        });
+    }
+
+    #[gpui::test]
+    async fn waiting_bridge_drops_view_and_aborts_backend_work(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        let backend =
+            Arc::new(AgentBackend::new("http://127.0.0.1:9".to_string(), String::new()).unwrap());
+        let screen = cx.new(|cx| LoginScreen::new(backend.clone(), cx));
+        let weak = screen.downgrade();
+        let (owned, released) = tokio::sync::oneshot::channel::<()>();
+        screen.update(cx, |this, cx| {
+            this.oauth = OAuthFlow::Hosted {
+                provider: OAuthProvider::Apple,
+            };
+            this.begin(cx);
+            this.call(
+                async move {
+                    let _owned = owned;
+                    std::future::pending::<Result<AuthSession, String>>().await
+                },
+                cx,
+                LoginScreen::oauth_completed,
+            );
+        });
+        cx.run_until_parked();
+        // GPUI queues entity disposal until an App update flushes its effects.
+        // Run that cycle so LoginScreen::Drop aborts the pending backend task.
+        cx.update(|_| drop(screen));
+        cx.run_until_parked();
+        assert!(
+            weak.upgrade().is_none(),
+            "closing the login screen must reach Drop and cancel its native attempt"
+        );
+        assert!(
+            released.await.is_err(),
+            "screen disposal must abort, rather than detach, its backend work"
+        );
     }
 }

@@ -39,7 +39,7 @@ class AgentWorkflowBoundaryTests(unittest.TestCase):
         config = workflow("agent-ci.yml")
         self.assertEqual(set(config["on"]), {"push", "pull_request", "workflow_dispatch"})
         self.assertEqual(config["on"]["push"]["branches"], ["master"])
-        self.assertEqual(config["on"]["pull_request"]["branches"], ["master"])
+        self.assertIsNone(config["on"]["pull_request"])
         self.assertEqual(config["permissions"], {"contents": "read"})
         for value in strings(config):
             self.assertNotRegex(value, r"\bsecrets\b|github\.token|\bGH_TOKEN\b")
@@ -146,7 +146,7 @@ class AgentDesktopPackagingBoundaryTests(unittest.TestCase):
         self.assertEqual(config["name"], "Maple Agent Desktop Builds")
         self.assertEqual(config["on"], {
             "push": {"branches": ["master"]},
-            "pull_request": {"branches": ["master"]},
+            "pull_request": None,
             "workflow_dispatch": None,
         })
         self.assertEqual(config["permissions"], {"contents": "read"})

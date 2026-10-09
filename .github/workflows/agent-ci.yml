@@ -4,7 +4,7 @@ on:
   push:
     branches: [master]
   pull_request:
-    branches: [master]
+    # Run unprivileged validation for stacked PRs as well as master targets.
   workflow_dispatch:
 
 # PR code, including forks, executes only on fresh hosted runners with a

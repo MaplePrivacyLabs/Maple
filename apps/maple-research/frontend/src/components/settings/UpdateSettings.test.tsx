@@ -145,6 +145,26 @@ describe("UpdateSettings", () => {
     consoleError.mockRestore();
   });
 
+  test("explains that a Dev package cannot use the production updater", async () => {
+    const updates = service({
+      checkForUpdates: mock(async () => ({ status: "updates_disabled_for_profile" as const }))
+    });
+    await act(async () => {
+      renderer = create(<UpdateSettings service={updates} />);
+      await Promise.resolve();
+    });
+    const checkButton = renderer!.root
+      .findAllByType("button")
+      .find((button) => textContent(button).includes("Check for updates"));
+    await act(async () => {
+      checkButton!.props.onClick();
+      await Promise.resolve();
+    });
+    expect(textContent(renderer!.root)).toContain(
+      "Updates are disabled for this Maple Dev build. Install a new Dev build to update."
+    );
+  });
+
   test("turns a user-requested ready result into a persistent restart action", async () => {
     const updates = service({
       checkForUpdates: mock(async () => ({

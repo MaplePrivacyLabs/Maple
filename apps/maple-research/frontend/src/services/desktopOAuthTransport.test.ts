@@ -95,6 +95,7 @@ describe("desktop OAuth transport selection", () => {
     expect(parsed.searchParams.get("native_request_id")).toBe(nativeRequestId);
     expect(parsed.searchParams.has("native_oauth_attempt")).toBe(false);
     expect(parsed.searchParams.has("next")).toBe(false);
+    expect([...parsed.searchParams.keys()]).toHaveLength(4);
     expect(parsed.hash).toBe("");
   });
 
@@ -108,12 +109,11 @@ describe("desktop OAuth transport selection", () => {
   });
 
   test("dev launch selects the dev site and keeps the callback marker allowlisted", () => {
-    const url = new URL(
-      buildTransportV2DesktopAuthUrl(state, "dev", "https://dev-auth.example.test")
-    );
-    expect(url.origin).toBe("https://dev-auth.example.test");
+    const url = new URL(buildTransportV2DesktopAuthUrl(state, "dev", "https://auth-dev.maple.ai"));
+    expect(url.origin).toBe("https://auth-dev.maple.ai");
     expect(url.pathname).toBe("/desktop-auth");
     expect(url.searchParams.get("native_app_variant")).toBe("dev");
+    expect([...url.searchParams.keys()]).toHaveLength(5);
     expect(url.searchParams.get("native_session_id")).toBe(nativeSessionId);
     expect(url.searchParams.get("native_request_id")).toBe(nativeRequestId);
   });

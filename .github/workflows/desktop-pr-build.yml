@@ -5,7 +5,7 @@ permissions:
 
 on:
   pull_request:
-    branches: [master]
+    # Run unprivileged validation for stacked PRs as well as master targets.
 
 jobs:
   changes:
@@ -53,6 +53,44 @@ jobs:
             apps/maple-research/frontend/src-tauri/target/universal-apple-darwin/release/bundle/macos/*.app
             apps/maple-research/frontend/src-tauri/target/reproducibility/maple-macos-app.tar.gz
             apps/maple-research/frontend/src-tauri/target/reproducibility/desktop-pr-macos-*.sha256
+          retention-days: 5
+
+  build-research-dev-macos:
+    needs: changes
+    if: ${{ always() && !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.macos != 'false') }}
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # was v4
+        with:
+          persist-credentials: false
+
+      - name: Select pinned Xcode
+        run: python3 scripts/ci/select-xcode.py
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # was v22
+        with:
+          github-token: ""
+
+      - name: Cache sccache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # was v4
+        with:
+          path: ~/Library/Caches/Mozilla.sccache
+          key: ${{ runner.os }}-sccache-research-dev-${{ hashFiles('apps/maple-research/frontend/src-tauri/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-sccache-research-dev-
+
+      - name: Build isolated Research Dev app (unsigned)
+        run: nix develop --no-update-lock-file .#ci -c ./scripts/ci/research-dev-desktop.sh
+
+      - name: Upload Research Dev PR package and identity proof
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # was v4
+        with:
+          name: maple-research-dev-macos-pr
+          path: |
+            apps/maple-research/frontend/src-tauri/target/research-dev/maple-research-dev-macos.tar.gz
+            apps/maple-research/frontend/src-tauri/target/research-dev/build-profile.json
+          if-no-files-found: error
           retention-days: 5
 
   build-linux:

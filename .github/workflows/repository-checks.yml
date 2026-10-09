@@ -12,7 +12,7 @@ on:
       - "flake.nix"
       - "flake.lock"
   pull_request:
-    branches: [master]
+    # Run unprivileged validation for stacked PRs as well as master targets.
     paths:
       - ".github/workflows/**"
       - "scripts/ci/**"

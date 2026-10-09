@@ -109,6 +109,10 @@ mock.module("@tauri-apps/api/event", () => ({
   }
 }));
 
+let startupUrls: string[] | null = null;
+const getCurrent = mock(async () => startupUrls);
+mock.module("@tauri-apps/plugin-deep-link", () => ({ getCurrent }));
+
 type PendingNativeOAuthAttempt = import("@/services/nativeOAuthAttempt").PendingNativeOAuthAttempt;
 const { beginNativeOAuthAttempt, readPendingNativeOAuthAttempt } =
   await import("@/services/nativeOAuthAttempt");
@@ -174,6 +178,8 @@ describe("DeepLinkHandler native auth callbacks", () => {
 
   beforeEach(async () => {
     deepLinkListener = undefined;
+    startupUrls = null;
+    getCurrent.mockClear();
     renderer = null;
     storage = new MemoryStorage();
     location = { href: "tauri://localhost/" };
@@ -399,6 +405,47 @@ describe("DeepLinkHandler native auth callbacks", () => {
     expect(location.href).toBe("tauri://localhost/");
     await approveDeepLink(`cloud.opensecret.maple.dev://auth?handoff_grant=${VALID_GRANT}`);
     expect(sharedState().installCalls).toHaveLength(1);
+  });
+
+  test("Dev reads a buffered launch callback through the same attempt fence", async () => {
+    await prepareAttempt();
+    startupUrls = [`cloud.opensecret.maple.dev://auth?handoff_grant=${VALID_GRANT}`];
+    await act(async () => {
+      renderer?.update(
+        <NotificationProvider>
+          <DeepLinkHandler tauri appVariant="dev" desktopDev />
+        </NotificationProvider>
+      );
+      await Promise.resolve();
+    });
+    expect(getCurrent).toHaveBeenCalledTimes(1);
+    expect(renderer?.root.findByType(NativeOAuthAccountConfirmation).props.account.userId).toBe(
+      USER_ID
+    );
+    await flushDeepLink(startupUrls[0]);
+    expect(nativeCalls).toHaveLength(1);
+    await decideAccount(true, Promise.resolve());
+    expect(sharedState().installCalls).toHaveLength(1);
+  });
+
+  test("Dev cold launch ignores other-app and unsolicited callbacks; production does not read startup URLs", async () => {
+    expect(getCurrent).not.toHaveBeenCalled();
+    startupUrls = [
+      `cloud.opensecret.maple://auth?handoff_grant=${VALID_GRANT}`,
+      `cloud.opensecret.maple.dev://auth?handoff_grant=${VALID_GRANT}`
+    ];
+    await act(async () => {
+      renderer?.update(
+        <NotificationProvider>
+          <DeepLinkHandler tauri appVariant="dev" desktopDev />
+        </NotificationProvider>
+      );
+      await Promise.resolve();
+    });
+    expect(getCurrent).toHaveBeenCalledTimes(1);
+    expect(nativeCalls).toHaveLength(0);
+    expect(sharedState().installCalls).toHaveLength(0);
+    expect(location.href).toBe("tauri://localhost/");
   });
 
   test("ignores callbacks without a pending attempt or while already authenticated", async () => {

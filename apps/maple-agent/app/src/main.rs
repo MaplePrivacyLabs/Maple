@@ -11,6 +11,7 @@ mod billing;
 #[cfg(feature = "desktop")]
 mod desktop;
 mod env;
+mod hosted_oauth;
 #[cfg(feature = "desktop")]
 mod keymap;
 #[cfg(feature = "desktop")]

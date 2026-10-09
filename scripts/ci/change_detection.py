@@ -102,6 +102,8 @@ CI_SCRIPT_ROUTES = {
     "scripts/ci/ios-pr.sh": frozenset({"ios"}),
     "scripts/ci/ios-release.sh": frozenset({"ios"}),
     "scripts/ci/ios-variant.sh": frozenset({"ios"}),
+    "scripts/ci/research-dev-desktop.sh": frozenset({"macos"}),
+    "scripts/ci/research-dev-profile.py": frozenset({"macos"}),
     "scripts/ci/select-xcode.py": frozenset({"macos", "ios", "ios_onnx"}),
     "scripts/ci/verify-release-artifacts.sh": NATIVE_PLATFORMS,
     "scripts/ci/web.sh": frozenset({"frontend"}),

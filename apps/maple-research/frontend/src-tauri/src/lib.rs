@@ -9,6 +9,7 @@ mod agent_acp;
 mod agent_host;
 #[cfg(desktop)]
 mod agent_tauri;
+mod desktop_app_profile;
 #[cfg(test)]
 mod ios_app_variant;
 #[cfg(any(desktop, target_os = "ios"))]
@@ -32,6 +33,7 @@ mod word_extractor;
 #[cfg(desktop)]
 #[tauri::command]
 async fn restart_for_update(app_handle: tauri::AppHandle) -> Result<(), String> {
+    ensure_profile_updates_enabled(&app_handle)?;
     // Never restart while a bundle replacement is in progress, and do not let
     // renderer code turn this updater-only command into a general restart.
     let _install_guard = UPDATE_INSTALL_LOCK.lock().await;
@@ -113,6 +115,7 @@ async fn install_pending_update(
     app_handle: tauri::AppHandle,
     expected_version: String,
 ) -> Result<PreparedUpdate, String> {
+    ensure_profile_updates_enabled(&app_handle)?;
     // Only one native bundle mutation may run. A second visible Install action
     // coalesces behind the first and receives its resulting native state; it
     // must never launch a second package-manager/UAC prompt automatically.
@@ -239,10 +242,11 @@ fn handle_desktop_run_event(app_handle: &tauri::AppHandle, event: tauri::RunEven
 
 // This handles incoming deep links
 fn handle_deep_link_event(url: &str, app: &tauri::AppHandle) {
-    // Maple Dev must never process a return intended for the installed production app.
-    if app.config().identifier == "cloud.opensecret.maple.dev"
-        && !tauri::Url::parse(url).is_ok_and(|url| url.scheme() == "cloud.opensecret.maple.dev")
-    {
+    let parsed = tauri::Url::parse(url).ok();
+    if !desktop_app_profile::accepts_callback_scheme(
+        &app.config().identifier,
+        parsed.as_ref().map(tauri::Url::scheme),
+    ) {
         log::warn!("[Deep Link] Ignoring callback for another app");
         return;
     }
@@ -344,7 +348,9 @@ pub fn run() {
             #[cfg(target_os = "macos")]
             enable_main_window_frame_autosave(app.handle());
 
-            legacy_tts_cleanup::schedule(app.handle());
+            if desktop_app_profile::legacy_cleanup_enabled(&app.config().identifier) {
+                legacy_tts_cleanup::schedule(app.handle());
+            }
 
             let service = agent_host::build_service(app.handle())?;
             if !app.manage(service) {
@@ -363,7 +369,9 @@ pub fn run() {
             });
             // Optionally register the scheme at runtime
             #[cfg(desktop)]
-            if let Err(e) = app.deep_link().register("cloud.opensecret.maple") {
+            let callback_scheme =
+                desktop_app_profile::callback_scheme(&app.config().identifier);
+            if let Err(e) = app.deep_link().register(callback_scheme) {
                 log::error!("[Deep Link] Failed to register scheme: {e}");
             }
             // Windows startup diagnostic: confirm the OS has our custom scheme
@@ -372,10 +380,10 @@ pub fn run() {
             // HKCU\Software\Classes\cloud.opensecret.maple key (no installer run,
             // a deleted dev build, or a stale path), so log it once at startup.
             #[cfg(target_os = "windows")]
-            match app.deep_link().is_registered("cloud.opensecret.maple") {
-                Ok(true) => log::info!("[Deep Link] scheme 'cloud.opensecret.maple' is registered"),
+            match app.deep_link().is_registered(callback_scheme) {
+                Ok(true) => log::info!("[Deep Link] scheme '{callback_scheme}' is registered"),
                 Ok(false) => log::warn!(
-                    "[Deep Link] scheme 'cloud.opensecret.maple' is NOT registered; OAuth/payment deep links will not reach the app"
+                    "[Deep Link] scheme '{callback_scheme}' is NOT registered; OAuth/payment deep links will not reach the app"
                 ),
                 Err(e) => log::error!("[Deep Link] is_registered check failed: {e}"),
             }
@@ -387,6 +395,9 @@ pub fn run() {
                 // Check on startup and hourly while automatic updates remain enabled.
                 let app_handle = app.handle().clone();
                 tauri::async_runtime::spawn(async move {
+                    if !desktop_app_profile::updates_enabled(&app_handle.config().identifier) {
+                        return;
+                    }
                     // Wait for app to fully initialize (use async sleep to not block the thread)
                     tokio::time::sleep(std::time::Duration::from_secs(5)).await;
 
@@ -440,6 +451,7 @@ pub fn run() {
 
                     let check_updates_item =
                         MenuItemBuilder::with_id(check_updates_id, "Check for Updates")
+                            .enabled(desktop_app_profile::updates_enabled(&app.config().identifier))
                             .build(handle)?;
 
                     // For macOS, we need to create a proper submenu structure
@@ -688,6 +700,7 @@ enum UpdateCheckTrigger {
 #[derive(Debug, PartialEq, Eq, serde::Serialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
 enum UpdateCheckResult {
+    UpdatesDisabledForProfile,
     AutomaticUpdatesDisabled,
     UpToDate,
     ReadyToRestart {
@@ -916,6 +929,15 @@ async fn automatic_updates_enabled(app_handle: &tauri::AppHandle) -> Result<bool
 }
 
 #[cfg(desktop)]
+fn ensure_profile_updates_enabled(app_handle: &tauri::AppHandle) -> Result<(), String> {
+    if desktop_app_profile::updates_enabled(&app_handle.config().identifier) {
+        Ok(())
+    } else {
+        Err("Updates are disabled for this Maple Dev build.".to_string())
+    }
+}
+
+#[cfg(desktop)]
 async fn automatic_update_may_continue(
     app_handle: &tauri::AppHandle,
     trigger: UpdateCheckTrigger,
@@ -943,6 +965,12 @@ async fn check_for_updates(
     trigger: UpdateCheckTrigger,
 ) -> Result<UpdateCheckResult, String> {
     use tauri_plugin_updater::UpdaterExt;
+
+    // Neither manual requests nor persisted preferences can opt a Dev bundle
+    // into production update discovery/downloads.
+    if !desktop_app_profile::updates_enabled(&app_handle.config().identifier) {
+        return Ok(UpdateCheckResult::UpdatesDisabledForProfile);
+    }
 
     let _check_guard = UPDATE_CHECK_LOCK.lock().await;
 

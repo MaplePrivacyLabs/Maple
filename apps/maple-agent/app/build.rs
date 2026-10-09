@@ -61,6 +61,7 @@ fn main() {
         "api_url": profile.api_url,
         "billing_api_url": profile.billing_api_url,
         "web_url": profile.web_url,
+        "auth_origin": profile.auth_origin,
         "client_id": profile.client_id,
         "pcr_environment": profile.pcr_environment,
         "version": std::env::var("CARGO_PKG_VERSION").expect("Cargo package version"),

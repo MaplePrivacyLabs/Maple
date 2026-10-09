@@ -5,6 +5,7 @@ import {
   isCurrentDesktopOAuthTarget,
   markTransportV2DesktopOAuth,
   readTransportV2DesktopOAuth,
+  type NativeOAuthInput,
   type TransportV2DesktopOAuthState
 } from "@/services/desktopOAuthTransport";
 import { getBrowserOAuthCallbackUrl } from "@/services/oauthConfig";
@@ -24,12 +25,24 @@ export function HostedStart({ route }: { route: Extract<AuthSiteRoute, { kind: "
       started.current = true;
       void (async () => {
         try {
-          const handoffInput = {
+          const common = {
             provider: route.provider,
             nativeSessionId: route.nativeSessionId,
-            nativeRequestId: route.nativeRequestId,
-            ...(route.nativeAppVariant ? { nativeAppVariant: route.nativeAppVariant } : {})
+            nativeRequestId: route.nativeRequestId
           };
+          const handoffInput: NativeOAuthInput =
+            route.nativeApp === "agent"
+              ? {
+                  ...common,
+                  nativeApp: "agent",
+                  returnPort: route.returnPort,
+                  returnState: route.returnState,
+                  environment: route.environment
+                }
+              : {
+                  ...common,
+                  ...(route.nativeAppVariant ? { nativeAppVariant: route.nativeAppVariant } : {})
+                };
           markTransportV2DesktopOAuth(handoffInput);
           const pending = readTransportV2DesktopOAuth(route.provider);
           if (!pending) throw new Error("Native sign-in is unavailable");

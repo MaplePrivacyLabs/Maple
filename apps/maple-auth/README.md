@@ -19,6 +19,8 @@ build and publication controls.
   additionally requires `native_app_variant=dev`. Prod rejects that parameter;
   Dev rejects the Prod request form. Neither accepts a caller-selected backend,
   scheme, return URL, or project.
+- `/agent/start` accepts the four V2 fields plus `return_port` and `return_state`
+  for the fixed loopback contract below. It never accepts `native_app_variant`.
 - `/auth/github/callback` and `/auth/google/callback` use the same-origin SDK
   pending state. OAuth initiation explicitly selects this origin's callback.
 - Apple uses its popup flow. `/auth/apple/callback` only explains how to restart
@@ -47,6 +49,35 @@ again after asynchronous work. Cancellation, timeout, or a replacement flow
 prevents a late grant from opening the app. The manual Open Maple link remains available after
 a successful mint. SDK credentials remain on this origin; finishing a handoff
 does not sign out another tab or the user.
+
+## Agent return contract
+
+Agent opens `/agent/start?transport=v2&provider=...&native_session_id=...&native_request_id=...&return_port=...&return_state=...`.
+Each field occurs exactly once. Session/request IDs and `return_state` are
+32 lowercase hex characters; the native client generates a fresh random
+16-byte return state and binds its IPv4 loopback listener before opening Auth.
+`return_port` is canonical decimal from 1 through 65535. No hostname, path,
+URL, app variant, or environment may be supplied in the request.
+
+Auth keeps the compiled environment, Agent identity, port and state in the
+pending target alongside the provider/session/request pair. These fields must
+still match after provider callbacks and minting. Account confirmation mints
+once and shows **Return to Maple Agent Dev** (Dev) or **Return to Maple Agent**
+(Prod). Agent return requires that separate button click; Auth never navigates
+to loopback automatically. The top-level destination is exactly:
+
+```text
+http://127.0.0.1:<port>/auth/callback?handoff_grant=<grant>&return_state=<state>
+```
+
+The URL stays in component memory and expires at the earlier of the SDK's
+`expires_at` (Unix seconds) and the pending attempt's deadline. Manual return
+rechecks account ownership, credential revision, expiry, and replacement flows.
+The native listener validates its state, redeems the grant through the reserved
+native session/request, and publishes the authenticated account. Credentials
+remain stored on Auth. Research keeps its automatic return and manual fallback.
+Auth supports the Agent route in both profiles; native Agent Prod adoption is
+separately disabled until its production configuration is approved.
 
 ## Develop and validate
 

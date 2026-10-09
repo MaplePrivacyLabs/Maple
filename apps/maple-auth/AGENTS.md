@@ -19,7 +19,11 @@ trust. Dev requires `native_app_variant=dev` and returns only through
 `cloud.opensecret.maple.dev`; Prod retains the four-parameter request and
 `cloud.opensecret.maple` return. Bind that identity to pending state and recheck
 it before mint/open. Do not accept arbitrary URLs, schemes, or query-selected
-backend configuration. Client adoption and Agent return paths are separate.
+backend configuration. Agent uses a separate `/agent/start` contract with a
+canonical port and random return state, fixed `127.0.0.1` callback path, and
+compiled environment label. Bind all target fields through callback and mint.
+Require a second user click for loopback return and enforce the issuer's grant
+expiry. Research's automatic return remains unchanged.
 
 Preserve V2-only route parsing, same-origin OAuth callbacks, popup-only Apple,
 SDK bootstrap ordering, pending target and account ownership checks, one mint

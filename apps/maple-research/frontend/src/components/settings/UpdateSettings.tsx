@@ -21,6 +21,8 @@ function updateCheckMessage(result: UpdateCheckResult): string {
       return `Version ${result.version} is installed. Restart Maple to finish updating.`;
     case "ready_to_install":
       return `Version ${result.version} is downloaded and ready to install.`;
+    case "updates_disabled_for_profile":
+      return "Updates are disabled for this Maple Dev build. Install a new Dev build to update.";
     case "automatic_updates_disabled":
       return "Automatic updates are off. You can still check for updates manually.";
   }

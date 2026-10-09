@@ -1,0 +1,136 @@
+{
+  "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
+  "productName": "Maple Research Dev",
+  "identifier": "cloud.opensecret.maple.dev",
+  "build": {
+    "beforeBuildCommand": null
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "Maple Research Dev",
+        "width": 1200,
+        "height": 800,
+        "minWidth": 800,
+        "minHeight": 600,
+        "center": true
+      }
+    ],
+    "security": {
+      "capabilities": [
+        {
+          "identifier": "desktop-dev",
+          "description": "Research Dev desktop permissions, isolated from legacy production storage",
+          "windows": [
+            "main"
+          ],
+          "platforms": [
+            "macOS"
+          ],
+          "permissions": [
+            "core:default",
+            "dialog:default",
+            "fs:default",
+            {
+              "identifier": "fs:allow-read-file",
+              "allow": [
+                {
+                  "path": "$APPCONFIG/**"
+                }
+              ]
+            },
+            {
+              "identifier": "fs:allow-write-file",
+              "allow": [
+                {
+                  "path": "$APPCONFIG/**"
+                }
+              ]
+            },
+            {
+              "identifier": "fs:allow-create",
+              "allow": [
+                {
+                  "path": "$APPCONFIG/**"
+                }
+              ]
+            },
+            {
+              "identifier": "fs:allow-exists",
+              "allow": [
+                {
+                  "path": "$APPCONFIG/**"
+                }
+              ]
+            },
+            {
+              "identifier": "fs:allow-mkdir",
+              "allow": [
+                {
+                  "path": "$APPCONFIG"
+                }
+              ]
+            },
+            {
+              "identifier": "opener:allow-open-url",
+              "allow": [
+                {
+                  "url": "mailto:*"
+                },
+                {
+                  "url": "http://localhost:5173/*"
+                },
+                {
+                  "url": "https://trymaple.ai/*"
+                },
+                {
+                  "url": "https://*.stripe.com/*"
+                },
+                {
+                  "url": "https://*.stripe.network/*"
+                },
+                {
+                  "url": "https://*.zaprite.com/*"
+                },
+                {
+                  "url": "https://opensecret.cloud/*"
+                },
+                {
+                  "url": "https://*"
+                }
+              ]
+            },
+            "opener:allow-reveal-item-in-dir",
+            "sign-in-with-apple:default",
+            "deep-link:allow-get-current"
+          ]
+        }
+      ]
+    }
+  },
+  "plugins": {
+    "updater": {
+      "endpoints": []
+    },
+    "deep-link": {
+      "desktop": {
+        "schemes": [
+          "cloud.opensecret.maple.dev"
+        ]
+      },
+      "mobile": []
+    }
+  },
+  "bundle": {
+    "targets": [
+      "app"
+    ],
+    "createUpdaterArtifacts": false,
+    "icon": [
+      "icons/dev/icon.png"
+    ],
+    "macOS": {
+      "signingIdentity": null
+    }
+  }
+}

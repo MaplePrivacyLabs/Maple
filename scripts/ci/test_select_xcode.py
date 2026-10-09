@@ -160,6 +160,7 @@ resolve_xcode_developer_dir
             ("agent-desktop-build.yml", "verify-macos"),
             ("desktop-build.yml", "build-macos"),
             ("desktop-pr-build.yml", "build-macos"),
+            ("desktop-pr-build.yml", "build-research-dev-macos"),
             ("ios-dev-testflight.yml", "build-ios-dev"),
             ("ios-dev-testflight.yml", "submit-ios-dev-testflight"),
             ("mobile-build.yml", "build-ios"),
