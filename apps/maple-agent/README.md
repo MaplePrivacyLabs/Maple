@@ -13,11 +13,10 @@ OpenAI-compatible proxy. See "Command line" below.
 ```
 app/                  The maple-agent binary. Owns the window, login, chat,
                       settings, notifications, and the backend adapter.
-crates/maple-agent/   Maple's transport-neutral agent runtime, extracted from
-                      the Tauri app with Tauri removed. Owns embedded Goose,
-                      the Maple provider over the Maple Rust SDK, developer
-                      tools, account-scoped session storage, and the ACP
-                      server.
+crates/maple-agent/   Maple's transport-neutral agent runtime. Runs tasks on
+                      the pi-* crates, and owns the Maple provider over the
+                      Maple Rust SDK, account-scoped task storage, Maple's
+                      tools, and the ACP server.
 crates/maple-billing/ HTTP client for the Maple billing API.
 crates/pi-ai/         Model messages, streaming events and an OpenAI-compatible
                       provider, after Pi's pi-ai package.
@@ -25,10 +24,9 @@ crates/pi-agent-core/ The agent loop with tools, hooks and message queues, after
                       Pi's pi-agent-core package.
 crates/pi-coding-agent/
                       Sessions as an append-only tree, compaction, skills and
-                      prompt templates, the extension API and the agent
-                      session, after Pi's coding-agent core. The pi-* crates
-                      have no Maple dependencies; the runtime does not use
-                      them yet.
+                      prompt templates, the extension API, the built-in tools
+                      and the agent session, after Pi's coding-agent core. The
+                      pi-* crates have no Maple dependencies.
 docs/                 Theme spec measured from the Tauri app.
 scripts/              One maintainer helper: screenshot.py takes a desktop
                       screenshot through the xdg portal on GNOME Wayland.
@@ -45,19 +43,10 @@ running agent through that facade only. This mirrors Maple's own edge-adapter
 pattern, so a future process split replaces the facade without touching UI
 code.
 
-The runtime was originally copied from Research’s Tauri source (now
-`apps/maple-research/frontend/src-tauri/src`) (`agent.rs`,
-`agent/*`, `maple_api.rs`, `open_secret_config.rs`) and changed only to
-remove Tauri:
-
-- `tauri::http` types → the `http` crate
-- Tauri event and command adapters dropped; auth state and the agent event
-  sink are injectable traits
-- public visibility opened on the service surface the app consumes
-
-Goose is pinned to a fork revision based on upstream v1.53.0 in this
-component’s Cargo manifests and lockfile. The fork supports ephemeral native
-clients for embedded CUA. Research has an independent dependency graph.
+The runtime began as a copy of Research’s Tauri agent (now
+`apps/maple-research/frontend/src-tauri/src`) with Tauri removed, and now runs
+tasks on the pi-* crates instead of an embedded Goose. Research keeps its own
+Goose, with an independent dependency graph.
 
 ## Features
 
@@ -450,7 +439,7 @@ ignored. See [build profiles](docs/release-profiles.md).
 | `MAPLE_SHELL` | The bash the agent's `bash` tool runs. | `/bin/bash`, else `bash` on PATH (Windows: Git Bash; without it, the `powershell` tool) |
 | `MAPLE_UPDATE_REPO` | GitHub `owner/repo` containing stable `maple-agent-vX.Y.Z` releases. | `MaplePrivacyLabs/Maple` |
 | `MAPLE_DISABLE_UPDATE_CHECK` | `1` turns the release check off. | unset |
-| `RUST_LOG` | Log filter. | `info,goose=warn` |
+| `RUST_LOG` | Log filter. | `info` |
 
 ### File locations
 

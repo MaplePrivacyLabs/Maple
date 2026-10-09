@@ -105,8 +105,6 @@
                 "xim-ctext-0.3.0" = "sha256-pRT4Sz1JU9ros47/7pmIW9kosWOGMOItcnNd+VrvnpE=";
                 "zed-font-kit-0.14.1-zed" = "sha256-KXygi0olNQi5yM8eaJVykNDtbPMDjT+cWPBF8UrtXR4=";
                 "zed-scap-0.0.8-zed" = "sha256-BihiQHlal/eRsktyf0GI3aSWsUCW7WcICMsC2Xvb7kw=";
-                "cua-driver-sdk-0.28.0" = "sha256-jiAlbvolcowWSmenp7TtnJu7rn6W6qe8bj3fgWdemN8=";
-                "goose-1.53.0" = "sha256-RJ1b8Rwo3WgHt2zYn979z2XWxWS5SDcorICkOjhrvkw=";
               };
             };
 
