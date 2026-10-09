@@ -156,7 +156,7 @@ describe("AppleAuthProvider", () => {
     const nonces = ["11", "22", "33", "44"].map((value) => value.repeat(32));
 
     initiateAppleAuth = mock(async () => ({
-      auth_url: `https://appleid.apple.com/auth/authorize?nonce=${nonces.shift() ?? "55".repeat(32)}`,
+      auth_url: `https://appleid.apple.com/auth/authorize?client_id=cloud.opensecret.maple.services&nonce=${nonces.shift() ?? "55".repeat(32)}`,
       state: states.shift() ?? "unexpected-state"
     }));
     handleAppleCallback = mock(async () => {});
@@ -235,6 +235,77 @@ describe("AppleAuthProvider", () => {
     const control = signInControls.shift();
     if (!completion || !control) throw new Error("Apple sign-in attempt did not start");
     return { completion, control };
+  }
+
+  for (const clientId of [
+    "cloud.opensecret.maple.services",
+    "cloud.opensecret.maple.dev.services"
+  ]) {
+    test(`initializes the popup with the backend Services ID ${clientId}`, async () => {
+      initiateAppleAuth.mockImplementationOnce(async () => ({
+        auth_url: `https://appleid.apple.com/auth/authorize?client_id=${clientId}&nonce=${"11".repeat(32)}`,
+        state: "state-one"
+      }));
+      await act(async () => {
+        renderer = create(<AppleAuthProvider onError={onError} />);
+      });
+      const attempt = await startAttempt();
+      expect(initiateAppleAuth).toHaveBeenCalledWith("");
+      expect(appleInit).toHaveBeenCalledWith({
+        clientId,
+        scope: "name email",
+        redirectURI: "https://trymaple.ai/auth/apple/callback",
+        state: "state-one",
+        nonce: "11".repeat(32),
+        usePopup: true
+      });
+      await act(async () => {
+        attempt.control.resolve({ authorization: { code: "fixture-code", state: "state-one" } });
+        await attempt.completion;
+      });
+      expect(handleAppleCallback).toHaveBeenCalledWith("fixture-code", "state-one", "");
+      expect(onError).not.toHaveBeenCalled();
+    });
+  }
+
+  for (const [name, endpoint, query] of [
+    ["HTTP provider", "http://appleid.apple.com/auth/authorize", "client_id=cloud.maple"],
+    [
+      "wrong provider",
+      "https://appleid.apple.com.example.test/auth/authorize",
+      "client_id=cloud.maple"
+    ],
+    ["credentials", "https://user:pass@appleid.apple.com/auth/authorize", "client_id=cloud.maple"],
+    ["wrong port", "https://appleid.apple.com:8443/auth/authorize", "client_id=cloud.maple"],
+    ["wrong path", "https://appleid.apple.com/auth/token", "client_id=cloud.maple"],
+    ["missing client ID", "https://appleid.apple.com/auth/authorize", ""],
+    ["empty client ID", "https://appleid.apple.com/auth/authorize", "client_id="],
+    [
+      "duplicate client IDs",
+      "https://appleid.apple.com/auth/authorize",
+      "client_id=cloud.maple&client_id=cloud.maple"
+    ],
+    ["malformed client ID", "https://appleid.apple.com/auth/authorize", "client_id=cloud%20maple"],
+    ["fragment", "https://appleid.apple.com/auth/authorize", "client_id=cloud.maple#fragment"]
+  ]) {
+    test(`rejects ${name} before initializing or opening the Apple popup`, async () => {
+      initiateAppleAuth.mockImplementationOnce(async () => ({
+        auth_url: `${endpoint}?nonce=${"11".repeat(32)}&${query}`,
+        state: "state-one"
+      }));
+      await act(async () => {
+        renderer = create(<AppleAuthProvider onError={onError} />);
+      });
+      await act(async () => {
+        await renderer?.root.findByType("button").props.onClick();
+      });
+      expect(onError).toHaveBeenCalledWith(
+        new Error("Apple authorization response did not contain a valid client ID")
+      );
+      expect(appleInit).not.toHaveBeenCalled();
+      expect(appleSignIn).not.toHaveBeenCalled();
+      expect(handleAppleCallback).not.toHaveBeenCalled();
+    });
   }
 
   test("uses only the signIn promise and retries with fresh state after cancellation or rejection", async () => {
