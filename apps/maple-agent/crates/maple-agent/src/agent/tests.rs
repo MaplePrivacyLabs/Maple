@@ -362,6 +362,82 @@ async fn bash_runs_commands_in_the_task_folder() {
 }
 
 #[tokio::test]
+async fn the_model_shows_its_plan_and_asks_the_user() {
+    let harness = Harness::new().await;
+    let todos = json!({"todos": [{"content": "Pick a folder", "status": "in_progress"}]});
+    harness
+        .faux
+        .push_message(vec![faux_tool_call("todo_write", todos.clone())]);
+    harness.faux.push_message(vec![faux_tool_call(
+        "request_user_input",
+        json!({"question": "Which folder?", "options": [{"label": "src"}]}),
+    )]);
+    harness.faux.push_text("Done.");
+    let task = harness.create_task().await;
+    let mut run = harness.send(&task, "Plan it").await;
+
+    // The question reaches the interface as a card for this task.
+    let question = || {
+        harness
+            .recorder
+            .events
+            .lock()
+            .unwrap()
+            .iter()
+            .find_map(|event| match event {
+                AgentServiceEvent::Question {
+                    session_id,
+                    request_id,
+                    questions,
+                } if *session_id == task => Some((request_id.clone(), questions.clone())),
+                _ => None,
+            })
+    };
+    eventually(|| question().is_some()).await;
+    let (request_id, questions) = question().unwrap();
+    assert_eq!(questions.len(), 1);
+    assert_eq!(questions[0].id, "question_0");
+    assert_eq!(questions[0].header, "Question");
+    assert_eq!(questions[0].options[0].label, "src");
+    let answer = r#"{"answers":{"question_0":{"answers":["src"]}}}"#;
+    assert!(
+        harness
+            .service
+            .answer_question(&request_id, answer.to_string())
+            .await
+    );
+    assert_eq!(finished(&mut run).await, AgentRunTerminal::Completed);
+
+    // The model sees its plan confirmed, then the answer.
+    let requests = harness.faux.requests();
+    let results: Vec<String> = requests[2]
+        .context
+        .messages
+        .iter()
+        .filter_map(|message| match message {
+            pi_ai::Message::ToolResult(result) => Some(pi_ai::content_text(&result.content)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&results[0]).unwrap(),
+        todos
+    );
+    assert_eq!(results[1], answer);
+
+    // The plan's row carries the list the interface draws.
+    let detail = harness.handle.load_session(task).await.unwrap();
+    assert!(
+        detail
+            .timeline
+            .iter()
+            .any(|row| row.item_type == "tool" && row.input.as_ref() == Some(&todos)),
+        "{:?}",
+        detail.timeline
+    );
+}
+
+#[tokio::test]
 async fn stop_keeps_the_reply_so_far_and_says_it_was_stopped() {
     let harness =
         Harness::with_faux(FauxProvider::new().with_chunk_delay(Duration::from_millis(20))).await;

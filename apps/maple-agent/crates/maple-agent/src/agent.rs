@@ -420,6 +420,7 @@ impl AgentRuntimeHandle {
             api: maple_api_session,
             store: self.store()?,
             host: self.service.host.clone(),
+            questions: self.service.state.questions.clone(),
             project_root: project_root.clone(),
             model: model.clone(),
         }));

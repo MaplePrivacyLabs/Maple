@@ -1,8 +1,22 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
+use pi_agent_core::{ToolInvocation, ToolUpdates};
+use serde_json::{Map, Value, json};
+use tokio_util::sync::CancellationToken;
+
 use super::*;
-use crate::agent::AgentToolContextSpec;
+use crate::agent::{AgentEventDispatcher, AgentEventSink, AgentServiceEvent, AgentToolContextSpec};
+
+struct NullSink;
+
+impl AgentEventSink for NullSink {
+    fn emit(&self, _event: &AgentServiceEvent) {}
+}
+
+fn broker() -> QuestionBroker {
+    QuestionBroker::new(AgentEventDispatcher::new(Arc::new(NullSink)))
+}
 
 fn spawn(env: &[(&str, &str)]) -> BashSpawnContext {
     BashSpawnContext {
@@ -25,7 +39,13 @@ fn commands_get_the_login_path_the_task_id_and_its_tool_context() {
         )
         .unwrap(),
     );
-    let tools = task_tools("task-1", context, Some("/login/bin:/usr/bin".to_string()));
+    let tools = task_tools(
+        "task-1",
+        TaskKind::Desktop,
+        context,
+        Some("/login/bin:/usr/bin".to_string()),
+        &broker(),
+    );
     let hook = tools.options.bash.spawn_hook.unwrap();
     let started = hook(spawn(&[
         ("PATH", "/usr/bin"),
@@ -61,7 +81,13 @@ fn a_revoked_context_stops_adding_its_values_but_keeps_scrubbing() {
         )
         .unwrap(),
     );
-    let tools = task_tools("task-1", context.clone(), None);
+    let tools = task_tools(
+        "task-1",
+        TaskKind::Desktop,
+        context.clone(),
+        None,
+        &broker(),
+    );
     context.revoke();
     let started = tools.options.bash.spawn_hook.unwrap()(spawn(&[("TOKEN", "inherited")]));
     assert!(!started.env.contains_key("TOKEN"));
@@ -71,8 +97,10 @@ fn a_revoked_context_stops_adding_its_values_but_keeps_scrubbing() {
 fn the_model_gets_read_a_shell_edit_and_write() {
     let tools = task_tools(
         "task-1",
+        TaskKind::Desktop,
         SharedAgentToolContext::new(AgentToolContextSpec::default()),
         None,
+        &broker(),
     );
     let shell = if cfg!(windows) {
         tools.builtin[1].as_str()
@@ -80,6 +108,167 @@ fn the_model_gets_read_a_shell_edit_and_write() {
         "bash"
     };
     assert_eq!(tools.builtin, ["read", shell, "edit", "write"]);
-    assert!(tools.maple.is_empty());
     assert!(tools.options.powershell.spawn_hook.is_some());
+}
+
+fn tool(tools: &TaskTools, name: &str) -> Arc<dyn pi_agent_core::AgentTool> {
+    tools
+        .maple
+        .iter()
+        .find(|tool| tool.tool.name() == name)
+        .map(|tool| tool.tool.clone())
+        .unwrap()
+}
+
+fn desktop_tools() -> TaskTools {
+    task_tools(
+        "task-1",
+        TaskKind::Desktop,
+        SharedAgentToolContext::new(AgentToolContextSpec::default()),
+        None,
+        &broker(),
+    )
+}
+
+#[test]
+fn desktop_tasks_get_the_plan_and_questions_and_acp_tasks_do_not() {
+    let names: Vec<String> = desktop_tools()
+        .maple
+        .iter()
+        .map(|tool| tool.tool.name().to_string())
+        .collect();
+    assert_eq!(names, ["todo_write", "request_user_input"]);
+    let acp = task_tools(
+        "task-1",
+        TaskKind::Acp,
+        SharedAgentToolContext::new(AgentToolContextSpec::default()),
+        None,
+        &broker(),
+    );
+    assert!(acp.maple.is_empty());
+}
+
+#[tokio::test]
+async fn the_plan_is_echoed_to_the_model() {
+    let todo = tool(&desktop_tools(), "todo_write");
+    let args = json!({"todos": [{"content": "Read the code", "status": "in_progress"}]});
+    let result = todo
+        .execute(ToolInvocation {
+            call_id: "call-1".to_string(),
+            args: args.clone(),
+            cancel: CancellationToken::new(),
+            updates: ToolUpdates::none(),
+        })
+        .await
+        .unwrap();
+    let text = pi_ai::content_text(&result.content);
+    assert_eq!(serde_json::from_str::<Value>(&text).unwrap(), args);
+}
+
+#[test]
+fn near_miss_questions_take_the_schema_shape() {
+    let ask = tool(&desktop_tools(), "request_user_input");
+    let prepare = |args: Value| {
+        let Value::Object(map) = args else {
+            unreachable!()
+        };
+        Value::Object(ask.prepare_arguments(map))
+    };
+    let expected = json!({"questions": [{
+        "id": "",
+        "header": "",
+        "question": "Which folder?",
+        "options": [{"label": "src", "description": ""}],
+    }]});
+    // One question at the top level, with an option string and extra keys.
+    assert_eq!(
+        prepare(
+            json!({"question": "Which folder?", "options": [{"label": "src"}, "docs"], "why": 1})
+        ),
+        expected
+    );
+    // `questions` as one object.
+    assert_eq!(
+        prepare(json!({"questions": {"question": "Which folder?", "options": [{"label": "src"}]}})),
+        expected
+    );
+    // Nothing to ask is left for validation to refuse.
+    assert_eq!(prepare(json!({"other": 1})), json!({"other": 1}));
+    let validated = pi_ai::validate_tool_arguments(
+        ask.declaration(),
+        &pi_ai::ToolCall {
+            id: "call-1".to_string(),
+            name: "request_user_input".to_string(),
+            arguments: match expected {
+                Value::Object(map) => map,
+                _ => Map::new(),
+            },
+        },
+    );
+    assert!(validated.is_ok(), "{validated:?}");
+}
+
+#[test]
+fn questions_are_deduplicated_capped_and_defaulted() {
+    let questions = desktop::parse_user_questions(&[
+        json!({"id": "question_1", "question": "First?"}),
+        json!({"question": "Second?"}),
+        json!({"id": "question_1", "question": "Third?"}),
+        json!({"id": "extra", "question": "Fourth?"}),
+    ]);
+    let ids: Vec<&str> = questions.iter().map(|q| q.id.as_str()).collect();
+    assert_eq!(ids, ["question_1", "question_1_2", "question_1_3"]);
+    assert_eq!(questions[1].question, "Second?");
+
+    let questions = desktop::parse_user_questions(&[
+        json!({"question": "  "}),
+        json!({"id": " a ", "question": "Real?", "options": [{"label": " "}, {"label": "Yes"}]}),
+        json!({"question": "Pick several", "multiSelect": true}),
+        json!({"question": "Invalid flag", "multiSelect": "true"}),
+    ]);
+    assert_eq!(questions.len(), 3);
+    assert_eq!(questions[0].id, "a");
+    assert_eq!(questions[0].header, "Question");
+    assert_eq!(questions[0].options.len(), 1);
+    assert!(!questions[0].multi_select);
+    assert!(questions[1].multi_select);
+    assert!(!questions[2].multi_select);
+}
+
+#[tokio::test]
+async fn an_unanswered_question_is_taken_back_when_the_run_stops() {
+    let questions = broker();
+    let tools = task_tools(
+        "task-1",
+        TaskKind::Desktop,
+        SharedAgentToolContext::new(AgentToolContextSpec::default()),
+        None,
+        &questions,
+    );
+    let ask = tool(&tools, "request_user_input");
+    let cancel = CancellationToken::new();
+    let call = {
+        let cancel = cancel.clone();
+        tokio::spawn(async move {
+            ask.execute(ToolInvocation {
+                call_id: "call-1".to_string(),
+                args: json!({"questions": [{"id": "a", "header": "", "question": "Go?", "options": []}]}),
+                cancel,
+                updates: ToolUpdates::none(),
+            })
+            .await
+            .unwrap()
+        })
+    };
+    while questions.pending_count().await == 0 {
+        tokio::task::yield_now().await;
+    }
+    cancel.cancel();
+    let result = call.await.unwrap();
+    assert!(result.is_error);
+    assert_eq!(
+        pi_ai::content_text(&result.content),
+        "request_user_input cancelled"
+    );
+    assert_eq!(questions.pending_count().await, 0);
 }

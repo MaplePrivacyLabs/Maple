@@ -4,8 +4,13 @@
 //! `powershell` in place of `bash` on Windows without Git Bash. Maple sets up
 //! how their commands start: from the login shell's PATH, with the task's id,
 //! and with the task's tool context, so the ACP bridge's variables stay out.
-//! `MAPLE_SHELL` names the bash to run. Maple's own tools join these as they
-//! move to the Pi runtime.
+//! `MAPLE_SHELL` names the bash to run.
+//!
+//! Maple's own tools join these: desktop tasks get the plan the user
+//! watches (`todo_write`) and questions the user answers
+//! (`request_user_input`). The others join as they move to the Pi runtime.
+
+mod desktop;
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -16,6 +21,8 @@ use pi_coding_agent::tools::{
     BashSpawnContext, BashSpawnHook, PowerShellToolOptions, ToolsOptions, set_env_var,
 };
 
+use super::questions::QuestionBroker;
+use super::store::TaskKind;
 use super::tool_context::SharedAgentToolContext;
 
 /// The developer's choice of bash.
@@ -30,12 +37,15 @@ pub(crate) struct TaskTools {
     pub(crate) maple: Vec<RegisteredTool>,
 }
 
-/// The tools of the task `session_id`. `login_path` is the login shell's
-/// PATH, when it could be read.
+/// The tools of the task `session_id`, of `kind`. `login_path` is the login
+/// shell's PATH, when it could be read; `questions` takes the questions the
+/// user answers.
 pub(crate) fn task_tools(
     session_id: &str,
+    kind: TaskKind,
     tool_context: SharedAgentToolContext,
     login_path: Option<String>,
+    questions: &QuestionBroker,
 ) -> TaskTools {
     let shell_path = std::env::var_os(SHELL_ENV)
         .filter(|path| !path.is_empty())
@@ -60,7 +70,10 @@ pub(crate) fn task_tools(
             .iter()
             .map(|name| name.to_string())
             .collect(),
-        maple: Vec::new(),
+        maple: match kind {
+            TaskKind::Desktop => desktop::desktop_tools(session_id, questions.clone()),
+            TaskKind::Acp => Vec::new(),
+        },
     }
 }
 

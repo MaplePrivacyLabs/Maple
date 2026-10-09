@@ -14,6 +14,7 @@ use tokio_util::sync::CancellationToken;
 
 use super::config::path_string;
 use super::provider::{CatalogEntry, maple_model, maple_model_registry};
+use super::questions::QuestionBroker;
 use super::runs::{Failures, Runs};
 use super::store::{TaskRow, TaskStore};
 use super::tool_context::SharedAgentToolContext;
@@ -40,6 +41,8 @@ pub(super) struct RuntimeParts {
     pub(super) api: Arc<MapleApiSession>,
     pub(super) store: Arc<TaskStore>,
     pub(super) host: MapleAgentHostResources,
+    /// The service's broker, which the interface answers through.
+    pub(super) questions: QuestionBroker,
     pub(super) project_root: PathBuf,
     pub(super) model: String,
 }
@@ -50,6 +53,7 @@ pub(super) struct AgentRuntime {
     pub(super) api: Arc<MapleApiSession>,
     pub(super) store: Arc<TaskStore>,
     pub(super) host: MapleAgentHostResources,
+    questions: QuestionBroker,
     models: ModelRegistry,
     /// The root new tasks start in.
     project_root: Mutex<PathBuf>,
@@ -77,6 +81,7 @@ impl AgentRuntime {
             api: parts.api,
             store: parts.store,
             host: parts.host,
+            questions: parts.questions,
             models,
             project_root: Mutex::new(parts.project_root),
             model: parts.model,
@@ -212,8 +217,10 @@ impl AgentRuntime {
         options.settings = self.settings();
         let tools = tools::task_tools(
             &row.id,
+            row.kind,
             SharedAgentToolContext::new(self.host.default_tool_context.clone()),
             search_path,
+            &self.questions,
         );
         options.tool_options = tools.options;
         options.builtin_tools = Some(tools.builtin);
