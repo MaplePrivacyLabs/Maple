@@ -676,6 +676,13 @@ pub enum AgentRunEvent {
     SubagentFinished {
         id: String,
     },
+    /// Pi began summarizing the task's history to make room in the context.
+    Compacting,
+    /// The summary replaced the history it covers; `HistoryReplaced`
+    /// follows.
+    Compacted,
+    /// The task's stored history changed under the rows shown so far: a
+    /// compaction, or failed attempts that Pi retried. Reload it.
     HistoryReplaced,
     Error(AgentTimelineItem),
     Finished(AgentRunTerminal),

@@ -61,17 +61,17 @@ impl Recorder {
 
 /// A running runtime whose tasks' model is scripted. Other modules' tests
 /// use it too.
-pub(super) struct Harness {
+pub(crate) struct Harness {
     pub(super) service: MapleAgentService,
-    pub(super) handle: AgentRuntimeHandle,
+    pub(crate) handle: AgentRuntimeHandle,
     pub(super) recorder: Arc<Recorder>,
     /// The tasks' model.
-    pub(super) faux: FauxProvider,
+    pub(crate) faux: FauxProvider,
     /// The side model of titles and summaries, scripted apart so a task's
     /// script does not depend on when they are asked.
     side: FauxProvider,
     data: tempfile::TempDir,
-    pub(super) project: tempfile::TempDir,
+    pub(crate) project: tempfile::TempDir,
 }
 
 /// Side-model requests to their own script, the rest to the task's.
@@ -108,11 +108,11 @@ fn service(data: &Path, recorder: Arc<Recorder>) -> MapleAgentService {
 }
 
 impl Harness {
-    pub(super) async fn new() -> Self {
+    pub(crate) async fn new() -> Self {
         Self::with_faux(FauxProvider::new()).await
     }
 
-    async fn with_faux(faux: FauxProvider) -> Self {
+    pub(crate) async fn with_faux(faux: FauxProvider) -> Self {
         let data = tempfile::tempdir().unwrap();
         let project = tempfile::tempdir().unwrap();
         let recorder = Arc::new(Recorder::default());
@@ -162,7 +162,7 @@ impl Harness {
         self.service.state.runtime.lock().await.clone().unwrap()
     }
 
-    pub(super) async fn create_task(&self) -> String {
+    pub(crate) async fn create_task(&self) -> String {
         self.handle.create_session(None).await.unwrap().session.id
     }
 
@@ -187,7 +187,7 @@ impl Harness {
     }
 }
 
-pub(super) async fn finished(run: &mut AgentRunHandle) -> AgentRunTerminal {
+pub(crate) async fn finished(run: &mut AgentRunHandle) -> AgentRunTerminal {
     let terminal = tokio::time::timeout(
         Duration::from_secs(10),
         run.terminal.wait_for(Option::is_some),
@@ -199,7 +199,7 @@ pub(super) async fn finished(run: &mut AgentRunHandle) -> AgentRunTerminal {
 }
 
 /// Wait until `condition` holds, checking every few milliseconds.
-pub(super) async fn eventually(mut condition: impl FnMut() -> bool) {
+pub(crate) async fn eventually(mut condition: impl FnMut() -> bool) {
     tokio::time::timeout(Duration::from_secs(10), async {
         while !condition() {
             tokio::time::sleep(Duration::from_millis(5)).await;
@@ -224,7 +224,7 @@ fn shown(items: &[AgentTimelineItem]) -> Vec<(String, String, Option<String>, Op
         .collect()
 }
 
-pub(super) fn last_user_text(request: &pi_ai::faux::FauxRequest) -> String {
+pub(crate) fn last_user_text(request: &pi_ai::faux::FauxRequest) -> String {
     request
         .context
         .messages

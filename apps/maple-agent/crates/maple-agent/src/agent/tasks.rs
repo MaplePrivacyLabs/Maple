@@ -15,6 +15,7 @@ use super::config::{
     normalize_project_root, path_string,
 };
 use super::mcp::{normalize_mcp_servers, servers_for_new_task, set_chosen_servers};
+use super::runtime::AgentRuntime;
 use super::store::{TaskKind, TaskRow};
 use super::timeline::{MAX_AGENT_SESSION_TITLE_CHARS, merge_into, session_timeline};
 use super::{
@@ -28,6 +29,8 @@ use crate::maple_api::MapleApiSession;
 pub(super) const DEFAULT_AGENT_SESSION_TITLE: &str = "New task";
 /// The title an ACP connection gives the tasks it creates.
 pub(super) const ACP_SESSION_FALLBACK_TITLE: &str = "Maple ACP";
+/// Why `/compact` did nothing: the history is all recent enough to keep.
+pub const NOTHING_TO_COMPACT_ERROR: &str = "There is nothing to compact yet";
 
 /// A title from a task's first prompt: its text on one line, shortened.
 pub(super) fn session_title_from_prompt(prompt: &str) -> String {
@@ -104,6 +107,32 @@ impl AgentRuntimeHandle {
             mcp_server_names: None,
             system_prompt: None,
         });
+        let row = self
+            .new_task_row(&runtime, request, TaskKind::Desktop)
+            .await?;
+        runtime.store.insert(&row)?;
+        let summary = row.summary();
+        emit_agent_event(
+            &self.service.host.events,
+            AgentServiceEvent::SessionCreated(summary.clone()),
+        );
+        Ok(AgentSessionDetail {
+            session: summary,
+            timeline: Vec::new(),
+            mcp_errors: Vec::new(),
+            queue: runtime.runs.queue_snapshot(&row.id),
+        })
+    }
+
+    /// The row of a new task of `kind`, not recorded yet: in the requested
+    /// project or the runtime's, on the requested model or the runtime's,
+    /// with the servers it asks for or those on for new tasks.
+    pub(super) async fn new_task_row(
+        &self,
+        runtime: &AgentRuntime,
+        request: AgentCreateSessionRequest,
+        kind: TaskKind,
+    ) -> Result<TaskRow, String> {
         let config = {
             let _settings = self.lock_settings().await;
             load_agent_config_inner(self.paths(), &self.user_id)
@@ -118,40 +147,35 @@ impl AgentRuntimeHandle {
             _ => runtime.project_root(),
         };
         ensure_session_project_root_is_visible(&root, &config.removed_project_roots)?;
+        let fallback_title = match kind {
+            TaskKind::Desktop => DEFAULT_AGENT_SESSION_TITLE,
+            TaskKind::Acp => ACP_SESSION_FALLBACK_TITLE,
+        };
         let title = request
             .title
             .filter(|value| !value.trim().is_empty())
-            .unwrap_or_else(|| DEFAULT_AGENT_SESSION_TITLE.to_string());
+            .unwrap_or_else(|| fallback_title.to_string());
         let model = request.model.unwrap_or_else(|| runtime.model.clone());
         let mut row = TaskRow::new(
             pi_coding_agent::session::SessionManager::new_id(),
             title,
             path_string(&root),
-            TaskKind::Desktop,
+            kind,
             Some(model),
             pi_ai::now_ms(),
         );
         set_chosen_servers(&mut row, mcp_servers);
-        // Built-in CUA set up on this device is on for the task when the
-        // composer asks for it, or by the default for new tasks.
-        if let Some(cua_on) = super::cua::choice_for_new_task(
-            super::integrations::cua_default(self.paths(), &self.user_id),
-            request.mcp_server_names.as_deref(),
-        ) {
+        // Built-in CUA set up on this device is on for a desktop task when
+        // the composer asks for it, or by the default for new tasks.
+        if kind == TaskKind::Desktop
+            && let Some(cua_on) = super::cua::choice_for_new_task(
+                super::integrations::cua_default(self.paths(), &self.user_id),
+                request.mcp_server_names.as_deref(),
+            )
+        {
             super::cua::set_task_choice(&mut row, cua_on);
         }
-        runtime.store.insert(&row)?;
-        let summary = row.summary();
-        emit_agent_event(
-            &self.service.host.events,
-            AgentServiceEvent::SessionCreated(summary.clone()),
-        );
-        Ok(AgentSessionDetail {
-            session: summary,
-            timeline: Vec::new(),
-            mcp_errors: Vec::new(),
-            queue: runtime.runs.queue_snapshot(&row.id),
-        })
+        Ok(row)
     }
 
     /// The tasks, newest first, optionally only one project's.
@@ -169,6 +193,7 @@ impl AgentRuntimeHandle {
             .store()?
             .list(root.as_deref())?
             .iter()
+            .filter(|row| super::surface::is_listed(row))
             .map(TaskRow::summary)
             .collect())
     }
@@ -403,10 +428,13 @@ impl AgentRuntimeHandle {
                 runtime.task_session(&row, model).await?
             }
         };
-        session
-            .compact(None)
-            .await
-            .map_err(|error| format!("Compaction failed: {error}"))?;
+        match session.compact(None).await {
+            Ok(_) => {}
+            Err(pi_coding_agent::AgentSessionError::NothingToCompact) => {
+                return Err(NOTHING_TO_COMPACT_ERROR.to_string());
+            }
+            Err(error) => return Err(format!("Compaction failed: {error}")),
+        }
         let facts = session.with_session(super::store::SessionFacts::of);
         if let Some(row) = runtime.store.refresh_caches(&session_id, &facts)? {
             emit_agent_event(

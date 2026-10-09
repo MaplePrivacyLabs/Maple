@@ -4790,6 +4790,8 @@ impl ChatScreen {
                     self.notice = Some(message.into());
                 }
             }
+            // The reload that follows shows the compaction's notice.
+            AgentRunEvent::Compacting | AgentRunEvent::Compacted => return false,
             AgentRunEvent::HistoryReplaced => {
                 if self.is_selected(session_id) {
                     // Replace history only; the run keeps flowing.

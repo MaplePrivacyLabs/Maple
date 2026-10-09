@@ -4,7 +4,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
 use pi_agent_core::QueueMode;
@@ -28,15 +28,24 @@ use super::provider::{CatalogEntry, maple_model, maple_model_registry};
 use super::questions::QuestionBroker;
 use super::runs::{Failures, Runs};
 use super::store::{TaskKind, TaskRow, TaskStore};
+use super::surface::{
+    AgentSurfaceAccess, SURFACE_CONTROLLED_ERROR, SurfaceTask, with_surface_servers,
+};
 use super::tool_context::SharedAgentToolContext;
 use super::{
-    AgentRuntimeStatus, AgentServiceEvent, MapleAgentHostResources, emit_agent_event, login_path,
-    tools,
+    AgentMcpServer, AgentRuntimeStatus, AgentServiceEvent, MapleAgentHostResources,
+    emit_agent_event, login_path, tools,
 };
 use crate::maple_api::MapleApiSession;
 
 /// The product name Pi's default system prompt names.
 const APP_NAME: &str = "Maple";
+
+fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
 
 /// Retries of a failed request: today's budget of about five minutes.
 const RETRY: RetrySettings = RetrySettings {
@@ -89,6 +98,14 @@ pub(super) struct AgentRuntime {
     pub(super) lifetime: CancellationToken,
     /// The tasks whose sessions are loaded.
     sessions: tokio::sync::Mutex<HashMap<String, LoadedTask>>,
+    /// The tasks a calling surface holds, by task id. Changed, and read for
+    /// a session's build, under the sessions' lock, so a session is built
+    /// with what the task has.
+    surfaces: Mutex<HashMap<String, SurfaceTask>>,
+    /// The system prompts calling surfaces gave the tasks they created, for
+    /// as long as the runtime runs: the caller owns the prompt and gives it
+    /// again with a new task.
+    system_prompts: Mutex<HashMap<String, String>>,
     pub(super) runs: Runs,
     pub(super) failures: Failures,
     /// The external agents of the account's tasks.
@@ -122,6 +139,8 @@ impl AgentRuntime {
             model: parts.model,
             lifetime,
             sessions: tokio::sync::Mutex::new(HashMap::new()),
+            surfaces: Mutex::new(HashMap::new()),
+            system_prompts: Mutex::new(HashMap::new()),
             runs: Runs::default(),
             failures: Failures::default(),
         })
@@ -241,9 +260,20 @@ impl AgentRuntime {
             .await
             .map_err(|error| error.to_string())
             .and_then(|saved| saved);
+        // A calling surface's own servers run beside the task's, in place of
+        // a saved one of the same name.
+        let surface_servers = self.surface_mcp_servers(session_id);
         match saved {
-            Ok(saved) => mcp.sync(task_servers(&saved, &row)),
-            Err(error) => log::warn!("Failed to read the account's MCP servers: {error}"),
+            Ok(saved) => mcp.sync(with_surface_servers(
+                task_servers(&saved, &row),
+                surface_servers,
+            )),
+            Err(error) => {
+                log::warn!("Failed to read the account's MCP servers: {error}");
+                if !surface_servers.is_empty() {
+                    mcp.sync(surface_servers);
+                }
+            }
         }
         self.stop_idle_task_servers(session_id).await;
         let started =
@@ -260,13 +290,131 @@ impl AgentRuntime {
     /// binding failed, if it did.
     async fn start_task_cua(&self, row: &TaskRow, vision: bool) -> Option<String> {
         let task_cua = self.loaded_cua(&row.id).await?;
-        if row.kind == TaskKind::Desktop && cua::task_choice(row) == Some(true) {
+        if self.driven_kind(row) == TaskKind::Desktop && cua::task_choice(row) == Some(true) {
             task_cua.bind(vision).await.err()
         } else {
             if task_cua.is_bound() {
                 task_cua.unbind().await;
             }
             None
+        }
+    }
+
+    /// The tool context of a task a calling surface holds.
+    pub(super) fn surface_context(&self, session_id: &str) -> Option<SharedAgentToolContext> {
+        lock(&self.surfaces)
+            .get(session_id)
+            .map(|task| task.context.clone())
+    }
+
+    /// Whether a calling surface holds the task.
+    pub(super) fn is_surfaced(&self, session_id: &str) -> bool {
+        lock(&self.surfaces).contains_key(session_id)
+    }
+
+    /// How a task is driven: as a calling surface's while one holds it,
+    /// whichever surface created it.
+    pub(super) fn driven_kind(&self, row: &TaskRow) -> TaskKind {
+        if self.is_surfaced(&row.id) {
+            TaskKind::Acp
+        } else {
+            row.kind
+        }
+    }
+
+    /// The MCP servers the surface that holds the task gave it.
+    pub(super) fn surface_mcp_servers(&self, session_id: &str) -> Vec<AgentMcpServer> {
+        lock(&self.surfaces)
+            .get(session_id)
+            .map(|task| task.mcp_servers.clone())
+            .unwrap_or_default()
+    }
+
+    /// Whether `access` still holds its task, with its context in force.
+    pub(super) fn surface_holds(&self, access: &AgentSurfaceAccess) -> bool {
+        lock(&self.surfaces)
+            .get(access.session_id())
+            .is_some_and(|task| {
+                task.installation == access.installation() && !task.context.is_revoked()
+            })
+    }
+
+    /// The system prompt a calling surface gave the task it created.
+    pub(super) fn system_prompt(&self, session_id: &str) -> Option<String> {
+        lock(&self.system_prompts).get(session_id).cloned()
+    }
+
+    pub(super) fn set_system_prompt(&self, session_id: &str, prompt: Option<String>) {
+        let mut prompts = lock(&self.system_prompts);
+        match prompt.filter(|prompt| !prompt.trim().is_empty()) {
+            Some(prompt) => prompts.insert(session_id.to_string(), prompt),
+            None => prompts.remove(session_id),
+        };
+    }
+
+    /// Give a calling surface its hold on a task. The task's loaded session,
+    /// built for whoever drove it before, is unloaded, so its next run
+    /// builds it with the surface's context. Refused while the task runs or
+    /// another surface holds it.
+    pub(super) async fn install_surface(
+        &self,
+        session_id: &str,
+        task: SurfaceTask,
+    ) -> Result<(), String> {
+        let unloaded = {
+            let mut sessions = self.sessions.lock().await;
+            if self.lifetime.is_cancelled() {
+                return Err(super::RUNTIME_NOT_RUNNING_ERROR.to_string());
+            }
+            if self.runs.is_running(session_id) {
+                return Err("Stop the running agent before opening this task here".to_string());
+            }
+            let mut surfaces = lock(&self.surfaces);
+            if surfaces.contains_key(session_id) {
+                return Err(SURFACE_CONTROLLED_ERROR.to_string());
+            }
+            surfaces.insert(session_id.to_string(), task);
+            drop(surfaces);
+            sessions.remove(session_id)
+        };
+        if let Some(task) = unloaded {
+            task.session.shutdown().await;
+        }
+        Ok(())
+    }
+
+    /// End the hold `installation` has on a task, if it still has it: the
+    /// task's run stops, and its session is unloaded, so whoever drives it
+    /// next builds it afresh.
+    pub(super) async fn release_surface(&self, session_id: &str, installation: u64) {
+        let held = |surfaces: &HashMap<String, SurfaceTask>| {
+            surfaces
+                .get(session_id)
+                .is_some_and(|task| task.installation == installation)
+        };
+        if !held(&lock(&self.surfaces)) {
+            return;
+        }
+        self.stop_task_run(session_id, super::runs::RUN_SHUTDOWN_TIMEOUT)
+            .await;
+        let unloaded = {
+            let mut sessions = self.sessions.lock().await;
+            let mut surfaces = lock(&self.surfaces);
+            if !held(&surfaces) {
+                return;
+            }
+            surfaces.remove(session_id);
+            drop(surfaces);
+            // A run that would not stop keeps its session, with the
+            // surface's context revoked.
+            if self.runs.is_running(session_id) {
+                None
+            } else {
+                sessions.remove(session_id)
+            }
+        };
+        if let Some(task) = unloaded {
+            task.session.shutdown().await;
         }
     }
 
@@ -391,12 +539,21 @@ impl AgentRuntime {
         // and the resources come from disk.
         let search_path = login_path::login_search_path().await;
         let resources = self.resources(&row.project_root).await;
-        let providers = task_providers(&external_agents_on(&self.host.paths, &self.user_id), row);
+        let agents_on = external_agents_on(&self.host.paths, &self.user_id);
         let mut sessions = self.sessions.lock().await;
         // Shutdown closes the loaded sessions; none is built after it.
         if self.lifetime.is_cancelled() {
             return Err(super::RUNTIME_NOT_RUNNING_ERROR.to_string());
         }
+        // A task a calling surface holds runs with the surface's tool
+        // context, and without the desktop's own tools.
+        let surface_context = self.surface_context(&row.id);
+        let kind = self.driven_kind(row);
+        let providers = if kind == TaskKind::Desktop {
+            task_providers(&agents_on, row)
+        } else {
+            Vec::new()
+        };
         if let Some(LoadedTask {
             session, agents, ..
         }) = sessions.get(&row.id)
@@ -428,13 +585,14 @@ impl AgentRuntime {
         let mut options =
             AgentSessionOptions::new(&row.project_root, APP_NAME, manager, self.models.clone());
         options.model = Some(model);
-        options.settings = self.settings();
+        options.settings = self.settings(self.system_prompt(&row.id));
         options.resources = resources.unwrap_or_default();
         let attachments = Arc::new(account_attachment_store(&self.host.paths, &self.user_id)?);
-        let tool_context = SharedAgentToolContext::new(self.host.default_tool_context.clone());
+        let tool_context = surface_context
+            .unwrap_or_else(|| SharedAgentToolContext::new(self.host.default_tool_context.clone()));
         let tools = tools::task_tools(tools::TaskToolsFor {
             session_id: row.id.clone(),
-            kind: row.kind,
+            kind,
             tool_context: tool_context.clone(),
             login_path: search_path.clone(),
             questions: self.questions.clone(),
@@ -452,7 +610,7 @@ impl AgentRuntime {
         options.tools = tools.maple;
         // External agents work for tasks in the desktop app.
         let agents = TaskProviders::default();
-        if row.kind == TaskKind::Desktop {
+        if kind == TaskKind::Desktop {
             options
                 .tools
                 .extend(external_agent_tools(ExternalAgentToolsFor {
@@ -508,16 +666,21 @@ impl AgentRuntime {
 
     /// The settings of every session: Maple's retry budget, queued messages
     /// delivered together, no thinking control yet, and the host's opening
-    /// instructions after Pi's own.
-    fn settings(&self) -> Settings {
-        let harness_instructions = self.host.harness_instructions();
+    /// instructions after Pi's own, then the caller's `system_prompt`.
+    fn settings(&self, system_prompt: Option<String>) -> Settings {
+        let appended = [Some(self.host.harness_instructions()), system_prompt]
+            .into_iter()
+            .flatten()
+            .map(|text| text.trim().to_string())
+            .filter(|text| !text.is_empty())
+            .collect::<Vec<_>>()
+            .join("\n\n");
         Settings {
             retry: RETRY,
             steering_mode: QueueMode::All,
             follow_up_mode: QueueMode::All,
             default_thinking_level: Some(ThinkingLevel::Off),
-            append_system_prompt: Some(harness_instructions.trim().to_string())
-                .filter(|text| !text.is_empty()),
+            append_system_prompt: Some(appended).filter(|text| !text.is_empty()),
             ..Settings::default()
         }
     }

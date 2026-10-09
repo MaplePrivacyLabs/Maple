@@ -416,6 +416,18 @@ the desktop app does not need to run. Logs go to the log file only; stdout
 is the ACP channel. If no sign-in is saved, it exits with a message that
 tells the user to sign in from the desktop app first.
 
+Each ACP session is a Maple task. `session/new` creates one in the client's
+working directory; session lists show it from its first prompt, and one
+closed before that is removed. `session/load` opens any task of that
+directory and replays its history. While a session is open its task runs
+for that client only: its commands get the bridge's allowlisted variables
+(Buzz's credentials and `PATH`), the client's HTTP MCP servers run beside
+the account's, and the desktop's own tools (the plan, questions, external
+agents and computer use) are left out. Tasks created over ACP stay out of
+the desktop task list. Maple has no session modes: every tool call runs
+without asking, and a project with skills or instructions of its own asks
+the client's user once whether to trust it.
+
 ### `maple-agent proxy`
 
 ```

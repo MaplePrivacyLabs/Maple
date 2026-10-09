@@ -26,6 +26,7 @@ mod runs;
 mod runtime;
 mod side_models;
 mod store;
+mod surface;
 mod tasks;
 mod timeline;
 mod tool_context;
@@ -50,6 +51,12 @@ pub use integrations::begin_integration_setup;
 pub use runs::AgentRunHandle;
 use runtime::AgentRuntime;
 use store::TaskStore;
+pub use surface::{
+    AGENT_SURFACE_INACTIVE_ERROR, AgentSurfaceAccess, AgentSurfaceLease, AgentSurfaceSession,
+};
+pub use tasks::NOTHING_TO_COMPACT_ERROR;
+#[cfg(any(feature = "acp", test))]
+pub(crate) use tool_context::SENSITIVE_BRIDGE_ENV;
 pub use tool_context::{AgentToolContextSpec, default_tool_context_spec};
 pub use types::*;
 
@@ -458,6 +465,9 @@ impl AgentRuntimeHandle {
             model: model.clone(),
         });
         let status = runtime.desktop_status();
+        // A crash can strand a task an ACP client created and never
+        // prompted; remove those before the task list is read.
+        surface::sweep_stale_provisional(&runtime.store, self.paths(), &self.user_id);
         // The delegation skills follow the external agents in Settings.
         if let Err(error) = integrations::sync_external_agent_skills(self.paths(), &self.user_id) {
             log::warn!("Failed to update the external agent skills: {error}");
@@ -742,5 +752,6 @@ impl AgentRuntimeHandle {
     }
 }
 
+/// The runtime on a scripted provider, which other modules' tests use too.
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

@@ -27,6 +27,7 @@ use super::attachments::{AgentImageAttachment, image_prompt, split_image_prompt}
 use super::config::{account_attachment_store, unix_ms};
 use super::runtime::AgentRuntime;
 use super::store::SessionFacts;
+use super::surface::{AGENT_SURFACE_INACTIVE_ERROR, AgentSurfaceAccess, SURFACE_CONTROLLED_ERROR};
 use super::timeline::{
     LiveTimeline, MAPLE_NOTICE_ENTRY, STOPPED_NOTICE_TEXT, error_item, notice_entry_data,
     notice_item,
@@ -626,6 +627,22 @@ impl AgentRuntimeHandle {
         };
         runtime.stop_run(&run_id, AgentRunSurface::Desktop)
     }
+
+    /// Send a calling surface's prompt to a task it holds: a run of its own,
+    /// once the task's last run has ended, whose events go to the surface
+    /// alone. Nothing is queued or steered. Cancelling `cancellation` stops
+    /// the run, as Stop does, or the send while it waits.
+    pub async fn send_surface_message(
+        &self,
+        access: &AgentSurfaceAccess,
+        request: AgentSendMessageRequest,
+        cancellation: CancellationToken,
+    ) -> Result<AgentRunHandle, String> {
+        self.verify_generation().await?;
+        self.ensure_accepting_new_work()?;
+        let runtime = self.runtime().await?;
+        runtime.send_surface(access, request, cancellation).await
+    }
 }
 
 impl AgentRuntime {
@@ -637,6 +654,105 @@ impl AgentRuntime {
             .map(|(_, run)| run.events.clone());
         if let Some(events) = events {
             events.publish(AgentRunEvent::QueueChanged(snapshot));
+        }
+    }
+
+    async fn send_surface(
+        self: &Arc<Self>,
+        access: &AgentSurfaceAccess,
+        request: AgentSendMessageRequest,
+        cancellation: CancellationToken,
+    ) -> Result<AgentRunHandle, String> {
+        let session_id = request.session_id.clone();
+        if session_id != access.session_id() {
+            return Err("Agent tool context access does not match this task".to_string());
+        }
+        if request.steer || request.queue_id.is_some() {
+            return Err("A calling surface's message is never queued".to_string());
+        }
+        if !self.surface_holds(access) || self.store.get(&session_id)?.is_none() {
+            return Err(AGENT_SURFACE_INACTIVE_ERROR.to_string());
+        }
+        let message = self.outgoing(&request).await?;
+        if message.is_empty() {
+            return Err(EMPTY_PROMPT_ERROR.to_string());
+        }
+        // A run the surface stopped may still be ending.
+        let run = loop {
+            let finished = self.runs.finished.notified();
+            tokio::pin!(finished);
+            finished.as_mut().enable();
+            {
+                let mut state = self.runs.state();
+                if state.run_of(&session_id).is_none() {
+                    break self.register_run(
+                        &mut state,
+                        &session_id,
+                        vec![message.clone()],
+                        Vec::new(),
+                        AgentRunSurface::CallingSurface,
+                    );
+                }
+            }
+            tokio::select! {
+                _ = &mut finished => {}
+                _ = cancellation.cancelled() => {
+                    return Err("The Agent run was cancelled before it started".to_string());
+                }
+                _ = self.lifetime.cancelled() => {
+                    return Err(super::RUNTIME_NOT_RUNNING_ERROR.to_string());
+                }
+            }
+        };
+        // The caller's cancellation stops the run, from its setup on, until
+        // the run ends.
+        let stopped = run.stopped.clone();
+        let (follow_tx, follow_rx) = tokio::sync::oneshot::channel();
+        tokio::spawn(async move {
+            let follow = async move {
+                let Ok(mut terminal) = follow_rx.await else {
+                    return;
+                };
+                wait_for_terminal(&mut terminal).await;
+            };
+            tokio::select! {
+                _ = cancellation.cancelled() => stopped.cancel(),
+                _ = follow => {}
+            }
+        });
+        let handle = self.start_run(&request, run).await?;
+        let _ = follow_tx.send(handle.terminal.clone());
+        // Prompted, the task is the surface's for good.
+        self.settle_provisional(&session_id);
+        Ok(handle)
+    }
+
+    /// Stop the task's run, whoever drives it, and wait at most `timeout`
+    /// for it to end.
+    pub(super) async fn stop_task_run(&self, session_id: &str, timeout: Duration) {
+        let deadline = tokio::time::Instant::now() + timeout;
+        loop {
+            let finished = self.runs.finished.notified();
+            tokio::pin!(finished);
+            finished.as_mut().enable();
+            {
+                let mut state = self.runs.state();
+                let Some(run) = state
+                    .runs
+                    .values_mut()
+                    .find(|run| run.session_id == session_id)
+                else {
+                    return;
+                };
+                run.accepting = false;
+                run.stopped.cancel();
+                if let Some(session) = &run.session {
+                    session.abort();
+                }
+            }
+            if tokio::time::timeout_at(deadline, finished).await.is_err() {
+                return;
+            }
         }
     }
 
@@ -662,6 +778,9 @@ impl AgentRuntime {
     ) -> Result<AgentRunHandle, String> {
         if request.queue_id.is_some() && !request.attachments.is_empty() {
             return Err(QUEUED_MESSAGE_ATTACHMENTS_ERROR.to_string());
+        }
+        if self.is_surfaced(&request.session_id) {
+            return Err(SURFACE_CONTROLLED_ERROR.to_string());
         }
         let message = self.outgoing(&request).await?;
         loop {
@@ -840,33 +959,39 @@ impl AgentRuntime {
                 (prompts, consumed)
             }
         };
-        Ok(Plan::Start(
-            self.register_run(&mut state, session_id, prompts, consumed),
-        ))
+        Ok(Plan::Start(self.register_run(
+            &mut state,
+            session_id,
+            prompts,
+            consumed,
+            AgentRunSurface::Desktop,
+        )))
     }
 
-    /// Register a desktop run for `session_id`, to start with `prompts`.
+    /// Register a run of `surface` for `session_id`, to start with
+    /// `prompts`. A desktop run's events also go to the host.
     fn register_run(
         &self,
         state: &mut RunsState,
         session_id: &str,
         prompts: Vec<Outgoing>,
         consumed: Vec<String>,
+        surface: AgentRunSurface,
     ) -> NewRun {
         let run_id = next_run_id();
-        let (events, receiver) = RunEvents::new(
-            self.host.events.clone(),
-            session_id,
-            &run_id,
-            HostEvents::Publish,
-        );
+        let host = match surface {
+            AgentRunSurface::Desktop => HostEvents::Publish,
+            AgentRunSurface::CallingSurface => HostEvents::Suppress,
+        };
+        let (events, receiver) =
+            RunEvents::new(self.host.events.clone(), session_id, &run_id, host);
         // Stopping the runtime stops the run, also before it has a task.
         let stopped = self.lifetime.child_token();
         state.runs.insert(
             run_id.clone(),
             ActiveRun {
                 session_id: session_id.to_string(),
-                surface: AgentRunSurface::Desktop,
+                surface,
                 stopped: stopped.clone(),
                 accepting: true,
                 events: events.clone(),
@@ -918,6 +1043,9 @@ impl AgentRuntime {
         custom_type: &'static str,
         text: String,
     ) -> Result<(), String> {
+        if self.is_surfaced(session_id) {
+            return Err(SURFACE_CONTROLLED_ERROR.to_string());
+        }
         let message = Outgoing::hidden(custom_type, text);
         loop {
             let finished = self.runs.finished.notified();
@@ -948,6 +1076,7 @@ impl AgentRuntime {
                         session_id,
                         vec![message.clone()],
                         Vec::new(),
+                        AgentRunSurface::Desktop,
                     )),
                 }
             };
@@ -1331,6 +1460,15 @@ impl AgentRuntime {
     }
 }
 
+/// Wait until `terminal` says how the run ended, or its run is gone.
+async fn wait_for_terminal(terminal: &mut watch::Receiver<Option<AgentRunTerminal>>) {
+    while terminal.borrow_and_update().is_none() {
+        if terminal.changed().await.is_err() {
+            return;
+        }
+    }
+}
+
 /// Run one prompt. Stop aborts it, and keeps aborting until the prompt
 /// returns: an abort that lands while Pi is still setting the run up would
 /// otherwise be forgotten when the run starts.
@@ -1444,9 +1582,13 @@ impl RunWatch {
                 }
             }
             AgentSessionEvent::RetryStart { .. } => lock(&self.state).retried = true,
+            AgentSessionEvent::CompactionStart { .. } => events.publish(AgentRunEvent::Compacting),
             AgentSessionEvent::CompactionEnd {
                 result: Some(_), ..
-            } => events.publish(AgentRunEvent::HistoryReplaced),
+            } => {
+                events.publish(AgentRunEvent::Compacted);
+                events.publish(AgentRunEvent::HistoryReplaced);
+            }
             AgentSessionEvent::CompactionEnd {
                 error: Some(error), ..
             } => log::warn!("Agent compaction failed: {error}"),
