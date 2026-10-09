@@ -3,7 +3,7 @@
 
 use chrono::{Datelike, Local};
 
-pub(super) const ASSET_BASE: &str = "https://www.trymaple.ai/email/";
+pub(super) const ASSET_BASE: &str = "https://img.maple.ai/";
 
 #[derive(Clone, Copy)]
 pub(super) enum Kind {
