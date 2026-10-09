@@ -437,8 +437,8 @@ impl ExternalAgentRegistry {
     }
 
     /// Find and start the agents of every task on `path`, as a test's fake
-    /// agents need.
-    #[cfg(test)]
+    /// agents need. Those tests run on Unix.
+    #[cfg(all(test, unix))]
     pub(crate) fn set_test_search_path(&self, path: String) {
         *self
             .test_search_path
