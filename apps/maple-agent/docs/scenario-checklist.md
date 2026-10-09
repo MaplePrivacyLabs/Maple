@@ -25,7 +25,7 @@ stdio MCP server configured in Settings > Integrations.
 
 | # | Scenario | How | Pass when |
 |---|---|---|---|
-| C1 | Queued follow-up | Press Enter with a message while a run is active | The message waits in the queue and runs as the next turn (**automated**: `desktop_send_during_active_run_stages_a_native_queue`) |
+| C1 | Queued follow-up | Press Enter with a message while a run is active | The message waits in the queue and runs as the next turn (**automated**: `a_message_sent_during_a_run_waits_as_a_chip_and_follows`) |
 | C2 | Steering | Ctrl/Cmd+Enter during a run | The message lands inside the current turn |
 | C3 | Stop and resume | Stop a long shell command, then send a follow-up | The stopped notice shows, no orphaned declined pair, and the follow-up runs |
 | C4 | Attachments | Attach an image by picker and by paste, then send | The model sees the image (vision model) or a `read_image` reference (text model) |
@@ -46,7 +46,7 @@ stdio MCP server configured in Settings > Integrations.
 
 | # | Scenario | How | Pass when |
 |---|---|---|---|
-| L1 | `read`, `shell`, `edit`, `write` | One prompt that uses all four | Each runs without a card and the files match |
+| L1 | `read`, `bash`, `edit`, `write` | One prompt that uses all four | Each runs without a card and the files match |
 | L2 | `read_image` | A local and a public https image | Both are described |
 | L3 | `todo_write` | Ask for a multi-step plan | The plan pins above the composer and updates |
 | L4 | `web_search` and `open_url` | Ask for a page title | Web results and the title come back |
@@ -67,7 +67,7 @@ stdio MCP server configured in Settings > Integrations.
 | # | Scenario | How | Pass when |
 |---|---|---|---|
 | U1 | Built-in CUA | Enable it in Settings, ask a task to list open windows | The task sees the windows; the per-task switch works |
-| U2 | Old computer-use task | Open a task saved by a build with the standalone driver | The driver does not start; the task's Cua row reads unconfigured (**automated**: `persisted_cua_driver_stdio_entry_is_stripped_before_any_agent_starts`) |
+| U2 | Old computer-use settings | Start on settings saved by a build with the standalone driver | Its retired choice is dropped, and a saved `cua-driver` server neither starts nor blocks other saves (**automated**: `saved_choices_of_other_versions_or_retired_backends`, `a_cua_named_server_already_saved_does_not_block_other_saves`) |
 | M1 | Custom stdio and HTTP MCP servers | Enable one of each on a task | Their tools are offered directly and run (**automated** for an HTTP server: `a_tasks_mcp_servers_give_the_model_their_tools`) |
 | M2 | A server that cannot connect | Give a task a server whose command does not exist, then run it twice | The first run's notice names it, the second's does not; switching it on again fails with the reason (**automated**: `a_server_that_cannot_connect_is_reported_once_and_cannot_be_switched_on`) |
 | A1 | ACP agent mode | A stdio ACP client: `session/new`, a tool prompt, `session/list`, `session/load`, cancel, `/compact` | No modes advertised, zero `session/request_permission` for tools, the trust chooser on an untrusted project, no task left by a session closed before its first prompt (**automated**: `acp::tests`) |
@@ -84,7 +84,7 @@ stdio MCP server configured in Settings > Integrations.
 | D4 | Plan meter | Settings > Usage | The plan, percent used and reset date show, nothing else |
 | D5 | Notifications | Finish a task and ask a question with the window in the background | Two notifications, none for permissions |
 | D6 | Appearance, fonts, motion, Vim | Change each setting | Each applies live |
-| D7 | Old task with `delegate` history | Open one | Its old calls render as plain rows and new runs offer no `delegate` (**automated**: `persisted_summon_extension_is_removed_on_the_next_run`) |
+| D7 | Tasks from a Goose build | Open the app on an account with tasks a Goose build saved | The app starts and runs new tasks; the old ones are not listed, since the Pi runtime reads no Goose-era data |
 
 ## Results
 
