@@ -24,6 +24,7 @@ use pi_coding_agent::session::{EntryKind, SessionManager};
 use serde::Serialize;
 use serde_json::{Value, json};
 
+use super::attachments::split_image_prompt;
 use super::types::AgentTimelineItem;
 
 pub(crate) const MAX_AGENT_SESSION_TITLE_CHARS: usize = 80;
@@ -192,15 +193,34 @@ pub(crate) fn merge_into(items: &mut Vec<AgentTimelineItem>, incoming: AgentTime
     previous.merge = incoming.merge;
 }
 
+/// A user's message: what they typed, and the images they attached, which
+/// the interface draws from the task's attachments.
 fn user_item(timestamp: Timestamp, content: &[Content], merge: &str) -> AgentTimelineItem {
+    let text = content_text(content);
+    let (text, input) = match split_image_prompt(&text) {
+        Some((typed, attachments)) => {
+            let attachments: Vec<Value> = attachments
+                .into_iter()
+                .map(|attachment| {
+                    json!({
+                        "id": attachment.id,
+                        "name": attachment.name,
+                        "source": attachment.source,
+                    })
+                })
+                .collect();
+            (typed, Some(json!({ "imageAttachments": attachments })))
+        }
+        None => (text, None),
+    };
     AgentTimelineItem {
         id: user_row_id(timestamp),
         item_type: "message".to_string(),
         role: Some("user".to_string()),
         title: None,
-        text: Some(content_text(content)),
+        text: Some(text),
         status: None,
-        input: None,
+        input,
         output: None,
         created_ms: created_ms(timestamp),
         merge: merge.to_string(),

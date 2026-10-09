@@ -899,6 +899,119 @@ async fn steering_joins_the_running_turn() {
     assert_eq!(last_user_text(&requests[1]), "Use the other file");
 }
 
+/// A 1x1 PNG.
+const PNG_1X1: &str =
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
+
+fn with_image(mut request: AgentSendMessageRequest, name: &str) -> AgentSendMessageRequest {
+    request.attachments = vec![AgentImageUpload {
+        name: name.to_string(),
+        data_url: format!("data:image/png;base64,{PNG_1X1}"),
+    }];
+    request
+}
+
+/// The last user message of a request, as the model got it.
+fn last_user(request: &pi_ai::faux::FauxRequest) -> pi_ai::UserMessage {
+    request
+        .context
+        .messages
+        .iter()
+        .rev()
+        .find_map(|message| match message {
+            pi_ai::Message::User(user) => Some(user.clone()),
+            _ => None,
+        })
+        .unwrap()
+}
+
+#[tokio::test]
+async fn attached_images_reach_the_model_and_show_with_their_message() {
+    use base64::Engine as _;
+
+    let harness =
+        Harness::with_faux(FauxProvider::new().with_chunk_delay(Duration::from_millis(10))).await;
+    harness
+        .faux
+        .push_text("A dialog, streamed slowly enough to queue behind.");
+    harness.faux.push_text("Also a dialog.");
+    let task = harness.create_task().await;
+    let first = with_image(harness.request(&task, "What is this?"), "dialog.png");
+    let mut run = harness.handle.send_message(first).await.unwrap();
+    // A message sent during the run waits as a chip with its image.
+    let mut second = with_image(harness.request(&task, "And this?"), "second.png");
+    second.vision_capable = true;
+    let staged = harness.handle.send_message(second).await.unwrap();
+    assert_eq!(staged.queued.unwrap().attachments[0].name, "second.png");
+    assert_eq!(finished(&mut run).await, AgentRunTerminal::Completed);
+
+    // A model without vision gets the image by source, to look with
+    // read_image; one with vision gets it beside the text.
+    let requests = harness.faux.requests();
+    let first = last_user(&requests[0]);
+    let text = pi_ai::content_text(&first.content);
+    assert!(
+        text.starts_with(
+            "What is this?\n\nThe user attached the following image:\n- \"dialog.png\": maple-attachment://"
+        ),
+        "{text}"
+    );
+    assert!(text.ends_with("when you need visual details from that image."));
+    assert_eq!(first.content.len(), 1);
+    let second = last_user(&requests[1]);
+    assert!(!pi_ai::content_text(&second.content).contains("read_image"));
+    assert!(matches!(
+        &second.content[1],
+        pi_ai::Content::Image(image) if image.mime_type == "image/png"
+    ));
+
+    // Live and after a reload, a message shows what the user typed and its
+    // images, which the interface reads from the task.
+    let users = |rows: &[AgentTimelineItem]| -> Vec<(String, Vec<(String, String)>)> {
+        rows.iter()
+            .filter(|row| row.role.as_deref() == Some("user"))
+            .map(|row| {
+                let images = row
+                    .input
+                    .as_ref()
+                    .and_then(|input| input["imageAttachments"].as_array().cloned())
+                    .unwrap_or_default()
+                    .iter()
+                    .map(|image| {
+                        (
+                            image["id"].as_str().unwrap().to_string(),
+                            image["name"].as_str().unwrap().to_string(),
+                        )
+                    })
+                    .collect();
+                (row.text.clone().unwrap_or_default(), images)
+            })
+            .collect()
+    };
+    let live = users(&harness.recorder.live_rows(&run.run_id));
+    let detail = harness.handle.load_session(task.clone()).await.unwrap();
+    assert_eq!(users(&detail.timeline), live);
+    let shown: Vec<(&str, &str)> = live
+        .iter()
+        .map(|(text, images)| (text.as_str(), images[0].1.as_str()))
+        .collect();
+    assert_eq!(
+        shown,
+        [("What is this?", "dialog.png"), ("And this?", "second.png")]
+    );
+    let bytes = harness
+        .handle
+        .read_image_attachment(task, live[0].1[0].0.clone())
+        .await
+        .unwrap();
+    assert_eq!(
+        bytes,
+        base64::engine::general_purpose::STANDARD
+            .decode(PNG_1X1)
+            .unwrap()
+    );
+}
+
 #[tokio::test]
 async fn a_failed_reply_fails_the_run_and_shows_its_error() {
     let harness = Harness::new().await;

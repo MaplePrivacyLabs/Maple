@@ -13,12 +13,13 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
-use pi_ai::{Message, StopReason};
+use pi_ai::{ImageContent, Message, StopReason};
 use pi_coding_agent::{AgentSession, AgentSessionEvent, PromptOptions, SessionMessage};
 use tokio::sync::{Notify, mpsc, watch};
 use tokio_util::sync::CancellationToken;
 
-use super::config::unix_ms;
+use super::attachments::{AgentImageAttachment, image_prompt, split_image_prompt};
+use super::config::{account_attachment_store, unix_ms};
 use super::runtime::AgentRuntime;
 use super::store::SessionFacts;
 use super::timeline::{
@@ -37,7 +38,6 @@ const MAX_DESKTOP_QUEUE_ITEMS: usize = 16;
 const MAX_DESKTOP_QUEUE_TEXT_BYTES: usize = 32 * 1024;
 const QUEUED_MESSAGE_ATTACHMENTS_ERROR: &str =
     "New images cannot be added while sending a queued message";
-const ATTACHMENTS_UNAVAILABLE_ERROR: &str = "Image attachments are not available yet";
 const EMPTY_PROMPT_ERROR: &str = "Prompt cannot be empty";
 /// How often Stop repeats its abort until the run's prompt returns.
 const STOP_REPEAT_INTERVAL: Duration = Duration::from_millis(100);
@@ -61,6 +61,55 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// A message on its way to the model: what the user typed, the images they
+/// attached, and, for a model that sees images, the images themselves.
+#[derive(Clone, Debug, Default)]
+struct Outgoing {
+    text: String,
+    attachments: Vec<AgentImageAttachment>,
+    images: Vec<ImageContent>,
+}
+
+impl Outgoing {
+    fn text(text: impl Into<String>) -> Self {
+        Self {
+            text: text.into(),
+            ..Self::default()
+        }
+    }
+
+    /// A message read back from the text Pi was given, as when steering
+    /// goes back to the queue. Its images are then referred to by source.
+    fn from_prompt(prompt: String) -> Self {
+        match split_image_prompt(&prompt) {
+            Some((text, attachments)) => Self {
+                text,
+                attachments,
+                images: Vec::new(),
+            },
+            None => Self::text(prompt),
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.text.is_empty() && self.attachments.is_empty()
+    }
+
+    /// The text and images Pi gets: the text names the attachments, and a
+    /// model without the images is told to look with `read_image`.
+    fn prompt(&self) -> (String, Vec<ImageContent>) {
+        (
+            image_prompt(&self.text, &self.attachments, !self.images.is_empty()),
+            self.images.clone(),
+        )
+    }
+
+    fn steer(&self, session: &AgentSession) {
+        let (text, images) = self.prompt();
+        session.steer(&text, images);
+    }
 }
 
 /// What a send started, staged or steered.
@@ -180,7 +229,7 @@ struct ActiveRun {
     /// The task's session, once the run has it.
     session: Option<AgentSession>,
     /// Messages steered in before the session was ready.
-    pending_steers: Vec<String>,
+    pending_steers: Vec<Outgoing>,
     task: Option<tokio::task::JoinHandle<()>>,
 }
 
@@ -189,10 +238,43 @@ impl ActiveRun {
         self.surface == AgentRunSurface::Desktop && self.accepting && !self.stopped.is_cancelled()
     }
 
-    fn steer(&mut self, text: &str) {
+    fn steer(&mut self, message: Outgoing) {
         match &self.session {
-            Some(session) => session.steer(text, Vec::new()),
-            None => self.pending_steers.push(text.to_string()),
+            Some(session) => message.steer(session),
+            None => self.pending_steers.push(message),
+        }
+    }
+}
+
+/// A message waiting behind a run, with the images it shows a model that
+/// sees them.
+#[derive(Clone)]
+struct Chip {
+    message: AgentQueuedMessage,
+    images: Vec<ImageContent>,
+}
+
+impl Chip {
+    fn new(session_id: &str, message: Outgoing) -> Self {
+        let queue_id = next_queue_id();
+        Self {
+            message: AgentQueuedMessage {
+                message_id: queue_id.clone(),
+                queue_id,
+                session_id: session_id.to_string(),
+                text: message.text,
+                attachments: message.attachments,
+                created_ms: unix_ms(),
+            },
+            images: message.images,
+        }
+    }
+
+    fn outgoing(self) -> Outgoing {
+        Outgoing {
+            text: self.message.text,
+            attachments: self.message.attachments,
+            images: self.images,
         }
     }
 }
@@ -200,7 +282,7 @@ impl ActiveRun {
 #[derive(Default)]
 struct DesktopQueue {
     revision: u64,
-    items: VecDeque<AgentQueuedMessage>,
+    items: VecDeque<Chip>,
     /// A chip the user is editing; nothing is sent while one is.
     editing: Option<String>,
 }
@@ -209,7 +291,7 @@ impl DesktopQueue {
     fn snapshot(&self) -> AgentDesktopQueueSnapshot {
         AgentDesktopQueueSnapshot {
             revision: self.revision,
-            items: self.items.iter().cloned().collect(),
+            items: self.items.iter().map(|chip| chip.message.clone()).collect(),
         }
     }
 
@@ -262,14 +344,14 @@ impl RunsState {
         &mut self,
         session_id: &str,
         queue_id: &str,
-    ) -> Result<(AgentQueuedMessage, AgentDesktopQueueSnapshot), String> {
+    ) -> Result<(Chip, AgentDesktopQueueSnapshot), String> {
         let Some(queue) = self.queues.get_mut(session_id) else {
             return Err("Queued Agent message is no longer available".to_string());
         };
         let Some(index) = queue
             .items
             .iter()
-            .position(|item| item.queue_id == queue_id)
+            .position(|item| item.message.queue_id == queue_id)
         else {
             return Err("Queued Agent message has already been sent".to_string());
         };
@@ -281,10 +363,7 @@ impl RunsState {
     }
 
     /// Every chip, unless one is being edited.
-    fn take_chips(
-        &mut self,
-        session_id: &str,
-    ) -> Option<(Vec<AgentQueuedMessage>, AgentDesktopQueueSnapshot)> {
+    fn take_chips(&mut self, session_id: &str) -> Option<(Vec<Chip>, AgentDesktopQueueSnapshot)> {
         let queue = self.queues.get_mut(session_id)?;
         if queue.items.is_empty() || queue.editing.is_some() {
             return None;
@@ -370,7 +449,7 @@ async fn join_tasks(mut tasks: Vec<tokio::task::JoinHandle<()>>, timeout: Durati
 /// A run registered by a send and not set up yet.
 struct NewRun {
     run_id: String,
-    prompts: Vec<String>,
+    prompts: Vec<Outgoing>,
     /// Chips the run sends; they leave the queue once it starts.
     consumed: Vec<String>,
     stopped: CancellationToken,
@@ -427,7 +506,7 @@ impl AgentRuntimeHandle {
             .state()
             .remove_chip(&request.session_id, &request.queue_id)?;
         runtime.publish_queue(&request.session_id, snapshot);
-        Ok(removed)
+        Ok(removed.message)
     }
 
     /// Hold the queue while the user edits a chip: nothing is sent until
@@ -444,7 +523,7 @@ impl AgentRuntimeHandle {
         if !queue
             .items
             .iter()
-            .any(|item| item.queue_id == request.queue_id)
+            .any(|item| item.message.queue_id == request.queue_id)
         {
             return Err("Queued Agent message has already been sent".to_string());
         }
@@ -509,20 +588,15 @@ impl AgentRuntime {
         self: &Arc<Self>,
         request: AgentSendMessageRequest,
     ) -> Result<AgentRunHandle, String> {
-        if !request.attachments.is_empty() {
-            return Err(if request.queue_id.is_some() {
-                QUEUED_MESSAGE_ATTACHMENTS_ERROR
-            } else {
-                ATTACHMENTS_UNAVAILABLE_ERROR
-            }
-            .to_string());
+        if request.queue_id.is_some() && !request.attachments.is_empty() {
+            return Err(QUEUED_MESSAGE_ATTACHMENTS_ERROR.to_string());
         }
-        let text = request.text.trim().to_string();
+        let message = self.outgoing(&request).await?;
         loop {
             let finished = self.runs.finished.notified();
             tokio::pin!(finished);
             finished.as_mut().enable();
-            match self.plan_desktop_send(&request, &text)? {
+            match self.plan_desktop_send(&request, &message)? {
                 Plan::Joined(handle) => return Ok(handle),
                 Plan::Wait => {
                     tokio::select! {
@@ -537,13 +611,49 @@ impl AgentRuntime {
         }
     }
 
+    /// The message a send carries. Its images are stored with the task
+    /// first; a model that sees images gets them beside the text.
+    async fn outgoing(&self, request: &AgentSendMessageRequest) -> Result<Outgoing, String> {
+        let text = request.text.trim().to_string();
+        if request.attachments.is_empty() {
+            return Ok(Outgoing::text(text));
+        }
+        let session_id = request.session_id.clone();
+        if self.store.get(&session_id)?.is_none() {
+            return Err(format!("Failed to find Agent task {session_id}"));
+        }
+        let store = account_attachment_store(&self.host.paths, &self.user_id)?;
+        let uploads = request.attachments.clone();
+        let stored =
+            tokio::task::spawn_blocking(move || store.store_uploads(&session_id, &uploads))
+                .await
+                .map_err(|error| format!("Failed to store the images: {error}"))??;
+        let images = if request.vision_capable {
+            stored
+                .iter()
+                .map(|image| ImageContent {
+                    data: image.base64_data.clone(),
+                    mime_type: image.attachment.mime_type.clone(),
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+        Ok(Outgoing {
+            text,
+            attachments: stored.into_iter().map(|image| image.attachment).collect(),
+            images,
+        })
+    }
+
     /// Decide what a desktop send does, and register a new run atomically
     /// with that decision.
     fn plan_desktop_send(
         &self,
         request: &AgentSendMessageRequest,
-        text: &str,
+        message: &Outgoing,
     ) -> Result<Plan, String> {
+        let text = message.text.as_str();
         let session_id = request.session_id.as_str();
         let mut state = self.runs.state();
         let joinable = match state.run_of(session_id) {
@@ -563,9 +673,9 @@ impl AgentRuntime {
                         update_chip_text(&mut state, session_id, queue_id, text)?;
                     }
                     let (removed, snapshot) = state.remove_chip(session_id, queue_id)?;
-                    steered.push(removed.text);
+                    steered.push(removed.outgoing());
                     Some(snapshot)
-                } else if text.is_empty() {
+                } else if message.is_empty() {
                     let Some((items, snapshot)) = state.take_chips(session_id) else {
                         return Err(if state.snapshot(session_id).items.is_empty() {
                             EMPTY_PROMPT_ERROR.to_string()
@@ -574,15 +684,15 @@ impl AgentRuntime {
                                 .to_string()
                         });
                     };
-                    steered.extend(items.into_iter().map(|item| item.text));
+                    steered.extend(items.into_iter().map(Chip::outgoing));
                     Some(snapshot)
                 } else {
-                    steered.push(text.to_string());
+                    steered.push(message.clone());
                     None
                 };
                 let run = state.runs.get_mut(&run_id).expect("the run was just found");
-                for text in &steered {
-                    run.steer(text);
+                for message in steered {
+                    run.steer(message);
                 }
                 let events = run.events.clone();
                 let queue = state.snapshot(session_id);
@@ -592,7 +702,7 @@ impl AgentRuntime {
                 }
                 return Ok(Plan::Joined(AgentRunHandle::joined(run_id, None, queue)));
             }
-            if text.is_empty() {
+            if message.is_empty() {
                 return Err(EMPTY_PROMPT_ERROR.to_string());
             }
             if text.len() > MAX_DESKTOP_QUEUE_TEXT_BYTES {
@@ -602,23 +712,16 @@ impl AgentRuntime {
             if queue.items.len() >= MAX_DESKTOP_QUEUE_ITEMS {
                 return Err("Agent task already has too many queued messages".to_string());
             }
-            let queue_id = next_queue_id();
-            let chip = AgentQueuedMessage {
-                message_id: queue_id.clone(),
-                queue_id,
-                session_id: session_id.to_string(),
-                text: text.to_string(),
-                attachments: Vec::new(),
-                created_ms: unix_ms(),
-            };
-            queue.items.push_back(chip.clone());
+            let chip = Chip::new(session_id, message.clone());
+            let queued = chip.message.clone();
+            queue.items.push_back(chip);
             let snapshot = queue.changed();
             let events = state.runs[&run_id].events.clone();
             drop(state);
             events.publish(AgentRunEvent::QueueChanged(snapshot.clone()));
             return Ok(Plan::Joined(AgentRunHandle::joined(
                 run_id,
-                Some(chip),
+                Some(queued),
                 snapshot,
             )));
         }
@@ -635,24 +738,33 @@ impl AgentRuntime {
                 let chip = state
                     .queues
                     .get(session_id)
-                    .and_then(|queue| queue.items.iter().find(|item| item.queue_id == queue_id))
+                    .and_then(|queue| {
+                        queue
+                            .items
+                            .iter()
+                            .find(|item| item.message.queue_id == queue_id)
+                    })
                     .ok_or_else(|| "Queued Agent message has already been sent".to_string())?;
-                (vec![chip.text.clone()], vec![queue_id.to_string()])
+                (vec![chip.clone().outgoing()], vec![queue_id.to_string()])
             }
             _ => {
-                let leftover = state.snapshot(session_id).items;
-                let mut prompts: Vec<String> =
-                    leftover.iter().map(|item| item.text.clone()).collect();
-                if !text.is_empty() {
-                    prompts.push(text.to_string());
+                let leftover: Vec<Chip> = state
+                    .queues
+                    .get(session_id)
+                    .map(|queue| queue.items.iter().cloned().collect())
+                    .unwrap_or_default();
+                let consumed = leftover
+                    .iter()
+                    .map(|chip| chip.message.queue_id.clone())
+                    .collect();
+                let mut prompts: Vec<Outgoing> = leftover.into_iter().map(Chip::outgoing).collect();
+                if !message.is_empty() {
+                    prompts.push(message.clone());
                 }
                 if prompts.is_empty() {
                     return Err(EMPTY_PROMPT_ERROR.to_string());
                 }
-                (
-                    prompts,
-                    leftover.into_iter().map(|item| item.queue_id).collect(),
-                )
+                (prompts, consumed)
             }
         };
         let run_id = next_run_id();
@@ -735,8 +847,8 @@ impl AgentRuntime {
             .runs
             .get_mut(&run_id)
             .expect("checked above, under the same lock");
-        for text in std::mem::take(&mut run.pending_steers) {
-            session.steer(&text, Vec::new());
+        for message in std::mem::take(&mut run.pending_steers) {
+            message.steer(&session);
         }
         run.session = Some(session.clone());
         if let Some(snapshot) = changed {
@@ -769,7 +881,7 @@ impl AgentRuntime {
     async fn prepare_run_session(
         &self,
         request: &AgentSendMessageRequest,
-        prompts: &[String],
+        prompts: &[Outgoing],
         events: &RunEvents,
     ) -> Result<AgentSession, String> {
         let session_id = request.session_id.as_str();
@@ -810,8 +922,12 @@ impl AgentRuntime {
                 },
             );
         }
+        // Named from the first message with text: images alone say nothing.
         if super::tasks::names_from_prompt(&row)
-            && let Some(first) = prompts.first()
+            && let Some(first) = prompts
+                .iter()
+                .map(|message| message.text.as_str())
+                .find(|text| !text.is_empty())
         {
             let title = super::tasks::session_title_from_prompt(first);
             if let Some(named) = self
@@ -852,15 +968,17 @@ impl AgentRuntime {
             };
             // Steering queued before the prompt joins its first turn, so
             // several messages make one turn.
-            for text in rest {
-                session.steer(text, Vec::new());
+            for message in rest {
+                message.steer(&session);
             }
             prompted = true;
+            let (text, images) = first.prompt();
             let options = PromptOptions {
+                images,
                 expand: false,
                 ..PromptOptions::default()
             };
-            if let Err(error) = prompt_until_stopped(&session, first, options, &stopped).await {
+            if let Err(error) = prompt_until_stopped(&session, &text, options, &stopped).await {
                 failure = Some(error.to_string());
                 break;
             }
@@ -870,11 +988,11 @@ impl AgentRuntime {
             // A message steered in after Pi's last look would wait for the
             // task's next prompt; send it now with the queued chips.
             let (stranded, _) = session.clear_queue();
-            prompts = stranded;
+            prompts = stranded.into_iter().map(Outgoing::from_prompt).collect();
             match self.take_chips_or_close(&run_id, &session_id) {
                 Some((chips, snapshot)) => {
                     events.publish(AgentRunEvent::QueueChanged(snapshot));
-                    prompts.extend(chips.into_iter().map(|chip| chip.text));
+                    prompts.extend(chips.into_iter().map(Chip::outgoing));
                 }
                 None if prompts.is_empty() => break,
                 None => {}
@@ -886,7 +1004,11 @@ impl AgentRuntime {
         if cancelled {
             // Steering the session never took goes back to the queue.
             let (stranded, _) = session.clear_queue();
-            let unsent = if prompted { stranded } else { prompts };
+            let unsent = if prompted {
+                stranded.into_iter().map(Outgoing::from_prompt).collect()
+            } else {
+                prompts
+            };
             self.requeue(&session_id, unsent, &events);
             if prompted {
                 let id = format!("stopped-{}", pi_ai::now_ms());
@@ -939,7 +1061,7 @@ impl AgentRuntime {
         &self,
         run_id: &str,
         session_id: &str,
-    ) -> Option<(Vec<AgentQueuedMessage>, AgentDesktopQueueSnapshot)> {
+    ) -> Option<(Vec<Chip>, AgentDesktopQueueSnapshot)> {
         let mut state = self.runs.state();
         let taken = state.take_chips(session_id);
         if taken.is_none()
@@ -951,23 +1073,15 @@ impl AgentRuntime {
     }
 
     /// Put messages a stopped run never sent back at the head of the queue.
-    fn requeue(&self, session_id: &str, texts: Vec<String>, events: &RunEvents) {
-        if texts.is_empty() {
+    fn requeue(&self, session_id: &str, messages: Vec<Outgoing>, events: &RunEvents) {
+        if messages.is_empty() {
             return;
         }
         let snapshot = {
             let mut state = self.runs.state();
             let queue = state.queue(session_id);
-            for text in texts.into_iter().rev() {
-                let queue_id = next_queue_id();
-                queue.items.push_front(AgentQueuedMessage {
-                    message_id: queue_id.clone(),
-                    queue_id,
-                    session_id: session_id.to_string(),
-                    text,
-                    attachments: Vec::new(),
-                    created_ms: unix_ms(),
-                });
+            for message in messages.into_iter().rev() {
+                queue.items.push_front(Chip::new(session_id, message));
             }
             queue.changed()
         };
@@ -1020,11 +1134,11 @@ fn update_chip_text(
     let Some(item) = queue
         .items
         .iter_mut()
-        .find(|item| item.queue_id == queue_id)
+        .find(|item| item.message.queue_id == queue_id)
     else {
         return Err("Queued Agent message has already been sent".to_string());
     };
-    item.text = text.to_string();
+    item.message.text = text.to_string();
     if queue.editing.as_deref() == Some(queue_id) {
         queue.editing = None;
     }
@@ -1050,7 +1164,7 @@ struct DrivenRun {
     session_id: String,
     session: AgentSession,
     events: RunEvents,
-    prompts: Vec<String>,
+    prompts: Vec<Outgoing>,
     stopped: CancellationToken,
     terminal: watch::Sender<Option<AgentRunTerminal>>,
     usage: watch::Sender<Option<AgentRunUsage>>,
