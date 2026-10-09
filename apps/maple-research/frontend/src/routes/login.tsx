@@ -55,10 +55,20 @@ function LoginPage() {
   const [loginMethod, setLoginMethod] = useState<LoginMethod>(null);
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
+  const [pendingProvider, setPendingProvider] = useState<"github" | "google" | null>(null);
 
   // Use platform detection functions
   const isIOSPlatform = isIOS();
   const isTauriEnv = isTauri();
+
+  // A provider redirect can leave this page in the browser's back-forward cache.
+  useEffect(() => {
+    const restoreLogin = (event: PageTransitionEvent) => {
+      if (event.persisted) setPendingProvider(null);
+    };
+    window.addEventListener("pageshow", restoreLogin);
+    return () => window.removeEventListener("pageshow", restoreLogin);
+  }, []);
 
   // Redirect if already logged in
   useEffect(() => {
@@ -123,6 +133,9 @@ function LoginPage() {
   };
 
   const handleGitHubLogin = async () => {
+    if (pendingProvider) return;
+    if (!isTauriEnv) setPendingProvider("github");
+    setError(null);
     try {
       console.log("[OAuth] Using", isTauriEnv ? "Tauri" : "web", "flow");
 
@@ -151,11 +164,15 @@ function LoginPage() {
       }
     } catch (error) {
       console.error("Failed to initiate GitHub login:", error);
+      setPendingProvider(null);
       setError("Failed to initiate GitHub login. Please try again.");
     }
   };
 
   const handleGoogleLogin = async () => {
+    if (pendingProvider) return;
+    if (!isTauriEnv) setPendingProvider("google");
+    setError(null);
     try {
       console.log("[OAuth] Using", isTauriEnv ? "Tauri" : "web", "flow");
 
@@ -184,6 +201,7 @@ function LoginPage() {
       }
     } catch (error) {
       console.error("Failed to initiate Google login:", error);
+      setPendingProvider(null);
       setError("Failed to initiate Google login. Please try again.");
     }
   };
@@ -351,19 +369,31 @@ function LoginPage() {
         </Button>
         <Button
           onClick={handleGitHubLogin}
+          disabled={pendingProvider !== null}
+          aria-busy={pendingProvider === "github"}
           variant="outline"
           className="w-full bg-white/40 dark:bg-white/0"
         >
-          <Github className="mr-2 h-4 w-4" />
-          Log in with GitHub
+          {pendingProvider === "github" ? (
+            <Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden="true" />
+          ) : (
+            <Github className="mr-2 h-4 w-4" />
+          )}
+          {pendingProvider === "github" ? "Signing in…" : "Log in with GitHub"}
         </Button>
         <Button
           onClick={handleGoogleLogin}
+          disabled={pendingProvider !== null}
+          aria-busy={pendingProvider === "google"}
           variant="outline"
           className="w-full bg-white/40 dark:bg-white/0"
         >
-          <Google className="mr-2 h-4 w-4" />
-          Log in with Google
+          {pendingProvider === "google" ? (
+            <Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden="true" />
+          ) : (
+            <Google className="mr-2 h-4 w-4" />
+          )}
+          {pendingProvider === "google" ? "Signing in…" : "Log in with Google"}
         </Button>
         {isTauriEnv ? (
           <Button

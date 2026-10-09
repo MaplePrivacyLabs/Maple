@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from "react";
 import { useOpenSecret } from "@mapleai/sdk";
+import { Loader2 } from "lucide-react";
 import { Button, type ButtonProps } from "./ui/button";
 import { Apple } from "./icons/Apple";
 import { HostedNativeSignInConfirmation } from "./HostedNativeSignInConfirmation";
@@ -121,6 +122,7 @@ export function AppleAuthProvider({
   const os = useOpenSecret();
   const appleScriptLoaded = useRef(false);
   const isSignInPending = useRef(false);
+  const [isPending, setIsPending] = useState(false);
   const active = useRef(true);
   const ownedTarget = useRef<TransportV2DesktopOAuthState | null>(null);
   const [nativeConfirmation, setNativeConfirmation] = useState<TransportV2DesktopOAuthState | null>(
@@ -217,6 +219,8 @@ export function AppleAuthProvider({
   const handleAppleSignIn = async () => {
     if (isSignInPending.current || nativeConfirmation || !active.current) return;
     isSignInPending.current = true;
+    setIsPending(true);
+    let completed = false;
     const nativeFlow = isNativeOAuthRedirect();
     const target = nativeFlow ? readTransportV2DesktopOAuth("apple") : null;
     ownedTarget.current = target;
@@ -238,6 +242,7 @@ export function AppleAuthProvider({
       }
 
       await completeAuthorization(authorization, nativeFlow, target);
+      completed = true;
     } catch (error) {
       if (!active.current || (target && !isCurrentDesktopOAuthTarget(target))) return;
       const signInError = getAppleAuthError(error);
@@ -247,7 +252,11 @@ export function AppleAuthProvider({
         onError?.(signInError);
       }
     } finally {
-      isSignInPending.current = false;
+      // Successful sign-in stays busy until navigation or account confirmation replaces it.
+      if (!completed) {
+        isSignInPending.current = false;
+        if (active.current) setIsPending(false);
+      }
     }
   };
 
@@ -269,9 +278,15 @@ export function AppleAuthProvider({
       onClick={handleAppleSignIn}
       variant={buttonVariant}
       className={className || "w-full"}
+      disabled={isPending}
+      aria-busy={isPending}
     >
-      <Apple className="mr-2 h-4 w-4" />
-      {buttonLabel}
+      {isPending ? (
+        <Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden="true" />
+      ) : (
+        <Apple className="mr-2 h-4 w-4" />
+      )}
+      {isPending ? "Signing in…" : buttonLabel}
     </Button>
   );
 }

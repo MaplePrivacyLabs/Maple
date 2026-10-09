@@ -237,6 +237,76 @@ describe("AppleAuthProvider", () => {
     return { completion, control };
   }
 
+  function expectPending(pending: boolean): void {
+    const button = renderer!.root.findByType("button");
+    expect(button.props.disabled).toBe(pending);
+    expect(button.props["aria-busy"]).toBe(pending);
+    expect(button.children.includes("Signing in…")).toBe(pending);
+    expect(
+      button.findAllByType("svg").some((icon) => icon.props.className.includes("animate-spin"))
+    ).toBe(pending);
+  }
+
+  test("shows pending from initiation through the closed popup's callback and navigation", async () => {
+    let resolveInitiation!: (result: { auth_url: string; state: string }) => void;
+    let resolveCallback!: () => void;
+    initiateAppleAuth.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveInitiation = resolve;
+        })
+    );
+    handleAppleCallback.mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveCallback = resolve;
+        })
+    );
+    await act(async () => {
+      renderer = create(
+        <AppleAuthProvider onSuccess={onSuccess} redirectAfterLogin={redirectAfterLogin} />
+      );
+    });
+    expectPending(false);
+
+    let completion!: Promise<void>;
+    await act(async () => {
+      completion = renderer!.root.findByType("button").props.onClick();
+    });
+    expectPending(true);
+    expect(appleSignIn).not.toHaveBeenCalled();
+
+    await act(async () => {
+      resolveInitiation({
+        auth_url: `https://appleid.apple.com/auth/authorize?client_id=cloud.opensecret.maple.services&nonce=${"11".repeat(32)}`,
+        state: "state-one"
+      });
+    });
+    expectPending(true);
+    expect(appleSignIn).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      signInControls.shift()!.resolve({
+        authorization: { code: "callback-code", state: "state-one" }
+      });
+    });
+    expect(handleAppleCallback).toHaveBeenCalledTimes(1);
+    expectPending(true);
+    expect(redirectAfterLogin).not.toHaveBeenCalled();
+    await act(async () => {
+      await renderer!.root.findByType("button").props.onClick();
+    });
+    expect(initiateAppleAuth).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      resolveCallback();
+      await completion;
+    });
+    expect(onSuccess).toHaveBeenCalledTimes(1);
+    expect(redirectAfterLogin).toHaveBeenCalledTimes(1);
+    expectPending(true);
+  });
+
   for (const clientId of [
     "cloud.opensecret.maple.services",
     "cloud.opensecret.maple.dev.services"
@@ -326,6 +396,7 @@ describe("AppleAuthProvider", () => {
     ).toEqual([]);
 
     const firstAttempt = await startAttempt();
+    expectPending(true);
     await act(async () => {
       await renderer?.root.findByType("button").props.onClick();
     });
@@ -352,8 +423,10 @@ describe("AppleAuthProvider", () => {
 
     expect(onError).toHaveBeenCalledTimes(0);
     expect(handleAppleCallback).toHaveBeenCalledTimes(0);
+    expectPending(false);
 
     const legacyCancellationAttempt = await startAttempt();
+    expectPending(true);
     await act(async () => {
       legacyCancellationAttempt.control.reject({ error: "popup_closed_by_user" });
       await legacyCancellationAttempt.completion;
@@ -361,8 +434,10 @@ describe("AppleAuthProvider", () => {
 
     expect(onError).toHaveBeenCalledTimes(0);
     expect(handleAppleCallback).toHaveBeenCalledTimes(0);
+    expectPending(false);
 
     const failedAttempt = await startAttempt();
+    expectPending(true);
     await act(async () => {
       failedAttempt.control.reject({ error: "authorization_failed" });
       await failedAttempt.completion;
@@ -371,6 +446,7 @@ describe("AppleAuthProvider", () => {
     expect(onError).toHaveBeenCalledTimes(1);
     expect(onError.mock.calls[0]?.[0]).toEqual(new Error("authorization_failed"));
     expect(handleAppleCallback).toHaveBeenCalledTimes(0);
+    expectPending(false);
 
     await act(async () => {
       renderer?.update(
@@ -385,6 +461,7 @@ describe("AppleAuthProvider", () => {
     });
 
     const retry = await startAttempt();
+    expectPending(true);
     documentTarget.dispatchEvent(
       appleEvent("AppleIDSignInOnSuccess", {
         authorization: { code: "promise-code", state: "state-two" }
