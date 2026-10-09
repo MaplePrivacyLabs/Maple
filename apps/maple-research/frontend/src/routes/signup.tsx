@@ -60,6 +60,7 @@ function SignupPage() {
   const [signUpMethod, setSignUpMethod] = useState<SignUpMethod>(null);
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
+  const [pendingProvider, setPendingProvider] = useState<"github" | "google" | null>(null);
   const [showGuestWarning, setShowGuestWarning] = useState(false);
   const [showGuestCredentials, setShowGuestCredentials] = useState(false);
   const [guestUuid, setGuestUuid] = useState<string | null>(null);
@@ -67,6 +68,15 @@ function SignupPage() {
   // Use platform detection functions
   const isIOSPlatform = isIOS();
   const isTauriEnv = isTauri();
+
+  // A provider redirect can leave this page in the browser's back-forward cache.
+  useEffect(() => {
+    const restoreLogin = (event: PageTransitionEvent) => {
+      if (event.persisted) setPendingProvider(null);
+    };
+    window.addEventListener("pageshow", restoreLogin);
+    return () => window.removeEventListener("pageshow", restoreLogin);
+  }, []);
 
   // Redirect if already logged in (but not if we're showing guest credentials)
   useEffect(() => {
@@ -153,6 +163,9 @@ function SignupPage() {
   };
 
   const handleGitHubSignup = async () => {
+    if (pendingProvider) return;
+    if (!isTauriEnv) setPendingProvider("github");
+    setError(null);
     try {
       console.log("[OAuth] Using", isTauriEnv ? "Tauri" : "web", "flow");
 
@@ -181,11 +194,15 @@ function SignupPage() {
       }
     } catch (error) {
       console.error("Failed to initiate GitHub signup:", error);
+      setPendingProvider(null);
       setError("Failed to initiate GitHub signup. Please try again.");
     }
   };
 
   const handleGoogleSignup = async () => {
+    if (pendingProvider) return;
+    if (!isTauriEnv) setPendingProvider("google");
+    setError(null);
     try {
       console.log("[OAuth] Using", isTauriEnv ? "Tauri" : "web", "flow");
 
@@ -214,6 +231,7 @@ function SignupPage() {
       }
     } catch (error) {
       console.error("Failed to initiate Google signup:", error);
+      setPendingProvider(null);
       setError("Failed to initiate Google signup. Please try again.");
     }
   };
@@ -384,19 +402,31 @@ function SignupPage() {
         </Button>
         <Button
           onClick={handleGitHubSignup}
+          disabled={pendingProvider !== null}
+          aria-busy={pendingProvider === "github"}
           variant="outline"
           className="w-full bg-white/40 dark:bg-white/0"
         >
-          <Github className="mr-2 h-4 w-4" />
-          Sign up with GitHub
+          {pendingProvider === "github" ? (
+            <Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden="true" />
+          ) : (
+            <Github className="mr-2 h-4 w-4" />
+          )}
+          {pendingProvider === "github" ? "Signing in…" : "Sign up with GitHub"}
         </Button>
         <Button
           onClick={handleGoogleSignup}
+          disabled={pendingProvider !== null}
+          aria-busy={pendingProvider === "google"}
           variant="outline"
           className="w-full bg-white/40 dark:bg-white/0"
         >
-          <Google className="mr-2 h-4 w-4" />
-          Sign up with Google
+          {pendingProvider === "google" ? (
+            <Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden="true" />
+          ) : (
+            <Google className="mr-2 h-4 w-4" />
+          )}
+          {pendingProvider === "google" ? "Signing in…" : "Sign up with Google"}
         </Button>
         {isTauriEnv ? (
           <Button
