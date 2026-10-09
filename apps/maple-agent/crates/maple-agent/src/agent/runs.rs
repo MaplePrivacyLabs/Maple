@@ -814,8 +814,12 @@ impl AgentRuntime {
             && let Some(first) = prompts.first()
         {
             let title = super::tasks::session_title_from_prompt(first);
-            if let Some(named) = self.store.update(session_id, |row| row.title = title)? {
+            if let Some(named) = self
+                .store
+                .update(session_id, |row| row.title = title.clone())?
+            {
                 events.publish(AgentRunEvent::SessionUpdated(named.summary()));
+                self.generate_title(session_id, first, title);
             }
         }
         Ok(session)

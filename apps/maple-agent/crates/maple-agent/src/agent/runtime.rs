@@ -18,7 +18,10 @@ use super::questions::QuestionBroker;
 use super::runs::{Failures, Runs};
 use super::store::{TaskRow, TaskStore};
 use super::tool_context::SharedAgentToolContext;
-use super::{AgentRuntimeStatus, MapleAgentHostResources, login_path, tools};
+use super::{
+    AgentRuntimeStatus, AgentServiceEvent, MapleAgentHostResources, emit_agent_event, login_path,
+    tools,
+};
 use crate::maple_api::MapleApiSession;
 
 /// The product name Pi's default system prompt names.
@@ -165,6 +168,76 @@ impl AgentRuntime {
     /// A task's loaded session, if it is loaded.
     pub(super) async fn loaded_session(&self, session_id: &str) -> Option<AgentSession> {
         self.sessions.lock().await.get(session_id).cloned()
+    }
+
+    /// The models the runtime serves, side models included.
+    pub(super) fn models(&self) -> &ModelRegistry {
+        &self.models
+    }
+
+    /// A task's session for a side question: the loaded one as it is, or
+    /// the task loaded on the model it last ran on.
+    pub(super) async fn side_question_session(
+        &self,
+        session_id: &str,
+    ) -> Result<AgentSession, String> {
+        if let Some(session) = self.loaded_session(session_id).await {
+            return Ok(session);
+        }
+        let row = self
+            .store
+            .get(session_id)?
+            .ok_or_else(|| format!("Failed to find Agent task {session_id}"))?;
+        let model_id = row.model.clone().unwrap_or_else(|| self.model.clone());
+        self.task_session(&row, self.pi_model(&model_id, None, false))
+            .await
+    }
+
+    /// Give a task named from its first prompt a generated title, unless
+    /// its title changes first. Runs beside the task until the runtime
+    /// stops.
+    pub(super) fn generate_title(&self, session_id: &str, first_prompt: &str, fallback: String) {
+        let models = self.models.clone();
+        let store = Arc::clone(&self.store);
+        let events = self.host.events.clone();
+        let cancel = self.lifetime.child_token();
+        let (session_id, first_prompt) = (session_id.to_string(), first_prompt.to_string());
+        tokio::spawn(async move {
+            let title = match super::side_models::generate_title(
+                &models,
+                &session_id,
+                &first_prompt,
+                cancel.clone(),
+            )
+            .await
+            {
+                Ok(Some(title)) if !cancel.is_cancelled() => title,
+                Ok(_) => return,
+                Err(error) => {
+                    log::debug!("{error}");
+                    return;
+                }
+            };
+            let mut renamed = false;
+            let updated = store.update(&session_id, |row| {
+                if !row.title_user_set && row.title == fallback {
+                    row.title = title;
+                    renamed = true;
+                }
+            });
+            match updated {
+                Ok(Some(row)) if renamed => emit_agent_event(
+                    &events,
+                    AgentServiceEvent::SessionUpdated {
+                        session_id: session_id.clone(),
+                        run_id: None,
+                        session: row.summary(),
+                    },
+                ),
+                Ok(_) => {}
+                Err(error) => log::warn!("Failed to save the generated Agent task title: {error}"),
+            }
+        });
     }
 
     /// The Pi model of a Maple model id. The host resolves the context

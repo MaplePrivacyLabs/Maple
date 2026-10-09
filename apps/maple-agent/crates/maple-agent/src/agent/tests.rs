@@ -58,9 +58,34 @@ struct Harness {
     service: MapleAgentService,
     handle: AgentRuntimeHandle,
     recorder: Arc<Recorder>,
+    /// The tasks' model.
     faux: FauxProvider,
+    /// The side model of titles and summaries, scripted apart so a task's
+    /// script does not depend on when they are asked.
+    side: FauxProvider,
     data: tempfile::TempDir,
     project: tempfile::TempDir,
+}
+
+/// Side-model requests to their own script, the rest to the task's.
+struct SplitStream {
+    task: FauxProvider,
+    side: FauxProvider,
+}
+
+impl pi_ai::StreamFn for SplitStream {
+    fn stream(
+        &self,
+        model: &pi_ai::Model,
+        context: pi_ai::Context,
+        options: pi_ai::StreamOptions,
+    ) -> pi_ai::AssistantMessageStream {
+        if model.id == side_models::SIDE_MODEL {
+            self.side.stream(model, context, options)
+        } else {
+            self.task.stream(model, context, options)
+        }
+    }
 }
 
 fn service(data: &Path, recorder: Arc<Recorder>) -> MapleAgentService {
@@ -88,6 +113,7 @@ impl Harness {
             handle,
             recorder,
             faux,
+            side: FauxProvider::new(),
             data,
             project,
         };
@@ -107,7 +133,10 @@ impl Harness {
             .await
             .unwrap();
         let runtime = self.service.state.runtime.lock().await.clone().unwrap();
-        runtime.use_stream_fn(Arc::new(self.faux.clone()));
+        runtime.use_stream_fn(Arc::new(SplitStream {
+            task: self.faux.clone(),
+            side: self.side.clone(),
+        }));
     }
 
     /// A service over the same files, as after the app restarts.
@@ -484,6 +513,164 @@ async fn the_web_tools_follow_the_tasks_web_switch() {
         tools[1]
     );
     assert!(has_web(&tools[2]), "{:?}", tools[2]);
+}
+
+#[tokio::test]
+async fn a_new_task_gets_a_generated_title_unless_renamed_first() {
+    let harness = Harness::new().await;
+    harness.side.push_text("\"Fix the login bug\"");
+    harness.faux.push_text("Done.");
+    let task = harness.create_task().await;
+    let mut run = harness
+        .send(&task, "please fix the login bug in auth.rs")
+        .await;
+    assert_eq!(finished(&mut run).await, AgentRunTerminal::Completed);
+    let title = || async {
+        harness
+            .handle
+            .load_session(task.clone())
+            .await
+            .unwrap()
+            .session
+            .title
+    };
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while title().await != "Fix the login bug" {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("the generated title is saved");
+    let request = harness.side.requests().pop().unwrap();
+    assert_eq!(request.model.id, side_models::SIDE_MODEL);
+    assert!(last_user_text(&request).contains("please fix the login bug"));
+    assert!(harness.recorder.events.lock().unwrap().iter().any(|event| {
+        matches!(event, AgentServiceEvent::SessionUpdated { session, .. }
+            if session.title == "Fix the login bug")
+    }));
+
+    // A title the user gives while the generated one is on its way stays.
+    let harness = Harness::with_faux(FauxProvider::new()).await;
+    let slow_side = FauxProvider::new().with_chunk_delay(Duration::from_millis(100));
+    slow_side.push_text("A generated title that arrives late");
+    let runtime = harness.service.state.runtime.lock().await.clone().unwrap();
+    runtime.use_stream_fn(Arc::new(SplitStream {
+        task: harness.faux.clone(),
+        side: slow_side.clone(),
+    }));
+    harness.faux.push_text("Done.");
+    let task = harness.create_task().await;
+    let mut run = harness.send(&task, "rename me").await;
+    assert_eq!(finished(&mut run).await, AgentRunTerminal::Completed);
+    harness
+        .handle
+        .rename_session(
+            test_maple_api_session(USER),
+            AgentRenameSessionRequest {
+                session_id: task.clone(),
+                title: "Mine".to_string(),
+            },
+        )
+        .await
+        .unwrap();
+    eventually(|| slow_side.pending() == 0).await;
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    let detail = harness.handle.load_session(task).await.unwrap();
+    assert_eq!(detail.session.title, "Mine");
+}
+
+#[tokio::test]
+async fn tool_calls_and_thinking_are_summarized_by_the_side_model() {
+    let harness = Harness::new().await;
+    harness.side.push_text("\"Listed the files\"\nextra");
+    harness.side.push_text("Decided to read main.rs first");
+    let task = harness.create_task().await;
+    let summary = harness
+        .handle
+        .summarize_tool_call(&task, "bash", Some(&json!({"command": "ls"})), "main.rs")
+        .await
+        .unwrap();
+    assert_eq!(summary.as_deref(), Some("Listed the files"));
+    let summary = harness
+        .handle
+        .summarize_thinking(&task, "I should read main.rs before editing.")
+        .await
+        .unwrap();
+    assert_eq!(summary.as_deref(), Some("Decided to read main.rs first"));
+    let requests = harness.side.requests();
+    assert_eq!(
+        last_user_text(&requests[0]),
+        "Tool: bash\nInput: {\"command\":\"ls\"}\nOutput: main.rs"
+    );
+    assert_eq!(requests[0].options.max_tokens, Some(48));
+    assert!(
+        harness.faux.requests().is_empty(),
+        "the task's model is not asked"
+    );
+}
+
+#[tokio::test]
+async fn a_side_question_streams_an_answer_and_leaves_the_task_alone() {
+    let harness = Harness::new().await;
+    harness.faux.push_text("I read main.rs.");
+    let task = harness.create_task().await;
+    let mut run = harness.send(&task, "Read main.rs").await;
+    assert_eq!(finished(&mut run).await, AgentRunTerminal::Completed);
+    let before = harness.handle.load_session(task.clone()).await.unwrap();
+
+    harness.faux.push_text("Because it holds the entry point.");
+    harness
+        .handle
+        .ask_side_question(
+            &task,
+            "side-1".to_string(),
+            Vec::new(),
+            "Why main.rs?".to_string(),
+        )
+        .await
+        .unwrap();
+    let side_events = || -> Vec<SideQuestionEvent> {
+        harness
+            .recorder
+            .events
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|event| match event {
+                AgentServiceEvent::SideQuestion {
+                    request_id, event, ..
+                } if request_id == "side-1" => Some(event.clone()),
+                _ => None,
+            })
+            .collect()
+    };
+    eventually(|| {
+        side_events()
+            .iter()
+            .any(|event| !matches!(event, SideQuestionEvent::Chunk(_)))
+    })
+    .await;
+    let events = side_events();
+    assert!(
+        matches!(events.last(), Some(SideQuestionEvent::Finished)),
+        "{events:?}"
+    );
+    let answer: String = events
+        .iter()
+        .filter_map(|event| match event {
+            SideQuestionEvent::Chunk(text) => Some(text.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(answer, "Because it holds the entry point.");
+
+    // The question went with the task's history, framed, and nothing was saved.
+    let request = harness.faux.requests().pop().unwrap();
+    let texts = user_texts(&request);
+    assert_eq!(texts[0], "Read main.rs");
+    assert!(texts[1].ends_with("\n\nWhy main.rs?"), "{texts:?}");
+    let after = harness.handle.load_session(task).await.unwrap();
+    assert_eq!(after.timeline.len(), before.timeline.len());
 }
 
 #[tokio::test]

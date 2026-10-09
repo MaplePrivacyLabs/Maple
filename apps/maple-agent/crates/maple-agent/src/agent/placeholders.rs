@@ -8,7 +8,7 @@
 
 use super::{
     AgentPathLayout, AgentRuntimeHandle, AgentSessionMcpServer, AgentSetSessionMcpServerRequest,
-    AgentSlashCommand, AgentSubagent, SideQuestionTurn,
+    AgentSlashCommand, AgentSubagent,
 };
 
 const UNAVAILABLE: &str = "This feature is not available in this build of Maple yet";
@@ -61,37 +61,6 @@ impl AgentRuntimeHandle {
         &self,
         _session_id: &str,
         _agent_id: &str,
-    ) -> Result<(), String> {
-        unavailable()
-    }
-
-    /// A one-line summary of a tool call.
-    pub async fn summarize_tool_call(
-        &self,
-        _session_id: &str,
-        _tool_name: &str,
-        _input: Option<&serde_json::Value>,
-        _output_text: &str,
-    ) -> Result<Option<String>, String> {
-        Ok(None)
-    }
-
-    /// A one-line summary of a thinking block.
-    pub async fn summarize_thinking(
-        &self,
-        _session_id: &str,
-        _thinking_text: &str,
-    ) -> Result<Option<String>, String> {
-        Ok(None)
-    }
-
-    /// A `/btw` side question.
-    pub async fn ask_side_question(
-        &self,
-        _session_id: &str,
-        _request_id: String,
-        _prior: Vec<SideQuestionTurn>,
-        _question: String,
     ) -> Result<(), String> {
         unavailable()
     }

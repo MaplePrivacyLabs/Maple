@@ -22,6 +22,7 @@ pub(crate) mod provider;
 mod questions;
 mod runs;
 mod runtime;
+mod side_models;
 mod store;
 mod tasks;
 mod timeline;
