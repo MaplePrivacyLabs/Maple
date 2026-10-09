@@ -214,6 +214,9 @@ pub struct MapleApiSession {
     session_id: String,
     event_sink: Arc<dyn MapleApiAuthEventSink>,
     inner: RwLock<MapleApiSessionInner>,
+    /// A model catalog a test serves in place of the backend's.
+    #[cfg(test)]
+    test_catalog: std::sync::Mutex<Option<maple_sdk::ModelCatalogResponse>>,
 }
 
 pub(crate) struct MapleApiAuthLease<'a> {
@@ -265,6 +268,8 @@ impl MapleApiSession {
                     client,
                 },
             }),
+            #[cfg(test)]
+            test_catalog: std::sync::Mutex::new(None),
         })
     }
 
@@ -522,6 +527,15 @@ impl MapleApiSession {
     }
 
     pub(crate) async fn model_catalog(&self) -> Result<maple_sdk::ModelCatalogResponse, String> {
+        #[cfg(test)]
+        if let Some(catalog) = self
+            .test_catalog
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+        {
+            return Ok(catalog);
+        }
         let snapshot = self.client_snapshot().await?;
         let response = snapshot.client.get_model_catalog().await;
         self.record_refresh(&snapshot).await?;
@@ -668,6 +682,17 @@ struct TestMapleApiAuthEventSink;
 #[cfg(test)]
 impl MapleApiAuthEventSink for TestMapleApiAuthEventSink {
     fn auth_changed(&self, _snapshot: &MapleApiAuthSnapshot) {}
+}
+
+#[cfg(test)]
+impl MapleApiSession {
+    /// Serve `catalog` as the backend's model catalog.
+    pub(crate) fn set_test_catalog(&self, catalog: maple_sdk::ModelCatalogResponse) {
+        *self
+            .test_catalog
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(catalog);
+    }
 }
 
 #[cfg(test)]

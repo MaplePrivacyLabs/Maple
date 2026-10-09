@@ -48,6 +48,7 @@ pub use config::{
     startup_project_root,
 };
 pub use integrations::begin_integration_setup;
+pub use provider::CatalogEntry;
 pub use runs::AgentRunHandle;
 use runtime::AgentRuntime;
 use store::TaskStore;

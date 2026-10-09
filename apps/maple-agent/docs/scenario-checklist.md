@@ -70,7 +70,7 @@ stdio MCP server configured in Settings > Integrations.
 | U2 | Old computer-use settings | Start on settings saved by a build with the standalone driver | Its retired choice is dropped, and a saved `cua-driver` server neither starts nor blocks other saves (**automated**: `saved_choices_of_other_versions_or_retired_backends`, `a_cua_named_server_already_saved_does_not_block_other_saves`) |
 | M1 | Custom stdio and HTTP MCP servers | Enable one of each on a task | Their tools are offered directly and run (**automated** for an HTTP server: `a_tasks_mcp_servers_give_the_model_their_tools`) |
 | M2 | A server that cannot connect | Give a task a server whose command does not exist, then run it twice | The first run's notice names it, the second's does not; switching it on again fails with the reason (**automated**: `a_server_that_cannot_connect_is_reported_once_and_cannot_be_switched_on`) |
-| A1 | ACP agent mode | A stdio ACP client: `session/new`, a tool prompt, `session/list`, `session/load`, cancel, `/compact` | No modes advertised, zero `session/request_permission` for tools, the trust chooser on an untrusted project, no task left by a session closed before its first prompt (**automated**: `acp::tests`) |
+| A1 | ACP agent mode | A stdio ACP client: `session/new`, a tool prompt, `session/list`, `session/load`, cancel, `/compact` | No modes advertised, zero `session/request_permission` for tools, the trust chooser on an untrusted project, no task left by a session closed before its first prompt, and every turn on the model's catalog vision and context window, which `usage_update` reports (**automated**: `acp::tests`) |
 | A3 | Buzz over ACP | Buzz with `buzz-dev-mcp` and an HTTP MCP server; ask for a shell command that prints `BUZZ_RELAY_URL` | The command sees the relay URL and the server's tools are offered; a desktop task's commands never see it (**automated** in the runtime: `agent::surface::tests`) |
 | A2 | Proxy, `login`, `--version` | Run each mode | Each works as the README says |
 
@@ -80,7 +80,7 @@ stdio MCP server configured in Settings > Integrations.
 |---|---|---|---|
 | D1 | Tool and thinking summaries | Setting on; run a tool | One-line summaries appear and turn off with the setting |
 | D2 | Image descriptions for text models | Attach an image on a text-only model | The description reaches the model |
-| D3 | Context ring and compaction | A long task | The ring fills; `/compact` empties it |
+| D3 | Context ring and compaction | A long task | The ring fills toward the model's catalog window and the task compacts by itself before it is full; `/compact` empties it |
 | D4 | Plan meter | Settings > Usage | The plan, percent used and reset date show, nothing else |
 | D5 | Notifications | Finish a task and ask a question with the window in the background | Two notifications, none for permissions |
 | D6 | Appearance, fonts, motion, Vim | Change each setting | Each applies live |

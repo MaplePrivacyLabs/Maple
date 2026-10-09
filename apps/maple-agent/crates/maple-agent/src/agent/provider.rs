@@ -143,9 +143,11 @@ impl ApiKeySource for NoKeys {
 
 /// What the catalog says about one model, after resolving an alias.
 #[derive(Clone, Debug, Default, PartialEq)]
-pub(crate) struct CatalogEntry {
-    pub(crate) context_window: Option<u64>,
-    pub(crate) vision: Option<bool>,
+pub struct CatalogEntry {
+    /// The context window in tokens; `None` when the catalog does not say.
+    pub context_window: Option<u64>,
+    /// Whether the model sees images; `None` when the catalog does not say.
+    pub vision: Option<bool>,
 }
 
 /// The catalog's view of `model_id`. An alias resolves to its target; an

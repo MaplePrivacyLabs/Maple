@@ -1865,16 +1865,17 @@ impl AgentBackend {
             .await
     }
 
-    /// Catalog vision flag for a model; None when unknown.
-    pub async fn model_supports_vision(
+    /// What the catalog says about a model: its vision and context window.
+    /// None when the catalog cannot be read.
+    pub async fn model_catalog_entry(
         &self,
         user_id: &str,
         model: &str,
-    ) -> Result<Option<bool>, String> {
+    ) -> Result<Option<maple_agent::agent::CatalogEntry>, String> {
         self.service
             .handle_for_user(user_id)
             .await?
-            .model_supports_vision(model)
+            .model_catalog_entry(model)
             .await
     }
 

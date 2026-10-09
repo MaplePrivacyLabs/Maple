@@ -7,7 +7,7 @@ use super::convert::acp_session_config_options;
 use super::transport::AcpOutboundTracker;
 use crate::agent::{
     AgentMcpKeyValue, AgentMcpServer, AgentMcpTransport, AgentRuntimeHandle, AgentSessionSummary,
-    AgentSurfaceLease, AgentToolContextSpec, SENSITIVE_BRIDGE_ENV,
+    AgentSurfaceLease, AgentToolContextSpec, CatalogEntry, SENSITIVE_BRIDGE_ENV,
 };
 
 use agent_client_protocol::JsonRpcNotification;
@@ -68,9 +68,10 @@ pub(super) struct AcpSession {
     pub(super) lease: Option<AgentSurfaceLease>,
     pub(super) model: String,
     pub(super) available_models: Vec<String>,
-    /// Cached context window of `model` for `usage_update` notifications.
-    /// `None` until resolved (or after a model switch invalidates it).
-    pub(super) context_limit: Option<u64>,
+    /// What the catalog says about `model`: its vision and context window
+    /// for each turn and for `usage_update`. `None` until the catalog is
+    /// read, and again after a model switch.
+    pub(super) catalog: Option<CatalogEntry>,
     /// The session title last advertised to the caller; semantic-title
     /// updates are only sent when the title moves past this.
     pub(super) advertised_title: Option<String>,

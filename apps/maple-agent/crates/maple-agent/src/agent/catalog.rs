@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use serde::{Deserialize, Serialize};
 
 use super::config::{agent_config_dir, unix_ms};
-use super::provider::catalog_entry;
+use super::provider::{CatalogEntry, catalog_entry};
 use super::types::{
     TRANSCRIPTION_MODEL, TTS_MODEL, audio_error_message, selectable_agent_model_id,
     speech_audio_from_body,
@@ -151,38 +151,33 @@ impl AgentRuntimeHandle {
         Ok(models)
     }
 
+    /// What the live catalog says about a model, an alias resolved to its
+    /// target. `None` when the catalog cannot be read; a model it does not
+    /// list has an empty entry.
+    pub async fn model_catalog_entry(
+        &self,
+        model_id: &str,
+    ) -> Result<Option<CatalogEntry>, String> {
+        if model_id.trim().is_empty() {
+            return Ok(Some(CatalogEntry::default()));
+        }
+        match self.api().await?.model_catalog().await {
+            Ok(catalog) => Ok(Some(catalog_entry(&catalog, model_id).unwrap_or_default())),
+            Err(error) => {
+                log::warn!("Failed to fetch the Maple Agent model catalog: {error}");
+                Ok(None)
+            }
+        }
+    }
+
     /// A model's context window from the live catalog, an alias resolved to
     /// its target. `None` when the catalog does not say.
     pub async fn context_limit_for_model(&self, model_id: &str) -> Result<Option<i64>, String> {
-        if model_id.trim().is_empty() {
-            return Ok(None);
-        }
-        let catalog = match self.api().await?.model_catalog().await {
-            Ok(catalog) => catalog,
-            Err(error) => {
-                log::warn!("Failed to fetch the Maple Agent model catalog: {error}");
-                return Ok(None);
-            }
-        };
-        Ok(catalog_entry(&catalog, model_id)
+        Ok(self
+            .model_catalog_entry(model_id)
+            .await?
             .and_then(|entry| entry.context_window)
             .and_then(|window| i64::try_from(window).ok()))
-    }
-
-    /// Whether the catalog marks a model, or an alias's target, as seeing
-    /// images. `None` when the catalog does not say.
-    pub async fn model_supports_vision(&self, model_id: &str) -> Result<Option<bool>, String> {
-        if model_id.trim().is_empty() {
-            return Ok(None);
-        }
-        let catalog = match self.api().await?.model_catalog().await {
-            Ok(catalog) => catalog,
-            Err(error) => {
-                log::warn!("Failed to fetch the Maple Agent model catalog: {error}");
-                return Ok(None);
-            }
-        };
-        Ok(catalog_entry(&catalog, model_id).and_then(|entry| entry.vision))
     }
 
     /// Which voice endpoints the account's models offer: a `whisper` model

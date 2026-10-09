@@ -162,6 +162,14 @@ impl Harness {
         self.service.state.runtime.lock().await.clone().unwrap()
     }
 
+    /// Serve `catalog` as the backend's model catalog.
+    pub(crate) async fn serve_catalog(&self, catalog: serde_json::Value) {
+        self.runtime()
+            .await
+            .api
+            .set_test_catalog(serde_json::from_value(catalog).unwrap());
+    }
+
     pub(crate) async fn create_task(&self) -> String {
         self.handle.create_session(None).await.unwrap().session.id
     }
@@ -1233,6 +1241,43 @@ async fn read_image_describes_exactly_while_the_runs_model_cannot_see() {
         })
         .collect();
     assert_eq!(required, [json!(["source"]), json!(["source", "context"])]);
+}
+
+/// One catalog lookup gives a model's vision and window: an empty entry
+/// for a model the catalog does not list, and none while it cannot be read.
+#[tokio::test]
+async fn the_catalog_gives_a_models_vision_and_window() {
+    let harness = Harness::new().await;
+    assert_eq!(
+        harness.handle.model_catalog_entry("glm-5-3").await.unwrap(),
+        None
+    );
+    harness
+        .serve_catalog(json!({
+            "object": "list",
+            "data": [{"id": "glm-5-3", "context_window": 64000, "capabilities": {"vision": true}}],
+            "aliases": [],
+        }))
+        .await;
+    assert_eq!(
+        harness.handle.model_catalog_entry("glm-5-3").await.unwrap(),
+        Some(CatalogEntry {
+            context_window: Some(64_000),
+            vision: Some(true),
+        })
+    );
+    assert_eq!(
+        harness.handle.model_catalog_entry("missing").await.unwrap(),
+        Some(CatalogEntry::default())
+    );
+    assert_eq!(
+        harness
+            .handle
+            .context_limit_for_model("glm-5-3")
+            .await
+            .unwrap(),
+        Some(64_000)
+    );
 }
 
 #[tokio::test]

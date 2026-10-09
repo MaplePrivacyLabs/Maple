@@ -40,7 +40,7 @@ use transport::{
 use crate::agent::{
     AGENT_SURFACE_INACTIVE_ERROR, AgentCreateSessionRequest, AgentImageUpload, AgentRunEvent,
     AgentRunTerminal, AgentRuntimeHandle, AgentSendMessageRequest, AgentTaskState,
-    AgentTimelineItem, NOTHING_TO_COMPACT_ERROR,
+    AgentTimelineItem, CatalogEntry, NOTHING_TO_COMPACT_ERROR,
 };
 use agent_client_protocol::schema::v1::{
     CancelNotification, CloseSessionRequest, CloseSessionResponse, ConfigOptionUpdate,
@@ -274,7 +274,7 @@ impl AcpConnectionContext {
                 lease: Some(lease),
                 model: model.clone(),
                 available_models: available_models.clone(),
-                context_limit: None,
+                catalog: None,
                 advertised_title: Some(created.detail.session.title.clone()),
                 message_count: created.detail.session.message_count,
                 created_here: true,
@@ -328,32 +328,29 @@ impl AcpConnectionContext {
         }
     }
 
-    /// Resolve the session model's context window, cached per session. A
-    /// `usage_update` needs both `used` and `size`, so an unknown window
-    /// means no update is sent rather than a fabricated size.
-    async fn session_context_limit(&self, session_id: &str, model: &str) -> Option<u64> {
+    /// What the catalog says about the session's model, cached per session.
+    /// A catalog that cannot be read gives an empty entry, and the next turn
+    /// asks again.
+    async fn session_catalog_entry(&self, session_id: &str, model: &str) -> CatalogEntry {
         if let Some(cached) = self
             .sessions
             .lock()
             .await
             .get(session_id)
-            .and_then(|session| session.context_limit)
+            .filter(|session| session.model == model)
+            .and_then(|session| session.catalog.clone())
         {
-            return Some(cached);
+            return cached;
         }
-        let limit = self
-            .agent
-            .context_limit_for_model(model)
-            .await
-            .ok()
-            .flatten()
-            .and_then(|tokens| u64::try_from(tokens).ok());
-        if let Some(limit) = limit
-            && let Some(session) = self.sessions.lock().await.get_mut(session_id)
+        let Some(entry) = self.agent.model_catalog_entry(model).await.ok().flatten() else {
+            return CatalogEntry::default();
+        };
+        if let Some(session) = self.sessions.lock().await.get_mut(session_id)
+            && session.model == model
         {
-            session.context_limit = Some(limit);
+            session.catalog = Some(entry.clone());
         }
-        limit
+        entry
     }
 
     /// Soft-delete a task: archive it so it disappears from session lists
@@ -531,7 +528,7 @@ impl AcpConnectionContext {
                 lease: Some(lease),
                 model: model.clone(),
                 available_models: available_models.clone(),
-                context_limit: None,
+                catalog: None,
                 advertised_title: Some(persisted.title.clone()),
                 message_count,
                 created_here: false,
@@ -768,7 +765,7 @@ impl AcpConnectionContext {
                         .data("Maple tasks are model-locked after their first message"));
                 }
                 session.model = model.to_string();
-                session.context_limit = None;
+                session.catalog = None;
             }
             _ => {
                 return Err(agent_client_protocol::Error::invalid_params()
@@ -1231,23 +1228,18 @@ impl AcpConnectionContext {
                 session.project_root.clone(),
             )
         };
-        // The catalog decides how prompt images travel for this turn:
-        // embedded for vision models, through the read_image helper for
-        // everyone else. Unknown models fail closed to the helper, which
-        // still sees the image, so no prompt is ever rejected or silently
-        // dropped. Text-only prompts skip the catalog round-trip.
-        let vision_capable = if images.is_empty() {
-            false
-        } else {
-            tokio::select! {
-                biased;
-                _ = cancellation.cancelled() => {
-                    return Ok(PromptResponse::new(StopReason::Cancelled));
-                }
-                supported = self.agent.model_supports_vision(&model) => {
-                    matches!(supported.map_err(internal_acp_error)?, Some(true))
-                }
+        // The catalog decides the turn's model, with or without images in
+        // the prompt: a vision model sees images, embedded and from tools,
+        // and the run compacts at the model's own window. A model the
+        // catalog does not describe falls back to read_image, which still
+        // sees the image, and to the default window, so no prompt is ever
+        // rejected or silently dropped.
+        let catalog = tokio::select! {
+            biased;
+            _ = cancellation.cancelled() => {
+                return Ok(PromptResponse::new(StopReason::Cancelled));
             }
+            entry = self.session_catalog_entry(session_id, &model) => entry,
         };
         // Generated titles land between turns, after the previous turn's
         // events ended; catch up before the next one starts.
@@ -1293,8 +1285,10 @@ impl AcpConnectionContext {
                     session_id: session_id.to_string(),
                     text: prompt,
                     model: Some(model.clone()),
-                    context_limit: None,
-                    vision_capable,
+                    context_limit: catalog
+                        .context_window
+                        .and_then(|window| usize::try_from(window).ok()),
+                    vision_capable: catalog.vision == Some(true),
                     steer: false,
                     queue_id: None,
                     attachments: images,
@@ -1357,8 +1351,10 @@ impl AcpConnectionContext {
         // would be double-counted on every later turn.
         let result = result.map(|response| response.usage(acp_usage(turn_usage)));
         // ACP's native context indicator: one usage_update per turn with
-        // the tokens now in the task's context and the model's window.
-        if let Some(size) = self.session_context_limit(session_id, &model).await {
+        // the tokens now in the task's context and the model's window. It
+        // needs both, so a window the catalog does not give sends none
+        // rather than a made-up size.
+        if let Some(size) = catalog.context_window {
             let used = self
                 .agent
                 .session_context_tokens(session_id)

@@ -522,6 +522,42 @@ async fn prompt_images_travel_through_the_read_image_helper() {
     finish(serving).await;
 }
 
+/// Every turn runs on what the catalog says about the model, a turn
+/// without images included: a vision model sees images, and the run and
+/// its `usage_update` use the model's own window.
+#[tokio::test]
+async fn turns_run_on_the_catalogs_vision_and_context_window() {
+    let harness = Harness::new().await;
+    harness
+        .serve_catalog(json!({
+            "object": "list",
+            "data": [{"id": "glm-5-3", "context_window": 64000, "max_context_tokens": 64000,
+                      "capabilities": {"vision": true}}],
+            "aliases": [],
+        }))
+        .await;
+    harness.faux.push_text("Hello.");
+    let (mut client, serving) = connect(&harness.handle, no_answers());
+    client.initialize(json!({})).await;
+    let session_id = client.new_session(harness.project.path()).await;
+    let result = client.prompt(&session_id, "Hi").await;
+    assert_eq!(result["stopReason"], "end_turn");
+
+    let request = harness.faux.requests().pop().unwrap();
+    assert!(request.model.supports_images());
+    assert_eq!(request.model.context_window, 64_000);
+    // read_image shows a model that sees the image itself.
+    let read_image = pi_ai::transcript::current_tools(&request.context.messages)
+        .into_iter()
+        .find(|tool| tool.name == "read_image")
+        .unwrap();
+    assert_eq!(read_image.parameters["required"], json!(["source"]));
+    let usage = client.take("usage_update");
+    assert_eq!(usage.last().unwrap()["update"]["size"], 64_000);
+    client.shutdown().await;
+    finish(serving).await;
+}
+
 /// A project with guidance of its own asks the caller's user once whether
 /// to trust it, before the first turn, and keeps the answer.
 #[tokio::test]
