@@ -9,13 +9,13 @@ use pi_ai::{Content, Tool};
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
 
-use super::ToolContext;
 use super::edit_diff::{
     Edit, apply_edits_to_normalized_content, detect_line_ending, generate_diff_string,
     generate_unified_patch, normalize_to_lf, restore_line_endings, split_bom,
 };
 use super::mutation_queue::with_file_mutation_queue;
 use super::path_utils::resolve_to_cwd;
+use super::{PREFER_STRICT, ToolContext};
 
 pub const EDIT_SNIPPET: &str = "Make precise file edits with exact text replacement, including multiple disjoint edits in one call";
 pub const EDIT_GUIDELINES: [&str; 4] = [
@@ -125,7 +125,8 @@ impl EditTool {
                     },
                     "required": ["path", "edits"]
                 }),
-            ),
+            )
+            .with_constrained_sampling(PREFER_STRICT),
             cwd: cwd.into(),
             operations: options
                 .operations

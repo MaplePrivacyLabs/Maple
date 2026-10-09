@@ -9,12 +9,12 @@ use pi_ai::{Content, Tool};
 use serde::Deserialize;
 use serde_json::json;
 
-use super::ToolContext;
 use super::image::{ImageResizeOptions, detect_supported_image_mime_type_from_file, process_image};
 use super::path_utils::resolve_read_path;
 use super::truncate::{
     DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, TruncatedBy, format_size, truncate_head,
 };
+use super::{PREFER_STRICT, ToolContext};
 
 pub const READ_SNIPPET: &str = "Read file contents";
 pub const READ_GUIDELINES: [&str; 1] = ["Use read to examine files instead of cat or sed."];
@@ -117,7 +117,8 @@ impl ReadTool {
                     },
                     "required": ["path"]
                 }),
-            ),
+            )
+            .with_constrained_sampling(PREFER_STRICT),
             cwd: cwd.into(),
             options,
             operations,

@@ -9,11 +9,13 @@
 //!   [`AssistantMessageEvent`]s that always ends in `Done` or `Error`, so request
 //!   failures are data, not errors ([`StreamFn`]);
 //! - helpers the agent layers share: streaming JSON repair, tool-argument
-//!   validation, context-overflow and retry classification, and token estimates.
+//!   validation, context-overflow and retry classification, strict tool schemas
+//!   ([`constrained`]) and token estimates.
 //!
 //! It has no dependency on any application. Hosts register providers in an
 //! [`ApiRegistry`] keyed by [`Model::api`].
 
+pub mod constrained;
 mod estimate;
 pub mod faux;
 mod json;

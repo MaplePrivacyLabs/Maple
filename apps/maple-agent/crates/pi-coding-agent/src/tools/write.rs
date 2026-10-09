@@ -9,9 +9,9 @@ use pi_ai::Tool;
 use serde::Deserialize;
 use serde_json::json;
 
-use super::ToolContext;
 use super::mutation_queue::with_file_mutation_queue;
 use super::path_utils::resolve_to_cwd;
+use super::{PREFER_STRICT, ToolContext};
 
 pub const WRITE_SNIPPET: &str = "Create or overwrite files";
 pub const WRITE_GUIDELINES: [&str; 1] = ["Use write only for new files or complete rewrites."];
@@ -75,7 +75,8 @@ impl WriteTool {
                     },
                     "required": ["path", "content"]
                 }),
-            ),
+            )
+            .with_constrained_sampling(PREFER_STRICT),
             cwd: cwd.into(),
             operations: options
                 .operations

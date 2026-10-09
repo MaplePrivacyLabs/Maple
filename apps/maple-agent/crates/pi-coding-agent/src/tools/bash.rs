@@ -21,13 +21,13 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 
-use super::ToolContext;
 use super::output::{OutputAccumulator, OutputSnapshot};
 use super::shell::{
     CommandTransport, ShellConfig, kill_process_tree, powershell_config, set_env_var, shell_config,
     shell_env, track_child, untrack_child,
 };
 use super::truncate::{DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, TruncatedBy, format_size};
+use super::{PREFER_STRICT, ToolContext};
 
 /// The longest timeout a call can ask for, in seconds.
 const MAX_TIMEOUT_SECONDS: f64 = 2_147_483_647.0 / 1000.0;
@@ -416,6 +416,7 @@ fn shell_declaration(name: &str, shell_name: &str) -> Tool {
             "required": ["command"]
         }),
     )
+            .with_constrained_sampling(PREFER_STRICT)
 }
 
 impl ShellTool {

@@ -26,7 +26,7 @@ mod write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use pi_ai::Model;
+use pi_ai::{ConstrainedSampling, Model, StrictSampling};
 
 use crate::extensions::{ExtensionContext, RegisteredTool, ToolPrompt};
 
@@ -67,6 +67,12 @@ pub use truncate::{
 pub use write::{
     LocalWriteOperations, WRITE_GUIDELINES, WRITE_SNIPPET, WriteOperations, WriteTool,
     WriteToolOptions,
+};
+
+/// How `read`, `bash`, `powershell`, `edit` and `write` ask for their arguments, as in
+/// Pi: in a provider's strict mode where it has one.
+pub(crate) const PREFER_STRICT: ConstrainedSampling = ConstrainedSampling::JsonSchema {
+    strict: StrictSampling::Prefer,
 };
 
 /// The built-in tools the model gets unless the host chooses others.

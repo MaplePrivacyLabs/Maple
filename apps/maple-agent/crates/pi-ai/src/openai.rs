@@ -14,6 +14,7 @@ use futures_util::stream::BoxStream;
 use serde_json::{Map, Value, json};
 use tokio_util::sync::CancellationToken;
 
+use crate::constrained::{make_strict_json_schema, resolve_strict_sampling};
 use crate::provider::{StreamFn, StreamOptions};
 use crate::stream::{AssistantMessageBuilder, AssistantMessageStream};
 use crate::transcript::{
@@ -21,7 +22,7 @@ use crate::transcript::{
 };
 use crate::types::{
     AssistantContent, AssistantMessage, Content, Context, MaxTokensField, Message, Model,
-    StopReason, ThinkingLevel, ToolResultMessage, Usage,
+    StopReason, ThinkingLevel, Tool, ToolResultMessage, Usage,
 };
 
 pub const API: &str = "openai-completions";
@@ -97,7 +98,13 @@ async fn run(
     builder: AssistantMessageBuilder,
 ) {
     let cancel = options.cancel.clone();
-    let mut body = build_request_body(model, &context, &options);
+    let mut body = match build_request_body(model, &context, &options) {
+        Ok(body) => body,
+        Err(error) => {
+            builder.fail(StopReason::Error, error);
+            return;
+        }
+    };
     if let Some(hook) = &options.on_payload {
         body = hook(body).await;
     }
@@ -179,8 +186,33 @@ fn error_detail(text: &str) -> String {
         .unwrap_or_else(|| text.to_string())
 }
 
-/// Build the Chat Completions request body for `context`.
-pub fn build_request_body(model: &Model, context: &Context, options: &StreamOptions) -> Value {
+/// A tool as Chat Completions declares it, in strict mode when it asks for that and the
+/// provider and its schema allow it.
+fn tool_declaration(tool: &Tool, supports_strict_mode: bool) -> Result<Value, String> {
+    let strict = resolve_strict_sampling(tool, supports_strict_mode)?;
+    let parameters = match strict {
+        Some(true) => make_strict_json_schema(&tool.parameters)?,
+        _ => tool.parameters.clone(),
+    };
+    let mut function = json!({
+        "name": tool.name,
+        "description": tool.description,
+        "parameters": parameters,
+    });
+    // Only a provider that supports strict mode gets the field; some reject unknown ones.
+    if supports_strict_mode {
+        function["strict"] = json!(strict.unwrap_or(false));
+    }
+    Ok(json!({ "type": "function", "function": function }))
+}
+
+/// Build the Chat Completions request body for `context`. It fails only for a tool that
+/// requires strict mode where it cannot have it.
+pub fn build_request_body(
+    model: &Model,
+    context: &Context,
+    options: &StreamOptions,
+) -> Result<Value, String> {
     let compat = &model.compat;
     let mut body = Map::new();
     body.insert("model".into(), json!(model.id));
@@ -205,19 +237,10 @@ pub fn build_request_body(model: &Model, context: &Context, options: &StreamOpti
     }
     let tools = current_tools(&context.messages);
     if !tools.is_empty() {
-        let tools: Vec<Value> = tools
+        let tools = tools
             .iter()
-            .map(|tool| {
-                json!({
-                    "type": "function",
-                    "function": {
-                        "name": tool.name,
-                        "description": tool.description,
-                        "parameters": tool.parameters,
-                    },
-                })
-            })
-            .collect();
+            .map(|tool| tool_declaration(tool, compat.supports_strict_mode))
+            .collect::<Result<Vec<Value>, String>>()?;
         body.insert("tools".into(), Value::Array(tools));
     }
     let level = options.reasoning.unwrap_or(ThinkingLevel::Off);
@@ -226,7 +249,7 @@ pub fn build_request_body(model: &Model, context: &Context, options: &StreamOpti
     {
         body.insert("reasoning_effort".into(), json!(effort));
     }
-    Value::Object(body)
+    Ok(Value::Object(body))
 }
 
 /// Make a transcript replayable: drop failed responses, answer every tool call exactly
@@ -893,6 +916,44 @@ mod tests {
         assert_eq!(
             body["messages"][1],
             json!({ "role": "user", "content": "hi" })
+        );
+    }
+
+    #[test]
+    fn tools_that_ask_for_it_go_in_strict_mode_where_the_provider_has_it() {
+        use crate::types::{ConstrainedSampling, StrictSampling};
+
+        let prefer = tool().with_constrained_sampling(ConstrainedSampling::JsonSchema {
+            strict: StrictSampling::Prefer,
+        });
+        let body = |model: &Model, tool: &Tool| {
+            let context = Context::new("sys", vec![tool.clone()], Vec::new());
+            build_request_body(model, &context, &StreamOptions::default())
+        };
+
+        // Off by default: the declaration is as it was, without the field.
+        let plain = body(&model(), &prefer).unwrap();
+        let function = &plain["tools"][0]["function"];
+        assert!(function.get("strict").is_none());
+        assert_eq!(function["parameters"], prefer.parameters);
+
+        let mut strict_model = model();
+        strict_model.compat.supports_strict_mode = true;
+        let strict = body(&strict_model, &prefer).unwrap();
+        let function = &strict["tools"][0]["function"];
+        assert_eq!(function["strict"], true);
+        assert_eq!(function["parameters"]["additionalProperties"], false);
+        assert_eq!(function["parameters"]["required"], json!(["path"]));
+        // A tool that does not ask is declared plainly, with strict off.
+        let other = body(&strict_model, &tool()).unwrap();
+        assert_eq!(other["tools"][0]["function"]["strict"], false);
+
+        let require = tool().with_constrained_sampling(ConstrainedSampling::JsonSchema {
+            strict: StrictSampling::Require,
+        });
+        assert_eq!(
+            body(&model(), &require).unwrap_err(),
+            "Tool \"read\" requires JSON-schema constrained sampling, but strict tools are unsupported."
         );
     }
 

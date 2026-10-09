@@ -249,6 +249,14 @@ pub struct Tool {
     pub name: String,
     pub description: String,
     pub parameters: Value,
+    /// How a provider may constrain the arguments the model writes; see
+    /// [`crate::constrained`].
+    #[serde(
+        default,
+        rename = "constrainedSampling",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub constrained_sampling: Option<ConstrainedSampling>,
 }
 
 impl Tool {
@@ -257,8 +265,31 @@ impl Tool {
             name: name.into(),
             description: description.into(),
             parameters,
+            constrained_sampling: None,
         }
     }
+
+    pub fn with_constrained_sampling(mut self, sampling: ConstrainedSampling) -> Self {
+        self.constrained_sampling = Some(sampling);
+        self
+    }
+}
+
+/// Constrained sampling for a tool's arguments, after Pi's `constrainedSampling`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ConstrainedSampling {
+    /// Arguments sampled to fit the parameters schema, in the provider's strict mode.
+    JsonSchema { strict: StrictSampling },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum StrictSampling {
+    /// Strict where the provider and the schema allow it, else as usual.
+    Prefer,
+    /// Strict, or the request fails.
+    Require,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -504,6 +535,9 @@ pub struct ModelCompat {
     pub supports_reasoning_effort: bool,
     /// Keep later system messages in place instead of folding them into the first.
     pub supports_mid_conversation_system_messages: bool,
+    /// Send tools that ask for constrained sampling in strict mode. Being compatible
+    /// with OpenAI does not imply it, so it is off unless a model turns it on.
+    pub supports_strict_mode: bool,
 }
 
 impl Default for ModelCompat {
@@ -514,6 +548,7 @@ impl Default for ModelCompat {
             supports_usage_in_streaming: true,
             supports_reasoning_effort: true,
             supports_mid_conversation_system_messages: false,
+            supports_strict_mode: false,
         }
     }
 }

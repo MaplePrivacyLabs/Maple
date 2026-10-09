@@ -569,6 +569,22 @@ async fn edit_reports_the_operations_own_access_error() {
 }
 
 #[test]
+fn the_file_and_shell_tools_prefer_strict_schemas_that_convert() {
+    let dir = tempfile::tempdir().unwrap();
+    let tools = create_all_tools(dir.path(), &ToolsOptions::default(), &context(), &[]);
+    let mut strict = Vec::new();
+    for registered in &tools {
+        let declaration = registered.tool.declaration();
+        if declaration.constrained_sampling.is_some() {
+            pi_ai::constrained::make_strict_json_schema(&declaration.parameters)
+                .unwrap_or_else(|error| panic!("{}: {error}", declaration.name));
+            strict.push(declaration.name.as_str());
+        }
+    }
+    assert_eq!(strict, ["read", "bash", "powershell", "edit", "write"]);
+}
+
+#[test]
 fn every_built_in_tool_is_created_with_the_defaults_active() {
     let dir = tempfile::tempdir().unwrap();
     let active: Vec<String> = DEFAULT_TOOL_NAMES
