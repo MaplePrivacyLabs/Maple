@@ -1,0 +1,25 @@
+[package]
+name = "pi-ai"
+description = "Provider-neutral model messages, streaming events and an OpenAI-compatible provider, after Pi's pi-ai package"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[features]
+default = ["reqwest"]
+# An HTTP transport for the OpenAI-compatible provider. Hosts with their own
+# transport (an in-process proxy, a test server) can turn it off.
+reqwest = ["dep:reqwest"]
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+futures-util = { workspace = true }
+async-trait = { workspace = true }
+bytes = "1"
+indexmap = { version = "2", features = ["serde"] }
+jsonschema = { version = "0.55", default-features = false }
+regex = "1"
+reqwest = { workspace = true, optional = true }

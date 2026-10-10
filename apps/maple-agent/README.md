@@ -19,6 +19,16 @@ crates/maple-agent/   Maple's transport-neutral agent runtime, extracted from
                       tools, account-scoped session storage, and the ACP
                       server.
 crates/maple-billing/ HTTP client for the Maple billing API.
+crates/pi-ai/         Model messages, streaming events and an OpenAI-compatible
+                      provider, after Pi's pi-ai package.
+crates/pi-agent-core/ The agent loop with tools, hooks and message queues, after
+                      Pi's pi-agent-core package.
+crates/pi-coding-agent/
+                      Sessions as an append-only tree, compaction, skills and
+                      prompt templates, the extension API and the agent
+                      session, after Pi's coding-agent core. The pi-* crates
+                      have no Maple dependencies; the runtime does not use
+                      them yet.
 docs/                 Theme spec measured from the Tauri app.
 scripts/              One maintainer helper: screenshot.py takes a desktop
                       screenshot through the xdg portal on GNOME Wayland.

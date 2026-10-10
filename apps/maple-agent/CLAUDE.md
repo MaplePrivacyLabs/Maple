@@ -5,8 +5,9 @@ Read the repository-root `AGENTS.md` and `$develop-maple-agent` as well.
 Commands below run from this component directory through its pinned Nix shell.
 
 GPUI desktop app for Maple. Workspace crates: `app` (package `maple-agent-app`, binary `maple-agent`),
-`crates/maple-agent`, `crates/maple-billing`. See `README.md` for the
-layout, prerequisites, and command line modes.
+`crates/maple-agent`, `crates/maple-billing`, and the agent core `crates/pi-ai`,
+`crates/pi-agent-core`, `crates/pi-coding-agent`, which must not depend on Maple
+crates. See `README.md` for the layout, prerequisites, and command line modes.
 
 Packaged Dev OAuth uses the compiled Auth origin and a one-attempt loopback
 listener in `app/src/hosted_oauth.rs`; Prod and unpackaged builds retain the
