@@ -89,6 +89,8 @@ and NSIS build. Its cache remains restore-only, and downloaded package proofs
 are checked independently on a standard GitHub runner. Signed Windows master
 and release builds remain on GitHub's `windows-2025`; this pilot does not
 validate Azure signing, updater signing, or installed application behavior.
+Windows master/release artifact verifiers also use standard `ubuntu-latest`
+runners rather than larger runners.
 
 ## SDK consumption
 
