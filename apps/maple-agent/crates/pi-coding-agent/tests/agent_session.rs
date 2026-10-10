@@ -8,6 +8,7 @@ use common::{Harness, echo_tool, entry_kinds, last_assistant_text, record, roles
 use pi_agent_core::AgentEvent;
 use pi_ai::faux::{FauxProvider, faux_message};
 use pi_ai::{AssistantContent, Content, ImageContent, Message, StopReason, ThinkingLevel, Usage};
+use pi_coding_agent::extensions::CustomMessageDraft;
 use pi_coding_agent::resources::{PromptTemplate, ResourceSource, Resources};
 use pi_coding_agent::session::{EntryKind, SessionEntry, SessionHeader, SessionManager};
 use pi_coding_agent::store::{JsonlStore, MemoryStore, SessionStore};
@@ -467,6 +468,41 @@ async fn tools_registered_later_reach_the_next_prompt() {
         })
         .unwrap();
     assert_eq!(result, "late");
+}
+
+#[tokio::test]
+async fn a_custom_message_the_user_does_not_see_starts_a_turn() {
+    let harness = Harness::new();
+    harness.faux.push_text("noted");
+    let session = harness.session().await;
+    let outcome = session
+        .send_custom_message(CustomMessageDraft {
+            custom_type: "background-result".into(),
+            content: vec![Content::text("the agent finished")],
+            display: false,
+            details: None,
+        })
+        .await
+        .unwrap();
+    assert_eq!(outcome, PromptOutcome::Completed);
+    // The model reads it as the user's turn; the transcript keeps it apart.
+    let request = &harness.faux.requests()[0];
+    let last_user = request
+        .context
+        .messages
+        .iter()
+        .rev()
+        .find_map(|message| match message {
+            Message::User(user) => Some(pi_ai::content_text(&user.content)),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(last_user, "the agent finished");
+    assert!(session.messages().iter().any(|message| matches!(
+        message,
+        SessionMessage::Custom(custom) if custom.custom_type == "background-result" && !custom.display
+    )));
+    assert_eq!(last_assistant_text(&session), "noted");
 }
 
 #[tokio::test]

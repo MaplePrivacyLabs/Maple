@@ -637,6 +637,34 @@ impl AgentSession {
         self.core.clone().prompt(text, options).await
     }
 
+    /// Start a turn with a custom message and wait for it, as Pi's `sendCustomMessage`
+    /// does with `triggerTurn`, for a host that hands the model something the user did
+    /// not type, such as a background agent's result. A message not to `display` stays
+    /// out of the transcript the user sees but reaches the model. During a prompt it is
+    /// queued as steering instead.
+    pub async fn send_custom_message(
+        &self,
+        draft: CustomMessageDraft,
+    ) -> Result<PromptOutcome, AgentSessionError> {
+        let core = self.core.clone();
+        let activity = loop {
+            if let Some(activity) = core.begin(Activity::Prompt) {
+                break activity;
+            }
+            match core.activity() {
+                Activity::Prompt => {
+                    core.queue(StreamingBehavior::Steer, custom_message(draft));
+                    return Ok(PromptOutcome::Queued);
+                }
+                // It settled in between.
+                Activity::Idle => continue,
+                _ => return Err(AgentSessionError::Busy),
+            }
+        };
+        core.run_delivered(activity, custom_message(draft)).await?;
+        Ok(PromptOutcome::Completed)
+    }
+
     /// Deliver `text` and `images` after the current turn's tool calls.
     pub fn steer(&self, text: &str, images: Vec<ImageContent>) {
         self.core
