@@ -164,7 +164,7 @@ jobs:
     name: Unsigned macOS packaging (${{ matrix.variant }})
     needs: [changes, macos-build]
     if: ${{ always() && !cancelled() && needs.macos-build.result == 'success' && github.event_name == 'pull_request' && (needs.changes.result != 'success' || needs.changes.outputs.agent != 'false') }}
-    runs-on: blacksmith-6vcpu-macos-26
+    runs-on: macos-26
     timeout-minutes: 120
     strategy:
       fail-fast: false
