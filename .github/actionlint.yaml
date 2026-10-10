@@ -1,4 +1,4 @@
 # Custom labels for managed runners used by GitHub Actions.
 self-hosted-runner:
   labels:
-    - blacksmith-16vcpu-ubuntu-2404-arm
+    - blacksmith-8vcpu-ubuntu-2404-arm

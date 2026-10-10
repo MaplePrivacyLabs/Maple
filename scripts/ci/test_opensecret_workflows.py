@@ -89,9 +89,9 @@ class OpenSecretWorkflowBoundaryTests(unittest.TestCase):
                     expected_runner = "ubuntu-latest"
                     if name == "opensecret-eif.yml":
                         expected_runner = {
-                            "eif-candidate": "blacksmith-16vcpu-ubuntu-2404-arm",
+                            "eif-candidate": "blacksmith-8vcpu-ubuntu-2404-arm",
                             "eif": "ubuntu-24.04-arm",
-                            "eif-trusted": "blacksmith-16vcpu-ubuntu-2404-arm",
+                            "eif-trusted": "blacksmith-8vcpu-ubuntu-2404-arm",
                         }[job_name]
                     elif (name, job_name) == ("opensecret-ci.yml", "helpers"):
                         expected_runner = "ubuntu-24.04-arm"
@@ -114,7 +114,7 @@ class OpenSecretWorkflowBoundaryTests(unittest.TestCase):
             check=True, capture_output=True, text=True,
         )
         self.assertEqual(json.loads(result.stdout), {
-            "self-hosted-runner": {"labels": ["blacksmith-16vcpu-ubuntu-2404-arm"]},
+            "self-hosted-runner": {"labels": ["blacksmith-8vcpu-ubuntu-2404-arm"]},
         })
 
     def test_ordinary_backend_ci_does_not_publish_or_build_eifs(self):
@@ -414,7 +414,7 @@ class EifReleaseWorkflowTests(unittest.TestCase):
     def test_build_job_is_the_trusted_read_only_builder(self):
         job = workflow(self.NAME)["jobs"]["build"]
         self.assertEqual(job["if"], "github.ref == 'refs/heads/master'")
-        self.assertEqual(job["runs-on"], "blacksmith-16vcpu-ubuntu-2404-arm")
+        self.assertEqual(job["runs-on"], "blacksmith-8vcpu-ubuntu-2404-arm")
         self.assertEqual(job["timeout-minutes"], 180)
         self.assertEqual(job["permissions"], {"contents": "read", "id-token": "write", "attestations": "write"})
         self.assertNotIn("environment", job)

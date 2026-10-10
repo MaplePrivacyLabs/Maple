@@ -109,8 +109,8 @@ reports an EIF input or approval JSON edit, as routed to the respective job.
 This intentionally trusts same-repository PR code to write the
 FlakeHub cache; it does not grant signing or deployment authority.
 Trusted EIF builds, approval comparisons, and release builders use
-`blacksmith-16vcpu-ubuntu-2404-arm` (Ubuntu 24.04 ARM64, 16 CPU, 48 GB RAM,
-750 GB disk), replacing the original GitHub-hosted 8 CPU / 32 GB / 300 GB
+`blacksmith-8vcpu-ubuntu-2404-arm` (Ubuntu 24.04 ARM64, 8 CPU, 24 GB RAM,
+160 GB disk), replacing the original GitHub-hosted 8 CPU / 32 GB / 300 GB
 builder. They retain the 180-minute limit and independent dev/prod inputs.
 The provider executes build code and receives the job's existing OIDC/cache
 permissions; the release builder also attests its output. PR candidate builds
