@@ -47,9 +47,17 @@ pub struct HttpResponse {
 
 /// Sends provider requests. Return `Err` only for transport failures; HTTP error
 /// statuses are responses.
+///
+/// `cancel` is the request's cancellation, as Pi hands its fetch an abort signal. The
+/// provider stops waiting once it fires, so a transport with work that must finish (a
+/// credential refresh, say) can see the cancellation and wind down on its own.
 #[async_trait]
 pub trait HttpTransport: Send + Sync {
-    async fn post(&self, request: HttpRequest) -> Result<HttpResponse, String>;
+    async fn post(
+        &self,
+        request: HttpRequest,
+        cancel: CancellationToken,
+    ) -> Result<HttpResponse, String>;
 }
 
 /// The Chat Completions provider.
@@ -118,7 +126,7 @@ async fn run(
             builder.fail(StopReason::Aborted, ABORTED);
             return;
         }
-        response = transport.post(request) => response,
+        response = transport.post(request, cancel.clone()) => response,
     };
     let response = match response {
         Ok(response) => response,
@@ -775,7 +783,11 @@ struct ReqwestTransport {
 #[cfg(feature = "reqwest")]
 #[async_trait]
 impl HttpTransport for ReqwestTransport {
-    async fn post(&self, request: HttpRequest) -> Result<HttpResponse, String> {
+    async fn post(
+        &self,
+        request: HttpRequest,
+        _cancel: CancellationToken,
+    ) -> Result<HttpResponse, String> {
         let mut builder = self.client.post(&request.url).body(request.body);
         for (name, value) in &request.headers {
             builder = builder.header(name.as_str(), value.as_str());
@@ -806,7 +818,11 @@ mod tests {
 
     #[async_trait]
     impl HttpTransport for ScriptedTransport {
-        async fn post(&self, request: HttpRequest) -> Result<HttpResponse, String> {
+        async fn post(
+            &self,
+            request: HttpRequest,
+            _cancel: CancellationToken,
+        ) -> Result<HttpResponse, String> {
             self.requests.lock().unwrap().push(request);
             let chunks: Vec<Result<Bytes, String>> = self
                 .chunks

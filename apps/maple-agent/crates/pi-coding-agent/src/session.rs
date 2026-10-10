@@ -387,14 +387,30 @@ pub struct SessionManager {
 impl SessionManager {
     /// A new, empty session.
     pub fn create(cwd: impl Into<String>, store: Box<dyn SessionStore>) -> Self {
+        Self::create_with_id(new_session_id(), cwd, store)
+    }
+
+    /// A new, empty session with an id the host chose, as Pi's `create` takes an `id`
+    /// option. A host that lists a session before its first write opens it again
+    /// under the same id.
+    pub fn create_with_id(
+        id: impl Into<String>,
+        cwd: impl Into<String>,
+        store: Box<dyn SessionStore>,
+    ) -> Self {
         let header = SessionHeader {
             version: SESSION_VERSION,
-            id: new_session_id(),
+            id: id.into(),
             timestamp: now_ms(),
             cwd: cwd.into(),
             parent_session: None,
         };
         Self::from_parts(header, Vec::new(), store, false)
+    }
+
+    /// A new session id, time-ordered like the ones sessions get.
+    pub fn new_id() -> String {
+        new_session_id()
     }
 
     /// A session that is never stored.
