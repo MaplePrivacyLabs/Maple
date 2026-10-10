@@ -429,6 +429,47 @@ async fn the_host_can_steer_and_queue_follow_ups_during_a_run() {
 }
 
 #[tokio::test]
+async fn tools_registered_later_reach_the_next_prompt() {
+    let harness = Harness::new();
+    harness.faux.push_text("no tools yet");
+    harness
+        .faux
+        .push_tool_call("echo", json!({ "text": "late" }));
+    harness.faux.push_text("echoed");
+    let session = harness.session().await;
+    let declared = |index: usize| -> Vec<String> {
+        pi_ai::transcript::current_tools(&harness.faux.requests()[index].context.messages)
+            .into_iter()
+            .map(|tool| tool.name)
+            .collect()
+    };
+
+    session
+        .prompt("one", PromptOptions::default())
+        .await
+        .unwrap();
+    assert!(declared(0).is_empty());
+    session.register_tool(echo_tool(true));
+    assert_eq!(session.active_tools(), ["echo"]);
+    session
+        .prompt("two", PromptOptions::default())
+        .await
+        .unwrap();
+    assert_eq!(declared(1), ["echo"]);
+    let result = session
+        .messages()
+        .iter()
+        .find_map(|message| match message {
+            SessionMessage::Llm(Message::ToolResult(result)) => {
+                Some(pi_ai::content_text(&result.content))
+            }
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(result, "late");
+}
+
+#[tokio::test]
 async fn a_busy_session_queues_only_when_asked() {
     let harness = Harness::new();
     harness.faux.push_hang();

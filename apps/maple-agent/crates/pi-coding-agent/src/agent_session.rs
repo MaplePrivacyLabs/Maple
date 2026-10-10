@@ -40,7 +40,7 @@ use crate::extensions::{
     Extension, ExtensionContext, ExtensionErrorReport, ExtensionRunner, ExtensionUi, Input,
     InputAction, InputSource, MessageEnd, ModelSelect, RegisteredTool, SessionBeforeCompact,
     SessionBeforeTree, SessionCompact, SessionShutdown, SessionStart, SessionStartReason,
-    SessionTree, ThinkingLevelSelect, ToolCall, ToolResult,
+    SessionTree, ThinkingLevelSelect, ToolCall, ToolPrompt, ToolResult,
 };
 use crate::messages::{BashExecutionMessage, CustomMessage, SessionMessage, convert_to_llm};
 use crate::models::ModelRegistry;
@@ -782,6 +782,13 @@ impl AgentSession {
         self.core.set_active_tools(names);
     }
 
+    /// Offer `tool` from the next prompt on, as an extension's `registerTool` can once the
+    /// session runs, for tools found later, such as an MCP server's once it connects. A tool
+    /// with a registered tool's name replaces it and keeps whether it is active.
+    pub fn register_tool(&self, tool: RegisteredTool) {
+        self.core.register_tool(tool);
+    }
+
     /// Every registered tool's name.
     pub fn tool_names(&self) -> Vec<String> {
         lock(&self.core.tools)
@@ -1128,6 +1135,31 @@ impl SessionCore {
 
     fn sync_tools(&self) {
         self.agent.set_tools(self.executable_tools());
+    }
+
+    fn register_tool(&self, tool: RegisteredTool) {
+        let name = tool.tool.name().to_string();
+        let activate = {
+            let mut tools = lock(&self.tools);
+            match tools
+                .iter()
+                .position(|existing| existing.tool.name() == name)
+            {
+                Some(index) => {
+                    tools[index] = tool;
+                    false
+                }
+                None => {
+                    let active = tool.active;
+                    tools.push(tool);
+                    active
+                }
+            }
+        };
+        if activate {
+            lock(&self.active_tools).push(name);
+        }
+        self.sync_tools();
     }
 
     fn set_active_tools(&self, names: &[String]) {
@@ -2133,6 +2165,32 @@ impl ExtensionContext {
         if let Some(core) = self.core() {
             core.set_active_tools(names);
         }
+    }
+
+    /// Offer `tool` from the next prompt on, as Pi's `registerTool` can at any time, for
+    /// tools found after the extension loaded, such as an MCP server's once it connects.
+    /// A tool with a registered tool's name replaces it and keeps whether it is active.
+    pub fn register_tool(&self, tool: Arc<dyn AgentTool>, prompt: ToolPrompt, active: bool) {
+        if let Some(core) = self.core() {
+            core.register_tool(RegisteredTool {
+                tool,
+                prompt,
+                active,
+                extension: Some(self.extension.to_string()),
+            });
+        }
+    }
+
+    /// Every registered tool's name.
+    pub fn tool_names(&self) -> Vec<String> {
+        self.core()
+            .map(|core| {
+                lock(&core.tools)
+                    .iter()
+                    .map(|tool| tool.tool.name().to_string())
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     pub async fn set_model(&self, model: Model) {

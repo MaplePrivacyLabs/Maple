@@ -697,3 +697,45 @@ async fn changes_made_during_a_run_reach_its_next_request() {
             .contains("- echo:")
     );
 }
+
+#[tokio::test]
+async fn an_extension_registers_tools_it_finds_later() {
+    let harness = Harness::new();
+    harness.faux.push_text("nothing yet");
+    harness
+        .faux
+        .push_tool_call("echo", json!({ "text": "found" }));
+    harness.faux.push_text("echoed");
+    let kept = Arc::new(Mutex::new(None));
+    let keep = {
+        let kept = Arc::clone(&kept);
+        extension("finder", move |api| {
+            *kept.lock().unwrap() = Some(api.context());
+        })
+    };
+    let session = harness
+        .session_with(|options| options.extensions = vec![keep])
+        .await;
+    session
+        .prompt("one", PromptOptions::default())
+        .await
+        .unwrap();
+
+    let context = kept.lock().unwrap().clone().unwrap();
+    let echo = echo_tool(true);
+    context.register_tool(echo.tool, echo.prompt, true);
+    assert!(context.tool_names().contains(&"echo".to_string()));
+    assert!(session.active_tools().contains(&"echo".to_string()));
+    session
+        .prompt("two", PromptOptions::default())
+        .await
+        .unwrap();
+    assert_eq!(tool_result_text(&session), "found");
+    assert_eq!(
+        pi_ai::transcript::current_tools(&harness.faux.requests()[1].context.messages)
+            .iter()
+            .filter(|tool| tool.name == "echo")
+            .count(),
+        1
+    );
+}
