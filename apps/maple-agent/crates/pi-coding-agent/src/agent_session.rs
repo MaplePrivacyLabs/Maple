@@ -817,6 +817,12 @@ impl AgentSession {
         self.core.register_tool(tool);
     }
 
+    /// Take the tool named `name` away from the next prompt on. Returns whether one was
+    /// registered.
+    pub fn unregister_tool(&self, name: &str) -> bool {
+        self.core.unregister_tool(name)
+    }
+
     /// Every registered tool's name.
     pub fn tool_names(&self) -> Vec<String> {
         lock(&self.core.tools)
@@ -1188,6 +1194,20 @@ impl SessionCore {
             lock(&self.active_tools).push(name);
         }
         self.sync_tools();
+    }
+
+    fn unregister_tool(&self, name: &str) -> bool {
+        let removed = {
+            let mut tools = lock(&self.tools);
+            let before = tools.len();
+            tools.retain(|tool| tool.tool.name() != name);
+            tools.len() != before
+        };
+        if removed {
+            lock(&self.active_tools).retain(|active| active != name);
+            self.sync_tools();
+        }
+        removed
     }
 
     fn set_active_tools(&self, names: &[String]) {
@@ -2207,6 +2227,12 @@ impl ExtensionContext {
                 extension: Some(self.extension.to_string()),
             });
         }
+    }
+
+    /// Take the tool named `name` away from the next prompt on. Returns whether one was
+    /// registered.
+    pub fn unregister_tool(&self, name: &str) -> bool {
+        self.core().is_some_and(|core| core.unregister_tool(name))
     }
 
     /// Every registered tool's name.

@@ -738,4 +738,8 @@ async fn an_extension_registers_tools_it_finds_later() {
             .count(),
         1
     );
+
+    assert!(context.unregister_tool("echo"));
+    assert!(!context.tool_names().contains(&"echo".to_string()));
+    assert!(!session.active_tools().contains(&"echo".to_string()));
 }
