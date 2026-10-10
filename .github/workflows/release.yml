@@ -137,7 +137,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - platform: macos-26-xlarge
+          - platform: blacksmith-6vcpu-macos-26
             nix_shell: ci
             artifact_prefix: macos
           - platform: blacksmith-8vcpu-ubuntu-2404
@@ -152,7 +152,7 @@ jobs:
           persist-credentials: false
 
       - name: Select pinned Xcode
-        if: startsWith(matrix.platform, 'macos-26')
+        if: runner.os == 'macOS'
         run: python3 scripts/ci/select-xcode.py
 
       - name: Install Nix
@@ -476,7 +476,7 @@ jobs:
   build-ios:
     environment: apple-signing
     needs: classify-app-release
-    runs-on: macos-26-xlarge
+    runs-on: blacksmith-6vcpu-macos-26
     permissions:
       contents: write
       id-token: write
@@ -635,7 +635,7 @@ jobs:
             archive: maple-proxy-linux-x86_64.tar.gz
           - runner: ubuntu-24.04-arm
             archive: maple-proxy-linux-aarch64.tar.gz
-          - runner: macos-26-xlarge
+          - runner: blacksmith-6vcpu-macos-26
             archive: maple-proxy-macos-aarch64.tar.gz
           - runner: windows-2025
             archive: maple-proxy-windows-x86_64.zip
@@ -824,7 +824,7 @@ jobs:
     needs:
       - classify-app-release
       - build-tauri
-    runs-on: macos-26-xlarge
+    runs-on: macos-26
     permissions:
       contents: read
     steps:
@@ -960,7 +960,7 @@ jobs:
       - update-latest-json
       - verify-android-release-artifacts
       - verify-proxy-release-artifacts
-    runs-on: macos-26-xlarge
+    runs-on: macos-26
     permissions:
       contents: read
     steps:
