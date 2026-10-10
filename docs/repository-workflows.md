@@ -60,6 +60,18 @@ artifacts to TestFlight. Creating a GitHub Release starts release builds and
 downstream publication. Use `$release-maple` only for explicitly requested
 release work, and report the tag and commit before publishing.
 
+## Linux runners
+
+Research desktop/Android compilation and Agent Linux CI/AppImage builds use
+`blacksmith-8vcpu-ubuntu-2404`. Lightweight selectors, web builds, artifact
+verification and the separate Agent attestation job remain on GitHub's standard
+runners. Signing jobs retain their protected environments. The desktop release
+build command only receives Apple environment variables on macOS, but that
+condition does not restrict the runner's job secret context: approving a signing
+job trusts its runner with the selected environment's secrets. PR builds have
+no signing credentials and retain their existing branch-scoped caches. No
+persistent vendor disks or Docker builders are configured by these workflows.
+
 ## macOS runners and Apple toolchain
 
 Unsigned Research desktop/iOS PR builds and Agent release-binary jobs use

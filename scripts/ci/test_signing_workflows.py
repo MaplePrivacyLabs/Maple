@@ -147,6 +147,19 @@ class SigningWorkflowTests(unittest.TestCase):
             self.assertEqual(job["environment"], "windows-signing")
             self.assertEqual(job.get("permissions", workflows()[name]["permissions"])["id-token"], "write")
 
+    def test_desktop_release_linux_build_subprocess_has_no_apple_environment(self):
+        # Step env is evaluated on the runner. This checks subprocess hygiene,
+        # not isolation from the job's protected-environment secret context.
+        job = workflows()["release.yml"]["jobs"]["build-tauri"]
+        build = next(step for step in job["steps"]
+                     if step.get("name") == "Build Tauri desktop app")
+        for name in ("APPLE_CERTIFICATE", "APPLE_CERTIFICATE_PASSWORD", "APPLE_ID",
+                     "APPLE_PASSWORD", "APPLE_TEAM_ID"):
+            self.assertTrue(build["env"][name].startswith("${{ runner.os == 'macOS' && secrets."))
+            self.assertTrue(build["env"][name].endswith(" || '' }}"))
+        for name in ("TAURI_SIGNING_PRIVATE_KEY", "TAURI_SIGNING_PRIVATE_KEY_PASSWORD"):
+            self.assertEqual(build["env"][name], "${{ secrets." + name + " }}")
+
     def test_dev_testflight_runs_for_every_master_push_and_only_trusted_manual_runs(self):
         config = workflows()["ios-dev-testflight.yml"]
         self.assertEqual(config["on"], {"push": {"branches": ["master"]}, "workflow_dispatch": None})
