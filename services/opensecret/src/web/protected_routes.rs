@@ -464,6 +464,7 @@ pub struct CreateApiKeyResponse {
     pub key: String, // UUID format with dashes - only returned on creation
     pub name: String,
     pub created_at: DateTime<Utc>,
+    pub last_used_at: Option<DateTime<Utc>>,
 }
 
 impl std::fmt::Debug for CreateApiKeyResponse {
@@ -472,6 +473,7 @@ impl std::fmt::Debug for CreateApiKeyResponse {
             .field("key", &"[redacted]")
             .field("name", &self.name)
             .field("created_at", &self.created_at)
+            .field("last_used_at", &self.last_used_at)
             .finish()
     }
 }
@@ -480,6 +482,7 @@ impl std::fmt::Debug for CreateApiKeyResponse {
 pub struct ApiKeyInfo {
     pub name: String,
     pub created_at: DateTime<Utc>,
+    pub last_used_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1267,6 +1270,7 @@ pub async fn create_api_key(
         key: api_key_uuid.to_string(), // Return the actual UUID to the user (only time it's shown)
         name: api_key_record.name,
         created_at: api_key_record.created_at,
+        last_used_at: api_key_record.last_used_at,
     };
 
     info!("Created API key '{}' for user {}", response.name, user.uuid);
@@ -1293,6 +1297,7 @@ pub async fn list_api_keys(
         .map(|key| ApiKeyInfo {
             name: key.name,
             created_at: key.created_at,
+            last_used_at: key.last_used_at,
         })
         .collect();
 

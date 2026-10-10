@@ -486,6 +486,7 @@ diesel::table! {
         name -> Text,
         created_at -> Timestamptz,
         updated_at -> Timestamptz,
+        last_used_at -> Nullable<Timestamptz>,
     }
 }
 

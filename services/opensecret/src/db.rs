@@ -504,6 +504,7 @@ pub trait DBConnection {
     fn get_user_api_key_by_id(&self, id: i32) -> Result<Option<UserApiKey>, DBError>;
     fn get_user_api_key_by_hash(&self, key_hash: &str) -> Result<Option<UserApiKey>, DBError>;
     fn get_user_by_api_key_hash(&self, key_hash: &str) -> Result<Option<User>, DBError>;
+    fn touch_user_api_key_last_used(&self, key_hash: &str) -> Result<bool, DBError>;
     fn get_all_user_api_keys_for_user(&self, user_id: Uuid) -> Result<Vec<UserApiKey>, DBError>;
     fn delete_user_api_key(&self, id: i32, user_id: Uuid) -> Result<(), DBError>;
     fn delete_user_api_key_by_name(&self, name: &str, user_id: Uuid) -> Result<(), DBError>;
@@ -2084,6 +2085,12 @@ impl DBConnection for PostgresConnection {
             .first::<User>(conn)
             .optional()
             .map_err(DBError::from)
+    }
+
+    fn touch_user_api_key_last_used(&self, key_hash: &str) -> Result<bool, DBError> {
+        let conn = &mut self.db.get().map_err(|_| DBError::ConnectionError)?;
+        let updated = UserApiKey::touch_last_used(conn, key_hash).map_err(DBError::from)?;
+        Ok(updated > 0)
     }
 
     fn get_all_user_api_keys_for_user(&self, user_id: Uuid) -> Result<Vec<UserApiKey>, DBError> {
