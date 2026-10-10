@@ -838,6 +838,81 @@ async fn system_md_and_append_system_md_shape_the_prompt_unless_the_host_does() 
 }
 
 #[tokio::test]
+async fn resources_set_between_prompts_reach_the_next_one_as_a_patch() {
+    let dir = tempfile::tempdir().unwrap();
+    let skill = dir.path().join("review/SKILL.md");
+    std::fs::create_dir_all(skill.parent().unwrap()).unwrap();
+    std::fs::write(
+        &skill,
+        "---\ndescription: Review changes\n---\nRead the diff first.",
+    )
+    .unwrap();
+    let file = |path: &str, content: &str| pi_coding_agent::resources::ContextFile {
+        path: path.into(),
+        content: content.into(),
+    };
+    let harness = Harness::new();
+    harness.faux.push_text("one");
+    harness.faux.push_text("two");
+    let session = harness
+        .session_with(|options| {
+            options.resources.context_files = vec![file("/work/AGENTS.md", "Use tabs.")];
+            options.settings.append_system_prompt = Some("Answer in Dutch.".into());
+            options.skill_load_hint = Some("Use the read tool to load a skill's file".into());
+        })
+        .await;
+    session
+        .prompt("hi", PromptOptions::default())
+        .await
+        .unwrap();
+    assert!(session.system_prompt().contains("Use tabs."));
+
+    let mut resources = Resources::load(
+        dir.path(),
+        &pi_coding_agent::resources::ResourcePaths {
+            agent_dir: dir.path().join("none"),
+            project_dir_name: ".maple".into(),
+            home_dir: None,
+        },
+        std::slice::from_ref(&skill),
+        &[],
+        true,
+    );
+    resources.context_files = vec![file("/work/AGENTS.md", "Use spaces.")];
+    resources.append_system_prompt = Some(file("APPEND_SYSTEM.md", "Answer in French."));
+    session.set_resources(resources);
+    assert_eq!(session.resources().skills[0].name, "review");
+    // A skill that is new by now expands.
+    session
+        .prompt("/skill:review", PromptOptions::default())
+        .await
+        .unwrap();
+    assert!(harness.sent_text(1).contains("Read the diff first."));
+
+    let prompt = session.system_prompt();
+    assert!(prompt.contains("Use spaces.") && !prompt.contains("Use tabs."));
+    assert!(prompt.contains("<name>review</name>"), "{prompt}");
+    // The host's appended text still wins over APPEND_SYSTEM.md.
+    assert!(prompt.contains("Answer in Dutch.") && !prompt.contains("French"));
+    // Only the sections that changed went out again.
+    assert_eq!(
+        entry_kinds(&session)[3..],
+        ["message:system", "message:user", "message:assistant"]
+    );
+    let patch = harness.faux.requests()[1]
+        .context
+        .messages
+        .iter()
+        .rev()
+        .find_map(|message| match message {
+            Message::System(system) => Some(system.sections.keys().cloned().collect::<Vec<_>>()),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(patch, ["project_context", "skills"]);
+}
+
+#[tokio::test]
 async fn images_a_tool_returns_are_made_to_fit_before_the_model_sees_them() {
     use base64::Engine;
     use base64::engine::general_purpose::STANDARD as BASE64;

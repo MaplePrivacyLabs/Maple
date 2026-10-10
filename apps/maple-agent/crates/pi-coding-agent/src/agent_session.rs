@@ -369,6 +369,7 @@ pub(crate) struct SessionCore {
     cwd: PathBuf,
     settings: Mutex<Settings>,
     resources: Mutex<Resources>,
+    host_prompt: HostPrompt,
     prompt_base: Mutex<SystemPromptOptions>,
     model: Mutex<Option<Model>>,
     tools: Mutex<Vec<RegisteredTool>>,
@@ -387,6 +388,33 @@ pub(crate) struct SessionCore {
 #[derive(Clone)]
 pub struct AgentSession {
     core: Arc<SessionCore>,
+}
+
+/// The prompt and appended text the host gave, which win over `SYSTEM.md` and
+/// `APPEND_SYSTEM.md`.
+struct HostPrompt {
+    custom: Option<String>,
+    append: Option<String>,
+}
+
+impl HostPrompt {
+    /// Fill the prompt's resource parts from `resources`, under the host's own text.
+    fn apply(&self, base: &mut SystemPromptOptions, resources: &Resources) {
+        let text = |file: &Option<crate::resources::ContextFile>| {
+            file.as_ref().map(|file| file.content.clone())
+        };
+        base.custom_prompt = self
+            .custom
+            .clone()
+            .or_else(|| text(&resources.system_prompt));
+        base.append = self
+            .append
+            .clone()
+            .or_else(|| text(&resources.append_system_prompt))
+            .unwrap_or_default();
+        base.context_files = resources.context_files.clone();
+        base.skills = resources.skills.clone();
+    }
 }
 
 fn placeholder_model() -> Model {
@@ -424,28 +452,17 @@ impl AgentSession {
         let thinking_level = model.as_ref().map_or(ThinkingLevel::Off, |model| {
             model.clamp_thinking_level(requested_thinking_level)
         });
-        // The host's prompt and appended text win over SYSTEM.md and APPEND_SYSTEM.md.
-        let resource_text = |file: &Option<crate::resources::ContextFile>| {
-            file.as_ref().map(|file| file.content.clone())
+        let host_prompt = HostPrompt {
+            custom: options.custom_prompt.clone(),
+            append: options.settings.append_system_prompt.clone(),
         };
-        let prompt_base = SystemPromptOptions {
+        let mut prompt_base = SystemPromptOptions {
             app_name: options.app_name.clone(),
-            custom_prompt: options
-                .custom_prompt
-                .clone()
-                .or_else(|| resource_text(&options.resources.system_prompt)),
-            append: options
-                .settings
-                .append_system_prompt
-                .clone()
-                .or_else(|| resource_text(&options.resources.append_system_prompt))
-                .unwrap_or_default(),
             cwd: options.cwd.to_string_lossy().into_owned(),
-            context_files: options.resources.context_files.clone(),
-            skills: options.resources.skills.clone(),
             skill_load_hint: options.skill_load_hint.clone(),
             ..SystemPromptOptions::default()
         };
+        host_prompt.apply(&mut prompt_base, &options.resources);
         let session_id = options.session.id().to_string();
 
         let core = Arc::new_cyclic(|weak: &Weak<SessionCore>| {
@@ -523,6 +540,7 @@ impl AgentSession {
                 cwd: options.cwd,
                 settings: Mutex::new(options.settings),
                 resources: Mutex::new(options.resources),
+                host_prompt,
                 prompt_base: Mutex::new(prompt_base),
                 model: Mutex::new(model),
                 tools: Mutex::new(tools),
@@ -784,6 +802,17 @@ impl AgentSession {
 
     pub fn resources(&self) -> Resources {
         lock(&self.core.resources).clone()
+    }
+
+    /// Use `resources` from the next prompt on, as Pi's `reload` does with what its
+    /// resource loader finds again: context files, skills and prompt templates, and
+    /// `SYSTEM.md` and `APPEND_SYSTEM.md` where the host gave no text of its own. The
+    /// transcript's prompt is brought up to date by the sections that changed.
+    pub fn set_resources(&self, resources: Resources) {
+        self.core
+            .host_prompt
+            .apply(&mut lock(&self.core.prompt_base), &resources);
+        *lock(&self.core.resources) = resources;
     }
 
     pub fn settings(&self) -> Settings {
