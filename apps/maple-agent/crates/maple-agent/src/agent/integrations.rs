@@ -9,10 +9,6 @@ use super::external_agents::claude::{self, ClaudeDetection};
 use super::external_agents::codex::{self, CodexDetection};
 use super::*;
 use std::collections::HashSet;
-#[cfg(target_os = "macos")]
-use std::process::Stdio;
-#[cfg(target_os = "macos")]
-use std::time::Duration;
 
 pub(super) const CUA_DRIVER_INTEGRATION_ID: &str = "cua-driver";
 /// The name Goose shows for the extension and that Maple uses when it has to
@@ -26,10 +22,6 @@ pub(super) const CUA_DRIVER_DESCRIPTION: &str =
 /// renders what it is given instead of keeping a second set of strings.
 const CUA_DRIVER_CARD_NAME: &str = "Cua";
 const CUA_DRIVER_CARD_DESCRIPTION: &str = "Let Maple see and control apps on this computer.";
-const CUA_EXTERNAL_MCP_DESCRIPTION: &str =
-    "Control desktop applications through the locally installed Cua Driver.";
-#[cfg(target_os = "macos")]
-const CUA_DRIVER_MACOS_BINARY: &str = "/Applications/CuaDriver.app/Contents/MacOS/cua-driver";
 /// The Codex CLI as an external agent a task can hand work to.
 pub(super) const CODEX_INTEGRATION_ID: &str = "codex";
 const CODEX_CARD_NAME: &str = "Codex";
@@ -169,13 +161,6 @@ const EXTERNAL_AGENT_SKILLS: [(&str, &str); 3] = [
 ];
 const INTEGRATIONS_FILE_NAME: &str = "integrations.json";
 const INTEGRATIONS_FILE_VERSION: u32 = 2;
-const LEGACY_INTEGRATIONS_FILE_VERSION: u32 = 1;
-#[cfg(any(target_os = "macos", test))]
-const CUA_MANIFEST_SCHEMA_VERSION: &str = "1";
-#[cfg(target_os = "macos")]
-const CUA_PROBE_TIMEOUT: Duration = Duration::from_secs(3);
-#[cfg(target_os = "macos")]
-const MAX_CUA_MANIFEST_BYTES: usize = 64 * 1024;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(super) struct StoredIntegrationRegistry {
@@ -246,9 +231,8 @@ fn codex_public(
         name: CODEX_CARD_NAME.to_string(),
         description: CODEX_CARD_DESCRIPTION.to_string(),
         availability,
-        backend: stored.map(|entry| entry.backend),
+        backend: stored.map(|entry| entry.backend.public()),
         version: detection.version.clone(),
-        standalone_version: None,
         permissions: None,
         setup_available: false,
         enabled_for_new_tasks: stored.is_some_and(|entry| entry.enabled),
@@ -270,9 +254,8 @@ fn claude_public(
             (_, Some(_)) => AgentIntegrationAvailability::SetupRequired,
             _ => AgentIntegrationAvailability::Available,
         },
-        backend: stored.map(|entry| entry.backend),
+        backend: stored.map(|entry| entry.backend.public()),
         version: detection.version.clone(),
-        standalone_version: None,
         permissions: None,
         setup_available: false,
         enabled_for_new_tasks: stored.is_some_and(|entry| entry.enabled),
@@ -400,39 +383,26 @@ pub(super) fn sync_external_agent_skills(
 struct StoredIntegration {
     id: String,
     enabled: bool,
-    backend: AgentIntegrationBackend,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    external_server: Option<AgentMcpServer>,
+    backend: StoredBackend,
 }
 
-#[derive(Debug, Clone, Deserialize)]
-struct LegacyStoredIntegrationRegistry {
-    version: u32,
-    #[serde(default)]
-    integrations: Vec<LegacyStoredIntegration>,
+/// The backend column of the device-local file. Files written by builds that
+/// offered the standalone CuaDriver say `external`; those entries are dropped
+/// on load, not migrated, so the file stays readable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum StoredBackend {
+    Embedded,
+    #[serde(other)]
+    Retired,
 }
 
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct LegacyStoredIntegration {
-    id: String,
-    server: AgentMcpServer,
-}
-
-#[cfg(any(target_os = "macos", test))]
-#[derive(Debug, Deserialize)]
-struct CuaManifest {
-    schema_version: String,
-    binary_path: String,
-    binary_version: String,
-    mcp_invocation: CuaMcpInvocation,
-}
-
-#[cfg(any(target_os = "macos", test))]
-#[derive(Debug, Deserialize)]
-struct CuaMcpInvocation {
-    command: String,
-    args: Vec<String>,
+impl StoredBackend {
+    fn public(self) -> AgentIntegrationBackend {
+        match self {
+            Self::Embedded | Self::Retired => AgentIntegrationBackend::Embedded,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -440,9 +410,7 @@ pub(super) struct CuaDetection {
     availability: AgentIntegrationAvailability,
     permissions: Option<AgentIntegrationPermissions>,
     setup_available: bool,
-    standalone_version: Option<String>,
     detail: Option<String>,
-    external_server: Option<AgentMcpServer>,
 }
 
 impl CuaDetection {
@@ -452,9 +420,7 @@ impl CuaDetection {
             availability: AgentIntegrationAvailability::NotDetected,
             permissions: None,
             setup_available: false,
-            standalone_version: None,
             detail: Some("Built-in CUA is not available on this operating system yet.".to_string()),
-            external_server: None,
         }
     }
 
@@ -470,9 +436,8 @@ impl CuaDetection {
             name: CUA_DRIVER_CARD_NAME.to_string(),
             description: CUA_DRIVER_CARD_DESCRIPTION.to_string(),
             availability: self.availability,
-            backend: stored.map(|entry| entry.backend),
+            backend: stored.map(|entry| entry.backend.public()),
             version: embedded_cua_version(),
-            standalone_version: self.standalone_version.clone(),
             permissions: self.permissions.clone(),
             setup_available: self.setup_available,
             enabled_for_new_tasks: stored.is_some_and(|entry| entry.enabled),
@@ -579,8 +544,7 @@ fn set_external_agent_default(
         None if enabled => stored.integrations.push(StoredIntegration {
             id: provider.id.to_string(),
             enabled,
-            backend: AgentIntegrationBackend::Embedded,
-            external_server: None,
+            backend: StoredBackend::Embedded,
         }),
         None => {}
     }
@@ -617,44 +581,22 @@ fn set_cua_default(
 
     if enabled {
         ensure_no_custom_integration_collision(&custom)?;
+        if !detection.embedded_ready() {
+            return Err(
+                "Set up Maple's Accessibility and Screen Recording permissions before enabling built-in CUA"
+                    .to_string(),
+            );
+        }
         match stored.cua_mut() {
             Some(entry) => {
-                match entry.backend {
-                    AgentIntegrationBackend::Embedded if !detection.embedded_ready() => {
-                        return Err(
-                            "Set up Maple's Accessibility and Screen Recording permissions before enabling built-in CUA"
-                                .to_string(),
-                        );
-                    }
-                    AgentIntegrationBackend::External => {
-                        let server = detection.external_server.clone().ok_or_else(|| {
-                            "The standalone CuaDriver selected by this setting is no longer available. Set up built-in CUA instead."
-                                .to_string()
-                        })?;
-                        entry.external_server = Some(server);
-                    }
-                    AgentIntegrationBackend::Embedded => {}
-                }
+                entry.backend = StoredBackend::Embedded;
                 entry.enabled = true;
             }
-            None if detection.embedded_ready() => {
-                stored.integrations.push(StoredIntegration {
-                    id: CUA_DRIVER_INTEGRATION_ID.to_string(),
-                    enabled: true,
-                    backend: AgentIntegrationBackend::Embedded,
-                    external_server: detection.external_server.clone(),
-                });
-            }
             None => {
-                let server = detection.external_server.clone().ok_or_else(|| {
-                    "Set up Maple's Accessibility and Screen Recording permissions before enabling CUA"
-                        .to_string()
-                })?;
                 stored.integrations.push(StoredIntegration {
                     id: CUA_DRIVER_INTEGRATION_ID.to_string(),
                     enabled: true,
-                    backend: AgentIntegrationBackend::External,
-                    external_server: Some(server),
+                    backend: StoredBackend::Embedded,
                 });
             }
         }
@@ -665,9 +607,8 @@ fn set_cua_default(
     save_stored_integrations(paths, user_id, &stored)
 }
 
-/// Switch the new-task default to Maple's embedded backend only after the OS
-/// reports both grants. An incomplete setup never silently takes a working
-/// external backend away from the user.
+/// Record Maple's embedded backend as the new-task default once the OS
+/// reports both grants. An incomplete setup leaves the stored choice alone.
 pub(super) fn select_embedded_integration_backend(
     paths: &AgentPathLayout,
     user_id: &str,
@@ -685,17 +626,11 @@ pub(super) fn select_embedded_integration_backend(
     ensure_no_custom_integration_collision(&custom)?;
     let mut stored = load_stored_integrations(paths, user_id)?;
     match stored.cua_mut() {
-        Some(entry) => {
-            entry.backend = AgentIntegrationBackend::Embedded;
-            if detection.external_server.is_some() {
-                entry.external_server = detection.external_server.clone();
-            }
-        }
+        Some(entry) => entry.backend = StoredBackend::Embedded,
         None => stored.integrations.push(StoredIntegration {
             id: CUA_DRIVER_INTEGRATION_ID.to_string(),
             enabled: false,
-            backend: AgentIntegrationBackend::Embedded,
-            external_server: detection.external_server.clone(),
+            backend: StoredBackend::Embedded,
         }),
     }
     save_stored_integrations(paths, user_id, &stored)?;
@@ -707,24 +642,14 @@ pub(super) fn effective_mcp_servers(
     custom: Vec<AgentMcpServer>,
 ) -> Result<Vec<AgentMcpServer>, String> {
     let mut servers = custom;
-    if let Some(entry) = stored.cua() {
-        // The integration owns this product identity even when the embedded
-        // backend has no external server definition. A custom server that a
+    if stored.cua().is_some() {
+        // The integration owns this product identity. A custom server that a
         // previous release accepted under any historical spelling is shadowed
         // before Goose can select or start it. Merging would make
         // normalization fail and lock the account out of every task, while
         // starting it briefly before embedded CUA replaces it would cross the
         // explicit backend boundary.
         servers.retain(|candidate| !is_cua_identity(&candidate.name));
-        let Some(server) = entry.external_server.as_ref() else {
-            return normalize_mcp_servers(servers);
-        };
-        let mut server = server.clone();
-        // Keep the concrete external definition available to old tasks,
-        // but only select it by default while External owns the global
-        // default. Embedded sessions are represented in Maple metadata.
-        server.enabled = entry.enabled && entry.backend == AgentIntegrationBackend::External;
-        servers.push(server);
     }
     normalize_mcp_servers(servers)
 }
@@ -735,7 +660,7 @@ pub(super) fn is_cua_key(name: &str) -> bool {
 }
 
 /// Whether a configured server uses any spelling reserved for curated CUA.
-fn is_cua_identity(name: &str) -> bool {
+pub(super) fn is_cua_identity(name: &str) -> bool {
     let key = goose::config::extensions::name_to_key(name.trim());
     [
         CUA_DRIVER_MCP_NAME,
@@ -782,7 +707,7 @@ pub(super) fn cua_state_for_new_session(
     let explicitly_requested =
         requested_names.map(|names| names.iter().any(|name| is_cua_key(name)));
     let enabled = explicitly_requested.unwrap_or(entry.enabled);
-    if entry.backend == AgentIntegrationBackend::Embedded && !allow_embedded {
+    if !allow_embedded {
         if explicitly_requested == Some(true) {
             return Err(
                 "Built-in CUA is available only to tasks running in the Maple desktop app"
@@ -792,7 +717,7 @@ pub(super) fn cua_state_for_new_session(
         return Ok(None);
     }
     Ok(Some(CuaSessionState {
-        backend: entry.backend,
+        backend: entry.backend.public(),
         enabled,
     }))
 }
@@ -828,16 +753,8 @@ pub(super) fn session_cua_backend(
     if let Some(state) = session_cua_state(session) {
         return Some(state.backend);
     }
-    if session_mcp_extension_keys(session)
-        .iter()
-        .any(|name| is_cua_key(name))
-    {
-        // Tasks created by the external-driver PR predate Maple's logical
-        // metadata. Their concrete persisted stdio extension is unambiguous.
-        return Some(AgentIntegrationBackend::External);
-    }
-    let backend = stored.cua().map(|entry| entry.backend)?;
-    if backend == AgentIntegrationBackend::Embedded && session.session_type != SessionType::User {
+    let backend = stored.cua().map(|entry| entry.backend.public())?;
+    if session.session_type != SessionType::User {
         return None;
     }
     Some(backend)
@@ -852,9 +769,6 @@ pub(super) fn project_session_mcp_servers(
     servers.retain(|server| !is_cua_key(&server.name));
 
     let state = session_cua_state(session);
-    let active_external = session_mcp_extension_keys(session)
-        .iter()
-        .any(|name| is_cua_key(name));
     if session.session_type == SessionType::User {
         servers.extend(
             EXTERNAL_AGENT_INTEGRATIONS
@@ -876,17 +790,12 @@ pub(super) fn project_session_mcp_servers(
     if backend.is_none() && session.session_type != SessionType::User {
         return Ok(servers);
     }
-    let stored = stored.cua();
     let enabled = match backend {
         Some(AgentIntegrationBackend::Embedded) => state.is_some_and(|state| state.enabled),
-        Some(AgentIntegrationBackend::External) => active_external,
         None => false,
     };
     let available = match backend {
         Some(AgentIntegrationBackend::Embedded) => embedded_cua_ready(),
-        Some(AgentIntegrationBackend::External) => {
-            active_external || stored.is_some_and(|entry| entry.external_server.is_some())
-        }
         None => false,
     };
     servers.push(AgentSessionMcpServer {
@@ -896,7 +805,6 @@ pub(super) fn project_session_mcp_servers(
         description: CUA_DRIVER_CARD_DESCRIPTION.to_string(),
         transport: match backend {
             Some(AgentIntegrationBackend::Embedded) => "embedded",
-            Some(AgentIntegrationBackend::External) => "stdio",
             None => "unconfigured",
         }
         .to_string(),
@@ -978,52 +886,27 @@ fn load_stored_integrations(
         .get("version")
         .and_then(Value::as_u64)
         .ok_or_else(|| "Device-local integration settings have no version".to_string())?;
-    let registry = match u32::try_from(version) {
+    let mut registry: StoredIntegrationRegistry = match u32::try_from(version) {
         Ok(INTEGRATIONS_FILE_VERSION) => serde_json::from_str(&contents).map_err(|error| {
             format!("Failed to parse device-local integration settings: {error}")
         })?,
-        Ok(LEGACY_INTEGRATIONS_FILE_VERSION) => {
-            let legacy: LegacyStoredIntegrationRegistry =
-                serde_json::from_str(&contents).map_err(|error| {
-                    format!("Failed to parse legacy device-local integration settings: {error}")
-                })?;
-            migrate_legacy_registry(legacy)?
-        }
         _ => {
             return Err(format!(
                 "Unsupported device-local integration settings version {version}"
             ));
         }
     };
-    validate_stored_registry(registry)
-}
-
-fn migrate_legacy_registry(
-    registry: LegacyStoredIntegrationRegistry,
-) -> Result<StoredIntegrationRegistry, String> {
-    if registry.version != LEGACY_INTEGRATIONS_FILE_VERSION {
-        return Err(format!(
-            "Unsupported legacy integration settings version {}",
-            registry.version
-        ));
-    }
-    let integrations = registry
+    // Entries that chose the retired standalone CuaDriver are dropped, not
+    // migrated: the file stays readable and the card falls back to "not set
+    // up" until the user enables built-in CUA.
+    let before = registry.integrations.len();
+    registry
         .integrations
-        .into_iter()
-        .map(|entry| {
-            let enabled = entry.server.enabled;
-            StoredIntegration {
-                id: entry.id,
-                enabled,
-                backend: AgentIntegrationBackend::External,
-                external_server: Some(entry.server),
-            }
-        })
-        .collect();
-    Ok(StoredIntegrationRegistry {
-        version: INTEGRATIONS_FILE_VERSION,
-        integrations,
-    })
+        .retain(|entry| entry.backend != StoredBackend::Retired);
+    if registry.integrations.len() != before {
+        log::warn!("Ignoring a device-local integration entry that selected a retired backend");
+    }
+    validate_stored_registry(registry)
 }
 
 fn validate_stored_registry(
@@ -1045,47 +928,8 @@ fn validate_stored_registry(
                     .to_string(),
             );
         }
-        if external_agent_selection(&entry.id).is_some() {
-            if entry.backend != AgentIntegrationBackend::Embedded || entry.external_server.is_some()
-            {
-                return Err("Device-local external agent settings are invalid".to_string());
-            }
-            continue;
-        }
-        if entry.backend == AgentIntegrationBackend::External && entry.external_server.is_none() {
-            return Err(
-                "Device-local external Cua Driver settings have no server definition".to_string(),
-            );
-        }
-        if let Some(server) = entry.external_server.as_ref() {
-            validate_stored_cua_server(server)?;
-        }
     }
     Ok(registry)
-}
-
-fn validate_stored_cua_server(server: &AgentMcpServer) -> Result<(), String> {
-    if server.name != CUA_DRIVER_MCP_NAME
-        || server.description != CUA_EXTERNAL_MCP_DESCRIPTION
-        || server.timeout_seconds != DEFAULT_MCP_TIMEOUT_SECONDS
-    {
-        return Err("Device-local Cua Driver settings are invalid".to_string());
-    }
-    let AgentMcpTransport::Stdio {
-        command,
-        environment,
-    } = &server.transport
-    else {
-        return Err("Device-local Cua Driver transport is invalid".to_string());
-    };
-    if !environment.is_empty() {
-        return Err("Device-local Cua Driver environment must be empty".to_string());
-    }
-    let parts = split_mcp_command(command, CUA_DRIVER_MCP_NAME)?;
-    if parts.len() != 2 || parts[1] != "mcp" || !Path::new(&parts[0]).is_absolute() {
-        return Err("Device-local Cua Driver command is invalid".to_string());
-    }
-    Ok(())
 }
 
 fn save_stored_integrations(
@@ -1107,216 +951,21 @@ async fn detect_cua_driver() -> CuaDetection {
     #[cfg(embedded_cua)]
     {
         let permissions = super::cua::embedded_cua_permission_status();
-        // Only macOS ships a standalone CuaDriver application at a path Maple
-        // knows. Everywhere else the built-in runtime is the only backend, so
-        // there is nothing to discover and no foreign executable to run.
-        let (standalone_version, external_server, standalone_error) =
-            detect_standalone_driver().await;
-        let embedded_ready = permissions.ready();
-        let availability = if embedded_ready || external_server.is_some() {
+        let availability = if permissions.ready() {
             AgentIntegrationAvailability::Available
         } else {
             AgentIntegrationAvailability::SetupRequired
         };
         // Say what is missing on the card itself, and say it in terms of what
         // is left to do rather than repeating the requirement's name.
-        let detail = super::cua::desktop_helper_hint()
-            .or_else(|| {
-                standalone_error.map(|error| {
-                    format!(
-                        "Maple could not verify the standalone CuaDriver installation: {error}. Built-in CUA can still be set up."
-                    )
-                })
-            });
+        let detail = super::cua::desktop_helper_hint();
         CuaDetection {
             availability,
             permissions: Some(permissions),
             setup_available: super::cua::desktop_setup_available(),
-            standalone_version,
             detail,
-            external_server,
         }
     }
-}
-
-/// Discover a separately installed CuaDriver application, if this platform has
-/// one at a path Maple knows.
-#[cfg(target_os = "macos")]
-async fn detect_standalone_driver() -> (Option<String>, Option<AgentMcpServer>, Option<String>) {
-    let candidate = PathBuf::from(CUA_DRIVER_MACOS_BINARY);
-    let exists = match candidate.try_exists() {
-        Ok(exists) => exists,
-        Err(error) => {
-            return (
-                None,
-                None,
-                Some(format!(
-                    "could not inspect the standalone application: {error}"
-                )),
-            );
-        }
-    };
-    if !exists {
-        return (None, None, None);
-    }
-    if let Err(error) = ensure_standalone_binary_is_protected(&candidate) {
-        return (None, None, Some(error));
-    }
-    match probe_cua_manifest(&candidate).await {
-        Ok((version, server)) => (Some(version), Some(server), None),
-        Err(error) => (None, None, Some(error)),
-    }
-}
-
-#[cfg(all(embedded_cua, not(target_os = "macos")))]
-async fn detect_standalone_driver() -> (Option<String>, Option<AgentMcpServer>, Option<String>) {
-    (None, None, None)
-}
-
-/// Refuse to execute a driver that any other account can rewrite.
-///
-/// Maple runs this binary to read its manifest whenever the Integrations page
-/// opens, so a group- or world-writable file at the expected path would let a
-/// second account choose the code Maple runs. Ownership is deliberately not
-/// checked: a normal drag-install leaves the application owned by the user who
-/// installed it.
-#[cfg(target_os = "macos")]
-fn ensure_standalone_binary_is_protected(path: &Path) -> Result<(), String> {
-    use std::os::unix::fs::PermissionsExt;
-
-    let metadata = std::fs::metadata(path)
-        .map_err(|error| format!("could not inspect the standalone application: {error}"))?;
-    if metadata.permissions().mode() & 0o022 != 0 {
-        return Err(
-            "the standalone application is writable by other accounts and was not run".to_string(),
-        );
-    }
-    Ok(())
-}
-
-#[cfg(target_os = "macos")]
-async fn probe_cua_manifest(path: &Path) -> Result<(String, AgentMcpServer), String> {
-    let canonical = path
-        .canonicalize()
-        .map_err(|error| format!("could not resolve the executable: {error}"))?;
-    let mut command = tokio::process::Command::new(&canonical);
-    command
-        .arg("manifest")
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .kill_on_drop(true);
-    let mut child = command
-        .spawn()
-        .map_err(|error| format!("could not start the manifest probe: {error}"))?;
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| "could not capture the manifest".to_string())?;
-    let mut reader = tokio::spawn(super::bounded_process::read_bounded_stdout(
-        stdout,
-        MAX_CUA_MANIFEST_BYTES,
-        "the Cua Driver manifest",
-    ));
-
-    let status = match tokio::time::timeout(CUA_PROBE_TIMEOUT, child.wait()).await {
-        Ok(Ok(status)) => status,
-        Ok(Err(error)) => {
-            reader.abort();
-            return Err(format!("could not wait for the manifest probe: {error}"));
-        }
-        Err(_) => {
-            reader.abort();
-            let _ = child.kill().await;
-            let _ = child.wait().await;
-            return Err("manifest probe timed out".to_string());
-        }
-    };
-    let bytes = match tokio::time::timeout(CUA_PROBE_TIMEOUT, &mut reader).await {
-        Ok(Ok(result)) => result?,
-        Ok(Err(error)) => return Err(format!("could not collect the manifest: {error}")),
-        Err(_) => {
-            reader.abort();
-            return Err("manifest output did not close".to_string());
-        }
-    };
-    if !status.success() {
-        return Err(format!("manifest probe exited with {status}"));
-    }
-    parse_cua_manifest(&canonical, &bytes)
-}
-
-#[cfg(any(target_os = "macos", test))]
-fn parse_cua_manifest(
-    detected_binary: &Path,
-    bytes: &[u8],
-) -> Result<(String, AgentMcpServer), String> {
-    let manifest: CuaManifest = serde_json::from_slice(bytes)
-        .map_err(|error| format!("manifest is not valid JSON: {error}"))?;
-    if manifest.schema_version != CUA_MANIFEST_SCHEMA_VERSION {
-        return Err(format!(
-            "manifest schema {} is not supported",
-            manifest.schema_version
-        ));
-    }
-    let version = manifest.binary_version.trim();
-    if version.is_empty() {
-        return Err("manifest has no binary version".to_string());
-    }
-    if manifest.mcp_invocation.args != ["mcp"] {
-        return Err("manifest does not advertise the expected MCP entrypoint".to_string());
-    }
-
-    let declared_binary = canonical_manifest_path(&manifest.binary_path, "binary path")?;
-    let command_binary = canonical_manifest_path(&manifest.mcp_invocation.command, "MCP command")?;
-    if declared_binary != detected_binary || command_binary != detected_binary {
-        return Err("manifest executable does not match the detected application".to_string());
-    }
-
-    let verified_binary = detected_binary
-        .to_str()
-        .ok_or_else(|| "detected Cua Driver path is not valid UTF-8".to_string())?;
-    let command = join_mcp_command(std::iter::once(verified_binary).chain(["mcp"]))?;
-    let server = AgentMcpServer {
-        name: CUA_DRIVER_MCP_NAME.to_string(),
-        description: CUA_EXTERNAL_MCP_DESCRIPTION.to_string(),
-        enabled: false,
-        timeout_seconds: DEFAULT_MCP_TIMEOUT_SECONDS,
-        transport: AgentMcpTransport::Stdio {
-            command,
-            environment: Vec::new(),
-        },
-    };
-    validate_stored_cua_server(&server)?;
-    Ok((version.to_string(), server))
-}
-
-#[cfg(any(target_os = "macos", test))]
-fn canonical_manifest_path(path: &str, label: &str) -> Result<PathBuf, String> {
-    let path = Path::new(path);
-    if !path.is_absolute() {
-        return Err(format!("manifest {label} is not absolute"));
-    }
-    path.canonicalize()
-        .map_err(|error| format!("could not resolve manifest {label}: {error}"))
-}
-
-#[cfg(any(target_os = "macos", test))]
-fn join_mcp_command<'a>(parts: impl IntoIterator<Item = &'a str>) -> Result<String, String> {
-    parts
-        .into_iter()
-        .map(|part| {
-            if part.is_empty() || part.contains(['\0', '"']) {
-                return Err("manifest MCP arguments contain unsupported characters".to_string());
-            }
-            if part.chars().any(char::is_whitespace) {
-                Ok(format!("\"{part}\""))
-            } else {
-                Ok(part.to_string())
-            }
-        })
-        .collect::<Result<Vec<_>, _>>()
-        .map(|parts| parts.join(" "))
 }
 
 #[cfg(test)]
@@ -1331,35 +980,6 @@ mod tests {
         }
     }
 
-    fn stored_cua_server(root: &Path, enabled: bool) -> AgentMcpServer {
-        let binary = root.join("cua-driver");
-        let command = join_mcp_command([binary.to_str().expect("UTF-8 test path"), "mcp"])
-            .expect("valid test command");
-        AgentMcpServer {
-            name: CUA_DRIVER_MCP_NAME.to_string(),
-            description: CUA_EXTERNAL_MCP_DESCRIPTION.to_string(),
-            enabled,
-            timeout_seconds: DEFAULT_MCP_TIMEOUT_SECONDS,
-            transport: AgentMcpTransport::Stdio {
-                command,
-                environment: Vec::new(),
-            },
-        }
-    }
-
-    fn manifest(binary: &Path, schema: &str, args: &[&str]) -> Vec<u8> {
-        serde_json::to_vec(&json!({
-            "schema_version": schema,
-            "binary_path": binary,
-            "binary_version": "0.21.1-test",
-            "mcp_invocation": {
-                "command": binary,
-                "args": args,
-            }
-        }))
-        .unwrap()
-    }
-
     fn codex_registry(enabled: bool) -> StoredIntegrationRegistry {
         provider_registry("codex", enabled)
     }
@@ -1370,8 +990,7 @@ mod tests {
             integrations: vec![StoredIntegration {
                 id: provider.to_string(),
                 enabled,
-                backend: AgentIntegrationBackend::Embedded,
-                external_server: None,
+                backend: StoredBackend::Embedded,
             }],
         }
     }
@@ -1385,7 +1004,7 @@ mod tests {
                 temp.path().to_path_buf(),
                 "Old task".into(),
                 SessionType::User,
-                GooseMode::SmartApprove,
+                GooseMode::Auto,
             )
             .await
             .unwrap();
@@ -1422,7 +1041,7 @@ mod tests {
                 temp.path().to_path_buf(),
                 "Other task".into(),
                 SessionType::User,
-                GooseMode::SmartApprove,
+                GooseMode::Auto,
             )
             .await
             .unwrap();
@@ -1469,9 +1088,8 @@ mod tests {
             rows.iter()
                 .any(|row| row.name == CUA_DRIVER_MCP_NAME && !row.enabled && !row.available)
         );
-        let temp = tempfile::tempdir().unwrap();
-        let mut custom = stored_cua_server(temp.path(), false);
-        custom.name = "codex".to_string();
+        let mut custom = http_server("codex");
+        custom.enabled = false;
         let rows = project_session_mcp_servers(&codex_registry(true), &[custom], &session).unwrap();
         let codex_rows = rows
             .iter()
@@ -1512,13 +1130,12 @@ mod tests {
         let service = &fixture.handle.service;
         let user = fixture.handle.user_id.as_ref();
         let paths = &service.host.paths;
-        let (manager, transport, web_state) = {
+        let (manager, transport) = {
             let runtime = service.inner.lock().await;
             let runtime = runtime.as_ref().unwrap();
             (
                 runtime.session_manager.clone(),
                 runtime.maple_api_session.clone(),
-                runtime.web_tool_state.clone(),
             )
         };
         let session = manager
@@ -1526,7 +1143,7 @@ mod tests {
                 fixture.project_root.clone(),
                 "Before Codex".into(),
                 SessionType::User,
-                GooseMode::SmartApprove,
+                GooseMode::Auto,
             )
             .await
             .unwrap();
@@ -1534,7 +1151,6 @@ mod tests {
             service: service.clone(),
             runtime: fixture.handle.clone(),
             session_manager: manager.clone(),
-            permission_modes: Arc::new(Mutex::new(HashMap::new())),
             project_root: fixture.project_root.clone(),
             lifetime: CancellationToken::new(),
         }));
@@ -1542,7 +1158,7 @@ mod tests {
             manager.clone(),
             Arc::new(PermissionManager::new(fixture.root.join("permissions"))),
             None,
-            GooseMode::SmartApprove,
+            GooseMode::Auto,
             true,
             GoosePlatform::GooseDesktop,
         );
@@ -1590,14 +1206,11 @@ mod tests {
                     paths,
                     user_id: user,
                 },
-                &manager,
                 &transport,
                 SessionAgentConfiguration {
-                    web_tool_state: &web_state,
                     session: &session,
                     model: DEFAULT_AGENT_MODEL,
                     context_limit: None,
-                    mode: DEFAULT_GOOSE_MODE,
                     primary_model_supports_vision: false,
                     tool_context: &context,
                     allow_embedded_cua: desktop,
@@ -1677,7 +1290,6 @@ mod tests {
             agent.extension_manager.get_context().clone(),
             false,
             transport,
-            web_state,
             context,
         )
         .unwrap()
@@ -1704,75 +1316,6 @@ mod tests {
     }
 
     #[test]
-    fn manifest_builds_an_ordinary_disabled_mcp_server() {
-        let temporary = tempfile::tempdir().unwrap();
-        let binary = temporary.path().join("cua driver");
-        fs::write(&binary, b"fixture").unwrap();
-        let binary = binary.canonicalize().unwrap();
-
-        let (version, server) =
-            parse_cua_manifest(&binary, &manifest(&binary, "1", &["mcp"])).unwrap();
-
-        assert_eq!(version, "0.21.1-test");
-        assert!(!server.enabled);
-        assert_eq!(server.name, CUA_DRIVER_MCP_NAME);
-        assert_eq!(
-            server.transport,
-            AgentMcpTransport::Stdio {
-                command: format!("\"{}\" mcp", binary.display()),
-                environment: Vec::new(),
-            }
-        );
-    }
-
-    #[test]
-    fn manifest_rejects_unknown_schema_and_non_mcp_invocation() {
-        let temporary = tempfile::tempdir().unwrap();
-        let binary = temporary.path().join("cua-driver");
-        fs::write(&binary, b"fixture").unwrap();
-        let binary = binary.canonicalize().unwrap();
-
-        assert!(
-            parse_cua_manifest(&binary, &manifest(&binary, "2", &["mcp"]))
-                .unwrap_err()
-                .contains("schema")
-        );
-        assert!(
-            parse_cua_manifest(&binary, &manifest(&binary, "1", &["serve"]))
-                .unwrap_err()
-                .contains("MCP entrypoint")
-        );
-    }
-
-    #[test]
-    fn manifest_rejects_a_different_or_relative_binary() {
-        let temporary = tempfile::tempdir().unwrap();
-        let detected = temporary.path().join("cua-driver");
-        let different = temporary.path().join("different");
-        fs::write(&detected, b"fixture").unwrap();
-        fs::write(&different, b"fixture").unwrap();
-        let detected = detected.canonicalize().unwrap();
-        let different = different.canonicalize().unwrap();
-
-        assert!(
-            parse_cua_manifest(&detected, &manifest(&different, "1", &["mcp"]))
-                .unwrap_err()
-                .contains("does not match")
-        );
-        let relative = br#"{
-            "schema_version":"1",
-            "binary_path":"cua-driver",
-            "binary_version":"test",
-            "mcp_invocation":{"command":"cua-driver","args":["mcp"]}
-        }"#;
-        assert!(
-            parse_cua_manifest(&detected, relative)
-                .unwrap_err()
-                .contains("not absolute")
-        );
-    }
-
-    #[test]
     fn stored_integrations_are_device_local_and_join_the_effective_registry() {
         let temporary = tempfile::tempdir().unwrap();
         let first = AgentPathLayout::from_app_roots(
@@ -1784,7 +1327,6 @@ mod tests {
             temporary.path().join("second-device"),
         );
         let user = "cua-device-local@example.com";
-        let server = stored_cua_server(temporary.path(), true);
         save_stored_integrations(
             &first,
             user,
@@ -1793,22 +1335,25 @@ mod tests {
                 integrations: vec![StoredIntegration {
                     id: CUA_DRIVER_INTEGRATION_ID.to_string(),
                     enabled: true,
-                    backend: AgentIntegrationBackend::External,
-                    external_server: Some(server.clone()),
+                    backend: StoredBackend::Embedded,
                 }],
             },
         )
         .unwrap();
 
+        let first_device = stored_integrations_for_read(&first, user);
+        let entry = first_device
+            .cua()
+            .expect("the first device stored a choice");
+        assert!(entry.enabled);
+        assert_eq!(entry.backend, StoredBackend::Embedded);
+        // A custom server under the integration's key is shadowed on the
+        // device that stored the choice.
         assert_eq!(
-            effective_mcp_servers(&stored_integrations_for_read(&first, user), Vec::new()).unwrap(),
-            vec![server]
+            effective_mcp_servers(&first_device, vec![http_server("cua-driver")]).unwrap(),
+            Vec::new()
         );
-        assert!(
-            effective_mcp_servers(&stored_integrations_for_read(&second, user), Vec::new())
-                .unwrap()
-                .is_empty()
-        );
+        assert!(stored_integrations_for_read(&second, user).cua().is_none());
     }
 
     #[test]
@@ -1895,43 +1440,13 @@ mod tests {
     }
 
     #[test]
-    fn the_integration_shadows_a_custom_server_that_shares_its_key() {
-        let temporary = tempfile::tempdir().unwrap();
-        let managed = stored_cua_server(temporary.path(), true);
-        let stored = StoredIntegrationRegistry {
-            version: INTEGRATIONS_FILE_VERSION,
-            integrations: vec![StoredIntegration {
-                id: CUA_DRIVER_INTEGRATION_ID.to_string(),
-                enabled: true,
-                backend: AgentIntegrationBackend::External,
-                external_server: Some(managed.clone()),
-            }],
-        };
-
-        // A legacy custom server under the same key is replaced rather than
-        // merged: merging would make normalization reject the whole account.
-        let effective = effective_mcp_servers(
-            &stored,
-            vec![http_server("cua-driver"), http_server("Docs")],
-        )
-        .unwrap();
-        assert_eq!(effective.len(), 2);
-        assert!(effective.iter().any(|server| server.name == "Docs"));
-        assert!(effective.iter().any(|server| {
-            server.name == CUA_DRIVER_MCP_NAME
-                && matches!(server.transport, AgentMcpTransport::Stdio { .. })
-        }));
-    }
-
-    #[test]
     fn embedded_integration_shadows_every_legacy_cua_alias() {
         let stored = StoredIntegrationRegistry {
             version: INTEGRATIONS_FILE_VERSION,
             integrations: vec![StoredIntegration {
                 id: CUA_DRIVER_INTEGRATION_ID.to_string(),
                 enabled: true,
-                backend: AgentIntegrationBackend::Embedded,
-                external_server: None,
+                backend: StoredBackend::Embedded,
             }],
         };
 
@@ -1978,14 +1493,11 @@ mod tests {
             },
         )
         .unwrap();
-        let managed = stored_cua_server(temporary.path(), false);
         let detection = CuaDetection {
             availability: AgentIntegrationAvailability::Available,
             setup_available: true,
-            permissions: None,
-            standalone_version: Some("test".to_string()),
+            permissions: Some(AgentIntegrationPermissions::none_required()),
             detail: None,
-            external_server: Some(managed),
         };
 
         let enabled = set_integration_default(
@@ -1999,14 +1511,15 @@ mod tests {
         )
         .unwrap();
         assert!(enabled[0].enabled_for_new_tasks);
+        assert_eq!(enabled[0].backend, Some(AgentIntegrationBackend::Embedded));
+        // Embedded CUA is Maple metadata, not an MCP server: the custom list
+        // is untouched.
         let effective = effective_mcp_servers(
             &stored_integrations_for_read(&paths, user),
             load_agent_config_inner(&paths, user).unwrap().mcp_servers,
         )
         .unwrap();
-        assert_eq!(effective.len(), 2);
-        assert_eq!(effective[0], custom);
-        assert!(effective[1].enabled);
+        assert_eq!(effective, vec![custom.clone()]);
 
         let disabled = set_integration_default(
             &paths,
@@ -2019,25 +1532,32 @@ mod tests {
         )
         .unwrap();
         assert!(!disabled[0].enabled_for_new_tasks);
+        assert!(
+            stored_integrations_for_read(&paths, user)
+                .cua()
+                .is_some_and(|entry| !entry.enabled),
+            "disabling keeps the managed entry, switched off"
+        );
         let effective = effective_mcp_servers(
             &stored_integrations_for_read(&paths, user),
             load_agent_config_inner(&paths, user).unwrap().mcp_servers,
         )
         .unwrap();
-        assert_eq!(effective.len(), 2);
-        assert_eq!(effective[0], custom);
-        assert!(!effective[1].enabled);
+        assert_eq!(effective, vec![custom]);
     }
 
+    /// Files from builds that offered the standalone CuaDriver still load:
+    /// a version-1 file is unsupported and read as empty, and a version-2
+    /// entry that selected the `external` backend is dropped while the other
+    /// entries survive.
     #[test]
-    fn version_one_registry_migrates_to_the_external_backend_without_switching() {
+    fn registries_that_name_the_retired_standalone_backend_still_load() {
         let temporary = tempfile::tempdir().unwrap();
         let paths = AgentPathLayout::from_app_roots(
             temporary.path().join("config"),
             temporary.path().join("local-data"),
         );
-        let user = "cua-migration@example.com";
-        let server = stored_cua_server(temporary.path(), true);
+        let user = "cua-retired@example.com";
         let path = integrations_path(&paths, user).unwrap();
         write_device_local_json_file(
             &path,
@@ -2045,21 +1565,33 @@ mod tests {
                 "version": 1,
                 "integrations": [{
                     "id": CUA_DRIVER_INTEGRATION_ID,
-                    "server": server,
+                    "server": http_server("cua-driver"),
                 }],
             }),
         )
         .unwrap();
+        assert!(load_stored_integrations(&paths, user).is_err());
+        assert!(stored_integrations_for_read(&paths, user).cua().is_none());
 
-        let migrated = load_stored_integrations(&paths, user).unwrap();
-        assert_eq!(migrated.version, INTEGRATIONS_FILE_VERSION);
-        assert_eq!(migrated.integrations.len(), 1);
-        assert!(migrated.integrations[0].enabled);
-        assert_eq!(
-            migrated.integrations[0].backend,
-            AgentIntegrationBackend::External
-        );
-        assert!(migrated.integrations[0].external_server.is_some());
+        write_device_local_json_file(
+            &path,
+            &json!({
+                "version": INTEGRATIONS_FILE_VERSION,
+                "integrations": [
+                    {
+                        "id": CUA_DRIVER_INTEGRATION_ID,
+                        "enabled": true,
+                        "backend": "external",
+                        "externalServer": http_server("cua-driver"),
+                    },
+                    { "id": "codex", "enabled": true, "backend": "embedded" }
+                ],
+            }),
+        )
+        .unwrap();
+        let loaded = load_stored_integrations(&paths, user).unwrap();
+        assert!(loaded.cua().is_none(), "the retired entry is dropped");
+        assert!(external_agent_enabled(&loaded, "codex"));
     }
 
     #[test]
@@ -2070,7 +1602,6 @@ mod tests {
             temporary.path().join("local-data"),
         );
         let user = "cua-embedded@example.com";
-        let external = stored_cua_server(temporary.path(), true);
         save_stored_integrations(
             &paths,
             user,
@@ -2079,8 +1610,7 @@ mod tests {
                 integrations: vec![StoredIntegration {
                     id: CUA_DRIVER_INTEGRATION_ID.to_string(),
                     enabled: true,
-                    backend: AgentIntegrationBackend::External,
-                    external_server: Some(external),
+                    backend: StoredBackend::Embedded,
                 }],
             },
         )
@@ -2089,9 +1619,7 @@ mod tests {
             availability: AgentIntegrationAvailability::Available,
             setup_available: true,
             permissions: Some(AgentIntegrationPermissions::none_required()),
-            standalone_version: Some("test".to_string()),
             detail: None,
-            external_server: None,
         };
 
         let projected =

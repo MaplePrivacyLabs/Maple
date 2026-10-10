@@ -9,7 +9,7 @@ use gpui::{App, KeyBinding, Keystroke};
 
 use crate::ui::{application_vim, text_input::vim_actions};
 
-use crate::keymap::{RENAMED_SLOT_IDS, build_binding, catalog, install};
+use crate::keymap::{RENAMED_SLOT_IDS, RETIRED_SLOT_IDS, build_binding, catalog, install};
 
 pub(crate) type ShortcutOverrides = BTreeMap<String, Option<String>>;
 
@@ -159,13 +159,17 @@ impl ShortcutRuntime {
 }
 
 /// Move overrides saved under a renamed slot id to the slot's current id,
-/// unless the current id has its own. Run before editing overrides so a reset
-/// or change also retires the old key.
+/// unless the current id has its own, and drop overrides saved under a
+/// retired slot id. Run before editing overrides so a reset or change also
+/// retires the old keys.
 pub(crate) fn migrate_renamed_slots(overrides: &mut ShortcutOverrides) {
     for (old, new) in RENAMED_SLOT_IDS {
         if let Some(saved) = overrides.remove(*old) {
             overrides.entry((*new).to_owned()).or_insert(saved);
         }
+    }
+    for retired in RETIRED_SLOT_IDS {
+        overrides.remove(*retired);
     }
 }
 
@@ -181,7 +185,9 @@ pub(super) fn prepare(overrides: &ShortcutOverrides) -> Result<PreparedShortcuts
     let unknown = overrides
         .keys()
         .filter(|id| {
-            !known_ids.contains(id.as_str()) && !RENAMED_SLOT_IDS.iter().any(|(old, _)| old == id)
+            !known_ids.contains(id.as_str())
+                && !RENAMED_SLOT_IDS.iter().any(|(old, _)| old == id)
+                && !RETIRED_SLOT_IDS.contains(&id.as_str())
         })
         .cloned()
         .collect::<Vec<_>>();
@@ -560,6 +566,32 @@ mod tests {
         assert_eq!(
             overrides.into_iter().collect::<Vec<_>>(),
             vec![("menu.next".to_string(), Some("ctrl-n".to_string()))]
+        );
+    }
+
+    /// A build that removed a slot must not warn about the override a user
+    /// saved for it; the next edit drops the stale key.
+    #[test]
+    fn an_override_for_a_retired_slot_is_dropped_quietly() {
+        let mut overrides = ShortcutOverrides::new();
+        overrides.insert("chat.allow_permission".into(), None);
+        overrides.insert("chat.new_task".into(), Some("secondary-shift-n".into()));
+        let prepared = prepare(&overrides).unwrap();
+        assert_eq!(prepared.compatibility_warning, None);
+        assert!(
+            prepared
+                .rows
+                .iter()
+                .all(|row| row.slot_id != "chat.allow_permission")
+        );
+
+        migrate_renamed_slots(&mut overrides);
+        assert_eq!(
+            overrides.into_iter().collect::<Vec<_>>(),
+            vec![(
+                "chat.new_task".to_string(),
+                Some("secondary-shift-n".to_string())
+            )]
         );
     }
 

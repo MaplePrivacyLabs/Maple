@@ -134,9 +134,6 @@ pub struct AgentIntegration {
     pub backend: Option<AgentIntegrationBackend>,
     /// Version of the implementation built into Maple, when one exists.
     pub version: Option<String>,
-    /// Version of a separately-installed compatible application, when one was
-    /// discovered. Its presence never grants Maple permission or enables it.
-    pub standalone_version: Option<String>,
     /// Host-process permissions needed by the built-in implementation.
     pub permissions: Option<AgentIntegrationPermissions>,
     /// Whether a setup action would still do something. It is false once the
@@ -150,11 +147,13 @@ pub struct AgentIntegration {
     pub detail: Option<String>,
 }
 
+/// The implementation behind a curated integration. Only Maple's own
+/// embedded backend remains; tasks saved with the retired standalone driver
+/// read as having no backend.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentIntegrationBackend {
     Embedded,
-    External,
 }
 
 /// One host-process permission that a built-in integration needs.
@@ -484,7 +483,6 @@ pub struct AgentSetSessionMcpServerRequest {
 pub struct AgentStartRequest {
     pub project_root: Option<String>,
     pub model: Option<String>,
-    pub mode: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -493,7 +491,6 @@ pub struct AgentRuntimeStatus {
     pub running: bool,
     pub project_root: Option<String>,
     pub model: Option<String>,
-    pub mode: Option<String>,
     pub active_runs: HashMap<String, String>,
 }
 
@@ -521,7 +518,6 @@ pub struct AgentCreateSessionRequest {
     pub model: Option<String>,
     #[serde(default)]
     pub context_limit: Option<usize>,
-    pub mode: Option<String>,
     pub mcp_server_names: Option<Vec<String>>,
     /// Caller-owned system prompt, appended to Maple's own. Surfaces such
     /// as ACP pass the persona text their client supplies with the task.
@@ -537,7 +533,6 @@ pub struct AgentSendMessageRequest {
     pub model: Option<String>,
     #[serde(default)]
     pub context_limit: Option<usize>,
-    pub mode: Option<String>,
     #[serde(default)]
     pub vision_capable: bool,
     #[serde(default)]
@@ -555,58 +550,30 @@ pub struct AgentRenameSessionRequest {
     pub title: String,
 }
 
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AgentPermissionResponse {
-    pub session_id: String,
-    pub request_id: String,
-    pub decision: String,
-}
-
+/// An approval request raised by an external agent (Codex, Claude Code).
+/// Maple accepts every one; the shape is kept for the activity log.
 #[derive(Debug, Clone, PartialEq)]
-pub struct AgentPermissionRequest {
+pub(crate) struct AgentPermissionRequest {
     pub request_id: String,
     pub tool_name: String,
     pub arguments: serde_json::Map<String, Value>,
     pub prompt: Option<String>,
 }
 
+/// Maple's answer to an external agent's approval request: accepted at
+/// once, or cancelled once the agent or its turn has ended.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AgentPermissionDecision {
+pub(crate) enum AgentPermissionDecision {
     AllowOnce,
-    DenyOnce,
     Cancel,
 }
 
-impl AgentPermissionDecision {
-    pub(super) fn status(self) -> &'static str {
-        match self {
-            Self::AllowOnce => "allow_once",
-            Self::DenyOnce => "deny_once",
-            Self::Cancel => "cancelled",
-        }
-    }
-
-    pub(super) fn goose_permission(self) -> Permission {
-        match self {
-            Self::AllowOnce => Permission::AllowOnce,
-            Self::DenyOnce => Permission::DenyOnce,
-            Self::Cancel => Permission::Cancel,
-        }
-    }
-}
-
+/// Which surface owns a run: Maple Desktop, or a calling surface such as
+/// ACP that keeps its own run handle, cancellation scope and live timeline.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AgentPermissionRouting {
+pub enum AgentRunSurface {
     Desktop,
     CallingSurface,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AgentPermissionModeRequest {
-    pub session_id: String,
-    pub mode: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -656,7 +623,6 @@ pub struct AgentRunHandle {
     pub terminal: watch::Receiver<Option<AgentRunTerminal>>,
     pub usage: watch::Receiver<Option<AgentRunUsage>>,
     pub event_overflowed: Arc<AtomicBool>,
-    pub(crate) permission_responder: Option<AgentRunPermissionResponder>,
     pub(crate) cancellation: Option<AgentRunCancellation>,
     pub queued: Option<AgentQueuedMessage>,
     pub queue: AgentDesktopQueueSnapshot,
@@ -715,30 +681,6 @@ pub(super) fn nonnegative_tokens(tokens: Option<i32>) -> u64 {
         .unwrap_or(0)
 }
 
-#[derive(Clone)]
-pub(crate) struct AgentRunPermissionResponder {
-    pub(super) agent: AgentRuntimeHandle,
-    pub(super) session_id: Arc<str>,
-    pub(super) run_id: Arc<str>,
-}
-
-impl AgentRunPermissionResponder {
-    pub async fn respond(
-        &self,
-        request_id: String,
-        decision: AgentPermissionDecision,
-    ) -> Result<(), String> {
-        self.agent
-            .permission_respond_for_run(
-                self.session_id.as_ref(),
-                self.run_id.as_ref(),
-                request_id,
-                decision,
-            )
-            .await
-    }
-}
-
 /// Opaque cancellation capability for one run owned by a calling surface.
 ///
 /// Unlike the Desktop command boundary, an adapter already has the exact run
@@ -749,7 +691,7 @@ pub(crate) struct AgentRunCancellation {
     pub(super) agent: AgentRuntimeHandle,
     pub(super) session_id: Arc<str>,
     pub(super) run_id: Arc<str>,
-    pub(super) routing: AgentPermissionRouting,
+    pub(super) routing: AgentRunSurface,
 }
 
 impl AgentRunCancellation {
@@ -911,7 +853,7 @@ pub(super) async fn cleanup_provisional_created_session(
     // untouched provisional row are gone. If the exact reservation no longer
     // belongs to us, fail closed and leave the durable task alone.
     let _session_lifecycle = service.session_lifecycle.lock().await;
-    let permission_modes = {
+    {
         let mut runtime = service.inner.lock().await;
         match runtime.as_mut() {
             Some(current) if current.account_scope == access.account_scope.as_ref() => {
@@ -938,14 +880,13 @@ pub(super) async fn cleanup_provisional_created_session(
                 ) {
                     installed.context.revoke();
                 }
-                Some(Arc::clone(&current.permission_modes))
             }
             // Runtime stop/replacement drains the old registry. The captured
             // account-scoped managers still let us remove only the untouched
             // row that this setup created.
-            _ => None,
+            _ => {}
         }
-    };
+    }
     access.context.revoke();
     if let Err(error) = agent_manager
         .remove_session_if_loaded(access.session_id.as_ref())
@@ -956,13 +897,6 @@ pub(super) async fn cleanup_provisional_created_session(
             access.session_id
         );
     }
-    if let Some(permission_modes) = permission_modes {
-        permission_modes
-            .lock()
-            .await
-            .remove(access.session_id.as_ref());
-    }
-
     let current = match session_manager
         .get_session(access.session_id.as_ref(), true)
         .await
@@ -1039,21 +973,17 @@ pub enum AgentRunEvent {
     SessionUpdated(AgentSessionSummary),
     Started,
     TimelineItem(AgentTimelineItem),
-    PermissionRequested {
-        request: AgentPermissionRequest,
-        item: AgentTimelineItem,
-    },
     SetupWarning(String),
-    /// A `delegate` call handed a task to a subagent. `id` is the request
-    /// ID of that call, which the two events below repeat.
+    /// An external agent started working for the task. `id` is its row
+    /// ID, which the two events below repeat.
     SubagentStarted {
         id: String,
         task: String,
-        /// The subagent runs in the background; the task collects its
-        /// result later with `load`.
+        /// The agent runs in the background; its result is delivered to
+        /// the task when it ends.
         background: bool,
-        /// Set when the subagent is an external agent (Codex), which the
-        /// user can stop from its row.
+        /// The external agent this row stands for; the user can stop it
+        /// from its row.
         external: Option<ExternalAgentRef>,
     },
     /// The subagent called a tool. Only the latest one is shown.
@@ -1110,12 +1040,12 @@ pub enum AgentServiceEvent {
     },
 }
 
-/// One subagent that is still working for a task. A caller that opens
-/// the task after the run ended reads these to rebuild its live view.
+/// One external agent that is still working for a task. A caller that
+/// opens the task after the run ended reads these to rebuild its live view.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentSubagent {
-    /// Request ID of the `delegate` call that started it.
+    /// Row ID of the agent, shared by every event about it.
     pub id: String,
     pub task: String,
     /// It works in the background; the task collects the result later.
@@ -1125,8 +1055,7 @@ pub struct AgentSubagent {
     pub elapsed_ms: u64,
     /// The tool it called most recently.
     pub activity: Option<String>,
-    /// Set when this is an external agent (Codex) rather than a Goose
-    /// subagent.
+    /// Which external agent (Codex, Claude Code) this row stands for.
     pub external: Option<ExternalAgentRef>,
 }
 
@@ -1189,7 +1118,6 @@ pub struct AgentSessionSummary {
     pub updated_ms: i64,
     pub message_count: usize,
     pub model: Option<String>,
-    pub mode: String,
     /// Whether the task can use `web_search` / `open_url`.
     pub web_enabled: bool,
     /// Where the task sits in the sidebar ladder.

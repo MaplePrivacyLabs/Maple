@@ -1,50 +1,36 @@
-//! Conversions between Maple's agent types and the ACP wire shapes: session
-//! modes and config options, permission requests and decisions, and timeline
-//! items rendered as session updates.
+//! Conversions between Maple's agent types and the ACP wire shapes: config
+//! options, the project-trust prompts, and timeline items rendered as session
+//! updates.
 
-use super::session::AcpSessionMode;
 use super::transport::AcpOutboundSendError;
 use crate::agent::{
-    AgentImageUpload, AgentPermissionDecision, AgentPermissionRequest, AgentRunTerminal,
-    AgentRunUsage, AgentSlashCommand, AgentTimelineItem, compaction_notice_text,
+    AgentImageUpload, AgentRunTerminal, AgentRunUsage, AgentSlashCommand, AgentTimelineItem,
+    compaction_notice_text,
 };
 use agent_client_protocol::schema::v1::{
     AvailableCommand, AvailableCommandsUpdate, BooleanPropertySchema, ContentBlock, ContentChunk,
-    CreateElicitationRequest, Diff, ElicitationFormMode, ElicitationSchema,
-    ElicitationSessionScope, InitializeRequest, PermissionOption, PermissionOptionKind,
-    PromptResponse, RequestPermissionOutcome, SessionConfigOption, SessionConfigOptionCategory,
-    SessionConfigSelectOption, SessionId, SessionMode, SessionModeState, SessionUpdate, StopReason,
-    TextContent, ToolCall, ToolCallContent, ToolCallLocation, ToolCallStatus, ToolCallUpdate,
-    ToolCallUpdateFields, ToolKind, Usage,
+    CreateElicitationRequest, ElicitationFormMode, ElicitationSchema, ElicitationSessionScope,
+    InitializeRequest, PermissionOption, PermissionOptionKind, PromptResponse,
+    RequestPermissionOutcome, SessionConfigOption, SessionConfigOptionCategory,
+    SessionConfigSelectOption, SessionId, SessionUpdate, StopReason, TextContent, ToolCall,
+    ToolCallContent, ToolCallLocation, ToolCallStatus, ToolCallUpdate, ToolCallUpdateFields,
+    ToolKind, Usage,
 };
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 pub(super) const MAX_ACP_ERROR_CHARS: usize = 500;
-/// Cap for the argument preview attached to an ACP permission request.
-const MAX_ACP_PERMISSION_PREVIEW_CHARS: usize = 500;
 pub(super) const MAX_ACP_TOOL_TEXT_CHARS: usize = 16_000;
 #[derive(Default)]
 pub(super) struct AcpToolProjection {
     seen: HashSet<String>,
 }
 
-pub(super) fn acp_session_modes(current: AcpSessionMode) -> SessionModeState {
-    SessionModeState::new(
-        current.id(),
-        vec![
-            SessionMode::new("interactive", "Interactive")
-                .description("Maple asks the ACP caller to approve sensitive tool calls"),
-            SessionMode::new("approve_all", "Approve all")
-                .description("Automatically approve every tool call without asking"),
-        ],
-    )
-}
-
+/// The model selector is the only config option: Maple has no session
+/// modes, every tool call runs without asking.
 pub(super) fn acp_config_options(
     model: &str,
     available_models: &[String],
-    current_mode: AcpSessionMode,
 ) -> Vec<SessionConfigOption> {
     let model_options = available_models
         .iter()
@@ -53,16 +39,6 @@ pub(super) fn acp_config_options(
     vec![
         SessionConfigOption::select("model", "Model", model.to_string(), model_options)
             .category(SessionConfigOptionCategory::Model),
-        SessionConfigOption::select(
-            "mode",
-            "Mode",
-            current_mode.id(),
-            vec![
-                SessionConfigSelectOption::new("interactive", "Interactive"),
-                SessionConfigSelectOption::new("approve_all", "Approve all"),
-            ],
-        )
-        .category(SessionConfigOptionCategory::Mode),
     ]
 }
 
@@ -70,13 +46,12 @@ pub(super) fn acp_session_config_options(
     model: &str,
     available_models: &[String],
     message_count: usize,
-    current_mode: AcpSessionMode,
 ) -> Vec<SessionConfigOption> {
     if message_count == 0 {
-        acp_config_options(model, available_models, current_mode)
+        acp_config_options(model, available_models)
     } else {
         let locked_models = [model.to_string()];
-        acp_config_options(model, &locked_models, current_mode)
+        acp_config_options(model, &locked_models)
     }
 }
 
@@ -185,141 +160,6 @@ fn image_file_extension(mime_type: &str) -> &'static str {
     }
 }
 
-pub(super) fn acp_permission_tool_call(
-    request: &AgentPermissionRequest,
-    item: &AgentTimelineItem,
-) -> ToolCall {
-    let title = item
-        .title
-        .clone()
-        .unwrap_or_else(|| format!("Approve {}", request.tool_name));
-    let mut tool_call = ToolCall::new(request.request_id.clone(), title)
-        .kind(acp_tool_kind(&request.tool_name))
-        .status(ToolCallStatus::Pending)
-        .raw_input(serde_json::Value::Object(request.arguments.clone()));
-    let locations = acp_permission_locations(request);
-    if !locations.is_empty() {
-        tool_call = tool_call.locations(locations);
-    }
-    if let Some(prompt) = request.prompt.as_ref().filter(|prompt| !prompt.is_empty()) {
-        tool_call = tool_call.content(vec![ToolCallContent::from(ContentBlock::Text(
-            TextContent::new(prompt.clone()),
-        ))]);
-        return tool_call;
-    }
-    match edit_diff_contents(request) {
-        Some(diffs) => tool_call.content(diffs),
-        None => {
-            let preview = bounded_permission_arguments(request);
-            if !preview.is_empty() {
-                tool_call = tool_call.content(vec![ToolCallContent::from(ContentBlock::Text(
-                    TextContent::new(preview),
-                ))]);
-            }
-            tool_call
-        }
-    }
-}
-
-/// File locations for an approval card, so the caller can link to what is
-/// about to change. Only absolute paths are reported.
-fn acp_permission_locations(request: &AgentPermissionRequest) -> Vec<ToolCallLocation> {
-    let arguments = serde_json::Value::Object(request.arguments.clone());
-    let Some(path) = tool_path(&arguments).filter(|path| Path::new(path).is_absolute()) else {
-        return Vec::new();
-    };
-    // `offset` names a one-based line for read; `line` covers tools that
-    // say it directly.
-    let line = ["offset", "line"].iter().find_map(|key| {
-        arguments
-            .get(*key)
-            .and_then(serde_json::Value::as_u64)
-            .filter(|line| *line > 0 && *line <= u32::MAX as u64)
-            .map(|line| line as u32)
-    });
-    vec![ToolCallLocation::new(PathBuf::from(path)).line(line)]
-}
-
-/// Edit and write approvals rendered as diffs, the shape ACP clients show
-/// inline. `None` when the call is not a bounded file modification.
-fn edit_diff_contents(request: &AgentPermissionRequest) -> Option<Vec<ToolCallContent>> {
-    let bare_name = request
-        .tool_name
-        .rsplit("__")
-        .next()
-        .unwrap_or(&request.tool_name);
-    let arguments = serde_json::Value::Object(request.arguments.clone());
-    let path = tool_path(&arguments)?;
-    let diff = |old: Option<&str>, new: &str| {
-        ToolCallContent::Diff(
-            Diff::new(
-                PathBuf::from(path),
-                bounded_chars(new, MAX_ACP_PERMISSION_PREVIEW_CHARS),
-            )
-            .old_text(old.map(|old| bounded_chars(old, MAX_ACP_PERMISSION_PREVIEW_CHARS))),
-        )
-    };
-    match bare_name {
-        "edit" => {
-            let edits = arguments.get("edits")?.as_array()?;
-            let contents = edits
-                .iter()
-                .filter_map(|edit| {
-                    let new = edit.get("newText").and_then(serde_json::Value::as_str)?;
-                    let old = edit.get("oldText").and_then(serde_json::Value::as_str);
-                    Some(diff(old, new))
-                })
-                .collect::<Vec<_>>();
-            (!contents.is_empty()).then_some(contents)
-        }
-        "write" => {
-            let new = arguments
-                .get("content")
-                .and_then(serde_json::Value::as_str)?;
-            Some(vec![diff(None, new)])
-        }
-        _ => None,
-    }
-}
-
-/// A bounded, human-readable view of a tool call's arguments. ACP clients
-/// render an approval card from `content`; without it a card such as edit
-/// shows a bare title even though `rawInput` carries the change.
-fn bounded_permission_arguments(request: &AgentPermissionRequest) -> String {
-    let compact = serde_json::Value::Object(request.arguments.clone()).to_string();
-    if compact == "{}" {
-        return String::new();
-    }
-    let bounded = bounded_chars(&compact, MAX_ACP_PERMISSION_PREVIEW_CHARS);
-    if bounded.chars().count() < compact.chars().count() {
-        format!("{bounded}…")
-    } else {
-        bounded
-    }
-}
-
-pub(super) fn acp_tool_kind(tool_name: &str) -> ToolKind {
-    match tool_name.rsplit("__").next().unwrap_or(tool_name) {
-        "shell" | "computer" => ToolKind::Execute,
-        "read" | "read_image" => ToolKind::Read,
-        "edit" | "write" | "text_editor" => ToolKind::Edit,
-        "search" | "web_search" => ToolKind::Search,
-        "open_url" => ToolKind::Fetch,
-        _ => ToolKind::Other,
-    }
-}
-
-pub(super) fn acp_permission_options() -> Vec<PermissionOption> {
-    vec![
-        PermissionOption::new("allow_once", "Allow once", PermissionOptionKind::AllowOnce),
-        PermissionOption::new(
-            "reject_once",
-            "Reject once",
-            PermissionOptionKind::RejectOnce,
-        ),
-    ]
-}
-
 pub(super) fn client_supports_form_elicitation(request: &InitializeRequest) -> bool {
     request
         .client_capabilities
@@ -350,7 +190,7 @@ pub(super) fn project_trust_elicitation_request(
     CreateElicitationRequest::new(
         ElicitationFormMode::new(ElicitationSessionScope::new(session_id), schema),
         format!(
-            "Trust project '{}'? Normal tool permissions still apply.",
+            "Trust project '{}'? Maple runs every tool call without asking.",
             project_root.display()
         ),
     )
@@ -399,27 +239,6 @@ pub(super) fn project_trust_permission_decision(
     }
 }
 
-pub(super) fn acp_permission_decision(
-    outcome: &RequestPermissionOutcome,
-) -> Result<AgentPermissionDecision, String> {
-    match outcome {
-        RequestPermissionOutcome::Cancelled => Ok(AgentPermissionDecision::Cancel),
-        RequestPermissionOutcome::Selected(selected)
-            if selected.option_id.0.as_ref() == "allow_once" =>
-        {
-            Ok(AgentPermissionDecision::AllowOnce)
-        }
-        RequestPermissionOutcome::Selected(selected)
-            if selected.option_id.0.as_ref() == "reject_once" =>
-        {
-            Ok(AgentPermissionDecision::DenyOnce)
-        }
-        RequestPermissionOutcome::Selected(_) => {
-            Err("ACP client selected an unknown Maple permission option".to_string())
-        }
-        _ => Err("ACP client returned an unsupported Maple permission outcome".to_string()),
-    }
-}
 pub(super) const COMPACTION_COMPLETED_NOTICE: &str = "Compaction completed.\n";
 
 pub(super) fn timeline_update(
@@ -528,24 +347,6 @@ pub(super) fn acp_tool_update(
         }
         SessionUpdate::ToolCallUpdate(ToolCallUpdate::new(item.id.clone(), fields))
     }
-}
-
-/// Live subagent progress as an update to the `delegate` tool call that
-/// owns it.
-///
-/// ACP has no concept of a subagent, so the tool call is where its work
-/// belongs. The content of a tool call is replaced, not appended, so this
-/// carries the latest line only, like the desktop card. The final content
-/// is the tool's own result, which arrives with the call's completion.
-pub(super) fn subagent_tool_update(delegate_id: &str, line: String) -> SessionUpdate {
-    SessionUpdate::ToolCallUpdate(ToolCallUpdate::new(
-        delegate_id.to_string(),
-        ToolCallUpdateFields::new()
-            .status(ToolCallStatus::InProgress)
-            .content(vec![ToolCallContent::from(ContentBlock::Text(
-                TextContent::new(line),
-            ))]),
-    ))
 }
 
 pub(super) fn timeline_tool_kind(item: &AgentTimelineItem) -> ToolKind {

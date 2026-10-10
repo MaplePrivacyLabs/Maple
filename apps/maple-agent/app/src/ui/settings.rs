@@ -20,7 +20,7 @@ use crate::ui::popup::{Menu, MenuItem, Placement, Popup};
 use crate::ui::text_input::TextInput;
 
 use crate::backend::AgentBackend;
-use crate::settings::{self, AppSettings, PermissionMode, UsageSummary};
+use crate::settings::{self, AppSettings};
 use crate::shortcuts::{
     ShortcutConflict, ShortcutConflictKind, ShortcutContextOverlap, ShortcutOverrides,
     ShortcutSnapshot,
@@ -92,7 +92,6 @@ impl Section {
 /// toggling.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum SettingMenu {
-    Permission,
     Appearance,
     ChatFont,
     ChatSize,
@@ -104,7 +103,6 @@ impl SettingMenu {
     /// Stable id fragment for the popup panel and its rows.
     fn id(self) -> &'static str {
         match self {
-            Self::Permission => "permission",
             Self::Appearance => "appearance",
             Self::ChatFont => "chat-font",
             Self::ChatSize => "chat-size",
@@ -134,7 +132,6 @@ pub struct SettingsScreen {
     account: AccountState,
     billing: BillingState,
     api_keys: ApiKeysState,
-    usage: Option<UsageSummary>,
     /// Plan usage meter, same source as the sidebar card.
     plan: Option<crate::billing::PlanUsage>,
     /// Account MCP servers; None until loaded.
@@ -294,7 +291,6 @@ impl SettingsScreen {
             account: AccountState::new(application_vim_enabled, application_focus.clone(), cx),
             billing: BillingState::new(),
             api_keys: ApiKeysState::new(application_vim_enabled, application_focus.clone(), cx),
-            usage: None,
             plan: None,
             mcp_servers: None,
             mcp_editor: None,
@@ -323,7 +319,6 @@ impl SettingsScreen {
         this.load_account(cx);
         this.load_billing(cx);
         this.load_api_keys(cx);
-        this.load_usage(cx);
         this.load_plan(cx);
         this.load_mcp_servers(cx);
         this.load_integrations(cx);
@@ -709,24 +704,6 @@ impl SettingsScreen {
         self.save_mcp_servers(servers, cx);
     }
 
-    fn load_usage(&self, cx: &mut Context<Self>) {
-        let (spawn_backend, usage_backend) = (self.backend.clone(), self.backend.clone());
-        let user_id = self.user_id.clone();
-        let task = spawn_backend.spawn(async move {
-            let scope = usage_backend.account_scope(&user_id);
-            scope.map(|scope| settings::load_usage(&scope))
-        });
-        cx.spawn(async move |this, cx| {
-            let usage = task.await.ok().flatten().unwrap_or_default();
-            this.update(cx, |this, cx| {
-                this.usage = Some(usage);
-                cx.notify();
-            })
-            .ok();
-        })
-        .detach();
-    }
-
     /// Change one setting: apply it to the local copy, queue the write
     /// off the UI thread, and re-render. Every toggle goes through here.
     ///
@@ -768,13 +745,6 @@ impl SettingsScreen {
     /// share this order, so an index means the same option in both.
     fn menu_options(&self, menu: SettingMenu) -> Vec<SettingOption> {
         match menu {
-            SettingMenu::Permission => [PermissionMode::SmartApprove, PermissionMode::Auto]
-                .iter()
-                .map(|&mode| SettingOption {
-                    label: mode.label().to_string(),
-                    current: self.settings.default_permission_mode == mode,
-                })
-                .collect(),
             SettingMenu::Appearance => [
                 theme::Preference::System,
                 theme::Preference::Dark,
@@ -824,7 +794,6 @@ impl SettingsScreen {
     /// The saved value shown on the dropdown's trigger button.
     fn menu_value(&self, menu: SettingMenu) -> String {
         match menu {
-            SettingMenu::Permission => self.settings.default_permission_mode.label().to_string(),
             SettingMenu::Appearance => self.theme.label().to_string(),
             SettingMenu::ChatFont => {
                 crate::ui::typography::ChatFontFamily::parse(&self.settings.chat_font_family)
@@ -944,14 +913,6 @@ impl SettingsScreen {
         cx: &mut Context<Self>,
     ) {
         match menu {
-            SettingMenu::Permission => {
-                let Some(mode) = [PermissionMode::SmartApprove, PermissionMode::Auto].get(index)
-                else {
-                    return;
-                };
-                let mode = *mode;
-                self.edit_setting(move |settings| settings.default_permission_mode = mode, cx);
-            }
             SettingMenu::Appearance => {
                 let Some(preference) = [
                     theme::Preference::System,
@@ -1536,19 +1497,6 @@ impl SettingsScreen {
             Section::General => {
                 pane = pane
                     .child(section_title("Defaults"))
-                    .child({
-                        let mode = self.settings.default_permission_mode;
-                        self.application_target(
-                            || SettingsTarget::General(GeneralTarget::Permission),
-                            self.setting_menu_row(
-                                "Default permission mode",
-                                mode.note(),
-                                SettingMenu::Permission,
-                                window,
-                                cx,
-                            ),
-                        )
-                    })
                     .child(self.application_target(
                         || SettingsTarget::General(GeneralTarget::Web),
                         toggle_row(
@@ -1730,30 +1678,6 @@ impl SettingsScreen {
                         .text_color(gpui::rgb(theme::text_muted()))
                         .child("Plan usage unavailable"),
                 });
-                pane = pane.child(section_title("Usage"));
-                if let Some(usage) = &self.usage {
-                    pane = pane
-                        .child(
-                            div()
-                                .flex()
-                                .gap_6()
-                                .child(stat("Turns", usage.totals.turns.to_string()))
-                                .child(stat("Sessions", usage.totals.sessions.to_string()))
-                                .child(stat(
-                                    "Total tokens",
-                                    format_tokens(usage.totals.total_tokens),
-                                ))
-                                .child(stat("Est. cost", format!("${:.2}", usage.totals.cost))),
-                        )
-                        .child(usage_table("By model", &usage.by_model))
-                        .child(usage_table("Recent sessions", &usage.by_session));
-                } else {
-                    pane = pane.child(
-                        div()
-                            .text_color(gpui::rgb(theme::text_muted()))
-                            .child("Loading usage…"),
-                    );
-                }
             }
             Section::About => {
                 pane = pane
@@ -2478,15 +2402,7 @@ impl SettingsScreen {
                     || SettingsTarget::IntegrationSetup(integration.id.clone()),
                     pill_button(
                         format!("integration-setup-{}", integration.id),
-                        if matches!(
-                            &integration.backend,
-                            Some(AgentIntegrationBackend::External)
-                        ) || integration.standalone_version.is_some()
-                        {
-                            "Set up built-in"
-                        } else {
-                            "Set up"
-                        },
+                        "Set up",
                         false,
                         cx.listener(move |this, _event, _window, cx| {
                             this.setup_integration(&id, cx);
@@ -2799,16 +2715,7 @@ fn integration_can_enable(integration: &AgentIntegration) -> bool {
         );
     }
 
-    match integration.backend {
-        Some(AgentIntegrationBackend::Embedded) => {
-            cua_permissions_ready(integration.permissions.as_ref())
-        }
-        Some(AgentIntegrationBackend::External) => integration.standalone_version.is_some(),
-        None => {
-            cua_permissions_ready(integration.permissions.as_ref())
-                || integration.standalone_version.is_some()
-        }
-    }
+    cua_permissions_ready(integration.permissions.as_ref())
 }
 
 fn integration_can_toggle(integration: &AgentIntegration) -> bool {
@@ -2822,11 +2729,7 @@ fn integration_can_setup(integration: &AgentIntegration) -> bool {
             integration.availability,
             AgentIntegrationAvailability::NotDetected
         )
-        && (!cua_permissions_ready(integration.permissions.as_ref())
-            || matches!(
-                &integration.backend,
-                Some(AgentIntegrationBackend::External)
-            ))
+        && !cua_permissions_ready(integration.permissions.as_ref())
 }
 
 fn integration_availability(integration: &AgentIntegration) -> (&'static str, u32) {
@@ -2844,9 +2747,7 @@ fn integration_availability(integration: &AgentIntegration) -> (&'static str, u3
     match &integration.availability {
         AgentIntegrationAvailability::NotDetected => ("Not detected", theme::text_muted()),
         AgentIntegrationAvailability::Available if is_cua_driver(&integration.id) => {
-            if cua_permissions_ready(integration.permissions.as_ref())
-                || integration.standalone_version.is_some()
-            {
+            if cua_permissions_ready(integration.permissions.as_ref()) {
                 ("Ready", theme::status_success())
             } else {
                 ("Available", theme::status_success())
@@ -2867,16 +2768,8 @@ fn integration_setup_notice(permissions: &AgentIntegrationPermissions) -> Option
     Some(format!("{}: {guidance}", missing.label()))
 }
 
-fn cua_backend_label(integration: &AgentIntegration) -> &'static str {
-    match integration.backend {
-        Some(AgentIntegrationBackend::External) => "Standalone driver",
-        None if integration.standalone_version.is_some()
-            && !cua_permissions_ready(integration.permissions.as_ref()) =>
-        {
-            "Standalone detected"
-        }
-        Some(AgentIntegrationBackend::Embedded) | None => "Built into Maple",
-    }
+fn cua_backend_label(_integration: &AgentIntegration) -> &'static str {
+    "Built into Maple"
 }
 
 fn integration_status_badge(label: &'static str, color: u32) -> Div {
@@ -3183,87 +3076,6 @@ fn info_row(label: &str, value: String) -> Div {
         )
 }
 
-fn stat(label: &str, value: String) -> Div {
-    div()
-        .flex()
-        .flex_col()
-        .gap_1()
-        .child(
-            div()
-                .text_xs()
-                .text_color(gpui::rgb(theme::text_muted()))
-                .child(label.to_string()),
-        )
-        .child(
-            div()
-                .text_xl()
-                .font_weight(gpui::FontWeight::BOLD)
-                .text_color(gpui::rgb(theme::text_primary()))
-                .child(value),
-        )
-}
-
-fn usage_table(title: &str, rows: &[crate::settings::UsageRow]) -> Div {
-    let mut table = div().flex().flex_col().gap_2().child(
-        div()
-            .text_sm()
-            .font_weight(gpui::FontWeight::SEMIBOLD)
-            .text_color(gpui::rgb(theme::text_primary()))
-            .child(title.to_string()),
-    );
-    for row in rows.iter().take(10) {
-        table = table.child(
-            div()
-                .flex()
-                .items_center()
-                .justify_between()
-                .gap_3()
-                .px_3()
-                .py_2()
-                .rounded(theme::RADIUS_SM)
-                .bg(gpui::rgb(theme::bg_elevated()))
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .text_sm()
-                        .text_color(gpui::rgb(theme::text_primary()))
-                        .line_clamp(1)
-                        .child(row.label.clone()),
-                )
-                .child(
-                    div()
-                        .text_xs()
-                        .text_color(gpui::rgb(theme::text_secondary()))
-                        .child(format!("{} turns", row.turns)),
-                )
-                .child(
-                    div()
-                        .text_xs()
-                        .text_color(gpui::rgb(theme::text_secondary()))
-                        .child(format_tokens(row.total_tokens)),
-                )
-                .child(
-                    div()
-                        .text_xs()
-                        .text_color(gpui::rgb(theme::text_muted()))
-                        .child(format!("${:.2}", row.cost)),
-                ),
-        );
-    }
-    table
-}
-
-fn format_tokens(tokens: i64) -> String {
-    if tokens >= 1_000_000 {
-        format!("{:.1}M", tokens as f64 / 1_000_000.0)
-    } else if tokens >= 1_000 {
-        format!("{:.1}k", tokens as f64 / 1_000.0)
-    } else {
-        tokens.to_string()
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3318,7 +3130,6 @@ mod tests {
             detail: None,
             permissions: Some(macos_permissions(ready, ready)),
             setup_available: true,
-            standalone_version: None,
             backend: Some(AgentIntegrationBackend::Embedded),
         }
     }
@@ -3420,18 +3231,11 @@ mod tests {
         assert!(integration_is_visible(&claude_needs_setup));
         assert!(!integration_can_enable(&claude_needs_setup));
 
-        let mut external = integration(AgentIntegrationAvailability::Available, true);
-        external.backend = Some(AgentIntegrationBackend::External);
-        external.permissions = Some(macos_permissions(false, false));
-        external.standalone_version = Some("0.23.2".to_string());
-        assert!(integration_can_toggle(&external));
-        assert!(integration_can_setup(&external));
-
-        // A separately installed driver must not make an embedded selection
-        // enableable after Maple's own grants have been revoked. The setup
-        // action is the only route back to a ready embedded backend.
-        let mut revoked_embedded = external.clone();
-        revoked_embedded.backend = Some(AgentIntegrationBackend::Embedded);
+        // An embedded selection is not enableable after Maple's own grants
+        // have been revoked. The setup action is the only route back to a
+        // ready embedded backend.
+        let mut revoked_embedded = integration(AgentIntegrationAvailability::Available, true);
+        revoked_embedded.permissions = Some(macos_permissions(false, false));
         revoked_embedded.enabled_for_new_tasks = false;
         assert!(!integration_can_enable(&revoked_embedded));
         assert!(!integration_can_toggle(&revoked_embedded));

@@ -30,7 +30,6 @@ mod state_tests {
             updated_ms: 0,
             message_count: 1,
             model: None,
-            mode: "smart_approve".to_string(),
         }
     }
 
@@ -550,96 +549,6 @@ mod state_tests {
     }
 
     #[gpui::test]
-    fn test_decided_permission_row_clears_the_card(cx: &mut TestAppContext) {
-        cx.executor().allow_parking();
-        let screen = screen(cx);
-        screen.update(cx, |this, cx| {
-            this.selected_session = Some("s1".to_string());
-            this.pending_permissions.push(PendingPermission {
-                session_id: "s1".to_string(),
-                run_id: "r1".to_string(),
-                request_id: "req-1".to_string(),
-                tool_name: "shell".to_string(),
-                prompt: None,
-                arguments: "".into(),
-            });
-            this.permission_responding = true;
-            // A row for another request must not clear the card.
-            let mut other = item("permission-req-2", "permission", None);
-            other.status = Some("allow_once".to_string());
-            this.handle_service_event(
-                AgentServiceEvent::TimelineItem {
-                    session_id: "s1".to_string(),
-                    run_id: None,
-                    item: other,
-                },
-                cx,
-            );
-            assert!(this.current_permission().is_some());
-            // The runtime approved the request (Allow all) and replaced
-            // its row with a decision.
-            let mut decided = item("permission-req-1", "permission", None);
-            decided.status = Some("allow_once".to_string());
-            this.handle_service_event(
-                AgentServiceEvent::TimelineItem {
-                    session_id: "s1".to_string(),
-                    run_id: None,
-                    item: decided,
-                },
-                cx,
-            );
-            assert!(this.current_permission().is_none());
-            assert!(!this.permission_responding);
-        });
-    }
-
-    #[gpui::test]
-    fn test_permission_for_other_session_waits_until_selected(cx: &mut TestAppContext) {
-        cx.executor().allow_parking();
-        let screen = screen(cx);
-        screen.update(cx, |this, cx| {
-            this.selected_session = Some("s1".to_string());
-            let request = maple_agent::agent::AgentPermissionRequest {
-                request_id: "req-2".to_string(),
-                tool_name: "shell".to_string(),
-                arguments: serde_json::Map::new(),
-                prompt: None,
-            };
-            this.handle_service_event(
-                AgentServiceEvent::Run {
-                    session_id: "s2".to_string(),
-                    run_id: "r2".to_string(),
-                    event: maple_agent::agent::AgentRunEvent::PermissionRequested {
-                        request,
-                        item: item("permission-req-2", "permission", None),
-                    },
-                },
-                cx,
-            );
-            // Not shown for the session on screen.
-            assert!(this.current_permission().is_none());
-            // Shown once that session is opened.
-            this.selected_session = Some("s2".to_string());
-            assert_eq!(
-                this.current_permission().map(|p| p.request_id.as_str()),
-                Some("req-2")
-            );
-            // Gone when its run ends.
-            this.handle_service_event(
-                AgentServiceEvent::Run {
-                    session_id: "s2".to_string(),
-                    run_id: "r2".to_string(),
-                    event: maple_agent::agent::AgentRunEvent::Finished(
-                        maple_agent::agent::AgentRunTerminal::Cancelled,
-                    ),
-                },
-                cx,
-            );
-            assert!(this.current_permission().is_none());
-        });
-    }
-
-    #[gpui::test]
     fn test_session_upsert_never_duplicates(cx: &mut TestAppContext) {
         cx.executor().allow_parking();
         let screen = screen(cx);
@@ -1013,26 +922,6 @@ mod state_tests {
             this.skip_question(cx);
             assert!(this.pending_questions.is_empty());
             assert!(this.question_selected.is_empty());
-        });
-    }
-
-    /// Escape answers a showing prompt before it reaches the running
-    /// task: a permission card is denied, not left behind by a stop.
-    #[gpui::test]
-    fn test_escape_denies_a_showing_permission(cx: &mut TestAppContext) {
-        cx.executor().allow_parking();
-        let screen = screen(cx);
-        screen.update(cx, |this, cx| {
-            this.pending_permissions.push(PendingPermission {
-                session_id: "s1".to_string(),
-                run_id: "r1".to_string(),
-                request_id: "req-1".to_string(),
-                tool_name: "shell".to_string(),
-                prompt: None,
-                arguments: "".into(),
-            });
-            this.escape(cx);
-            assert!(this.permission_responding);
         });
     }
 
@@ -1915,11 +1804,11 @@ mod state_tests {
     }
 
     /// The created task is compared with the composer before anything is
-    /// sent: web access and the mode the create could not carry, a server
-    /// switched on after Enter, and an external agent, which no request
-    /// switches on. With a difference the send waits for the apply; with
-    /// none it goes out at once. Before, the first turn ran under the
-    /// mode and web access the task happened to be created with.
+    /// sent: web access the create could not carry, a server switched on
+    /// after Enter, and an external agent, which no request switches on.
+    /// With a difference the send waits for the apply; with none it goes
+    /// out at once. Before, the first turn ran under the web access the
+    /// task happened to be created with.
     #[gpui::test]
     fn test_first_send_applies_the_composer_before_sending(cx: &mut TestAppContext) {
         cx.executor().allow_parking();
@@ -1931,7 +1820,6 @@ mod state_tests {
             this.draft = true;
             this.default_web_enabled = false;
             this.web_enabled = false;
-            this.permission_mode = PermissionMode::Auto;
             this.set_draft_mcp_defaults(vec![
                 draft_mcp_row(mcp_server("docs", true)),
                 draft_mcp_row(mcp_server("wiki", false)),
@@ -1946,15 +1834,12 @@ mod state_tests {
                 },
             ]);
             let request = this.new_session_request().expect("draft request");
-            assert_eq!(request.mode.as_deref(), Some("auto"));
             assert_eq!(request.mcp_server_names, Some(vec!["docs".to_string()]));
             this.send_text("hello".to_string(), cx);
             assert!(this.session_setup_pending);
             let generation = this.selection_generation;
 
-            // While the create is in flight: Approve all -> Ask first, wiki
-            // on, Codex on.
-            this.permission_mode = PermissionMode::SmartApprove;
+            // While the create is in flight: wiki on, Codex on.
             this.toggle_session_mcp(
                 "wiki".to_string(),
                 AgentSessionIntegrationKind::Mcp,
@@ -1970,7 +1855,6 @@ mod state_tests {
 
             // The create lands with what it was asked for.
             let mut created = summary_at("created", "New Task", "/work/alpha");
-            created.mode = "auto".to_string();
             created.web_enabled = true;
             let task_mcp = this.created_task_mcp(request.mcp_server_names.as_deref());
             assert_eq!(
@@ -1997,7 +1881,6 @@ mod state_tests {
                 this.new_session_changes(&created, &task_mcp),
                 NewSessionChanges {
                     web: Some(false),
-                    mode: Some("smart_approve".to_string()),
                     mcp: vec![
                         DraftMcpChange {
                             name: "wiki".to_string(),
@@ -2027,7 +1910,6 @@ mod state_tests {
             assert!(!this.awaiting_first_token);
 
             // Once the task matches the composer the send goes out.
-            created.mode = "smart_approve".to_string();
             created.web_enabled = false;
             let mut task_mcp = task_mcp;
             task_mcp[1].enabled = true;
@@ -2037,7 +1919,6 @@ mod state_tests {
             assert!(!this.session_setup_pending);
             assert!(this.pending_first_send.is_none());
             assert_eq!(this.selected_session.as_deref(), Some("created"));
-            assert_eq!(this.permission_mode, PermissionMode::SmartApprove);
             assert!(!this.web_enabled, "the chip is not clobbered");
             assert!(this.awaiting_first_token, "the send was dispatched");
         });
@@ -2644,7 +2525,6 @@ mod state_tests {
             availability,
             backend,
             version: None,
-            standalone_version: None,
             permissions: None,
             setup_available: false,
             enabled_for_new_tasks,
@@ -2729,7 +2609,7 @@ mod state_tests {
         assert_eq!(rows[1].display_name, "CODEX");
 
         // Without a stored CUA choice the row is unconfigured and off; an
-        // external backend that is not installed is on but unavailable.
+        // embedded choice whose grants are missing is on but unavailable.
         let rows = draft_mcp_rows(
             Vec::new(),
             &[integration_card(
@@ -2747,12 +2627,12 @@ mod state_tests {
             &[integration_card(
                 "cua-driver",
                 AgentIntegrationAvailability::SetupRequired,
-                Some(AgentIntegrationBackend::External),
+                Some(AgentIntegrationBackend::Embedded),
                 true,
             )],
         );
         assert!(rows[0].enabled && !rows[0].available);
-        assert_eq!(rows[0].transport, "stdio");
+        assert_eq!(rows[0].transport, "embedded");
         // No catalog at all: the servers alone, as before.
         let rows = draft_mcp_rows(vec![mcp_server("docs", false)], &[]);
         assert_eq!(rows.len(), 1);
@@ -3170,7 +3050,6 @@ mod state_tests {
                 running: true,
                 project_root: None,
                 model: None,
-                mode: None,
                 active_runs: HashMap::new(),
             };
             assert!(
@@ -4016,6 +3895,22 @@ mod state_tests {
         cx.simulate_click(bounds.center(), gpui::Modifiers::default());
     }
 
+    /// The composer offers the model and integration chips; there is no
+    /// approval-mode chip because every tool call runs without asking.
+    #[gpui::test]
+    fn composer_offers_no_approval_mode(cx: &mut TestAppContext) {
+        let (_chat, cx) = chat_window(cx, |this, cx| {
+            this.sessions = vec![summary("s1", "One")];
+            this.models = vec!["voxtral-small-24b".to_string()];
+            this.sync_sidebar(cx);
+        });
+        cx.update(|window, _| window.refresh());
+        cx.run_until_parked();
+        assert!(cx.debug_bounds("model-picker").is_some());
+        assert!(cx.debug_bounds("mcp-menu").is_some());
+        assert!(cx.debug_bounds("permission-mode-toggle").is_none());
+    }
+
     /// Issue #997: a second press on the button that opened a menu closes
     /// it. Before, the menu's outside-press handler closed it on the way
     /// down and the button's click opened it again.
@@ -4030,7 +3925,6 @@ mod state_tests {
             ("projects-header", "Switcher"),
             ("menu-session-s1", "Task(s1)"),
             ("model-picker", "Model"),
-            ("permission-mode-toggle", "Mode"),
             ("mcp-menu", "Integrations"),
             ("root-picker", "Project"),
         ] {
@@ -4067,7 +3961,7 @@ mod state_tests {
             ("model-picker", "menu-session-s1", "Task(s1)"),
             ("model-picker", "projects-header", "Switcher"),
             ("menu-session-s1", "projects-header", "Switcher"),
-            ("root-picker", "permission-mode-toggle", "Mode"),
+            ("root-picker", "mcp-menu", "Integrations"),
         ] {
             press(cx, first);
             press(cx, then);
@@ -4458,20 +4352,11 @@ mod state_tests {
                 queue_id: "q1".to_string(),
                 draft: String::new(),
             });
-            this.pending_permissions.push(PendingPermission {
-                session_id: "s1".to_string(),
-                run_id: "run-1".to_string(),
-                request_id: "req-1".to_string(),
-                tool_name: "bash".to_string(),
-                prompt: None,
-                arguments: "".into(),
-            });
             this.leave_selected_session(cx);
             assert_eq!(this.selected_session, None);
             assert!(this.btw.is_none());
             assert!(this.queue.is_empty());
             assert!(this.queue_edit.is_none());
-            assert!(this.pending_permissions.is_empty());
         });
     }
 
@@ -4483,14 +4368,6 @@ mod state_tests {
             this.booting = false;
             this.active_runs
                 .insert("s1".to_string(), "run-1".to_string());
-            this.pending_permissions.push(PendingPermission {
-                session_id: "s1".to_string(),
-                run_id: "run-1".to_string(),
-                request_id: "req-1".to_string(),
-                tool_name: "bash".to_string(),
-                prompt: None,
-                arguments: "".into(),
-            });
             this.pending_questions = vec![crate::backend::PendingQuestion {
                 session_id: "s1".to_string(),
                 request_id: "question-1".to_string(),
@@ -4511,7 +4388,6 @@ mod state_tests {
                 this.active_runs.get("s1").map(String::as_str),
                 Some("run-1")
             );
-            assert_eq!(this.pending_permissions.len(), 1);
             assert_eq!(this.pending_questions.len(), 1);
         });
     }
@@ -4664,62 +4540,6 @@ mod state_tests {
             this.project_root = Some("/work/beta".to_string());
             let request = this.new_session_request().expect("explicit root request");
             assert_eq!(request.project_root.as_deref(), Some("/work/beta"));
-            assert_eq!(
-                request.mode.as_deref(),
-                Some("smart_approve"),
-                "a new task carries the composer's current mode"
-            );
-        });
-    }
-
-    /// A saved "Allow all" default must reach task creation: the created
-    /// row's mode is what the chip adopts and the first prompt sends, so a
-    /// None mode here would restart every task at Ask First.
-    #[gpui::test]
-    fn test_new_task_takes_the_saved_permission_default(cx: &mut TestAppContext) {
-        let _guard = SETTINGS_LOCK.lock();
-        let dir = std::env::temp_dir().join(format!(
-            "maple-agent-test-permission-default-{}",
-            std::process::id()
-        ));
-        let _ = std::fs::remove_dir_all(&dir);
-        let config = dir.join("maple-agent");
-        std::fs::create_dir_all(&config).unwrap();
-        std::fs::write(
-            config.join("settings.json"),
-            r#"{"default_permission_mode":"auto"}"#,
-        )
-        .unwrap();
-        let previous = std::env::var_os("XDG_CONFIG_HOME");
-        unsafe { std::env::set_var("XDG_CONFIG_HOME", &dir) };
-        cx.executor().allow_parking();
-        let screen = cx.new(|cx| {
-            ChatScreen::new_inner(
-                std::sync::Arc::new(
-                    crate::backend::AgentBackend::new(
-                        "http://127.0.0.1:9".to_string(),
-                        String::new(),
-                    )
-                    .expect("backend"),
-                ),
-                "user".to_string(),
-                cx,
-            )
-        });
-        match previous {
-            Some(value) => unsafe { std::env::set_var("XDG_CONFIG_HOME", value) },
-            None => unsafe { std::env::remove_var("XDG_CONFIG_HOME") },
-        }
-        let _ = std::fs::remove_dir_all(&dir);
-
-        screen.update(cx, |this, _cx| {
-            this.project_root = Some("/work/beta".to_string());
-            let request = this.new_session_request().expect("explicit root request");
-            assert_eq!(
-                request.mode.as_deref(),
-                Some("auto"),
-                "the saved default must be persisted onto the new task"
-            );
         });
     }
 
@@ -4875,7 +4695,6 @@ mod state_tests {
                     running: true,
                     project_root: Some("/work/alpha".to_string()),
                     model: None,
-                    mode: None,
                     active_runs: HashMap::from([("s2".to_string(), "run-2".to_string())]),
                 }),
                 cx,
