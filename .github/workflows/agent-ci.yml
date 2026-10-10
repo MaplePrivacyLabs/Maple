@@ -7,7 +7,7 @@ on:
     # Run unprivileged validation for stacked PRs as well as master targets.
   workflow_dispatch:
 
-# PR code, including forks, executes only on fresh hosted runners with a
+# PR code, including forks, executes only on fresh managed runners with a
 # read-only token. No signing, release publication, environment, or deployment
 # credentials belong in this workflow.
 permissions:
@@ -83,7 +83,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-26, windows-latest]
+        os: [blacksmith-8vcpu-ubuntu-2404, macos-26, windows-latest]
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:

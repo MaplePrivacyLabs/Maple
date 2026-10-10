@@ -140,7 +140,7 @@ jobs:
           - platform: macos-26-xlarge
             nix_shell: ci
             artifact_prefix: macos
-          - platform: ubuntu-latest-8-cores
+          - platform: blacksmith-8vcpu-ubuntu-2404
             nix_shell: desktop-linux
             artifact_prefix: linux
 
@@ -163,7 +163,7 @@ jobs:
       - name: Cache sccache
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # was v4
         with:
-          path: ${{ startsWith(matrix.platform, 'macos') && '~/Library/Caches/Mozilla.sccache' || '~/.cache/sccache' }}
+          path: ${{ runner.os == 'macOS' && '~/Library/Caches/Mozilla.sccache' || '~/.cache/sccache' }}
           key: ${{ runner.os }}-sccache-release-${{ hashFiles('apps/maple-research/frontend/src-tauri/Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-sccache-release-
@@ -172,7 +172,7 @@ jobs:
       # Ubuntu 24.04 restricts unprivileged user namespaces by default; linuxdeploy/AppImage
       # packaging uses bubblewrap and otherwise fails with "bwrap: setting up uid map: Permission denied".
       - name: Allow bubblewrap user namespaces
-        if: matrix.platform == 'ubuntu-latest-8-cores'
+        if: runner.os == 'Linux'
         run: |
           set -euo pipefail
           if [ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
@@ -185,15 +185,15 @@ jobs:
       - name: Build Tauri desktop app
         run: nix develop --no-update-lock-file .#${{ matrix.nix_shell }} -c ./scripts/ci/desktop-release.sh
         env:
-          APPIMAGE_EXTRACT_AND_RUN: ${{ matrix.platform == 'ubuntu-latest-8-cores' && '1' || '' }}
-          NO_STRIP: ${{ matrix.platform == 'ubuntu-latest-8-cores' && 'true' || '' }}
+          APPIMAGE_EXTRACT_AND_RUN: ${{ runner.os == 'Linux' && '1' || '' }}
+          NO_STRIP: ${{ runner.os == 'Linux' && 'true' || '' }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_PASSWORD: ${{ secrets.APPLE_ID_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_CERTIFICATE: ${{ runner.os == 'macOS' && secrets.APPLE_CERTIFICATE || '' }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ runner.os == 'macOS' && secrets.APPLE_CERTIFICATE_PASSWORD || '' }}
+          APPLE_ID: ${{ runner.os == 'macOS' && secrets.APPLE_ID || '' }}
+          APPLE_PASSWORD: ${{ runner.os == 'macOS' && secrets.APPLE_ID_PASSWORD || '' }}
+          APPLE_TEAM_ID: ${{ runner.os == 'macOS' && secrets.APPLE_TEAM_ID || '' }}
 
       - name: Show sccache stats
         if: always()
@@ -382,7 +382,7 @@ jobs:
   build-android:
     environment: android-signing
     needs: classify-app-release
-    runs-on: ubuntu-latest-8-cores
+    runs-on: blacksmith-8vcpu-ubuntu-2404
     permissions:
       contents: write
       id-token: write
@@ -570,7 +570,7 @@ jobs:
 
   build-web:
     needs: classify-app-release
-    runs-on: ubuntu-latest-8-cores
+    runs-on: ubuntu-latest
     permissions:
       contents: write
       id-token: write
@@ -764,7 +764,7 @@ jobs:
     needs:
       - classify-app-release
       - build-android
-    runs-on: ubuntu-latest-8-cores
+    runs-on: ubuntu-latest
     permissions:
       contents: read
     steps:
@@ -795,7 +795,7 @@ jobs:
     needs:
       - classify-app-release
       - build-tauri
-    runs-on: ubuntu-latest-8-cores
+    runs-on: ubuntu-latest
     permissions:
       contents: read
     steps:
