@@ -1484,6 +1484,8 @@ export type DocumentUploadInitResponse = {
 export type ApiKey = {
   name: string;
   created_at: string;
+  /** RFC3339 timestamp of the last request this key authenticated, or null if never used */
+  last_used_at: string | null;
 };
 
 export type ApiKeyCreateResponse = ApiKey & {

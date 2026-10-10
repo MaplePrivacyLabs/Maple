@@ -495,6 +495,10 @@ pub struct ConfirmAccountDeletionRequest {
 pub struct ApiKey {
     pub name: String,
     pub created_at: DateTime<Utc>,
+    /// RFC3339 timestamp of the last request this key authenticated, or None
+    /// if never used. Defaults to None for compatibility with older backends.
+    #[serde(default)]
+    pub last_used_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -512,6 +516,8 @@ pub struct ApiKeyCreateResponse {
     pub key: String, // UUID format with dashes, only returned on creation
     pub name: String,
     pub created_at: DateTime<Utc>,
+    #[serde(default)]
+    pub last_used_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

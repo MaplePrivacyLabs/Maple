@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Link, useBlocker } from "@tanstack/react-router";
 import { useOpenSecret } from "@mapleai/sdk";
-import { AlertCircle, Calendar, KeyRound, Loader2, Plus, Trash2 } from "lucide-react";
+import { AlertCircle, Calendar, Clock, KeyRound, Loader2, Plus, Trash2 } from "lucide-react";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { useSettingsNavigationLock } from "@/contexts/SettingsNavigationLockContext";
@@ -101,6 +101,12 @@ export function ApiKeysSettings() {
                       <p className="mt-0.5 flex items-center gap-1 text-xs text-muted-foreground">
                         <Calendar className="h-3 w-3" />
                         Created {formatDate(apiKey.created_at)}
+                      </p>
+                      <p className="mt-0.5 flex items-center gap-1 text-xs text-muted-foreground">
+                        <Clock className="h-3 w-3" />
+                        {apiKey.last_used_at
+                          ? `Last used ${formatDate(apiKey.last_used_at)}`
+                          : "Never used"}
                       </p>
                     </div>
                     {!isConfirmingDelete && (

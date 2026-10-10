@@ -1,5 +1,5 @@
 use crate::models::schema::user_api_keys;
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Duration, Utc};
 use diesel::prelude::*;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -26,6 +26,7 @@ pub struct UserApiKey {
     pub name: String,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    pub last_used_at: Option<DateTime<Utc>>,
 }
 
 impl std::fmt::Debug for UserApiKey {
@@ -37,6 +38,7 @@ impl std::fmt::Debug for UserApiKey {
             .field("name", &self.name)
             .field("created_at", &self.created_at)
             .field("updated_at", &self.updated_at)
+            .field("last_used_at", &self.last_used_at)
             .finish()
     }
 }
@@ -146,5 +148,26 @@ impl UserApiKey {
         } else {
             Ok(())
         }
+    }
+
+    /// Records that this key just authenticated a request.
+    ///
+    /// The write is throttled: it only lands when `last_used_at` is NULL or
+    /// older than one minute, so high-frequency authenticated requests do not
+    /// amplify database writes. Returns whether a row was updated.
+    pub fn touch_last_used(
+        conn: &mut PgConnection,
+        key_hash: &str,
+    ) -> Result<usize, UserApiKeyError> {
+        let stale_before = Utc::now() - Duration::minutes(1);
+        diesel::update(user_api_keys::table.filter(user_api_keys::key_hash.eq(key_hash)))
+            .set(user_api_keys::last_used_at.eq(Utc::now()))
+            .filter(
+                user_api_keys::last_used_at
+                    .is_null()
+                    .or(user_api_keys::last_used_at.lt(stale_before)),
+            )
+            .execute(conn)
+            .map_err(UserApiKeyError::DatabaseError)
     }
 }

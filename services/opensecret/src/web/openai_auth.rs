@@ -70,6 +70,12 @@ pub async fn validate_openai_auth(
                 let key_hash = format!("{:x}", hasher.finalize());
                 match data.db.get_user_by_api_key_hash(&key_hash) {
                     Ok(Some(user)) => {
+                        // Best-effort usage tracking: record that this key
+                        // authenticated a request, but never fail auth if the
+                        // timestamp cannot be written.
+                        if let Err(e) = data.db.touch_user_api_key_last_used(&key_hash) {
+                            tracing::warn!("Failed to update API key last-used timestamp: {:?}", e);
+                        }
                         req.extensions_mut().insert(user);
                         req.extensions_mut().insert(AuthMethod::ApiKey);
                         return next.run(req).await;
