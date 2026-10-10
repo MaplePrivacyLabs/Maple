@@ -72,6 +72,12 @@ job trusts its runner with the selected environment's secrets. PR builds have
 no signing credentials and retain their existing branch-scoped caches. No
 persistent vendor disks or Docker builders are configured by these workflows.
 
+Research's Unix compiler-cache statistics use `scripts/ci/sccache-stats.sh`,
+which shares the build's cache configuration. In Actions the sccache socket
+lives under `RUNNER_TEMP`, so separate Nix shells reach the same server despite
+their different `TMPDIR` values. Cache archive restoration and compiler hits
+remain separate measurements.
+
 ## macOS runners and Apple toolchain
 
 Research desktop/iOS builds, iOS ONNX cache warming, Agent release-binary jobs

@@ -59,7 +59,7 @@ jobs:
 
       - name: Show sccache stats
         if: always()
-        run: nix develop --no-update-lock-file .#android -c sccache --show-stats
+        run: nix develop --no-update-lock-file .#android -c ./scripts/ci/sccache-stats.sh
 
       - name: Upload Android fake signed PR artifacts
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # was v4

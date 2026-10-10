@@ -55,7 +55,7 @@ jobs:
 
       - name: Show sccache stats
         if: always()
-        run: nix develop --no-update-lock-file .#ci -c sccache --show-stats
+        run: nix develop --no-update-lock-file .#ci -c ./scripts/ci/sccache-stats.sh
 
       - name: Collect macOS release checksums
         run: |
@@ -133,7 +133,7 @@ jobs:
 
       - name: Show sccache stats
         if: always()
-        run: nix develop --no-update-lock-file .#desktop-linux -c sccache --show-stats
+        run: nix develop --no-update-lock-file .#desktop-linux -c ./scripts/ci/sccache-stats.sh
 
       - name: Collect Linux release checksums
         run: |
