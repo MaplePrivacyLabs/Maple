@@ -856,7 +856,7 @@ jobs:
     needs:
       - classify-app-release
       - build-windows
-    runs-on: ubuntu-latest-8-cores
+    runs-on: ubuntu-latest
     permissions:
       contents: read
     steps:
