@@ -1,3 +1,5 @@
+mod maple_templates;
+
 use crate::AppMode;
 use crate::DBError;
 use crate::PROJECT_RESEND_API_KEY;
@@ -20,285 +22,6 @@ pub enum EmailError {
     #[error("Database error: {0}")]
     DatabaseError(#[from] DBError),
 }
-
-const WELCOME_EMAIL_HTML: &str = r#"
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Welcome to Maple</title>
-    <style>
-        body {
-            font-family: ui-sans-serif, system-ui, -apple-system, sans-serif;
-            margin: 0;
-            padding: 0;
-            background-color: #f9fafb;
-            color: #1a1a1a;
-            -webkit-font-smoothing: antialiased;
-        }
-        .wrapper {
-            max-width: 600px;
-            margin: 0 auto;
-            background-color: #ffffff;
-        }
-        .header {
-            padding: 40px 32px 24px;
-            text-align: center;
-        }
-        .header img.logo {
-            height: 48px;
-            width: 48px;
-            border-radius: 12px;
-            margin-bottom: 16px;
-        }
-        .header h1 {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
-            font-size: 32px;
-            font-weight: 350;
-            letter-spacing: -0.02em;
-            margin: 0;
-            color: #111;
-        }
-        .header p {
-            font-size: 16px;
-            color: #555;
-            margin: 12px 0 0;
-            line-height: 1.5;
-        }
-        .hero-image {
-            text-align: center;
-            padding: 8px 32px 24px;
-        }
-        .hero-image img {
-            max-width: 100%;
-            height: auto;
-            border-radius: 8px;
-        }
-        .section {
-            padding: 0 32px 24px;
-        }
-        .section h2 {
-            font-size: 18px;
-            font-weight: 600;
-            margin: 0 0 8px;
-            color: #111;
-        }
-        .section p {
-            font-size: 15px;
-            color: #444;
-            line-height: 1.6;
-            margin: 0 0 12px;
-        }
-        .download-buttons {
-            text-align: center;
-            padding: 0 32px 32px;
-        }
-        .download-buttons a {
-            display: inline-block;
-            margin: 4px 6px;
-        }
-        .download-buttons img {
-            height: 44px;
-        }
-        .divider {
-            border: none;
-            border-top: 1px solid #eee;
-            margin: 0 32px;
-        }
-        .pro-section {
-            padding: 24px 32px;
-        }
-        .pro-section h2 {
-            font-size: 18px;
-            font-weight: 600;
-            margin: 0 0 12px;
-            color: #111;
-        }
-        .pro-section p {
-            font-size: 15px;
-            color: #444;
-            line-height: 1.6;
-            margin: 0 0 16px;
-        }
-        .feature-grid {
-            border-collapse: collapse;
-            mso-table-lspace: 0pt;
-            mso-table-rspace: 0pt;
-            margin: 0 0 16px;
-        }
-        .feature-grid td {
-            vertical-align: top;
-            padding: 8px 0;
-            width: 50%;
-        }
-        .feature-grid .label {
-            font-size: 14px;
-            font-weight: 600;
-            color: #111;
-        }
-        .feature-grid .desc {
-            font-size: 13px;
-            color: #666;
-            margin-top: 2px;
-        }
-        .cta-button {
-            display: inline-block;
-            padding: 12px 28px;
-            background-color: #111;
-            color: #ffffff !important;
-            text-decoration: none;
-            border-radius: 6px;
-            font-size: 15px;
-            font-weight: 500;
-        }
-        .proxy-section {
-            padding: 24px 32px;
-            background-color: #f4f4f5;
-        }
-        .proxy-section h2 {
-            font-size: 16px;
-            font-weight: 600;
-            margin: 0 0 8px;
-            color: #111;
-        }
-        .proxy-section p {
-            font-size: 14px;
-            color: #555;
-            line-height: 1.6;
-            margin: 0 0 12px;
-        }
-        .proxy-section a {
-            color: #f67d57;
-            font-weight: 600;
-        }
-        .footer {
-            padding: 24px 32px;
-            text-align: center;
-        }
-        .footer p {
-            font-size: 13px;
-            color: #999;
-            margin: 0 0 6px;
-            line-height: 1.5;
-        }
-        a {
-            color: #f67d57;
-        }
-        .footer a {
-            color: #f67d57;
-            text-decoration: none;
-        }
-    </style>
-</head>
-<body>
-    <div class="wrapper">
-
-        <!-- Header -->
-        <div class="header">
-            <img class="logo" src="https://www.trymaple.ai/apple-touch-icon.png" alt="Maple" width="48" height="48">
-            <h1>Welcome to Maple</h1>
-            <p>Powerful AI that respects your privacy</p>
-        </div>
-
-        <!-- Intro message -->
-        <div class="section">
-            <h2>Your private room is ready</h2>
-            <p>This is a personal space for you and AI to talk, without anyone listening. When your conversations are confidential, you're free to think openly, ask questions, and build the future. Say what's on your mind.</p>
-        </div>
-        <div class="download-buttons">
-            <a href="https://trymaple.ai" style="background-color: #f67d57; color: #fff; padding: 12px 28px; border-radius: 6px; text-decoration: none; font-size: 15px; font-weight: 500;">Start your first chat</a>
-        </div>
-
-        <!-- Hero Image -->
-        <div class="hero-image">
-            <img src="https://blog.trymaple.ai/content/images/size/w1600/2026/02/maple-mobile-and-desktop.jpg" alt="Maple on desktop and mobile" style="max-width: 100%; height: auto; border-radius: 8px;">
-        </div>
-
-        <!-- Download Section -->
-        <div class="section">
-            <h2>Get Maple on Every Device</h2>
-            <p>Your conversations sync securely across all your devices. Pick up right where you left off. iPhone, Android, Mac, Windows, Linux, and Web.</p>
-        </div>
-        <div class="download-buttons">
-            <a href="https://www.trymaple.ai/research#download" style="background-color: #111; color: #fff; padding: 12px 28px; border-radius: 6px; text-decoration: none; font-size: 15px; font-weight: 500;">Download Apps</a>
-        </div>
-
-        <hr class="divider">
-
-        <!-- Pro Upsell -->
-        <div class="pro-section">
-            <h2>Do More with Pro</h2>
-            <p>Unlock the full power of private AI. Everything is end-to-end encrypted and your data stays yours.</p>
-
-            <table class="feature-grid" width="100%" cellpadding="0" cellspacing="0" border="0">
-                <tr>
-                    <td>
-                        <div class="label">Most Powerful Models</div>
-                        <div class="desc">Top open models, private by default</div>
-                    </td>
-                    <td>
-                        <div class="label">Web Search</div>
-                        <div class="desc">Real-time answers from the web</div>
-                    </td>
-                </tr>
-                <tr>
-                    <td>
-                        <div class="label">Image Analysis</div>
-                        <div class="desc">Understand photos and screenshots</div>
-                    </td>
-                    <td>
-                        <div class="label">Document Upload</div>
-                        <div class="desc">Analyze PDFs, text docs, and more</div>
-                    </td>
-                </tr>
-                <tr>
-                    <td>
-                        <div class="label">Voice</div>
-                        <div class="desc">Talk to Maple on mobile and desktop</div>
-                    </td>
-                    <td>
-                        <div class="label">Developer API</div>
-                        <div class="desc">OpenAI-compatible API access</div>
-                    </td>
-                </tr>
-            </table>
-
-            <div style="text-align: center;">
-                <a href="https://www.trymaple.ai/research#pricing" class="cta-button">See Plans</a>
-            </div>
-        </div>
-
-        <hr class="divider">
-
-        <!-- Maple Proxy -->
-        <div class="proxy-section">
-            <table width="100%" cellpadding="0" cellspacing="0" border="0" style="border-collapse: collapse; mso-table-lspace: 0pt; mso-table-rspace: 0pt;">
-                <tr>
-                    <td width="48" valign="top" style="width: 48px; padding: 0;">
-                        <img src="https://www.trymaple.ai/apple-touch-icon.png" alt="Maple" width="48" height="48" style="display: block; width: 48px; height: 48px; border-radius: 12px;">
-                    </td>
-                    <td width="16" style="width: 16px; font-size: 0; line-height: 0;">&nbsp;</td>
-                    <td valign="top" style="vertical-align: top;">
-                        <h2>Build with Maple Proxy</h2>
-                        <p>Bring encrypted AI into your own tools. Maple Proxy is an OpenAI-compatible API that works with 1,000s of tools. Use it with coding assistants, automation pipelines, or your own apps.</p>
-                        <p><a href="https://blog.trymaple.ai/maple-proxy-documentation/">Read the docs &rarr;</a></p>
-                    </td>
-                </tr>
-            </table>
-        </div>
-
-        <!-- Footer -->
-        <div class="footer">
-            <img src="https://www.trymaple.ai/apple-touch-icon.png" alt="Maple" width="48" height="48" style="width: 48px; height: 48px; border-radius: 12px; margin-bottom: 12px;">
-            <p>Questions? Reach us at <a href="mailto:support@trymaple.ai">support@trymaple.ai</a></p>
-            <p><a href="https://trymaple.ai">trymaple.ai</a></p>
-        </div>
-
-    </div>
-</body>
-</html>
-"#;
 
 async fn get_project_email_settings(
     app_state: &crate::AppState,
@@ -356,7 +79,7 @@ pub async fn send_hello_email(
         })?;
 
     // Only send welcome email for Maple project for now
-    if project.name != "Maple" {
+    if !is_maple_project(&project.name) {
         tracing::debug!("Skipping welcome email for non-Maple project");
         return Ok(());
     }
@@ -367,15 +90,23 @@ pub async fn send_hello_email(
     let resend = Resend::new(&api_key);
 
     let to = [to_email];
-    let subject = format!("Welcome to {}!", project.name);
+    let message = maple_templates::render(
+        maple_templates::Kind::Welcome,
+        &project.name,
+        &project.name,
+        account_support_email(&project.name),
+        "",
+        "",
+    );
 
     // Schedule the email to be sent 5 minutes from now
     let scheduled_time = Utc::now() + Duration::minutes(5);
     let scheduled_at = scheduled_time.to_rfc3339();
 
-    let email = CreateEmailBaseOptions::new(sender(&project.name, &from_email), to, subject)
-        .with_html(WELCOME_EMAIL_HTML)
-        .with_scheduled_at(&scheduled_at);
+    let email =
+        CreateEmailBaseOptions::new(sender(&project.name, &from_email), to, message.subject)
+            .with_html(&message.html)
+            .with_scheduled_at(&scheduled_at);
 
     let email = with_account_reply_to(email, &project.name);
     let _email = resend.emails.send(email).await.map_err(|e| {
@@ -451,45 +182,14 @@ fn account_mark_html(project_name: &str) -> &'static str {
     }
 }
 
-pub async fn send_verification_email(
-    app_state: &crate::AppState,
-    project_id: i32,
-    to_email: String,
-    verification_code: uuid::Uuid,
-) -> Result<(), EmailError> {
-    let (api_key, from_email) = get_project_email_settings(app_state, project_id).await?;
-    let resend = Resend::new(&api_key);
-
-    // Get project name and email settings
-    let project = app_state
-        .db
-        .get_org_project_by_id(project_id)
-        .map_err(|e| {
-            error!("Failed to get project: {}", e);
-            EmailError::UnknownError
-        })?;
-
-    // Get organization name for the team signature
-    let org = app_state.db.get_org_by_id(project.org_id).map_err(|e| {
-        error!("Failed to get organization: {}", e);
-        EmailError::UnknownError
-    })?;
-
-    let email_settings = app_state
-        .db
-        .get_project_email_settings(project_id)?
-        .ok_or(EmailError::ProjectSettingsNotFound)?;
-
-    let to = [to_email];
-    let subject = format!("Verify Your {} Account", project.name);
-    let team_name = account_team_name(&project.name, &org.name);
-    let mark = account_mark_html(&project.name);
-
-    // Ensure base URL has exactly one trailing slash
-    let base_url = email_settings.email_verification_url.trim_end_matches('/');
-    let verification_url = format!("{}/{}", base_url, verification_code);
-
-    let html_content = format!(
+fn legacy_verification_html(
+    project_name: &str,
+    team_name: &str,
+    mark: &str,
+    verification_url: &str,
+    verification_code: &str,
+) -> String {
+    format!(
         r#"
         <!DOCTYPE html>
         <html lang="en">
@@ -524,15 +224,232 @@ pub async fn send_verification_email(
         </body>
         </html>
         "#,
-        project.name,
+        project_name,
         mark,
-        project.name,
+        project_name,
         verification_url,
         verification_url,
         verification_code,
-        project.name,
+        project_name,
         team_name
+    )
+}
+
+fn legacy_password_reset_html(
+    project_name: &str,
+    team_name: &str,
+    mark: &str,
+    alphanumeric_code: &str,
+) -> String {
+    format!(
+        r#"
+        <!DOCTYPE html>
+        <html lang="en">
+        <head>
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <title>Reset Your {} Password</title>
+            <style>
+                body {{ font-family: ui-sans-serif,system-ui,sans-serif; }}
+                .container {{ max-width: 600px; margin: 0 auto; padding: 20px; }}
+                h1, h2, h3 {{ font-weight: 300; }}
+                .code {{ background-color: rgba(1,1,1,0.05); padding: 10px; border-radius: 5px; font-family: monospace; font-size: 16px; }}
+            </style>
+        </head>
+        <body>
+            <div class="container">
+                {}
+                <h1>Reset Your {} Password</h1>
+                <p>We received a request to reset your {} account password. If you didn't make this request, you can ignore this email.</p>
+                <p>To reset your password, use the following code:</p>
+                <p class="code">{}</p>
+                <p>This code will expire in 24 hours.</p>
+                <p>If you have any issues, please contact our support team.</p>
+                <p>Best regards,<br>The {} Team</p>
+            </div>
+        </body>
+        </html>
+        "#,
+        project_name, mark, project_name, project_name, alphanumeric_code, team_name
+    )
+}
+
+fn legacy_password_reset_confirmation_html(
+    project_name: &str,
+    team_name: &str,
+    mark: &str,
+    support_email: &str,
+) -> String {
+    format!(
+        r#"
+        <!DOCTYPE html>
+        <html lang="en">
+        <head>
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <title>Password Reset Confirmation</title>
+            <style>
+                body {{ font-family: ui-sans-serif,system-ui,sans-serif; }}
+                .container {{ max-width: 600px; margin: 0 auto; padding: 20px; }}
+                h1, h2, h3 {{ font-weight: 300; }}
+            </style>
+        </head>
+        <body>
+            <div class="container">
+                {}
+                <h1>Password Reset Confirmation</h1>
+                <p>Your {} account password has been successfully reset.</p>
+                <p>If you did not initiate this password reset, please contact us immediately at <a href="mailto:{}">{}</a>.</p>
+                <p>For security reasons, we recommend that you:</p>
+                <ul>
+                    <li>Change your password again if you suspect any unauthorized access.</li>
+                    <li>Review your account activity for any suspicious actions.</li>
+                </ul>
+                <p>If you have any questions or concerns, please don't hesitate to reach out to our support team.</p>
+                <p>Best regards,<br>The {} Team</p>
+            </div>
+        </body>
+        </html>
+        "#,
+        mark, project_name, support_email, support_email, team_name
+    )
+}
+
+fn legacy_account_deletion_html(
+    project_name: &str,
+    team_name: &str,
+    mark: &str,
+    confirmation_code: &str,
+) -> String {
+    format!(
+        r#"
+        <!DOCTYPE html>
+        <html lang="en">
+        <head>
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <title>Account Deletion Request</title>
+            <style>
+                body {{ font-family: ui-sans-serif,system-ui,sans-serif; }}
+                .container {{ max-width: 600px; margin: 0 auto; padding: 20px; }}
+                h1, h2, h3 {{ font-weight: 300; }}
+                .code {{ background-color: rgba(1,1,1,0.05); padding: 10px; border-radius: 5px; font-family: monospace; font-size: 16px; }}
+                .warning {{ color: #e74c3c; }}
+            </style>
+        </head>
+        <body>
+            <div class="container">
+                {}
+                <h1>Account Deletion Request</h1>
+                <p>We received a request to delete your {} account. <span class="warning">This action is permanent and cannot be undone.</span></p>
+                <p>To confirm your account deletion, use the following confirmation code:</p>
+                <p class="code">{}</p>
+                <p>This confirmation code will expire in 24 hours.</p>
+                <p>If you did not request this account deletion, please ignore this email, and your account will remain active. If you have any concerns about account security, please contact our support team.</p>
+                <p>Best regards,<br>The {} Team</p>
+            </div>
+        </body>
+        </html>
+        "#,
+        mark, project_name, confirmation_code, team_name
+    )
+}
+
+fn legacy_account_deletion_confirmation_html(
+    project_name: &str,
+    team_name: &str,
+    mark: &str,
+    support_email: &str,
+) -> String {
+    format!(
+        r#"
+        <!DOCTYPE html>
+        <html lang="en">
+        <head>
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <title>Account Deletion Confirmation</title>
+            <style>
+                body {{ font-family: ui-sans-serif,system-ui,sans-serif; }}
+                .container {{ max-width: 600px; margin: 0 auto; padding: 20px; }}
+                h1, h2, h3 {{ font-weight: 300; }}
+            </style>
+        </head>
+        <body>
+            <div class="container">
+                {}
+                <h1>Account Deletion Confirmation</h1>
+                <p>Your {} account has been successfully deleted along with all associated data.</p>
+                <p>If you did not request this account deletion, please contact us immediately at <a href="mailto:{}">{}</a>.</p>
+                <p>Thank you for your time with us. We hope to see you again in the future.</p>
+                <p>Best regards,<br>The {} Team</p>
+            </div>
+        </body>
+        </html>
+        "#,
+        mark, project_name, support_email, support_email, team_name
+    )
+}
+
+pub async fn send_verification_email(
+    app_state: &crate::AppState,
+    project_id: i32,
+    to_email: String,
+    verification_code: uuid::Uuid,
+) -> Result<(), EmailError> {
+    let (api_key, from_email) = get_project_email_settings(app_state, project_id).await?;
+    let resend = Resend::new(&api_key);
+
+    // Get project name and email settings
+    let project = app_state
+        .db
+        .get_org_project_by_id(project_id)
+        .map_err(|e| {
+            error!("Failed to get project: {}", e);
+            EmailError::UnknownError
+        })?;
+
+    // Get organization name for the team signature
+    let org = app_state.db.get_org_by_id(project.org_id).map_err(|e| {
+        error!("Failed to get organization: {}", e);
+        EmailError::UnknownError
+    })?;
+
+    let email_settings = app_state
+        .db
+        .get_project_email_settings(project_id)?
+        .ok_or(EmailError::ProjectSettingsNotFound)?;
+
+    let to = [to_email];
+    let legacy_subject = format!("Verify Your {} Account", project.name);
+    let team_name = account_team_name(&project.name, &org.name);
+    let mark = account_mark_html(&project.name);
+
+    // Ensure base URL has exactly one trailing slash
+    let base_url = email_settings.email_verification_url.trim_end_matches('/');
+    let verification_url = format!("{}/{}", base_url, verification_code);
+
+    let legacy_html_content = legacy_verification_html(
+        &project.name,
+        &team_name,
+        mark,
+        &verification_url,
+        &verification_code.to_string(),
     );
+
+    let (subject, html_content) = if is_maple_project(&project.name) {
+        let message = maple_templates::render(
+            maple_templates::Kind::Verification,
+            &project.name,
+            &team_name,
+            account_support_email(&project.name),
+            &verification_code.to_string(),
+            verification_url.as_str(),
+        );
+        (message.subject, message.html)
+    } else {
+        (legacy_subject, legacy_html_content)
+    };
 
     let email = CreateEmailBaseOptions::new(sender(&project.name, &from_email), to, subject)
         .with_html(&html_content);
@@ -570,41 +487,26 @@ pub async fn send_password_reset_email(
     })?;
 
     let to = [to_email];
-    let subject = format!("Reset Your {} Password", project.name);
+    let legacy_subject = format!("Reset Your {} Password", project.name);
     let team_name = account_team_name(&project.name, &org.name);
     let mark = account_mark_html(&project.name);
 
-    let html_content = format!(
-        r#"
-        <!DOCTYPE html>
-        <html lang="en">
-        <head>
-            <meta charset="UTF-8">
-            <meta name="viewport" content="width=device-width, initial-scale=1.0">
-            <title>Reset Your {} Password</title>
-            <style>
-                body {{ font-family: ui-sans-serif,system-ui,sans-serif; }}
-                .container {{ max-width: 600px; margin: 0 auto; padding: 20px; }}
-                h1, h2, h3 {{ font-weight: 300; }}
-                .code {{ background-color: rgba(1,1,1,0.05); padding: 10px; border-radius: 5px; font-family: monospace; font-size: 16px; }}
-            </style>
-        </head>
-        <body>
-            <div class="container">
-                {}
-                <h1>Reset Your {} Password</h1>
-                <p>We received a request to reset your {} account password. If you didn't make this request, you can ignore this email.</p>
-                <p>To reset your password, use the following code:</p>
-                <p class="code">{}</p>
-                <p>This code will expire in 24 hours.</p>
-                <p>If you have any issues, please contact our support team.</p>
-                <p>Best regards,<br>The {} Team</p>
-            </div>
-        </body>
-        </html>
-        "#,
-        project.name, mark, project.name, project.name, alphanumeric_code, team_name
-    );
+    let legacy_html_content =
+        legacy_password_reset_html(&project.name, &team_name, mark, &alphanumeric_code);
+
+    let (subject, html_content) = if is_maple_project(&project.name) {
+        let message = maple_templates::render(
+            maple_templates::Kind::PasswordReset,
+            &project.name,
+            &team_name,
+            account_support_email(&project.name),
+            alphanumeric_code.as_str(),
+            "",
+        );
+        (message.subject, message.html)
+    } else {
+        (legacy_subject, legacy_html_content)
+    };
 
     let email = CreateEmailBaseOptions::new(sender(&project.name, &from_email), to, subject)
         .with_html(&html_content);
@@ -641,44 +543,27 @@ pub async fn send_password_reset_confirmation_email(
     })?;
 
     let to = [to_email];
-    let subject = format!("Your {} Password Has Been Reset", project.name);
+    let legacy_subject = format!("Your {} Password Has Been Reset", project.name);
     let team_name = account_team_name(&project.name, &org.name);
     let support_email = account_support_email(&project.name);
     let mark = account_mark_html(&project.name);
 
-    let html_content = format!(
-        r#"
-        <!DOCTYPE html>
-        <html lang="en">
-        <head>
-            <meta charset="UTF-8">
-            <meta name="viewport" content="width=device-width, initial-scale=1.0">
-            <title>Password Reset Confirmation</title>
-            <style>
-                body {{ font-family: ui-sans-serif,system-ui,sans-serif; }}
-                .container {{ max-width: 600px; margin: 0 auto; padding: 20px; }}
-                h1, h2, h3 {{ font-weight: 300; }}
-            </style>
-        </head>
-        <body>
-            <div class="container">
-                {}
-                <h1>Password Reset Confirmation</h1>
-                <p>Your {} account password has been successfully reset.</p>
-                <p>If you did not initiate this password reset, please contact us immediately at <a href="mailto:{}">{}</a>.</p>
-                <p>For security reasons, we recommend that you:</p>
-                <ul>
-                    <li>Change your password again if you suspect any unauthorized access.</li>
-                    <li>Review your account activity for any suspicious actions.</li>
-                </ul>
-                <p>If you have any questions or concerns, please don't hesitate to reach out to our support team.</p>
-                <p>Best regards,<br>The {} Team</p>
-            </div>
-        </body>
-        </html>
-        "#,
-        mark, project.name, support_email, support_email, team_name
-    );
+    let legacy_html_content =
+        legacy_password_reset_confirmation_html(&project.name, &team_name, mark, support_email);
+
+    let (subject, html_content) = if is_maple_project(&project.name) {
+        let message = maple_templates::render(
+            maple_templates::Kind::PasswordResetConfirmation,
+            &project.name,
+            &team_name,
+            account_support_email(&project.name),
+            "",
+            "",
+        );
+        (message.subject, message.html)
+    } else {
+        (legacy_subject, legacy_html_content)
+    };
 
     let email = CreateEmailBaseOptions::new(sender(&project.name, &from_email), to, subject)
         .with_html(&html_content);
@@ -1003,42 +888,26 @@ pub async fn send_account_deletion_email(
     })?;
 
     let to = [to_email];
-    let subject = format!("Account Deletion Request for Your {} Account", project.name);
+    let legacy_subject = format!("Account Deletion Request for Your {} Account", project.name);
     let team_name = account_team_name(&project.name, &org.name);
     let mark = account_mark_html(&project.name);
 
-    let html_content = format!(
-        r#"
-        <!DOCTYPE html>
-        <html lang="en">
-        <head>
-            <meta charset="UTF-8">
-            <meta name="viewport" content="width=device-width, initial-scale=1.0">
-            <title>Account Deletion Request</title>
-            <style>
-                body {{ font-family: ui-sans-serif,system-ui,sans-serif; }}
-                .container {{ max-width: 600px; margin: 0 auto; padding: 20px; }}
-                h1, h2, h3 {{ font-weight: 300; }}
-                .code {{ background-color: rgba(1,1,1,0.05); padding: 10px; border-radius: 5px; font-family: monospace; font-size: 16px; }}
-                .warning {{ color: #e74c3c; }}
-            </style>
-        </head>
-        <body>
-            <div class="container">
-                {}
-                <h1>Account Deletion Request</h1>
-                <p>We received a request to delete your {} account. <span class="warning">This action is permanent and cannot be undone.</span></p>
-                <p>To confirm your account deletion, use the following confirmation code:</p>
-                <p class="code">{}</p>
-                <p>This confirmation code will expire in 24 hours.</p>
-                <p>If you did not request this account deletion, please ignore this email, and your account will remain active. If you have any concerns about account security, please contact our support team.</p>
-                <p>Best regards,<br>The {} Team</p>
-            </div>
-        </body>
-        </html>
-        "#,
-        mark, project.name, confirmation_code, team_name
-    );
+    let legacy_html_content =
+        legacy_account_deletion_html(&project.name, &team_name, mark, &confirmation_code);
+
+    let (subject, html_content) = if is_maple_project(&project.name) {
+        let message = maple_templates::render(
+            maple_templates::Kind::AccountDeletion,
+            &project.name,
+            &team_name,
+            account_support_email(&project.name),
+            confirmation_code.as_str(),
+            "",
+        );
+        (message.subject, message.html)
+    } else {
+        (legacy_subject, legacy_html_content)
+    };
 
     let email = CreateEmailBaseOptions::new(sender(&project.name, &from_email), to, subject)
         .with_html(&html_content);
@@ -1075,39 +944,27 @@ pub async fn send_account_deletion_confirmation_email(
     })?;
 
     let to = [to_email];
-    let subject = format!("Your {} Account Has Been Deleted", project.name);
+    let legacy_subject = format!("Your {} Account Has Been Deleted", project.name);
     let team_name = account_team_name(&project.name, &org.name);
     let support_email = account_support_email(&project.name);
     let mark = account_mark_html(&project.name);
 
-    let html_content = format!(
-        r#"
-        <!DOCTYPE html>
-        <html lang="en">
-        <head>
-            <meta charset="UTF-8">
-            <meta name="viewport" content="width=device-width, initial-scale=1.0">
-            <title>Account Deletion Confirmation</title>
-            <style>
-                body {{ font-family: ui-sans-serif,system-ui,sans-serif; }}
-                .container {{ max-width: 600px; margin: 0 auto; padding: 20px; }}
-                h1, h2, h3 {{ font-weight: 300; }}
-            </style>
-        </head>
-        <body>
-            <div class="container">
-                {}
-                <h1>Account Deletion Confirmation</h1>
-                <p>Your {} account has been successfully deleted along with all associated data.</p>
-                <p>If you did not request this account deletion, please contact us immediately at <a href="mailto:{}">{}</a>.</p>
-                <p>Thank you for your time with us. We hope to see you again in the future.</p>
-                <p>Best regards,<br>The {} Team</p>
-            </div>
-        </body>
-        </html>
-        "#,
-        mark, project.name, support_email, support_email, team_name
-    );
+    let legacy_html_content =
+        legacy_account_deletion_confirmation_html(&project.name, &team_name, mark, support_email);
+
+    let (subject, html_content) = if is_maple_project(&project.name) {
+        let message = maple_templates::render(
+            maple_templates::Kind::AccountDeletionConfirmation,
+            &project.name,
+            &team_name,
+            account_support_email(&project.name),
+            "",
+            "",
+        );
+        (message.subject, message.html)
+    } else {
+        (legacy_subject, legacy_html_content)
+    };
 
     let email = CreateEmailBaseOptions::new(sender(&project.name, &from_email), to, subject)
         .with_html(&html_content);
@@ -1123,22 +980,254 @@ pub async fn send_account_deletion_confirmation_email(
 #[cfg(test)]
 mod tests {
     use super::{
-        account_mark_html, account_support_email, account_team_name, sender, WELCOME_EMAIL_HTML,
+        account_mark_html, account_reply_to, account_support_email, account_team_name,
+        legacy_account_deletion_confirmation_html, legacy_account_deletion_html,
+        legacy_password_reset_confirmation_html, legacy_password_reset_html,
+        legacy_verification_html, maple_templates, sender,
     };
+    use maple_templates::Kind;
+
+    const VERIFY_CODE: &str = "3f6c2d1e-8b4a-4c7e-9f21-5a0d7b6e4c19";
+    const VERIFY_URL: &str =
+        "https://trymaple.ai/verify-email/3f6c2d1e-8b4a-4c7e-9f21-5a0d7b6e4c19";
+    const RESET_CODE: &str = "7KQ2M9XA";
+    const DELETE_CODE: &str = "b81e4f0a-2c6d-4a93-8e57-d1f3a9c20b64";
 
     #[test]
-    fn maple_account_mail_uses_the_maple_mark_and_signoff() {
+    fn non_maple_html_matches_pre_edit_snapshots() {
+        let project = "Other";
+        let team = account_team_name(project, "Acme Org");
+        let mark = account_mark_html(project);
+        let support = account_support_email(project);
+        assert_eq!(
+            legacy_verification_html(project, &team, mark, VERIFY_URL, VERIFY_CODE),
+            serde_json::from_str::<String>(include_str!(
+                "email/non_maple_snapshots/verification.json"
+            ))
+            .unwrap()
+        );
+        assert_eq!(
+            legacy_password_reset_html(project, &team, mark, RESET_CODE),
+            serde_json::from_str::<String>(include_str!(
+                "email/non_maple_snapshots/password_reset.json"
+            ))
+            .unwrap()
+        );
+        assert_eq!(
+            legacy_password_reset_confirmation_html(project, &team, mark, support),
+            serde_json::from_str::<String>(include_str!(
+                "email/non_maple_snapshots/password_reset_confirmation.json"
+            ))
+            .unwrap()
+        );
+        assert_eq!(
+            legacy_account_deletion_html(project, &team, mark, DELETE_CODE),
+            serde_json::from_str::<String>(include_str!(
+                "email/non_maple_snapshots/account_deletion.json"
+            ))
+            .unwrap()
+        );
+        assert_eq!(
+            legacy_account_deletion_confirmation_html(project, &team, mark, support),
+            serde_json::from_str::<String>(include_str!(
+                "email/non_maple_snapshots/account_deletion_confirmation.json"
+            ))
+            .unwrap()
+        );
+        assert_eq!(sender(project, "hi@acme.test"), "Other <hi@acme.test>");
+        assert_eq!(account_reply_to(project), None);
+        assert_eq!(support, "support@opensecret.cloud");
+        assert_eq!(
+            [
+                format!("Verify Your {project} Account"),
+                format!("Reset Your {project} Password"),
+                format!("Your {project} Password Has Been Reset"),
+                format!("Account Deletion Request for Your {project} Account"),
+                format!("Your {project} Account Has Been Deleted"),
+            ],
+            [
+                "Verify Your Other Account",
+                "Reset Your Other Password",
+                "Your Other Password Has Been Reset",
+                "Account Deletion Request for Your Other Account",
+                "Your Other Account Has Been Deleted",
+            ]
+        );
+    }
+
+    #[test]
+    fn maple_account_mail_branding_and_links() {
         assert_eq!(account_team_name("Maple", "OpenSecret"), "Maple");
         assert_eq!(account_support_email("Maple"), "support@trymaple.ai");
-        assert!(account_mark_html("Maple").contains("www.trymaple.ai/apple-touch-icon.png"));
-        assert!(WELCOME_EMAIL_HTML.contains("https://www.trymaple.ai/research#download"));
-        assert!(WELCOME_EMAIL_HTML.contains("https://www.trymaple.ai/research#pricing"));
-        assert!(WELCOME_EMAIL_HTML.contains("https://www.trymaple.ai/apple-touch-icon.png"));
-        assert!(WELCOME_EMAIL_HTML.contains("Welcome to Maple</h1>"));
-        assert!(WELCOME_EMAIL_HTML.contains("Windows"));
-        assert!(!WELCOME_EMAIL_HTML.contains("maple-app-icon-rounded"));
-        assert!(!WELCOME_EMAIL_HTML.contains("#a855f7"));
-        assert!(!WELCOME_EMAIL_HTML.contains("Maple AI"));
+        assert_eq!(account_reply_to("Maple"), Some("support@trymaple.ai"));
+        let welcome = maple_templates::render(
+            Kind::Welcome,
+            "Maple",
+            "Maple",
+            "support@trymaple.ai",
+            "",
+            "",
+        );
+        assert_eq!(welcome.subject, "Welcome to Maple");
+        assert!(welcome.html.contains("href=\"https://trymaple.ai\""));
+        assert!(welcome
+            .html
+            .contains("<a href=\"https://www.trymaple.ai\"><img"));
+        for href in [
+            "https://www.trymaple.ai/pricing?utm_source=email&amp;utm_medium=email&amp;utm_campaign=welcome&amp;utm_content=see-plans",
+            "https://www.trymaple.ai/downloads?utm_source=email&amp;utm_medium=email&amp;utm_campaign=welcome&amp;utm_content=download-app",
+            "https://www.trymaple.ai/research?utm_source=email&amp;utm_medium=email&amp;utm_campaign=welcome&amp;utm_content=details",
+            "https://www.trymaple.ai/docs/proxy?utm_source=email&amp;utm_medium=email&amp;utm_campaign=welcome&amp;utm_content=proxy-docs",
+        ] {
+            assert!(welcome.html.contains(&format!("href=\"{href}\"")), "{href}");
+        }
+        assert!(welcome
+            .html
+            .contains("href=\"https://github.com/MaplePrivacyLabs/Maple\""));
+        assert!(!welcome.html.contains("research#download"));
+        assert!(!welcome.html.contains("research#pricing"));
+        assert!(!welcome.html.contains("OpenSecretCloud/Maple"));
+        assert!(welcome.html.contains("class=\"ink\" src=\"https://img.maple.ai/email/research-laptop.jpg\" width=\"536\" alt=\"Maple Research open on a laptop\""));
+        assert!(welcome
+            .html
+            .contains("app-icon.png\" width=\"48\" height=\"48\" alt=\"\""));
+        assert!(welcome
+            .html
+            .contains("footer-watermark-light.png\" width=\"600\" alt=\"\""));
+        assert!(welcome
+            .html
+            .contains("footer-watermark-dark.png\" width=\"600\" alt=\"\""));
+        assert!(welcome
+            .html
+            .contains("601 Congress Ave, Suite 250, Austin, TX 78701"));
+        assert!(welcome
+            .html
+            .contains("https://img.maple.ai/email/tile-welcome.png"));
+        assert!(!welcome.html.contains("tracking"));
+
+        for (kind, campaign, tag_count) in [
+            (Kind::Welcome, "welcome", 6),
+            (Kind::Verification, "verify-email", 2),
+            (Kind::PasswordReset, "password-reset", 2),
+            (Kind::PasswordResetConfirmation, "password-changed", 2),
+            (Kind::AccountDeletion, "delete-account", 2),
+            (Kind::AccountDeletionConfirmation, "account-deleted", 2),
+        ] {
+            let message = maple_templates::render(
+                kind,
+                "Maple",
+                "Maple",
+                "support@trymaple.ai",
+                "CODE",
+                "https://trymaple.ai/verify-email/CODE",
+            );
+            for (path, content) in [("", "footer-home"), ("/privacy", "footer-privacy")] {
+                let href = format!(
+                    "href=\"https://www.trymaple.ai{path}?utm_source=email&amp;utm_medium=email&amp;utm_campaign={campaign}&amp;utm_content={content}\""
+                );
+                assert!(message.html.contains(&href), "{href}");
+            }
+            assert_eq!(message.html.matches("utm_campaign=").count(), tag_count);
+            assert!(!message.html.contains("mailto:support@trymaple.ai?utm_"));
+            assert!(!message.html.contains("x.com/trymapleai?utm_"));
+            assert!(!message.html.contains("MaplePrivacyLabs/Maple?utm_"));
+            assert!(!message.html.contains("verify-email/CODE?utm_"));
+        }
+    }
+
+    #[test]
+    fn account_mail_keeps_sender_reply_to_and_html_payload() {
+        use super::with_account_reply_to;
+        use resend_rs::types::CreateEmailBaseOptions;
+
+        let maple = maple_templates::render(
+            Kind::Welcome,
+            "Maple",
+            "Maple",
+            "support@trymaple.ai",
+            "",
+            "",
+        );
+        let email = CreateEmailBaseOptions::new(
+            sender("Maple", "hello@email.trymaple.ai"),
+            ["you@example.com"],
+            maple.subject,
+        )
+        .with_html(&maple.html)
+        .with_scheduled_at("2026-10-08T19:15:00Z");
+        let payload = serde_json::to_value(with_account_reply_to(email, "Maple")).unwrap();
+        assert_eq!(payload["from"], "Maple <hello@email.trymaple.ai>");
+        assert_eq!(payload["to"], serde_json::json!(["you@example.com"]));
+        assert_eq!(
+            payload["reply_to"],
+            serde_json::json!(["support@trymaple.ai"])
+        );
+        assert!(payload["html"]
+            .as_str()
+            .unwrap()
+            .starts_with("<!DOCTYPE html>"));
+        assert_eq!(payload["scheduled_at"], "2026-10-08T19:15:00Z");
+        assert!(payload.get("text").is_none());
+    }
+
+    #[test]
+    fn maple_html_escapes_dynamic_values_in_text_and_attributes() {
+        let hostile = "<Org \"x\" & '{{TEAM}}'>";
+        let url = "https://example.test/path?x=\"<>&";
+        let msg = maple_templates::render(
+            Kind::Verification,
+            hostile,
+            hostile,
+            "help@example.test",
+            hostile,
+            url,
+        );
+        assert!(msg
+            .html
+            .contains("&lt;Org &quot;x&quot; &amp; &#x27;{{TEAM}}&#x27;&gt;"));
+        assert!(msg
+            .html
+            .contains("href=\"https://example.test/path?x=&quot;&lt;&gt;&amp;\""));
+        assert!(!msg.html.contains(hostile));
+        assert!(!msg.html.contains(url));
+        assert!(!msg.html.contains("<Org"));
+    }
+
+    // The comparison script sets this to capture exactly what the Rust renderer
+    // emits. No Resend client or network call is involved.
+    #[test]
+    fn dump_maple_html_for_preview_comparison() {
+        let Some(path) = std::env::var_os("MAPLE_EMAIL_DUMP_DIR") else {
+            return;
+        };
+        std::fs::create_dir_all(&path).unwrap();
+        let samples = [
+            ("welcome", Kind::Welcome, "", ""),
+            ("verification", Kind::Verification, VERIFY_CODE, VERIFY_URL),
+            ("password-reset", Kind::PasswordReset, RESET_CODE, ""),
+            (
+                "password-reset-confirmation",
+                Kind::PasswordResetConfirmation,
+                "",
+                "",
+            ),
+            ("account-deletion", Kind::AccountDeletion, DELETE_CODE, ""),
+            (
+                "account-deletion-confirmation",
+                Kind::AccountDeletionConfirmation,
+                "",
+                "",
+            ),
+        ];
+        for (slug, kind, code, url) in samples {
+            let message =
+                maple_templates::render(kind, "Maple", "Maple", "support@trymaple.ai", code, url);
+            std::fs::write(
+                std::path::Path::new(&path).join(format!("{slug}.html")),
+                message.html,
+            )
+            .unwrap();
+        }
     }
 
     #[test]
@@ -1156,20 +1245,5 @@ mod tests {
             "EvilBcc xyz a <hi@acme.test>"
         );
         assert_eq!(sender("<>", "hi@acme.test"), "hi@acme.test");
-    }
-
-    #[test]
-    fn other_project_mail_keeps_the_organization_signoff() {
-        assert_eq!(account_team_name("Other", "OpenSecret"), "OpenSecret");
-        assert_eq!(account_support_email("Other"), "support@opensecret.cloud");
-        assert_eq!(account_mark_html("Other"), "");
-    }
-
-    #[test]
-    fn maple_replies_go_to_support() {
-        use super::account_reply_to;
-
-        assert_eq!(account_reply_to("Maple"), Some("support@trymaple.ai"));
-        assert_eq!(account_reply_to("Other"), None);
     }
 }
