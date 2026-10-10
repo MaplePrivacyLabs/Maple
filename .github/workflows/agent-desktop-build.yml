@@ -112,7 +112,7 @@ jobs:
       contents: read
       id-token: write
       attestations: write
-    runs-on: macos-26-xlarge
+    runs-on: macos-26
     timeout-minutes: 120
     strategy:
       fail-fast: false

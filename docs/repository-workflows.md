@@ -64,7 +64,9 @@ release work, and report the tag and commit before publishing.
 
 Unsigned Research desktop/iOS PR builds and Agent release-binary jobs use
 explicit ARM64 `blacksmith-6vcpu-macos-26` runners. Other macOS jobs retain
-`macos-26` or `macos-26-xlarge` runners. The Agent's final signed-package
+`macos-26` or `macos-26-xlarge` runners. Agent preview packaging and protected
+signing use standard GitHub `macos-26` runners to assemble prebuilt binaries.
+The Agent's final signed-package
 provenance identifies the GitHub packaging/signing job; Blacksmith is trusted
 for prebuilt binary integrity. Research
 desktop and iOS builds select stable Xcode 26.5, build `17F42`, from
