@@ -79,6 +79,17 @@ version/build and artifact inputs, and validating desktop and iOS packaging.
 Retiring a CI host image does not raise the shipped client's deployment
 targets: Research still supports macOS 13.4 and iOS 16.0.
 
+## Windows runner pilot
+
+The Research unsigned Windows PR package uses
+`blacksmith-8vcpu-windows-2025` (Windows Server 2025, public beta). The job
+records its actual capacity and Visual Studio Build Tools installation before
+running the existing pinned Bun/Rust, ONNX Runtime, VC runtime DLL staging,
+and NSIS build. Its cache remains restore-only, and downloaded package proofs
+are checked independently on a standard GitHub runner. Signed Windows master
+and release builds remain on GitHub's `windows-2025`; this pilot does not
+validate Azure signing, updater signing, or installed application behavior.
+
 ## SDK consumption
 
 Follow the [consumer version policy](sdk-publishing.md#consumer-version-policy).

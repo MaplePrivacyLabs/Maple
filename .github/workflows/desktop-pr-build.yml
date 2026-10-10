@@ -155,11 +155,22 @@ jobs:
   build-windows:
     needs: changes
     if: ${{ always() && !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.windows != 'false') }}
-    runs-on: windows-latest
+    runs-on: blacksmith-8vcpu-windows-2025
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # was v4
         with:
           persist-credentials: false
+
+      - name: Record Windows runner capacity and build tools
+        shell: pwsh
+        run: |
+          Write-Output "Image: $env:ImageOS $env:ImageVersion"
+          Get-CimInstance Win32_OperatingSystem | Select-Object Caption, Version, BuildNumber | ConvertTo-Json -Compress
+          Get-CimInstance Win32_Processor | Select-Object Name, NumberOfLogicalProcessors | ConvertTo-Json -Compress
+          Get-CimInstance Win32_ComputerSystem | Select-Object TotalPhysicalMemory | ConvertTo-Json -Compress
+          Get-PSDrive -PSProvider FileSystem | Select-Object Name, Used, Free | ConvertTo-Json -Compress
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+          & $vswhere -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -format json
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@f4d14e03ff726c06358e5557344e1da148b56cf7 # was v1
