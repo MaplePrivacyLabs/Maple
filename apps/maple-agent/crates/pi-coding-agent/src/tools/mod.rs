@@ -51,7 +51,7 @@ pub use image::{
 };
 pub use ls::{LS_SNIPPET, LocalLsOperations, LsOperations, LsTool, LsToolOptions};
 pub use mutation_queue::with_file_mutation_queue;
-pub use output::{OutputAccumulator, OutputSnapshot};
+pub use output::{OutputAccumulator, OutputSnapshot, write_output_file};
 pub use path_utils::{expand_path, resolve_read_path, resolve_to_cwd};
 pub use read::{
     LocalReadOperations, READ_GUIDELINES, READ_SNIPPET, ReadOperations, ReadTool, ReadToolOptions,
@@ -61,8 +61,8 @@ pub use shell::{
     powershell_config, set_env_var, shell_config, shell_env,
 };
 pub use truncate::{
-    DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, GREP_MAX_LINE_LENGTH, TruncatedBy, TruncationResult,
-    format_size, truncate_head, truncate_line, truncate_tail,
+    DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, GREP_MAX_LINE_LENGTH, MiddleTruncation, TruncatedBy,
+    TruncationResult, format_size, truncate_head, truncate_line, truncate_middle, truncate_tail,
 };
 pub use write::{
     LocalWriteOperations, WRITE_GUIDELINES, WRITE_SNIPPET, WriteOperations, WriteTool,

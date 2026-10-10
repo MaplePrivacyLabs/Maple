@@ -190,6 +190,53 @@ pub fn truncate_tail(content: &str, max_lines: usize, max_bytes: usize) -> Trunc
     }
 }
 
+/// Text with its middle cut out to fit `max_bytes`, as Pi's `truncateMiddle` cuts it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MiddleTruncation {
+    /// The head and tail kept, joined by a `…N chars truncated…` marker.
+    pub content: String,
+    pub truncated: bool,
+    /// Characters removed from the middle.
+    pub removed_chars: usize,
+    pub total_bytes: usize,
+    pub total_lines: usize,
+}
+
+/// Keep the first and last halves of `max_bytes` and mark what was removed between them,
+/// as Codex and Pi cut long MCP results. Cuts fall on character boundaries.
+pub fn truncate_middle(content: &str, max_bytes: usize) -> MiddleTruncation {
+    let total_lines = split_lines_for_counting(content).len();
+    if content.len() <= max_bytes {
+        return MiddleTruncation {
+            content: content.to_string(),
+            truncated: false,
+            removed_chars: 0,
+            total_bytes: content.len(),
+            total_lines,
+        };
+    }
+    let mut head_end = max_bytes / 2;
+    while !content.is_char_boundary(head_end) {
+        head_end -= 1;
+    }
+    let mut tail_start = content.len() - (max_bytes - max_bytes / 2);
+    while !content.is_char_boundary(tail_start) {
+        tail_start += 1;
+    }
+    let removed_chars = content[head_end..tail_start].chars().count();
+    MiddleTruncation {
+        content: format!(
+            "{}…{removed_chars} chars truncated…{}",
+            &content[..head_end],
+            &content[tail_start..]
+        ),
+        truncated: true,
+        removed_chars,
+        total_bytes: content.len(),
+        total_lines,
+    }
+}
+
 /// `line` cut to `max_chars` characters, marked when it was cut, and whether it was.
 pub fn truncate_line(line: &str, max_chars: usize) -> (String, bool) {
     match line.char_indices().nth(max_chars) {
@@ -265,6 +312,24 @@ mod tests {
             truncate_line("héllo world", 5),
             ("héllo... [truncated]".to_string(), true)
         );
+    }
+
+    #[test]
+    fn the_middle_is_cut_out_at_characters() {
+        let kept = truncate_middle("short\ntext", 64);
+        assert!(!kept.truncated);
+        assert_eq!(
+            (kept.content.as_str(), kept.total_lines),
+            ("short\ntext", 2)
+        );
+
+        let cut = truncate_middle("aaaa€€€€bbbb", 8);
+        assert!(cut.truncated);
+        // Four bytes from each end, moved off the middle of a three-byte character.
+        assert_eq!(cut.content, "aaaa…4 chars truncated…bbbb");
+        assert_eq!((cut.removed_chars, cut.total_bytes), (4, 20));
+        let cut = truncate_middle("a€€b", 5);
+        assert_eq!(cut.content, "a…2 chars truncated…b");
     }
 
     #[test]

@@ -276,6 +276,18 @@ pub(crate) fn create_output_file(prefix: &str, extension: &str) -> io::Result<(P
     create_output_file_in(&std::env::temp_dir(), prefix, extension)
 }
 
+/// Save `data` to a new private output file, as Pi's `writeOutputFile` does for the full
+/// text of a cut result or a binary resource, and return its path. `extension` includes
+/// the dot.
+pub fn write_output_file(prefix: &str, extension: &str, data: &[u8]) -> io::Result<PathBuf> {
+    let (path, mut file) = create_output_file(prefix, extension)?;
+    if let Err(error) = file.write_all(data).and_then(|()| file.flush()) {
+        let _ = std::fs::remove_file(&path);
+        return Err(error);
+    }
+    Ok(path)
+}
+
 fn create_output_file_in(dir: &Path, prefix: &str, extension: &str) -> io::Result<(PathBuf, File)> {
     loop {
         let path = dir.join(format!(
@@ -347,6 +359,14 @@ mod tests {
         let snapshot = output.snapshot(true);
         assert!(!snapshot.truncation.truncated);
         assert!(snapshot.full_output_path.is_none());
+    }
+
+    #[test]
+    fn written_output_files_hold_the_data() {
+        let path = write_output_file("test-write", ".txt", b"full text").unwrap();
+        assert!(path.to_string_lossy().ends_with(".txt"));
+        assert_eq!(std::fs::read(&path).unwrap(), b"full text");
+        std::fs::remove_file(path).unwrap();
     }
 
     #[test]
