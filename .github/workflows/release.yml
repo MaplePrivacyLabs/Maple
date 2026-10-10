@@ -197,7 +197,7 @@ jobs:
 
       - name: Show sccache stats
         if: always()
-        run: nix develop --no-update-lock-file .#${{ matrix.nix_shell }} -c sccache --show-stats
+        run: nix develop --no-update-lock-file .#${{ matrix.nix_shell }} -c ./scripts/ci/sccache-stats.sh
 
       - name: Collect desktop release checksums
         run: |
@@ -434,7 +434,7 @@ jobs:
 
       - name: Show sccache stats
         if: always()
-        run: nix develop --no-update-lock-file .#android -c sccache --show-stats
+        run: nix develop --no-update-lock-file .#android -c ./scripts/ci/sccache-stats.sh
 
       - name: Collect Android release checksums
         run: |

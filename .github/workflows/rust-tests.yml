@@ -70,4 +70,4 @@ jobs:
 
       - name: Show sccache stats
         if: always()
-        run: nix develop --no-update-lock-file .#ci -c sccache --show-stats
+        run: nix develop --no-update-lock-file .#ci -c ./scripts/ci/sccache-stats.sh

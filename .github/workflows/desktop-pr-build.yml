@@ -42,7 +42,7 @@ jobs:
 
       - name: Show sccache stats
         if: always()
-        run: nix develop --no-update-lock-file .#ci -c sccache --show-stats
+        run: nix develop --no-update-lock-file .#ci -c ./scripts/ci/sccache-stats.sh
 
       - name: Upload macOS PR Build
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # was v4
@@ -135,7 +135,7 @@ jobs:
 
       - name: Show sccache stats
         if: always()
-        run: nix develop --no-update-lock-file .#desktop-linux -c sccache --show-stats
+        run: nix develop --no-update-lock-file .#desktop-linux -c ./scripts/ci/sccache-stats.sh
 
       - name: Upload Linux PR Builds
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # was v4

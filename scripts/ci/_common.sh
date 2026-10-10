@@ -114,7 +114,8 @@ configure_sccache() {
 
     case "${os}" in
       darwin)
-        socket_root="${TMPDIR:-/tmp}"
+        # Nix creates a different TMPDIR for each workflow step.
+        socket_root="${RUNNER_TEMP:-${TMPDIR:-/tmp}}"
         export SCCACHE_SERVER_UDS="${SCCACHE_SERVER_UDS:-${socket_root%/}/maple-sccache-${os}.sock}"
         export SCCACHE_DIR="${SCCACHE_DIR:-${HOME}/Library/Caches/Mozilla.sccache}"
         ;;
@@ -127,7 +128,7 @@ configure_sccache() {
         fi
         ;;
       *)
-        socket_root="${TMPDIR:-/tmp}"
+        socket_root="${RUNNER_TEMP:-${TMPDIR:-/tmp}}"
         export SCCACHE_SERVER_UDS="${SCCACHE_SERVER_UDS:-${socket_root%/}/maple-sccache-${os}.sock}"
         export SCCACHE_DIR="${SCCACHE_DIR:-${HOME}/.cache/sccache}"
         ;;
