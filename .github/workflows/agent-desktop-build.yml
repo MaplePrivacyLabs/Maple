@@ -65,7 +65,7 @@ jobs:
     name: Build macOS binary (${{ matrix.variant }})
     needs: changes
     if: ${{ always() && !cancelled() && ((github.event_name == 'pull_request' && (needs.changes.result != 'success' || needs.changes.outputs.agent != 'false')) || (github.repository == 'MaplePrivacyLabs/Maple' && github.ref == 'refs/heads/master' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch'))) }}
-    runs-on: macos-26
+    runs-on: blacksmith-6vcpu-macos-26
     timeout-minutes: 120
     strategy:
       fail-fast: false
@@ -112,7 +112,7 @@ jobs:
       contents: read
       id-token: write
       attestations: write
-    runs-on: macos-26-xlarge
+    runs-on: macos-26
     timeout-minutes: 120
     strategy:
       fail-fast: false
