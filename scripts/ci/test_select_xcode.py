@@ -150,6 +150,8 @@ resolve_xcode_developer_dir
                         self.assertNotIn("Xcode_26.5_beta", step.get("run", ""))
                         continue
                     selectors.append((path.name, job_id))
+                    if "if" in step:
+                        self.assertEqual(step["if"], "runner.os == 'macOS'", (path.name, job_id))
                     checkout = [s for s in steps[:index] if s.get("uses", "").startswith("actions/checkout@")]
                     self.assertEqual(len(checkout), 1, (path.name, job_id))
                     self.assertIs(checkout[0]["with"]["persist-credentials"], False)

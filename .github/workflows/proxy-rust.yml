@@ -91,7 +91,7 @@ jobs:
             archive: maple-proxy-linux-x86_64.tar.gz
           - runner: ubuntu-24.04-arm
             archive: maple-proxy-linux-aarch64.tar.gz
-          - runner: macos-26-xlarge
+          - runner: blacksmith-6vcpu-macos-26
             archive: maple-proxy-macos-aarch64.tar.gz
           - runner: windows-2025
             archive: maple-proxy-windows-x86_64.zip

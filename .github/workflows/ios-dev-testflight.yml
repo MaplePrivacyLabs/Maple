@@ -22,7 +22,7 @@ jobs:
       github.ref == 'refs/heads/master' &&
       (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
     environment: apple-signing
-    runs-on: macos-26-xlarge
+    runs-on: blacksmith-6vcpu-macos-26
     timeout-minutes: 240
     permissions:
       contents: read
@@ -126,7 +126,7 @@ jobs:
       (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
     needs: build-ios-dev
     environment: apple-signing
-    runs-on: macos-26-xlarge
+    runs-on: macos-26
     timeout-minutes: 45
     permissions:
       contents: read

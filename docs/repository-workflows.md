@@ -74,14 +74,16 @@ persistent vendor disks or Docker builders are configured by these workflows.
 
 ## macOS runners and Apple toolchain
 
-Unsigned Research desktop/iOS PR builds and Agent release-binary jobs use
-explicit ARM64 `blacksmith-6vcpu-macos-26` runners. Other macOS jobs retain
-`macos-26` or `macos-26-xlarge` runners. Agent preview packaging and protected
-signing use standard GitHub `macos-26` runners to assemble prebuilt binaries.
-The Agent's final signed-package
-provenance identifies the GitHub packaging/signing job; Blacksmith is trusted
-for prebuilt binary integrity. Research
-desktop and iOS builds select stable Xcode 26.5, build `17F42`, from
+Research desktop/iOS builds, iOS ONNX cache warming, Agent release-binary jobs
+and native proxy macOS archives use ARM64 `blacksmith-6vcpu-macos-26` runners.
+Artifact verifiers, TestFlight uploads, and Agent preview packaging/protected
+signing use standard GitHub `macos-26` runners. Research signed builders retain
+their existing `desktop-signing` or `apple-signing` environment, so their
+provider receives that environment's secret context. Existing master pushes
+can build and upload independent Dev/Prod TestFlight artifacts after verification.
+The Agent's final signed-package provenance identifies its GitHub
+packaging/signing job; Blacksmith is trusted for prebuilt binary integrity.
+Research desktop and iOS builds select stable Xcode 26.5, build `17F42`, from
 [`scripts/ci/apple-toolchain.json`](../scripts/ci/apple-toolchain.json) through
 the shared selector, which aligns the runner's active `xcode-select` directory
 and `DEVELOPER_DIR`; the root Nix shell exports the same version and build

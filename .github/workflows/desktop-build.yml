@@ -18,7 +18,7 @@ jobs:
     environment: desktop-signing
     needs: changes
     if: ${{ always() && !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.frontend != 'false' || needs.changes.outputs.macos != 'false') }}
-    runs-on: macos-26-xlarge
+    runs-on: blacksmith-6vcpu-macos-26
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # was v4
         with:
@@ -192,7 +192,7 @@ jobs:
   verify-macos-desktop-artifacts:
     needs:
       - build-macos
-    runs-on: macos-26-xlarge
+    runs-on: macos-26
     permissions:
       contents: read
     steps:

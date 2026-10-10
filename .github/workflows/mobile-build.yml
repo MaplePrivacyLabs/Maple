@@ -34,7 +34,7 @@ jobs:
       github.ref == 'refs/heads/master' &&
       (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
       (needs.changes.result != 'success' || needs.changes.outputs.frontend != 'false' || needs.changes.outputs.ios != 'false')
-    runs-on: macos-26-xlarge
+    runs-on: blacksmith-6vcpu-macos-26
     permissions:
       contents: read
       id-token: write
@@ -114,7 +114,7 @@ jobs:
 
   verify-ios-artifacts:
     needs: build-ios
-    runs-on: macos-26-xlarge
+    runs-on: macos-26
     permissions:
       contents: read
     steps:
@@ -145,7 +145,7 @@ jobs:
       github.ref == 'refs/heads/master' &&
       (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
     needs: verify-ios-artifacts
-    runs-on: macos-26-xlarge
+    runs-on: macos-26
     permissions:
       contents: read
     steps:
@@ -204,7 +204,7 @@ jobs:
       github.ref == 'refs/heads/master' &&
       (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
       (needs.changes.result != 'success' || needs.changes.outputs.ios_onnx != 'false')
-    runs-on: macos-26-xlarge
+    runs-on: blacksmith-6vcpu-macos-26
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # was v4
         with:
