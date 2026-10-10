@@ -426,7 +426,10 @@ the account's, and the desktop's own tools (the plan, questions, external
 agents and computer use) are left out. Tasks created over ACP stay out of
 the desktop task list. Maple has no session modes: every tool call runs
 without asking, and a project with skills or instructions of its own asks
-the client's user once whether to trust it.
+the client's user once whether to trust it. Use a task in one place at a
+time: the desktop app and `maple-agent acp` are separate processes, and
+running one task from both at once can split its history. Both parts stay
+in the task's file, but only one shows.
 
 ### `maple-agent proxy`
 
@@ -476,7 +479,7 @@ ignored. See [build profiles](docs/release-profiles.md).
 | `MAPLE_BILLING_API_URL` | Maple billing API. | `https://billing.opensecret.cloud` |
 | `MAPLE_CLIENT_ID` | OpenSecret client id (UUID). | Maple's id |
 | `MAPLE_MODEL` | Model to select at start. | Runtime default |
-| `MAPLE_CONTEXT_LIMIT` | Context window size in tokens, when the model catalog does not report one. | Catalog value |
+| `MAPLE_CONTEXT_LIMIT` | Context window in tokens, used instead of the model catalog's for compaction and the context ring. | Catalog value |
 | `MAPLE_SHELL` | The bash the agent's `bash` tool runs. | `/bin/bash`, else `bash` on PATH (Windows: Git Bash; without it, the `powershell` tool) |
 | `MAPLE_UPDATE_REPO` | GitHub `owner/repo` containing stable `maple-agent-vX.Y.Z` releases. | `MaplePrivacyLabs/Maple` |
 | `MAPLE_DISABLE_UPDATE_CHECK` | `1` turns the release check off. | unset |
