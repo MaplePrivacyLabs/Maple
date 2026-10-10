@@ -637,16 +637,16 @@ impl AgentSession {
         self.core.clone().prompt(text, options).await
     }
 
-    /// Deliver `text` after the current turn's tool calls.
-    pub fn steer(&self, text: &str) {
+    /// Deliver `text` and `images` after the current turn's tool calls.
+    pub fn steer(&self, text: &str, images: Vec<ImageContent>) {
         self.core
-            .queue(StreamingBehavior::Steer, user_message(text, Vec::new()));
+            .queue(StreamingBehavior::Steer, user_message(text, images));
     }
 
-    /// Deliver `text` once the agent would otherwise stop.
-    pub fn follow_up(&self, text: &str) {
+    /// Deliver `text` and `images` once the agent would otherwise stop.
+    pub fn follow_up(&self, text: &str, images: Vec<ImageContent>) {
         self.core
-            .queue(StreamingBehavior::FollowUp, user_message(text, Vec::new()));
+            .queue(StreamingBehavior::FollowUp, user_message(text, images));
     }
 
     /// Remove queued messages; returns the steering and follow-up texts.

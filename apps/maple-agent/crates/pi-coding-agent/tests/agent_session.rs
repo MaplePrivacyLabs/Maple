@@ -7,7 +7,7 @@ use std::time::Duration;
 use common::{Harness, echo_tool, entry_kinds, last_assistant_text, record, roles};
 use pi_agent_core::AgentEvent;
 use pi_ai::faux::{FauxProvider, faux_message};
-use pi_ai::{AssistantContent, Message, StopReason, ThinkingLevel, Usage};
+use pi_ai::{AssistantContent, Content, ImageContent, Message, StopReason, ThinkingLevel, Usage};
 use pi_coding_agent::resources::{PromptTemplate, ResourceSource, Resources};
 use pi_coding_agent::session::{EntryKind, SessionEntry, SessionHeader, SessionManager};
 use pi_coding_agent::store::{JsonlStore, MemoryStore, SessionStore};
@@ -389,8 +389,14 @@ async fn the_host_can_steer_and_queue_follow_ups_during_a_run() {
             AgentSessionEvent::Agent(AgentEvent::ToolExecutionStart { .. })
         ) && !queued.swap(true, Ordering::SeqCst)
         {
-            host.steer("use b");
-            host.follow_up("then summarize");
+            host.steer(
+                "use b",
+                vec![ImageContent {
+                    data: "aW1n".into(),
+                    mime_type: "image/png".into(),
+                }],
+            );
+            host.follow_up("then summarize", Vec::new());
         }
     });
 
@@ -405,6 +411,18 @@ async fn the_host_can_steer_and_queue_follow_ups_during_a_run() {
         .map(SessionMessage::text)
         .collect();
     assert_eq!(texts, ["go", "use b", "then summarize"]);
+    // The steered image reaches the model with its text.
+    let steered = harness.faux.requests()[1]
+        .context
+        .messages
+        .iter()
+        .rev()
+        .find_map(|message| match message {
+            Message::User(user) => Some(user.content.clone()),
+            _ => None,
+        })
+        .unwrap();
+    assert!(matches!(&steered[1], Content::Image(image) if image.data == "aW1n"));
     let events = events.lock().unwrap();
     assert!(events.contains(&"queue:1:1".to_string()));
     assert!(events.contains(&"queue:0:0".to_string()));
