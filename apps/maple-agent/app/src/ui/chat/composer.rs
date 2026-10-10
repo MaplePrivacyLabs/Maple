@@ -1,7 +1,6 @@
 //! The chat pane chrome: the header and its menus, the slash palette,
 //! the plan and side-question cards, and the composer itself.
 
-use crate::settings::PermissionMode;
 use std::sync::Arc;
 
 use gpui::{Context, Div, IntoElement, SharedString, Window, div, prelude::*, px};
@@ -259,29 +258,6 @@ impl ChatScreen {
                     item
                 }
             }))
-    }
-
-    fn mode_menu(&self) -> Menu<Self> {
-        Menu::new("mode-menu", px(320.))
-            .label("Approval mode")
-            .application_vim(self.application_vim_enabled)
-            .items(
-                [PermissionMode::Auto, PermissionMode::SmartApprove].map(|mode| {
-                    MenuItem::new(
-                        SharedString::from(format!("mode-{}", mode.as_str())),
-                        mode.label(),
-                        move |this: &mut Self, _: &mut Window, cx: &mut Context<Self>| {
-                            this.permission_mode = mode;
-                            this.uses_default_permission_mode = false;
-                            this.apply_permission_mode(cx);
-                            cx.notify();
-                        },
-                    )
-                    .icon(mode.icon())
-                    .note(mode.note())
-                    .current(self.permission_mode == mode)
-                }),
-            )
     }
 
     /// The task's integrations, each with a switch. A server that still
@@ -657,7 +633,7 @@ impl ChatScreen {
                     .text_sm()
                     .font_weight(gpui::FontWeight::SEMIBOLD)
                     .text_color(gpui::rgb(theme::text_primary()))
-                    .child("Subagents"),
+                    .child("External agents"),
             )
             .child(
                 div()
@@ -975,21 +951,6 @@ impl ChatScreen {
                         window,
                         cx,
                         |this, _| this.model_menu(),
-                    ))
-                    .child(self.with_menu(
-                        ChatPopup::Mode,
-                        chip(
-                            "permission-mode-toggle",
-                            Some(self.permission_mode.icon()),
-                            self.permission_mode.label().to_string(),
-                            true,
-                            self.popup.is_open(&ChatPopup::Mode),
-                            false,
-                        ),
-                        Placement::AboveStart,
-                        window,
-                        cx,
-                        |this, _| this.mode_menu(),
                     ))
                     .child(self.with_menu(
                         ChatPopup::Integrations,

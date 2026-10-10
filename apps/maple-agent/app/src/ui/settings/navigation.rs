@@ -24,7 +24,6 @@ pub(super) enum SettingsRegion {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum GeneralTarget {
-    Permission,
     Web,
     Appearance,
     ChatFont,
@@ -125,7 +124,6 @@ impl SettingsScreen {
     pub(super) fn visible_application_targets(&self) -> Vec<SettingsTarget> {
         match self.section {
             Section::General => [
-                GeneralTarget::Permission,
                 GeneralTarget::Web,
                 GeneralTarget::Appearance,
                 GeneralTarget::ChatFont,
@@ -370,7 +368,6 @@ impl SettingsScreen {
 
     fn activate_general_target(&mut self, target: GeneralTarget, cx: &mut Context<Self>) {
         match target {
-            GeneralTarget::Permission => self.toggle_setting_menu(SettingMenu::Permission, cx),
             GeneralTarget::Web => self.toggle_web_default(cx),
             GeneralTarget::Appearance => self.toggle_setting_menu(SettingMenu::Appearance, cx),
             GeneralTarget::ChatFont => self.toggle_setting_menu(SettingMenu::ChatFont, cx),
@@ -703,8 +700,7 @@ mod tests {
                             ),
                     ),
                     setup_available: true,
-                    standalone_version: Some("0.23.2".to_string()),
-                    backend: Some(maple_agent::agent::AgentIntegrationBackend::External),
+                    backend: Some(maple_agent::agent::AgentIntegrationBackend::Embedded),
                 },
                 // An undetected integration contributes no focus target.
                 maple_agent::agent::AgentIntegration {
@@ -717,7 +713,6 @@ mod tests {
                     detail: None,
                     permissions: None,
                     setup_available: false,
-                    standalone_version: None,
                     backend: None,
                 },
             ]);
@@ -857,10 +852,16 @@ mod tests {
                     "entering the pane defers reveal until its selected row is rendered"
                 );
 
+                // General starts at the web toggle: there is no permission
+                // row to land on first.
+                assert_eq!(
+                    this.visible_application_targets().first(),
+                    Some(&SettingsTarget::General(GeneralTarget::Web))
+                );
                 this.move_application_selection(1, 1, window, cx);
                 assert_eq!(
                     this.application_vim.target,
-                    Some(SettingsTarget::General(GeneralTarget::Web))
+                    Some(SettingsTarget::General(GeneralTarget::Appearance))
                 );
                 assert!(
                     this.application_reveal_pending,
@@ -1007,6 +1008,27 @@ mod tests {
         cx.update(|window, _| window.activate_window());
         cx.run_until_parked();
         (settings, cx)
+    }
+
+    /// The General pane starts at the web toggle: there is no "Default
+    /// permission mode" row because every tool call runs without asking.
+    #[gpui::test]
+    fn general_settings_have_no_permission_row(cx: &mut TestAppContext) {
+        let (settings, cx) = dropdown_window(cx, true);
+        assert!(
+            cx.debug_bounds("setting-value-default-permission-mode")
+                .is_none()
+        );
+        assert!(
+            cx.debug_bounds("setting-value-appearance").is_some(),
+            "the other General rows still render"
+        );
+        settings.update(cx, |this, _| {
+            assert_eq!(
+                this.visible_application_targets().first(),
+                Some(&SettingsTarget::General(GeneralTarget::Web))
+            );
+        });
     }
 
     #[gpui::test]

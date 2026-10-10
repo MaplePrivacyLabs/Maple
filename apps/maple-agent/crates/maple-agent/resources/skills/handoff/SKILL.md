@@ -11,7 +11,8 @@ metadata:
 Maple can start an external coding agent (Codex or Claude Code) inside this project.
 The agent runs with its own context and its own account. It does not see
 this conversation. It runs under its own sandbox and approval settings;
-whatever it asks approval for comes to the user through Maple.
+Maple accepts its approval requests, and its questions still come to the
+user through Maple.
 
 ## Steps
 

@@ -9,8 +9,8 @@ use gpui::{Context, Window};
 
 use super::navigation::ApplicationVimCommand;
 use super::{
-    AllowPermission, ChatEscape, ChatScreen, ChooseProject, CopySelection, FocusSearch, NewTask,
-    NextTask, OpenAppSettings, OpenSettings, PickQuestionOption, PreviousTask, SelectAllTranscript,
+    ChatEscape, ChatScreen, ChooseProject, CopySelection, FocusSearch, NewTask, NextTask,
+    OpenAppSettings, OpenSettings, PickQuestionOption, PreviousTask, SelectAllTranscript,
     ToggleArchived, ToggleSidebar,
 };
 
@@ -26,7 +26,6 @@ pub(super) enum ChatCommand {
     OpenSettings,
     PickQuestionOption { index: usize },
     PreviousTask,
-    RespondPermission { allow: bool },
     SelectAllTranscript,
     ToggleArchived,
     ToggleSidebar,
@@ -66,20 +65,10 @@ impl ChatScreen {
                 self.pick_and_submit_question_option(index, cx)
             }
             ChatCommand::PreviousTask => self.step_task(-1, cx),
-            ChatCommand::RespondPermission { allow } => self.respond_permission(allow, cx),
             ChatCommand::SelectAllTranscript => self.select_all_text(cx),
             ChatCommand::ToggleArchived => self.toggle_archived_visibility(cx),
             ChatCommand::ToggleSidebar => self.toggle_sidebar_visibility(cx),
         }
-    }
-
-    pub(super) fn allow_permission(
-        &mut self,
-        _: &AllowPermission,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.execute_command(ChatCommand::RespondPermission { allow: true }, window, cx);
     }
 
     pub(super) fn chat_escape(

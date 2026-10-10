@@ -1,8 +1,6 @@
 use crate::agent::{
     AGENT_TOOL_CONTEXT_INACTIVE_ERROR, AgentCreateSessionRequest, AgentHostEventPolicy,
-    AgentPermissionDecision, AgentPermissionRequest, AgentRunEvent, AgentRunPermissionResponder,
-    AgentRunTerminal, AgentRuntimeHandle, AgentSendMessageRequest, AgentTaskState,
-    AgentTimelineItem,
+    AgentRunEvent, AgentRunTerminal, AgentRuntimeHandle, AgentSendMessageRequest, AgentTaskState,
 };
 mod config;
 mod convert;
@@ -10,24 +8,22 @@ mod handler;
 mod session;
 mod transport;
 
-pub use config::{AgentAcpConfig, AgentAcpPermissionMode, load_acp_config};
+pub use config::{AgentAcpConfig, load_acp_config};
 use config::{AgentAcpStats, normalize_config};
 use convert::{
     AcpToolProjection, COMPACTION_COMPLETED_NOTICE, MAX_ACP_ERROR_CHARS, acp_available_commands,
-    acp_config_options, acp_permission_decision, acp_permission_options, acp_permission_tool_call,
-    acp_session_config_options, acp_session_modes, acp_usage, bounded_chars, event_error_text,
+    acp_config_options, acp_session_config_options, acp_usage, bounded_chars, event_error_text,
     internal_acp_error, outbound_error, parse_slash_command, project_trust_elicitation_request,
     project_trust_permission_decision, project_trust_permission_options, prompt_images,
-    prompt_result_from_terminal, prompt_text, subagent_tool_update, timeline_update,
+    prompt_result_from_terminal, prompt_text, timeline_update,
 };
 use handler::{AcpCallerSessionFields, MapleAcpHandler};
 use session::{
-    ALLOWED_BRIDGE_ENV, AcpConnectionContext, AcpPermissionResolution, AcpProjectTrustResolution,
-    AcpPromptState, AcpSession, AcpSessionMode, AcpSessionOperation, SharedRuntimeStart,
-    UnpublishedAcpSession, bridge_tool_context_spec, canonical_session_id,
-    canonical_session_id_text, close_registration_may_be_released, ensure_acp_session_is_loadable,
-    ensure_allowed_project_root, filter_bridge_environment, has_buzz_credentials,
-    is_acp_loadable_session_mode, prepare_session_mcp,
+    ALLOWED_BRIDGE_ENV, AcpConnectionContext, AcpProjectTrustResolution, AcpPromptState,
+    AcpSession, AcpSessionOperation, SharedRuntimeStart, UnpublishedAcpSession,
+    bridge_tool_context_spec, canonical_session_id, canonical_session_id_text,
+    close_registration_may_be_released, ensure_allowed_project_root, filter_bridge_environment,
+    find_acp_session, has_buzz_credentials, prepare_session_mcp,
 };
 use transport::{
     AcpOutboundReservation, AcpOutboundSendError, AcpOutboundTracker, BoundedLineReader,
@@ -189,7 +185,6 @@ impl AcpConnectionContext {
         let (environment, transient_mcp_servers) =
             prepare_session_mcp(&bridge_environment, &request.mcp_servers)?;
         let tool_context = bridge_tool_context_spec(&environment).map_err(internal_acp_error)?;
-        let mode = AcpSessionMode::default();
         let created = self
             .agent
             .create_session_with_surface_context(
@@ -202,7 +197,6 @@ impl AcpConnectionContext {
                     ),
                     model: Some(model.clone()),
                     context_limit: None,
-                    mode: Some(mode.maple_mode().to_string()),
                     mcp_server_names: None,
                     system_prompt: caller.system_prompt,
                 }),
@@ -211,7 +205,7 @@ impl AcpConnectionContext {
                 self.lifetime.child_token(),
                 // The ACP caller is the only interactive surface for this task.
                 // Persisted history remains loadable in Maple Desktop, but live
-                // permission cards must never create a second approval broker.
+                // question cards must never open a second interactive surface.
                 AgentHostEventPolicy::Suppress,
             )
             .await
@@ -254,7 +248,6 @@ impl AcpConnectionContext {
                 prompted: false,
                 project_root: project_root.clone(),
                 project_trust_decision: project_trust.decision,
-                mode,
             },
         );
         operations.insert(session_id.clone(), AcpSessionOperation::new(&self.lifetime));
@@ -271,12 +264,7 @@ impl AcpConnectionContext {
         self.send_available_commands(cx, &session_id, &command_root)
             .await;
         Ok(NewSessionResponse::new(session_id)
-            .modes(acp_session_modes(AcpSessionMode::default()))
-            .config_options(acp_config_options(
-                &model,
-                &available_models,
-                AcpSessionMode::default(),
-            )))
+            .config_options(acp_config_options(&model, &available_models)))
     }
 
     async fn retire_session(&self, session_id: &str) {
@@ -334,20 +322,6 @@ impl AcpConnectionContext {
             session.context_limit = Some(limit);
         }
         limit
-    }
-
-    /// Save a caller-selected mode to the task row so a later connection
-    /// loads it. Runtime policy follows on the next prompt regardless,
-    /// because every prompt carries the live mode.
-    async fn persist_session_mode(
-        &self,
-        session_id: &str,
-        mode: AcpSessionMode,
-    ) -> Result<(), agent_client_protocol::Error> {
-        self.agent
-            .persist_session_permission_mode(session_id, mode.maple_mode())
-            .await
-            .map_err(internal_acp_error)
     }
 
     /// Soft-delete a task: archive it so it disappears from session lists
@@ -429,13 +403,9 @@ impl AcpConnectionContext {
             .list_sessions(Some(project_root_text.clone()))
             .await
             .map_err(internal_acp_error)?;
-        let persisted = ensure_acp_session_is_loadable(&persisted_sessions, &session_id)
+        let persisted = find_acp_session(&persisted_sessions, &session_id)
             .map_err(|error| agent_client_protocol::Error::invalid_request().data(error))?;
         let persisted_model = persisted.model.clone();
-        let session_mode = match persisted.mode.as_str() {
-            "auto" => AcpSessionMode::ApproveAll,
-            _ => AcpSessionMode::Interactive,
-        };
         let available_models = self.available_models().await?;
         if let Some(model) = persisted_model.as_ref()
             && !available_models.iter().any(|available| available == model)
@@ -545,7 +515,6 @@ impl AcpConnectionContext {
                 prompted: false,
                 project_root,
                 project_trust_decision: project_trust.decision,
-                mode: session_mode,
             },
         );
         drop(sessions);
@@ -570,14 +539,13 @@ impl AcpConnectionContext {
         drop(operation_guard);
         self.send_available_commands(cx, &session_id, &command_root)
             .await;
-        Ok(LoadSessionResponse::new()
-            .modes(acp_session_modes(session_mode))
-            .config_options(acp_session_config_options(
+        Ok(
+            LoadSessionResponse::new().config_options(acp_session_config_options(
                 &model,
                 &available_models,
                 message_count,
-                session_mode,
-            )))
+            )),
+        )
     }
 
     async fn list_sessions(
@@ -611,12 +579,11 @@ impl AcpConnectionContext {
         let visible = sessions
             .into_iter()
             .filter(|session| {
-                is_acp_loadable_session_mode(&session.mode)
-                    && ensure_allowed_project_root(
-                        Path::new(&session.project_root),
-                        &config.allowed_project_roots,
-                    )
-                    .is_ok()
+                ensure_allowed_project_root(
+                    Path::new(&session.project_root),
+                    &config.allowed_project_roots,
+                )
+                .is_ok()
             })
             .collect::<Vec<_>>();
         let start = request
@@ -764,13 +731,12 @@ impl AcpConnectionContext {
                     .data("ACP session is closing"),
             );
         }
-        let (response, pending_mode) = {
+        let response = {
             let mut sessions = self.sessions.lock().await;
             let session = sessions.get_mut(&session_id).ok_or_else(|| {
                 agent_client_protocol::Error::resource_not_found(Some(session_id.clone()))
                     .data("ACP session is not owned by this connection")
             })?;
-            let mut pending_mode: Option<AcpSessionMode> = None;
             let selected_value = request.value.as_value_id().ok_or_else(|| {
                 agent_client_protocol::Error::invalid_params()
                     .data("Maple ACP configuration options require a select value")
@@ -793,31 +759,19 @@ impl AcpConnectionContext {
                     session.model = model.to_string();
                     session.context_limit = None;
                 }
-                "mode" => {
-                    let mode =
-                        AcpSessionMode::parse(selected_value.0.as_ref()).ok_or_else(|| {
-                            agent_client_protocol::Error::invalid_params()
-                                .data("Unknown Maple ACP permission mode")
-                        })?;
-                    session.mode = mode;
-                    pending_mode = Some(mode);
-                }
                 _ => {
                     return Err(agent_client_protocol::Error::invalid_params()
                         .data("Unknown Maple ACP configuration option"));
                 }
             }
-            let response = SetSessionConfigOptionResponse::new(session.config_options());
-            (response, pending_mode)
+            SetSessionConfigOptionResponse::new(session.config_options())
         };
-        // Persist outside the sessions lock; the write only decides what a
-        // later connection loads, while every prompt carries the live mode.
-        if let Some(mode) = pending_mode {
-            self.persist_session_mode(&session_id, mode).await?;
-        }
         Ok(response)
     }
 
+    /// Maple advertises no session modes, so no mode id can be selected.
+    /// The route stays so a client that still sends one gets a clear
+    /// `invalid_params` answer instead of a method-not-found error.
     async fn set_mode(
         &self,
         request: SetSessionModeRequest,
@@ -843,15 +797,10 @@ impl AcpConnectionContext {
                     .data("ACP session is not available on this connection"),
             );
         }
-        let mode = AcpSessionMode::parse(request.mode_id.0.as_ref()).ok_or_else(|| {
-            agent_client_protocol::Error::invalid_params().data("Unknown Maple ACP permission mode")
-        })?;
-        self.persist_session_mode(&session_id, mode).await?;
-        let mut sessions = self.sessions.lock().await;
-        if let Some(session) = sessions.get_mut(&session_id) {
-            session.mode = mode;
-        }
-        Ok(SetSessionModeResponse::new())
+        Err(agent_client_protocol::Error::invalid_params().data(format!(
+            "Maple ACP has no session modes ('{}' cannot be selected): every tool call runs without asking",
+            request.mode_id.0
+        )))
     }
 
     async fn begin_prompt(
@@ -1071,7 +1020,7 @@ impl AcpConnectionContext {
             response = &mut response_future => Some(response),
         };
         let Some(response) = response else {
-            retain_cancelled_permission_request(response_future, reservation);
+            retain_cancelled_caller_request(response_future, reservation);
             return Ok(None);
         };
         drop(reservation);
@@ -1116,7 +1065,7 @@ impl AcpConnectionContext {
             .status(ToolCallStatus::Pending)
             .content(vec![ToolCallContent::from(ContentBlock::Text(
                 TextContent::new(format!(
-                    "Trusting '{}' allows Maple to use project-provided guidance, including agent skills. These instructions can influence how agents work and use tools. Normal tool permissions still apply.",
+                    "Trusting '{}' allows Maple to use project-provided guidance, including agent skills. These instructions can influence how agents work and use tools, and Maple runs every tool call without asking.",
                     project_root.display()
                 )),
             ))]);
@@ -1144,7 +1093,7 @@ impl AcpConnectionContext {
             response = &mut response_future => Some(response),
         };
         let Some(response) = response else {
-            retain_cancelled_permission_request(response_future, reservation);
+            retain_cancelled_caller_request(response_future, reservation);
             return Ok(None);
         };
         drop(reservation);
@@ -1248,81 +1197,6 @@ impl AcpConnectionContext {
         Ok(AcpProjectTrustResolution::Continue)
     }
 
-    async fn request_permission_from_caller(
-        &self,
-        cx: &ConnectionTo<Client>,
-        session_id: SessionId,
-        request: AgentPermissionRequest,
-        item: &AgentTimelineItem,
-        responder: &AgentRunPermissionResponder,
-        cancellation: &CancellationToken,
-    ) -> Result<AcpPermissionResolution, AcpOutboundSendError> {
-        let tool_call = acp_permission_tool_call(&request, item);
-        let permission_request =
-            RequestPermissionRequest::new(session_id, tool_call.into(), acp_permission_options());
-        let encoded_bytes = serde_json::to_vec(&permission_request)
-            .map_err(|error| {
-                AcpOutboundSendError::Transport(internal_acp_error(format!(
-                    "Failed to encode Maple ACP permission request: {error}"
-                )))
-            })?
-            .len();
-        // Permission requests use the same global event/byte budget as streamed
-        // notifications. Hold the reservation until the caller responds so a
-        // slow client cannot accumulate unbounded JSON-RPC request frames.
-        let reservation = self.outbound.reserve(encoded_bytes, cancellation).await?;
-        if cancellation.is_cancelled() {
-            cancel_maple_permission(responder, &request.request_id).await;
-            return Ok(AcpPermissionResolution::Cancelled);
-        }
-        let sent_request = cx.send_request(permission_request);
-        let mut response_future = Box::pin(sent_request.block_task());
-        let response = tokio::select! {
-            biased;
-            _ = cancellation.cancelled() => None,
-            response = &mut response_future => Some(response),
-        };
-        let Some(response) = response else {
-            // ACP v1 has no stable request-cancellation primitive. Stop Maple
-            // immediately, but keep consuming the already-sent JSON-RPC request
-            // and retain its outbound credits until the client replies or the
-            // connection closes. Otherwise a cancel-and-never-reply client can
-            // accumulate unbounded SDK correlation entries outside our limit.
-            cancel_maple_permission(responder, &request.request_id).await;
-            retain_cancelled_permission_request(response_future, reservation);
-            return Ok(AcpPermissionResolution::Cancelled);
-        };
-        drop(reservation);
-
-        let (decision, resolution) = match response {
-            Ok(response) => match acp_permission_decision(&response.outcome) {
-                Ok(AgentPermissionDecision::Cancel) => (
-                    AgentPermissionDecision::Cancel,
-                    AcpPermissionResolution::Cancelled,
-                ),
-                Ok(decision) => (decision, AcpPermissionResolution::Continue),
-                Err(error) => {
-                    cancel_maple_permission(responder, &request.request_id).await;
-                    return Err(AcpOutboundSendError::Transport(internal_acp_error(error)));
-                }
-            },
-            Err(error) => {
-                cancel_maple_permission(responder, &request.request_id).await;
-                return Err(AcpOutboundSendError::Transport(error));
-            }
-        };
-
-        if let Err(error) = responder.respond(request.request_id, decision).await {
-            if cancellation.is_cancelled() {
-                return Ok(AcpPermissionResolution::Cancelled);
-            }
-            return Err(AcpOutboundSendError::Transport(internal_acp_error(
-                format!("Failed to resolve Maple permission request: {error}"),
-            )));
-        }
-        Ok(resolution)
-    }
-
     #[allow(clippy::too_many_arguments)]
     async fn prompt(
         self: &Arc<Self>,
@@ -1350,7 +1224,7 @@ impl AcpConnectionContext {
                 return Err(error);
             }
         }
-        let (tool_context_access, model, session_mode, project_root) = {
+        let (tool_context_access, model, project_root) = {
             let sessions = self.sessions.lock().await;
             match sessions.get(&session_id) {
                 Some(session) => (
@@ -1360,7 +1234,6 @@ impl AcpConnectionContext {
                         .expect("a runnable ACP session must own a lease")
                         .access(),
                     session.model.clone(),
-                    session.mode,
                     session.project_root.clone(),
                 ),
                 None => {
@@ -1433,7 +1306,6 @@ impl AcpConnectionContext {
                     text: prompt,
                     model: Some(model.clone()),
                     context_limit: None,
-                    mode: Some(session_mode.maple_mode().to_string()),
                     vision_capable,
                     steer: false,
                     queue_id: None,
@@ -1481,13 +1353,6 @@ impl AcpConnectionContext {
             self.prompt_states.lock().await.remove(&session_id);
             return Err(agent_client_protocol::Error::internal_error()
                 .data("Maple did not create an ACP cancellation capability for this run"));
-        };
-        let Some(permission_responder) = run.permission_responder else {
-            prompt_lifetime.cancel();
-            let _ = run_cancellation.cancel().await;
-            self.prompt_states.lock().await.remove(&session_id);
-            return Err(agent_client_protocol::Error::internal_error()
-                .data("Maple did not create an ACP permission responder for this run"));
         };
         let prompt_registered = {
             let mut states = self.prompt_states.lock().await;
@@ -1647,54 +1512,6 @@ impl AcpConnectionContext {
                         }
                     }
                 }
-                Some(AgentRunEvent::PermissionRequested {
-                    request: permission,
-                    item,
-                }) => {
-                    match self
-                        .request_permission_from_caller(
-                            cx,
-                            protocol_session_id.clone(),
-                            permission,
-                            &item,
-                            &permission_responder,
-                            &prompt_lifetime,
-                        )
-                        .await
-                    {
-                        Ok(AcpPermissionResolution::Continue) => {}
-                        Ok(AcpPermissionResolution::Cancelled) => {
-                            cancel_after_result = true;
-                            break Ok(PromptResponse::new(StopReason::Cancelled));
-                        }
-                        Err(AcpOutboundSendError::UpdateTooLarge) => {
-                            cancel_after_result = true;
-                            let _ = run_cancellation.cancel().await;
-                            match self
-                                .send_final_agent_message(
-                                    cx,
-                                    protocol_session_id.clone(),
-                                    "Maple stopped this turn because one ACP permission request exceeded the 4 MiB transport limit.",
-                                    &self.lifetime,
-                                )
-                                .await
-                            {
-                                Ok(()) | Err(AcpOutboundSendError::UpdateTooLarge) => {
-                                    break Ok(PromptResponse::new(StopReason::EndTurn));
-                                }
-                                Err(AcpOutboundSendError::Cancelled) => {
-                                    break Ok(PromptResponse::new(StopReason::Cancelled));
-                                }
-                                Err(AcpOutboundSendError::Transport(error)) => break Err(error),
-                            }
-                        }
-                        Err(AcpOutboundSendError::Cancelled) => {
-                            cancel_after_result = true;
-                            break Ok(PromptResponse::new(StopReason::Cancelled));
-                        }
-                        Err(AcpOutboundSendError::Transport(error)) => break Err(error),
-                    }
-                }
                 Some(AgentRunEvent::Error(item)) => {
                     if let Some(message) = event_error_text(&item) {
                         match self
@@ -1765,34 +1582,11 @@ impl AcpConnectionContext {
                         Err(AcpOutboundSendError::Transport(error)) => break Err(error),
                     }
                 }
-                // A subagent has no place of its own in ACP, so its work
-                // rides the `delegate` tool call that owns it.
+                // External agents report through the host's event sink, not
+                // the run stream, so nothing arrives here for them.
                 Some(
-                    AgentRunEvent::SubagentStarted { id, task, .. }
-                    | AgentRunEvent::SubagentActivity { id, tool: task },
-                ) => {
-                    match self
-                        .send_session_update(
-                            cx,
-                            SessionNotification::new(
-                                protocol_session_id.clone(),
-                                subagent_tool_update(&id, task),
-                            ),
-                            &prompt_lifetime,
-                        )
-                        .await
-                    {
-                        Ok(()) | Err(AcpOutboundSendError::UpdateTooLarge) => {}
-                        Err(AcpOutboundSendError::Cancelled) => {
-                            cancel_after_result = true;
-                            break Ok(PromptResponse::new(StopReason::Cancelled));
-                        }
-                        Err(AcpOutboundSendError::Transport(error)) => break Err(error),
-                    }
-                }
-                // The end of a subagent is the end of its tool call, which
-                // carries the result. Replacing that content with a notice
-                // would drop what the caller came for.
+                    AgentRunEvent::SubagentStarted { .. } | AgentRunEvent::SubagentActivity { .. },
+                ) => {}
                 // A semantic title landing mid-run renames the task; keep
                 // the caller's session list in sync.
                 Some(AgentRunEvent::SessionUpdated(summary)) => {
@@ -2085,18 +1879,7 @@ impl AcpConnectionContext {
     }
 }
 
-async fn cancel_maple_permission(responder: &AgentRunPermissionResponder, request_id: &str) {
-    if let Err(error) = responder
-        .respond(request_id.to_string(), AgentPermissionDecision::Cancel)
-        .await
-    {
-        log::debug!(
-            "Maple ACP permission request {request_id} was already resolved while failing closed: {error}"
-        );
-    }
-}
-
-fn retain_cancelled_permission_request<F, T>(response: F, reservation: AcpOutboundReservation)
+fn retain_cancelled_caller_request<F, T>(response: F, reservation: AcpOutboundReservation)
 where
     F: std::future::Future<Output = T> + Send + 'static,
     T: Send + 'static,
@@ -2128,7 +1911,7 @@ mod tests {
     use super::session::completed_runtime_start;
     use super::transport::is_session_update_line;
     use super::*;
-    use crate::agent::{AgentRunUsage, AgentSessionSummary};
+    use crate::agent::{AgentRunUsage, AgentSessionSummary, AgentTimelineItem};
     use agent_client_protocol::schema::v1::{
         ClientCapabilities, ElicitationCapabilities, ElicitationFormCapabilities, McpServerStdio,
         SelectedPermissionOutcome,
@@ -2259,11 +2042,12 @@ mod tests {
     /// The stdio contract an editor depends on before it can do anything:
     /// `initialize` answers, `session/new` returns the mode list AND the model
     /// list, and the task it persists is loadable by a later connection.
-    /// Regression shape: any mismatch between the mode ACP maps onto and the
-    /// runtime's external-surface gates turns `session/new` (or `session/load`)
-    /// into an error and the editor loses the model list entirely.
+    /// `session/new` and `session/load` advertise no modes and offer the
+    /// model selector only. Regression shape: a gate on the persisted mode
+    /// turned `session/load` into an error and the editor lost the model list
+    /// entirely.
     #[tokio::test]
-    async fn stdio_surface_returns_modes_models_and_loads_persisted_sessions() {
+    async fn session_new_and_load_advertise_no_modes() {
         let agent = started_agent_runtime("acp-stdio").await;
         let project_root = agent.project_root.to_string_lossy().into_owned();
 
@@ -2299,17 +2083,18 @@ mod tests {
             .expect("session/new must return a session id")
             .to_string();
         assert!(!session_id.is_empty());
-        assert_eq!(
-            new_session["result"]["modes"]["currentModeId"], "interactive",
-            "a fresh session must start interactive: {new_session}"
+        assert!(
+            new_session["result"]["modes"].is_null(),
+            "a session advertises no modes: {new_session}"
         );
-        let mode_ids: Vec<&str> = new_session["result"]["modes"]["availableModes"]
-            .as_array()
-            .expect("modes must be a list")
-            .iter()
-            .map(|mode| mode["id"].as_str().expect("mode ids are strings"))
-            .collect();
-        assert_eq!(mode_ids, vec!["interactive", "approve_all"]);
+        assert!(
+            new_session["result"]["configOptions"]
+                .as_array()
+                .expect("configOptions must be a list")
+                .iter()
+                .all(|option| option["id"] != "mode"),
+            "no mode config option is offered: {new_session}"
+        );
 
         let model_option = new_session["result"]["configOptions"]
             .as_array()
@@ -2334,37 +2119,13 @@ mod tests {
             "the current model must come from the offered list: {current:?} in {offered:?}"
         );
 
-        let id = client
-            .request(
-                "session/set_mode",
-                json!({"sessionId": session_id, "modeId": "approve_all"}),
-            )
-            .await;
-        let switched = client.response(id).await;
-        assert!(
-            switched.get("error").is_none(),
-            "approve_all is a mode: {switched}"
-        );
-        let id = client
-            .request(
-                "session/set_mode",
-                json!({"sessionId": session_id, "modeId": "bogus"}),
-            )
-            .await;
-        let rejected = client.response(id).await;
-        assert!(
-            rejected.get("error").is_some(),
-            "unknown modes must be rejected: {rejected}"
-        );
-
         // Client EOF must end the serve task and release the session lease.
         client.shutdown().await;
         finish_acp_stdio_serve(serving).await;
 
         // A persisted task must be loadable by a later connection. The ACP
         // task above stays hidden from listing until its first prompt, so load
-        // a desktop task saved under the same caller-mediated mode: this only
-        // succeeds while the mode ACP persists is one the load path accepts.
+        // a desktop task instead.
         let created = agent
             .handle
             .create_session(Some(crate::agent::AgentCreateSessionRequest {
@@ -2372,7 +2133,6 @@ mod tests {
                 title: Some("acp load target".to_string()),
                 model: None,
                 context_limit: None,
-                mode: Some("smart_approve".to_string()),
                 mcp_server_names: None,
                 system_prompt: None,
             }))
@@ -2399,10 +2159,62 @@ mod tests {
             "session/load failed: {}",
             loaded["error"]
         );
-        assert_eq!(
-            loaded["result"]["modes"]["currentModeId"], "interactive",
-            "a persisted caller-mediated task loads as interactive: {loaded}"
+        assert!(
+            loaded["result"]["modes"].is_null(),
+            "a loaded task advertises no modes: {loaded}"
         );
+        client.shutdown().await;
+        finish_acp_stdio_serve(serving).await;
+    }
+
+    /// `session/set_mode` is answered with `invalid_params` for every mode id,
+    /// including the ids older builds advertised.
+    #[tokio::test]
+    async fn set_mode_is_rejected() {
+        let agent = started_agent_runtime("acp-set-mode").await;
+        let project_root = agent.project_root.to_string_lossy().into_owned();
+
+        let (mut client, serving) = spawn_acp_stdio_serve(agent.handle.clone()).await;
+        let id = client
+            .request(
+                "initialize",
+                json!({"protocolVersion": 2, "clientCapabilities": {}}),
+            )
+            .await;
+        client.response(id).await;
+        let id = client
+            .request(
+                "session/new",
+                json!({"cwd": project_root, "mcpServers": []}),
+            )
+            .await;
+        let new_session = client.response(id).await;
+        let session_id = new_session["result"]["sessionId"]
+            .as_str()
+            .expect("session/new must return a session id")
+            .to_string();
+
+        for mode_id in ["approve_all", "interactive", "bogus"] {
+            let id = client
+                .request(
+                    "session/set_mode",
+                    json!({"sessionId": session_id, "modeId": mode_id}),
+                )
+                .await;
+            let rejected = client.response(id).await;
+            assert_eq!(
+                rejected["error"]["code"], -32602,
+                "set_mode({mode_id}) must fail with invalid_params: {rejected}"
+            );
+            assert!(
+                rejected["error"]["data"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .contains("no session modes"),
+                "the error explains that Maple has no modes: {rejected}"
+            );
+        }
+
         client.shutdown().await;
         finish_acp_stdio_serve(serving).await;
     }
@@ -2542,10 +2354,10 @@ mod tests {
     }
 
     #[test]
-    fn default_config_is_caller_mediated() {
+    fn default_config_allows_eight_connections() {
         let config = AgentAcpConfig::default();
-        assert_eq!(config.permission_mode, AgentAcpPermissionMode::ReadOnly);
         assert_eq!(config.max_connections, 8);
+        assert!(config.allowed_project_roots.is_empty());
     }
 
     #[test]
@@ -2574,7 +2386,7 @@ mod tests {
         assert!(canonical_session_id(&SessionId::new(" \n\t ")).is_err());
     }
 
-    fn session_summary_with_mode(id: &str, mode: &str) -> AgentSessionSummary {
+    fn session_summary(id: &str) -> AgentSessionSummary {
         AgentSessionSummary {
             id: id.to_string(),
             title: id.to_string(),
@@ -2583,53 +2395,22 @@ mod tests {
             updated_ms: 1,
             message_count: 0,
             model: Some("model".to_string()),
-            mode: mode.to_string(),
             web_enabled: false,
             state: AgentTaskState::Active,
             acp: false,
         }
     }
 
+    /// Only a missing task is refused.
     #[test]
-    fn session_list_loadability_accepts_read_only_and_approve_all_tasks() {
-        let sessions = [
-            session_summary_with_mode("read-only", "smart_approve"),
-            session_summary_with_mode("approve-all", "auto"),
-            session_summary_with_mode("approval", "approve"),
-            session_summary_with_mode("chat", "chat"),
-            session_summary_with_mode("unknown", "future_mode"),
-        ];
+    fn session_load_preflight_rejects_missing_tasks() {
+        let sessions = [session_summary("one"), session_summary("two")];
 
-        let visible = sessions
-            .iter()
-            .filter(|session| is_acp_loadable_session_mode(&session.mode))
-            .map(|session| session.id.as_str())
-            .collect::<Vec<_>>();
-
-        assert_eq!(visible, vec!["read-only", "approve-all", "approval"]);
-    }
-
-    #[test]
-    fn session_load_preflight_rejects_unknown_and_missing_tasks() {
-        let sessions = [
-            session_summary_with_mode("read-only", "smart_approve"),
-            session_summary_with_mode("approve-all", "auto"),
-        ];
-
-        assert_eq!(
-            ensure_acp_session_is_loadable(&sessions, "read-only")
-                .unwrap()
-                .id,
-            "read-only"
-        );
-        assert_eq!(
-            ensure_acp_session_is_loadable(&sessions, "approve-all")
-                .unwrap()
-                .id,
-            "approve-all"
-        );
+        for id in ["one", "two"] {
+            assert_eq!(find_acp_session(&sessions, id).unwrap().id, id);
+        }
         assert!(
-            ensure_acp_session_is_loadable(&sessions, "missing")
+            find_acp_session(&sessions, "missing")
                 .unwrap_err()
                 .contains("does not exist")
         );
@@ -2684,25 +2465,6 @@ mod tests {
         assert_eq!(timeline_tool_text(&item).as_deref(), Some("/tmp/project"));
         assert_eq!(encoded["content"][0]["content"]["text"], "/tmp/project");
         assert_eq!(encoded["rawInput"]["command"], "pwd");
-    }
-
-    /// ACP has no subagent of its own, so live subagent work rides the
-    /// `delegate` tool call, the way Goose's own ACP server reports it.
-    #[test]
-    fn subagent_progress_updates_the_delegate_tool_call() {
-        let encoded = serde_json::to_value(subagent_tool_update(
-            "delegate-1",
-            "Terminal: cargo test".to_string(),
-        ))
-        .unwrap();
-
-        assert_eq!(encoded["sessionUpdate"], "tool_call_update");
-        assert_eq!(encoded["toolCallId"], "delegate-1");
-        assert_eq!(encoded["status"], "in_progress");
-        assert_eq!(
-            encoded["content"][0]["content"]["text"],
-            "Terminal: cargo test"
-        );
     }
 
     #[test]
@@ -2805,32 +2567,28 @@ mod tests {
         assert_eq!(encoded["cachedWriteTokens"], 1);
     }
 
+    /// The model selector is the only config option, and it locks to the
+    /// persisted model after the first message.
     #[test]
     fn model_selector_locks_to_the_persisted_model_after_first_message() {
         let models = vec!["model-a".to_string(), "model-b".to_string()];
-        let fresh = serde_json::to_value(acp_session_config_options(
-            "model-b",
-            &models,
-            0,
-            AcpSessionMode::Interactive,
-        ))
-        .expect("fresh model options should serialize");
-        let locked = serde_json::to_value(acp_session_config_options(
-            "model-b",
-            &models,
-            1,
-            AcpSessionMode::ApproveAll,
-        ))
-        .expect("locked model options should serialize");
+        let fresh = serde_json::to_value(acp_session_config_options("model-b", &models, 0))
+            .expect("fresh model options should serialize");
+        let locked = serde_json::to_value(acp_session_config_options("model-b", &models, 1))
+            .expect("locked model options should serialize");
 
+        assert_eq!(
+            fresh.as_array().unwrap().len(),
+            1,
+            "no mode option: {fresh}"
+        );
+        assert_eq!(fresh[0]["id"], "model");
         assert_eq!(fresh[0]["currentValue"], "model-b");
         assert_eq!(fresh[0]["options"].as_array().unwrap().len(), 2);
-        assert_eq!(fresh[1]["currentValue"], "interactive");
+        assert_eq!(locked.as_array().unwrap().len(), 1);
         assert_eq!(locked[0]["currentValue"], "model-b");
         assert_eq!(locked[0]["options"].as_array().unwrap().len(), 1);
         assert_eq!(locked[0]["options"][0]["value"], "model-b");
-        assert_eq!(locked[1]["currentValue"], "approve_all");
-        assert_eq!(locked[1]["options"].as_array().unwrap().len(), 2);
     }
 
     #[test]
@@ -2887,136 +2645,6 @@ mod tests {
         assert_eq!(encoded["messageId"], "system-1");
         // Other runtime notices stay out of the ACP stream.
         assert!(timeline_update(&system_item("Thinking hard"), &mut projection, false).is_none());
-    }
-
-    #[test]
-    fn legacy_allow_all_cannot_bypass_the_acp_caller() {
-        // The stale Desktop-owned bypass stays readable only so old files
-        // keep loading; it can no longer influence a session's mode.
-        let migrated = normalize_config(AgentAcpConfig {
-            permission_mode: AgentAcpPermissionMode::AllowAll,
-            ..AgentAcpConfig::default()
-        })
-        .unwrap();
-        assert_eq!(migrated.permission_mode, AgentAcpPermissionMode::ReadOnly);
-    }
-
-    #[test]
-    fn permission_request_exposes_only_one_shot_caller_choices() {
-        let request = AgentPermissionRequest {
-            request_id: "request-1".to_string(),
-            tool_name: "developer__shell".to_string(),
-            arguments: serde_json::Map::from_iter([(
-                "command".to_string(),
-                serde_json::json!("git push"),
-            )]),
-            prompt: Some("Push this branch?".to_string()),
-        };
-        let item = AgentTimelineItem {
-            id: "permission-request-1".to_string(),
-            item_type: "permission".to_string(),
-            role: Some("system".to_string()),
-            title: Some("Push branch".to_string()),
-            text: request.prompt.clone(),
-            status: Some("pending".to_string()),
-            input: Some(serde_json::Value::Object(request.arguments.clone())),
-            output: None,
-            created_ms: 1,
-            merge: "replace".to_string(),
-        };
-        let permission = RequestPermissionRequest::new(
-            "session-1",
-            acp_permission_tool_call(&request, &item).into(),
-            acp_permission_options(),
-        );
-        let encoded = serde_json::to_value(permission).unwrap();
-
-        assert_eq!(encoded["toolCall"]["toolCallId"], "request-1");
-        assert_eq!(encoded["toolCall"]["title"], "Push branch");
-        assert_eq!(encoded["toolCall"]["kind"], "execute");
-        assert_eq!(
-            encoded["toolCall"]["content"][0]["content"]["text"],
-            "Push this branch?"
-        );
-        assert_eq!(encoded["toolCall"]["status"], "pending");
-        assert_eq!(encoded["toolCall"]["rawInput"]["command"], "git push");
-        assert_eq!(
-            encoded["options"],
-            serde_json::json!([
-                { "optionId": "allow_once", "name": "Allow once", "kind": "allow_once" },
-                { "optionId": "reject_once", "name": "Reject once", "kind": "reject_once" }
-            ])
-        );
-    }
-
-    #[test]
-    fn permission_request_without_prompt_previews_the_arguments() {
-        let path = std::env::temp_dir().join("notes.md");
-        assert!(path.is_absolute(), "the approval fixture must be absolute");
-        let path = path.to_string_lossy().into_owned();
-        let title = format!("edit: {path}");
-        let request = AgentPermissionRequest {
-            request_id: "request-2".to_string(),
-            tool_name: "edit".to_string(),
-            arguments: serde_json::Map::from_iter([
-                ("path".to_string(), serde_json::json!(path)),
-                (
-                    "edits".to_string(),
-                    serde_json::json!([{ "oldText": "foo", "newText": "bar" }]),
-                ),
-            ]),
-            prompt: None,
-        };
-        let item = AgentTimelineItem {
-            id: "permission-request-2".to_string(),
-            item_type: "permission".to_string(),
-            role: Some("system".to_string()),
-            title: Some(title.clone()),
-            text: None,
-            status: Some("pending".to_string()),
-            input: Some(serde_json::Value::Object(request.arguments.clone())),
-            output: None,
-            created_ms: 1,
-            merge: "replace".to_string(),
-        };
-        let permission = RequestPermissionRequest::new(
-            "session-1",
-            acp_permission_tool_call(&request, &item).into(),
-            acp_permission_options(),
-        );
-        let encoded = serde_json::to_value(permission).unwrap();
-        assert_eq!(encoded["toolCall"]["title"], title);
-        // Edit approvals render as diffs, the shape ACP clients show inline.
-        assert_eq!(encoded["toolCall"]["content"][0]["type"], "diff");
-        assert_eq!(encoded["toolCall"]["content"][0]["path"], path);
-        assert_eq!(encoded["toolCall"]["content"][0]["oldText"], "foo");
-        assert_eq!(encoded["toolCall"]["content"][0]["newText"], "bar");
-        // The card links to the file it approves.
-        assert_eq!(encoded["toolCall"]["locations"][0]["path"], path);
-
-        // One approval card must not flood the caller with a huge edit.
-        let long = "x".repeat(20_000);
-        let long_request = AgentPermissionRequest {
-            request_id: "request-3".to_string(),
-            tool_name: "edit".to_string(),
-            arguments: serde_json::Map::from_iter([
-                ("path".to_string(), serde_json::json!(path)),
-                (
-                    "edits".to_string(),
-                    serde_json::json!([{ "newText": long }]),
-                ),
-            ]),
-            prompt: None,
-        };
-        let bounded = serde_json::to_value(acp_permission_tool_call(&long_request, &item)).unwrap();
-        let bounded_text = bounded["content"][0]["newText"]
-            .as_str()
-            .expect("the bounded diff must stay attached");
-        assert!(
-            bounded_text.chars().count() <= 501,
-            "diff text must be bounded, got {}",
-            bounded_text.chars().count()
-        );
     }
 
     #[test]
@@ -3095,7 +2723,7 @@ mod tests {
             encoded["message"]
                 .as_str()
                 .unwrap()
-                .contains("Normal tool permissions still apply")
+                .contains("Maple runs every tool call without asking")
         );
     }
 
@@ -3108,32 +2736,6 @@ mod tests {
         form.client_capabilities = ClientCapabilities::new()
             .elicitation(ElicitationCapabilities::new().form(ElicitationFormCapabilities::new()));
         assert!(client_supports_form_elicitation(&form));
-    }
-
-    #[test]
-    fn permission_outcomes_map_fail_closed() {
-        assert_eq!(
-            acp_permission_decision(&RequestPermissionOutcome::Selected(
-                SelectedPermissionOutcome::new("allow_once")
-            )),
-            Ok(AgentPermissionDecision::AllowOnce)
-        );
-        assert_eq!(
-            acp_permission_decision(&RequestPermissionOutcome::Selected(
-                SelectedPermissionOutcome::new("reject_once")
-            )),
-            Ok(AgentPermissionDecision::DenyOnce)
-        );
-        assert_eq!(
-            acp_permission_decision(&RequestPermissionOutcome::Cancelled),
-            Ok(AgentPermissionDecision::Cancel)
-        );
-        assert!(
-            acp_permission_decision(&RequestPermissionOutcome::Selected(
-                SelectedPermissionOutcome::new("allow_always")
-            ))
-            .is_err()
-        );
     }
 
     #[cfg(unix)]
@@ -3171,12 +2773,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn cancelled_permission_retains_credit_until_the_orphan_request_settles() {
+    async fn cancelled_trust_chooser_retains_credit_until_the_orphan_request_settles() {
         let tracker = AcpOutboundTracker::with_limits(1, 1024);
         let cancellation = CancellationToken::new();
         let first = tracker.reserve(1, &cancellation).await.unwrap();
         let (settled_tx, settled_rx) = tokio::sync::oneshot::channel::<()>();
-        retain_cancelled_permission_request(
+        retain_cancelled_caller_request(
             async move {
                 let _ = settled_rx.await;
             },
@@ -3231,8 +2833,10 @@ mod tests {
         assert!(ensure_allowed_project_root(Path::new("relative/project"), &[]).is_err());
     }
 
+    /// Files from builds that still saved `enabled` and `permissionMode`
+    /// load; the retired fields are ignored.
     #[test]
-    fn a_config_written_before_the_enabled_flag_was_dropped_still_loads() {
+    fn a_config_written_with_retired_fields_still_loads() {
         let root = tempfile::tempdir().unwrap();
         let user_id = "acp-legacy-user";
         let path = config_path(root.path(), user_id).unwrap();
@@ -3245,7 +2849,7 @@ mod tests {
 
         let config = load_config(root.path(), user_id).unwrap();
         assert_eq!(config.max_connections, 4);
-        assert_eq!(config.permission_mode, AgentAcpPermissionMode::ReadOnly);
+        assert!(config.allowed_project_roots.is_empty());
     }
 
     #[test]

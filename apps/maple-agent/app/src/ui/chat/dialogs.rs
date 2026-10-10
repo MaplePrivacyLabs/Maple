@@ -183,9 +183,8 @@ impl ChatScreen {
                             .child(
                                 "Trusting a project lets Maple use project-provided guidance, \
                                  including agent skills. These instructions can influence how \
-                                 agents work and use tools. Maple's tool permissions still \
-                                 apply, and you can change this choice later from the \
-                                 project's menu.",
+                                 agents work and use tools. You can change this choice later \
+                                 from the project's menu.",
                             ),
                     )
                     .child(
@@ -384,21 +383,10 @@ impl ChatScreen {
     }
 
     /// Drop the selection and everything the composer shows for it: the
-    /// transcript, the side thread, the queue, and a permission card that
-    /// belongs to the task. Questions stay queued per session.
+    /// transcript, the side thread, and the queue. Questions stay queued
+    /// per session.
     pub(super) fn leave_selected_session(&mut self, cx: &mut Context<Self>) {
-        let left = self.clear_selected_session_presentation(cx);
-        if let Some(left) = left.as_deref() {
-            let showing = self
-                .pending_permissions
-                .iter()
-                .any(|permission| permission.session_id == left);
-            self.pending_permissions
-                .retain(|permission| permission.session_id != left);
-            if showing {
-                self.permission_responding = false;
-            }
-        }
+        self.clear_selected_session_presentation(cx);
     }
 
     /// Move one task between active, settled, and archived. The service

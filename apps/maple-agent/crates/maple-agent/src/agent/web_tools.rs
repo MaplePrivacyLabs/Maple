@@ -7,15 +7,12 @@ use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
 use rmcp::model::{Tool, ToolAnnotations};
 use rmcp::object;
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, VecDeque};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::sync::Arc;
-use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
 pub(crate) const WEB_SEARCH_TOOL_NAME: &str = "web_search";
 pub(crate) const OPEN_URL_TOOL_NAME: &str = "open_url";
-const MAX_PROVENANCE_URLS_PER_SESSION: usize = 256;
 const MAX_PUBLIC_URL_CHARS: usize = 2_048;
 const MAX_QUERY_CHARS: usize = 512;
 const MAX_PURPOSE_CHARS: usize = 500;
@@ -25,63 +22,6 @@ const MAX_OPEN_URL_TOOL_OUTPUT_CHARS: usize = 32_000;
 const OPEN_URL_TRUNCATION_MARKER: &str = "\n[Page content truncated by Maple.]\n";
 const WEB_TOOL_ERROR_TRUNCATION_MARKER: &str = "\n[Tool error truncated by Maple.]\n";
 const TOOL_ERROR_PREFIX_CHARS: usize = "Error: ".len();
-
-#[derive(Default)]
-pub(crate) struct WebToolState {
-    search_urls: Mutex<HashMap<String, VecDeque<String>>>,
-}
-
-impl WebToolState {
-    pub(crate) async fn record_search_urls<'a>(
-        &self,
-        session_id: &str,
-        urls: impl IntoIterator<Item = &'a str>,
-        cancel_token: &CancellationToken,
-    ) -> bool {
-        if cancel_token.is_cancelled() {
-            return false;
-        }
-        let mut sessions = self.search_urls.lock().await;
-        // This lock acquisition can wait behind another session operation.
-        // Make cancellation linearize before the first provenance mutation.
-        if cancel_token.is_cancelled() {
-            return false;
-        }
-        let session_urls = sessions.entry(session_id.to_string()).or_default();
-        for raw_url in urls {
-            let Ok(url) = normalize_public_https_url(raw_url) else {
-                continue;
-            };
-            if let Some(index) = session_urls.iter().position(|existing| existing == &url) {
-                session_urls.remove(index);
-            }
-            session_urls.push_back(url);
-            while session_urls.len() > MAX_PROVENANCE_URLS_PER_SESSION {
-                session_urls.pop_front();
-            }
-        }
-        true
-    }
-
-    pub(crate) async fn contains_search_url(&self, session_id: &str, url: &str) -> bool {
-        let Ok(url) = normalize_public_https_url(url) else {
-            return false;
-        };
-        self.search_urls
-            .lock()
-            .await
-            .get(session_id)
-            .is_some_and(|urls| urls.iter().any(|existing| existing == &url))
-    }
-
-    pub(crate) async fn clear_session(&self, session_id: &str) {
-        self.search_urls.lock().await.remove(session_id);
-    }
-
-    pub(crate) async fn clear_all(&self) {
-        self.search_urls.lock().await.clear();
-    }
-}
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -219,8 +159,6 @@ pub(crate) fn open_url_tool() -> Tool {
 
 pub(crate) async fn execute_web_search(
     transport: &Arc<dyn MapleWebTransport>,
-    state: &WebToolState,
-    session_id: &str,
     params: WebSearchParams,
     cancel_token: CancellationToken,
 ) -> Result<String, String> {
@@ -255,8 +193,7 @@ pub(crate) async fn execute_web_search(
         trace_id,
         mut results,
     } = response;
-    let trace_id =
-        trace_id.map(|trace_id| bounded_chars(&trace_id, MAX_TRACE_ID_CHARS, "…", Keep::Head));
+    let trace_id = trace_id.map(|trace_id| bounded_chars(&trace_id, MAX_TRACE_ID_CHARS, "…"));
     let mut maple_truncated = false;
     let output = loop {
         let candidate = serde_json::to_string_pretty(&WebSearchToolOutput {
@@ -274,15 +211,7 @@ pub(crate) async fn execute_web_search(
         }
         maple_truncated = true;
     };
-
-    let recorded = state
-        .record_search_urls(
-            session_id,
-            results.iter().map(|result| result.url.as_str()),
-            &cancel_token,
-        )
-        .await;
-    if !recorded {
+    if cancel_token.is_cancelled() {
         return Err("Web search was cancelled".to_string());
     }
     Ok(output)
@@ -326,8 +255,7 @@ pub(crate) async fn execute_open_url(
 }
 
 fn format_open_url_tool_output(url: &str, trace_id: Option<&str>, markdown: &str) -> String {
-    let trace_id =
-        trace_id.map(|trace_id| bounded_chars(trace_id, MAX_TRACE_ID_CHARS, "…", Keep::Head));
+    let trace_id = trace_id.map(|trace_id| bounded_chars(trace_id, MAX_TRACE_ID_CHARS, "…"));
     let complete_header = open_url_metadata_header(url, trace_id.as_deref(), false);
     if complete_header.chars().count() + markdown.chars().count() <= MAX_OPEN_URL_TOOL_OUTPUT_CHARS
     {
@@ -494,34 +422,19 @@ fn embedded_well_known_nat64_ipv4(address: Ipv6Addr) -> Option<Ipv4Addr> {
 }
 
 /// Which end of a value survives when it is bounded.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Keep {
-    /// Keep the start and drop everything after it.
-    Head,
-    /// Keep both ends and drop the middle.
-    Ends,
-}
-
-/// Bound `value` to `max_chars`, standing `marker` in for what it drops.
+/// Bound `value` to `max_chars`, keeping its start and standing `marker`
+/// in for what it drops.
 ///
 /// Char counts, not byte counts: every caller here bounds text that may hold
 /// multi-byte characters, and a byte cut would split them.
-pub(crate) fn bounded_chars(value: &str, max_chars: usize, marker: &str, keep: Keep) -> String {
+pub(crate) fn bounded_chars(value: &str, max_chars: usize, marker: &str) -> String {
     let total = value.chars().count();
     if total <= max_chars {
         return value.to_string();
     }
     let budget = max_chars.saturating_sub(marker.chars().count());
-    let head_chars = match keep {
-        Keep::Head => budget,
-        Keep::Ends => budget / 2,
-    };
-    let head = value.chars().take(head_chars).collect::<String>();
-    let tail = value
-        .chars()
-        .skip(total - (budget - head_chars))
-        .collect::<String>();
-    format!("{head}{marker}{tail}")
+    let head = value.chars().take(budget).collect::<String>();
+    format!("{head}{marker}")
 }
 
 /// Truncate Markdown that the backend already sanitized without cutting away
@@ -579,7 +492,6 @@ fn bound_web_tool_error(error: String, final_output_limit: usize) -> String {
         &error,
         final_output_limit.saturating_sub(TOOL_ERROR_PREFIX_CHARS),
         WEB_TOOL_ERROR_TRUNCATION_MARKER,
-        Keep::Head,
     )
 }
 
@@ -706,35 +618,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn search_calls_transport_and_records_only_its_session() {
+    async fn search_calls_transport_once() {
         let concrete = mock_transport();
         let transport: Arc<dyn MapleWebTransport> = concrete.clone();
-        let state = WebToolState::default();
-        let output = execute_web_search(
-            &transport,
-            &state,
-            "session-a",
-            search_params(),
-            CancellationToken::new(),
-        )
-        .await
-        .unwrap();
+        let output = execute_web_search(&transport, search_params(), CancellationToken::new())
+            .await
+            .unwrap();
         assert!(output.contains("https://example.com/result"));
         assert_eq!(concrete.searches.lock().unwrap().len(), 1);
-        assert!(
-            state
-                .contains_search_url("session-a", "https://example.com/result")
-                .await
-        );
-        assert!(
-            !state
-                .contains_search_url("session-b", "https://example.com/result")
-                .await
-        );
     }
 
     #[tokio::test]
-    async fn search_output_stays_valid_json_and_never_records_dropped_urls() {
+    async fn search_output_stays_valid_json_when_bounded() {
         let mut concrete = Arc::try_unwrap(mock_transport()).ok().unwrap();
         concrete.search_response.trace_id = Some("t".repeat(MAX_TRACE_ID_CHARS + 100));
         concrete.search_response.results = (0..50)
@@ -746,19 +641,11 @@ mod tests {
                 published_at: None,
             })
             .collect();
-        let dropped_url = concrete.search_response.results.last().unwrap().url.clone();
         let concrete = Arc::new(concrete);
         let transport: Arc<dyn MapleWebTransport> = concrete;
-        let state = WebToolState::default();
-        let output = execute_web_search(
-            &transport,
-            &state,
-            "session",
-            search_params(),
-            CancellationToken::new(),
-        )
-        .await
-        .unwrap();
+        let output = execute_web_search(&transport, search_params(), CancellationToken::new())
+            .await
+            .unwrap();
         assert!(output.chars().count() <= MAX_WEB_SEARCH_TOOL_OUTPUT_CHARS);
         let value: serde_json::Value = serde_json::from_str(&output).unwrap();
         assert_eq!(value["maple_truncated"], true);
@@ -769,86 +656,22 @@ mod tests {
         assert!(value["trace_id"].as_str().unwrap().ends_with('…'));
         assert!(value["notice"].as_str().unwrap().contains("Untrusted"));
         assert!(value["results"].as_array().unwrap().len() < 50);
-        assert!(!state.contains_search_url("session", &dropped_url).await);
     }
 
     #[tokio::test]
-    async fn cancelled_search_never_seeds_provenance() {
+    async fn cancelled_search_is_reported_as_cancelled() {
         let concrete = Arc::new(MockTransport {
             wait_for_cancellation: true,
             ..Arc::try_unwrap(mock_transport()).ok().unwrap()
         });
         let transport: Arc<dyn MapleWebTransport> = concrete;
-        let state = WebToolState::default();
         let cancel = CancellationToken::new();
         cancel.cancel();
         assert!(
-            execute_web_search(&transport, &state, "session", search_params(), cancel)
+            execute_web_search(&transport, search_params(), cancel)
                 .await
                 .is_err()
         );
-        assert!(
-            !state
-                .contains_search_url("session", "https://example.com/result")
-                .await
-        );
-    }
-
-    #[tokio::test]
-    async fn cancellation_while_waiting_for_state_lock_never_seeds_provenance() {
-        let concrete = mock_transport();
-        let transport: Arc<dyn MapleWebTransport> = concrete.clone();
-        let state = Arc::new(WebToolState::default());
-        let state_guard = state.search_urls.lock().await;
-        let task_state = Arc::clone(&state);
-        let cancel = CancellationToken::new();
-        let task_cancel = cancel.clone();
-        let task = tokio::spawn(async move {
-            execute_web_search(
-                &transport,
-                &task_state,
-                "session",
-                search_params(),
-                task_cancel,
-            )
-            .await
-        });
-        while concrete.searches.lock().unwrap().is_empty() {
-            tokio::task::yield_now().await;
-        }
-        cancel.cancel();
-        drop(state_guard);
-
-        assert!(task.await.unwrap().is_err());
-        assert!(
-            !state
-                .contains_search_url("session", "https://example.com/result")
-                .await
-        );
-    }
-
-    #[tokio::test]
-    async fn provenance_is_bounded_and_clearable_per_session() {
-        let state = WebToolState::default();
-        let urls = (0..=MAX_PROVENANCE_URLS_PER_SESSION)
-            .map(|index| format!("https://example.com/{index}"))
-            .collect::<Vec<_>>();
-        state
-            .record_search_urls(
-                "session",
-                urls.iter().map(String::as_str),
-                &CancellationToken::new(),
-            )
-            .await;
-        assert!(!state.contains_search_url("session", &urls[0]).await);
-        assert!(state.contains_search_url("session", &urls[1]).await);
-        assert!(
-            state
-                .contains_search_url("session", urls.last().unwrap())
-                .await
-        );
-        state.clear_session("session").await;
-        assert!(!state.contains_search_url("session", &urls[1]).await);
     }
 
     #[tokio::test]

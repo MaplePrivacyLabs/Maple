@@ -29,14 +29,9 @@ model cannot name, end, or enumerate sessions. The client uses the SDK's
 canonical `list_tools_json` and `call_tool` surfaces, so Maple does not maintain
 a second copy of CUA's tool definitions or run an in-process network protocol.
 
-Goose still owns tool discovery, namespacing, dispatch, and Maple's normal
-approval routing. Maple marks every CUA operation as sensitive for approval
-purposes, including screenshots and accessibility reads, because an
-observation can carry private data from any application. That rule lives in
-Maple's own Goose permission file, which Goose consults before any annotation
-or heuristic, so CUA's published schemas and annotations reach the model
-unaltered. The user's existing Maple permission mode therefore remains the
-place to choose between per-call approval and allow-all behavior.
+Goose still owns tool discovery, namespacing, and dispatch. Every CUA call
+runs without asking for approval, like every other tool call in a Maple
+task; CUA's published schemas and annotations reach the model unaltered.
 
 CUA's action schemas and screenshot defaults remain canonical. Maple adapts the
 general-purpose catalog only at the bound-session boundary: it hides CUA's six
@@ -66,8 +61,8 @@ Helper usage is recorded outside the primary context ledger.
 
 The native client is ephemeral. Goose must not serialize a Rust object as an
 ordinary MCP transport, so its extension snapshot excludes the client. Maple
-stores only versioned logical task metadata: whether CUA is enabled and whether
-that task uses the embedded or legacy external backend. On cold load or a new
+stores only versioned logical task metadata: whether CUA is enabled for the
+task, and the embedded backend it uses. On cold load or a new
 turn Maple recreates its trusted connection and rejoins the stable account/task
 CUA lifecycle.
 
@@ -153,14 +148,12 @@ action in a session raises a consent prompt. Background delivery is unavailable
 on GNOME, so actions use `delivery_mode: "foreground"`, which activates the
 target window and restores the previous one afterwards.
 
-Maple detects a compatible standalone `CuaDriver.app` on macOS only, for
-migration from the first integrations preview. It refuses to run that
-executable when other accounts can write to it. No other platform looks for a
-separately installed driver, so no foreign binary is ever executed. Existing tasks and version-1 device
-settings retain that external backend. A successful explicit setup switches
-the default for future tasks to embedded CUA without rewriting historical task
-snapshots. Maple never installs, updates, launches, or reconfigures the
-standalone driver.
+Maple no longer detects or runs a separately installed `CuaDriver.app`, so no
+foreign binary is ever executed. A task saved by the first integrations preview
+with that driver's stdio entry loses the entry before any agent is built for
+it, and a device setting that selected the external backend is ignored on
+load; both read as "not set up" until the user enables built-in CUA. Nothing
+is migrated or rewritten beyond that.
 
 Enabling the card changes the default for newly-created tasks. Existing tasks
 retain an independent switch in the composer. Changing tools while a task is
@@ -207,7 +200,7 @@ remain separate distribution concerns.
   main-thread fixes that should move back to an upstream release once
   available.
 - Direct embedding is not process isolation. A CUA crash or native defect can
-  affect Maple, and Maple approval does not provide OS-level containment.
+  affect Maple, and nothing in Maple provides OS-level containment.
 - The CUA cursor overlay needs a main-thread AppKit host adapter and is not
   wired in this preview.
 - Cancellation is best effort after an operating-system input event has been

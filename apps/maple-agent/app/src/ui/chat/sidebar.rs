@@ -2557,7 +2557,6 @@ pub(super) fn session_summary_eq(a: &AgentSessionSummary, b: &AgentSessionSummar
         && a.updated_ms == b.updated_ms
         && a.message_count == b.message_count
         && a.model == b.model
-        && a.mode == b.mode
         && a.web_enabled == b.web_enabled
         && a.state == b.state
 }

@@ -7,7 +7,7 @@ use std::sync::{Arc, Weak};
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 
-use super::shell_permission::classifier::{side_model_config, thinking_disabled_request_params};
+use super::side_model::{side_model_config, thinking_disabled_request_params};
 
 const IMAGE_DESCRIPTION_TIMEOUT: Duration = Duration::from_secs(60);
 pub(super) const IMAGE_DESCRIPTION_MODEL: &str = "gemma4-31b";

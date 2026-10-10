@@ -93,7 +93,7 @@ request. Keep fixture launch and environment setup shared with the Codex tests.
 
 Apply `$review-maple-security`'s trust-boundary and evidence methodology to the
 actual GPUI source; its Tauri-specific file list is for Research. Validate
-account isolation, tool approval, MCP/ACP inputs, persistence, and process
+account isolation, tool execution, MCP/ACP inputs, persistence, and process
 ownership at the layer implementing the effect. Never treat a passing source
 import or a native login screen as authenticated chat or containment proof.
 

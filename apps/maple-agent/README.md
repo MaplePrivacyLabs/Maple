@@ -16,8 +16,8 @@ app/                  The maple-agent binary. Owns the window, login, chat,
 crates/maple-agent/   Maple's transport-neutral agent runtime, extracted from
                       the Tauri app with Tauri removed. Owns embedded Goose,
                       the Maple provider over the Maple Rust SDK, developer
-                      tools, permission policy, account-scoped session
-                      storage, and the ACP server.
+                      tools, account-scoped session storage, and the ACP
+                      server.
 crates/maple-billing/ HTTP client for the Maple billing API.
 docs/                 Theme spec measured from the Tauri app.
 scripts/              One maintainer helper: screenshot.py takes a desktop
@@ -46,9 +46,8 @@ remove Tauri:
 - public visibility opened on the service surface the app consumes
 
 Goose is pinned to a fork revision based on upstream v1.53.0 in this
-component’s Cargo manifests and lockfile. The fork forwards subagent approvals
-to the parent and supports ephemeral native clients for embedded CUA. Research
-has an independent dependency graph.
+component’s Cargo manifests and lockfile. The fork supports ephemeral native
+clients for embedded CUA. Research has an independent dependency graph.
 
 ## Features
 
@@ -61,31 +60,26 @@ has an independent dependency graph.
   the `acp` mode skip sign-in. The window opens while the saved session is
   checked, and a check that cannot reach the server keeps the credentials
   for the next launch; only a refusal from the server signs the user out.
-- Agent chat with streaming Markdown, tool calls, permission prompts,
-  agent questions, image attachments (picker, paste, or drag and drop),
-  a per-message Copy button, and a context-window indicator.
+- Agent chat with streaming Markdown, tool calls, agent questions, image
+  attachments (picker, paste, or drag and drop), a per-message Copy button,
+  and a context-window indicator. Every tool call runs without asking for
+  approval.
 - Slash commands in the composer: `/btw` asks a side question the task
   never sees, plus `/compact`, `/new`, `/pin`, `/web`, `/model`, and
   `/help`. The account's skills appear in the same list.
 - The task's latest todo list stays pinned above the composer.
-- Subagents: the task can give a piece of work to a subagent with the
-  `delegate` tool, which runs it in its own context. The Goose fork makes
-  the subagent inherit the task's permission mode and forwards its approval
-  requests to the parent session. Maple also asks before each handoff in
-  Read only mode. Subagents show above the composer with the tool each one
-  runs and how long it has worked. A subagent that runs in the background
-  keeps its row after the turn ends, and Maple tells the task when it
-  finishes, with a bounded result in the running turn or a new turn Maple
-  starts automatically. The task can use `load` to retrieve any truncated output.
 - External agents: a task can hand work to Codex or Claude Code installed on
   this computer with the `agent_start`, `agent_send`, `agent_status`,
   `agent_cancel`, and `list_agent_providers` tools, once the provider is enabled
   under Settings > Integrations. Each agent runs in the project with its own
-  account, context, and sandbox settings; whatever it asks approval for
-  comes to you through Maple's permission card, and Allow all grants it. Its progress streams
-  into the tool call's row and its row above the composer has a Stop
-  button. Three skills, `/handoff`, `/committee`, and `/advisor`, teach the
-  task when and how to delegate. See
+  account, context, and sandbox settings; Maple accepts its approval
+  requests, and its questions still come to you through Maple's question
+  card. Its progress streams into the tool call's row, and its row above
+  the composer shows how long it has worked, with a Stop button. A
+  background agent keeps its row after the turn ends, and Maple tells the
+  task when it finishes, with a bounded result in the running turn or a new
+  turn Maple starts automatically. Three skills, `/handoff`, `/committee`,
+  and `/advisor`, teach the task when and how to delegate. See
   [`docs/external-agents.md`](docs/external-agents.md).
 - Voice: dictate a message with the microphone button, and read any
   message aloud. Both use Maple's speech models; the voice and speed
@@ -111,15 +105,15 @@ has an independent dependency graph.
   projects that provide skills ask once for a trust decision before
   their guidance loads.
 - Sessions grouped by project, with rename, archive, and restore.
-- Settings: General (default permission mode, web tools, appearance,
-  tool call details, desktop notifications, tool call summaries, composer Vim,
-  application Vim, and the speech voice and speed), Keyboard Shortcuts, System
-  prompt, Integrations (detected built-ins and custom MCP servers), Usage (plan
-  meter from the billing API plus totals from the Goose ledger), and About.
+- Settings: General (web tools, appearance, tool call details, desktop
+  notifications, tool call summaries, composer Vim, application Vim, and the
+  speech voice and speed), Keyboard Shortcuts, System prompt, Integrations
+  (detected built-ins and custom MCP servers), Usage (the plan meter from
+  the billing API), and About.
 - Dark and light themes; the default follows the system.
 - Billing status from the Maple billing API.
-- Desktop notifications when a task finishes, asks a question, or needs
-  permission while the window is not focused.
+- Desktop notifications when a task finishes or asks a question while the
+  window is not focused.
 - Release check on launch: a banner links to a newer GitHub release.
   Nothing is downloaded or installed by the app.
 - Window size and maximized state persist between launches.
@@ -151,12 +145,11 @@ the embedded transport.
 Enabling an integration sets a device-local default for new tasks. Existing
 tasks keep their frozen integration choice and expose CUA as an independent
 per-task switch in the composer. A task that never chose a backend adopts the
-device default only when it can actually run it. A detected standalone
-CuaDriver, which Maple looks for on macOS only, remains a legacy-compatible
-backend until the user explicitly sets up the built-in one;
-Maple does not install or update it, start or stop its daemon, or alter another
-client's configuration. Custom STDIO and Streamable HTTP MCP servers remain
-account configuration that may roam between devices.
+device default only when it can actually run it. Maple no longer looks for a
+separately installed CuaDriver application: a task saved with its stdio entry
+loses that entry on its next run, and a device setting that selected it reads
+as not set up. Custom STDIO and Streamable HTTP MCP servers remain account
+configuration that may roam between devices.
 
 The embedded design, migration rules, privacy boundary, and preview limits are
 documented in [`docs/embedded-cua.md`](docs/embedded-cua.md).
@@ -164,7 +157,7 @@ documented in [`docs/embedded-cua.md`](docs/embedded-cua.md).
 #### Claude Code
 
 Settings > Integrations lists Claude Code (`claude`) alongside Codex, with the
-same per-task selection, streamed activity, permission cards, and Stop control.
+same per-task selection, streamed activity, question cards, and Stop control.
 Install the Claude Code CLI on the app's PATH and sign in using
 `claude auth login`. Maple uses a Rust transport adapted from Goose's Claude
 Code provider. The CLI is the only external runtime dependency. The integration
@@ -443,7 +436,6 @@ ignored. See [build profiles](docs/release-profiles.md).
 | `MAPLE_BILLING_API_URL` | Maple billing API. | `https://billing.opensecret.cloud` |
 | `MAPLE_CLIENT_ID` | OpenSecret client id (UUID). | Maple's id |
 | `MAPLE_MODEL` | Model to select at start. | Runtime default |
-| `MAPLE_PERMISSION_MODE` | `smart_approve` or `auto`. Overrides the saved setting. | Saved setting |
 | `MAPLE_CONTEXT_LIMIT` | Context window size in tokens, when the model catalog does not report one. | Catalog value |
 | `GOOSE_SHELL` | Shell for the agent's shell tool. | `bash` (Windows: `cmd`) |
 | `MAPLE_UPDATE_REPO` | GitHub `owner/repo` containing stable `maple-agent-vX.Y.Z` releases. | `MaplePrivacyLabs/Maple` |
@@ -467,11 +459,10 @@ shows unpackaged builds; packaged Dev and Prod append `maple-agent-dev` and
 | --- | --- |
 | `<config>/settings.json` | App settings. |
 | `<config>/agent/accounts/<scope>/config.json` | Per-account agent configuration (default root, model, custom MCP servers, project trust). May roam between machines. |
-| `<config>/agent/accounts/<scope>/goose/config/` | Goose permission file for the account. |
 | `<config>/agent/accounts/<scope>/goose/config/skills/` | Skills the account's tasks can load, including the delegation skills Maple installs while any external agent is enabled. |
 | `<config>/agent/goose-runtime/` | Goose process configuration. |
 | `<local data>/auth.json` | Sign-in credentials (mode 0600). Device-local; never in a roaming profile. |
-| `<local data>/agent/accounts/<scope>/integrations.json` | Per-account defaults and validated launch details for integrations detected on this device. |
+| `<local data>/agent/accounts/<scope>/integrations.json` | Per-account defaults for the integrations on this device. |
 | `<local data>/agent/accounts/<scope>/goose/data/sessions/sessions.db` | Goose session history and usage ledger (SQLite, WAL). |
 | `<local data>/agent/accounts/<scope>/tool_summaries.db` | Model-written one-line summaries of tool calls (SQLite, WAL). |
 | `<local data>/agent/accounts/<scope>/attachments/` | Image attachments. |
@@ -503,6 +494,12 @@ Windows; Linux additionally runs the feature-matrix lint/headless checks and
 a release build. `just ci` is the full local format, lint, build and test gate;
 `just release` separately validates the optimized binary. PR jobs have no
 signing or publishing credentials. See the root agent guide for shared checks.
+
+Two by-hand checks complement the automated ones: the
+[scenario checklist](docs/scenario-checklist.md), one scenario per feature
+with the results of each run, and the
+[performance check](docs/performance-check.md), a quick release-build sanity
+check.
 
 ## Update and release boundary
 

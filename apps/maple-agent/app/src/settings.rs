@@ -10,9 +10,6 @@ use std::path::PathBuf;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct AppSettings {
-    /// Default permission policy for new sessions; see [`PermissionMode`].
-    #[serde(default)]
-    pub default_permission_mode: PermissionMode,
     /// Whether tool cards show input/output payloads by default.
     #[serde(default = "default_tool_details")]
     pub tool_details: bool,
@@ -41,8 +38,8 @@ pub struct AppSettings {
     /// Display names for project roots, keyed by absolute path.
     #[serde(default)]
     pub project_names: std::collections::HashMap<String, String>,
-    /// Whether run completion, permissions, and questions raise desktop
-    /// notifications while the window is not focused.
+    /// Whether run completion and questions raise desktop notifications
+    /// while the window is not focused.
     #[serde(default = "default_desktop_notifications")]
     pub desktop_notifications: bool,
     /// Skip looping and reveal animations. gpui reads no OS preference for
@@ -121,86 +118,6 @@ fn default_tts_speed() -> f32 {
     DEFAULT_TTS_SPEED
 }
 
-/// Permission policy for a session: whether a gated tool call needs a
-/// decision from the user. Modelled on [`crate::ui::theme::Preference`],
-/// including the same infallible `parse` so an unknown value on disk
-/// degrades to the safer mode instead of failing the whole settings load.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum PermissionMode {
-    /// Confirm each gated tool call.
-    #[default]
-    SmartApprove,
-    /// Approve every tool call without asking.
-    Auto,
-}
-
-impl PermissionMode {
-    /// Anything unknown reads as the safer mode.
-    pub fn parse(value: &str) -> Self {
-        match value {
-            "auto" => Self::Auto,
-            _ => Self::SmartApprove,
-        }
-    }
-
-    /// The mode named by `value`, or `None` when it names no mode. Use
-    /// this where an unknown value must fall back to a saved default
-    /// rather than to the safer mode.
-    pub fn from_str(value: &str) -> Option<Self> {
-        match value {
-            "auto" => Some(Self::Auto),
-            "smart_approve" => Some(Self::SmartApprove),
-            _ => None,
-        }
-    }
-
-    /// Icon name: a bolt for allow all, a shield for ask first.
-    pub fn icon(self) -> &'static str {
-        match self {
-            Self::SmartApprove => "shield-check",
-            Self::Auto => "zap",
-        }
-    }
-
-    /// The value written to disk and handed to the agent runtime.
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::SmartApprove => "smart_approve",
-            Self::Auto => "auto",
-        }
-    }
-
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::SmartApprove => "Ask first",
-            Self::Auto => "Allow all",
-        }
-    }
-
-    /// One line of explanation under the label.
-    pub fn note(self) -> &'static str {
-        match self {
-            Self::SmartApprove => "Confirm each gated tool call",
-            Self::Auto => "Approve every tool call without asking",
-        }
-    }
-}
-
-// Serialized as the bare string it has always been, so settings.json and
-// the runtime's mode field keep their format.
-impl serde::Serialize for PermissionMode {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.serialize_str(self.as_str())
-    }
-}
-
-impl<'de> serde::Deserialize<'de> for PermissionMode {
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let value = <String as serde::Deserialize>::deserialize(deserializer)?;
-        Ok(Self::parse(&value))
-    }
-}
-
 /// Persisted window geometry. Position is left to the window manager:
 /// Wayland does not expose it, and a stale position can open the window
 /// off-screen after a monitor change.
@@ -274,7 +191,6 @@ fn default_tool_summaries() -> bool {
 impl Default for AppSettings {
     fn default() -> Self {
         Self {
-            default_permission_mode: PermissionMode::default(),
             tool_details: default_tool_details(),
             default_web_enabled: default_web_enabled(),
             tool_summaries: default_tool_summaries(),
@@ -438,180 +354,28 @@ pub fn update_settings_and_wait(update: impl FnOnce(&mut AppSettings) + Send + '
     let _ = rx.recv();
 }
 
-/// One aggregated usage row: per session or per model.
-#[derive(Debug, Clone, Default)]
-pub struct UsageRow {
-    pub label: String,
-    pub sessions: u64,
-    pub turns: u64,
-    pub total_tokens: i64,
-    pub cost: f64,
-}
-
-#[derive(Debug, Clone, Default)]
-pub struct UsageSummary {
-    pub totals: UsageRow,
-    pub by_model: Vec<UsageRow>,
-    pub by_session: Vec<UsageRow>,
-}
-
-/// Read usage totals from the goose usage ledger for one account scope.
-pub fn load_usage(account_scope: &str) -> UsageSummary {
-    let db = crate::backend::account_session_db(account_scope);
-    let Some(conn) = crate::backend::open_session_db_read_only(&db) else {
-        return UsageSummary::default();
-    };
-    usage_from_ledger(&conn)
-}
-
-/// Aggregate one account's ledger.
-///
-/// A subagent has a session of its own, and its provider calls land in
-/// the ledger under it. Every row counts against the task that delegated
-/// the work, so the reader sees what a task cost in total. Goose refuses
-/// a subagent of a subagent, so resolving one parent is enough.
-fn usage_from_ledger(conn: &rusqlite::Connection) -> UsageSummary {
-    let mut summary = UsageSummary::default();
-
-    if let Ok(mut stmt) = conn.prepare(
-        "SELECT COUNT(*), COALESCE(SUM(total_tokens),0), COALESCE(SUM(cost),0) \
-         FROM usage_ledger",
-    ) && let Ok(row) = stmt.query_row([], |row| {
-        Ok((
-            row.get::<_, i64>(0)?,
-            row.get::<_, i64>(1)?,
-            row.get::<_, f64>(2)?,
-        ))
-    }) {
-        summary.totals = UsageRow {
-            label: "All activity".to_string(),
-            sessions: 0,
-            turns: row.0.max(0) as u64,
-            total_tokens: row.1,
-            cost: row.2,
-        };
-    }
-
-    if let Ok(mut stmt) = conn.prepare(
-        "SELECT u.model, COUNT(DISTINCT COALESCE(s.parent_session_id, u.session_id)), COUNT(*), \
-         COALESCE(SUM(u.total_tokens),0), COALESCE(SUM(u.cost),0) \
-         FROM usage_ledger u LEFT JOIN sessions s ON s.id = u.session_id \
-         GROUP BY u.model ORDER BY SUM(u.total_tokens) DESC",
-    ) && let Ok(rows) = stmt.query_map([], |row| {
-        Ok(UsageRow {
-            label: row
-                .get::<_, Option<String>>(0)?
-                .unwrap_or_else(|| "unknown".into()),
-            sessions: row.get::<_, i64>(1)?.max(0) as u64,
-            turns: row.get::<_, i64>(2)?.max(0) as u64,
-            total_tokens: row.get::<_, i64>(3)?,
-            cost: row.get::<_, f64>(4)?,
-        })
-    }) {
-        for row in rows.flatten() {
-            summary.totals.sessions += row.sessions;
-            summary.by_model.push(row);
-        }
-    }
-
-    if let Ok(mut stmt) = conn.prepare(
-        "SELECT COALESCE(parent.name, s.name), COALESCE(s.parent_session_id, u.session_id) AS task, \
-         COUNT(*), COALESCE(SUM(u.total_tokens),0), COALESCE(SUM(u.cost),0) \
-         FROM usage_ledger u JOIN sessions s ON s.id = u.session_id \
-         LEFT JOIN sessions parent ON parent.id = s.parent_session_id \
-         GROUP BY task ORDER BY MAX(u.created_timestamp) DESC LIMIT 20",
-    ) && let Ok(rows) = stmt.query_map([], |row| {
-        Ok(UsageRow {
-            label: {
-                let name: String = row.get::<_, Option<String>>(0)?.unwrap_or_default();
-                let id: String = row.get(1)?;
-                if name.trim().is_empty() { id } else { name }
-            },
-            sessions: 1,
-            turns: row.get::<_, i64>(2)?.max(0) as u64,
-            total_tokens: row.get::<_, i64>(3)?,
-            cost: row.get::<_, f64>(4)?,
-        })
-    }) {
-        for row in rows.flatten() {
-            summary.by_session.push(row);
-        }
-    }
-
-    summary
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// A subagent bills to the task that delegated the work, so the
-    /// usage screen shows one row per task and not one per subagent.
+    /// A settings file written while the app still saved a permission mode
+    /// and a shortcut for the approval card loads as it is; the next save
+    /// drops the mode, and the retired shortcut slot is ignored at run time
+    /// (see `shortcuts::tests::an_override_for_a_retired_slot_is_dropped_quietly`).
     #[test]
-    fn subagent_usage_counts_against_its_parent_task() {
-        let conn = rusqlite::Connection::open_in_memory().unwrap();
-        conn.execute_batch(
-            "CREATE TABLE sessions (
-                 id TEXT PRIMARY KEY,
-                 name TEXT NOT NULL DEFAULT '',
-                 parent_session_id TEXT
-             );
-             CREATE TABLE usage_ledger (
-                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                 session_id TEXT NOT NULL,
-                 created_timestamp INTEGER NOT NULL,
-                 model TEXT,
-                 total_tokens INTEGER,
-                 cost REAL
-             );
-             INSERT INTO sessions VALUES ('task-1', 'Review the parser', NULL);
-             INSERT INTO sessions VALUES ('sub-1', 'Delegated task', 'task-1');
-             INSERT INTO sessions VALUES ('task-2', 'Other work', NULL);
-             INSERT INTO usage_ledger (session_id, created_timestamp, model, total_tokens, cost)
-             VALUES ('task-1', 10, 'maple-1', 100, 1.0),
-                    ('sub-1',  20, 'maple-1', 400, 4.0),
-                    ('task-2', 30, 'maple-1', 700, 7.0);",
+    fn settings_with_a_saved_permission_mode_still_load() {
+        let settings: AppSettings = serde_json::from_str(
+            r#"{"default_permission_mode":"auto","tool_details":true,
+                "shortcut_overrides":{"chat.allow_permission":null,"chat.new_task":"secondary-shift-n"}}"#,
         )
-        .unwrap();
-
-        let usage = usage_from_ledger(&conn);
-        let rows = usage
-            .by_session
-            .iter()
-            .map(|row| (row.label.as_str(), row.turns, row.total_tokens))
-            .collect::<Vec<_>>();
+        .expect("an old settings file still loads");
+        assert!(settings.tool_details);
         assert_eq!(
-            rows,
-            vec![("Other work", 1, 700), ("Review the parser", 2, 500)],
-            "the subagent's tokens belong to the task that delegated them"
+            settings.shortcut_overrides.get("chat.allow_permission"),
+            Some(&None)
         );
-        // Two tasks ran, not three sessions.
-        assert_eq!(usage.by_model.len(), 1);
-        assert_eq!(usage.by_model[0].sessions, 2);
-        assert_eq!(usage.totals.total_tokens, 1200);
-    }
-
-    #[test]
-    fn permission_mode_round_trips_as_a_string() {
-        for mode in [PermissionMode::SmartApprove, PermissionMode::Auto] {
-            let json = serde_json::to_string(&mode).expect("serialize");
-            assert_eq!(json, format!("\"{}\"", mode.as_str()));
-            let back: PermissionMode = serde_json::from_str(&json).expect("deserialize");
-            assert_eq!(back, mode);
-        }
-    }
-
-    #[test]
-    fn unknown_permission_mode_reads_as_the_safer_one() {
-        assert_eq!(PermissionMode::parse("chat"), PermissionMode::SmartApprove);
-        assert_eq!(PermissionMode::parse(""), PermissionMode::SmartApprove);
-        assert_eq!(PermissionMode::default(), PermissionMode::SmartApprove);
-    }
-
-    #[test]
-    fn default_settings_keep_the_on_disk_permission_string() {
-        let json = serde_json::to_value(AppSettings::default()).expect("serialize");
-        assert_eq!(json["default_permission_mode"], "smart_approve");
+        let json = serde_json::to_value(&settings).expect("serialize");
+        assert!(json.get("default_permission_mode").is_none());
     }
 
     #[test]

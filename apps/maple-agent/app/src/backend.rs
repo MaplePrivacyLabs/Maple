@@ -45,18 +45,6 @@ pub struct PendingQuestion {
     pub questions: Vec<maple_agent::agent::AgentQuestion>,
 }
 
-#[derive(Debug, Clone)]
-pub struct PendingPermission {
-    pub session_id: String,
-    pub run_id: String,
-    pub request_id: String,
-    pub tool_name: String,
-    pub prompt: Option<String>,
-    /// Pretty-printed tool arguments, formatted once when the request
-    /// arrives instead of on every frame.
-    pub arguments: Arc<str>,
-}
-
 // Re-exported for the settings screens; a headless build has no reader.
 #[cfg_attr(not(feature = "desktop"), allow(unused_imports))]
 pub use maple_agent::maple_api::{
@@ -1562,13 +1550,11 @@ impl AgentBackend {
             Some(AgentStartRequest {
                 project_root: None,
                 model,
-                mode,
             }) => {
                 let config = handle.load_config().await?;
                 Some(AgentStartRequest {
                     project_root: gui_start_root(&config),
                     model,
-                    mode,
                 })
             }
             other => other,
@@ -2093,24 +2079,6 @@ impl AgentBackend {
             .await
     }
 
-    /// Set the permission policy for a session: "smart_approve" asks for
-    /// each gated tool, "auto" approves everything (bypass).
-    pub async fn set_permission_mode(
-        &self,
-        user_id: &str,
-        session_id: &str,
-        mode: &str,
-    ) -> Result<(), String> {
-        self.service
-            .handle_for_user(user_id)
-            .await?
-            .set_permission_mode(maple_agent::agent::AgentPermissionModeRequest {
-                session_id: session_id.to_string(),
-                mode: mode.to_string(),
-            })
-            .await
-    }
-
     /// Compact a session's history now; reload the session afterwards.
     pub async fn compact_session(&self, user_id: &str, session_id: &str) -> Result<(), String> {
         self.service
@@ -2356,35 +2324,12 @@ impl AgentBackend {
             .await
     }
 
-    pub async fn permission_respond(
-        &self,
-        user_id: &str,
-        session_id: &str,
-        request_id: &str,
-        allow: bool,
-    ) -> Result<(), String> {
-        self.service
-            .handle_for_user(user_id)
-            .await?
-            .permission_respond(maple_agent::agent::AgentPermissionResponse {
-                session_id: session_id.to_string(),
-                request_id: request_id.to_string(),
-                decision: if allow {
-                    "allow_once".to_string()
-                } else {
-                    "deny_once".to_string()
-                },
-            })
-            .await
-    }
-
     /// Standard start request for this app: the saved project root (see
-    /// `start_runtime`) with the configured model and the SmartApprove policy.
+    /// `start_runtime`) with the configured model.
     pub fn default_start_request(&self) -> AgentStartRequest {
         AgentStartRequest {
             project_root: None,
             model: std::env::var("MAPLE_MODEL").ok(),
-            mode: None,
         }
     }
 
