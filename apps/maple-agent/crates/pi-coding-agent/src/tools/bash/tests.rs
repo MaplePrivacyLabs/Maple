@@ -412,6 +412,108 @@ async fn dropping_a_call_stops_everything_it_started() {
 }
 
 #[cfg(unix)]
+#[tokio::test]
+async fn stopping_a_command_ends_a_background_job_that_keeps_printing() {
+    // A busy machine can pause the job for longer than the quiet window, so that the call
+    // ends on its own before Stop. Such a run proves nothing and is run again.
+    for _ in 0..5 {
+        let dir = tempfile::tempdir().unwrap();
+        let (shell_pid, ticks) = (dir.path().join("shell-pid"), dir.path().join("ticks"));
+        let tool = Arc::new(bash(dir.path(), BashToolOptions::default()));
+        let cancel = CancellationToken::new();
+        let call = tokio::spawn({
+            let (tool, cancel) = (tool.clone(), cancel.clone());
+            let command = printing_job(&shell_pid, &ticks);
+            async move { run_with(&tool, json!({"command": command}), cancel).await }
+        });
+        wait_for_exit(&shell_pid).await;
+        wait_for(&ticks).await;
+        cancel.cancel();
+        let result = tokio::time::timeout(Duration::from_secs(5), call)
+            .await
+            .expect("Stop ends the call")
+            .unwrap();
+        if let Err(error) = result {
+            assert!(error.ends_with("Command aborted"), "{error}");
+            assert_stopped(&ticks).await;
+            return;
+        }
+    }
+    panic!("the job never kept the call reading");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_timeout_ends_a_background_job_that_keeps_printing() {
+    // As above, a run in which the call ended on its own is run again.
+    for _ in 0..5 {
+        let dir = tempfile::tempdir().unwrap();
+        let (shell_pid, ticks) = (dir.path().join("shell-pid"), dir.path().join("ticks"));
+        let tool = bash(dir.path(), BashToolOptions::default());
+        let command = printing_job(&shell_pid, &ticks);
+        let result = tokio::time::timeout(
+            Duration::from_secs(5),
+            run(&tool, json!({"command": command, "timeout": 0.5})),
+        )
+        .await
+        .expect("the timeout ends the call");
+        if let Err(error) = result {
+            assert!(
+                error.ends_with("Command timed out after 0.5 seconds"),
+                "{error}"
+            );
+            assert_stopped(&ticks).await;
+            return;
+        }
+    }
+    panic!("the job never kept the call reading until the timeout");
+}
+
+/// A command whose shell writes its pid to `shell_pid` and exits at once, leaving a job
+/// that counts in `ticks`, then prints, every 500 turns of a loop that runs for several
+/// seconds. The job starts no process, so a busy machine is less likely to pause it.
+#[cfg(unix)]
+fn printing_job(shell_pid: &Path, ticks: &Path) -> String {
+    format!(
+        "(i=0; while [ $i -lt 3000000 ]; do i=$((i+1)); if [ $((i % 500)) -eq 0 ]; then printf x >> '{}'; echo tick; fi; done) & printf %s $$ > '{}'",
+        ticks.display(),
+        shell_pid.display()
+    )
+}
+
+/// Wait until the shell whose pid is in `path` has exited and been reaped.
+#[cfg(unix)]
+async fn wait_for_exit(path: &Path) {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let pid = fs::read_to_string(path)
+                .ok()
+                .and_then(|pid| pid.parse().ok());
+            // SAFETY: signal 0 only checks whether the process exists.
+            if pid.is_some_and(|pid: libc::pid_t| unsafe { libc::kill(pid, 0) } != 0) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("the shell exits");
+}
+
+/// Check that the job counting in `ticks` has stopped.
+#[cfg(unix)]
+async fn assert_stopped(ticks: &Path) {
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let counted = fs::metadata(ticks).unwrap().len();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(
+        fs::metadata(ticks).unwrap().len(),
+        counted,
+        "the job still runs"
+    );
+}
+
+#[cfg(unix)]
 async fn wait_for(path: &Path) {
     tokio::time::timeout(Duration::from_secs(5), async {
         while !path.exists() {

@@ -279,18 +279,32 @@ async fn run_local(
     guard.release();
 
     // The shell has exited. Collect output until both streams close, or until they have
-    // been quiet for a moment: a background process may hold them open.
+    // been quiet for a moment: a background process may hold them open, and output it
+    // keeps writing keeps collection going, as in Pi. Stop and the timeout still end the
+    // call then and, as in Pi, what is left of the command's process group, whose id
+    // stays the shell's while any member lives.
     loop {
         let quiet = tokio::time::timeout(EXIT_STDIO_GRACE, async {
             tokio::select! {
                 finished = readers.join_next() => finished.is_none(),
                 _ = activity.notified() => false,
             }
-        })
-        .await;
-        match quiet {
-            Ok(true) | Err(_) => break,
-            Ok(false) => continue,
+        });
+        tokio::select! {
+            quiet = quiet => match quiet {
+                Ok(true) | Err(_) => break,
+                Ok(false) => continue,
+            },
+            _ = options.cancel.cancelled(), if !aborted => {
+                aborted = true;
+                end_process_group(pid);
+                break;
+            }
+            _ = &mut deadline, if !timed_out => {
+                timed_out = true;
+                end_process_group(pid);
+                break;
+            }
         }
     }
     readers.abort_all();
@@ -304,6 +318,18 @@ async fn run_local(
         return Err(ExecError::TimedOut(options.timeout.unwrap_or_default()));
     }
     Ok(Some(exit_code(status)))
+}
+
+/// End what is left of a finished command's process group. Only the group is
+/// signalled: the shell itself is reaped, and its pid may be another process's now.
+fn end_process_group(pid: Option<u32>) {
+    #[cfg(unix)]
+    if let Some(pid) = pid.and_then(|pid| libc::pid_t::try_from(pid).ok()) {
+        // SAFETY: kill only sends a signal; a negative pid names the process group.
+        unsafe { libc::kill(-pid, libc::SIGKILL) };
+    }
+    #[cfg(not(unix))]
+    let _ = pid;
 }
 
 fn exit_code(status: std::process::ExitStatus) -> i32 {
