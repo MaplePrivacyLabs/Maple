@@ -113,9 +113,13 @@ class OpenSecretWorkflowBoundaryTests(unittest.TestCase):
             ["yq", "-o=json", ".", str(ROOT / ".github/actionlint.yaml")],
             check=True, capture_output=True, text=True,
         )
-        self.assertEqual(json.loads(result.stdout), {
-            "self-hosted-runner": {"labels": ["blacksmith-8vcpu-ubuntu-2404-arm"]},
-        })
+        labels = json.loads(result.stdout)["self-hosted-runner"]["labels"]
+        for workflow_name, job_names in (
+            ("opensecret-eif.yml", ("eif-candidate", "eif-trusted")),
+            ("opensecret-eif-release.yml", ("build",)),
+        ):
+            for job_name in job_names:
+                self.assertIn(workflow(workflow_name)["jobs"][job_name]["runs-on"], labels)
 
     def test_ordinary_backend_ci_does_not_publish_or_build_eifs(self):
         config = workflow("opensecret-ci.yml")
