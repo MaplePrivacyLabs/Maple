@@ -49,6 +49,10 @@ pub struct BashSpawnContext {
     pub command: String,
     pub cwd: PathBuf,
     pub env: BTreeMap<String, String>,
+    /// End everything the command started when the command ends, so that nothing
+    /// outlives it with what `env` gave it, such as credentials. Otherwise a background
+    /// job keeps running, as in Pi. Unix only for now.
+    pub contain: bool,
 }
 
 /// Adjusts a command, its folder or its environment before it runs.
@@ -65,6 +69,8 @@ pub struct ExecOptions {
     pub timeout: Option<f64>,
     /// The whole environment; this process's when `None`.
     pub env: Option<BTreeMap<String, String>>,
+    /// End everything the command started when it ends (Unix only for now).
+    pub contain: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -274,6 +280,11 @@ async fn run_local(
             }
         }
     };
+    // A contained command ends with everything it started. Its process group keeps the
+    // shell's id while any member lives, so the id names no other group.
+    if options.contain {
+        end_process_group(pid);
+    }
     // Reaped: from here the pid may belong to another process, so nothing is killed
     // through it, and a background job the command left keeps running.
     guard.release();
@@ -522,7 +533,12 @@ impl ShellTool {
                 set_env_var(&mut env, &keys[4], level);
             }
         }
-        let context = BashSpawnContext { command, cwd, env };
+        let context = BashSpawnContext {
+            command,
+            cwd,
+            env,
+            contain: false,
+        };
         match &self.spawn_hook {
             Some(hook) => hook(context),
             None => context,
@@ -701,6 +717,7 @@ impl AgentTool for ShellTool {
                     cancel: invocation.cancel.clone(),
                     timeout: params.timeout,
                     env: Some(spawn.env),
+                    contain: spawn.contain,
                 },
             )
             .await;

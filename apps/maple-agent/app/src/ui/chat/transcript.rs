@@ -8,7 +8,6 @@ use std::sync::Arc;
 use gpui::{Div, Entity, IntoElement, SharedString, Window, div, prelude::*, px};
 use maple_agent::agent::{
     AgentTimelineItem, EXTERNAL_AGENT_ACTIVITY_KEY, ExternalAgentActivity, ExternalAgentRef,
-    compaction_notice_text,
 };
 
 use super::cache::{MAX_DIFF_LINES, MarkdownKind};
@@ -541,11 +540,6 @@ fn render_thinking(
                 transcript.render,
             )),
     )
-}
-
-/// Goose's runtime strings rebranded for Maple users, who never see goose.
-pub(super) fn maple_display_text(text: &str) -> std::borrow::Cow<'_, str> {
-    std::borrow::Cow::Borrowed(compaction_notice_text(text).unwrap_or(text))
 }
 
 fn tool_status_style(status: Option<&str>) -> (&'static str, u32) {
@@ -1285,7 +1279,6 @@ fn render_system(item: &AgentTimelineItem) -> Div {
     if text.trim().is_empty() {
         return div();
     }
-    let text = maple_display_text(&text).into_owned();
     div()
         .text_sm()
         .text_color(gpui::rgb(theme::text_muted()))

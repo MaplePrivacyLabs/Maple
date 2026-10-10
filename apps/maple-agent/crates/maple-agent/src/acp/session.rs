@@ -1,13 +1,13 @@
 //! ACP connection and session state: what one connection holds, what one
 //! session owns, and the checks a session must pass before it exists.
 
+use super::SharedRuntimeStart;
 use super::config::{AgentAcpConfig, AgentAcpStats};
 use super::convert::acp_session_config_options;
 use super::transport::AcpOutboundTracker;
 use crate::agent::{
-    AgentMcpKeyValue, AgentRunCancellation, AgentRuntimeHandle, AgentSessionSummary,
-    AgentToolContextLease, AgentToolContextSpec, AgentTransientMcpServer,
-    AgentTransientMcpTransport, SENSITIVE_BRIDGE_ENV,
+    AgentMcpKeyValue, AgentMcpServer, AgentMcpTransport, AgentRuntimeHandle, AgentSessionSummary,
+    AgentSurfaceLease, AgentToolContextSpec, CatalogEntry, SENSITIVE_BRIDGE_ENV,
 };
 
 use agent_client_protocol::JsonRpcNotification;
@@ -23,7 +23,7 @@ use tokio_util::sync::CancellationToken;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt as _;
 
-pub(super) const ACP_TRANSIENT_MCP_TIMEOUT_SECONDS: u64 = 30;
+pub(super) const ACP_SESSION_MCP_TIMEOUT_SECONDS: u64 = 30;
 pub(super) const ALLOWED_BRIDGE_ENV: [&str; 6] = [
     "BUZZ_RELAY_URL",
     "BUZZ_PRIVATE_KEY",
@@ -37,14 +37,6 @@ pub(super) const ALLOWED_BRIDGE_ENV: [&str; 6] = [
 pub(super) struct BridgeHelloNotification {
     pub(super) environment: HashMap<String, String>,
 }
-
-/// The (shared) runtime start `session/new` and `session/load` wait on, so
-/// the ACP handshake can answer before the heavy runtime boots. Driving it
-/// through `Shared` means the first session request starts the runtime once
-/// while later requests await the same start.
-pub(super) type SharedRuntimeStart = futures_util::future::Shared<
-    std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send>>,
->;
 
 /// A start gate that is already satisfied; used when the runtime is known
 /// to be running (tests, desktop-owned runs).
@@ -73,12 +65,13 @@ pub(super) struct AcpConnectionContext {
 }
 
 pub(super) struct AcpSession {
-    pub(super) lease: Option<AgentToolContextLease>,
+    pub(super) lease: Option<AgentSurfaceLease>,
     pub(super) model: String,
     pub(super) available_models: Vec<String>,
-    /// Cached context window of `model` for `usage_update` notifications.
-    /// `None` until resolved (or after a model switch invalidates it).
-    pub(super) context_limit: Option<u64>,
+    /// What the catalog says about `model`: its vision and context window
+    /// for each turn and for `usage_update`. `None` until the catalog is
+    /// read, and again after a model switch.
+    pub(super) catalog: Option<CatalogEntry>,
     /// The session title last advertised to the caller; semantic-title
     /// updates are only sent when the title moves past this.
     pub(super) advertised_title: Option<String>,
@@ -89,20 +82,22 @@ pub(super) struct AcpSession {
     pub(super) project_trust_decision: Option<bool>,
 }
 
+/// A session's lease until the session is published to the connection.
+/// Dropped before that, it discards the task it created.
 pub(super) struct UnpublishedAcpSession {
-    pub(super) lease: Option<AgentToolContextLease>,
+    pub(super) lease: Option<AgentSurfaceLease>,
     pub(super) published: bool,
 }
 
 impl UnpublishedAcpSession {
-    pub(super) fn new(lease: AgentToolContextLease) -> Self {
+    pub(super) fn new(lease: AgentSurfaceLease) -> Self {
         Self {
             lease: Some(lease),
             published: false,
         }
     }
 
-    pub(super) fn publish(mut self) -> AgentToolContextLease {
+    pub(super) fn publish(mut self) -> AgentSurfaceLease {
         self.published = true;
         self.lease
             .take()
@@ -160,14 +155,10 @@ impl AcpSession {
     }
 }
 
-pub(super) enum AcpPromptState {
-    Starting {
-        cancellation: CancellationToken,
-    },
-    Running {
-        cancellation: CancellationToken,
-        run_cancellation: Box<AgentRunCancellation>,
-    },
+/// A session's prompt in progress. Its cancellation stops the prompt from
+/// its admission on, and the run once it started.
+pub(super) struct AcpPromptState {
+    pub(super) cancellation: CancellationToken,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -198,12 +189,16 @@ pub(super) fn ensure_allowed_project_root(
     Err("ACP session cwd is outside the configured project roots".to_string())
 }
 
+/// The caller's MCP servers for a session: the bridge's variables a Buzz
+/// `buzz-dev-mcp` definition carries, and the HTTP servers, which run beside
+/// the task's own. Other stdio servers are refused before anything starts:
+/// they would run caller-supplied native code here.
 pub(super) fn prepare_session_mcp(
     bridge_environment: &HashMap<String, String>,
     servers: &[McpServer],
-) -> Result<(HashMap<String, String>, Vec<AgentTransientMcpServer>), agent_client_protocol::Error> {
+) -> Result<(HashMap<String, String>, Vec<AgentMcpServer>), agent_client_protocol::Error> {
     let mut environment = bridge_environment.clone();
-    let mut transient = Vec::new();
+    let mut session_servers = Vec::new();
     for server in servers {
         match server {
             McpServer::Stdio(server) => {
@@ -273,12 +268,14 @@ pub(super) fn prepare_session_mcp(
                         value: header.value.clone(),
                     });
                 }
-                transient.push(AgentTransientMcpServer {
+                session_servers.push(AgentMcpServer {
                     name: server.name.clone(),
                     description: "ACP session MCP server".to_string(),
-                    timeout_seconds: ACP_TRANSIENT_MCP_TIMEOUT_SECONDS,
-                    transport: AgentTransientMcpTransport::StreamableHttp {
+                    enabled: true,
+                    timeout_seconds: ACP_SESSION_MCP_TIMEOUT_SECONDS,
+                    transport: AgentMcpTransport::StreamableHttp {
                         url: server.url.clone(),
+                        environment: Vec::new(),
                         headers,
                     },
                 });
@@ -293,7 +290,7 @@ pub(super) fn prepare_session_mcp(
             }
         }
     }
-    Ok((environment, transient))
+    Ok((environment, session_servers))
 }
 
 pub(super) fn filter_bridge_environment(
@@ -352,8 +349,8 @@ pub(super) fn canonical_session_id_text(
     Ok(session_id.to_string())
 }
 
-/// The persisted task a caller asked to load. Every task loads, whatever
-/// mode it was saved in: all of them run with every tool call allowed.
+/// The task a caller asked to load. Every task loads: all of them run with
+/// every tool call allowed.
 pub(super) fn find_acp_session<'a>(
     sessions: &'a [AgentSessionSummary],
     session_id: &str,

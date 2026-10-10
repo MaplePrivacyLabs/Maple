@@ -1,6 +1,6 @@
 [package]
 name = "maple-agent"
-description = "Transport-neutral Maple agent runtime: Goose-backed sessions, provider, tools, permissions"
+description = "Transport-neutral Maple agent runtime on the Pi crates: sessions, provider, tools"
 edition.workspace = true
 version.workspace = true
 license.workspace = true
@@ -22,26 +22,30 @@ futures-util = { workspace = true }
 once_cell = { workspace = true }
 http = { workspace = true }
 reqwest = { workspace = true }
+bytes = "1"
+base64 = "0.22"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 dirs = "6"
-goose = { git = "https://github.com/AnthonyRonning/goose.git", rev = "0a26a33078034b30c2297f89223e1d237cfc98d8", package = "goose", default-features = false }
-goose-providers = { git = "https://github.com/AnthonyRonning/goose.git", rev = "0a26a33078034b30c2297f89223e1d237cfc98d8", package = "goose-providers", default-features = false }
+httpdate = "1"
+icu_properties = "2.1.1"
+agent-client-protocol = { version = "=2.2.0", optional = true, default-features = false, features = ["unstable_end_turn_token_usage"] }
+rand = "0.8.6"
+rusqlite = { version = "0.32", features = ["bundled"] }
+sha2 = "0.10"
+tempfile = "3"
 maple-sdk = { workspace = true }
 maple-proxy = { workspace = true }
-rand = "0.8.6"
-rmcp = { version = "=3.4.1", default-features = false, features = ["client", "transport-streamable-http-client-reqwest"] }
-httpdate = "1"
-process-wrap = { version = "=9.1.0", default-features = false, features = ["tokio1", "creation-flags", "job-object", "process-group"] }
 pulldown-cmark = { version = "0.13", default-features = false }
-tempfile = "3"
-icu_properties = "2.1.1"
-sha2 = "0.10"
-agent-client-protocol = { version = "=2.2.0", optional = true, default-features = false, features = ["unstable_end_turn_token_usage"] }
-base64 = "0.22"
-bytes = "1"
+image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp"] }
+# MCP clients for the account's servers: stdio pipes Maple spawns itself, and streamable HTTP.
+rmcp = { version = "=3.4.1", default-features = false, features = ["client", "transport-async-rw", "transport-streamable-http-client-reqwest"] }
+pi-ai = { path = "../pi-ai", default-features = false }
+pi-agent-core = { path = "../pi-agent-core" }
+pi-coding-agent = { path = "../pi-coding-agent" }
 
-[target.'cfg(windows)'.dependencies]
-windows = { version = "0.62.2", features = ["Win32_System_Threading"] }
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+process-wrap = { version = "=9.1.0", default-features = false, features = ["tokio1", "process-session"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 # CUA's native SDK is not published to crates.io yet. Pin the trycua/cua
@@ -61,9 +65,6 @@ zbus = { version = "5.19", default-features = false, features = ["blocking-api",
 # libpipewire and libspa headers at build time and is deliberately left off;
 # full-screen portal screenshots do not need it.
 cua-driver-sdk = { git = "https://github.com/trycua/cua.git", rev = "2dbc1c2cfbee5d25c9cea2dc37db80b98d4f9b00", package = "cua-driver-sdk", features = ["portal-input"] }
-
-[target.'cfg(unix)'.dependencies]
-libc = "0.2"
 
 [dev-dependencies]
 chacha20poly1305 = "0.10"

@@ -437,6 +437,7 @@ async fn tools_registered_later_reach_the_next_prompt() {
         .faux
         .push_tool_call("echo", json!({ "text": "late" }));
     harness.faux.push_text("echoed");
+    harness.faux.push_text("gone again");
     let session = harness.session().await;
     let declared = |index: usize| -> Vec<String> {
         pi_ai::transcript::current_tools(&harness.faux.requests()[index].context.messages)
@@ -468,6 +469,15 @@ async fn tools_registered_later_reach_the_next_prompt() {
         })
         .unwrap();
     assert_eq!(result, "late");
+
+    assert!(session.unregister_tool("echo"));
+    assert!(!session.unregister_tool("echo"));
+    assert!(session.active_tools().is_empty());
+    session
+        .prompt("three", PromptOptions::default())
+        .await
+        .unwrap();
+    assert!(declared(3).is_empty());
 }
 
 #[tokio::test]

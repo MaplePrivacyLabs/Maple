@@ -196,6 +196,78 @@ pub(super) fn attachment_id_from_source(source: &str) -> Option<&str> {
         .and_then(|id| (!id.is_empty() && !id.contains(['/', '\\', '?', '#'])).then_some(id))
 }
 
+const ATTACHED_IMAGE: &str = "The user attached the following image";
+const READ_IMAGE_HINT: &str =
+    "Use read_image with an attachment source when you need visual details from that image.";
+
+/// The text a model gets for a message with images: what the user typed,
+/// then each image's name and source, as Goose's runtime wrote it. A model
+/// that gets the images beside the text (`inline`) is not told to look with
+/// `read_image`; the source still lets it crop one.
+pub(super) fn image_prompt(
+    text: &str,
+    attachments: &[AgentImageAttachment],
+    inline: bool,
+) -> String {
+    let mut prompt = text.trim().to_string();
+    if attachments.is_empty() {
+        return prompt;
+    }
+    if !prompt.is_empty() {
+        prompt.push_str("\n\n");
+    }
+    prompt.push_str(ATTACHED_IMAGE);
+    prompt.push_str(if attachments.len() == 1 {
+        ":\n"
+    } else {
+        "s:\n"
+    });
+    for attachment in attachments {
+        let name = serde_json::to_string(&attachment.name).unwrap_or_else(|_| "\"image\"".into());
+        prompt.push_str(&format!("- {name}: {}\n", attachment.source));
+    }
+    if !inline {
+        prompt.push_str(READ_IMAGE_HINT);
+    }
+    prompt
+}
+
+/// What the user typed and which images they attached, read back from the
+/// text [`image_prompt`] wrote. `None` for a message without images. An
+/// attachment read back has no media type.
+pub(super) fn split_image_prompt(prompt: &str) -> Option<(String, Vec<AgentImageAttachment>)> {
+    let start = prompt.rfind(ATTACHED_IMAGE)?;
+    let (typed, listing) = prompt.split_at(start);
+    let typed = match typed.strip_suffix("\n\n") {
+        Some(typed) => typed,
+        None if typed.is_empty() => "",
+        None => return None,
+    };
+    let mut lines = listing.lines();
+    let head = lines.next()?.strip_prefix(ATTACHED_IMAGE)?;
+    if head != ":" && head != "s:" {
+        return None;
+    }
+    let mut attachments = Vec::new();
+    for line in lines {
+        if line == READ_IMAGE_HINT {
+            break;
+        }
+        let item = line.strip_prefix("- ")?;
+        let mut names = serde_json::Deserializer::from_str(item).into_iter::<String>();
+        let name = names.next()?.ok()?;
+        let source = item[names.byte_offset()..].strip_prefix(": ")?;
+        let id = attachment_id_from_source(source)?;
+        attachments.push(AgentImageAttachment {
+            id: id.to_string(),
+            name,
+            mime_type: String::new(),
+            source: source.to_string(),
+        });
+    }
+    (!attachments.is_empty()).then(|| (typed.to_string(), attachments))
+}
+
 fn parse_data_url(data_url: &str) -> Result<(&str, &str), String> {
     let (header, data) = data_url
         .split_once(',')
@@ -350,5 +422,53 @@ mod tests {
             unsupported.unwrap_err(),
             "Only JPEG, PNG, and WebP images are supported"
         );
+    }
+
+    fn attachment(id: char, name: &str) -> AgentImageAttachment {
+        let id = id.to_string().repeat(32);
+        AgentImageAttachment {
+            source: format!("maple-attachment://{id}"),
+            id,
+            name: name.to_string(),
+            mime_type: String::new(),
+        }
+    }
+
+    #[test]
+    fn an_image_prompt_names_the_images_and_reads_back() {
+        let one = [attachment('a', "dialog.png")];
+        let prompt = image_prompt(" Why is this misaligned? ", &one, false);
+        assert_eq!(
+            prompt,
+            format!(
+                "Why is this misaligned?\n\nThe user attached the following image:\n- \"dialog.png\": maple-attachment://{}\n{READ_IMAGE_HINT}",
+                "a".repeat(32)
+            )
+        );
+        assert_eq!(
+            split_image_prompt(&prompt),
+            Some(("Why is this misaligned?".to_string(), one.to_vec()))
+        );
+
+        // With the images beside the text, nothing asks for read_image; a
+        // name may hold anything, and the text may be empty.
+        let two = [attachment('b', "a \"b\"\nc.png"), attachment('c', "d.png")];
+        let prompt = image_prompt("", &two, true);
+        assert!(prompt.starts_with("The user attached the following images:\n"));
+        assert!(!prompt.contains("read_image"));
+        assert_eq!(
+            split_image_prompt(&prompt),
+            Some((String::new(), two.to_vec()))
+        );
+
+        // Text without images is left as it is.
+        assert_eq!(image_prompt(" plain ", &[], false), "plain");
+        for text in [
+            "plain",
+            "The user attached the following image: nothing",
+            "x\nThe user attached the following image:\n- \"a\": maple-attachment://1",
+        ] {
+            assert_eq!(split_image_prompt(text), None, "{text}");
+        }
     }
 }

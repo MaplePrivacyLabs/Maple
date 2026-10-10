@@ -9,4 +9,4 @@ still install the helper from Settings.
 
 The driver and the extension negotiate an API version at run time, so these
 files move together with the SDK pin. When the pin changes, re-copy both files
-and update `UPSTREAM_SOURCE_REVISION` in `src/agent/gnome_helper.rs`.
+and update `UPSTREAM_SOURCE_REVISION` in `src/agent/cua/gnome_helper.rs`.

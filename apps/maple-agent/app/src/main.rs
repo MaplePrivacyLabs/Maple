@@ -374,8 +374,7 @@ fn init_logging(output: LogOutput) {
             .open(log_dir.join("maple-agent.log"))
             .ok()
     });
-    // goose is chatty at info during a run; its warnings still show.
-    const DEFAULT_FILTER: &str = "info,goose=warn";
+    const DEFAULT_FILTER: &str = "info";
     let mut builder = match output {
         LogOutput::FileAndStderr => env_logger::Builder::from_env(
             env_logger::Env::default().default_filter_or(DEFAULT_FILTER),

@@ -299,6 +299,7 @@ async fn local_operations_take_the_environment_given() {
                 cancel: CancellationToken::new(),
                 timeout: None,
                 env: Some(env),
+                contain: false,
             },
         )
         .await
@@ -361,6 +362,39 @@ async fn a_finished_command_may_leave_a_background_job_running() {
     );
     tokio::time::sleep(Duration::from_millis(1500)).await;
     assert_eq!(fs::read_to_string(&sentinel).unwrap(), "done");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_contained_command_ends_everything_it_started() {
+    let dir = tempfile::tempdir().unwrap();
+    let sentinel = dir.path().join("background-finished");
+    let tool = bash(
+        dir.path(),
+        BashToolOptions {
+            spawn_hook: Some(Arc::new(|mut context: BashSpawnContext| {
+                context.contain = true;
+                context
+            })),
+            ..BashToolOptions::default()
+        },
+    );
+    let started = std::time::Instant::now();
+    run(
+        &tool,
+        json!({"command": format!("(sleep 1; printf done > '{}') &", sentinel.display())}),
+    )
+    .await
+    .unwrap();
+    assert!(
+        started.elapsed() < Duration::from_secs(1),
+        "the job did not hold the call"
+    );
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    assert!(
+        !sentinel.exists(),
+        "the background job outlived its command"
+    );
 }
 
 #[cfg(unix)]

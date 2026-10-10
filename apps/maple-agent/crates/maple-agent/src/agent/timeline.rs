@@ -1,420 +1,641 @@
-//! Projection of Goose state onto what a host renders.
+//! Pi's sessions and events as the timeline Maple's surfaces render.
 //!
-//! A conversation, a single message, or a live tool exchange becomes a list
-//! of [`AgentTimelineItem`]s here: titles for tool calls, coalescing of a
-//! request with its response, the compaction notice, elicitation rows, and
-//! the live overlay a running turn keeps ahead of the persisted history. Session summaries live here for the same reason:
-//! they are the host's view of a session, not the runtime's.
+//! A row's id is derived from the message it shows, the same way for a live
+//! event and for the stored session, so a row streamed during a run is the
+//! row a reload produces: `u{timestamp}` for a user message, `a{timestamp}`
+//! plus `-thinking`, `-text` or `-error` for a reply, `a{timestamp}-{call id}`
+//! for a tool call and its result. Pi stamps every message with a time no
+//! other message of the process has, which makes those ids unique. Rows of
+//! Maple's own session entries, such as the "Stopped by user" notice, carry
+//! the id the runtime gave the entry.
+//!
+//! Live text and thinking arrive as `append` rows that the host concatenates;
+//! everything else, and every stored row, is a `replace` row.
 
-use super::*;
+use std::collections::HashMap;
 
-#[derive(Default)]
-pub(super) struct ConversationTimelineProjectionState {
-    pub(super) surfaced_thinking_in_inference: bool,
+use pi_agent_core::AgentEvent;
+use pi_ai::{
+    AssistantContent, AssistantMessage, AssistantMessageEvent, Content, Message, StopReason,
+    Timestamp, ToolCall, content_text,
+};
+use pi_coding_agent::SessionMessage;
+use pi_coding_agent::session::{EntryKind, SessionManager};
+use serde::Serialize;
+use serde_json::{Value, json};
+
+use super::attachments::split_image_prompt;
+use super::external_agents;
+use super::types::AgentTimelineItem;
+
+pub(crate) const MAX_AGENT_SESSION_TITLE_CHARS: usize = 80;
+pub(crate) const MAX_AGENT_ERROR_CHARS: usize = 1_200;
+
+/// The custom entry type of a notice Maple adds to a session, such as
+/// "Stopped by user". Notices are shown, never sent to the model.
+pub(crate) const MAPLE_NOTICE_ENTRY: &str = "maple.notice";
+pub(crate) const STOPPED_NOTICE_TEXT: &str = "Stopped by user";
+
+/// The data of a notice entry.
+pub(crate) fn notice_entry_data(id: &str, text: &str) -> Value {
+    json!({ "id": id, "text": text })
 }
 
-/// Project a stored Goose conversation into Maple's presentation timeline.
-///
-/// Goose deliberately repeats reasoning blocks on each split tool-request
-/// message. That replay belongs in the provider history, but it is not a second
-/// user-visible thought. Keep this normalization local to a single conversation
-/// so concurrent Agent sessions cannot affect one another and the
-/// persisted/provider-facing history remains byte-for-byte unchanged.
-pub(super) fn conversation_to_timeline_items(
-    conversation: &Conversation,
-) -> Vec<AgentTimelineItem> {
-    let mut state = ConversationTimelineProjectionState::default();
-    let mut items = Vec::new();
-    let mut current_turn_item_start = 0;
-    let mut resolved_permission_ids = HashSet::new();
-    let messages = conversation.messages();
-
-    for (index, message) in messages.iter().enumerate() {
-        let role = message_role(message);
-        let assistant = role == "assistant";
-        let inference_ends = assistant && message.metadata.usage.is_some();
-
-        // A real user message starts a new user turn. Tool responses are
-        // intentionally chain-neutral because Goose interleaves them between
-        // split requests from the same turn.
-        if is_real_user_message(message, &role) {
-            state.surfaced_thinking_in_inference = false;
-            current_turn_item_start = items.len();
-            resolved_permission_ids.clear();
-        }
-
-        for content in &message.content {
-            match content {
-                MessageContent::ToolResponse(response) => {
-                    resolved_permission_ids.insert(response.id.clone());
-                }
-                MessageContent::ActionRequired(action) => {
-                    if let ActionRequiredData::ElicitationResponse { id, .. } = &action.data {
-                        resolved_permission_ids.insert(id.clone());
-                    }
-                }
-                _ => {}
-            }
-        }
-        settle_turn_permission_items(
-            &mut items[current_turn_item_start..],
-            &resolved_permission_ids,
-            false,
-        );
-
-        let visible_message = message.user_visible_content();
-        // Match Goose's own session presentation contract: agent-only grind,
-        // retry, goal, and other internal messages stay in provider history but
-        // never become user-facing Maple timeline rows.
-        if !visible_message.is_user_visible() || visible_message.content.is_empty() {
-            if inference_ends {
-                state.surfaced_thinking_in_inference = false;
-            }
-            continue;
-        }
-
-        let mut thinking = message_thinking_projection(&visible_message);
-        let has_tool_request = visible_message
-            .content
-            .iter()
-            .any(|content| matches!(content, MessageContent::ToolRequest(_)));
-
-        // Goose intentionally copies reasoning onto every persisted split
-        // tool-request message for provider history. Its live AgentEvent stream
-        // emits that reasoning only once per provider inference. Reconstruct the
-        // same presentation boundary from the usage ledger Goose attaches to the
-        // inference's final assistant message. If no ledger boundary is reachable
-        // before the next real user turn, preserve every block rather than guess.
-        // Replace this reconstruction if Goose adds an explicit persisted
-        // inference ID or replay marker to its public message contract.
-        let has_usage_boundary =
-            assistant && provider_inference_has_usage_boundary(&messages[index..]);
-        if assistant
-            && has_tool_request
-            && state.surfaced_thinking_in_inference
-            && has_usage_boundary
-        {
-            thinking = None;
-        } else if assistant && thinking.is_some() {
-            state.surfaced_thinking_in_inference = true;
-        }
-
-        items.extend(message_to_timeline_items_with_thinking(
-            &visible_message,
-            false,
-            thinking.as_deref(),
-        ));
-        settle_turn_permission_items(
-            &mut items[current_turn_item_start..],
-            &resolved_permission_ids,
-            is_stopped_notice(message),
-        );
-
-        if inference_ends {
-            state.surfaced_thinking_in_inference = false;
-        }
-    }
-
-    coalesce_timeline_items(items)
+fn user_row_id(timestamp: Timestamp) -> String {
+    format!("u{timestamp}")
 }
 
-pub(super) fn is_stopped_notice(message: &Message) -> bool {
-    message.is_user_visible()
-        && !message.is_agent_visible()
-        && message.content.iter().any(|content| {
-            matches!(
-                content,
-                MessageContent::SystemNotification(notification)
-                    if notification.notification_type == SystemNotificationType::InlineMessage
-                        && notification.msg == "Stopped by user"
-            )
+fn reply_row_id(timestamp: Timestamp, part: &str) -> String {
+    format!("a{timestamp}-{part}")
+}
+
+fn tool_row_id(reply_timestamp: Timestamp, call_id: &str) -> String {
+    format!("a{reply_timestamp}-{call_id}")
+}
+
+/// The row of the tool call `call_id` in a stored session: that of the
+/// latest reply that made it, which the session stores before the call runs.
+pub(crate) fn stored_tool_row_id(session: &SessionManager, call_id: &str) -> Option<String> {
+    session
+        .branch()
+        .iter()
+        .rev()
+        .find_map(|entry| match &entry.kind {
+            EntryKind::Message {
+                message: SessionMessage::Llm(Message::Assistant(reply)),
+            } if reply.tool_calls().any(|call| call.id == call_id) => {
+                Some(tool_row_id(reply.timestamp, call_id))
+            }
+            _ => None,
         })
 }
 
-pub(super) fn settle_turn_permission_items(
-    items: &mut [AgentTimelineItem],
-    resolved_ids: &HashSet<String>,
-    cancel_unresolved: bool,
-) {
-    for item in items {
-        if item.item_type != "permission" || item.status.as_deref() != Some("pending") {
+fn created_ms(timestamp: Timestamp) -> u128 {
+    u128::try_from(timestamp).unwrap_or_default()
+}
+
+/// The timeline of a stored session: its current branch, oldest first.
+pub(crate) fn session_timeline(session: &SessionManager) -> Vec<AgentTimelineItem> {
+    let mut items: Vec<AgentTimelineItem> = Vec::new();
+    // A tool result's row is its call's row, found by call id.
+    let mut tool_rows: HashMap<String, String> = HashMap::new();
+    let branch = session.branch();
+    // Context edits that omit an entry hide it: Pi omits a failed attempt it
+    // retries, and a reply it compacts away to answer again.
+    let omitted: std::collections::HashSet<&str> = branch
+        .iter()
+        .filter_map(|entry| match &entry.kind {
+            EntryKind::ContextEdit {
+                target_id,
+                replacement: None,
+            } => Some(target_id.as_str()),
+            _ => None,
+        })
+        .collect();
+    for entry in &branch {
+        if omitted.contains(entry.id.as_str()) {
             continue;
         }
-        let resolved = item
-            .id
-            .strip_prefix("permission-")
-            .or_else(|| item.id.strip_prefix("elicitation-"))
-            .is_some_and(|id| resolved_ids.contains(id));
-        if resolved {
-            item.status = Some("completed".to_string());
-        } else if cancel_unresolved {
-            item.status = Some("cancelled".to_string());
-        }
-    }
-}
-
-/// Maple has no answer path for MCP elicitation. Once no run of the task is
-/// live, a pending "Input requested" row can never be answered, for example
-/// after a failed turn or an app exit, so it is shown as cancelled.
-pub(super) fn cancel_unanswerable_elicitation_items(items: &mut [AgentTimelineItem]) {
-    for item in items {
-        if item.item_type == "permission"
-            && item.status.as_deref() == Some("pending")
-            && item.id.starts_with("elicitation-")
-        {
-            item.status = Some("cancelled".to_string());
-        }
-    }
-}
-
-pub(super) fn is_real_user_message(message: &Message, role: &str) -> bool {
-    if role != "user" || !message.is_user_visible() {
-        return false;
-    }
-    message
-        .user_visible_content()
-        .content
-        .iter()
-        .any(|content| !matches!(content, MessageContent::ToolResponse(_)))
-}
-
-pub(super) fn provider_inference_has_usage_boundary(messages: &[Message]) -> bool {
-    for message in messages {
-        let role = message_role(message);
-        if is_real_user_message(message, &role) {
-            return false;
-        }
-        if role == "assistant" && message.metadata.usage.is_some() {
-            return true;
-        }
-    }
-    false
-}
-
-pub(super) fn message_thinking_projection(message: &Message) -> Option<String> {
-    // Match Goose Desktop's ACP adapter: concatenate adjacent thought chunks
-    // by message without rewriting their text. The frontend decides whether
-    // the fully merged thought is renderable, so a streamed punctuation or
-    // whitespace suffix is never lost.
-    let mut text = String::new();
-    let mut found = false;
-
-    for content in &message.content {
-        match content {
-            MessageContent::Thinking(thinking) => {
-                found = true;
-                text.push_str(&thinking.thinking);
+        match &entry.kind {
+            EntryKind::Message { message } => match message {
+                SessionMessage::Llm(Message::User(user)) => {
+                    items.push(user_item(user.timestamp, &user.content, "replace"));
+                }
+                SessionMessage::Llm(Message::Assistant(reply)) => {
+                    for call in reply.tool_calls() {
+                        tool_rows.insert(call.id.clone(), tool_row_id(reply.timestamp, &call.id));
+                    }
+                    items.extend(reply_items(reply));
+                }
+                SessionMessage::Llm(Message::ToolResult(result)) => {
+                    let id = tool_rows
+                        .get(&result.tool_call_id)
+                        .cloned()
+                        .unwrap_or_else(|| format!("tool-{}", result.tool_call_id));
+                    merge_into(
+                        &mut items,
+                        tool_result_item(
+                            id,
+                            &result.content,
+                            result.details.as_ref(),
+                            result.is_error,
+                            result.timestamp,
+                        ),
+                    );
+                }
+                SessionMessage::Llm(Message::System(_)) => {}
+                SessionMessage::Custom(custom) if custom.display => {
+                    items.push(notice_item(
+                        format!("custom{}", custom.timestamp),
+                        "Agent notice",
+                        &content_text(&custom.content),
+                        custom.timestamp,
+                    ));
+                }
+                // Maple's composer does not run the user's own shell commands yet.
+                SessionMessage::BashExecution(_)
+                | SessionMessage::Custom(_)
+                | SessionMessage::CompactionSummary(_)
+                | SessionMessage::BranchSummary(_) => {}
+            },
+            EntryKind::Custom {
+                custom_type,
+                data: Some(data),
+            } if custom_type == MAPLE_NOTICE_ENTRY => {
+                if let (Some(id), Some(text)) = (
+                    data.get("id").and_then(Value::as_str),
+                    data.get("text").and_then(Value::as_str),
+                ) {
+                    items.push(notice_item(
+                        id.to_string(),
+                        "Agent notice",
+                        text,
+                        entry.timestamp,
+                    ));
+                }
             }
-            MessageContent::RedactedThinking(_) => {
-                found = true;
-                text.push_str("Thinking redacted by provider.");
+            // An external agent's turn that ended after its tool call did
+            // leaves what it did on the call's row.
+            EntryKind::Custom {
+                custom_type,
+                data: Some(data),
+            } if custom_type == external_agents::TURN_END_ENTRY => {
+                if let Some(item) = external_agents::turn_end_row(data, created_ms(entry.timestamp))
+                {
+                    merge_into(&mut items, item);
+                }
+            }
+            EntryKind::Compaction { .. } => {
+                items.push(notice_item(
+                    format!("compaction-{}", entry.id),
+                    "Context compacted",
+                    "Earlier messages were summarized to make room in the context.",
+                    entry.timestamp,
+                ));
+            }
+            EntryKind::BranchSummary { summary, .. } if !summary.is_empty() => {
+                items.push(notice_item(
+                    format!("branch-summary-{}", entry.id),
+                    "Branch summary",
+                    summary,
+                    entry.timestamp,
+                ));
             }
             _ => {}
         }
     }
-    found.then_some(text)
+    items
 }
 
-pub(super) fn message_to_timeline_items(message: &Message, live: bool) -> Vec<AgentTimelineItem> {
-    if !message.is_user_visible() {
-        return Vec::new();
-    }
-    let thinking = message_thinking_projection(message);
-    message_to_timeline_items_with_thinking(message, live, thinking.as_deref())
-}
-
-pub(super) fn message_to_timeline_items_with_thinking(
-    message: &Message,
-    live: bool,
-    thinking: Option<&str>,
-) -> Vec<AgentTimelineItem> {
-    // Goose persists the canonical message for provider history but projects
-    // content-level audience annotations before emitting live user events.
-    // Apply the same projection when rebuilding Maple's timeline from storage.
-    let message = message.user_visible_content();
-    if !message.is_user_visible() || message.content.is_empty() {
-        return Vec::new();
-    }
-    let role = message_role(&message);
-    let base_id = message
-        .id
-        .clone()
-        .unwrap_or_else(|| format!("message-{}-{}", role, message.created));
-    let created_ms = if message.created > 0 {
-        (message.created as u128) * 1000
-    } else {
-        unix_ms()
+/// Merge `incoming` into the row with its id, or add it.
+pub(crate) fn merge_into(items: &mut Vec<AgentTimelineItem>, incoming: AgentTimelineItem) {
+    let Some(previous) = items.iter_mut().find(|item| item.id == incoming.id) else {
+        items.push(incoming);
+        return;
     };
-    let merge = if live { "append" } else { "replace" }.to_string();
-    let image_attachments = message_image_attachments(&message);
-    let visible_text = message_original_user_text(&message).unwrap_or_else(|| {
-        message
-            .content
-            .iter()
-            .filter_map(|content| match content {
-                MessageContent::Text(text) => Some(text.text.as_str()),
-                _ => None,
-            })
-            .collect::<String>()
-    });
-    let image_input = (!image_attachments.is_empty()).then(|| {
-        json!({
-            "imageAttachments": image_attachments,
-        })
-    });
-
-    let mut emitted_text = false;
-    let mut emitted_thinking = false;
-    message
-        .content
-        .iter()
-        .enumerate()
-        .filter_map(|(index, content)| match content {
-            MessageContent::Text(_) => {
-                if emitted_text {
-                    return None;
-                }
-                emitted_text = true;
-                Some(AgentTimelineItem {
-                    id: format!("{base_id}-text"),
-                    item_type: "message".to_string(),
-                    role: Some(role.clone()),
-                    title: None,
-                    text: Some(visible_text.clone()),
-                    status: None,
-                    input: image_input.clone(),
-                    output: None,
-                    created_ms,
-                    merge: merge.clone(),
-                })
-            }
-            MessageContent::Thinking(_) | MessageContent::RedactedThinking(_) => {
-                if emitted_thinking {
-                    return None;
-                }
-                emitted_thinking = true;
-                thinking.map(|thinking| AgentTimelineItem {
-                    id: format!("{base_id}-thinking"),
-                    item_type: "thinking".to_string(),
-                    role: Some("thought".to_string()),
-                    title: Some("Thinking".to_string()),
-                    text: Some(thinking.to_string()),
-                    status: None,
-                    input: None,
-                    output: None,
-                    created_ms,
-                    merge: merge.clone(),
-                })
-            }
-            MessageContent::ToolRequest(request) => Some(tool_request_item(request, created_ms)),
-            MessageContent::ToolResponse(response) => {
-                Some(tool_response_item(response, created_ms))
-            }
-            // Tool confirmations were answered by Maple's approval cards, which
-            // no longer exist; old history keeps them, the timeline does not.
-            MessageContent::ToolConfirmationRequest(_) => None,
-            MessageContent::ActionRequired(action) => action_required_item(action, created_ms),
-            MessageContent::SystemNotification(notification) => Some(system_notification_item(
-                &base_id,
-                index,
-                notification,
-                created_ms,
-            )),
-            MessageContent::Error(error) => {
-                Some(message_error_item(&base_id, index, error, created_ms))
-            }
-            // Images are provider-history payloads, not timeline events. The
-            // read_image tool request/result already gives users the useful,
-            // bounded presentation without exposing base64 metadata.
-            MessageContent::Image(_) | MessageContent::Document(_) => None,
-        })
-        .collect()
+    let append = incoming.merge == "append"
+        && matches!(incoming.item_type.as_str(), "message" | "thinking")
+        && incoming.text.is_some();
+    previous.title = merged_tool_title(previous, &incoming);
+    if append {
+        previous
+            .text
+            .get_or_insert_with(String::new)
+            .push_str(incoming.text.as_deref().unwrap_or_default());
+    } else if incoming.text.is_some() {
+        previous.text = incoming.text;
+    }
+    previous.item_type = incoming.item_type;
+    if incoming.role.is_some() {
+        previous.role = incoming.role;
+    }
+    if incoming.status.is_some() {
+        previous.status = incoming.status;
+    }
+    if incoming.input.is_some() {
+        previous.input = incoming.input;
+    }
+    if incoming.output.is_some() {
+        previous.output = incoming.output;
+    }
+    previous.created_ms = incoming.created_ms;
+    previous.merge = incoming.merge;
 }
 
-/// Maple wording for a Goose compaction notice, or `None` when the text
-/// is not one. Maple users never see the goose name, and ACP clients get
-/// the same wording.
-pub fn compaction_notice_text(text: &str) -> Option<&'static str> {
-    match text.trim() {
-        "goose is compacting the conversation..." => Some("Compacting…"),
-        "Context limit reached. Compacting to continue conversation..." => {
-            Some("Context limit reached — compacting to continue…")
+/// A user's message: what they typed, and the images they attached, which
+/// the interface draws from the task's attachments.
+fn user_item(timestamp: Timestamp, content: &[Content], merge: &str) -> AgentTimelineItem {
+    let text = content_text(content);
+    let (text, input) = match split_image_prompt(&text) {
+        Some((typed, attachments)) => {
+            let attachments: Vec<Value> = attachments
+                .into_iter()
+                .map(|attachment| {
+                    json!({
+                        "id": attachment.id,
+                        "name": attachment.name,
+                        "source": attachment.source,
+                    })
+                })
+                .collect();
+            (typed, Some(json!({ "imageAttachments": attachments })))
         }
-        _ => None,
-    }
-}
-
-pub(super) fn system_notification_item(
-    base_id: &str,
-    index: usize,
-    notification: &SystemNotificationContent,
-    created_ms: u128,
-) -> AgentTimelineItem {
-    // An external agent's end-of-turn notice is the tool row it belongs
-    // to, not a separate notice; see `external_agents::notice_timeline_item`.
-    if let Some(item) = external_agents::notice_timeline_item(notification, created_ms) {
-        return item;
-    }
-    let title = match notification.notification_type {
-        SystemNotificationType::ThinkingMessage => "Thinking",
-        SystemNotificationType::ProgressMessage => "Progress",
-        SystemNotificationType::InlineMessage => "Agent notice",
-        SystemNotificationType::CreditsExhausted => "Credits exhausted",
+        None => (text, None),
     };
     AgentTimelineItem {
-        id: format!("{base_id}-system-{index}"),
-        item_type: "system".to_string(),
-        role: Some("system".to_string()),
-        title: Some(title.to_string()),
-        text: Some(bounded_timeline_text(&notification.msg, 500)),
+        id: user_row_id(timestamp),
+        item_type: "message".to_string(),
+        role: Some("user".to_string()),
+        title: None,
+        text: Some(text),
+        status: None,
+        input,
+        output: None,
+        created_ms: created_ms(timestamp),
+        merge: merge.to_string(),
+    }
+}
+
+/// The rows of a finished reply: its thinking, its text, its tool calls and,
+/// when it failed, its error.
+fn reply_items(reply: &AssistantMessage) -> Vec<AgentTimelineItem> {
+    let mut items = Vec::new();
+    let thinking: Vec<&str> = reply
+        .content
+        .iter()
+        .filter_map(|block| match block {
+            AssistantContent::Thinking(thinking) if thinking.redacted => {
+                Some("Thinking redacted by provider.")
+            }
+            AssistantContent::Thinking(thinking) => Some(thinking.thinking.as_str()),
+            _ => None,
+        })
+        .collect();
+    if !thinking.is_empty() {
+        items.push(thinking_item(
+            reply.timestamp,
+            thinking.join("\n"),
+            "replace",
+        ));
+    }
+    let text = reply.text();
+    if reply
+        .content
+        .iter()
+        .any(|block| matches!(block, AssistantContent::Text(_)))
+    {
+        items.push(text_item(reply.timestamp, text, "replace"));
+    }
+    for call in reply.tool_calls() {
+        items.push(tool_call_item(reply.timestamp, call, "running"));
+    }
+    if reply.stop_reason == StopReason::Error {
+        items.push(reply_error_item(reply));
+    }
+    items
+}
+
+fn thinking_item(timestamp: Timestamp, text: String, merge: &str) -> AgentTimelineItem {
+    AgentTimelineItem {
+        id: reply_row_id(timestamp, "thinking"),
+        item_type: "thinking".to_string(),
+        role: Some("thought".to_string()),
+        title: Some("Thinking".to_string()),
+        text: Some(text),
         status: None,
         input: None,
-        // Provider-specific structured data can contain raw request or model
-        // payloads. The stable title/message above is the user-facing contract.
         output: None,
-        created_ms,
+        created_ms: created_ms(timestamp),
+        merge: merge.to_string(),
+    }
+}
+
+fn text_item(timestamp: Timestamp, text: String, merge: &str) -> AgentTimelineItem {
+    AgentTimelineItem {
+        id: reply_row_id(timestamp, "text"),
+        item_type: "message".to_string(),
+        role: Some("assistant".to_string()),
+        title: None,
+        text: Some(text),
+        status: None,
+        input: None,
+        output: None,
+        created_ms: created_ms(timestamp),
+        merge: merge.to_string(),
+    }
+}
+
+fn tool_call_item(reply_timestamp: Timestamp, call: &ToolCall, status: &str) -> AgentTimelineItem {
+    AgentTimelineItem {
+        id: tool_row_id(reply_timestamp, &call.id),
+        item_type: "tool".to_string(),
+        role: Some("assistant".to_string()),
+        title: Some(
+            descriptive_tool_title(&call.name, &call.arguments)
+                .unwrap_or_else(|| format_tool_title(&call.name)),
+        ),
+        text: None,
+        status: Some(status.to_string()),
+        input: Some(Value::Object(call.arguments.clone())),
+        output: None,
+        created_ms: created_ms(reply_timestamp),
         merge: "replace".to_string(),
     }
 }
 
-pub(super) fn tool_request_item(
-    request: &goose::conversation::message::ToolRequest,
-    created_ms: u128,
+fn tool_result_item(
+    id: String,
+    content: &[Content],
+    details: Option<&Value>,
+    is_error: bool,
+    timestamp: Timestamp,
 ) -> AgentTimelineItem {
-    match &request.tool_call {
-        Ok(call) => AgentTimelineItem {
-            id: request.id.clone(),
-            item_type: "tool".to_string(),
-            role: Some("assistant".to_string()),
-            title: Some(
-                descriptive_tool_title(call.name.as_ref(), &call.arguments).unwrap_or_else(|| {
-                    request
-                        .generated_title()
-                        .unwrap_or_else(|| call.name.as_ref())
-                        .to_string()
-                }),
-            ),
-            text: request
-                .generated_chain_summary()
-                .map(|summary| summary.summary),
-            status: Some("running".to_string()),
-            input: Some(serde_json::to_value(&call.arguments).unwrap_or(Value::Null)),
-            output: None,
-            created_ms,
-            merge: "replace".to_string(),
-        },
-        Err(error) => {
-            // Derive the id from the request so a reload produces the same
-            // row and two failures in one millisecond cannot collide.
-            let mut item = error_item(format!("Tool call parse failed: {error}"));
-            item.id = format!("{}-parse-error", request.id);
-            item.created_ms = created_ms;
-            item
+    AgentTimelineItem {
+        id,
+        item_type: "tool".to_string(),
+        role: Some("assistant".to_string()),
+        title: None,
+        text: None,
+        status: Some(if is_error { "failed" } else { "completed" }.to_string()),
+        input: None,
+        output: Some(json!({
+            "text": content_text(content),
+            "isError": is_error,
+            "structuredContent": details.cloned(),
+            "content": content.iter().map(summarize_tool_content).collect::<Vec<_>>(),
+        })),
+        created_ms: created_ms(timestamp),
+        merge: "replace".to_string(),
+    }
+}
+
+fn reply_error_item(reply: &AssistantMessage) -> AgentTimelineItem {
+    let message = reply
+        .error_message
+        .clone()
+        .unwrap_or_else(|| "The model's reply failed".to_string());
+    AgentTimelineItem {
+        id: reply_row_id(reply.timestamp, "error"),
+        item_type: "error".to_string(),
+        role: Some("system".to_string()),
+        title: Some(error_title(&message).to_string()),
+        text: Some(bounded_timeline_text(&message, MAX_AGENT_ERROR_CHARS)),
+        status: Some("failed".to_string()),
+        input: None,
+        output: None,
+        created_ms: created_ms(reply.timestamp),
+        merge: "replace".to_string(),
+    }
+}
+
+/// The row heading for a failed reply.
+fn error_title(message: &str) -> &'static str {
+    use super::provider::{
+        AUTHENTICATION_ERROR_MESSAGE, CONTEXT_OVERFLOW_MESSAGE, CREDITS_EXHAUSTED_MESSAGE,
+    };
+    if message.contains(AUTHENTICATION_ERROR_MESSAGE) {
+        "Authentication failed"
+    } else if message.contains(CREDITS_EXHAUSTED_MESSAGE) {
+        "Credits exhausted"
+    } else if message.contains(CONTEXT_OVERFLOW_MESSAGE) {
+        "Context limit exceeded"
+    } else {
+        "Agent error"
+    }
+}
+
+pub(crate) fn notice_item(
+    id: String,
+    title: &str,
+    text: &str,
+    timestamp: Timestamp,
+) -> AgentTimelineItem {
+    AgentTimelineItem {
+        id,
+        item_type: "system".to_string(),
+        role: Some("system".to_string()),
+        title: Some(title.to_string()),
+        text: Some(bounded_timeline_text(text, 500)),
+        status: None,
+        input: None,
+        output: None,
+        created_ms: created_ms(timestamp),
+        merge: "replace".to_string(),
+    }
+}
+
+/// An error row that belongs to no message, such as a run that could not start.
+pub(crate) fn error_item(message: String) -> AgentTimelineItem {
+    let now = pi_ai::now_ms();
+    AgentTimelineItem {
+        id: format!("error-{now}"),
+        item_type: "error".to_string(),
+        role: Some("system".to_string()),
+        title: Some("Agent error".to_string()),
+        text: Some(bounded_timeline_text(&message, MAX_AGENT_ERROR_CHARS)),
+        status: Some("failed".to_string()),
+        input: None,
+        output: None,
+        created_ms: created_ms(now),
+        merge: "replace".to_string(),
+    }
+}
+
+fn summarize_tool_content(content: &Content) -> Value {
+    match content {
+        Content::Text(text) => json!({ "type": "text", "text": text.text }),
+        Content::Image(image) => json!({
+            "type": "image",
+            "mimeType": image.mime_type,
+            "base64Chars": image.data.len(),
+            "dataOmitted": true,
+        }),
+    }
+}
+
+/// Turns a run's events into the rows they change.
+#[derive(Default)]
+pub(crate) struct LiveTimeline {
+    /// The reply streaming now.
+    reply: Option<StreamingReply>,
+    /// Tool call rows by call id, for their execution events.
+    tool_rows: HashMap<String, String>,
+}
+
+struct StreamingReply {
+    timestamp: Timestamp,
+    /// Content index → whether it is a text, thinking or tool-call block.
+    blocks: HashMap<usize, Block>,
+    has_text: bool,
+    has_thinking: bool,
+}
+
+#[derive(Clone)]
+enum Block {
+    Text,
+    Thinking,
+    ToolCall(String),
+}
+
+impl LiveTimeline {
+    /// The rows an event adds or changes.
+    pub(crate) fn rows(&mut self, event: &AgentEvent<SessionMessage>) -> Vec<AgentTimelineItem> {
+        match event {
+            AgentEvent::MessageStart { message } => match message {
+                SessionMessage::Llm(Message::User(user)) => {
+                    vec![user_item(user.timestamp, &user.content, "replace")]
+                }
+                SessionMessage::Llm(Message::Assistant(reply)) => {
+                    self.reply = Some(StreamingReply {
+                        timestamp: reply.timestamp,
+                        blocks: HashMap::new(),
+                        has_text: false,
+                        has_thinking: false,
+                    });
+                    Vec::new()
+                }
+                SessionMessage::Custom(custom) if custom.display => vec![notice_item(
+                    format!("custom{}", custom.timestamp),
+                    "Agent notice",
+                    &content_text(&custom.content),
+                    custom.timestamp,
+                )],
+                _ => Vec::new(),
+            },
+            AgentEvent::MessageUpdate { event } => self.reply_delta(event),
+            AgentEvent::MessageEnd {
+                message: SessionMessage::Llm(Message::Assistant(reply)),
+            } => {
+                self.reply = None;
+                for call in reply.tool_calls() {
+                    self.tool_rows
+                        .insert(call.id.clone(), tool_row_id(reply.timestamp, &call.id));
+                }
+                // The finished reply settles every row it streamed.
+                reply_items(reply)
+            }
+            AgentEvent::ToolExecutionStart {
+                tool_call_id,
+                tool_name,
+                args,
+            } => {
+                let Some(id) = self.tool_rows.get(tool_call_id) else {
+                    return Vec::new();
+                };
+                let arguments = args.as_object().cloned().unwrap_or_default();
+                vec![AgentTimelineItem {
+                    id: id.clone(),
+                    item_type: "tool".to_string(),
+                    role: Some("assistant".to_string()),
+                    title: Some(
+                        descriptive_tool_title(tool_name, &arguments)
+                            .unwrap_or_else(|| format_tool_title(tool_name)),
+                    ),
+                    text: None,
+                    status: Some("running".to_string()),
+                    input: Some(args.clone()),
+                    output: None,
+                    created_ms: created_ms(pi_ai::now_ms()),
+                    merge: "replace".to_string(),
+                }]
+            }
+            AgentEvent::ToolExecutionEnd {
+                tool_call_id,
+                result,
+                is_error,
+                ..
+            } => {
+                let Some(id) = self.tool_rows.get(tool_call_id) else {
+                    return Vec::new();
+                };
+                vec![tool_result_item(
+                    id.clone(),
+                    &result.content,
+                    result.details.as_ref(),
+                    *is_error,
+                    pi_ai::now_ms(),
+                )]
+            }
+            _ => Vec::new(),
+        }
+    }
+
+    fn reply_delta(&mut self, event: &AssistantMessageEvent) -> Vec<AgentTimelineItem> {
+        let Some(reply) = self.reply.as_mut() else {
+            return Vec::new();
+        };
+        match event {
+            AssistantMessageEvent::TextStart { index } => {
+                reply.blocks.insert(*index, Block::Text);
+                // Text blocks of one reply are joined with newlines.
+                if std::mem::replace(&mut reply.has_text, true) {
+                    return vec![text_item(reply.timestamp, "\n".to_string(), "append")];
+                }
+                vec![text_item(reply.timestamp, String::new(), "append")]
+            }
+            AssistantMessageEvent::TextDelta { delta, .. } => {
+                vec![text_item(reply.timestamp, delta.clone(), "append")]
+            }
+            AssistantMessageEvent::ThinkingStart { index } => {
+                reply.blocks.insert(*index, Block::Thinking);
+                if std::mem::replace(&mut reply.has_thinking, true) {
+                    return vec![thinking_item(reply.timestamp, "\n".to_string(), "append")];
+                }
+                vec![thinking_item(reply.timestamp, String::new(), "append")]
+            }
+            AssistantMessageEvent::ThinkingDelta { delta, .. } => {
+                vec![thinking_item(reply.timestamp, delta.clone(), "append")]
+            }
+            AssistantMessageEvent::ToolCallStart { index, id, name } => {
+                reply.blocks.insert(*index, Block::ToolCall(id.clone()));
+                let row = tool_row_id(reply.timestamp, id);
+                self.tool_rows.insert(id.clone(), row.clone());
+                vec![AgentTimelineItem {
+                    id: row,
+                    item_type: "tool".to_string(),
+                    role: Some("assistant".to_string()),
+                    title: Some(format_tool_title(name)),
+                    text: None,
+                    status: Some("running".to_string()),
+                    input: None,
+                    output: None,
+                    created_ms: created_ms(reply.timestamp),
+                    merge: "replace".to_string(),
+                }]
+            }
+            AssistantMessageEvent::ToolCallEnd { index, tool_call } => {
+                if let Some(Block::ToolCall(streamed_id)) = reply.blocks.get(index)
+                    && streamed_id != &tool_call.id
+                {
+                    // The server named the call late; keep its first row.
+                    self.tool_rows.insert(
+                        tool_call.id.clone(),
+                        tool_row_id(reply.timestamp, streamed_id),
+                    );
+                }
+                let mut item = tool_call_item(reply.timestamp, tool_call, "running");
+                if let Some(row) = self.tool_rows.get(&tool_call.id) {
+                    item.id = row.clone();
+                }
+                vec![item]
+            }
+            _ => Vec::new(),
         }
     }
 }
 
-pub(super) fn skill_load_title<T: Serialize>(tool_name: &str, arguments: &T) -> Option<String> {
+/// The text of `value`, cut to `max_chars` characters with an ellipsis.
+pub(crate) fn bounded_timeline_text(value: &str, max_chars: usize) -> String {
+    let mut chars = value.chars();
+    let bounded = chars.by_ref().take(max_chars).collect::<String>();
+    if chars.next().is_some() {
+        format!("{bounded}…")
+    } else {
+        bounded
+    }
+}
+
+pub(crate) fn skill_load_title<T: Serialize>(tool_name: &str, arguments: &T) -> Option<String> {
     if tool_name != "load_skill" {
         return None;
     }
@@ -429,15 +650,12 @@ pub(super) fn skill_load_title<T: Serialize>(tool_name: &str, arguments: &T) -> 
     ))
 }
 
-/// Friendly display label for a raw goose tool name, e.g. `developer__shell`
-/// -> "Terminal", `developer__text_editor` -> "Editor". Falls back to the
-/// mechanically-cleaned name for anything unmapped.
-pub(super) fn friendly_tool_label(name: &str) -> String {
-    // Strip any `extension__` prefix so both `shell` and `developer__shell`
-    // map the same way.
+/// Friendly display label for a tool name, e.g. `bash` -> "Terminal".
+/// Falls back to the mechanically-cleaned name for anything unmapped.
+pub(crate) fn friendly_tool_label(name: &str) -> String {
     let bare = name.rsplit("__").next().unwrap_or(name);
     match bare {
-        "shell" => "Terminal".to_string(),
+        "bash" | "powershell" | "shell" => "Terminal".to_string(),
         "text_editor" | "str_replace_editor" | "str_replace_based_edit_tool" => {
             "Editor".to_string()
         }
@@ -451,29 +669,20 @@ pub(super) fn friendly_tool_label(name: &str) -> String {
     }
 }
 
-/// Build a descriptive tool title that includes the most relevant argument so
-/// the timeline shows *what* is running (e.g. "Terminal: ls -la") instead of a
-/// bare, repeated tool name ("shell"). Returns `None` when no useful argument
-/// is present, so callers can fall back to their existing title logic.
-pub(super) fn descriptive_tool_title<T: Serialize>(
+/// A tool title that names the most relevant argument, e.g. "Terminal: ls -la",
+/// or `None` when no useful argument is present.
+pub(crate) fn descriptive_tool_title<T: Serialize>(
     tool_name: &str,
     arguments: &T,
 ) -> Option<String> {
-    // Preserve the existing, dedicated skill wording.
     if let Some(skill) = skill_load_title(tool_name, arguments) {
         return Some(skill);
     }
-    // An external agent call is titled by what it does, not by its prompt;
-    // the row's own body shows the agent's work.
-    if let Some(title) = external_agents::tool_title(tool_name) {
-        return Some(title.to_string());
-    }
     let arguments = serde_json::to_value(arguments).ok()?;
-    // Most-descriptive argument per tool, in priority order. Only the shell
-    // is described by its command; an editor call such as
-    // `{command: "view", path: "src/main.rs"}` is about the file.
+    // Most-descriptive argument per tool, in priority order. Only a shell
+    // is described by its command; an editor call is about the file.
     let bare_name = tool_name.rsplit("__").next().unwrap_or(tool_name);
-    let keys: &[&str] = if bare_name == "shell" {
+    let keys: &[&str] = if matches!(bare_name, "bash" | "powershell" | "shell") {
         &[
             "command",
             "path",
@@ -501,8 +710,6 @@ pub(super) fn descriptive_tool_title<T: Serialize>(
         .find_map(|key| arguments.get(*key).and_then(|value| value.as_str()))
         .map(str::trim)
         .filter(|value| !value.is_empty())?;
-
-    // Keep it to one readable line.
     let first_line = detail.lines().next().unwrap_or(detail).trim();
     let label = friendly_tool_label(tool_name);
     Some(format!(
@@ -511,7 +718,8 @@ pub(super) fn descriptive_tool_title<T: Serialize>(
     ))
 }
 
-pub(super) fn merged_tool_title(
+/// When a skill-loading call finishes, its title says whether it loaded.
+pub(crate) fn merged_tool_title(
     previous: &AgentTimelineItem,
     incoming: &AgentTimelineItem,
 ) -> Option<String> {
@@ -532,235 +740,15 @@ pub(super) fn merged_tool_title(
             return Some(format!("{prefix}{skill_name}"));
         }
     }
-
     incoming.title.clone().or_else(|| previous.title.clone())
 }
 
-pub(super) fn tool_response_item(
-    response: &goose::conversation::message::ToolResponse,
-    created_ms: u128,
-) -> AgentTimelineItem {
-    match &response.tool_result {
-        Ok(result) => {
-            let text = result
-                .content
-                .iter()
-                .filter_map(|content| content.as_text().map(|text| text.text.to_string()))
-                .collect::<Vec<_>>()
-                .join("\n");
-            let content = result
-                .content
-                .iter()
-                .map(summarize_tool_content)
-                .collect::<Vec<_>>();
-            AgentTimelineItem {
-                id: response.id.clone(),
-                item_type: "tool".to_string(),
-                role: Some("assistant".to_string()),
-                title: tool_response_title(&response.id),
-                text: None,
-                status: Some(
-                    if result.is_error.unwrap_or(false) {
-                        "failed"
-                    } else {
-                        "completed"
-                    }
-                    .to_string(),
-                ),
-                input: None,
-                output: Some(json!({
-                    "text": text,
-                    "isError": result.is_error,
-                    "structuredContent": result.structured_content,
-                    "content": content,
-                })),
-                created_ms,
-                merge: "replace".to_string(),
-            }
-        }
-        Err(error) => AgentTimelineItem {
-            id: response.id.clone(),
-            item_type: "tool".to_string(),
-            role: Some("assistant".to_string()),
-            title: tool_response_title(&response.id),
-            text: Some(bounded_timeline_text(
-                &error.to_string(),
-                MAX_AGENT_ERROR_CHARS,
-            )),
-            status: Some("failed".to_string()),
-            input: None,
-            output: None,
-            created_ms,
-            merge: "replace".to_string(),
-        },
-    }
-}
-
-pub(super) fn summarize_tool_content(content: &rmcp::model::ContentBlock) -> Value {
-    if let Some(text) = content.as_text() {
-        return json!({
-            "type": "text",
-            "text": text.text,
-        });
-    }
-
-    if let Some(image) = content.as_image() {
-        return image_metadata_value(&image.mime_type, image.data.len());
-    }
-
-    json!({
-        "type": "other",
-        "dataOmitted": true,
-    })
-}
-
-pub(super) fn image_metadata_value(mime_type: &str, base64_chars: usize) -> Value {
-    json!({
-        "type": "image",
-        "mimeType": mime_type,
-        "base64Chars": base64_chars,
-        "dataOmitted": true,
-    })
-}
-
-pub(super) fn coalesce_timeline_items(items: Vec<AgentTimelineItem>) -> Vec<AgentTimelineItem> {
-    items.into_iter().fold(Vec::new(), merge_timeline_item)
-}
-
-pub(super) fn merge_timeline_item(
-    mut current: Vec<AgentTimelineItem>,
-    incoming: AgentTimelineItem,
-) -> Vec<AgentTimelineItem> {
-    let Some(index) = current.iter().position(|item| item.id == incoming.id) else {
-        current.push(incoming);
-        return current;
-    };
-
-    let previous = current[index].clone();
-    let append_text = incoming.merge == "append"
-        && matches!(incoming.item_type.as_str(), "message" | "thinking")
-        && incoming.text.is_some();
-
-    let title = merged_tool_title(&previous, &incoming);
-    current[index] = AgentTimelineItem {
-        id: incoming.id,
-        item_type: incoming.item_type,
-        role: incoming.role.or(previous.role),
-        title,
-        text: if append_text {
-            Some(format!(
-                "{}{}",
-                previous.text.unwrap_or_default(),
-                incoming.text.unwrap_or_default()
-            ))
-        } else {
-            incoming.text.or(previous.text)
-        },
-        status: incoming.status.or(previous.status),
-        input: incoming.input.or(previous.input),
-        output: incoming.output.or(previous.output),
-        created_ms: incoming.created_ms,
-        merge: incoming.merge,
-    };
-
-    current
-}
-
-pub(super) fn action_required_item(
-    action: &goose::conversation::message::ActionRequired,
-    created_ms: u128,
-) -> Option<AgentTimelineItem> {
-    match &action.data {
-        // Every tool confirmation is answered by the runtime itself, so no
-        // row is drawn for one, live or persisted.
-        ActionRequiredData::ToolConfirmation { .. } => None,
-        ActionRequiredData::Elicitation {
-            id,
-            message,
-            requested_schema,
-        } => Some(AgentTimelineItem {
-            id: format!("elicitation-{id}"),
-            item_type: "permission".to_string(),
-            role: Some("system".to_string()),
-            title: Some("Input requested".to_string()),
-            text: Some(message.clone()),
-            status: Some("pending".to_string()),
-            input: Some(requested_schema.clone()),
-            output: None,
-            created_ms,
-            merge: "replace".to_string(),
-        }),
-        ActionRequiredData::ElicitationResponse { id, .. } => Some(AgentTimelineItem {
-            id: format!("elicitation-response-{id}"),
-            item_type: "system".to_string(),
-            role: Some("system".to_string()),
-            title: Some("Input response".to_string()),
-            text: None,
-            status: Some("completed".to_string()),
-            input: None,
-            output: None,
-            created_ms,
-            merge: "replace".to_string(),
-        }),
-        // This is persisted state-machine resume bookkeeping, not a new user
-        // permission request. Maple keeps Goose's experimental state machine
-        // disabled and should not render an extra permission card for it.
-        ActionRequiredData::ToolConfirmationResponse { .. } => None,
-    }
-}
-
-pub(super) fn message_error_item(
-    base_id: &str,
-    index: usize,
-    error: &ErrorContent,
-    created_ms: u128,
-) -> AgentTimelineItem {
-    let title = match error.kind {
-        MessageErrorKind::Authentication => "Authentication failed",
-        MessageErrorKind::ContextLengthExceeded => "Context limit exceeded",
-        MessageErrorKind::CreditsExhausted => "Credits exhausted",
-        MessageErrorKind::Other => "Agent error",
-    };
-    AgentTimelineItem {
-        id: format!("{base_id}-error-{index}"),
-        item_type: "error".to_string(),
-        role: Some("system".to_string()),
-        title: Some(title.to_string()),
-        text: Some(bounded_timeline_text(&error.message, MAX_AGENT_ERROR_CHARS)),
-        status: Some("failed".to_string()),
-        input: None,
-        output: None,
-        created_ms,
-        merge: "replace".to_string(),
-    }
-}
-
-pub(super) fn error_item(message: String) -> AgentTimelineItem {
-    AgentTimelineItem {
-        id: format!("error-{}", unix_ms()),
-        item_type: "error".to_string(),
-        role: Some("system".to_string()),
-        title: Some("Agent error".to_string()),
-        text: Some(bounded_timeline_text(&message, MAX_AGENT_ERROR_CHARS)),
-        status: Some("failed".to_string()),
-        input: None,
-        output: None,
-        created_ms: unix_ms(),
-        merge: "replace".to_string(),
-    }
-}
-
-pub(super) fn message_role(message: &Message) -> String {
-    serde_json::to_value(&message.role)
-        .ok()
-        .and_then(|value| value.as_str().map(ToOwned::to_owned))
-        .unwrap_or_else(|| format!("{:?}", message.role).to_lowercase())
-}
-
-pub(super) fn format_tool_title(name: &str) -> String {
+pub(crate) fn format_tool_title(name: &str) -> String {
     if let Some(title) = external_agents::tool_title(name) {
         return title.to_string();
     }
+    // An MCP tool, `mcp__<server>__<tool>`, reads as "server: tool".
+    let name = name.strip_prefix("mcp__").unwrap_or(name);
     let normalized = name.replace("__", ": ").replace('_', " ");
     normalized
         .split_whitespace()
@@ -770,264 +758,5 @@ pub(super) fn format_tool_title(name: &str) -> String {
         .to_string()
 }
 
-pub(super) fn tool_name_from_id(id: &str) -> Option<String> {
-    // Goose's `functions.<tool>:<sequence>` IDs encode a tool name. Provider
-    // IDs such as `chatcmpl-tool-*` do not; returning a title for those would
-    // overwrite the request's already-correct title during timeline merging.
-    let name = id
-        .strip_prefix("functions.")?
-        .split(':')
-        .next()
-        .unwrap_or("")
-        .trim();
-    if name.is_empty() {
-        None
-    } else {
-        Some(name.to_string())
-    }
-}
-
-pub(super) fn tool_response_title(id: &str) -> Option<String> {
-    tool_name_from_id(id).and_then(|name| {
-        // Preserve the request's argument-aware title when the response is
-        // merged into the same timeline row.
-        (name != "load_skill").then(|| format_tool_title(&name))
-    })
-}
-
-pub(super) fn session_summary(session: &Session) -> AgentSessionSummary {
-    AgentSessionSummary {
-        id: session.id.clone(),
-        title: session.name.clone(),
-        project_root: path_string(&session.working_dir),
-        created_ms: session.created_at.timestamp_millis(),
-        updated_ms: session.updated_at.timestamp_millis(),
-        message_count: session.message_count,
-        model: session
-            .model_config
-            .as_ref()
-            .map(|model| model.model_name.clone()),
-        web_enabled: session_web_enabled(session),
-        state: stored_task_state(session),
-        acp: session.session_type == SessionType::Acp,
-    }
-}
-
-/// Read the task's ladder state from the session. Goose's own archive
-/// timestamp wins, so a session archived from outside Maple's state
-/// record (an ACP client) still reads as archived; otherwise Maple's
-/// record decides, and absent means active.
-pub(super) fn stored_task_state(session: &Session) -> AgentTaskState {
-    if session.archived_at.is_some() {
-        return AgentTaskState::Archived;
-    }
-    session
-        .extension_data
-        .get_extension_state(MAPLE_TASK_STATE_KEY, MAPLE_TASK_STATE_VERSION)
-        .and_then(|value| value.get("state"))
-        .and_then(|value| serde_json::from_value::<AgentTaskState>(value.clone()).ok())
-        .unwrap_or_default()
-}
-
-/// The session's extension data with Maple's state record set to `state`.
-pub(super) fn extension_data_with_task_state(
-    session: &Session,
-    state: AgentTaskState,
-) -> goose::session::ExtensionData {
-    let mut extension_data = session.extension_data.clone();
-    extension_data.set_extension_state(
-        MAPLE_TASK_STATE_KEY,
-        MAPLE_TASK_STATE_VERSION,
-        json!({ "state": state }),
-    );
-    extension_data
-}
-
-/// Read Maple's web flag from the session; absent means enabled.
-pub(super) fn session_web_enabled(session: &Session) -> bool {
-    session
-        .extension_data
-        .get_extension_state(MAPLE_WEB_STATE_KEY, MAPLE_WEB_STATE_VERSION)
-        .and_then(|value| value.get("enabled"))
-        .and_then(Value::as_bool)
-        .unwrap_or(true)
-}
-
-pub(super) fn sort_sessions_newest_first(sessions: &mut [AgentSessionSummary]) {
-    sessions.sort_by_key(|session| std::cmp::Reverse(session.updated_ms));
-}
-
-pub(super) async fn record_and_emit_timeline_item(
-    events: &AgentRunEventPublisher,
-    live_timelines: &LiveTimelines,
-    session_id: &str,
-    routing: AgentRunSurface,
-    item: AgentTimelineItem,
-) {
-    record_timeline_item(live_timelines, session_id, routing, item.clone()).await;
-    events.publish(AgentRunEvent::TimelineItem(item)).await;
-}
-
-pub(super) async fn record_timeline_item(
-    live_timelines: &LiveTimelines,
-    session_id: &str,
-    routing: AgentRunSurface,
-    item: AgentTimelineItem,
-) {
-    let mut timelines = live_timelines.lock().await;
-    let current = match timelines.remove(session_id) {
-        Some(LiveTimelineEntry {
-            routing: owner,
-            timeline: LiveTimeline::Streaming(items),
-        }) if owner == routing => items,
-        // A real user message starts a new live suffix. The preceding terminal
-        // row is either already persisted or was a one-turn-only error/notice;
-        // carrying it forward could duplicate it on a mid-run session reload.
-        Some(LiveTimelineEntry {
-            routing: owner,
-            timeline: LiveTimeline::Completed(_) | LiveTimeline::Failed(_),
-        }) if owner == routing && is_user_message_item(&item) => Vec::new(),
-        Some(LiveTimelineEntry {
-            routing: owner,
-            timeline: LiveTimeline::Completed(candidate),
-        }) if owner == routing => candidate.items,
-        Some(LiveTimelineEntry {
-            routing: owner,
-            timeline: LiveTimeline::Failed(items),
-        }) if owner == routing => items,
-        // A new surface starts its own transient projection. Persisted Goose
-        // history remains the shared handoff boundary between surfaces.
-        Some(_) => Vec::new(),
-        None => Vec::new(),
-    };
-    timelines.insert(
-        session_id.to_string(),
-        LiveTimelineEntry {
-            routing,
-            timeline: LiveTimeline::Streaming(merge_timeline_item(current, item)),
-        },
-    );
-}
-
-/// Goose replaces persisted history during compaction, so any live rows from
-/// before that replacement are stale. Keep only the newest visible real-user
-/// row as an ID boundary for later events in the still-running turn. A session
-/// reload can then use Goose's live presentation suffix wholesale instead of
-/// merging it with differently-IDed provider-history reasoning.
-pub(super) async fn reseed_live_timeline_after_history_replaced(
-    live_timelines: &LiveTimelines,
-    session_id: &str,
-    routing: AgentRunSurface,
-    conversation: &Conversation,
-) {
-    let replacement_boundary = conversation
-        .messages()
-        .iter()
-        .rev()
-        .find(|message| {
-            let role = message_role(message);
-            is_real_user_message(message, &role)
-        })
-        .and_then(|message| {
-            coalesce_timeline_items(message_to_timeline_items(message, false))
-                .into_iter()
-                .find(is_user_message_item)
-        });
-
-    let mut timelines = live_timelines.lock().await;
-    match replacement_boundary {
-        Some(replacement_boundary) => {
-            // Prefer the existing live representation, but only for the user
-            // ID confirmed by Goose's replacement history. That preserves the
-            // authoritative presentation item without retaining a boundary
-            // that compaction or an explicit history command removed.
-            let boundary = timelines
-                .get(session_id)
-                .filter(|entry| entry.routing == routing)
-                .and_then(|entry| {
-                    entry.timeline.items().iter().rev().find(|item| {
-                        is_user_message_item(item) && item.id == replacement_boundary.id
-                    })
-                })
-                .cloned()
-                .unwrap_or(replacement_boundary);
-            timelines.insert(
-                session_id.to_string(),
-                LiveTimelineEntry {
-                    routing,
-                    timeline: LiveTimeline::Streaming(vec![boundary]),
-                },
-            );
-        }
-        None => {
-            remove_live_timeline_for_routing(&mut timelines, session_id, routing);
-        }
-    }
-}
-
-pub(super) async fn overlay_live_timeline(
-    live_timelines: &LiveTimelines,
-    session_id: &str,
-    routing: AgentRunSurface,
-    conversation: &Conversation,
-    persisted: Vec<AgentTimelineItem>,
-) -> Vec<AgentTimelineItem> {
-    let live_items = {
-        let mut timelines = live_timelines.lock().await;
-        let timeline = timelines
-            .get(session_id)
-            .filter(|entry| entry.routing == routing)
-            .map(|entry| entry.timeline.clone());
-        match timeline {
-            Some(LiveTimeline::Streaming(items)) => items,
-            Some(LiveTimeline::Completed(candidate)) => {
-                // agent_load_session already paid to load Goose history. Use
-                // that snapshot here instead of deserializing it a second time
-                // at the end of every prompt.
-                if terminal_message_is_persisted(conversation, &candidate) {
-                    remove_live_timeline_for_routing(&mut timelines, session_id, routing);
-                    Vec::new()
-                } else {
-                    candidate.items
-                }
-            }
-            Some(LiveTimeline::Failed(items)) => items,
-            None => Vec::new(),
-        }
-    };
-    if live_items.is_empty() {
-        return persisted;
-    }
-
-    overlay_live_timeline_items(persisted, live_items)
-}
-
-pub(super) fn overlay_live_timeline_items(
-    persisted: Vec<AgentTimelineItem>,
-    live_items: Vec<AgentTimelineItem>,
-) -> Vec<AgentTimelineItem> {
-    // AgentEvent is Goose's authoritative presentation stream. Once its first
-    // user boundary also exists in persisted history, keep only the persisted
-    // prefix before that turn and use the live suffix wholesale. This avoids
-    // matching or rewriting reasoning text when Goose's provider-history copy
-    // has a different message ID from the live thought.
-    let persisted_boundary = live_items
-        .iter()
-        .filter(|item| is_user_message_item(item))
-        .find_map(|live_user| persisted.iter().position(|item| item.id == live_user.id));
-    let mut timeline = match persisted_boundary {
-        Some(index) => persisted[..index].to_vec(),
-        None => persisted,
-    };
-    timeline.extend(live_items.into_iter().map(live_overlay_item));
-    coalesce_timeline_items(timeline)
-}
-
-pub(super) fn is_user_message_item(item: &AgentTimelineItem) -> bool {
-    item.item_type == "message" && item.role.as_deref() == Some("user")
-}
-
-pub(super) fn live_overlay_item(mut item: AgentTimelineItem) -> AgentTimelineItem {
-    item.merge = "replace".to_string();
-    item
-}
+#[cfg(test)]
+mod tests;

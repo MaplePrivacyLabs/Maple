@@ -106,6 +106,7 @@ pub async fn execute_bash_with_operations(
                 cancel: cancel.clone(),
                 timeout: None,
                 env: None,
+                contain: false,
             },
         )
         .await;

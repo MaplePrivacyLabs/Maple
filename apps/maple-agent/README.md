@@ -13,11 +13,10 @@ OpenAI-compatible proxy. See "Command line" below.
 ```
 app/                  The maple-agent binary. Owns the window, login, chat,
                       settings, notifications, and the backend adapter.
-crates/maple-agent/   Maple's transport-neutral agent runtime, extracted from
-                      the Tauri app with Tauri removed. Owns embedded Goose,
-                      the Maple provider over the Maple Rust SDK, developer
-                      tools, account-scoped session storage, and the ACP
-                      server.
+crates/maple-agent/   Maple's transport-neutral agent runtime. Runs tasks on
+                      the pi-* crates, and owns the Maple provider over the
+                      Maple Rust SDK, account-scoped task storage, Maple's
+                      tools, and the ACP server.
 crates/maple-billing/ HTTP client for the Maple billing API.
 crates/pi-ai/         Model messages, streaming events and an OpenAI-compatible
                       provider, after Pi's pi-ai package.
@@ -25,10 +24,9 @@ crates/pi-agent-core/ The agent loop with tools, hooks and message queues, after
                       Pi's pi-agent-core package.
 crates/pi-coding-agent/
                       Sessions as an append-only tree, compaction, skills and
-                      prompt templates, the extension API and the agent
-                      session, after Pi's coding-agent core. The pi-* crates
-                      have no Maple dependencies; the runtime does not use
-                      them yet.
+                      prompt templates, the extension API, the built-in tools
+                      and the agent session, after Pi's coding-agent core. The
+                      pi-* crates have no Maple dependencies.
 docs/                 Theme spec measured from the Tauri app.
 scripts/              One maintainer helper: screenshot.py takes a desktop
                       screenshot through the xdg portal on GNOME Wayland.
@@ -45,19 +43,10 @@ running agent through that facade only. This mirrors Maple's own edge-adapter
 pattern, so a future process split replaces the facade without touching UI
 code.
 
-The runtime was originally copied from Research’s Tauri source (now
-`apps/maple-research/frontend/src-tauri/src`) (`agent.rs`,
-`agent/*`, `maple_api.rs`, `open_secret_config.rs`) and changed only to
-remove Tauri:
-
-- `tauri::http` types → the `http` crate
-- Tauri event and command adapters dropped; auth state and the agent event
-  sink are injectable traits
-- public visibility opened on the service surface the app consumes
-
-Goose is pinned to a fork revision based on upstream v1.53.0 in this
-component’s Cargo manifests and lockfile. The fork supports ephemeral native
-clients for embedded CUA. Research has an independent dependency graph.
+The runtime began as a copy of Research’s Tauri agent (now
+`apps/maple-research/frontend/src-tauri/src`) with Tauri removed, and now runs
+tasks on the pi-* crates instead of an embedded Goose. Research keeps its own
+Goose, with an independent dependency graph.
 
 ## Features
 
@@ -76,7 +65,15 @@ clients for embedded CUA. Research has an independent dependency graph.
   approval.
 - Slash commands in the composer: `/btw` asks a side question the task
   never sees, plus `/compact`, `/new`, `/pin`, `/web`, `/model`, and
-  `/help`. The account's skills appear in the same list.
+  `/help`. Skills and prompt templates appear in the same list.
+- Instructions and skills, as in Pi: `AGENTS.md` (or `CLAUDE.md`) files
+  from the project folder and the folders above it, `~/.agents/AGENTS.md`,
+  and the account's own. Skills come from the account, `~/.agents/skills`,
+  `~/.claude/skills` and `~/.config/agents/skills`, and in a trusted
+  project from `.maple/skills`, `.agents/skills`, `.claude/skills` and
+  `.goose/skills`; the model sees each skill's description and reads the
+  skill when a task needs it. Prompt templates come from the account's
+  `prompts` folder and a trusted project's `.maple/prompts`.
 - The task's latest todo list stays pinned above the composer.
 - External agents: a task can hand work to Codex or Claude Code installed on
   this computer with the `agent_start`, `agent_send`, `agent_status`,
@@ -87,8 +84,8 @@ clients for embedded CUA. Research has an independent dependency graph.
   card. Its progress streams into the tool call's row, and its row above
   the composer shows how long it has worked, with a Stop button. A
   background agent keeps its row after the turn ends, and Maple tells the
-  task when it finishes, with a bounded result in the running turn or a new
-  turn Maple starts automatically. Three skills, `/handoff`, `/committee`,
+  task when it finishes, with a bounded result the model reads after the
+  running turn or in a turn Maple starts. Three skills, `/handoff`, `/committee`,
   and `/advisor`, teach the task when and how to delegate. See
   [`docs/external-agents.md`](docs/external-agents.md).
 - Voice: dictate a message with the microphone button, and read any
@@ -112,8 +109,8 @@ clients for embedded CUA. Research has an independent dependency graph.
 - Projects (working directories) with pinned and recent roots, rename,
   open in the file manager, and remove. The home directory and the
   directory the app was launched from are trusted by default. Other
-  projects that provide skills ask once for a trust decision before
-  their guidance loads.
+  projects that provide skills, prompt templates, or a `.maple/SYSTEM.md`
+  ask once for a trust decision before those load.
 - Sessions grouped by project, with rename, archive, and restore.
 - Settings: General (web tools, appearance, tool call details, desktop
   notifications, tool call summaries, composer Vim, application Vim, and the
@@ -143,26 +140,47 @@ because Mutter exposes no window geometry or screen capture to an ordinary
 client; Settings reports it as an unmet requirement until it is installed and
 the session has been restarted once.
 
-CUA keeps its native screenshot defaults. Every model receives full
-accessibility text plus a bounded projection of exact structured grounding
-data such as window IDs and element tokens. Vision models retain the canonical
-image blocks; text-only models instead receive a CUA-specific description from
-Maple's existing Gemma image helper, with raw screenshot blocks removed before
-the primary-model request. Maple owns the task-scoped session lifecycle and
-prevents models from mixing standalone CLI or other MCP session identities into
-the embedded transport.
+A desktop task with CUA on gets its tools as `cua-driver__<tool>`, bound
+anew at each run. CUA keeps its native screenshot defaults. Every model
+receives full accessibility text plus a bounded projection of exact structured
+grounding data such as window IDs and element tokens. Vision models retain the
+image blocks, fitted like every tool image; text-only models instead receive a
+CUA-specific description from Maple's existing Gemma image helper, with raw
+screenshot blocks removed before the primary-model request. Maple owns the
+task-scoped session lifecycle and prevents models from mixing standalone CLI or
+other MCP session identities into the embedded transport.
 
-Enabling an integration sets a device-local default for new tasks. Existing
-tasks keep their frozen integration choice and expose CUA as an independent
-per-task switch in the composer. A task that never chose a backend adopts the
-device default only when it can actually run it. Maple no longer looks for a
-separately installed CuaDriver application: a task saved with its stdio entry
-loses that entry on its next run, and a device setting that selected it reads
-as not set up. Custom STDIO and Streamable HTTP MCP servers remain account
-configuration that may roam between devices.
+Enabling an integration sets a device-local default for new tasks. A new task
+records its own CUA choice once CUA is set up on the device, and keeps it as an
+independent per-task switch in the composer; a task with no choice has it off.
+Maple no longer looks for a separately installed CuaDriver application: a
+custom server under one of CUA's names never runs for a task, and a device
+setting that selected the external backend reads as not set up. Custom STDIO
+and Streamable HTTP MCP servers remain account configuration that may roam
+between devices.
 
 The embedded design, migration rules, privacy boundary, and preview limits are
 documented in [`docs/embedded-cua.md`](docs/embedded-cua.md).
+
+#### Custom MCP servers
+
+Settings > Integrations also keeps custom MCP servers: a command Maple starts
+(stdio) or a Streamable HTTP endpoint, each with environment variables,
+headers, and a per-request timeout. A server switched on in Settings is on for
+new tasks, and the composer's menu switches servers on or off for one task.
+A task's servers start when it runs; its first prompt waits up to ten seconds
+for them, and a server that connects later joins from the next prompt. Their
+tools reach the model as `mcp__<server>__<tool>`, and their instructions join
+the system prompt. A server that fails to connect is named once in a notice
+and tried again at the task's next run. Changes in Settings apply from a
+task's next run.
+
+A stdio server runs in the task's folder with the login shell's PATH, in its
+own process group; it is stopped by closing its input, then SIGTERM, then
+SIGKILL. For an HTTP server, `$NAME` and `${NAME}` in the URL and in header
+values are filled in from the server's environment variables, and redirects
+are not followed. Sign-in to servers (OAuth), and MCP resources and prompts,
+are not supported yet.
 
 #### Claude Code
 
@@ -185,7 +203,7 @@ alongside CUA and custom MCP servers. Each task must select Codex explicitly;
 that choice survives relaunches but only applies while Settings enables Codex.
 Selecting it gives that task the external-agent tools. Enabling it in Settings
 installs the `handoff`, `committee`, and `advisor` skills into the
-account's Goose skills directory; disabling removes only the files Maple
+account's skills folder; disabling removes only the files Maple
 wrote. Codex needs version 0.143 or newer. See
 [`docs/external-agents.md`](docs/external-agents.md).
 
@@ -398,6 +416,21 @@ the desktop app does not need to run. Logs go to the log file only; stdout
 is the ACP channel. If no sign-in is saved, it exits with a message that
 tells the user to sign in from the desktop app first.
 
+Each ACP session is a Maple task. `session/new` creates one in the client's
+working directory; session lists show it from its first prompt, and one
+closed before that is removed. `session/load` opens any task of that
+directory and replays its history. While a session is open its task runs
+for that client only: its commands get the bridge's allowlisted variables
+(Buzz's credentials and `PATH`), the client's HTTP MCP servers run beside
+the account's, and the desktop's own tools (the plan, questions, external
+agents and computer use) are left out. Tasks created over ACP stay out of
+the desktop task list. Maple has no session modes: every tool call runs
+without asking, and a project with skills or instructions of its own asks
+the client's user once whether to trust it. Use a task in one place at a
+time: the desktop app and `maple-agent acp` are separate processes, and
+running one task from both at once can split its history. Both parts stay
+in the task's file, but only one shows.
+
 ### `maple-agent proxy`
 
 ```
@@ -446,11 +479,11 @@ ignored. See [build profiles](docs/release-profiles.md).
 | `MAPLE_BILLING_API_URL` | Maple billing API. | `https://billing.opensecret.cloud` |
 | `MAPLE_CLIENT_ID` | OpenSecret client id (UUID). | Maple's id |
 | `MAPLE_MODEL` | Model to select at start. | Runtime default |
-| `MAPLE_CONTEXT_LIMIT` | Context window size in tokens, when the model catalog does not report one. | Catalog value |
-| `GOOSE_SHELL` | Shell for the agent's shell tool. | `bash` (Windows: `cmd`) |
+| `MAPLE_CONTEXT_LIMIT` | Context window in tokens, used instead of the model catalog's for compaction and the context ring. | Catalog value |
+| `MAPLE_SHELL` | The bash the agent's `bash` tool runs. | `/bin/bash`, else `bash` on PATH (Windows: Git Bash; without it, the `powershell` tool) |
 | `MAPLE_UPDATE_REPO` | GitHub `owner/repo` containing stable `maple-agent-vX.Y.Z` releases. | `MaplePrivacyLabs/Maple` |
 | `MAPLE_DISABLE_UPDATE_CHECK` | `1` turns the release check off. | unset |
-| `RUST_LOG` | Log filter. | `info,goose=warn` |
+| `RUST_LOG` | Log filter. | `info` |
 
 ### File locations
 
@@ -469,11 +502,10 @@ shows unpackaged builds; packaged Dev and Prod append `maple-agent-dev` and
 | --- | --- |
 | `<config>/settings.json` | App settings. |
 | `<config>/agent/accounts/<scope>/config.json` | Per-account agent configuration (default root, model, custom MCP servers, project trust). May roam between machines. |
-| `<config>/agent/accounts/<scope>/goose/config/skills/` | Skills the account's tasks can load, including the delegation skills Maple installs while any external agent is enabled. |
-| `<config>/agent/goose-runtime/` | Goose process configuration. |
+| `<config>/agent/accounts/<scope>/AGENTS.md`, `skills/`, `prompts/`, `SYSTEM.md` | The account's own instructions, skills and prompt templates, as Pi's agent folder holds them, and a `SYSTEM.md` that replaces Pi's default prompt ahead of Maple's opening instructions. |
 | `<local data>/auth.json` | Sign-in credentials (mode 0600). Device-local; never in a roaming profile. |
 | `<local data>/agent/accounts/<scope>/integrations.json` | Per-account defaults for the integrations on this device. |
-| `<local data>/agent/accounts/<scope>/goose/data/sessions/sessions.db` | Goose session history and usage ledger (SQLite, WAL). |
+| `<local data>/agent/accounts/<scope>/sessions/` | One session file (JSONL) per task, and `tasks.db`, the task index (SQLite, WAL). |
 | `<local data>/agent/accounts/<scope>/tool_summaries.db` | Model-written one-line summaries of tool calls (SQLite, WAL). |
 | `<local data>/agent/accounts/<scope>/attachments/` | Image attachments. |
 | `<local data>/agent/acp/accounts/<scope>/config.json` | ACP configuration. |
@@ -488,7 +520,7 @@ over in place. Packaged profiles never adopt legacy or Research state.
 written atomically (temp file, sync, rename) with owner-only permissions.
 
 These directories are separate from the Tauri app's directories. The two
-apps must not share Goose session storage.
+apps must not share session storage.
 
 ## Tests
 

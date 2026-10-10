@@ -1,5 +1,4 @@
-//! App settings persisted to ~/.config/maple-agent/settings.json and local
-//! usage aggregation read from the goose usage ledger.
+//! App settings persisted to ~/.config/maple-agent/settings.json.
 
 // This module is the desktop frontend's boundary. A headless build (no
 // `desktop` feature) uses only a few entry points, so the rest is unused

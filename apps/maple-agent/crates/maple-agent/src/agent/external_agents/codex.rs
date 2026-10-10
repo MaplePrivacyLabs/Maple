@@ -2,166 +2,22 @@
 //!
 //! Codex uses the user's own sign-in and `~/.codex` configuration,
 //! including its sandbox and approval settings. Maple passes it only the
-//! prompt, the working directory, and one feature flag.
+//! prompt, the working directory, and one feature flag. Finding and probing
+//! the CLI is the integration catalog's (`integrations::detect`).
 
-use super::super::AgentQuestion;
-use super::super::developer_tools::parse_user_questions;
+use super::super::tools::parse_user_questions;
+use super::super::{AgentPermissionDecision, AgentQuestion, AgentQuestionOption};
 use serde_json::{Value, json};
-use std::path::{Path, PathBuf};
-use std::process::Stdio;
-use std::time::Duration;
+use std::path::Path;
 
 pub(crate) const PROVIDER_ID: &str = "codex";
 pub(crate) const PROVIDER_NAME: &str = "Codex";
-const EXECUTABLE: &str = "codex";
-/// The oldest Codex whose app-server speaks the v2 methods used here.
-const MIN_VERSION: (u64, u64, u64) = (0, 143, 0);
-const VERSION_PROBE_TIMEOUT: Duration = Duration::from_secs(3);
-const MAX_VERSION_BYTES: usize = 4 * 1024;
 /// The name the handshake reports. It is the reserved non-originating
 /// client name that Paseo uses, so Codex attributes the requests to the
 /// user's own client rather than to a third-party product.
 const CLIENT_NAME: &str = "codex_app_server_daemon";
 const CLIENT_TITLE: &str = "Codex App Server Daemon";
 const CLIENT_VERSION: &str = "0.0.0";
-
-/// What Maple found out about the Codex installation on this device.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub(crate) struct CodexDetection {
-    pub(crate) executable: Option<PathBuf>,
-    pub(crate) version: Option<String>,
-    /// `None` when Maple could not tell.
-    pub(crate) signed_in: Option<bool>,
-    /// Why the installation cannot be used, if it cannot.
-    pub(crate) problem: Option<String>,
-}
-
-/// Find `codex` on `search_path`, run `codex --version`, and read whether
-/// a sign-in exists. Nothing here changes the installation.
-pub(crate) async fn detect(search_path: Option<&str>) -> CodexDetection {
-    let Some(executable) = find_executable(search_path) else {
-        return CodexDetection::default();
-    };
-    let version = match probe_version(&executable).await {
-        Ok(version) => version,
-        Err(error) => {
-            return CodexDetection {
-                executable: Some(executable),
-                version: None,
-                signed_in: None,
-                problem: Some(format!("Maple could not run `codex --version`: {error}")),
-            };
-        }
-    };
-    let problem = match parse_version(&version) {
-        Some(parsed) if parsed < MIN_VERSION => Some(format!(
-            "Codex {version} is older than the {}.{}.{} that Maple needs. Update Codex.",
-            MIN_VERSION.0, MIN_VERSION.1, MIN_VERSION.2
-        )),
-        Some(_) => None,
-        None => Some(format!(
-            "Maple could not read the Codex version from `{version}`"
-        )),
-    };
-    CodexDetection {
-        executable: Some(executable),
-        version: Some(version),
-        signed_in: Some(auth_file_exists()),
-        problem,
-    }
-}
-
-pub(crate) fn find_executable(search_path: Option<&str>) -> Option<PathBuf> {
-    match search_path {
-        Some(path) => super::super::developer_tools::executable_in_search_path(EXECUTABLE, path),
-        None => super::super::developer_tools::executable_on_path(EXECUTABLE),
-    }
-}
-
-pub(super) async fn probe_version(executable: &Path) -> Result<String, String> {
-    let mut command = tokio::process::Command::new(executable);
-    command
-        .arg("--version")
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .kill_on_drop(true);
-    let mut child = command
-        .spawn()
-        .map_err(|error| format!("could not start it: {error}"))?;
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| "could not capture its output".to_string())?;
-    let mut reader = tokio::spawn(super::super::bounded_process::read_bounded_stdout(
-        stdout,
-        MAX_VERSION_BYTES,
-        "the Codex version",
-    ));
-    let status = match tokio::time::timeout(VERSION_PROBE_TIMEOUT, child.wait()).await {
-        Ok(Ok(status)) => status,
-        Ok(Err(error)) => {
-            reader.abort();
-            return Err(format!("could not wait for it: {error}"));
-        }
-        Err(_) => {
-            reader.abort();
-            let _ = child.kill().await;
-            let _ = child.wait().await;
-            return Err("it did not exit in time".to_string());
-        }
-    };
-    let bytes = match tokio::time::timeout(VERSION_PROBE_TIMEOUT, &mut reader).await {
-        Ok(Ok(result)) => result?,
-        Ok(Err(error)) => return Err(format!("could not collect its output: {error}")),
-        Err(_) => {
-            reader.abort();
-            return Err("its output did not close".to_string());
-        }
-    };
-    if !status.success() {
-        return Err(format!("it exited with {status}"));
-    }
-    let text = String::from_utf8_lossy(&bytes);
-    let version = text.trim();
-    if version.is_empty() {
-        return Err("it printed nothing".to_string());
-    }
-    Ok(version.to_string())
-}
-
-/// `codex-cli 0.153.4` and plain `0.153.4` both read as (0, 153, 4).
-pub(crate) fn parse_version(text: &str) -> Option<(u64, u64, u64)> {
-    text.split_whitespace().rev().find_map(|token| {
-        let token = token.trim_start_matches('v');
-        let core = token.split(['-', '+']).next()?;
-        let mut parts = core.split('.');
-        let major = parts.next()?.parse().ok()?;
-        let minor = parts.next()?.parse().ok()?;
-        let patch = parts.next().unwrap_or("0").parse().ok()?;
-        Some((major, minor, patch))
-    })
-}
-
-/// Codex keeps its sign-in in `auth.json` under its home. Maple only reads
-/// whether the file exists; it never opens it.
-fn auth_file_exists() -> bool {
-    codex_home().is_some_and(|home| home.join("auth.json").is_file())
-}
-
-fn codex_home() -> Option<PathBuf> {
-    if let Some(home) = std::env::var_os("CODEX_HOME").filter(|value| !value.is_empty()) {
-        return Some(PathBuf::from(home));
-    }
-    let home = std::env::var_os("HOME")
-        .or_else(|| std::env::var_os("USERPROFILE"))
-        .filter(|value| !value.is_empty())?;
-    Some(PathBuf::from(home).join(".codex"))
-}
-
-pub(crate) fn sign_in_hint() -> &'static str {
-    "Codex is not signed in. Run `codex login` in a terminal, then try again."
-}
 
 /// The command line that starts the app-server on stdio.
 pub(super) fn app_server_args() -> [&'static str; 1] {
@@ -553,7 +409,7 @@ pub(super) fn async_question_prompts(questions: &[AsyncQuestion]) -> Vec<AgentQu
             options: question
                 .options
                 .iter()
-                .map(|label| super::super::AgentQuestionOption {
+                .map(|label| AgentQuestionOption {
                     label: label.clone(),
                     description: String::new(),
                 })
@@ -684,8 +540,7 @@ pub(super) fn parse_server_request(method: &str, params: &Value) -> CodexServerR
 
 /// The answer to an approval request. Maple never grants `acceptForSession`:
 /// every acceptance is one-shot.
-pub(super) fn approval_response(decision: super::super::AgentPermissionDecision) -> Value {
-    use super::super::AgentPermissionDecision;
+pub(super) fn approval_response(decision: AgentPermissionDecision) -> Value {
     let decision = match decision {
         AgentPermissionDecision::AllowOnce => "accept",
         AgentPermissionDecision::Cancel => "cancel",
@@ -707,15 +562,6 @@ pub(super) fn user_input_response(answer: &str) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn parses_versions_in_the_shapes_codex_prints() {
-        assert_eq!(parse_version("codex-cli 0.153.4"), Some((0, 153, 4)));
-        assert_eq!(parse_version("0.143.0"), Some((0, 143, 0)));
-        assert_eq!(parse_version("v1.2.3-alpha.1"), Some((1, 2, 3)));
-        assert_eq!(parse_version("codex"), None);
-        assert!(parse_version("codex-cli 0.142.9").unwrap() < MIN_VERSION);
-    }
 
     #[test]
     fn turn_start_carries_prompt_and_overrides_but_no_policy() {
@@ -943,7 +789,6 @@ mod tests {
 
     #[test]
     fn responses_use_codex_decisions() {
-        use super::super::super::AgentPermissionDecision;
         assert_eq!(
             approval_response(AgentPermissionDecision::AllowOnce)["decision"],
             "accept"

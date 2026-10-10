@@ -7,21 +7,16 @@
 //! bounded concurrent reads, question answers, and activity projection here;
 //! it does not instantiate Goose's provider, whose subprocess is private.
 //! Unlike Goose's Auto mode, we never set --dangerously-skip-permissions.
+//! Finding and probing the CLI is the integration catalog's
+//! (`integrations::detect`).
 
-use super::super::developer_tools::{
-    executable_in_search_path, executable_on_path, spawn_contained,
-};
 use super::app_server::{RequestMethod, ServerMessage};
-use super::codex;
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
-use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
-use std::time::Duration;
 use tokio::io::AsyncWriteExt;
 use tokio::process::{ChildStdin, ChildStdout};
 use tokio::sync::{Mutex, mpsc, oneshot};
@@ -31,93 +26,8 @@ use tokio_util::sync::CancellationToken;
 pub(crate) const PROVIDER_ID: &str = "claude";
 pub(crate) const PROVIDER_NAME: &str = "Claude Code";
 const MAX_LINE_BYTES: usize = 4 * 1024 * 1024;
-const AUTH_PROBE_TIMEOUT: Duration = Duration::from_secs(3);
-const MAX_AUTH_BYTES: usize = 16 * 1024;
 const FAILURE: &str =
     "Claude Code could not complete this request. Check its sign-in and configuration.";
-
-#[derive(Debug, Clone, Default)]
-pub(crate) struct ClaudeDetection {
-    pub(crate) executable: Option<PathBuf>,
-    pub(crate) version: Option<String>,
-    /// `None` when the installed CLI cannot report its authentication state.
-    pub(crate) signed_in: Option<bool>,
-    pub(crate) problem: Option<String>,
-}
-
-pub(super) fn find_executable(search_path: Option<&str>) -> Option<PathBuf> {
-    match search_path {
-        Some(path) => executable_in_search_path("claude", path),
-        None => executable_on_path("claude"),
-    }
-}
-
-pub(crate) async fn detect(search_path: Option<&str>) -> ClaudeDetection {
-    let Some(executable) = find_executable(search_path) else {
-        return ClaudeDetection::default();
-    };
-    let mut detection = ClaudeDetection {
-        executable: Some(executable.clone()),
-        ..Default::default()
-    };
-    match codex::probe_version(&executable).await {
-        Ok(version) => {
-            detection.version = Some(version);
-            detection.signed_in = probe_auth_status(&executable, search_path).await;
-        }
-        Err(_) => {
-            detection.problem = Some(
-                "Maple could not run `claude --version`. Check the Claude Code installation."
-                    .into(),
-            )
-        }
-    }
-    detection
-}
-
-pub(crate) fn sign_in_hint() -> &'static str {
-    "Claude Code is not signed in. Run `claude auth login` in a terminal, then try again."
-}
-
-async fn probe_auth_status(executable: &Path, search_path: Option<&str>) -> Option<bool> {
-    let mut command = tokio::process::Command::new(executable);
-    command
-        .args(["auth", "status", "--json"])
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .kill_on_drop(true);
-    if let Some(path) = search_path {
-        command.env("PATH", path);
-    }
-    let mut child = spawn_contained(command).ok()?;
-    let stdout = child.as_mut().stdout().take()?;
-    let result = tokio::time::timeout(AUTH_PROBE_TIMEOUT, async {
-        tokio::join!(
-            child.as_mut().wait(),
-            super::super::bounded_process::read_bounded_stdout(
-                stdout,
-                MAX_AUTH_BYTES,
-                "Claude authentication status",
-            )
-        )
-    })
-    .await;
-    child.kill_and_wait().await;
-    let (status, output) = result.ok()?;
-    // Read only the boolean; never retain or log account details from the CLI.
-    #[derive(Deserialize)]
-    struct AuthStatus {
-        #[serde(rename = "loggedIn")]
-        logged_in: bool,
-    }
-    let auth: AuthStatus = serde_json::from_slice(&output.ok()?).ok()?;
-    match (status.ok()?.code(), auth.logged_in) {
-        (Some(0), true) => Some(true),
-        (Some(1), false) => Some(false),
-        _ => None,
-    }
-}
 
 pub(super) fn new_session_id() -> String {
     // Claude requires a UUID for --session-id. Generate RFC 4122 version 4

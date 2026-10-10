@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicI64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use indexmap::IndexMap;
@@ -9,11 +10,25 @@ use serde_json::{Map, Value};
 pub type Timestamp = i64;
 
 /// The current time as a [`Timestamp`].
+///
+/// Within one process every call returns a later time than the call before, a
+/// millisecond ahead of the clock if need be. Messages are stamped with it, so a
+/// message's timestamp tells it apart from every other message the process made,
+/// which hosts can key their views of the transcript by.
 pub fn now_ms() -> Timestamp {
-    SystemTime::now()
+    static LAST: AtomicI64 = AtomicI64::new(0);
+    let clock = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|elapsed| elapsed.as_millis() as Timestamp)
-        .unwrap_or_default()
+        .unwrap_or_default();
+    let mut last = LAST.load(Ordering::Relaxed);
+    loop {
+        let next = clock.max(last + 1);
+        match LAST.compare_exchange_weak(last, next, Ordering::Relaxed, Ordering::Relaxed) {
+            Ok(_) => return next,
+            Err(actual) => last = actual,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -781,5 +796,11 @@ mod tests {
         let sum = left.add(&right);
         assert_eq!((sum.input, sum.output, sum.total_tokens), (5, 2, 7));
         assert_eq!(sum.reasoning, Some(1));
+    }
+
+    #[test]
+    fn timestamps_never_repeat_within_a_process() {
+        let stamps: Vec<Timestamp> = (0..1_000).map(|_| now_ms()).collect();
+        assert!(stamps.windows(2).all(|pair| pair[0] < pair[1]));
     }
 }

@@ -6,7 +6,14 @@
 //! ties an external surface's tool context to that surface's lifetime.
 //! Logic lives in the parent module; this file holds the nouns.
 
-use super::*;
+use std::collections::HashMap;
+
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+
+use super::attachments::AgentImageAttachment;
+pub use super::attachments::AgentImageUpload;
+use super::{DEFAULT_AGENT_MODEL, DEFAULT_MCP_TIMEOUT_SECONDS};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -69,6 +76,9 @@ pub struct AgentProjectTrust {
 #[serde(rename_all = "snake_case")]
 pub enum AgentProjectTrustFeature {
     Skills,
+    PromptTemplates,
+    /// `SYSTEM.md` in the project's `.maple` folder.
+    SystemPrompt,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -266,28 +276,6 @@ pub struct AgentSetIntegrationEnabledRequest {
 #[serde(rename_all = "camelCase")]
 pub struct AgentSetupIntegrationRequest {
     pub id: String,
-}
-
-/// An MCP server supplied by an external Agent surface for one leased session.
-///
-/// Unlike [`AgentMcpServer`], this type is never serialized into Maple's user
-/// configuration or Goose session metadata. It may contain short-lived bearer
-/// headers owned by the calling surface, so the lease that installs it also
-/// owns its removal.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct AgentTransientMcpServer {
-    pub(crate) name: String,
-    pub(crate) description: String,
-    pub(crate) timeout_seconds: u64,
-    pub(crate) transport: AgentTransientMcpTransport,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum AgentTransientMcpTransport {
-    StreamableHttp {
-        url: String,
-        headers: Vec<AgentMcpKeyValue>,
-    },
 }
 
 pub(super) fn default_mcp_timeout_seconds() -> u64 {
@@ -592,8 +580,6 @@ pub struct AgentQueuedMessage {
     pub text: String,
     pub attachments: Vec<AgentImageAttachment>,
     pub created_ms: u128,
-    #[serde(skip)]
-    pub(super) message: Message,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -617,17 +603,6 @@ pub enum AgentRunTerminal {
     Failed,
 }
 
-pub struct AgentRunHandle {
-    pub run_id: String,
-    pub events: mpsc::Receiver<AgentRunEvent>,
-    pub terminal: watch::Receiver<Option<AgentRunTerminal>>,
-    pub usage: watch::Receiver<Option<AgentRunUsage>>,
-    pub event_overflowed: Arc<AtomicBool>,
-    pub(crate) cancellation: Option<AgentRunCancellation>,
-    pub queued: Option<AgentQueuedMessage>,
-    pub queue: AgentDesktopQueueSnapshot,
-}
-
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct AgentRunUsage {
     pub(crate) input_tokens: u64,
@@ -635,337 +610,6 @@ pub struct AgentRunUsage {
     pub(crate) total_tokens: u64,
     pub(crate) cached_read_tokens: u64,
     pub(crate) cached_write_tokens: u64,
-}
-
-pub(super) type AgentRunSetup = (
-    Arc<Agent>,
-    Vec<AgentMcpConnectionError>,
-    SharedAgentToolContext,
-    bool,
-    AgentRunUsage,
-);
-
-impl AgentRunUsage {
-    pub(super) fn from_accumulated_session(session: &Session) -> Self {
-        Self {
-            input_tokens: nonnegative_tokens(session.accumulated_usage.input_tokens),
-            output_tokens: nonnegative_tokens(session.accumulated_usage.output_tokens),
-            total_tokens: nonnegative_tokens(session.accumulated_usage.total_tokens),
-            cached_read_tokens: nonnegative_tokens(
-                session.accumulated_usage.cache_read_input_tokens,
-            ),
-            cached_write_tokens: nonnegative_tokens(
-                session.accumulated_usage.cache_write_input_tokens,
-            ),
-        }
-    }
-
-    pub(super) fn saturating_delta(self, before: Self) -> Self {
-        Self {
-            input_tokens: self.input_tokens.saturating_sub(before.input_tokens),
-            output_tokens: self.output_tokens.saturating_sub(before.output_tokens),
-            total_tokens: self.total_tokens.saturating_sub(before.total_tokens),
-            cached_read_tokens: self
-                .cached_read_tokens
-                .saturating_sub(before.cached_read_tokens),
-            cached_write_tokens: self
-                .cached_write_tokens
-                .saturating_sub(before.cached_write_tokens),
-        }
-    }
-}
-
-pub(super) fn nonnegative_tokens(tokens: Option<i32>) -> u64 {
-    tokens
-        .and_then(|tokens| u64::try_from(tokens).ok())
-        .unwrap_or(0)
-}
-
-/// Opaque cancellation capability for one run owned by a calling surface.
-///
-/// Unlike the Desktop command boundary, an adapter already has the exact run
-/// identity. Retaining that identity here prevents it from cancelling another
-/// surface's run through a caller-provided run ID.
-#[derive(Clone)]
-pub(crate) struct AgentRunCancellation {
-    pub(super) agent: AgentRuntimeHandle,
-    pub(super) session_id: Arc<str>,
-    pub(super) run_id: Arc<str>,
-    pub(super) routing: AgentRunSurface,
-}
-
-impl AgentRunCancellation {
-    pub async fn cancel(&self) -> Result<(), String> {
-        self.agent
-            .cancel_run_scoped(
-                self.run_id.as_ref(),
-                Some(self.session_id.as_ref()),
-                self.routing,
-            )
-            .await
-    }
-}
-
-pub(crate) struct CreatedAgentSession {
-    pub(crate) detail: AgentSessionDetail,
-    pub(crate) tool_context_lease: Option<AgentToolContextLease>,
-}
-
-/// Controls whether a surface's events are also projected into Maple Desktop.
-///
-/// This is deliberately independent of tool-context ownership. A calling
-/// surface can keep its transient run stream isolated while persisted history
-/// remains available when Maple Desktop later loads the task.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum AgentHostEventPolicy {
-    Publish,
-    Suppress,
-}
-
-#[derive(Debug)]
-pub(super) enum DesktopSendDisposition {
-    /// Desktop send: stage onto the live run when one exists, otherwise start.
-    StageOrStart,
-    /// ACP and other exclusive surfaces must not join another run.
-    StartOnly,
-    /// Internal, model-only completion: steer or start through Desktop admission.
-    BackgroundCompletion(Box<Message>),
-}
-
-impl AgentHostEventPolicy {
-    pub(super) fn publishes(self) -> bool {
-        matches!(self, Self::Publish)
-    }
-}
-
-pub(crate) struct AgentToolContextLease {
-    pub(super) service: MapleAgentService,
-    pub(super) access: AgentToolContextAccess,
-    pub(super) created_cleanup: Option<CreatedAgentSessionCleanup>,
-    pub(super) discard_created_on_drop: bool,
-    pub(super) cleanup_started: bool,
-}
-
-#[derive(Clone)]
-pub(super) struct CreatedAgentSessionCleanup {
-    pub(super) agent_manager: Arc<AgentManager>,
-    pub(super) session_manager: Arc<SessionManager>,
-    pub(super) expected: Session,
-}
-
-#[derive(Clone)]
-pub(crate) struct AgentToolContextAccess {
-    pub(super) account_scope: Arc<str>,
-    pub(super) session_id: Arc<str>,
-    pub(super) installation_id: u64,
-    pub(super) context: SharedAgentToolContext,
-}
-
-impl AgentToolContextLease {
-    pub fn access(&self) -> AgentToolContextAccess {
-        self.access.clone()
-    }
-
-    pub fn revoke(&self) {
-        self.access.context.revoke();
-    }
-
-    pub async fn release(mut self) {
-        // Stop credential-bearing calls synchronously before waiting for the
-        // session lifecycle fence and cached-Agent unload.
-        self.access.context.revoke();
-        release_tool_context_lease(self.service.clone(), self.access.clone()).await;
-        // Mark completion only after the awaited cleanup. If this future is
-        // cancelled while waiting for the lifecycle fence, Drop schedules an
-        // exact-match retry instead of stranding a revoked leased entry.
-        self.cleanup_started = true;
-    }
-
-    pub async fn discard_created_if_untouched(mut self) {
-        self.discard_created_on_drop = true;
-        self.access.context.revoke();
-        if let Some(cleanup) = self.created_cleanup.as_ref() {
-            cleanup_provisional_created_session(
-                self.service.clone(),
-                self.access.clone(),
-                Arc::clone(&cleanup.agent_manager),
-                Arc::clone(&cleanup.session_manager),
-                cleanup.expected.clone(),
-            )
-            .await;
-        } else {
-            release_tool_context_lease(self.service.clone(), self.access.clone()).await;
-        }
-        self.cleanup_started = true;
-    }
-}
-
-pub(super) async fn release_tool_context_lease(
-    service: MapleAgentService,
-    access: AgentToolContextAccess,
-) {
-    // A revoked leased entry remains authoritative until this lifecycle
-    // section removes it. Desktop callers must never garbage-collect it and
-    // reuse the still-cached Agent while transient caller state is attached.
-    let _session_lifecycle = service.session_lifecycle.lock().await;
-    let (removed, agent_manager) = {
-        let mut runtime = service.inner.lock().await;
-        let Some(current) = runtime.as_mut() else {
-            return;
-        };
-        if current.account_scope != access.account_scope.as_ref() {
-            return;
-        }
-        let removed = take_matching_tool_context(
-            &mut current.session_tool_contexts,
-            access.session_id.as_ref(),
-            access.installation_id,
-            &access.context,
-        );
-        (removed, Arc::clone(&current.agent_manager))
-    };
-    if let Some(installed) = removed {
-        installed.context.revoke();
-        // Dropping the cached Agent is the fail-closed way to remove every
-        // transient MCP client (and any secret-bearing HTTP headers) without
-        // mutating the persisted extension set. A later Desktop or ACP use
-        // reconstructs the Agent from durable, non-transient metadata.
-        if let Err(error) = agent_manager
-            .remove_session_if_loaded(access.session_id.as_ref())
-            .await
-        {
-            log::warn!(
-                "Failed to unload Agent task {} after external lease release: {error}",
-                access.session_id
-            );
-        }
-    }
-}
-
-pub(super) async fn cleanup_provisional_created_session(
-    service: MapleAgentService,
-    access: AgentToolContextAccess,
-    agent_manager: Arc<AgentManager>,
-    session_manager: Arc<SessionManager>,
-    expected: Session,
-) {
-    // Keep the task fenced until both the secret-bearing cached Agent and the
-    // untouched provisional row are gone. If the exact reservation no longer
-    // belongs to us, fail closed and leave the durable task alone.
-    let _session_lifecycle = service.session_lifecycle.lock().await;
-    {
-        let mut runtime = service.inner.lock().await;
-        match runtime.as_mut() {
-            Some(current) if current.account_scope == access.account_scope.as_ref() => {
-                if has_active_session_run(&current.active_runs, access.session_id.as_ref()) {
-                    return;
-                }
-                if let Some(installed) = current
-                    .session_tool_contexts
-                    .get(access.session_id.as_ref())
-                {
-                    let exact = installed.installation_id == access.installation_id
-                        && installed.context.ptr_eq(&access.context);
-                    if !exact {
-                        // A replacement owner won the task. Never unload or
-                        // delete underneath it.
-                        return;
-                    }
-                }
-                if let Some(installed) = take_matching_tool_context(
-                    &mut current.session_tool_contexts,
-                    access.session_id.as_ref(),
-                    access.installation_id,
-                    &access.context,
-                ) {
-                    installed.context.revoke();
-                }
-            }
-            // Runtime stop/replacement drains the old registry. The captured
-            // account-scoped managers still let us remove only the untouched
-            // row that this setup created.
-            _ => {}
-        }
-    }
-    access.context.revoke();
-    if let Err(error) = agent_manager
-        .remove_session_if_loaded(access.session_id.as_ref())
-        .await
-    {
-        log::warn!(
-            "Failed to unload provisional Agent task {} after setup error: {error}",
-            access.session_id
-        );
-    }
-    let current = match session_manager
-        .get_session(access.session_id.as_ref(), true)
-        .await
-    {
-        Ok(session) => session,
-        Err(_) => return,
-    };
-    let conversation_is_empty = current
-        .conversation
-        .as_ref()
-        .is_none_or(|conversation| conversation.messages().is_empty());
-    let untouched = current.id == expected.id
-        && current.created_at == expected.created_at
-        && current.working_dir == expected.working_dir
-        && current.session_type == expected.session_type
-        && current.name == expected.name
-        && !current.user_set_name
-        && current.message_count == 0
-        && conversation_is_empty
-        && current.archived_at == expected.archived_at;
-    if !untouched {
-        log::warn!(
-            "Preserving provisional Agent task {} after setup error because it changed while setup was pending",
-            access.session_id
-        );
-        return;
-    }
-    if let Err(error) = session_manager
-        .delete_session(access.session_id.as_ref())
-        .await
-    {
-        log::warn!(
-            "Failed to remove provisional Agent task {} after setup error: {error}",
-            access.session_id
-        );
-    }
-}
-
-impl Drop for AgentToolContextLease {
-    fn drop(&mut self) {
-        self.access.context.revoke();
-        if self.cleanup_started {
-            return;
-        }
-        let service = self.service.clone();
-        let access = self.access.clone();
-        let created_cleanup = self.created_cleanup.clone();
-        let discard_created = self.discard_created_on_drop;
-        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
-            runtime.spawn(async move {
-                if discard_created {
-                    if let Some(cleanup) = created_cleanup {
-                        cleanup_provisional_created_session(
-                            service,
-                            access,
-                            cleanup.agent_manager,
-                            cleanup.session_manager,
-                            cleanup.expected,
-                        )
-                        .await;
-                    } else {
-                        release_tool_context_lease(service, access).await;
-                    }
-                } else {
-                    release_tool_context_lease(service, access).await;
-                }
-            });
-        }
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -994,6 +638,13 @@ pub enum AgentRunEvent {
     SubagentFinished {
         id: String,
     },
+    /// Pi began summarizing the task's history to make room in the context.
+    Compacting,
+    /// The summary replaced the history it covers; `HistoryReplaced`
+    /// follows.
+    Compacted,
+    /// The task's stored history changed under the rows shown so far: a
+    /// compaction, or failed attempts that Pi retried. Reload it.
     HistoryReplaced,
     Error(AgentTimelineItem),
     Finished(AgentRunTerminal),
@@ -1065,6 +716,64 @@ pub struct AgentSubagent {
 pub struct ExternalAgentRef {
     pub provider: String,
     pub agent_id: String,
+}
+
+/// Where a tool result carries an external agent's activity.
+pub const EXTERNAL_AGENT_ACTIVITY_KEY: &str = "mapleExternalAgent";
+
+/// What one external agent has done, bounded so it fits a transcript row
+/// and a persisted notice.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExternalAgentActivity {
+    pub provider: String,
+    pub agent_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thread_id: Option<String>,
+    /// `running`, `completed`, `failed`, `cancelled`, or `idle`.
+    pub status: String,
+    /// The agent's messages in the current turn, tail-kept.
+    pub text: String,
+    #[serde(default)]
+    pub commands: Vec<ActivityCommand>,
+    #[serde(default)]
+    pub file_changes: Vec<ActivityFileChange>,
+    #[serde(default)]
+    pub todos: Vec<ActivityTodo>,
+    #[serde(default)]
+    pub turns: u32,
+    #[serde(default)]
+    pub elapsed_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    /// What the agent is waiting on the user for, while it waits.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending_permission: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ActivityCommand {
+    pub id: String,
+    pub command: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exit_code: Option<i64>,
+    /// `running`, `completed`, or `failed`.
+    pub status: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ActivityFileChange {
+    pub path: String,
+    pub kind: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ActivityTodo {
+    pub text: String,
+    pub completed: bool,
 }
 
 /// One finished exchange of a `/btw` thread, replayed on a follow-up so

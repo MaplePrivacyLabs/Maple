@@ -9,18 +9,17 @@
 //! The driver and the extension negotiate an API version at run time, so the
 //! embedded copy moves with the SDK pin. See `resources/gnome-helper/README.md`.
 
-#![cfg(target_os = "linux")]
-
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 pub(super) const EXTENSION_UUID: &str = "winrects@cua";
-/// The Cua Driver revision these files were copied from. Kept next to them so
-/// a stale vendor is visible in a diff rather than only at run time.
-pub(super) const UPSTREAM_SOURCE_REVISION: &str = "e7156658562eea3cb1721f3435ea317edb87acbd";
+/// The Cua Driver revision these files were copied from, the SDK's pin. Kept
+/// next to them so a stale vendor is visible in a diff rather than only at
+/// run time.
+pub(super) const UPSTREAM_SOURCE_REVISION: &str = "2dbc1c2cfbee5d25c9cea2dc37db80b98d4f9b00";
 
-const METADATA_JSON: &str = include_str!("../../resources/gnome-helper/metadata.json");
-const EXTENSION_JS: &str = include_str!("../../resources/gnome-helper/extension.js");
+const METADATA_JSON: &str = include_str!("../../../resources/gnome-helper/metadata.json");
+const EXTENSION_JS: &str = include_str!("../../../resources/gnome-helper/extension.js");
 
 const SHELL_SCHEMA: &str = "org.gnome.shell";
 const ENABLED_EXTENSIONS_KEY: &str = "enabled-extensions";

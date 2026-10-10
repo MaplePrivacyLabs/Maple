@@ -214,6 +214,9 @@ pub struct MapleApiSession {
     session_id: String,
     event_sink: Arc<dyn MapleApiAuthEventSink>,
     inner: RwLock<MapleApiSessionInner>,
+    /// A model catalog a test serves in place of the backend's.
+    #[cfg(test)]
+    test_catalog: std::sync::Mutex<Option<maple_sdk::ModelCatalogResponse>>,
 }
 
 pub(crate) struct MapleApiAuthLease<'a> {
@@ -265,6 +268,8 @@ impl MapleApiSession {
                     client,
                 },
             }),
+            #[cfg(test)]
+            test_catalog: std::sync::Mutex::new(None),
         })
     }
 
@@ -522,6 +527,15 @@ impl MapleApiSession {
     }
 
     pub(crate) async fn model_catalog(&self) -> Result<maple_sdk::ModelCatalogResponse, String> {
+        #[cfg(test)]
+        if let Some(catalog) = self
+            .test_catalog
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+        {
+            return Ok(catalog);
+        }
         let snapshot = self.client_snapshot().await?;
         let response = snapshot.client.get_model_catalog().await;
         self.record_refresh(&snapshot).await?;
@@ -668,6 +682,17 @@ struct TestMapleApiAuthEventSink;
 #[cfg(test)]
 impl MapleApiAuthEventSink for TestMapleApiAuthEventSink {
     fn auth_changed(&self, _snapshot: &MapleApiAuthSnapshot) {}
+}
+
+#[cfg(test)]
+impl MapleApiSession {
+    /// Serve `catalog` as the backend's model catalog.
+    pub(crate) fn set_test_catalog(&self, catalog: maple_sdk::ModelCatalogResponse) {
+        *self
+            .test_catalog
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(catalog);
+    }
 }
 
 #[cfg(test)]
@@ -1077,8 +1102,8 @@ mod tests {
         aead::{Aead, Payload},
     };
     use ciborium::value::Value as CborValue;
-    use goose_providers::{base::Provider, conversation::message::Message, model::ModelConfig};
     use hkdf::Hkdf;
+    use pi_ai::StreamFn as _;
     use std::sync::Mutex as StdMutex;
     use tokio::sync::Notify;
 
@@ -1643,23 +1668,33 @@ mod tests {
         assert_eq!(after.refresh_token, before.refresh_token);
     }
 
+    fn inference_context(text: &str) -> pi_ai::Context {
+        pi_ai::Context::new(
+            "system",
+            Vec::new(),
+            vec![pi_ai::Message::User(pi_ai::UserMessage {
+                content: vec![pi_ai::Content::text(text)],
+                timestamp: 0,
+            })],
+        )
+    }
+
     #[tokio::test]
     async fn provider_cancellation_after_sdk_refresh_reconciles_rotated_credentials() {
         let fixture = refresh_then_stall_fixture().await;
-        let provider = crate::agent::provider::MapleProvider::new(Arc::clone(&fixture.session));
+        let stream_fn = crate::agent::provider::MapleStreamFn::new(Arc::clone(&fixture.session)
+            as Arc<dyn crate::agent::provider::MapleInferenceTransport>);
         let cancellation = CancellationToken::new();
-        let task_cancellation = cancellation.clone();
+        let options = pi_ai::StreamOptions {
+            cancel: cancellation.clone(),
+            ..pi_ai::StreamOptions::default()
+        };
+        let model = crate::agent::provider::maple_model("test-model", None, None);
         let request = tokio::spawn(async move {
-            crate::agent::provider::with_run_cancellation(
-                task_cancellation,
-                provider.stream(
-                    &ModelConfig::new("test-model"),
-                    "system",
-                    &[Message::user().with_text("classify this URL")],
-                    &[],
-                ),
-            )
-            .await
+            stream_fn
+                .stream(&model, inference_context("classify this URL"), options)
+                .result()
+                .await
         });
 
         tokio::time::timeout(
@@ -1669,15 +1704,11 @@ mod tests {
         .await
         .expect("refreshed inference request should start");
         cancellation.cancel();
-        let result = tokio::time::timeout(std::time::Duration::from_secs(2), request)
+        let message = tokio::time::timeout(std::time::Duration::from_secs(2), request)
             .await
             .expect("provider cancellation should finish")
             .unwrap();
-        assert!(matches!(
-            result,
-            Err(goose_providers::errors::ProviderError::ExecutionError(message))
-                if message.contains("cancelled")
-        ));
+        assert_eq!(message.stop_reason, pi_ai::StopReason::Aborted);
         assert_refresh_reconciled(&fixture).await;
         fixture.server.abort();
     }
@@ -1708,17 +1739,19 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn dropped_classifier_provider_future_after_refresh_still_reconciles_credentials() {
+    async fn dropped_side_model_request_after_refresh_still_reconciles_credentials() {
         let fixture = refresh_then_stall_fixture().await;
-        let provider = crate::agent::provider::MapleProvider::new(Arc::clone(&fixture.session));
+        let stream_fn = crate::agent::provider::MapleStreamFn::new(Arc::clone(&fixture.session)
+            as Arc<dyn crate::agent::provider::MapleInferenceTransport>);
+        let model = crate::agent::provider::maple_model("llama3-3-70b", None, None);
         let request = tokio::spawn(async move {
-            provider
-                .complete(
-                    &ModelConfig::new("llama3-3-70b"),
-                    "classify web permission",
-                    &[Message::user().with_text("untrusted classifier input")],
-                    &[],
+            stream_fn
+                .stream(
+                    &model,
+                    inference_context("untrusted classifier input"),
+                    pi_ai::StreamOptions::default(),
                 )
+                .result()
                 .await
         });
 
@@ -1727,7 +1760,7 @@ mod tests {
             fixture.request_started.notified(),
         )
         .await
-        .expect("refreshed classifier request should start");
+        .expect("refreshed side-model request should start");
         request.abort();
         let _ = request.await;
         assert_refresh_reconciled(&fixture).await;

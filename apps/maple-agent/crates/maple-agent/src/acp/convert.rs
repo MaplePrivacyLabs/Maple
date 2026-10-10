@@ -5,7 +5,6 @@
 use super::transport::AcpOutboundSendError;
 use crate::agent::{
     AgentImageUpload, AgentRunTerminal, AgentRunUsage, AgentSlashCommand, AgentTimelineItem,
-    compaction_notice_text,
 };
 use agent_client_protocol::schema::v1::{
     AvailableCommand, AvailableCommandsUpdate, BooleanPropertySchema, ContentBlock, ContentChunk,
@@ -16,14 +15,18 @@ use agent_client_protocol::schema::v1::{
     ToolCallContent, ToolCallLocation, ToolCallStatus, ToolCallUpdate, ToolCallUpdateFields,
     ToolKind, Usage,
 };
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 pub(super) const MAX_ACP_ERROR_CHARS: usize = 500;
 pub(super) const MAX_ACP_TOOL_TEXT_CHARS: usize = 16_000;
+
+/// What a session's caller has been sent of the rows of one stream: the
+/// tool calls it knows, and the text of each streamed message so far.
 #[derive(Default)]
-pub(super) struct AcpToolProjection {
-    seen: HashSet<String>,
+pub(super) struct AcpProjection {
+    tools: HashSet<String>,
+    streamed: HashMap<String, String>,
 }
 
 /// The model selector is the only config option: Maple has no session
@@ -239,55 +242,82 @@ pub(super) fn project_trust_permission_decision(
     }
 }
 
+/// Agent text that tells the caller a compaction began, as the reference
+/// adapters (claude-agent-acp, codex-acp) do: compaction is a full model
+/// round-trip with no other output.
+pub(super) const COMPACTING_NOTICE: &str = "Compacting…\n";
 pub(super) const COMPACTION_COMPLETED_NOTICE: &str = "Compaction completed.\n";
+pub(super) const NOTHING_TO_COMPACT_NOTICE: &str = "Nothing to compact yet.\n";
+/// The title of the row a stored compaction shows as.
+const COMPACTED_ROW_TITLE: &str = "Context compacted";
 
+/// The update a timeline row makes for the caller, if any. A live run's
+/// text and thinking stream as `append` rows, each sent as it comes; the
+/// `replace` row that settles a message sends only what did not stream.
+/// A `replay` of a stored task also sends the user's messages and the
+/// failures; a live run's failure is sent once the run ends, since Pi may
+/// still retry it.
 pub(super) fn timeline_update(
     item: &AgentTimelineItem,
-    tools: &mut AcpToolProjection,
-    include_user_messages: bool,
+    projection: &mut AcpProjection,
+    replay: bool,
 ) -> Option<SessionUpdate> {
     match item.item_type.as_str() {
-        "message" if include_user_messages && item.role.as_deref() == Some("user") => {
-            item.text.as_ref().map(|text| {
-                SessionUpdate::UserMessageChunk(
-                    ContentChunk::new(ContentBlock::Text(TextContent::new(text.clone())))
-                        .message_id(item.id.as_str()),
-                )
-            })
+        "message" if item.role.as_deref() == Some("user") => {
+            let text = item.text.as_ref().filter(|_| replay)?;
+            Some(SessionUpdate::UserMessageChunk(text_chunk(
+                text.clone(),
+                &item.id,
+            )))
         }
-        "message" if item.role.as_deref() == Some("assistant") => item.text.as_ref().map(|text| {
-            SessionUpdate::AgentMessageChunk(
-                ContentChunk::new(ContentBlock::Text(TextContent::new(text.clone())))
-                    .message_id(item.id.as_str()),
-            )
-        }),
-        "thinking" => item.text.as_ref().map(|text| {
-            SessionUpdate::AgentThoughtChunk(
-                ContentChunk::new(ContentBlock::Text(TextContent::new(text.clone())))
-                    .message_id(item.id.as_str()),
-            )
-        }),
-        "tool" => Some(acp_tool_update(item, tools)),
-        // Compaction is a full model round-trip with no other output. The
-        // reference adapters (claude-agent-acp, codex-acp) tell the client
-        // with a short agent-text notice, so clients render it the same way.
-        "system" => item
-            .text
-            .as_deref()
-            .and_then(compaction_notice_text)
-            .map(|notice| {
-                SessionUpdate::AgentMessageChunk(
-                    ContentChunk::new(ContentBlock::Text(TextContent::new(format!("{notice}\n"))))
-                        .message_id(item.id.as_str()),
-                )
-            }),
+        "message" if item.role.as_deref() == Some("assistant") => projection
+            .unsent_text(item)
+            .map(|text| SessionUpdate::AgentMessageChunk(text_chunk(text, &item.id))),
+        "thinking" => projection
+            .unsent_text(item)
+            .map(|text| SessionUpdate::AgentThoughtChunk(text_chunk(text, &item.id))),
+        "tool" => Some(acp_tool_update(item, projection)),
+        "error" if replay => event_error_text(item)
+            .map(|text| SessionUpdate::AgentMessageChunk(text_chunk(text, &item.id))),
+        "system" if item.title.as_deref() == Some(COMPACTED_ROW_TITLE) => {
+            Some(SessionUpdate::AgentMessageChunk(text_chunk(
+                COMPACTION_COMPLETED_NOTICE.to_string(),
+                &item.id,
+            )))
+        }
+        // Other runtime notices stay out of the ACP stream.
         _ => None,
     }
 }
 
+impl AcpProjection {
+    /// The text of a message row the caller has not been sent yet.
+    fn unsent_text(&mut self, item: &AgentTimelineItem) -> Option<String> {
+        let text = item.text.as_deref()?;
+        if item.merge == "append" {
+            self.streamed
+                .entry(item.id.clone())
+                .or_default()
+                .push_str(text);
+            return Some(text.to_string()).filter(|text| !text.is_empty());
+        }
+        // The settled text: what streamed is its start, and the rest goes
+        // now. A caller cannot take back text, so a message that settled
+        // differently from its stream is left as it streamed.
+        let streamed = self.streamed.remove(&item.id).unwrap_or_default();
+        text.strip_prefix(streamed.as_str())
+            .filter(|rest| !rest.is_empty())
+            .map(str::to_string)
+    }
+}
+
+pub(super) fn text_chunk(text: String, message_id: &str) -> ContentChunk {
+    ContentChunk::new(ContentBlock::Text(TextContent::new(text))).message_id(message_id)
+}
+
 pub(super) fn acp_tool_update(
     item: &AgentTimelineItem,
-    tools: &mut AcpToolProjection,
+    projection: &mut AcpProjection,
 ) -> SessionUpdate {
     let status = match item.status.as_deref() {
         Some("completed") => ToolCallStatus::Completed,
@@ -295,7 +325,9 @@ pub(super) fn acp_tool_update(
         Some("pending") => ToolCallStatus::Pending,
         _ => ToolCallStatus::InProgress,
     };
-    let kind = timeline_tool_kind(item);
+    // A result row names neither the tool nor its input; the kind the call
+    // was given stands.
+    let kind = (item.title.is_some() || item.input.is_some()).then(|| timeline_tool_kind(item));
     let content = timeline_tool_text(item).map(|text| {
         vec![ToolCallContent::from(ContentBlock::Text(TextContent::new(
             text,
@@ -305,12 +337,12 @@ pub(super) fn acp_tool_update(
     let raw_input = item.input.as_ref().map(bounded_raw_json);
     let raw_output = timeline_tool_raw_output(item);
     let title = item.title.clone();
-    if tools.seen.insert(item.id.clone()) {
+    if projection.tools.insert(item.id.clone()) {
         let mut call = ToolCall::new(
             item.id.clone(),
             title.unwrap_or_else(|| "Maple tool".to_string()),
         )
-        .kind(kind)
+        .kind(kind.unwrap_or(ToolKind::Other))
         .status(status);
         if let Some(content) = content {
             call = call.content(content);
@@ -329,7 +361,10 @@ pub(super) fn acp_tool_update(
         // A response carries no title of its own for a provider-made
         // call ID. Leaving the field out keeps the request's title, which
         // says what ran; a placeholder would overwrite it.
-        let mut fields = ToolCallUpdateFields::new().kind(kind).status(status);
+        let mut fields = ToolCallUpdateFields::new().status(status);
+        if let Some(kind) = kind {
+            fields = fields.kind(kind);
+        }
         if let Some(title) = title {
             fields = fields.title(title);
         }
@@ -464,10 +499,10 @@ pub(super) fn prompt_result_from_terminal(
     match terminal {
         AgentRunTerminal::Completed => Ok(PromptResponse::new(StopReason::EndTurn)),
         AgentRunTerminal::Cancelled => Ok(PromptResponse::new(StopReason::Cancelled)),
-        // A failed terminal is emitted only after a run was admitted. Goose may
-        // already have persisted output or executed tools, and Buzz treats a
-        // JSON-RPC AgentError as pre-mutation/retryable. The preceding error
-        // update carries the failure text; settle the turn successfully here so
+        // A failed terminal is emitted only after a run was admitted. Pi may
+        // already have saved output or run tools, and Buzz treats a JSON-RPC
+        // AgentError as pre-mutation and retryable. The preceding update
+        // carries the failure text; settle the turn successfully here so
         // non-idempotent work is never replayed automatically.
         AgentRunTerminal::Failed => Ok(PromptResponse::new(StopReason::EndTurn)),
     }
