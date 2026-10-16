@@ -1484,6 +1484,8 @@ export type DocumentUploadInitResponse = {
 export type ApiKey = {
   name: string;
   created_at: string;
+  /** Non-secret key ID that billing uses to report per-key usage. Absent from older servers. */
+  public_id?: string;
 };
 
 export type ApiKeyCreateResponse = ApiKey & {

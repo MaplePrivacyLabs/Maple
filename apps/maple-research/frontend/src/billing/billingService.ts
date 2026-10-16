@@ -21,11 +21,13 @@ import {
   updateTeamName,
   fetchApiCreditBalance,
   fetchApiCreditSettings,
+  fetchBillingApiKeys,
   purchaseApiCredits,
   purchaseApiCreditsZaprite,
   updateApiCreditSettings,
   ApiCreditBalance,
   ApiCreditSettings,
+  BillingApiKeysResponse,
   PurchaseCreditsRequest,
   PurchaseCreditsZapriteRequest,
   CheckoutResponse,
@@ -329,6 +331,10 @@ export class BillingService {
   // API Credits methods
   async getApiCreditBalance(): Promise<ApiCreditBalance> {
     return this.executeWithToken((token) => fetchApiCreditBalance(token));
+  }
+
+  async getApiKeys(): Promise<BillingApiKeysResponse> {
+    return this.executeWithToken((token) => fetchBillingApiKeys(token));
   }
 
   async getApiCreditSettings(): Promise<ApiCreditSettings> {

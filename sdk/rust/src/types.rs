@@ -495,6 +495,10 @@ pub struct ConfirmAccountDeletionRequest {
 pub struct ApiKey {
     pub name: String,
     pub created_at: DateTime<Utc>,
+    /// Non-secret key ID that billing uses to report per-key usage. `None`
+    /// from servers that predate it.
+    #[serde(default)]
+    pub public_id: Option<Uuid>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -512,6 +516,10 @@ pub struct ApiKeyCreateResponse {
     pub key: String, // UUID format with dashes, only returned on creation
     pub name: String,
     pub created_at: DateTime<Utc>,
+    /// Non-secret key ID that billing uses to report per-key usage. `None`
+    /// from servers that predate it.
+    #[serde(default)]
+    pub public_id: Option<Uuid>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1439,6 +1447,34 @@ mod tests {
                 "project_id": null
             })
         );
+    }
+
+    #[test]
+    fn api_key_public_id_is_optional_for_older_servers() {
+        let listed: ApiKeyListResponse = serde_json::from_value(json!({
+            "keys": [
+                { "name": "old", "created_at": "2026-10-11T00:00:00Z" },
+                {
+                    "name": "new",
+                    "created_at": "2026-10-11T00:00:00Z",
+                    "public_id": "0b9d6c3e-5f0a-4d43-9a39-2f7c41d1c0aa"
+                }
+            ]
+        }))
+        .unwrap();
+        assert_eq!(listed.keys[0].public_id, None);
+        assert_eq!(
+            listed.keys[1].public_id,
+            Some(Uuid::parse_str("0b9d6c3e-5f0a-4d43-9a39-2f7c41d1c0aa").unwrap())
+        );
+
+        let created: ApiKeyCreateResponse = serde_json::from_value(json!({
+            "key": "6142db59-fc0c-413d-8792-579fc1457fe2",
+            "name": "old",
+            "created_at": "2026-10-11T00:00:00Z"
+        }))
+        .unwrap();
+        assert_eq!(created.public_id, None);
     }
 
     #[test]

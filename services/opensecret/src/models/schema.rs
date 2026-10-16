@@ -486,6 +486,7 @@ diesel::table! {
         name -> Text,
         created_at -> Timestamptz,
         updated_at -> Timestamptz,
+        public_id -> Uuid,
     }
 }
 

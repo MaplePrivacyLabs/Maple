@@ -503,7 +503,8 @@ pub trait DBConnection {
     fn create_user_api_key(&self, new_key: NewUserApiKey) -> Result<UserApiKey, DBError>;
     fn get_user_api_key_by_id(&self, id: i32) -> Result<Option<UserApiKey>, DBError>;
     fn get_user_api_key_by_hash(&self, key_hash: &str) -> Result<Option<UserApiKey>, DBError>;
-    fn get_user_by_api_key_hash(&self, key_hash: &str) -> Result<Option<User>, DBError>;
+    /// Returns the key's owner and the key's non-secret `public_id`.
+    fn get_user_by_api_key_hash(&self, key_hash: &str) -> Result<Option<(User, Uuid)>, DBError>;
     fn get_all_user_api_keys_for_user(&self, user_id: Uuid) -> Result<Vec<UserApiKey>, DBError>;
     fn delete_user_api_key(&self, id: i32, user_id: Uuid) -> Result<(), DBError>;
     fn delete_user_api_key_by_name(&self, name: &str, user_id: Uuid) -> Result<(), DBError>;
@@ -2070,18 +2071,18 @@ impl DBConnection for PostgresConnection {
         UserApiKey::get_by_key_hash(conn, key_hash).map_err(DBError::from)
     }
 
-    fn get_user_by_api_key_hash(&self, key_hash: &str) -> Result<Option<User>, DBError> {
+    fn get_user_by_api_key_hash(&self, key_hash: &str) -> Result<Option<(User, Uuid)>, DBError> {
         use crate::models::schema::{user_api_keys, users};
         use diesel::prelude::*;
 
         let conn = &mut self.db.get().map_err(|_| DBError::ConnectionError)?;
 
-        // Single JOIN query to get user directly from API key hash
+        // Single JOIN query to get the user and the key's public ID from the hash
         users::table
             .inner_join(user_api_keys::table.on(users::uuid.eq(user_api_keys::user_id)))
             .filter(user_api_keys::key_hash.eq(key_hash))
-            .select(users::all_columns)
-            .first::<User>(conn)
+            .select((users::all_columns, user_api_keys::public_id))
+            .first::<(User, Uuid)>(conn)
             .optional()
             .map_err(DBError::from)
     }

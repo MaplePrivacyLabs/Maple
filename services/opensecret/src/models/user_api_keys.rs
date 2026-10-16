@@ -26,6 +26,9 @@ pub struct UserApiKey {
     pub name: String,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    /// Random, non-secret key identifier. Unlike the key and its hash, it may
+    /// leave the enclave, for example to attribute billed usage to a key.
+    pub public_id: Uuid,
 }
 
 impl std::fmt::Debug for UserApiKey {
@@ -37,6 +40,7 @@ impl std::fmt::Debug for UserApiKey {
             .field("name", &self.name)
             .field("created_at", &self.created_at)
             .field("updated_at", &self.updated_at)
+            .field("public_id", &self.public_id)
             .finish()
     }
 }

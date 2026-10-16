@@ -487,7 +487,7 @@ fn openai_jwt_fallback_inserts_signed_auth_context_but_api_keys_do_not() {
         ],
     );
 
-    let api_key_insert = "req.extensions_mut().insert(AuthMethod::ApiKey)";
+    let api_key_insert = ".insert(AuthMethod::ApiKey { public_id })";
     let api_key_index = middleware_body
         .find(api_key_insert)
         .expect("OpenAI API-key branch should insert AuthMethod::ApiKey");

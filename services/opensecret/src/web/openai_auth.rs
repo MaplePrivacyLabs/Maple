@@ -18,7 +18,25 @@ use uuid::Uuid;
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum AuthMethod {
     Jwt,
-    ApiKey,
+    /// A user API key. `public_id` is the key's random, non-secret identifier,
+    /// the only key identifier that may leave the enclave.
+    ApiKey {
+        public_id: Uuid,
+    },
+}
+
+impl AuthMethod {
+    pub fn is_api_key(self) -> bool {
+        matches!(self, AuthMethod::ApiKey { .. })
+    }
+
+    /// The non-secret ID of the API key that authenticated the request.
+    pub fn api_key_public_id(self) -> Option<Uuid> {
+        match self {
+            AuthMethod::ApiKey { public_id } => Some(public_id),
+            AuthMethod::Jwt => None,
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -69,9 +87,10 @@ pub async fn validate_openai_auth(
                 hasher.update(api_key_uuid.to_string().as_bytes());
                 let key_hash = format!("{:x}", hasher.finalize());
                 match data.db.get_user_by_api_key_hash(&key_hash) {
-                    Ok(Some(user)) => {
+                    Ok(Some((user, public_id))) => {
                         req.extensions_mut().insert(user);
-                        req.extensions_mut().insert(AuthMethod::ApiKey);
+                        req.extensions_mut()
+                            .insert(AuthMethod::ApiKey { public_id });
                         return next.run(req).await;
                     }
                     Ok(None) => {

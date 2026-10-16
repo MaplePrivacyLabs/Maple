@@ -159,7 +159,7 @@ pub(crate) async fn authorize_completion_caller(
     let cache_policy =
         CompletionCachePolicy::for_request(session, cache_namespace_root, user.uuid)?;
     let billing_access = state
-        .chat_billing_access(user.uuid, auth_method == AuthMethod::ApiKey)
+        .chat_billing_access(user.uuid, auth_method.is_api_key())
         .await;
     let model_plan = completion_entitlement(user.uuid, user.is_guest(), billing_access, surface)?;
     Ok(CompletionCaller {
@@ -3457,7 +3457,7 @@ pub(crate) async fn publish_usage_event_internal(
     // Spawn background task for DB + SQS
     let state_clone = state.clone();
     let user_id = user.uuid;
-    let is_api_request = billing_context.auth_method == AuthMethod::ApiKey;
+    let auth_method = billing_context.auth_method;
     let provider_name = provider_name.to_string();
     let model_name = billing_context.model_name.clone();
 
@@ -3482,7 +3482,7 @@ pub(crate) async fn publish_usage_event_internal(
                 user_id,
                 usage,
                 total_cost,
-                is_api_request,
+                auth_method,
                 provider_name,
                 model_name,
             );
@@ -3514,7 +3514,7 @@ fn build_usage_event(
     user_id: Uuid,
     usage: CompletionUsage,
     estimated_cost: BigDecimal,
-    is_api_request: bool,
+    auth_method: AuthMethod,
     provider_name: String,
     model_name: String,
 ) -> UsageEvent {
@@ -3525,10 +3525,11 @@ fn build_usage_event(
         output_tokens: usage.completion_tokens,
         estimated_cost,
         chat_time: Utc::now(),
-        is_api_request,
+        is_api_request: auth_method.is_api_key(),
         provider_name,
         model_name,
         cached_input_tokens: usage.cached_prompt_tokens,
+        api_key_id: auth_method.api_key_public_id(),
     }
 }
 
@@ -7515,7 +7516,9 @@ mod tests {
             Uuid::parse_str("6142db59-fc0c-413d-8792-579fc1457fe2").unwrap(),
             usage,
             BigDecimal::from_str("0.001").unwrap(),
-            true,
+            AuthMethod::ApiKey {
+                public_id: Uuid::parse_str("0b9d6c3e-5f0a-4d43-9a39-2f7c41d1c0aa").unwrap(),
+            },
             "continuum".to_string(),
             "glm-5-3-flash".to_string(),
         );
@@ -7526,6 +7529,39 @@ mod tests {
         assert!(event.is_api_request);
         assert_eq!(event.provider_name, "continuum");
         assert_eq!(event.model_name, "glm-5-3-flash");
+    }
+
+    #[test]
+    fn usage_events_attribute_api_requests_to_the_key_public_id() {
+        let usage = CompletionUsage {
+            prompt_tokens: 100,
+            completion_tokens: 20,
+            cached_prompt_tokens: None,
+        };
+        let user_id = Uuid::parse_str("6142db59-fc0c-413d-8792-579fc1457fe2").unwrap();
+        let public_id = Uuid::parse_str("0b9d6c3e-5f0a-4d43-9a39-2f7c41d1c0aa").unwrap();
+
+        let api_event = build_usage_event(
+            user_id,
+            usage.clone(),
+            BigDecimal::from_str("0.001").unwrap(),
+            AuthMethod::ApiKey { public_id },
+            "continuum".to_string(),
+            "glm-5-3-flash".to_string(),
+        );
+        assert!(api_event.is_api_request);
+        assert_eq!(api_event.api_key_id, Some(public_id));
+
+        let jwt_event = build_usage_event(
+            user_id,
+            usage,
+            BigDecimal::from_str("0.001").unwrap(),
+            AuthMethod::Jwt,
+            "continuum".to_string(),
+            "glm-5-3-flash".to_string(),
+        );
+        assert!(!jwt_event.is_api_request);
+        assert_eq!(jwt_event.api_key_id, None);
     }
 
     #[test]
@@ -7549,7 +7585,7 @@ mod tests {
                 Uuid::parse_str("6142db59-fc0c-413d-8792-579fc1457fe2").unwrap(),
                 usage.clone(),
                 BigDecimal::from_str("0.001").unwrap(),
-                false,
+                AuthMethod::Jwt,
                 provider.to_string(),
                 public_model.to_string(),
             );

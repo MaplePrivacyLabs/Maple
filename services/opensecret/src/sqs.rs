@@ -42,6 +42,11 @@ pub struct UsageEvent {
     pub model_name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cached_input_tokens: Option<i32>,
+    /// Non-secret `public_id` of the API key behind an API request, so billing
+    /// can attribute usage to a key. Absent for JWT requests; never the key
+    /// or its hash.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_key_id: Option<Uuid>,
 }
 
 #[cfg(test)]
@@ -152,11 +157,13 @@ mod tests {
             provider_name: "continuum".to_string(),
             model_name: "kimi-k2-6".to_string(),
             cached_input_tokens: None,
+            api_key_id: None,
         };
 
         let serialized = serde_json::to_value(event).unwrap();
 
         assert!(serialized.get("cached_input_tokens").is_none());
+        assert!(serialized.get("api_key_id").is_none());
     }
 
     #[test]
@@ -172,11 +179,36 @@ mod tests {
             provider_name: "continuum".to_string(),
             model_name: "kimi-k2-6".to_string(),
             cached_input_tokens: Some(42),
+            api_key_id: None,
         };
 
         let serialized = serde_json::to_value(event).unwrap();
 
         assert_eq!(serialized.get("cached_input_tokens"), Some(&json!(42)));
+    }
+
+    #[test]
+    fn usage_event_serializes_api_key_id_when_present() {
+        let event = UsageEvent {
+            event_id: Uuid::parse_str("8c6c975a-1f33-439d-98f1-7dd26d4d3e89").unwrap(),
+            user_id: Uuid::parse_str("6142db59-fc0c-413d-8792-579fc1457fe2").unwrap(),
+            input_tokens: 100,
+            output_tokens: 20,
+            estimated_cost: BigDecimal::from_str("0.001").unwrap(),
+            chat_time: Utc::now(),
+            is_api_request: true,
+            provider_name: "continuum".to_string(),
+            model_name: "kimi-k2-6".to_string(),
+            cached_input_tokens: None,
+            api_key_id: Some(Uuid::parse_str("0b9d6c3e-5f0a-4d43-9a39-2f7c41d1c0aa").unwrap()),
+        };
+
+        let serialized = serde_json::to_value(event).unwrap();
+
+        assert_eq!(
+            serialized.get("api_key_id"),
+            Some(&json!("0b9d6c3e-5f0a-4d43-9a39-2f7c41d1c0aa"))
+        );
     }
 
     #[test]
@@ -195,6 +227,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(event.cached_input_tokens, None);
+        assert_eq!(event.api_key_id, None);
     }
 }
 

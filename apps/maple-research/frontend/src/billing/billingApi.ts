@@ -846,6 +846,41 @@ export async function fetchApiCreditBalance(thirdPartyToken: string): Promise<Ap
   return response.json();
 }
 
+// API Key Usage
+/** Billing's view of one API key, matched to the OpenSecret key list by `public_id`. */
+export type BillingApiKey = {
+  api_key_id: string;
+  /** Latest request that used credits; null when none is recorded. */
+  last_used_at: string | null;
+};
+
+export type BillingApiKeysResponse = {
+  /** Keys with no recorded use may be absent. */
+  api_keys: BillingApiKey[];
+};
+
+export async function fetchBillingApiKeys(
+  thirdPartyToken: string
+): Promise<BillingApiKeysResponse> {
+  const response = await fetch(`${import.meta.env.VITE_MAPLE_BILLING_API_URL}/v1/maple/api-keys`, {
+    headers: {
+      Authorization: `Bearer ${thirdPartyToken}`,
+      "Content-Type": "application/json"
+    }
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    console.error("Fetch API key usage error:", errorText);
+    if (response.status === 401) {
+      throw new Error("Unauthorized");
+    }
+    throw new Error(`Failed to fetch API key usage: ${errorText}`);
+  }
+
+  return response.json();
+}
+
 export async function fetchApiCreditSettings(thirdPartyToken: string): Promise<ApiCreditSettings> {
   const response = await fetch(
     `${import.meta.env.VITE_MAPLE_BILLING_API_URL}/v1/maple/api-credits/settings`,
