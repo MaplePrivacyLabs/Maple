@@ -220,9 +220,9 @@ mod tests {
         assert_eq!(CHECKOUT_SUCCESS_URL, format!("{PRICING_URL}?success=true"));
         assert_eq!(CHECKOUT_CANCEL_URL, format!("{PRICING_URL}?canceled=true"));
         if crate::profile::PROFILE == "dev" {
-            assert_eq!(PORTAL_RETURN_URL, "https://app-dev.trymaple.ai");
+            assert_eq!(PORTAL_RETURN_URL, "https://app-dev.maple.ai");
         } else {
-            assert_eq!(PORTAL_RETURN_URL, "https://trymaple.ai");
+            assert_eq!(PORTAL_RETURN_URL, "https://app.maple.ai");
         }
     }
 

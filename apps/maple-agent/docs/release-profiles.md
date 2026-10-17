@@ -12,9 +12,10 @@ ID, or PCR trust environment.
 | Prod | Maple Agent | `cloud.opensecret.maple.agent` | `maple-agent-prod` | Hosted Prod API and billing; production PCR |
 
 The API endpoints and client ID match `scripts/ci/_common.sh`'s existing
-Research Dev and Prod service selection. Billing browser pricing and checkout
-return pages use the unchanged `web_url`: `https://app-dev.trymaple.ai` for Dev
-and `https://trymaple.ai` for Prod.
+Research Dev and Prod service selection. Billing browser pricing, checkout
+success/cancellation, and customer portal return pages use the compiled
+`web_url`: `https://app-dev.maple.ai` for Dev and `https://app.maple.ai` for
+Prod. Dev remains protected by Cloudflare Access.
 
 Packaged Dev selects `https://auth-dev.maple.ai` and Prod selects
 `https://auth.maple.ai` as their compiled `auth_origin` for hosted native

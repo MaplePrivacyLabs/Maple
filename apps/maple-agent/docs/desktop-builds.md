@@ -98,8 +98,9 @@ and process survival; it does not capture a presented frame or verify login, cha
 microphone or capture permissions. Linux command-line checks do not exercise
 X11/Wayland or host GPU drivers; those remain beta runtime checks. Dev checkout
 and portal requests use the Dev billing API, and pricing/payment return links
-use the existing `app-dev.trymaple.ai` website, which is protected by Cloudflare
-Access. Prod uses `trymaple.ai`.
+use `app-dev.maple.ai`, which is protected by Cloudflare Access. Prod uses
+`app.maple.ai`. Profile changes require checkout success/cancellation and portal
+return validation; package metadata alone does not prove those browser flows.
 
 ## Packaging commands
 

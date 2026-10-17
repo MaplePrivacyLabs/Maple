@@ -58,9 +58,9 @@ pub fn profiles() -> Result<BTreeMap<String, ReleaseProfile>, String> {
             || !profile.billing_api_url.starts_with("https://")
             || profile.web_url
                 != if channel == "dev" {
-                    "https://app-dev.trymaple.ai"
+                    "https://app-dev.maple.ai"
                 } else {
-                    "https://trymaple.ai"
+                    "https://app.maple.ai"
                 }
             || profile.auth_origin.as_deref()
                 != if channel == "dev" {
@@ -201,8 +201,8 @@ mod tests {
         assert_ne!(dev.data_namespace, prod.data_namespace);
         assert_ne!(dev.api_url, prod.api_url);
         assert_ne!(dev.billing_api_url, prod.billing_api_url);
-        assert_eq!(dev.web_url, "https://app-dev.trymaple.ai");
-        assert_eq!(prod.web_url, "https://trymaple.ai");
+        assert_eq!(dev.web_url, "https://app-dev.maple.ai");
+        assert_eq!(prod.web_url, "https://app.maple.ai");
         assert_eq!(
             dev.auth_origin.as_deref(),
             Some("https://auth-dev.maple.ai")
