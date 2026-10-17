@@ -1114,13 +1114,13 @@ mod tests {
     #[test]
     fn maple_email_links_images_and_font() {
         let welcome = maple_message(AccountEmail::Welcome).html;
-        assert!(welcome.contains("href=\"https://trymaple.ai\""));
-        assert!(welcome.contains("<a href=\"https://www.trymaple.ai\"><img"));
+        assert!(welcome.contains("href=\"https://app.maple.ai\""));
+        assert!(welcome.contains("<a href=\"https://maple.ai\"><img"));
         for href in [
-            "https://www.trymaple.ai/pricing?utm_source=email&amp;utm_medium=email&amp;utm_campaign=welcome&amp;utm_content=see-plans",
-            "https://www.trymaple.ai/downloads?utm_source=email&amp;utm_medium=email&amp;utm_campaign=welcome&amp;utm_content=download-app",
-            "https://www.trymaple.ai/research?utm_source=email&amp;utm_medium=email&amp;utm_campaign=welcome&amp;utm_content=details",
-            "https://www.trymaple.ai/docs/proxy?utm_source=email&amp;utm_medium=email&amp;utm_campaign=welcome&amp;utm_content=proxy-docs",
+            "https://maple.ai/pricing?utm_source=email&amp;utm_medium=email&amp;utm_campaign=welcome&amp;utm_content=see-plans",
+            "https://maple.ai/downloads?utm_source=email&amp;utm_medium=email&amp;utm_campaign=welcome&amp;utm_content=download-app",
+            "https://maple.ai/research?utm_source=email&amp;utm_medium=email&amp;utm_campaign=welcome&amp;utm_content=details",
+            "https://maple.ai/docs/proxy?utm_source=email&amp;utm_medium=email&amp;utm_campaign=welcome&amp;utm_content=proxy-docs",
         ] {
             assert!(welcome.contains(&format!("href=\"{href}\"")), "{href}");
         }
@@ -1139,9 +1139,12 @@ mod tests {
         for (email, expected) in every_account_email() {
             let html = maple_message(email).html;
             let campaign = expected.maple_campaign;
-            for (path, content) in [("", "footer-home"), ("/privacy", "footer-privacy")] {
+            for (url, content) in [
+                ("https://maple.ai", "footer-home"),
+                ("https://app.maple.ai/privacy", "footer-privacy"),
+            ] {
                 let href = format!(
-                    "href=\"https://www.trymaple.ai{path}?utm_source=email&amp;utm_medium=email&amp;utm_campaign={campaign}&amp;utm_content={content}\""
+                    "href=\"{url}?utm_source=email&amp;utm_medium=email&amp;utm_campaign={campaign}&amp;utm_content={content}\""
                 );
                 assert!(html.contains(&href), "{href}");
             }
