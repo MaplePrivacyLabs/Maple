@@ -174,7 +174,10 @@ fn preflight_docx(file_bytes: &[u8], limits: DocxLimits) -> Result<Vec<u8>, Stri
             return Err(unreadable_word("DOCX ZIP contains a symbolic-link entry"));
         }
 
-        let entry_name = entry.name().to_string();
+        let entry_name = entry
+            .name()
+            .map_err(|_| unreadable_word("DOCX ZIP contains an invalid part name encoding"))?
+            .into_owned();
         let normalized_name = normalize_opc_entry_name(&entry_name)?;
         if !normalized_names.insert(normalized_name.clone()) {
             return Err(unreadable_word(format!(
@@ -1200,7 +1203,7 @@ mod tests {
     use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
     use std::io::{Cursor, Read, Seek, SeekFrom, Write};
     use zip::write::{SimpleFileOptions, ZipWriter};
-    use zip::CompressionMethod;
+    use zip::{CompressionMethod, ZipArchive};
 
     #[test]
     fn extracts_docx_paragraphs_unicode_tabs_and_tables() {
@@ -1336,6 +1339,86 @@ mod tests {
         ]);
         let error = preflight_docx(&bytes, DOCX_LIMITS).expect_err("duplicate should fail");
         assert_eq!(error, WORD_READ_ERROR);
+    }
+
+    #[test]
+    fn rejects_a_docx_main_document_symlink() {
+        let bytes = docx_with_symlink("word/document.xml", "../../outside.xml");
+        let error = extract_word_document(bytes, WordFileType::Docx, 10 * 1024 * 1024)
+            .expect_err("a symbolic-link main document should fail");
+        assert_eq!(error, WORD_READ_ERROR);
+    }
+
+    #[test]
+    fn rejects_a_docx_ancillary_symlink() {
+        let bytes = docx_with_symlink("word/media/link", "../../../outside");
+        let error = extract_word_document(bytes, WordFileType::Docx, 10 * 1024 * 1024)
+            .expect_err("an unused symbolic-link part should fail");
+        assert_eq!(error, WORD_READ_ERROR);
+    }
+
+    #[test]
+    fn rejects_docx_parts_with_unsafe_paths() {
+        for name in [
+            "../outside.xml",
+            "word/../../outside.xml",
+            r"word\..\..\outside.xml",
+            "%2e%2e/outside.xml",
+            "word/%2e%2e/%2e%2e/outside.xml",
+            "/outside.xml",
+        ] {
+            let bytes = zip_entries(&[
+                ("[Content_Types].xml", content_types_xml()),
+                ("_rels/.rels", package_rels_xml()),
+                (
+                    "word/document.xml",
+                    document_xml("<w:p><w:r><w:t>Safe text</w:t></w:r></w:p>"),
+                ),
+                (name, "<unused/>".to_string()),
+            ]);
+            let error = extract_word_document(bytes, WordFileType::Docx, 10 * 1024 * 1024)
+                .expect_err("an unsafe ancillary part path should fail");
+            assert_eq!(error, WORD_READ_ERROR, "part name: {name}");
+        }
+    }
+
+    #[test]
+    fn canonical_docx_discards_privileged_modes_and_unused_parts() {
+        let mut bytes = zip_entries(&[
+            ("[Content_Types].xml", content_types_xml()),
+            ("_rels/.rels", package_rels_xml()),
+            (
+                "word/document.xml",
+                document_xml("<w:p><w:r><w:t>Preserved Maple text</w:t></w:r></w:p>"),
+            ),
+            ("word/media/unused.bin", "unused".to_string()),
+        ]);
+        // ZipWriter intentionally masks these bits, so change the directory
+        // metadata to model an archive produced by an untrusted application.
+        set_zip_entry_mode(&mut bytes, "word/document.xml", 0o106755);
+        let mut original = ZipArchive::new(Cursor::new(&bytes)).expect("open original package");
+        assert_eq!(
+            original
+                .by_name("word/document.xml")
+                .expect("original main document")
+                .external_attributes()
+                >> 16
+                & 0o6000,
+            0o6000,
+        );
+
+        let canonical = preflight_docx(&bytes, DOCX_LIMITS).expect("canonicalize valid package");
+        let mut archive = ZipArchive::new(Cursor::new(&canonical)).expect("open canonical package");
+        assert_eq!(archive.len(), 3);
+        assert!(archive.by_name("word/media/unused.bin").is_err());
+        for index in 0..archive.len() {
+            let entry = archive.by_index(index).expect("canonical package entry");
+            assert!(!entry.is_symlink());
+            assert_eq!((entry.external_attributes() >> 16) & 0o6000, 0);
+        }
+        let text = extract_word_document(canonical, WordFileType::Docx, 10 * 1024 * 1024)
+            .expect("canonical package should still extract");
+        assert_eq!(text, "Preserved Maple text");
     }
 
     #[test]
@@ -1517,6 +1600,58 @@ mod tests {
                 .expect("write ZIP part");
         }
         writer.finish().expect("finish ZIP").into_inner()
+    }
+
+    fn docx_with_symlink(name: &str, target: &str) -> Vec<u8> {
+        let mut writer = ZipWriter::new(Cursor::new(Vec::new()));
+        let options = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
+        let mut entries = vec![
+            ("[Content_Types].xml", content_types_xml()),
+            ("_rels/.rels", package_rels_xml()),
+        ];
+        if name != "word/document.xml" {
+            entries.push((
+                "word/document.xml",
+                document_xml("<w:p><w:r><w:t>Safe text</w:t></w:r></w:p>"),
+            ));
+        }
+        for (entry_name, contents) in entries {
+            writer
+                .start_file(entry_name, options)
+                .expect("start ZIP part");
+            writer
+                .write_all(contents.as_bytes())
+                .expect("write ZIP part");
+        }
+        writer
+            .add_symlink(name, target, SimpleFileOptions::default())
+            .expect("add symbolic-link ZIP part");
+        writer.finish().expect("finish ZIP").into_inner()
+    }
+
+    fn set_zip_entry_mode(bytes: &mut [u8], name: &str, mode: u32) {
+        let end_of_directory = bytes.len() - 22;
+        assert_eq!(
+            &bytes[end_of_directory..end_of_directory + 4],
+            b"PK\x05\x06"
+        );
+        let mut cursor = super::read_le_u32(bytes, end_of_directory + 16)
+            .expect("central-directory offset") as usize;
+        while cursor < end_of_directory {
+            assert_eq!(&bytes[cursor..cursor + 4], b"PK\x01\x02");
+            let name_len =
+                super::read_le_u16(bytes, cursor + 28).expect("part name length") as usize;
+            let extra_len = super::read_le_u16(bytes, cursor + 30).expect("extra length") as usize;
+            let comment_len =
+                super::read_le_u16(bytes, cursor + 32).expect("comment length") as usize;
+            if &bytes[cursor + 46..cursor + 46 + name_len] == name.as_bytes() {
+                bytes[cursor + 5] = 3; // Unix creator system.
+                bytes[cursor + 38..cursor + 42].copy_from_slice(&(mode << 16).to_le_bytes());
+                return;
+            }
+            cursor += 46 + name_len + extra_len + comment_len;
+        }
+        panic!("ZIP fixture has no part named {name}");
     }
 
     fn content_types_xml() -> String {

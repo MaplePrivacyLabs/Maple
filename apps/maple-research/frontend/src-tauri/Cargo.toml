@@ -42,11 +42,11 @@ anyhow = "1.0"
 pdf_oxide = { version = "=0.3.74", git = "https://github.com/OpenSecretCloud/pdf_oxide.git", rev = "f24b43ba997dd91ce60839640a8ce3ac92a87a5d", features = ["ocr-ort", "rendering"] }
 # Keep the pre-1.0 Word parser exact-pinned. office_oxide is already in the
 # PDFOxide graph; Maple adds strict DOC/DOCX container and semantic guards.
-office_oxide = { version = "=0.1.7", default-features = false }
+office_oxide = { version = "=0.1.15", default-features = false }
 # Maple canonicalizes legacy CFB containers before office_oxide sees them.
 cfb = "=0.10.0"
 quick-xml = "=0.41.0"
-zip = { version = "=8.6.0", default-features = false, features = ["deflate"] }
+zip = { version = "=9.0.5", default-features = false, features = ["deflate"] }
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
 base64 = "0.22"
 reqwest = { version = "0.13", features = ["stream"] }
@@ -115,6 +115,10 @@ ciborium = "0.2"
 # The embedded proxy requires `maple-sdk` from the registry; resolve it to the same
 # in-tree source as the dependency above (docs/sdk-publishing.md).
 maple-sdk = { path = "../../../../sdk/rust" }
+# Backport Tauri's zip 9 dependency fix without changing the updater API or
+# legacy Windows ZIP support. Remove when adopting a release with this fix:
+# https://github.com/tauri-apps/plugins-workspace/pull/3698
+tauri-plugin-updater = { path = "patches/tauri-plugin-updater-2.10.1" }
 # Local patch for tao 0.35.2 Android intent crashes:
 # https://github.com/tauri-apps/tao/issues/1217
 #
