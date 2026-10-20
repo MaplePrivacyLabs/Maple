@@ -42,9 +42,13 @@ use crate::{
         openai_auth::AuthMethod,
         provider_error::PublicProviderError,
         responses::{
-            build_prompt, build_prompt_with_token_reserve, build_usage,
+            build_usage,
+            compaction::{
+                self,
+                context::{ContextItem, ContextItemKey, ContextItemKind},
+                CompactionBudget, CompactionOutput, ContextManagement, SummaryExecutor,
+            },
             constants::*,
-            context_builder::normalize_tool_call_ids_for_model,
             error_mapping,
             image_describer::{
                 describe_image_with_fallback, ImageDescriptionAttemptError,
@@ -419,6 +423,27 @@ fn responses_pre_persistence_api_error(
     }
 }
 
+/// Initial preparation and provider starts share the logical Response's existing
+/// allowance. Check each admission separately: a completed preparation step can
+/// cross the deadline before the next provider future would otherwise be polled.
+async fn await_initial_response_step<T>(
+    execution: &ResponseExecution,
+    deadline: TokioInstant,
+    step: impl std::future::Future<Output = Result<T, CompletionExecutionError>>,
+) -> Result<T, CompletionExecutionError> {
+    if TokioInstant::now() >= deadline {
+        return Err(CompletionExecutionError::Request(
+            ApiError::ServiceUnavailable,
+        ));
+    }
+    tokio::select! {
+        biased;
+        _ = execution.cancelled() => Err(CompletionExecutionError::Request(ApiError::ServiceUnavailable)),
+        _ = tokio::time::sleep_until(deadline) => Err(CompletionExecutionError::Request(ApiError::ServiceUnavailable)),
+        result = step => result,
+    }
+}
+
 fn web_search_is_selected(
     tool_choice: &Option<String>,
     tools: &Option<Value>,
@@ -542,6 +567,22 @@ fn build_model_turn_request(
     chat_request
 }
 
+/// Keep internal summaries on the selected model's normal Responses policy.
+/// The helper allowance is independent of the caller's main generation limit.
+pub(super) fn build_compaction_model_request(
+    body: &ResponsesCreateRequest,
+    messages: &[Value],
+    summary_output_tokens: usize,
+) -> Value {
+    let mut request = build_model_turn_request(body, messages, false);
+    request["stream"] = json!(false);
+    request["max_tokens"] = json!(summary_output_tokens);
+    if let Some(object) = request.as_object_mut() {
+        object.remove("stream_options");
+    }
+    request
+}
+
 fn web_search_tool_turn_limit_reached(tool_turn_count: usize, model_plan: ModelPlan) -> bool {
     tool_turn_count > web_search_tool_turn_limit(model_plan)
 }
@@ -634,15 +675,15 @@ fn final_assistant_finish_reason(tools_enabled: bool, finish_reason: Option<Stri
 mod tests {
     use super::{
         append_streamed_tool_calls, apply_responses_model_defaults,
-        assistant_turn_finished_with_tool_call, build_internal_system_prompt_for_now,
-        build_model_turn_request, build_provider_tools, consume_assistant_turn,
-        ensure_prompt_fits_model, final_assistant_finish_reason, finalize_first_model_tool_call,
-        forward_authoritative_response_terminal, has_streamed_tool_call_entries, image_attachments,
-        image_description_access, image_description_api_error,
-        image_description_attempt_failure_class, maple_kagi_web_search_prompt,
-        model_turn_request_without_user_payload, normalize_responses_input,
-        reserve_response_message_uuid_with_check, resolve_responses_model,
-        resolve_responses_sampling, response_cancellation_ack_decision,
+        assistant_turn_finished_with_tool_call, await_initial_response_step,
+        build_internal_system_prompt_for_now, build_model_turn_request, build_provider_tools,
+        consume_assistant_turn, ensure_prompt_fits_model, final_assistant_finish_reason,
+        finalize_first_model_tool_call, forward_authoritative_response_terminal,
+        has_streamed_tool_call_entries, image_attachments, image_description_access,
+        image_description_api_error, image_description_attempt_failure_class,
+        maple_kagi_web_search_prompt, model_turn_request_without_user_payload,
+        normalize_responses_input, reserve_response_message_uuid_with_check,
+        resolve_responses_model, resolve_responses_sampling, response_cancellation_ack_decision,
         response_execution_for_status, responses_pre_persistence_api_error, run_response_worker,
         send_storage_message, wait_for_local_response_execution_quiescence, web_search_is_selected,
         web_search_tool_turn_limit, web_search_tool_turn_limit_error,
@@ -1287,6 +1328,153 @@ mod tests {
             metadata: None,
             stream: true,
             reasoning: None,
+            context_management: None,
+        }
+    }
+
+    #[test]
+    fn compaction_context_management_omission_uses_automatic_policy() {
+        let body: ResponsesCreateRequest = serde_json::from_value(json!({
+            "model": "deepseek-v4-1-flash",
+            "input": "hello",
+            "conversation": Uuid::new_v4(),
+        }))
+        .unwrap();
+        assert!(body.context_management.is_none());
+        let (policy, enabled) = crate::web::responses::compaction::policy_for(&body).unwrap();
+        assert!(enabled);
+        let window = crate::tokens::model_max_ctx(&body.model);
+        assert_eq!(
+            policy,
+            crate::web::responses::compaction::policy::CompactionPolicy::from_context_window(
+                window,
+                0,
+                2_048.min(window / 16),
+            ),
+        );
+        assert!(serde_json::to_value(body)
+            .unwrap()
+            .get("context_management")
+            .is_none());
+    }
+
+    #[test]
+    fn compaction_context_management_empty_list_disables_without_changing_main_allowance() {
+        let mut body = responses_request_for_model("deepseek-v4-1-flash");
+        body.max_output_tokens = Some(12_345);
+        body.context_management = Some(vec![]);
+        let (policy, enabled) = crate::web::responses::compaction::policy_for(&body).unwrap();
+        assert!(!enabled);
+        assert_eq!(
+            policy.input_budget,
+            crate::tokens::model_max_ctx(&body.model) - 12_345,
+        );
+        assert_eq!(body.max_output_tokens, Some(12_345));
+        assert_eq!(
+            serde_json::to_value(body).unwrap()["context_management"],
+            json!([])
+        );
+    }
+
+    #[test]
+    fn compaction_context_management_custom_threshold_is_validated_and_input_bounded() {
+        use crate::web::responses::compaction::ContextManagement;
+
+        let mut body = responses_request_for_model("deepseek-v4-1-flash");
+        let window = crate::tokens::model_max_ctx(&body.model);
+        body.max_output_tokens = Some(12_345);
+        body.context_management = Some(vec![ContextManagement::Compaction {
+            compact_threshold: Some(42_000),
+        }]);
+        let (policy, enabled) = crate::web::responses::compaction::policy_for(&body).unwrap();
+        assert!(enabled);
+        assert_eq!(policy.trigger_tokens, 42_000);
+        assert_eq!(policy.input_budget, window - 12_345);
+
+        body.context_management = Some(vec![ContextManagement::Compaction {
+            compact_threshold: Some(window),
+        }]);
+        let (policy, _) = crate::web::responses::compaction::policy_for(&body).unwrap();
+        assert_eq!(policy.trigger_tokens, policy.input_budget);
+        assert_eq!(body.max_output_tokens, Some(12_345));
+
+        for threshold in [0, window + 1] {
+            body.context_management = Some(vec![ContextManagement::Compaction {
+                compact_threshold: Some(threshold),
+            }]);
+            assert!(matches!(
+                crate::web::responses::compaction::policy_for(&body),
+                Err(ApiError::BadRequest),
+            ));
+        }
+        body.context_management = Some(vec![
+            ContextManagement::Compaction {
+                compact_threshold: None,
+            },
+            ContextManagement::Compaction {
+                compact_threshold: Some(42_000),
+            },
+        ]);
+        assert!(matches!(
+            crate::web::responses::compaction::policy_for(&body),
+            Err(ApiError::BadRequest),
+        ));
+    }
+
+    #[test]
+    fn compaction_context_management_rejects_unknown_types_and_invalid_threshold_shapes() {
+        for control in [
+            json!([{ "type": "sliding_window" }]),
+            json!([{ "type": "compaction", "compact_threshold": -1 }]),
+            json!([{ "type": "compaction", "compact_threshold": "42000" }]),
+        ] {
+            let mut body =
+                serde_json::to_value(responses_request_for_model("deepseek-v4-1-flash")).unwrap();
+            body["context_management"] = control;
+            assert!(serde_json::from_value::<ResponsesCreateRequest>(body).is_err());
+        }
+    }
+
+    #[test]
+    fn compaction_helper_allowance_does_not_mutate_main_output_cap_or_tools() {
+        let main_messages = [json!({"role":"user","content":"current main input"})];
+        let helper_messages = [json!({"role":"user","content":"historical summary input"})];
+        for output_cap in [None, Some(65_537)] {
+            let mut body = responses_request_for_model("deepseek-v4-1-flash");
+            body.max_output_tokens = output_cap;
+            body.tool_choice = Some("required".to_owned());
+            body.tools = Some(json!([{ "type": "web_search" }]));
+            body.parallel_tool_calls = true;
+            let original = serde_json::to_value(&body).unwrap();
+
+            let main = build_model_turn_request(&body, &main_messages, true);
+            let helper = super::build_compaction_model_request(&body, &helper_messages, 4_096);
+            assert_eq!(main["model"], body.model);
+            assert_eq!(helper["model"], main["model"]);
+            assert_eq!(main["max_tokens"], json!(output_cap));
+            assert_eq!(main["messages"], json!(main_messages));
+            assert_eq!(main["stream"], true);
+            assert_eq!(main["stream_options"]["include_usage"], true);
+            assert!(!main["tools"].as_array().unwrap().is_empty());
+            assert_eq!(helper["max_tokens"], 4_096);
+            assert_eq!(helper["messages"], json!(helper_messages));
+            assert_eq!(helper["stream"], false);
+            for field in [
+                "tools",
+                "tool_choice",
+                "parallel_tool_calls",
+                "stream_options",
+            ] {
+                assert!(
+                    helper.get(field).is_none(),
+                    "unexpected helper field: {field}"
+                );
+            }
+            assert_eq!(serde_json::to_value(&body).unwrap(), original);
+            assert_eq!(
+                build_model_turn_request(&body, &main_messages, true)["max_tokens"],
+                json!(output_cap),
+            );
         }
     }
 
@@ -1633,6 +1821,133 @@ mod tests {
         let no_tools = ResponseExecutionPolicy::new(ModelPlan::Paid, false);
         assert_eq!(no_tools.max_tool_executions, 0);
         assert_eq!(no_tools.max_model_turns, 1);
+    }
+
+    #[tokio::test]
+    async fn initial_response_step_does_not_poll_expired_or_cancelled_work() {
+        for cancelled in [false, true] {
+            let registry = crate::web::responses::ResponseExecutionRegistry::default();
+            let registration = registry.register(Uuid::new_v4(), Uuid::new_v4()).unwrap();
+            let execution = registration.execution();
+            let deadline = if cancelled {
+                execution.cancel();
+                tokio::time::Instant::now() + Duration::from_secs(1)
+            } else {
+                tokio::time::Instant::now() - Duration::from_millis(1)
+            };
+            let polls = AtomicUsize::new(0);
+            let result = await_initial_response_step(&execution, deadline, async {
+                polls.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            })
+            .await;
+            assert!(matches!(
+                result,
+                Err(CompletionExecutionError::Request(
+                    ApiError::ServiceUnavailable
+                ))
+            ));
+            assert_eq!(polls.load(Ordering::SeqCst), 0);
+        }
+    }
+
+    #[tokio::test]
+    async fn initial_response_step_cancellation_drops_in_flight_work() {
+        struct DropMarker<'a>(&'a AtomicUsize);
+        impl Drop for DropMarker<'_> {
+            fn drop(&mut self) {
+                self.0.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+
+        let registry = crate::web::responses::ResponseExecutionRegistry::default();
+        let registration = registry.register(Uuid::new_v4(), Uuid::new_v4()).unwrap();
+        let execution = registration.execution();
+        let dropped = AtomicUsize::new(0);
+        let (started, started_rx) = oneshot::channel();
+        let step = await_initial_response_step(
+            &execution,
+            tokio::time::Instant::now() + Duration::from_secs(1),
+            async {
+                let _drop_marker = DropMarker(&dropped);
+                let _ = started.send(());
+                std::future::pending::<Result<(), CompletionExecutionError>>().await
+            },
+        );
+        let cancel = async {
+            started_rx.await.unwrap();
+            execution.cancel();
+        };
+        let (result, ()) = timeout(Duration::from_secs(1), async { tokio::join!(step, cancel) })
+            .await
+            .expect("cancellation must stop initial work");
+        assert!(matches!(
+            result,
+            Err(CompletionExecutionError::Request(
+                ApiError::ServiceUnavailable
+            ))
+        ));
+        assert_eq!(dropped.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn initial_response_step_recovery_uses_one_absolute_deadline() {
+        let registry = crate::web::responses::ResponseExecutionRegistry::default();
+        let registration = registry.register(Uuid::new_v4(), Uuid::new_v4()).unwrap();
+        let execution = registration.execution();
+        let starts = AtomicUsize::new(0);
+        let deadline = tokio::time::Instant::now() + Duration::from_millis(100);
+
+        let result: Result<(), CompletionExecutionError> = timeout(Duration::from_secs(1), async {
+            // The first simulated provider start returns a rejection; rebuilding
+            // its context must use the same deadline rather than a new allowance.
+            await_initial_response_step(&execution, deadline, async {
+                starts.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            })
+            .await?;
+            await_initial_response_step(
+                &execution,
+                deadline,
+                std::future::pending::<Result<(), CompletionExecutionError>>(),
+            )
+            .await?;
+            await_initial_response_step(&execution, deadline, async {
+                starts.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            })
+            .await
+        })
+        .await
+        .expect("the shared deadline must stop recovery");
+        assert!(matches!(
+            result,
+            Err(CompletionExecutionError::Request(
+                ApiError::ServiceUnavailable
+            ))
+        ));
+        assert_eq!(starts.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn initial_response_step_preserves_results_and_typed_failures() {
+        let registry = crate::web::responses::ResponseExecutionRegistry::default();
+        let registration = registry.register(Uuid::new_v4(), Uuid::new_v4()).unwrap();
+        let execution = registration.execution();
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(1);
+        assert_eq!(
+            await_initial_response_step(&execution, deadline, async { Ok(42usize) })
+                .await
+                .unwrap(),
+            42
+        );
+        assert!(matches!(
+            await_initial_response_step::<()>(&execution, deadline, async {
+                Err(CompletionExecutionError::Request(ApiError::BadRequest))
+            })
+            .await,
+            Err(CompletionExecutionError::Request(ApiError::BadRequest))
+        ));
     }
 
     fn completed_attempt_chunk() -> CompletionChunk {
@@ -2984,6 +3299,125 @@ mod tests {
         assert!(state.first_unknown_item_report(second));
         assert!(!state.first_unknown_item_report(second));
     }
+
+    #[test]
+    fn compaction_output_is_opaque_and_interleaves_without_fake_canonical_items() {
+        use crate::web::responses::compaction::CompactionOutput;
+
+        let mut state = ClientResponseState::default();
+        let first = CompactionOutput {
+            id: Uuid::new_v4(),
+            encrypted_content: "opaque-checkpoint-one".to_owned(),
+            after_item_uuid: None,
+        };
+        let message = Uuid::new_v4();
+        let call = Uuid::new_v4();
+        let result = Uuid::new_v4();
+        let second = CompactionOutput {
+            id: Uuid::new_v4(),
+            encrypted_content: "opaque-checkpoint-two".to_owned(),
+            after_item_uuid: Some(result),
+        };
+
+        assert_eq!(state.push_compaction(first.clone()), Some(0));
+        assert_eq!(state.push_message(message), 1);
+        assert_eq!(
+            state.append_message_delta(message, "ordinary answer"),
+            Some(1)
+        );
+        assert!(state.mark_message_completed(message));
+        assert_eq!(
+            state.push_tool_call(call, "web_search".to_owned(), json!({"query":"example"})),
+            2
+        );
+        assert_eq!(
+            state.push_tool_output(result, call, "ordinary tool result".to_owned()),
+            3
+        );
+        assert_eq!(state.push_compaction(second.clone()), Some(4));
+        assert_eq!(state.push_compaction(first.clone()), None);
+        assert_eq!(state.push_compaction(second.clone()), None);
+        assert_eq!(
+            state.append_message_delta(first.id, "must not become a message"),
+            None
+        );
+        assert!(!state.mark_message_completed(first.id));
+        assert!(!state.mark_reasoning_completed(first.id));
+
+        let output = serde_json::to_value(state.build_output_items()).unwrap();
+        assert_eq!(output.as_array().unwrap().len(), 5);
+        for (index, checkpoint) in [(0, &first), (4, &second)] {
+            assert_eq!(
+                output[index],
+                json!({
+                    "id": checkpoint.id,
+                    "type": "compaction",
+                    "encrypted_content": checkpoint.encrypted_content,
+                }),
+            );
+        }
+        assert_eq!(output[1]["type"], "message");
+        assert_eq!(output[1]["status"], STATUS_COMPLETED);
+        assert_eq!(output[1]["content"][0]["text"], "ordinary answer");
+        assert_eq!(output[2]["type"], "tool_call");
+        assert_eq!(output[2]["call_id"], call.to_string());
+        assert_eq!(output[3]["type"], "tool_output");
+        assert_eq!(output[3]["call_id"], call.to_string());
+        assert_eq!(output[3]["output"], "ordinary tool result");
+    }
+
+    #[test]
+    fn compaction_added_and_done_lifecycle_serializes_the_same_opaque_item() {
+        use crate::web::responses::compaction::CompactionOutput;
+
+        let output = CompactionOutput {
+            id: Uuid::new_v4(),
+            encrypted_content: "opaque-user-key-ciphertext".to_owned(),
+            after_item_uuid: Some(Uuid::new_v4()),
+        };
+        let mut state = ClientResponseState::default();
+        let index = state.push_compaction(output.clone()).unwrap();
+        let added = serde_json::to_value(super::ResponseOutputItemAddedEvent {
+            event_type: EVENT_RESPONSE_OUTPUT_ITEM_ADDED,
+            sequence_number: 10,
+            output_index: index,
+            item: output.as_output_item(),
+        })
+        .unwrap();
+        let done = serde_json::to_value(super::ResponseOutputItemDoneEvent {
+            event_type: EVENT_RESPONSE_OUTPUT_ITEM_DONE,
+            sequence_number: 11,
+            output_index: index,
+            item: output.as_output_item(),
+        })
+        .unwrap();
+        assert_eq!(added["type"], EVENT_RESPONSE_OUTPUT_ITEM_ADDED);
+        assert_eq!(done["type"], EVENT_RESPONSE_OUTPUT_ITEM_DONE);
+        assert_eq!(added["output_index"], done["output_index"]);
+        assert_eq!(added["item"], done["item"]);
+        assert_eq!(
+            added["item"],
+            serde_json::to_value(&state.build_output_items()[0]).unwrap()
+        );
+        assert_eq!(added["item"]["type"], "compaction");
+        assert_eq!(added["item"]["encrypted_content"], output.encrypted_content);
+        for field in [
+            "status",
+            "role",
+            "content",
+            "name",
+            "arguments",
+            "call_id",
+            "output",
+            "after_item_uuid",
+        ] {
+            assert!(
+                added["item"].get(field).is_none(),
+                "unexpected compaction field: {field}"
+            );
+        }
+        assert_eq!(state.push_compaction(output), None);
+    }
 }
 
 /// Conversation parameter - can be a string UUID or an object with id field
@@ -3096,6 +3530,10 @@ pub struct ResponsesCreateRequest {
     /// forwarded as the model turn's `reasoning_effort`.
     #[serde(default)]
     pub reasoning: Option<ResponsesReasoningRequest>,
+
+    /// Automatic checkpoint controls. Omission uses server defaults.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_management: Option<Vec<ContextManagement>>,
 }
 
 /// The `reasoning` object of a Responses request. `summary` is accepted for
@@ -3140,6 +3578,7 @@ fn model_turn_request_without_user_payload(
         metadata: None,
         stream: body.stream,
         reasoning: body.reasoning.clone(),
+        context_management: body.context_management.clone(),
     }
 }
 
@@ -3267,7 +3706,12 @@ pub struct OutputItem {
     pub id: String,
 
     /// Status of the item
+    #[serde(skip_serializing_if = "String::is_empty")]
     pub status: String,
+
+    /// Opaque checkpoint content, present only for compaction output items.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub encrypted_content: Option<String>,
 
     /// Role (for message type)
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -3703,6 +4147,9 @@ pub struct ToolOutputCreatedEvent {
 /// Message types for the storage task
 #[derive(Debug, Clone)]
 pub enum StorageMessage {
+    /// The checkpoint is already committed independently; this only projects
+    /// its output-item lifecycle to the client, never into canonical messages.
+    Compaction(CompactionOutput),
     MessageStarted {
         item_id: Uuid,
     },
@@ -3746,6 +4193,7 @@ pub enum StorageMessage {
 
 #[derive(Debug, Clone)]
 enum StreamOutputItemRecord {
+    Compaction(CompactionOutput),
     Message {
         id: Uuid,
         text: String,
@@ -3778,6 +4226,15 @@ struct ClientResponseState {
 }
 
 impl ClientResponseState {
+    fn push_compaction(&mut self, output: CompactionOutput) -> Option<i32> {
+        if self.indices.contains_key(&output.id) {
+            return None;
+        }
+        let index = self.items.len();
+        self.indices.insert(output.id, index);
+        self.items.push(StreamOutputItemRecord::Compaction(output));
+        Some(index as i32)
+    }
     /// Returns true the first time an unknown item id is reported for this stream.
     fn first_unknown_item_report(&mut self, item_id: Uuid) -> bool {
         self.warned_unknown_items.insert(item_id)
@@ -3903,11 +4360,13 @@ impl ClientResponseState {
         self.items
             .iter()
             .map(|item| match item {
+                StreamOutputItemRecord::Compaction(output) => output.as_output_item(),
                 StreamOutputItemRecord::Message {
                     id,
                     text,
                     completed,
                 } => OutputItem {
+                    encrypted_content: None,
                     id: id.to_string(),
                     output_type: OUTPUT_TYPE_MESSAGE.to_string(),
                     status: if *completed {
@@ -3926,6 +4385,7 @@ impl ClientResponseState {
                     output: None,
                 },
                 StreamOutputItemRecord::Reasoning { id, completed, .. } => OutputItem {
+                    encrypted_content: None,
                     id: id.to_string(),
                     output_type: "reasoning".to_string(),
                     status: if *completed {
@@ -3947,6 +4407,7 @@ impl ClientResponseState {
                     name,
                     arguments,
                 } => OutputItem {
+                    encrypted_content: None,
                     id: id.to_string(),
                     output_type: "tool_call".to_string(),
                     status: STATUS_COMPLETED.to_string(),
@@ -3962,6 +4423,7 @@ impl ClientResponseState {
                     call_id,
                     output,
                 } => OutputItem {
+                    encrypted_content: None,
                     id: id.to_string(),
                     output_type: "tool_output".to_string(),
                     status: STATUS_COMPLETED.to_string(),
@@ -4006,10 +4468,6 @@ struct ImageDescriptionToolPair {
 }
 
 impl ImageDescriptionToolPair {
-    fn prompt_tokens(&self) -> usize {
-        (self.argument_tokens as usize).saturating_add(self.output_tokens as usize)
-    }
-
     fn prompt_messages(&self) -> [Value; 2] {
         let arguments = serde_json::to_string(&self.arguments).unwrap_or_else(|_| "{}".to_string());
         [
@@ -4337,6 +4795,10 @@ struct BuiltContext {
     prompt_messages: Arc<Vec<Value>>,
     total_prompt_tokens: usize,
     web_search_enabled: bool,
+    compactions: Vec<CompactionOutput>,
+    compaction_budget: Arc<CompactionBudget>,
+    current_user_uuid: Uuid,
+    allowed_urls: HashSet<String>,
 }
 
 /// Persisted database records
@@ -4653,7 +5115,7 @@ async fn prepare_request_storage(
     } = normalized;
 
     // Validate that the user message doesn't exceed the context budget
-    // Even if we drop everything else, we need to fit at least the user's message
+    // Compaction preserves this input exactly, so it must fit on its own.
     ensure_prompt_fits_model(
         user.uuid,
         user_message_tokens as usize,
@@ -4685,17 +5147,16 @@ async fn prepare_request_storage(
     })
 }
 
-/// Phase 2: Build context and check billing
-///
-/// Read-only phase that builds conversation context and validates billing quota
-/// before any database writes occur.
+/// Phase 2: plan context, execute/publish any checkpoint, then check final quota.
+/// Compaction is explicit paid preparation; canonical request items still wait
+/// for the established successful main-provider start boundary.
 ///
 /// Operations:
 /// - Reads the owned conversation's existing messages
 /// - Builds prompt context with new user message (not yet persisted)
 /// - Checks billing quota and token limits
 #[allow(clippy::too_many_arguments)]
-async fn build_context_and_check_billing(
+async fn prepare_context_and_check_billing(
     state: &Arc<AppState>,
     user: &User,
     body: &ResponsesCreateRequest,
@@ -4705,45 +5166,79 @@ async fn build_context_and_check_billing(
     model_plan: ModelPlan,
     conversation: &crate::models::responses::Conversation,
     web_search_enabled: bool,
+    response_uuid: Uuid,
+    response_execution: &ResponseExecution,
+    compaction_budget: &Arc<CompactionBudget>,
+    deadline: TokioInstant,
+    routing: InferenceRoutingContext,
+    cache_policy: &CompletionCachePolicy,
+    force_compaction: bool,
 ) -> Result<BuiltContext, ApiError> {
     let internal_system_prompt = build_internal_system_prompt(web_search_enabled, model_plan);
 
-    // Build the conversation context from all persisted messages
-    // Pass instructions from request (if provided) to override default user instructions
-    let image_description_tokens = image_descriptions
-        .iter()
-        .map(ImageDescriptionToolPair::prompt_tokens)
-        .sum::<usize>();
-    let token_reserve =
-        (prepared.user_message_tokens as usize).saturating_add(image_description_tokens);
-    let (mut prompt_messages, mut total_prompt_tokens) = build_prompt_with_token_reserve(
-        state.db.as_ref(),
-        conversation.id,
-        user.uuid,
-        &prepared.user_key,
-        &body.model,
-        body.instructions.as_deref(),
-        Some(&internal_system_prompt),
-        token_reserve,
-        model_reasoning_replay(&body.model, web_search_enabled).before_new_user_message(),
-    )?;
-
-    // Add the NEW user message to the context (not yet persisted)
-    // This is needed for: 1) billing check, 2) sending to LLM
     let user_message_for_prompt = json!({
         "role": "user",
         "content": MessageContentConverter::to_model_format(&prepared.message_content)
     });
-    prompt_messages.push(user_message_for_prompt);
-    total_prompt_tokens += prepared.user_message_tokens as usize;
-
+    let mut incoming = vec![ContextItem::from_prompt(
+        ContextItemKey {
+            kind: ContextItemKind::User,
+            uuid: prepared.user_message_id,
+        },
+        Some(response_uuid),
+        vec![user_message_for_prompt],
+        prepared.user_message_tokens as usize,
+        false,
+        None,
+    )];
     for pair in image_descriptions {
-        prompt_messages.extend(pair.prompt_messages());
+        let messages = pair.prompt_messages();
+        incoming.push(ContextItem::from_prompt(
+            ContextItemKey {
+                kind: ContextItemKind::ToolCall,
+                uuid: pair.tool_call_id,
+            },
+            Some(response_uuid),
+            vec![messages[0].clone()],
+            pair.argument_tokens as usize,
+            false,
+            Some(pair.tool_call_id),
+        ));
+        incoming.push(ContextItem::from_prompt(
+            ContextItemKey {
+                kind: ContextItemKind::ToolOutput,
+                uuid: pair.tool_output_id,
+            },
+            Some(response_uuid),
+            vec![messages[1].clone()],
+            pair.output_tokens as usize,
+            false,
+            Some(pair.tool_call_id),
+        ));
     }
-    total_prompt_tokens = total_prompt_tokens.saturating_add(image_description_tokens);
-    normalize_tool_call_ids_for_model(&mut prompt_messages, &body.model);
-
-    ensure_prompt_fits_model(user.uuid, total_prompt_tokens, &body.model, "prompt")?;
+    let executor = SummaryExecutor {
+        state,
+        user,
+        body,
+        routing,
+        cache_policy,
+        execution: response_execution,
+        budget: compaction_budget,
+        deadline,
+    };
+    let prompt = compaction::prepare_prompt(
+        &executor,
+        conversation.id,
+        &prepared.user_key,
+        prepared.user_message_id,
+        response_uuid,
+        &internal_system_prompt,
+        model_reasoning_replay(&body.model, web_search_enabled).before_new_user_message(),
+        &incoming,
+        force_compaction,
+    )
+    .await?;
+    let total_prompt_tokens = prompt.estimated_tokens;
 
     // Check billing with token validation (BEFORE any persistence).
     if let Some(billing_access) = billing_access {
@@ -4777,9 +5272,13 @@ async fn build_context_and_check_billing(
 
     Ok(BuiltContext {
         conversation: conversation.clone(),
-        prompt_messages: Arc::new(prompt_messages),
+        prompt_messages: Arc::new(prompt.messages),
         total_prompt_tokens,
         web_search_enabled,
+        compactions: prompt.compactions,
+        compaction_budget: compaction_budget.clone(),
+        current_user_uuid: prepared.user_message_id,
+        allowed_urls: prompt.allowed_urls,
     })
 }
 
@@ -5623,7 +6122,7 @@ async fn setup_completion_processor(
     let tools_requested = context.web_search_enabled;
     let mut prompt_messages = Arc::as_ref(&context.prompt_messages).clone();
     let mut prompt_token_estimate = context.total_prompt_tokens;
-    let mut kagi_allowed_urls = tools::collect_kagi_allowed_urls_from_prompt(&prompt_messages);
+    let mut kagi_allowed_urls = context.allowed_urls.clone();
     let mut next_message_id = Some(assistant_message_id);
     let mut tool_turn_count = 0usize;
     let mut model_turn_count = 0usize;
@@ -5645,33 +6144,74 @@ async fn setup_completion_processor(
 
         let started = match first_started.take() {
             Some(started) => started,
-            None => match start_responses_assistant_turn(
-                state,
-                user,
-                body,
-                pinned_completion,
-                headers,
-                &prompt_messages,
-                tools_enabled,
-                persisted.response.uuid,
-                context.conversation.uuid,
-                tool_turn_count,
-                prompt_token_estimate,
-                response_execution.clone(),
-                cache_policy,
-            )
-            .await
-            {
-                Ok(started) => started,
-                Err(error) => {
-                    let failure = PublicResponseFailure::from_completion_error(&error);
-                    error!(
+            None => {
+                let mut compacted_after_rejection = false;
+                loop {
+                    match start_responses_assistant_turn(
+                        state,
+                        user,
+                        body,
+                        pinned_completion,
+                        headers,
+                        &prompt_messages,
+                        tools_enabled,
+                        persisted.response.uuid,
+                        context.conversation.uuid,
+                        tool_turn_count,
+                        prompt_token_estimate,
+                        response_execution.clone(),
+                        cache_policy,
+                    )
+                    .await
+                    {
+                        Ok(started) => break started,
+                        Err(error)
+                            if !compacted_after_rejection
+                                && compaction::is_context_rejection(&error)
+                                && compaction::policy_for(body)
+                                    .is_ok_and(|(_, enabled)| enabled) =>
+                        {
+                            compacted_after_rejection = true;
+                            let next = match prepare_persisted_context(
+                                state,
+                                user,
+                                body,
+                                model_plan,
+                                context,
+                                user_key,
+                                response_execution.clone(),
+                                execution_policy.deadline,
+                                cache_policy,
+                                tools_enabled,
+                                true,
+                            )
+                            .await
+                            {
+                                Ok(next) => next,
+                                Err(error) => {
+                                    return ResponseTerminal::Failed(
+                                        PublicResponseFailure::from_api_error(&error),
+                                    )
+                                }
+                            };
+                            prompt_messages = next.messages;
+                            prompt_token_estimate = next.estimated_tokens;
+                            kagi_allowed_urls.extend(next.allowed_urls);
+                            for output in next.compactions {
+                                let _ = tx_client.send(StorageMessage::Compaction(output)).await;
+                            }
+                        }
+                        Err(error) => {
+                            let failure = PublicResponseFailure::from_completion_error(&error);
+                            error!(
                         "Responses provider start failed after persistence: response_uuid={}, failure={:?}",
                         persisted.response.uuid, failure
                     );
-                    return ResponseTerminal::Failed(failure);
+                            return ResponseTerminal::Failed(failure);
+                        }
+                    }
                 }
-            },
+            }
         };
 
         let turn = match stream_one_assistant_turn(
@@ -5719,24 +6259,31 @@ async fn setup_completion_processor(
                     force_final_without_tools = true;
                 }
 
-                let internal_system_prompt =
-                    build_internal_system_prompt(tools_requested, model_plan);
                 let next_turn_tools_enabled = tools_requested && !force_final_without_tools;
-                let (rebuilt_messages, rebuilt_tokens) = match build_prompt(
-                    state.db.as_ref(),
-                    context.conversation.id,
-                    user.uuid,
+                let next = match prepare_persisted_context(
+                    state,
+                    user,
+                    body,
+                    model_plan,
+                    context,
                     user_key,
-                    &body.model,
-                    body.instructions.as_deref(),
-                    Some(&internal_system_prompt),
-                    model_reasoning_replay(&body.model, next_turn_tools_enabled),
-                ) {
+                    response_execution.clone(),
+                    execution_policy.deadline,
+                    cache_policy,
+                    next_turn_tools_enabled,
+                    false,
+                )
+                .await
+                {
                     Ok(prompt) => prompt,
                     Err(_) => return ResponseTerminal::Failed(PublicResponseFailure::Internal),
                 };
-                prompt_messages = rebuilt_messages;
-                prompt_token_estimate = rebuilt_tokens;
+                prompt_messages = next.messages;
+                prompt_token_estimate = next.estimated_tokens;
+                kagi_allowed_urls.extend(next.allowed_urls);
+                for output in next.compactions {
+                    let _ = tx_client.send(StorageMessage::Compaction(output)).await;
+                }
             }
             AssistantTurnOutcome::Final { finish_reason } => {
                 return ResponseTerminal::Completed { finish_reason };
@@ -5746,6 +6293,47 @@ async fn setup_completion_processor(
             }
         }
     }
+}
+
+/// Reconstruct post-tool context through the same checkpoint service used by
+/// initial preparation. Caller input is identified by its original UUID.
+#[allow(clippy::too_many_arguments)]
+async fn prepare_persisted_context(
+    state: &Arc<AppState>,
+    user: &User,
+    body: &ResponsesCreateRequest,
+    model_plan: ModelPlan,
+    context: &BuiltContext,
+    user_key: &SecretKey,
+    execution: ResponseExecution,
+    deadline: TokioInstant,
+    cache_policy: &CompletionCachePolicy,
+    tools_enabled: bool,
+    force: bool,
+) -> Result<compaction::PreparedPrompt, ApiError> {
+    let routing = InferenceRoutingContext::new(model_plan);
+    let executor = SummaryExecutor {
+        state,
+        user,
+        body,
+        routing,
+        cache_policy,
+        execution: &execution,
+        budget: &context.compaction_budget,
+        deadline,
+    };
+    compaction::prepare_prompt(
+        &executor,
+        context.conversation.id,
+        user_key,
+        context.current_user_uuid,
+        execution.response_id(),
+        &build_internal_system_prompt(context.web_search_enabled, model_plan),
+        model_reasoning_replay(&body.model, tools_enabled),
+        &[],
+        force,
+    )
+    .await
 }
 
 /// Run the independently owned response until an execution terminal is reached.
@@ -6015,11 +6603,21 @@ async fn create_response_stream(
     let _message_uuid_reservation = reserve_response_message_uuid(&state, user_message_id)?;
     let image_access = image_description_access(&normalized.image_attachments, billing_access)?;
 
-    // Phase 1b/2a: Validate the model budget and base context before making any
-    // user-billed descriptor calls. The context builder keeps the system prompt
-    // and the conversation's first user turn regardless of truncation, so an
-    // Auto alternate can still overflow here; that earns one bounded second
-    // decision without it, before any billed helper or provider work.
+    // Paid preparation and every later tool turn share one execution lifetime,
+    // deadline and helper allowance. No canonical request rows exist yet.
+    let execution_policy = ResponseExecutionPolicy::new(model_plan, web_search_enabled);
+    let response_uuid = Uuid::new_v4();
+    let response_execution_registration = state
+        .response_executions
+        .register(response_uuid, user.uuid)
+        .map_err(|_| ApiError::InternalServerError)?;
+    let response_execution = response_execution_registration.execution();
+    let compaction_budget = Arc::new(CompactionBudget::default());
+
+    // Phase 1b/2a: Validate the required input and prepare base context before
+    // image description. Settled history may already require paid compaction.
+    // A selected Auto alternate can still be unable to hold protected input;
+    // that permits one bounded second decision, without repeating summaries.
     let mut model_reselected = false;
     let mut normalized = Some(normalized);
     let (prepared, base_context) = loop {
@@ -6035,7 +6633,7 @@ async fn create_response_stream(
         let outcome = async {
             let prepared =
                 prepare_request_storage(&user, user_key, &body, input, user_message_id).await?;
-            let base_context = build_context_and_check_billing(
+            let base_context = prepare_context_and_check_billing(
                 &state,
                 &user,
                 &body,
@@ -6045,6 +6643,13 @@ async fn create_response_stream(
                 model_plan,
                 &conversation,
                 web_search_enabled,
+                response_uuid,
+                &response_execution,
+                &compaction_budget,
+                execution_policy.deadline,
+                routing,
+                &cache_policy,
+                false,
             )
             .await?;
             Ok::<_, ApiError>((prepared, base_context))
@@ -6060,33 +6665,43 @@ async fn create_response_stream(
                     "Responses Auto alternate cannot hold this conversation; deciding again without it: selector={}, model={}",
                     requested_model, excluded.model_id
                 );
-                resolved_model = resolve_model(Some(&excluded))?;
+                resolved_model = resolve_model(Some(&excluded)).map_err(|error| {
+                    responses_pre_persistence_api_error(
+                        error.into(),
+                        compaction_budget.has_paid_work(),
+                    )
+                })?;
                 apply_resolved_model(&mut body, &resolved_model);
             }
             Err(error) => return Err(error),
         }
     };
 
-    // Phase 2b: Describe all current-turn images before any database write or
-    // SSE response. A complete cascade failure therefore leaves no partial chat.
+    // Phase 2b: Describe current-turn images before canonical request writes or
+    // SSE. A valid history checkpoint may already exist; failed helpers never
+    // create a partial canonical chat.
     let image_descriptions = match image_access {
-        Some(access) => {
-            describe_images(
-                &state,
-                &user,
-                &cache_policy,
-                routing.with_model_plan(ModelPlan::Paid),
-                access,
-                &prepared.image_attachments,
-            )
-            .await?
-        }
+        Some(access) => describe_images(
+            &state,
+            &user,
+            &cache_policy,
+            routing.with_model_plan(ModelPlan::Paid),
+            access,
+            &prepared.image_attachments,
+        )
+        .await
+        .map_err(|error| {
+            if compaction_budget.has_paid_work() {
+                responses_pre_persistence_api_error(error.into(), true)
+            } else {
+                error
+            }
+        })?,
         None => Vec::new(),
     };
-    let descriptions_done = !image_descriptions.is_empty();
 
-    // Phase 2c: Rebuild with enough reserved room for the persisted descriptions
-    // so historical context can be truncated instead of rejecting a valid turn,
+    // Phase 2c: Rebuild with the current descriptions included, compacting settled
+    // history when needed while preserving the current turn,
     // then pin the user's main route so it observes the latest local routing
     // state. If the chosen model lost its routes while the helpers ran, or an
     // Auto alternate cannot hold the descriptions, take the same bounded second
@@ -6097,7 +6712,7 @@ async fn create_response_stream(
     } else {
         None
     };
-    let (context, pinned_completion) = loop {
+    let (mut context, pinned_completion) = loop {
         let built = match context.take() {
             Some(built) => built,
             None => {
@@ -6107,7 +6722,7 @@ async fn create_response_stream(
                     .db
                     .get_conversation_by_uuid_and_user(conv_uuid, user.uuid)
                     .map_err(error_mapping::map_conversation_error)?;
-                match build_context_and_check_billing(
+                match prepare_context_and_check_billing(
                     &state,
                     &user,
                     &body,
@@ -6117,6 +6732,13 @@ async fn create_response_stream(
                     model_plan,
                     &conversation,
                     web_search_enabled,
+                    response_uuid,
+                    &response_execution,
+                    &compaction_budget,
+                    execution_policy.deadline,
+                    routing,
+                    &cache_policy,
+                    false,
                 )
                 .await
                 {
@@ -6136,7 +6758,10 @@ async fn create_response_stream(
                             requested_model, excluded.model_id
                         );
                         resolved_model = resolve_model(Some(&excluded)).map_err(|error| {
-                            responses_pre_persistence_api_error(error.into(), descriptions_done)
+                            responses_pre_persistence_api_error(
+                                error.into(),
+                                !image_descriptions.is_empty() || compaction_budget.has_paid_work(),
+                            )
                         })?;
                         apply_resolved_model(&mut body, &resolved_model);
                         ensure_prompt_fits_model(
@@ -6175,7 +6800,10 @@ async fn create_response_stream(
                     retry_after.map(|hint| hint.as_secs())
                 );
                 resolved_model = resolve_model(Some(&excluded)).map_err(|error| {
-                    responses_pre_persistence_api_error(error.into(), descriptions_done)
+                    responses_pre_persistence_api_error(
+                        error.into(),
+                        !image_descriptions.is_empty() || compaction_budget.has_paid_work(),
+                    )
                 })?;
                 apply_resolved_model(&mut body, &resolved_model);
                 ensure_prompt_fits_model(
@@ -6189,7 +6817,7 @@ async fn create_response_stream(
             Err(error) => {
                 return Err(responses_pre_persistence_api_error(
                     error.into(),
-                    descriptions_done,
+                    !image_descriptions.is_empty() || compaction_budget.has_paid_work(),
                 ))
             }
         }
@@ -6200,13 +6828,6 @@ async fn create_response_stream(
     // an upstream capacity rejection remains ambiguous even without durable
     // conversation writes. Successful response bodies remain untouched until
     // Phase 3 commits, and prior descriptor work suppresses whole-request replay.
-    let execution_policy = ResponseExecutionPolicy::new(model_plan, context.web_search_enabled);
-    let response_uuid = Uuid::new_v4();
-    let response_execution_registration = state
-        .response_executions
-        .register(response_uuid, user.uuid)
-        .map_err(|_| ApiError::InternalServerError)?;
-    let response_execution = response_execution_registration.execution();
     // Acquire the root lineages before persistence exposes the response. A
     // concurrent cancellation may then seal admission without preventing the
     // already-owned storage/supervisor tasks from performing ordered cleanup.
@@ -6223,23 +6844,98 @@ async fn create_response_stream(
         .begin_task()
         .map_err(|_| ApiError::InternalServerError)?;
     let model_turn_body = model_turn_request_without_user_payload(&body);
-    let first_started = start_responses_assistant_turn(
-        &state,
-        &user,
-        &model_turn_body,
-        &pinned_completion,
-        &headers,
-        context.prompt_messages.as_ref(),
-        context.web_search_enabled,
-        response_uuid,
-        context.conversation.uuid,
-        0,
-        context.total_prompt_tokens,
-        response_execution.clone(),
-        &cache_policy,
+    let first_started = match await_initial_response_step(
+        &response_execution,
+        execution_policy.deadline,
+        start_responses_assistant_turn(
+            &state,
+            &user,
+            &model_turn_body,
+            &pinned_completion,
+            &headers,
+            context.prompt_messages.as_ref(),
+            context.web_search_enabled,
+            response_uuid,
+            context.conversation.uuid,
+            0,
+            context.total_prompt_tokens,
+            response_execution.clone(),
+            &cache_policy,
+        ),
     )
     .await
-    .map_err(|error| responses_pre_persistence_api_error(error, !image_descriptions.is_empty()))?;
+    {
+        Ok(started) => started,
+        Err(error)
+            if compaction::is_context_rejection(&error) && compaction::policy_for(&body)?.1 =>
+        {
+            context = await_initial_response_step(
+                &response_execution,
+                execution_policy.deadline,
+                async {
+                    prepare_context_and_check_billing(
+                        &state,
+                        &user,
+                        &body,
+                        &prepared,
+                        &image_descriptions,
+                        billing_access,
+                        model_plan,
+                        &conversation,
+                        web_search_enabled,
+                        response_uuid,
+                        &response_execution,
+                        &compaction_budget,
+                        execution_policy.deadline,
+                        routing,
+                        &cache_policy,
+                        true,
+                    )
+                    .await
+                    .map_err(CompletionExecutionError::from)
+                },
+            )
+            .await
+            .map_err(|error| {
+                responses_pre_persistence_api_error(
+                    error,
+                    !image_descriptions.is_empty() || compaction_budget.has_paid_work(),
+                )
+            })?;
+            await_initial_response_step(
+                &response_execution,
+                execution_policy.deadline,
+                start_responses_assistant_turn(
+                    &state,
+                    &user,
+                    &model_turn_body,
+                    &pinned_completion,
+                    &headers,
+                    &context.prompt_messages,
+                    context.web_search_enabled,
+                    response_uuid,
+                    context.conversation.uuid,
+                    0,
+                    context.total_prompt_tokens,
+                    response_execution.clone(),
+                    &cache_policy,
+                ),
+            )
+            .await
+            .map_err(|error| {
+                responses_pre_persistence_api_error(
+                    error,
+                    !image_descriptions.is_empty() || compaction_budget.has_paid_work(),
+                )
+            })?
+        }
+        Err(error) => {
+            return Err(responses_pre_persistence_api_error(
+                error,
+                !image_descriptions.is_empty() || compaction_budget.has_paid_work(),
+            ))
+        }
+    };
 
     // Phase 3: Persist request data
     let persisted = persist_request_data(
@@ -6303,6 +6999,15 @@ async fn create_response_stream(
     let (tx_tool_ack, rx_tool_ack) = mpsc::channel::<Result<(), String>>(8);
     let (tx_terminal_ack, rx_terminal_ack) =
         oneshot::channel::<Result<Option<ResponseTerminal>, String>>();
+
+    // Initial compaction is already durable. Publish its lifecycle only after
+    // response.created when the client channel is consumed below.
+    for output in &context.compactions {
+        tx_client
+            .send(StorageMessage::Compaction(output.clone()))
+            .await
+            .map_err(|_| ApiError::InternalServerError)?;
+    }
 
     // The image pairs are already durable. Emit them before the supervisor can
     // enqueue any assistant output, and never send them back through storage.
@@ -6493,6 +7198,7 @@ async fn create_response_stream(
                         sequence_number: emitter.sequence_number(),
                         output_index,
                         item: OutputItem {
+                            encrypted_content: None,
                             id: item_id.to_string(),
                             output_type: "reasoning".to_string(),
                             status: STATUS_IN_PROGRESS.to_string(),
@@ -6505,6 +7211,15 @@ async fn create_response_stream(
                         },
                     };
                     yield Ok(ResponseEvent::OutputItemAdded(reasoning_item_added).to_sse_event(&mut emitter).await);
+                }
+                StorageMessage::Compaction(output) => {
+                    let Some(output_index)=client_state.push_compaction(output.clone()) else {continue;};
+                    let added=ResponseOutputItemAddedEvent {event_type:EVENT_RESPONSE_OUTPUT_ITEM_ADDED,
+                        sequence_number:emitter.sequence_number(),output_index,item:output.as_output_item()};
+                    yield Ok(ResponseEvent::OutputItemAdded(added).to_sse_event(&mut emitter).await);
+                    let done=ResponseOutputItemDoneEvent {event_type:EVENT_RESPONSE_OUTPUT_ITEM_DONE,
+                        sequence_number:emitter.sequence_number(),output_index,item:output.as_output_item()};
+                    yield Ok(ResponseEvent::OutputItemDone(done).to_sse_event(&mut emitter).await);
                 }
                 StorageMessage::ReasoningDelta { item_id, delta } => {
                     let Some(output_index) = client_state.append_reasoning_delta(item_id, &delta) else {
@@ -6551,6 +7266,7 @@ async fn create_response_stream(
                         sequence_number: emitter.sequence_number(),
                         output_index,
                         item: OutputItem {
+                            encrypted_content: None,
                             id: item_id.to_string(),
                             output_type: "reasoning".to_string(),
                             status: STATUS_COMPLETED.to_string(),
@@ -6651,6 +7367,7 @@ async fn create_response_stream(
                         sequence_number: emitter.sequence_number(),
                         output_index,
                         item: OutputItem {
+                            encrypted_content: None,
                             id: tool_call_id.to_string(),
                             output_type: "tool_call".to_string(),
                             status: STATUS_IN_PROGRESS.to_string(),
@@ -6682,6 +7399,7 @@ async fn create_response_stream(
                         sequence_number: emitter.sequence_number(),
                         output_index,
                         item: OutputItem {
+                            encrypted_content: None,
                             id: tool_call_id.to_string(),
                             output_type: "tool_call".to_string(),
                             status: STATUS_COMPLETED.to_string(),
@@ -6711,6 +7429,7 @@ async fn create_response_stream(
                         sequence_number: emitter.sequence_number(),
                         output_index,
                         item: OutputItem {
+                            encrypted_content: None,
                             id: tool_output_id.to_string(),
                             output_type: "tool_output".to_string(),
                             status: STATUS_IN_PROGRESS.to_string(),
@@ -6742,6 +7461,7 @@ async fn create_response_stream(
                         sequence_number: emitter.sequence_number(),
                         output_index,
                         item: OutputItem {
+                            encrypted_content: None,
                             id: tool_output_id.to_string(),
                             output_type: "tool_output".to_string(),
                             status: STATUS_COMPLETED.to_string(),
@@ -6854,7 +7574,18 @@ async fn get_response(
         .await
         .map_err(|_| error_mapping::map_key_retrieval_error())?;
 
-    let mut output_items = Vec::new();
+    let compactions: Vec<_> = state
+        .db
+        .list_response_compactions(response.conversation_id, user.uuid, response.uuid)
+        .map_err(|_| ApiError::InternalServerError)?
+        .iter()
+        .map(CompactionOutput::from)
+        .collect();
+    let mut output_items: Vec<_> = compactions
+        .iter()
+        .filter(|item| item.after_item_uuid.is_none())
+        .map(CompactionOutput::as_output_item)
+        .collect();
 
     for msg in &messages {
         let status = msg
@@ -6889,6 +7620,7 @@ async fn get_response(
                     })?;
 
                 output_items.push(OutputItem {
+                    encrypted_content: None,
                     id: msg.uuid.to_string(),
                     output_type: "tool_call".to_string(),
                     status,
@@ -6911,6 +7643,7 @@ async fn get_response(
                 })?;
 
                 output_items.push(OutputItem {
+                    encrypted_content: None,
                     id: msg.uuid.to_string(),
                     output_type: "tool_output".to_string(),
                     status,
@@ -6924,6 +7657,7 @@ async fn get_response(
             }
             "reasoning" => {
                 output_items.push(OutputItem {
+                    encrypted_content: None,
                     id: msg.uuid.to_string(),
                     output_type: "reasoning".to_string(),
                     status,
@@ -6937,6 +7671,12 @@ async fn get_response(
             }
             _ => {}
         }
+        output_items.extend(
+            compactions
+                .iter()
+                .filter(|item| item.after_item_uuid == Some(msg.uuid))
+                .map(CompactionOutput::as_output_item),
+        );
     }
 
     // Calculate token counts from individual messages

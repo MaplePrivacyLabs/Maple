@@ -102,7 +102,7 @@ async fn oauth_selection_v2_request(
 #[ignore = "requires AEAD_TAMPER_TEST_DATABASE_URL pointing at disposable migrated local Postgres"]
 async fn db_oauth_callback_selection_v1_v2() {
     use crate::{
-        db::setup_db,
+        db::setup_test_db,
         models::{
             org_project_secrets::NewOrgProjectSecret,
             org_projects::NewOrgProject,
@@ -136,7 +136,7 @@ async fn db_oauth_callback_selection_v1_v2() {
     let app_state = Arc::new(
         AppStateBuilder::default()
             .app_mode(AppMode::Local)
-            .db(setup_db(database_url))
+            .db(setup_test_db(database_url))
             .enclave_key(enclave_key.to_vec())
             .aws_credential_manager(Arc::new(tokio::sync::RwLock::new(None)))
             .openai_api_base("http://127.0.0.1:9".to_string())
@@ -398,7 +398,7 @@ impl Drop for OAuthCompletionMock {
 
 async fn oauth_callback_completion_case(provider: &str, is_v2: bool) {
     use crate::{
-        db::setup_db,
+        db::setup_test_db,
         jwt::{
             validate_token, AuthContext, TRANSPORT_V2_USER_ACCESS, TRANSPORT_V2_USER_REFRESH,
             USER_ACCESS, USER_REFRESH,
@@ -433,7 +433,7 @@ async fn oauth_callback_completion_case(provider: &str, is_v2: bool) {
     let enclave_key = [42u8; 32];
     let mut app_state = AppStateBuilder::default()
         .app_mode(AppMode::Local)
-        .db(setup_db(database_url))
+        .db(setup_test_db(database_url))
         .enclave_key(enclave_key.to_vec())
         .aws_credential_manager(Arc::new(tokio::sync::RwLock::new(None)))
         .openai_api_base("http://127.0.0.1:9".to_string())

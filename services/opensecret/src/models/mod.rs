@@ -15,6 +15,7 @@ pub mod platform_password_reset;
 pub mod platform_users;
 pub mod project_settings;
 pub mod remote_enrollment;
+pub mod response_compaction;
 pub mod responses;
 pub mod schema;
 pub mod token_usage;

@@ -2717,6 +2717,21 @@ pub(crate) async fn get_bounded_chat_completion_response(
     finish_started_completion(state, user, started).await
 }
 
+/// A bounded internal completion owned by the same durable Responses execution.
+/// This shares provider routing, attestation and usage publication with ordinary
+/// helpers while preserving cancellation/task ownership across context compaction.
+pub(crate) async fn get_bounded_chat_completion_response_for_execution(
+    state: &Arc<AppState>,
+    user: &User,
+    body: Value,
+    headers: &HeaderMap,
+    execution: CompletionExecutionContext<'_>,
+    response_execution: ResponseExecution,
+) -> Result<CompletionStream, CompletionExecutionError> {
+    let execution = execution.with_response_execution(response_execution)?;
+    get_bounded_chat_completion_response(state, user, body, headers, execution).await
+}
+
 #[derive(Default)]
 struct CompletionExecutionOptions {
     non_streaming_body_limit: Option<usize>,

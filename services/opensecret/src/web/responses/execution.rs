@@ -153,6 +153,10 @@ impl Drop for ResponseExecutionRegistration {
 }
 
 impl ResponseExecution {
+    pub(crate) fn response_id(&self) -> Uuid {
+        self.inner.response_id
+    }
+
     /// Acquire task ownership synchronously before spawning the child.
     pub(crate) fn begin_task(&self) -> Result<ResponseExecutionTaskGuard, ClosedResponseExecution> {
         let mut state = self

@@ -31,6 +31,10 @@ use crate::models::project_settings::OAuthSettings;
 use crate::models::project_settings::{
     EmailSettings, NewProjectSetting, ProjectSetting, ProjectSettingError, SettingCategory,
 };
+use crate::models::response_compaction::{
+    CompactionCheckpoint, CompactionError, CompactionPublishResult, CompactionSnapshot,
+    ContextItemKey, NewCompactionCheckpoint,
+};
 use crate::models::responses::{
     validate_conversation_project_limit, AssistantMessage, Conversation, ConversationProject,
     ConversationProjectFilter, NewAssistantMessage, NewConversation, NewConversationProject,
@@ -137,6 +141,8 @@ pub enum DBError {
     ProjectSettingNotFound,
     #[error("Responses API error: {0}")]
     ResponsesError(#[from] crate::models::responses::ResponsesError),
+    #[error("Responses compaction error: {0}")]
+    CompactionError(#[from] CompactionError),
     #[error("User seed wrapping error: {0}")]
     UserSeedWrappingError(#[from] UserSeedWrappingError),
     #[error("App data migration error: {0}")]
@@ -745,6 +751,29 @@ pub trait DBConnection {
     fn get_tool_call_by_uuid(&self, uuid: Uuid, user_id: Uuid) -> Result<ToolCall, DBError>;
     fn create_tool_output(&self, new_output: NewToolOutput) -> Result<ToolOutput, DBError>;
     fn get_tool_output_by_uuid(&self, uuid: Uuid, user_id: Uuid) -> Result<ToolOutput, DBError>;
+
+    // Complete user-scoped checkpoint snapshots; ciphertext is fetched only for selected items.
+    fn load_compaction_snapshot(
+        &self,
+        conversation_id: i64,
+        user_id: Uuid,
+    ) -> Result<CompactionSnapshot, DBError>;
+    fn load_compaction_items(
+        &self,
+        conversation_id: i64,
+        user_id: Uuid,
+        keys: &[ContextItemKey],
+    ) -> Result<Vec<RawThreadMessage>, DBError>;
+    fn list_response_compactions(
+        &self,
+        conversation_id: i64,
+        user_id: Uuid,
+        response_uuid: Uuid,
+    ) -> Result<Vec<CompactionCheckpoint>, DBError>;
+    fn publish_compaction_checkpoint(
+        &self,
+        checkpoint: NewCompactionCheckpoint,
+    ) -> Result<CompactionPublishResult, DBError>;
 
     // Context reconstruction
     fn get_conversation_context_messages(
@@ -2572,7 +2601,10 @@ impl DBConnection for PostgresConnection {
 
     fn delete_response(&self, uuid: Uuid, user_id: Uuid) -> Result<(), DBError> {
         let conn = &mut self.db.get().map_err(|_| DBError::ConnectionError)?;
-        Response::delete_by_uuid_and_user(conn, uuid, user_id).map_err(DBError::from)
+        CompactionCheckpoint::delete_response(conn, uuid, user_id).map_err(|error| match error {
+            CompactionError::Responses(error) => DBError::ResponsesError(error),
+            error => DBError::from(error),
+        })
     }
 
     fn create_conversation_with_response_and_message(
@@ -3052,6 +3084,44 @@ impl DBConnection for PostgresConnection {
         RawThreadMessage::get_response_context(conn, response_id).map_err(DBError::from)
     }
 
+    fn load_compaction_snapshot(
+        &self,
+        conversation_id: i64,
+        user_id: Uuid,
+    ) -> Result<CompactionSnapshot, DBError> {
+        let conn = &mut self.db.get().map_err(|_| DBError::ConnectionError)?;
+        CompactionSnapshot::load(conn, conversation_id, user_id).map_err(DBError::from)
+    }
+
+    fn load_compaction_items(
+        &self,
+        conversation_id: i64,
+        user_id: Uuid,
+        keys: &[ContextItemKey],
+    ) -> Result<Vec<RawThreadMessage>, DBError> {
+        let conn = &mut self.db.get().map_err(|_| DBError::ConnectionError)?;
+        CompactionSnapshot::load_items(conn, conversation_id, user_id, keys).map_err(DBError::from)
+    }
+
+    fn list_response_compactions(
+        &self,
+        conversation_id: i64,
+        user_id: Uuid,
+        response_uuid: Uuid,
+    ) -> Result<Vec<CompactionCheckpoint>, DBError> {
+        let conn = &mut self.db.get().map_err(|_| DBError::ConnectionError)?;
+        CompactionCheckpoint::list_for_response(conn, conversation_id, user_id, response_uuid)
+            .map_err(DBError::from)
+    }
+
+    fn publish_compaction_checkpoint(
+        &self,
+        checkpoint: NewCompactionCheckpoint,
+    ) -> Result<CompactionPublishResult, DBError> {
+        let conn = &mut self.db.get().map_err(|_| DBError::ConnectionError)?;
+        CompactionCheckpoint::publish(conn, checkpoint).map_err(DBError::from)
+    }
+
     // Optimized context reconstruction (metadata-based)
     fn get_conversation_context_metadata(
         &self,
@@ -3074,9 +3144,10 @@ impl DBConnection for PostgresConnection {
 
     fn delete_user_message(&self, id: Uuid, user_id: Uuid) -> Result<(), DBError> {
         let conn = &mut self.db.get().map_err(|_| DBError::ConnectionError)?;
-        // First get the message by UUID to find its ID
-        let msg = UserMessage::get_by_uuid_and_user(conn, id, user_id)?;
-        UserMessage::delete_by_id_and_user(conn, msg.id, user_id).map_err(DBError::from)
+        CompactionCheckpoint::delete_user_message(conn, id, user_id).map_err(|error| match error {
+            CompactionError::Responses(error) => DBError::ResponsesError(error),
+            error => DBError::from(error),
+        })
     }
 
     // Maintenance
@@ -3097,6 +3168,23 @@ pub(crate) fn setup_db(url: String) -> Arc<dyn DBConnection + Send + Sync> {
         .expect("Unable to build DB connection pool");
 
     info!("Connected to database with pool size: 20, min idle: 5");
+    Arc::new(PostgresConnection { db: pool })
+}
+
+/// Disposable test processes must not exit while idle-refill workers are still
+/// opening native libpq/OpenSSL connections. Production keeps its warm pool.
+#[cfg(test)]
+pub(crate) fn setup_test_db(url: String) -> Arc<dyn DBConnection + Send + Sync> {
+    let manager = ConnectionManager::<PgConnection>::new(url);
+    let pool = Pool::builder()
+        .max_size(20)
+        .min_idle(Some(0))
+        .connection_timeout(std::time::Duration::from_secs(30))
+        .idle_timeout(Some(std::time::Duration::from_secs(600)))
+        .max_lifetime(Some(std::time::Duration::from_secs(1800)))
+        .test_on_check_out(true)
+        .build(manager)
+        .expect("Unable to build disposable test DB connection pool");
     Arc::new(PostgresConnection { db: pool })
 }
 

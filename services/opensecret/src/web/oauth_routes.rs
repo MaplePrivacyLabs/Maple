@@ -1671,7 +1671,7 @@ async fn encrypt_access_token(
 mod tests {
     use super::*;
     use crate::{
-        db::setup_db,
+        db::setup_test_db,
         models::{org_projects::OrgProject, schema::org_projects},
         seed_wrapping::CredentialKind,
         AppMode, AppStateBuilder,
@@ -1958,7 +1958,7 @@ mod tests {
     }
 
     async fn build_local_test_app_state(database_url: String) -> AppState {
-        let db = setup_db(database_url);
+        let db = setup_test_db(database_url);
         AppStateBuilder::default()
             .app_mode(AppMode::Local)
             .db(db)
