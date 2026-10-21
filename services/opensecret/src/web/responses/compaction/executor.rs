@@ -26,6 +26,77 @@ use std::{collections::VecDeque, sync::Arc};
 use tokio::time::Instant;
 
 const MAX_FRAGMENT_REDUCTIONS: usize = 3;
+const MAX_SUMMARY_TEXT_BYTES: usize = 256 * 1024;
+
+/// Keep advisory availability failures separate from conditions that must stop
+/// the entire logical Response. Public errors never contain summary/source text.
+#[derive(Debug)]
+pub(super) enum SummaryExecutionError {
+    Cancelled,
+    Deadline,
+    Capacity,
+    InvalidSummary,
+    Provider(Box<CompletionExecutionError>),
+    Unsafe(ApiError),
+}
+
+impl SummaryExecutionError {
+    pub(super) fn can_fallback_to_uncompacted(&self) -> bool {
+        match self {
+            Self::Capacity | Self::InvalidSummary => true,
+            Self::Provider(error) => match error.as_ref() {
+                CompletionExecutionError::Request(ApiError::ServiceUnavailable)
+                | CompletionExecutionError::Request(ApiError::InferenceCapacity { .. }) => true,
+                CompletionExecutionError::Attempt {
+                    terminal: crate::inference::AttemptTerminal::Failed { failure, .. },
+                    public_error,
+                } => {
+                    if matches!(
+                        public_error,
+                        ApiError::Unauthorized
+                            | ApiError::UsageLimitReached
+                            | ApiError::FreeTokenLimitExceeded
+                            | ApiError::ModelNotAvailableOnPlan
+                            | ApiError::ModelNotAvailable
+                    ) {
+                        return false;
+                    }
+                    match failure.kind {
+                        AttemptFailureKind::Connect
+                        | AttemptFailureKind::Transport
+                        | AttemptFailureKind::ResponseStartTimeout
+                        | AttemptFailureKind::ResponseBody
+                        | AttemptFailureKind::InvalidResponse
+                        | AttemptFailureKind::StreamTimeout
+                        | AttemptFailureKind::UpstreamResponseError
+                        | AttemptFailureKind::UpstreamStreamError
+                        | AttemptFailureKind::UnexpectedEof
+                        | AttemptFailureKind::CapacityRejected
+                        | AttemptFailureKind::ProviderUnavailable => true,
+                        AttemptFailureKind::HttpStatus => {
+                            matches!(failure.status, Some(408 | 429 | 500..=599))
+                        }
+                        AttemptFailureKind::RequestBuild | AttemptFailureKind::ConsumerDropped => {
+                            false
+                        }
+                    }
+                }
+                _ => false,
+            },
+            Self::Cancelled | Self::Deadline | Self::Unsafe(_) => false,
+        }
+    }
+
+    pub(super) fn into_api_error(self) -> ApiError {
+        match self {
+            Self::Provider(error) => (*error).into_api_error(),
+            Self::Unsafe(error) => error,
+            Self::Cancelled | Self::Deadline | Self::Capacity | Self::InvalidSummary => {
+                ApiError::ServiceUnavailable
+            }
+        }
+    }
+}
 
 /// A narrow input-validation rejection can safely authorize a smaller prompt.
 /// It never authorizes replay of an accepted stream, a tool or a generic error.
@@ -54,46 +125,44 @@ pub(crate) struct SummaryExecutor<'a> {
 }
 
 impl SummaryExecutor<'_> {
-    pub async fn summarize(
+    pub(super) async fn summarize(
         &self,
         work: &SummaryWork,
         policy: &CompactionPolicy,
-    ) -> Result<String, ApiError> {
+    ) -> Result<String, SummaryExecutionError> {
+        self.check_execution()?;
         let messages: Vec<_> = work
             .items
             .iter()
             .flat_map(|item| item.summary_messages.iter().cloned())
             .collect();
-        let transcript =
-            summary::serialize_transcript(&messages).map_err(|_| ApiError::InternalServerError)?;
-        if transcript.is_empty() {
-            return work
-                .previous_summary
-                .clone()
-                .filter(|summary| !summary.trim().is_empty())
-                .ok_or(ApiError::MessageExceedsContextLimit);
+        if messages.is_empty() {
+            return Ok(summary::identity_only_checkpoint(
+                work.previous_summary.as_deref(),
+            ));
         }
         // A conservative byte-sized first partition is followed by request-size
         // estimates and a narrowly classified provider-overflow safety net.
         let fragment_bytes = policy.summary_input_budget.saturating_mul(2).max(4);
-        let mut fragments: VecDeque<_> = summary::split_transcript(&transcript, fragment_bytes)
-            .map_err(|_| ApiError::MessageExceedsContextLimit)?
-            .into_iter()
-            .map(|fragment| (fragment.to_owned(), 0usize))
-            .collect();
+        let pieces = summary::transcript_fragments(&messages, fragment_bytes)
+            .map_err(|_| SummaryExecutionError::Unsafe(ApiError::InternalServerError))?;
+        let mut fragments = fragment_batches(pieces, fragment_bytes);
         let mut previous = work.previous_summary.clone();
         while let Some((fragment, reductions)) = fragments.pop_front() {
-            let messages = summary::summary_messages(&fragment, previous.as_deref());
+            self.check_execution()?;
+            let messages = summary::fragment_summary_messages(&fragment, previous.as_deref());
             let estimate = count_tokens(
-                &serde_json::to_string(&messages).map_err(|_| ApiError::InternalServerError)?,
+                &serde_json::to_string(&messages)
+                    .map_err(|_| SummaryExecutionError::Unsafe(ApiError::InternalServerError))?,
             );
             if estimate > policy.summary_input_budget {
                 split_front(&mut fragments, fragment, reductions)?;
                 continue;
             }
-            self.budget.begin_call()?;
-            let request =
-                build_compaction_model_request(self.body, &messages, policy.summary_output_tokens);
+            self.budget
+                .begin_call()
+                .map_err(|_| SummaryExecutionError::Capacity)?;
+            let request = build_compaction_model_request(self.body, &messages);
             let billing = BillingContext::new(AuthMethod::Jwt, self.body.model.clone());
             let execution =
                 CompletionExecutionContext::new(billing, self.routing, self.cache_policy);
@@ -118,48 +187,89 @@ impl SummaryExecutor<'_> {
             };
             let response = tokio::select! {
                 biased;
-                _ = self.execution.cancelled() => return Err(ApiError::ServiceUnavailable),
-                _ = tokio::time::sleep_until(self.deadline) => return Err(ApiError::ServiceUnavailable),
+                _ = self.execution.cancelled() => return Err(SummaryExecutionError::Cancelled),
+                _ = tokio::time::sleep_until(self.deadline) => return Err(SummaryExecutionError::Deadline),
                 response = response => response,
             };
             match response {
                 Ok(response) => {
                     let next = summary::parse_summary_response(&response)
-                        .map_err(|_| ApiError::ServiceUnavailable)?;
-                    if count_tokens(&next) > policy.summary_output_tokens
-                        || next.len() > policy.summary_output_tokens.saturating_mul(16)
-                    {
-                        return Err(ApiError::ServiceUnavailable);
+                        .map_err(|_| SummaryExecutionError::InvalidSummary)?;
+                    // Native model/provider generation limits are not cl100k
+                    // limits. Keep only the independent untrusted byte bound.
+                    if next.len() > MAX_SUMMARY_TEXT_BYTES {
+                        return Err(SummaryExecutionError::InvalidSummary);
                     }
                     previous = Some(next);
                 }
                 Err(error) if is_context_rejection(&error) => {
                     split_front(&mut fragments, fragment, reductions)?;
                 }
-                Err(error) => return Err(error.into_api_error()),
+                Err(error) => return Err(SummaryExecutionError::Provider(Box::new(error))),
             }
         }
-        previous.ok_or(ApiError::MessageExceedsContextLimit)
+        previous.ok_or(SummaryExecutionError::Unsafe(
+            ApiError::MessageExceedsContextLimit,
+        ))
+    }
+
+    fn check_execution(&self) -> Result<(), SummaryExecutionError> {
+        if self.execution.is_cancelled() {
+            return Err(SummaryExecutionError::Cancelled);
+        }
+        if Instant::now() >= self.deadline {
+            return Err(SummaryExecutionError::Deadline);
+        }
+        Ok(())
     }
 }
 
+fn fragment_batches(
+    pieces: Vec<summary::TranscriptFragment>,
+    max_bytes: usize,
+) -> VecDeque<(Vec<summary::TranscriptFragment>, usize)> {
+    let mut batches = VecDeque::new();
+    let mut current = Vec::new();
+    let mut bytes = 0usize;
+    for piece in pieces {
+        let next_bytes = piece.serialized_bytes();
+        if !current.is_empty() && bytes.saturating_add(next_bytes) > max_bytes {
+            batches.push_back((std::mem::take(&mut current), 0));
+            bytes = 0;
+        }
+        current.push(piece);
+        bytes = bytes.saturating_add(next_bytes);
+    }
+    if !current.is_empty() {
+        batches.push_back((current, 0));
+    }
+    batches
+}
+
 fn split_front(
-    fragments: &mut VecDeque<(String, usize)>,
-    fragment: String,
+    fragments: &mut VecDeque<(Vec<summary::TranscriptFragment>, usize)>,
+    mut fragment: Vec<summary::TranscriptFragment>,
     reductions: usize,
-) -> Result<(), ApiError> {
+) -> Result<(), SummaryExecutionError> {
     if reductions >= MAX_FRAGMENT_REDUCTIONS {
-        return Err(ApiError::MessageExceedsContextLimit);
+        return Err(SummaryExecutionError::Unsafe(
+            ApiError::MessageExceedsContextLimit,
+        ));
     }
-    let mut middle = fragment.len() / 2;
-    while middle > 0 && !fragment.is_char_boundary(middle) {
-        middle -= 1;
-    }
-    if middle == 0 || middle == fragment.len() {
-        return Err(ApiError::MessageExceedsContextLimit);
-    }
-    fragments.push_front((fragment[middle..].to_owned(), reductions + 1));
-    fragments.push_front((fragment[..middle].to_owned(), reductions + 1));
+    let (left, right) = if fragment.len() > 1 {
+        let right = fragment.split_off(fragment.len() / 2);
+        (fragment, right)
+    } else {
+        let piece = fragment.pop().ok_or(SummaryExecutionError::Unsafe(
+            ApiError::MessageExceedsContextLimit,
+        ))?;
+        let (left, right) = piece
+            .split()
+            .map_err(|_| SummaryExecutionError::Unsafe(ApiError::MessageExceedsContextLimit))?;
+        (vec![left], vec![right])
+    };
+    fragments.push_front((right, reductions + 1));
+    fragments.push_front((left, reductions + 1));
     Ok(())
 }
 
@@ -244,6 +354,98 @@ mod tests {
         )
         .with_upstream_response(400, None, None)
         .with_upstream_diagnostic(diagnostic)
+    }
+
+    #[test]
+    fn advisory_fallback_excludes_cancellation_deadline_authorization_and_safety_failures() {
+        for error in [
+            SummaryExecutionError::Cancelled,
+            SummaryExecutionError::Deadline,
+            SummaryExecutionError::Unsafe(ApiError::InternalServerError),
+            SummaryExecutionError::Unsafe(ApiError::MessageExceedsContextLimit),
+            SummaryExecutionError::Provider(Box::new(CompletionExecutionError::Request(
+                ApiError::Unauthorized,
+            ))),
+            SummaryExecutionError::Provider(Box::new(CompletionExecutionError::Request(
+                ApiError::UsageLimitReached,
+            ))),
+            SummaryExecutionError::Provider(Box::new(CompletionExecutionError::Request(
+                ApiError::ModelNotAvailableOnPlan,
+            ))),
+        ] {
+            assert!(!error.can_fallback_to_uncompacted());
+        }
+        for error in [
+            SummaryExecutionError::Capacity,
+            SummaryExecutionError::InvalidSummary,
+            SummaryExecutionError::Provider(Box::new(CompletionExecutionError::Request(
+                ApiError::ServiceUnavailable,
+            ))),
+        ] {
+            assert!(error.can_fallback_to_uncompacted());
+        }
+        for status in [400, 401, 403, 404, 413, 422] {
+            let mut failure = http_failure(None);
+            failure.status = Some(status);
+            assert!(!SummaryExecutionError::Provider(Box::new(failed(failure)))
+                .can_fallback_to_uncompacted());
+        }
+        for status in [408, 429, 500, 502, 503, 504] {
+            let mut failure = http_failure(None);
+            failure.status = Some(status);
+            assert!(SummaryExecutionError::Provider(Box::new(failed(failure)))
+                .can_fallback_to_uncompacted());
+        }
+    }
+
+    #[test]
+    fn batches_keep_small_messages_together_and_reductions_keep_every_fragment() {
+        let messages: Vec<_> = (0..20)
+            .map(|index| json!({ "role": "user", "content": format!("Fact {index}") }))
+            .collect();
+        let pieces = summary::transcript_fragments(&messages, 20_000).unwrap();
+        let mut batches = fragment_batches(pieces, 20_000);
+        assert_eq!(batches.len(), 1);
+        let (whole, reductions) = batches.pop_front().unwrap();
+        assert_eq!(whole.len(), messages.len());
+        let original = summary::fragment_summary_messages(&whole, None);
+        split_front(&mut batches, whole, reductions).unwrap();
+        assert_eq!(batches.len(), 2);
+        let reduced: Vec<_> = batches
+            .into_iter()
+            .flat_map(|(pieces, reduction)| {
+                assert_eq!(reduction, 1);
+                pieces
+            })
+            .collect();
+        assert_eq!(summary::fragment_summary_messages(&reduced, None), original);
+        let (fragment, _) = fragment_batches(
+            summary::transcript_fragments(&[json!({ "role": "tool", "tool_call_id": "call_1", "content": "€🙂 tool output" })], 20_000).unwrap(),
+            20_000,
+        )
+        .pop_front()
+        .unwrap();
+        let mut reduced = VecDeque::new();
+        split_front(&mut reduced, fragment, 0).unwrap();
+        assert_eq!(reduced.len(), 2);
+        for (pieces, reduction) in &reduced {
+            assert_eq!(*reduction, 1);
+            let request = summary::fragment_summary_messages(pieces, None);
+            let data: serde_json::Value =
+                serde_json::from_str(request[1]["content"].as_str().unwrap()).unwrap();
+            assert_eq!(data["conversation"][0]["provenance"]["role"], "tool");
+            assert_eq!(
+                data["conversation"][0]["provenance"]["tool_call_id"],
+                "call_1"
+            );
+        }
+        let (fragment, _) = reduced.pop_front().unwrap();
+        assert!(matches!(
+            split_front(&mut reduced, fragment, MAX_FRAGMENT_REDUCTIONS),
+            Err(SummaryExecutionError::Unsafe(
+                ApiError::MessageExceedsContextLimit
+            ))
+        ));
     }
 
     #[tokio::test]

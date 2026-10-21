@@ -96,17 +96,41 @@ pub struct CompactionSourceMetadata {
 }
 
 impl CompactionSourceMetadata {
-    /// Only complete items are compactable. The current execution may contribute
-    /// settled tool steps; concurrent executions remain entirely verbatim.
+    /// A terminal response owns an immutable transcript even when its last item
+    /// was interrupted. Legacy standalone rows have no execution to consult, so
+    /// only their explicit terminal item states establish historical finality.
+    /// Unknown and still-running executions must never be inferred complete.
+    pub fn is_immutable_historical(&self) -> bool {
+        match self.response_uuid {
+            Some(_) => matches!(
+                self.response_status.as_deref(),
+                Some("completed" | "failed" | "cancelled")
+            ),
+            None => matches!(
+                self.item_status.as_deref(),
+                Some("completed" | "incomplete")
+            ),
+        }
+    }
+
+    /// The current execution may contribute only completed steps. Other
+    /// executions contribute their partial items only after becoming terminal;
+    /// concurrent or unknown executions remain entirely verbatim.
     pub fn is_settled_for(
         &self,
         current_response: Option<Uuid>,
         active_response_uuids: &[Uuid],
     ) -> bool {
-        self.item_status.as_deref() == Some("completed")
-            && !self.response_uuid.is_some_and(|uuid| {
-                Some(uuid) != current_response && active_response_uuids.contains(&uuid)
-            })
+        if self.response_uuid.is_some_and(|uuid| {
+            Some(uuid) != current_response && active_response_uuids.contains(&uuid)
+        }) {
+            return false;
+        }
+        if self.response_uuid.is_some() && self.response_uuid == current_response {
+            self.item_status.as_deref() == Some("completed")
+        } else {
+            self.is_immutable_historical()
+        }
     }
 }
 
@@ -618,10 +642,11 @@ impl CompactionCheckpoint {
             if !previous_valid
                 || coverage_fingerprint(&items, &new.covered_items).ok() != Some(new.source_fingerprint)
                 || items.iter().any(|row| {
-                    row.item_status.as_deref() != Some("completed")
-                        || (!previous.contains(&row.key)
-                            && matches!(row.response_status.as_deref(), Some("queued" | "in_progress"))
-                            && row.response_uuid != new.current_response_uuid)
+                    let frozen_previous = previous.contains(&row.key)
+                        && (row.item_status.as_deref() == Some("completed")
+                            || row.is_immutable_historical());
+                    !frozen_previous
+                        && !row.is_settled_for(new.current_response_uuid, &[])
                 })
             {
                 return Ok(CompactionPublishResult::Conflict);

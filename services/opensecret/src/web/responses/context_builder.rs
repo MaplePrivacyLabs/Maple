@@ -170,6 +170,15 @@ pub fn snapshot_from_raw(
     let mut items = Vec::with_capacity(metadata.len());
     for (index, source) in metadata.iter().enumerate() {
         let settled = source.is_settled_for(Some(current_response), active_response_uuids);
+        let unmatched = match source.key.kind {
+            ContextItemKind::ToolCall => {
+                !outputs.contains(&source.tool_call_id.unwrap_or(source.key.uuid))
+            }
+            ContextItemKind::ToolOutput => {
+                source.tool_call_id.is_none_or(|id| !calls.contains(&id))
+            }
+            _ => false,
+        };
         let mut item = ContextItem::from_prompt(
             source.key,
             source.response_uuid,
@@ -178,19 +187,47 @@ pub fn snapshot_from_raw(
             settled,
             source.tool_call_id,
         );
+        item.protected_input = source.tool_name.as_deref() == Some("read_image")
+            && matches!(
+                source.key.kind,
+                ContextItemKind::ToolCall | ContextItemKind::ToolOutput
+            );
+        item.historical_unmatched = unmatched
+            && source.response_uuid != Some(current_response)
+            && source.is_immutable_historical();
         if covered.contains(&source.key) {
             // The executor verifies the previous checkpoint's exact source
             // digest first. A previously covered completed step does not become
             // mutable merely because another response is now current.
-            item.settled = source.item_status.as_deref() == Some("completed");
+            item.settled = source.item_status.as_deref() == Some("completed")
+                || source.is_immutable_historical();
             items.push(item);
             continue;
         }
         let row = raw_by_key
             .remove(&source.key)
             .ok_or(crate::ApiError::InternalServerError)?;
+        let unrelated_active = source.response_uuid.is_some_and(|response| {
+            response != current_response && active_response_uuids.contains(&response)
+        });
+        if unmatched && (unrelated_active || item.historical_unmatched) {
+            pending.remove(&source.response_uuid);
+            items.push(item);
+            continue;
+        }
         let Some(encrypted) = row.content_enc.as_ref() else {
-            if settled {
+            // Empty assistant/reasoning rows are valid durable items. In
+            // particular, a reasoning-only completion has an empty assistant
+            // placeholder and must not poison the next conversation request.
+            if source.key.kind == ContextItemKind::Assistant {
+                pending.remove(&source.response_uuid);
+            }
+            if settled
+                && !matches!(
+                    source.key.kind,
+                    ContextItemKind::Assistant | ContextItemKind::Reasoning
+                )
+            {
                 return Err(crate::ApiError::InternalServerError);
             }
             items.push(item);
@@ -219,25 +256,6 @@ pub fn snapshot_from_raw(
                 reasoning.content.push_str(&content);
                 reasoning.tok = reasoning.tok.saturating_add(tokens);
             }
-            items.push(item);
-            continue;
-        }
-        // Preserve prior provider-validity behavior for an unfinished unrelated
-        // response. Its identities stay uncovered and cannot enter a checkpoint.
-        let unrelated_active = source.response_uuid.is_some_and(|response| {
-            response != current_response && active_response_uuids.contains(&response)
-        });
-        let unmatched = match source.key.kind {
-            ContextItemKind::ToolCall => {
-                !outputs.contains(&source.tool_call_id.unwrap_or(source.key.uuid))
-            }
-            ContextItemKind::ToolOutput => {
-                source.tool_call_id.is_none_or(|id| !calls.contains(&id))
-            }
-            _ => false,
-        };
-        if unrelated_active && unmatched {
-            pending.remove(&source.response_uuid);
             items.push(item);
             continue;
         }
@@ -301,6 +319,7 @@ pub fn snapshot_from_raw(
             },
         };
         item.prompt_messages = format_chat_messages(vec![message])?;
+        let protected_input = item.protected_input;
         item = ContextItem::from_prompt(
             item.key,
             item.response_uuid,
@@ -309,6 +328,7 @@ pub fn snapshot_from_raw(
             settled,
             item.tool_call_id,
         );
+        item.protected_input = protected_input;
         items.push(item);
     }
     // Tool IDs are normalized once on the complete final prompt, not separately
@@ -1163,6 +1183,255 @@ mod tests {
             &None,
         );
         assert!(matches!(result, Err(crate::ApiError::InternalServerError)));
+    }
+
+    #[tokio::test]
+    async fn nullable_completed_items_do_not_poison_next_turn_or_leak_pending_reasoning() {
+        let key = secp256k1::SecretKey::from_slice(&[7; 32]).unwrap();
+        let prior_response = Uuid::from_u128(1_000);
+        let current_response = Uuid::from_u128(2_000);
+        let fixtures = [
+            (ContextItemKind::User, "\"prior question\""),
+            (
+                ContextItemKind::Reasoning,
+                "private reasoning before empty answer",
+            ),
+            (ContextItemKind::Assistant, ""),
+            (ContextItemKind::Reasoning, ""),
+            (ContextItemKind::Assistant, "later visible answer"),
+            (ContextItemKind::User, "\"follow-up\""),
+        ];
+        let mut metadata = Vec::new();
+        let mut raw = Vec::new();
+        for (index, (kind, content)) in fixtures.into_iter().enumerate() {
+            let response = if index == 5 {
+                current_response
+            } else {
+                prior_response
+            };
+            let (mut source, mut row) =
+                snapshot_fixture(kind, (index + 1) as u128, Some(response), content).await;
+            if matches!(index, 2 | 3) {
+                source.token_count = Some(0);
+                source.encrypted_bytes = 0;
+                row.content_enc = None;
+                row.token_count = Some(0);
+            }
+            metadata.push(source);
+            raw.push(row);
+        }
+        let current = metadata[5].key;
+        let snapshot = snapshot_from_raw(
+            Vec::new(),
+            0,
+            &metadata,
+            raw,
+            &key,
+            "deepseek-v4-1-flash",
+            ReasoningReplay::All,
+            current,
+            current_response,
+            &[current_response],
+            &None,
+        )
+        .unwrap();
+        for index in [2, 3] {
+            assert!(snapshot.items[index].settled);
+            assert!(snapshot.items[index].prompt_messages.is_empty());
+            assert_eq!(snapshot.items[index].estimated_tokens, 0);
+        }
+        assert!(snapshot.items[4].prompt_messages[0]
+            .get("reasoning")
+            .is_none());
+        assert!(snapshot.items[4].prompt_messages[0]
+            .get("reasoning_content")
+            .is_none());
+        let messages = super::super::compaction::context::project(&snapshot, &None)
+            .unwrap()
+            .0;
+        assert_eq!(messages.len(), 3);
+        assert_eq!(messages[0]["content"], "prior question");
+        assert_eq!(messages[1]["content"], "later visible answer");
+        assert_eq!(messages[2]["content"], "follow-up");
+    }
+
+    #[tokio::test]
+    async fn null_required_user_content_still_fails_closed() {
+        let key = secp256k1::SecretKey::from_slice(&[7; 32]).unwrap();
+        let (source, mut row) = snapshot_fixture(ContextItemKind::User, 1, None, "\"input\"").await;
+        row.content_enc = None;
+        let result = snapshot_from_raw(
+            Vec::new(),
+            0,
+            std::slice::from_ref(&source),
+            vec![row],
+            &key,
+            "deepseek-v4-1-flash",
+            ReasoningReplay::None,
+            source.key,
+            Uuid::new_v4(),
+            &[],
+            &None,
+        );
+        assert!(matches!(result, Err(crate::ApiError::InternalServerError)));
+    }
+
+    #[tokio::test]
+    async fn terminal_partial_and_legacy_unmatched_rows_are_coverable_on_next_turn() {
+        use super::super::compaction::{context, policy::CompactionPolicy};
+        let key = secp256k1::SecretKey::from_slice(&[7; 32]).unwrap();
+        let prior_response = Uuid::from_u128(1_000);
+        let current_response = Uuid::from_u128(2_000);
+        let fixtures = [
+            (ContextItemKind::User, "\"interrupted question\""),
+            (ContextItemKind::Reasoning, "unfinished private reasoning"),
+            (ContextItemKind::Assistant, "partial visible answer"),
+            (ContextItemKind::ToolCall, "{}"),
+            (ContextItemKind::User, "\"continue\""),
+        ];
+        let mut metadata = Vec::new();
+        let mut raw = Vec::new();
+        for (index, (kind, content)) in fixtures.into_iter().enumerate() {
+            let response = if index == 4 {
+                current_response
+            } else {
+                prior_response
+            };
+            let (mut source, mut row) =
+                snapshot_fixture(kind, (index + 1) as u128, Some(response), content).await;
+            source.response_status = Some(
+                if index == 4 {
+                    "in_progress"
+                } else {
+                    "cancelled"
+                }
+                .into(),
+            );
+            if matches!(index, 1..=3) {
+                source.item_status = Some("incomplete".into());
+                row.status = Some("incomplete".into());
+            }
+            if index == 3 {
+                row.content_enc = None;
+            }
+            metadata.push(source);
+            raw.push(row);
+        }
+        let current = metadata[4].key;
+        let snapshot = snapshot_from_raw(
+            Vec::new(),
+            0,
+            &metadata,
+            raw,
+            &key,
+            "deepseek-v4-1-flash",
+            ReasoningReplay::None,
+            current,
+            current_response,
+            &[current_response],
+            &None,
+        )
+        .unwrap();
+        assert!(snapshot.items[..4].iter().all(|item| item.settled));
+        assert_eq!(
+            snapshot.items[2].prompt_messages[0]["content"],
+            "partial visible answer"
+        );
+        assert!(snapshot.items[3].historical_unmatched);
+        assert!(snapshot.items[3].prompt_messages.is_empty());
+        let policy = CompactionPolicy {
+            input_budget: 100,
+            trigger_tokens: 1,
+            keep_recent_tokens: 0,
+            summary_input_budget: 80,
+        };
+        let plan = context::plan_batch(&snapshot, &None, &policy, true, 100).unwrap();
+        assert_eq!(
+            plan.summary_work[0].covered,
+            metadata[..4]
+                .iter()
+                .map(|item| item.key)
+                .collect::<Vec<_>>()
+        );
+        let checkpoint = Some(
+            context::complete_plan(
+                &None,
+                &plan,
+                &["Prior request stopped after a partial visible answer.".into()],
+            )
+            .unwrap(),
+        );
+        let messages = context::project(&snapshot, &checkpoint).unwrap().0;
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[1]["content"], "continue");
+    }
+
+    #[tokio::test]
+    async fn persisted_current_image_pairs_keep_input_provenance_for_tool_loop_compaction() {
+        use super::super::compaction::{context, policy::CompactionPolicy};
+        let key = secp256k1::SecretKey::from_slice(&[7; 32]).unwrap();
+        let response = Uuid::from_u128(1_000);
+        let fixtures = [
+            (ContextItemKind::User, "\"inspect image and search\""),
+            (ContextItemKind::ToolCall, "{}"),
+            (ContextItemKind::ToolOutput, "exact image description"),
+            (ContextItemKind::ToolCall, "{}"),
+            (ContextItemKind::ToolOutput, "completed search output"),
+        ];
+        let mut metadata = Vec::new();
+        let mut raw = Vec::new();
+        for (index, (kind, content)) in fixtures.into_iter().enumerate() {
+            let (mut source, mut row) =
+                snapshot_fixture(kind, (index + 1) as u128, Some(response), content).await;
+            source.response_status = Some("in_progress".into());
+            if matches!(index, 1 | 2) {
+                source.tool_name = Some("read_image".into());
+                row.tool_name = source.tool_name.clone();
+            }
+            if matches!(index, 2 | 4) {
+                source.tool_call_id = Some(Uuid::from_u128(index as u128));
+                row.tool_call_id = source.tool_call_id;
+            }
+            metadata.push(source);
+            raw.push(row);
+        }
+        let snapshot = snapshot_from_raw(
+            Vec::new(),
+            0,
+            &metadata,
+            raw,
+            &key,
+            "deepseek-v4-1-flash",
+            ReasoningReplay::None,
+            metadata[0].key,
+            response,
+            &[response],
+            &None,
+        )
+        .unwrap();
+        assert!(snapshot.items[1].protected_input);
+        assert!(snapshot.items[2].protected_input);
+        assert!(!snapshot.items[3].protected_input);
+        let policy = CompactionPolicy {
+            input_budget: 100,
+            trigger_tokens: 1,
+            keep_recent_tokens: 0,
+            summary_input_budget: 80,
+        };
+        let plan = context::plan_batch(&snapshot, &None, &policy, true, 100).unwrap();
+        assert_eq!(
+            plan.summary_work[0].covered,
+            vec![metadata[3].key, metadata[4].key]
+        );
+        let checkpoint =
+            Some(context::complete_plan(&None, &plan, &["search memory".into()]).unwrap());
+        let messages = context::project(&snapshot, &checkpoint).unwrap().0;
+        assert_eq!(messages[0]["content"], "inspect image and search");
+        assert_eq!(messages[2]["content"], "exact image description");
+        assert!(messages[3]["content"]
+            .as_str()
+            .unwrap()
+            .contains("search memory"));
     }
 
     #[test]

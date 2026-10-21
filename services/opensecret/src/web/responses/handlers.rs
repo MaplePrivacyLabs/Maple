@@ -314,6 +314,7 @@ pub enum PublicResponseFailure {
     Provider(PublicProviderError),
     DeadlineExceeded,
     RepetitionDetected,
+    ContextLimit,
     Internal,
 }
 
@@ -347,6 +348,7 @@ impl PublicResponseFailure {
                 }
             }
             ApiError::InferenceProvider(error) => Self::Provider(*error),
+            ApiError::MessageExceedsContextLimit => Self::ContextLimit,
             _ => Self::Internal,
         }
     }
@@ -356,6 +358,7 @@ impl PublicResponseFailure {
             Self::CapacityRateLimited => "rate_limit_exceeded",
             Self::Provider(error) => error.code(),
             Self::RepetitionDetected => "repetition_detected",
+            Self::ContextLimit => "message_exceeds_context_limit",
             Self::CapacityOverloaded | Self::DeadlineExceeded | Self::Internal => "server_error",
         }
     }
@@ -368,6 +371,7 @@ impl PublicResponseFailure {
             Self::DeadlineExceeded => "The response exceeded its execution deadline.",
             Self::Provider(error) => error.message(),
             Self::RepetitionDetected => "The model stopped because it was repeating itself.",
+            Self::ContextLimit => "The message exceeds the model's context limit.",
             Self::Internal => "The response could not be completed.",
         }
     }
@@ -376,6 +380,7 @@ impl PublicResponseFailure {
         let error_code = match self {
             Self::CapacityRateLimited | Self::CapacityOverloaded => INFERENCE_CAPACITY_ERROR_CODE,
             Self::Provider(error) => error.code(),
+            Self::ContextLimit => "message_exceeds_context_limit",
             Self::DeadlineExceeded | Self::RepetitionDetected | Self::Internal => return None,
         };
         Some(OpenSecretResponseError {
@@ -572,12 +577,14 @@ fn build_model_turn_request(
 pub(super) fn build_compaction_model_request(
     body: &ResponsesCreateRequest,
     messages: &[Value],
-    summary_output_tokens: usize,
 ) -> Value {
     let mut request = build_model_turn_request(body, messages, false);
     request["stream"] = json!(false);
-    request["max_tokens"] = json!(summary_output_tokens);
     if let Some(object) = request.as_object_mut() {
+        // Like Pi's summarizer, retain the selected model/thinking policy and
+        // use its ordinary output allowance. The answer's caller-supplied cap
+        // must not become a separate limit on the internal summary.
+        object.remove("max_tokens");
         object.remove("stream_options");
     }
     request
@@ -1448,7 +1455,7 @@ mod tests {
             let original = serde_json::to_value(&body).unwrap();
 
             let main = build_model_turn_request(&body, &main_messages, true);
-            let helper = super::build_compaction_model_request(&body, &helper_messages, 4_096);
+            let helper = super::build_compaction_model_request(&body, &helper_messages);
             assert_eq!(main["model"], body.model);
             assert_eq!(helper["model"], main["model"]);
             assert_eq!(main["max_tokens"], json!(output_cap));
@@ -1456,7 +1463,7 @@ mod tests {
             assert_eq!(main["stream"], true);
             assert_eq!(main["stream_options"]["include_usage"], true);
             assert!(!main["tools"].as_array().unwrap().is_empty());
-            assert_eq!(helper["max_tokens"], 4_096);
+            assert!(helper.get("max_tokens").is_none());
             assert_eq!(helper["messages"], json!(helper_messages));
             assert_eq!(helper["stream"], false);
             for field in [
@@ -1485,6 +1492,43 @@ mod tests {
             summary: None,
         });
         request
+    }
+
+    #[test]
+    fn compaction_keeps_selected_reasoning_and_native_output_allowance() {
+        let messages = [json!({"role":"user","content":"Summarize history"})];
+        for model in ["deepseek-v4-1-flash", "glm-5-3", "kimi-k3"] {
+            for effort in [None, Some("low"), Some("high")] {
+                let mut body = match effort {
+                    Some(effort) => responses_request_with_effort(model, effort),
+                    None => responses_request_for_model(model),
+                };
+                body.max_output_tokens = Some(128);
+                let main = build_model_turn_request(&body, &messages, false);
+                let helper = super::build_compaction_model_request(&body, &messages);
+                for field in [
+                    "reasoning_effort",
+                    "chat_template_kwargs",
+                    "enable_thinking",
+                ] {
+                    assert_eq!(helper.get(field), main.get(field), "{model}: {field}");
+                }
+                assert_eq!(main["max_tokens"], 128);
+                assert!(helper.get("max_tokens").is_none());
+                assert!(helper.get("max_completion_tokens").is_none());
+            }
+        }
+    }
+
+    #[test]
+    fn impossible_output_reservation_is_rejected_before_context_preparation() {
+        let mut body = responses_request_for_model("deepseek-v4-1-flash");
+        body.max_output_tokens = Some(i32::MAX);
+        assert!(matches!(
+            crate::web::responses::compaction::policy_for(&body),
+            Err(ApiError::MessageExceedsContextLimit)
+        ));
+        assert_eq!(body.max_output_tokens, Some(i32::MAX));
     }
 
     #[test]
@@ -2519,6 +2563,13 @@ mod tests {
             "The model stopped because it was repeating itself."
         );
         assert!(repetition.contract_metadata().is_none());
+        let context = PublicResponseFailure::from_api_error(&ApiError::MessageExceedsContextLimit);
+        assert_eq!(context, PublicResponseFailure::ContextLimit);
+        assert_eq!(context.openai_code(), "message_exceeds_context_limit");
+        assert_eq!(
+            context.contract_metadata().unwrap().error_code,
+            "message_exceeds_context_limit"
+        );
     }
 
     #[test]
@@ -5193,7 +5244,7 @@ async fn prepare_context_and_check_billing(
     )];
     for pair in image_descriptions {
         let messages = pair.prompt_messages();
-        incoming.push(ContextItem::from_prompt(
+        let mut call = ContextItem::from_prompt(
             ContextItemKey {
                 kind: ContextItemKind::ToolCall,
                 uuid: pair.tool_call_id,
@@ -5203,8 +5254,10 @@ async fn prepare_context_and_check_billing(
             pair.argument_tokens as usize,
             false,
             Some(pair.tool_call_id),
-        ));
-        incoming.push(ContextItem::from_prompt(
+        );
+        call.protected_input = true;
+        incoming.push(call);
+        let mut output = ContextItem::from_prompt(
             ContextItemKey {
                 kind: ContextItemKind::ToolOutput,
                 uuid: pair.tool_output_id,
@@ -5214,7 +5267,9 @@ async fn prepare_context_and_check_billing(
             pair.output_tokens as usize,
             false,
             Some(pair.tool_call_id),
-        ));
+        );
+        output.protected_input = true;
+        incoming.push(output);
     }
     let executor = SummaryExecutor {
         state,
@@ -5235,6 +5290,7 @@ async fn prepare_context_and_check_billing(
         &internal_system_prompt,
         model_reasoning_replay(&body.model, web_search_enabled).before_new_user_message(),
         &incoming,
+        billing_access,
         force_compaction,
     )
     .await?;
@@ -6276,7 +6332,11 @@ async fn setup_completion_processor(
                 .await
                 {
                     Ok(prompt) => prompt,
-                    Err(_) => return ResponseTerminal::Failed(PublicResponseFailure::Internal),
+                    Err(error) => {
+                        return ResponseTerminal::Failed(PublicResponseFailure::from_api_error(
+                            &error,
+                        ))
+                    }
                 };
                 prompt_messages = next.messages;
                 prompt_token_estimate = next.estimated_tokens;
@@ -6331,6 +6391,7 @@ async fn prepare_persisted_context(
         &build_internal_system_prompt(context.web_search_enabled, model_plan),
         model_reasoning_replay(&body.model, tools_enabled),
         &[],
+        None,
         force,
     )
     .await

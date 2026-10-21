@@ -26,6 +26,13 @@ pub struct ContextItem {
     pub estimated_tokens: usize,
     pub settled: bool,
     pub tool_call_id: Option<Uuid>,
+    /// Request-derived input provenance (for example, automatic descriptions).
+    /// This is protected only while its owning Response is current; older input
+    /// remains compactable and still determines active-memory placement.
+    pub protected_input: bool,
+    /// A finished historical tool attempt without its counterpart is retained as
+    /// an identity, not replayed as an invalid provider tool exchange.
+    pub historical_unmatched: bool,
 }
 
 impl ContextItem {
@@ -60,6 +67,8 @@ impl ContextItem {
             estimated_tokens,
             settled,
             tool_call_id,
+            protected_input: false,
+            historical_unmatched: false,
         }
     }
 }
@@ -110,7 +119,8 @@ pub struct SummaryWork {
     pub kind: SectionKind,
     pub anchor: Option<ContextItemKey>,
     pub previous_summary: Option<String>,
-    /// Newly covered source only. Previously summarized text is supplied above.
+    /// Newly covered source. When folding an active section, its authenticated
+    /// memory follows its triggering user and request-derived input prefix.
     pub items: Vec<ContextItem>,
     /// Complete eventual coverage, including a previous checkpoint's coverage.
     pub covered: Vec<ContextItemKey>,
@@ -159,6 +169,9 @@ fn atomic_groups(snapshot: &ContextSnapshot) -> Vec<AtomicGroup> {
     let mut calls = HashMap::new();
     let mut outputs = HashMap::new();
     for (index, item) in items.iter().enumerate() {
+        if item.historical_unmatched && item.settled {
+            continue;
+        }
         match item.key.kind {
             ContextItemKind::ToolCall => {
                 calls.insert(item.tool_call_id.unwrap_or(item.key.uuid), index);
@@ -270,7 +283,12 @@ fn validated_coverage(
                 let position = *positions
                     .get(key)
                     .ok_or(ContextError::Checkpoint("covered source is absent"))?;
-                if *key == snapshot.current_user || !snapshot.items[position].settled {
+                if *key == snapshot.current_user
+                    || !snapshot.items[position].settled
+                    || (snapshot.items[position].protected_input
+                        && snapshot.items[position].response_uuid
+                            == Some(snapshot.current_response))
+                {
                     return Err(ContextError::Checkpoint(
                         "required or unsettled source covered",
                     ));
@@ -321,12 +339,36 @@ fn summary_message(section: &CheckpointSection) -> Value {
     })
 }
 
+fn active_memory_after(
+    snapshot: &ContextSnapshot,
+    section: &CheckpointSection,
+) -> Option<ContextItemKey> {
+    let anchor = section.anchor?;
+    let position = snapshot.items.iter().position(|item| item.key == anchor)?;
+    let response = snapshot.items[position].response_uuid;
+    let mut after = anchor;
+    for item in snapshot.items.iter().skip(position + 1) {
+        if item.response_uuid != response {
+            continue;
+        }
+        if !item.protected_input {
+            break;
+        }
+        after = item.key;
+    }
+    Some(after)
+}
+
 pub fn project(
     snapshot: &ContextSnapshot,
     checkpoint: &Option<CheckpointPayload>,
 ) -> Result<(Vec<Value>, usize), ContextError> {
     let covered = validated_coverage(snapshot, checkpoint)?;
     let mut messages = snapshot.instructions.clone();
+    let active_after = checkpoint
+        .as_ref()
+        .and_then(|value| value.active.as_ref())
+        .and_then(|section| active_memory_after(snapshot, section));
     if let Some(section) = checkpoint.as_ref().and_then(|value| value.history.as_ref()) {
         messages.push(summary_message(section));
     }
@@ -335,7 +377,7 @@ pub fn project(
             messages.extend(item.prompt_messages.iter().cloned());
         }
         if let Some(section) = checkpoint.as_ref().and_then(|value| value.active.as_ref()) {
-            if section.anchor == Some(item.key) {
+            if active_after == Some(item.key) {
                 messages.push(summary_message(section));
             }
         }
@@ -364,11 +406,25 @@ fn projected_token_estimate(
         .fold(raw_tokens, usize::saturating_add)
 }
 
+#[cfg(test)]
 pub fn plan(
     snapshot: &ContextSnapshot,
     checkpoint: &Option<CheckpointPayload>,
     policy: &CompactionPolicy,
     force: bool,
+) -> Result<ContextPlan, ContextError> {
+    plan_batch(snapshot, checkpoint, policy, force, usize::MAX)
+}
+
+/// Plan one item-aligned history batch. A single atomic tool/reasoning group may
+/// exceed the target; its complete transcript must still be summarized before
+/// publication. An older active section and its anchor are one indivisible unit.
+pub fn plan_batch(
+    snapshot: &ContextSnapshot,
+    checkpoint: &Option<CheckpointPayload>,
+    policy: &CompactionPolicy,
+    force: bool,
+    max_history_batch_tokens: usize,
 ) -> Result<ContextPlan, ContextError> {
     let covered = validated_coverage(snapshot, checkpoint)?;
     let estimated_tokens = projected_token_estimate(snapshot, checkpoint, &covered);
@@ -407,47 +463,96 @@ pub fn plan(
         .flat_map(|section| section.covered.iter().copied().chain(section.anchor))
         .filter_map(|key| snapshot.items.iter().position(|item| item.key == key))
         .max();
+    let fold_span = old_active
+        .and_then(|section| section.anchor)
+        .and_then(|anchor| snapshot.items.iter().position(|item| item.key == anchor))
+        .zip(fold_through)
+        .filter(|(_, end)| *end < current)
+        .and_then(|(start, end)| {
+            let first = groups
+                .iter()
+                .position(|group| group.start <= start && start <= group.end)?;
+            let last = groups
+                .iter()
+                .position(|group| group.start <= end && end <= group.end)?;
+            Some((first, last))
+        });
     let mut history = Vec::new();
     let mut active = Vec::new();
-    let mut history_open = true;
-    let mut active_open = true;
+    let mut history_tokens = 0usize;
+    let mut group_index = 0usize;
+    while let Some(group) = groups.get(group_index) {
+        if group.end >= current {
+            break;
+        }
+        let last = fold_span
+            .filter(|(first, _)| *first == group_index)
+            .map_or(group_index, |(_, last)| last);
+        let batch_groups = &groups[group_index..=last];
+        let items = &snapshot.items[group.start..=groups[last].end];
+        if items.iter().all(|item| covered.contains(&item.key)) {
+            group_index = last + 1;
+            continue;
+        }
+        let eligible = batch_groups.iter().all(|group| group.complete)
+            && items.iter().all(|item| {
+                item.settled
+                    && !(item.protected_input
+                        && item.response_uuid == Some(snapshot.current_response))
+            });
+        let must_fold = fold_through.is_some_and(|end| group.start <= end);
+        let keep_raw = (group_index..=last).any(|index| retained.contains(&index));
+        if !eligible || (keep_raw && !must_fold) {
+            break;
+        }
+        let tokens = items
+            .iter()
+            .filter(|item| !covered.contains(&item.key))
+            .map(|item| item.estimated_tokens)
+            .fold(0usize, usize::saturating_add);
+        if history_tokens > 0 && history_tokens.saturating_add(tokens) > max_history_batch_tokens {
+            break;
+        }
+        history.extend(
+            items
+                .iter()
+                .filter(|item| !covered.contains(&item.key))
+                .cloned(),
+        );
+        history_tokens = history_tokens.saturating_add(tokens);
+        group_index = last + 1;
+    }
     for (index, group) in groups.iter().enumerate() {
+        if group.start <= current {
+            continue;
+        }
         let items = &snapshot.items[group.start..=group.end];
         if items.iter().all(|item| covered.contains(&item.key)) {
             continue;
         }
-        let eligible = group.complete && items.iter().all(|item| item.settled);
-        if group.end < current {
-            let must_fold = fold_through.is_some_and(|end| group.start <= end);
-            if history_open && eligible && (!retained.contains(&index) || must_fold) {
-                history.extend(
-                    items
-                        .iter()
-                        .filter(|item| !covered.contains(&item.key))
-                        .cloned(),
-                );
-            } else {
-                history_open = false;
-            }
-        } else if group.start > current {
-            if active_open
-                && eligible
-                && !retained.contains(&index)
-                && items.iter().all(|item| {
-                    item.response_uuid == Some(snapshot.current_response)
-                        && item.key.kind != ContextItemKind::User
-                })
-            {
-                active.extend(
-                    items
-                        .iter()
-                        .filter(|item| !covered.contains(&item.key))
-                        .cloned(),
-                );
-            } else {
-                active_open = false;
-            }
+        // Current image descriptions are input, rather than earlier model work.
+        // Retain them without fencing off later completed tool exchanges.
+        if items.iter().all(|item| {
+            item.protected_input && item.response_uuid == Some(snapshot.current_response)
+        }) {
+            continue;
         }
+        let eligible = group.complete
+            && items.iter().all(|item| {
+                item.settled
+                    && !item.protected_input
+                    && item.response_uuid == Some(snapshot.current_response)
+                    && item.key.kind != ContextItemKind::User
+            });
+        if !eligible || retained.contains(&index) {
+            break;
+        }
+        active.extend(
+            items
+                .iter()
+                .filter(|item| !covered.contains(&item.key))
+                .cloned(),
+        );
     }
     let folds_previous_active = old_active.is_some_and(|section| {
         section
@@ -465,16 +570,22 @@ pub fn plan(
     });
     if !history.is_empty() {
         let previous_history = checkpoint.as_ref().and_then(|value| value.history.as_ref());
-        let mut summaries = previous_history
-            .map(|section| section.summary.clone())
-            .into_iter()
-            .collect::<Vec<_>>();
         let mut keys = previous_history
             .map(|section| section.covered.clone())
             .unwrap_or_default();
         if folds_previous_active {
             if let Some(section) = old_active {
-                summaries.push(section.summary.clone());
+                // This memory describes work after its triggering user input.
+                // Supply it there, rather than presenting it as older memory
+                // before the user's request to the incremental summarizer.
+                let after = active_memory_after(snapshot, section);
+                let anchor = history
+                    .iter_mut()
+                    .find(|item| Some(item.key) == after)
+                    .ok_or(ContextError::Checkpoint(
+                        "active memory insertion source is absent",
+                    ))?;
+                anchor.summary_messages.push(summary_message(section));
                 keys.extend(section.covered.iter().copied());
             }
         }
@@ -483,7 +594,7 @@ pub fn plan(
         result.summary_work.push(SummaryWork {
             kind: SectionKind::History,
             anchor: None,
-            previous_summary: (!summaries.is_empty()).then(|| summaries.join("\n\n")),
+            previous_summary: previous_history.map(|section| section.summary.clone()),
             items: history,
             covered: keys,
             folds_previous_active,
@@ -600,7 +711,6 @@ mod tests {
             trigger_tokens: 800,
             keep_recent_tokens: 200,
             summary_input_budget: 800,
-            summary_output_tokens: 100,
         }
     }
 
@@ -770,10 +880,15 @@ mod tests {
         assert_eq!(next.summary_work.len(), 2);
         assert_eq!(next.summary_work[0].kind, SectionKind::History);
         assert!(next.summary_work[0].folds_previous_active);
+        assert!(next.summary_work[0].previous_summary.is_none());
         assert_eq!(
-            next.summary_work[0].previous_summary.as_deref(),
-            Some("old active memory")
+            next.summary_work[0].items[0].summary_messages[0]["content"],
+            "item-1"
         );
+        assert!(next.summary_work[0].items[0].summary_messages[1]["content"]
+            .as_str()
+            .unwrap()
+            .contains("old active memory"));
         assert_eq!(next.summary_work[1].anchor, Some(snapshot.current_user));
         let candidate = Some(
             complete_plan(
@@ -834,8 +949,16 @@ mod tests {
         assert_eq!(plan.summary_work.len(), 2);
         assert_eq!(
             plan.summary_work[0].previous_summary.as_deref(),
-            Some("older memory\n\nprior active progress")
+            Some("older memory")
         );
+        assert_eq!(
+            plan.summary_work[0].items[0].summary_messages[0]["content"],
+            "item-3"
+        );
+        assert!(plan.summary_work[0].items[0].summary_messages[1]["content"]
+            .as_str()
+            .unwrap()
+            .contains("prior active progress"));
         assert_eq!(
             plan.summary_work[0]
                 .items
@@ -1162,5 +1285,198 @@ mod tests {
             .collect();
         let transcript = super::super::summary::serialize_transcript(&messages).unwrap();
         assert!(!transcript.contains("item-2"));
+    }
+
+    #[test]
+    fn bounded_history_batches_make_progress_without_splitting_tool_pairs() {
+        let mut items = vec![item(ContextItemKind::User, 1, 100)];
+        items.extend(tool_pair(2, 3, 300));
+        items.push(item(ContextItemKind::Assistant, 4, 100));
+        items.push(item(ContextItemKind::User, 5, 100));
+        let snapshot = snapshot(items, 5);
+        let mut policy = policy();
+        policy.keep_recent_tokens = 0;
+        let first = plan_batch(&snapshot, &None, &policy, true, 500).unwrap();
+        assert_eq!(
+            first.summary_work[0].covered,
+            vec![key(ContextItemKind::User, 1)]
+        );
+        let checkpoint = Some(complete_plan(&None, &first, &["first memory".into()]).unwrap());
+        let second = plan_batch(&snapshot, &checkpoint, &policy, true, 500).unwrap();
+        assert_eq!(
+            second.summary_work[0]
+                .items
+                .iter()
+                .map(|item| item.key)
+                .collect::<Vec<_>>(),
+            vec![
+                key(ContextItemKind::ToolCall, 2),
+                key(ContextItemKind::ToolOutput, 3)
+            ]
+        );
+        let checkpoint =
+            Some(complete_plan(&checkpoint, &second, &["pair memory".into()]).unwrap());
+        let third = plan_batch(&snapshot, &checkpoint, &policy, true, 500).unwrap();
+        assert_eq!(
+            third.summary_work[0].items[0].key,
+            key(ContextItemKind::Assistant, 4)
+        );
+        assert!(!third.summary_work[0]
+            .covered
+            .contains(&snapshot.current_user));
+    }
+
+    #[test]
+    fn batch_boundary_never_covers_active_anchor_without_its_complete_memory() {
+        let mut items = vec![
+            item(ContextItemKind::User, 1, 100),
+            item(ContextItemKind::User, 2, 100),
+        ];
+        items.extend(tool_pair(3, 4, 300));
+        items.push(item(ContextItemKind::Assistant, 5, 100));
+        items.push(item(ContextItemKind::User, 6, 100));
+        let snapshot = snapshot(items, 6);
+        let checkpoint = Some(CheckpointPayload {
+            active: Some(CheckpointSection {
+                summary: "lookup after question two".into(),
+                covered: vec![
+                    key(ContextItemKind::ToolCall, 3),
+                    key(ContextItemKind::ToolOutput, 4),
+                ],
+                anchor: Some(key(ContextItemKind::User, 2)),
+            }),
+            ..CheckpointPayload::default()
+        });
+        let mut policy = policy();
+        policy.keep_recent_tokens = 0;
+        let first = plan_batch(&snapshot, &checkpoint, &policy, true, 150).unwrap();
+        assert_eq!(
+            first.summary_work[0].covered,
+            vec![key(ContextItemKind::User, 1)]
+        );
+        assert!(!first.summary_work[0].folds_previous_active);
+        let checkpoint =
+            Some(complete_plan(&checkpoint, &first, &["older memory".into()]).unwrap());
+        let second = plan_batch(&snapshot, &checkpoint, &policy, true, 50).unwrap();
+        let work = &second.summary_work[0];
+        assert!(work.folds_previous_active);
+        assert_eq!(work.previous_summary.as_deref(), Some("older memory"));
+        assert_eq!(work.items[0].key, key(ContextItemKind::User, 2));
+        assert_eq!(work.items[0].summary_messages[0]["content"], "item-2");
+        assert!(work.items[0].summary_messages[1]["content"]
+            .as_str()
+            .unwrap()
+            .contains("lookup after question two"));
+        assert!(work.covered.contains(&key(ContextItemKind::ToolCall, 3)));
+        assert!(work.covered.contains(&key(ContextItemKind::ToolOutput, 4)));
+        assert!(!work.covered.contains(&key(ContextItemKind::Assistant, 5)));
+    }
+
+    #[test]
+    fn blocked_active_fold_keeps_anchor_and_memory_out_of_a_partial_batch() {
+        let mut items = vec![item(ContextItemKind::User, 1, 100)];
+        let mut intervening = item(ContextItemKind::Assistant, 2, 100);
+        intervening.settled = false;
+        items.push(intervening);
+        items.extend(tool_pair(3, 4, 300));
+        items.push(item(ContextItemKind::User, 5, 100));
+        let snapshot = snapshot(items, 5);
+        let checkpoint = Some(CheckpointPayload {
+            active: Some(CheckpointSection {
+                summary: "completed lookup".into(),
+                covered: vec![
+                    key(ContextItemKind::ToolCall, 3),
+                    key(ContextItemKind::ToolOutput, 4),
+                ],
+                anchor: Some(key(ContextItemKind::User, 1)),
+            }),
+            ..CheckpointPayload::default()
+        });
+        let mut policy = policy();
+        policy.keep_recent_tokens = 0;
+        assert!(plan_batch(&snapshot, &checkpoint, &policy, true, 100)
+            .unwrap()
+            .summary_work
+            .is_empty());
+    }
+
+    #[test]
+    fn current_image_input_survives_later_active_compaction_and_reload_in_order() {
+        let mut items = vec![item(ContextItemKind::User, 1, 100)];
+        let mut images = tool_pair(2, 3, 300);
+        for item in &mut images {
+            item.protected_input = true;
+        }
+        items.extend(images);
+        items.extend(tool_pair(4, 5, 600));
+        let mut snapshot = snapshot(items, 1);
+        let mut policy = policy();
+        policy.keep_recent_tokens = 0;
+        let first = plan_batch(&snapshot, &None, &policy, true, 1_000).unwrap();
+        assert_eq!(
+            first.summary_work[0].covered,
+            vec![
+                key(ContextItemKind::ToolCall, 4),
+                key(ContextItemKind::ToolOutput, 5)
+            ]
+        );
+        let checkpoint = Some(complete_plan(&None, &first, &["completed lookup".into()]).unwrap());
+        let messages = project(&snapshot, &checkpoint).unwrap().0;
+        assert_eq!(messages[1], snapshot.items[0].prompt_messages[0]);
+        assert_eq!(messages[2], snapshot.items[1].prompt_messages[0]);
+        assert_eq!(messages[3], snapshot.items[2].prompt_messages[0]);
+        assert!(messages[4]["content"]
+            .as_str()
+            .unwrap()
+            .contains("completed lookup"));
+        snapshot.items.push(item(ContextItemKind::User, 6, 100));
+        snapshot.current_user = key(ContextItemKind::User, 6);
+        snapshot.current_response = Uuid::from_u128(2_000);
+        let reloaded = project(&snapshot, &checkpoint).unwrap().0;
+        assert_eq!(&reloaded[1..5], &messages[1..5]);
+        let next = plan_batch(&snapshot, &checkpoint, &policy, true, 100).unwrap();
+        let work = &next.summary_work[0];
+        assert!(work.folds_previous_active);
+        assert!(work.covered.contains(&key(ContextItemKind::ToolCall, 2)));
+        assert!(work.covered.contains(&key(ContextItemKind::ToolOutput, 3)));
+        assert_eq!(work.items[0].summary_messages.len(), 1);
+        assert_eq!(work.items[1].summary_messages.len(), 1);
+        assert_eq!(work.items[2].summary_messages[0]["role"], "tool");
+        assert!(work.items[2].summary_messages[1]["content"]
+            .as_str()
+            .unwrap()
+            .contains("completed lookup"));
+    }
+
+    #[test]
+    fn settled_historical_unmatched_tool_is_coverable_without_invalid_replay() {
+        let mut orphan = tool_pair(2, 3, 600).remove(0);
+        orphan.response_uuid = Some(Uuid::from_u128(500));
+        orphan.historical_unmatched = true;
+        orphan.prompt_messages.clear();
+        orphan.summary_messages.clear();
+        orphan.estimated_tokens = 0;
+        let snapshot = snapshot(
+            vec![
+                item(ContextItemKind::User, 1, 100),
+                orphan,
+                item(ContextItemKind::User, 4, 100),
+            ],
+            4,
+        );
+        let mut policy = policy();
+        policy.keep_recent_tokens = 0;
+        let plan = plan_batch(&snapshot, &None, &policy, true, 1_000).unwrap();
+        assert_eq!(
+            plan.summary_work[0].covered,
+            vec![
+                key(ContextItemKind::User, 1),
+                key(ContextItemKind::ToolCall, 2)
+            ]
+        );
+        let checkpoint = Some(complete_plan(&None, &plan, &["historical request".into()]).unwrap());
+        let messages = project(&snapshot, &checkpoint).unwrap().0;
+        assert_eq!(messages.len(), 3);
+        assert_eq!(messages[2]["content"], "item-4");
     }
 }

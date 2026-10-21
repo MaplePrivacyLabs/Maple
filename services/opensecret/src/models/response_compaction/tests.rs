@@ -415,6 +415,50 @@ fn coverage_fingerprint_uses_canonical_source_order_instead_of_requested_key_ord
 }
 
 #[test]
+fn settlement_distinguishes_terminal_history_completed_current_steps_and_unknown_executions() {
+    let mut source = synthetic_snapshot().items.remove(0);
+    let response = source.response_uuid.unwrap();
+    let other = Uuid::from_u128(201);
+    for response_status in ["completed", "failed", "cancelled"] {
+        source.response_status = Some(response_status.to_string());
+        for item_status in ["completed", "incomplete", "in_progress"] {
+            source.item_status = Some(item_status.to_string());
+            assert!(source.is_immutable_historical());
+            assert!(source.is_settled_for(Some(other), &[]));
+            assert_eq!(
+                source.is_settled_for(Some(response), &[]),
+                item_status == "completed",
+                "a current execution may cover only its completed steps"
+            );
+        }
+    }
+    for response_status in [Some("queued"), Some("in_progress"), None] {
+        source.response_status = response_status.map(str::to_owned);
+        source.item_status = Some("completed".to_string());
+        assert!(!source.is_immutable_historical());
+        assert!(!source.is_settled_for(Some(other), &[]));
+        assert!(!source.is_settled_for(Some(other), &[response]));
+        assert!(source.is_settled_for(Some(response), &[response]));
+        source.item_status = Some("incomplete".to_string());
+        assert!(!source.is_settled_for(Some(response), &[response]));
+    }
+    source.response_uuid = None;
+    source.response_status = None;
+    for item_status in [
+        Some("completed"),
+        Some("incomplete"),
+        Some("in_progress"),
+        None,
+    ] {
+        source.item_status = item_status.map(str::to_owned);
+        let terminal = matches!(item_status, Some("completed" | "incomplete"));
+        assert_eq!(source.is_immutable_historical(), terminal);
+        assert_eq!(source.is_settled_for(None, &[]), terminal);
+        assert_eq!(source.is_settled_for(Some(other), &[]), terminal);
+    }
+}
+
+#[test]
 #[ignore = "requires AEAD_TAMPER_TEST_DATABASE_URL pointing at disposable migrated local Postgres"]
 fn db_compaction_ownership_isolation_covers_reads_publication_and_invalidation() {
     let mut fixture = Fixture::new();
@@ -555,6 +599,223 @@ fn db_compaction_uncovered_append_does_not_invalidate_selected_source() {
     let after = fixture.snapshot();
     assert_eq!(after.checkpoint.unwrap().uuid, checkpoint.uuid);
     assert_eq!(keys(&fixture.snapshot()), vec![covered, appended]);
+}
+
+#[test]
+#[ignore = "requires AEAD_TAMPER_TEST_DATABASE_URL pointing at disposable migrated local Postgres"]
+fn db_compaction_earlier_dated_late_insert_remains_uncovered_and_visible() {
+    let mut fixture = Fixture::new();
+    let covered = fixture.user_item(None, at(1));
+    let snapshot = fixture.snapshot();
+    let candidate = fixture.candidate(&snapshot, vec![covered], None);
+    let late_insert = fixture.user_item(None, at(0));
+    let checkpoint = published(fixture.publish(candidate));
+    let after = fixture.snapshot();
+    assert_eq!(after.checkpoint.unwrap().uuid, checkpoint.uuid);
+    assert_eq!(keys(&fixture.snapshot()), vec![late_insert, covered]);
+    let raw = CompactionSnapshot::load_items(
+        &mut fixture.conn,
+        fixture.conversation_id,
+        fixture.user,
+        &[late_insert],
+    )
+    .unwrap();
+    assert_eq!(raw_keys(&raw), vec![late_insert]);
+}
+
+#[test]
+#[ignore = "requires AEAD_TAMPER_TEST_DATABASE_URL pointing at disposable migrated local Postgres"]
+fn db_compaction_concurrent_publishers_have_one_winner_for_the_same_head() {
+    let mut fixture = Fixture::new();
+    let item = fixture.user_item(None, at(0));
+    let snapshot = fixture.snapshot();
+    let candidates = [
+        fixture.candidate(&snapshot, vec![item], None),
+        fixture.candidate(&snapshot, vec![item], None),
+    ];
+    let database_url = std::env::var("AEAD_TAMPER_TEST_DATABASE_URL").unwrap();
+    let (ready_sender, ready_receiver) = std::sync::mpsc::sync_channel(2);
+    let publishers: Vec<_> = candidates
+        .into_iter()
+        .map(|candidate| {
+            let database_url = database_url.clone();
+            let ready_sender = ready_sender.clone();
+            let (start_sender, start_receiver) = std::sync::mpsc::sync_channel(1);
+            let publisher = std::thread::spawn(move || {
+                let mut conn = PgConnection::establish(&database_url).unwrap();
+                conn.batch_execute("SET statement_timeout = '8s'").unwrap();
+                conn.batch_execute("SET lock_timeout = '6s'").unwrap();
+                ready_sender.send(()).unwrap();
+                start_receiver
+                    .recv_timeout(std::time::Duration::from_secs(5))
+                    .expect("both publishers must start within the bounded test window");
+                CompactionCheckpoint::publish(&mut conn, candidate).unwrap()
+            });
+            (publisher, start_sender)
+        })
+        .collect();
+    for _ in 0..publishers.len() {
+        ready_receiver
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("both publishers must establish their dedicated connections");
+    }
+    for (_, start_sender) in &publishers {
+        start_sender.send(()).unwrap();
+    }
+    let mut published_uuid = None;
+    let mut conflicts = 0;
+    for (publisher, _) in publishers {
+        match publisher.join().expect("publisher thread must finish") {
+            CompactionPublishResult::Published(checkpoint) => {
+                assert!(published_uuid.replace(checkpoint.uuid).is_none());
+                assert_eq!(checkpoint.generation, 1);
+            }
+            CompactionPublishResult::Conflict => conflicts += 1,
+        }
+    }
+    assert_eq!(conflicts, 1);
+    let after = fixture.snapshot();
+    assert_eq!(after.checkpoint.unwrap().uuid, published_uuid.unwrap());
+    assert_eq!(keys(&fixture.snapshot()), vec![item]);
+}
+
+#[test]
+#[ignore = "requires AEAD_TAMPER_TEST_DATABASE_URL pointing at disposable migrated local Postgres"]
+fn db_compaction_terminal_partial_items_are_coverable_by_a_later_response() {
+    for status in [
+        ResponseStatus::Completed,
+        ResponseStatus::Failed,
+        ResponseStatus::Cancelled,
+    ] {
+        let mut fixture = Fixture::new();
+        let finished = fixture.response(status);
+        let current = fixture.response(ResponseStatus::InProgress);
+        let user = fixture.user_item(Some(finished.id), at(0));
+        let assistant = fixture.assistant_item(Some(finished.id), at(1), "incomplete");
+        let reasoning = fixture.reasoning_item(at(2));
+        diesel::update(reasoning_items::table.filter(reasoning_items::uuid.eq(reasoning.uuid)))
+            .set((
+                reasoning_items::response_id.eq(Some(finished.id)),
+                reasoning_items::status.eq("incomplete"),
+            ))
+            .execute(&mut fixture.conn)
+            .unwrap();
+        let snapshot = fixture.snapshot();
+        assert!(snapshot
+            .items
+            .iter()
+            .all(|item| item.is_settled_for(Some(current.uuid), &snapshot.active_response_uuids)));
+        let covered = vec![user, assistant, reasoning];
+        let candidate = fixture.candidate(&snapshot, covered.clone(), Some(current.uuid));
+        published(fixture.publish(candidate));
+        let raw = CompactionSnapshot::load_items(
+            &mut fixture.conn,
+            fixture.conversation_id,
+            fixture.user,
+            &covered,
+        )
+        .unwrap();
+        assert_eq!(raw_keys(&raw), covered);
+        assert_eq!(raw[1].status.as_deref(), Some("incomplete"));
+        assert_eq!(raw[1].content_enc.as_deref(), Some([4_u8, 5, 6].as_slice()));
+        assert_eq!(raw[2].status.as_deref(), Some("incomplete"));
+    }
+}
+
+#[test]
+#[ignore = "requires AEAD_TAMPER_TEST_DATABASE_URL pointing at disposable migrated local Postgres"]
+fn db_compaction_terminal_null_assistant_is_coverable_without_changing_canonical_content() {
+    let mut fixture = Fixture::new();
+    let finished = fixture.response(ResponseStatus::Completed);
+    let user = fixture.user_item(Some(finished.id), at(0));
+    let assistant = fixture.assistant_item(Some(finished.id), at(1), "completed");
+    diesel::update(assistant_messages::table.filter(assistant_messages::uuid.eq(assistant.uuid)))
+        .set((
+            assistant_messages::content_enc.eq(None::<Vec<u8>>),
+            assistant_messages::completion_tokens.eq(0),
+        ))
+        .execute(&mut fixture.conn)
+        .unwrap();
+    let snapshot = fixture.snapshot();
+    assert!(snapshot
+        .items
+        .iter()
+        .all(|item| item.is_settled_for(None, &[])));
+    assert_eq!(snapshot.items[1].encrypted_bytes, 0);
+    let candidate = fixture.candidate(&snapshot, vec![user, assistant], None);
+    published(fixture.publish(candidate));
+    let raw = CompactionSnapshot::load_items(
+        &mut fixture.conn,
+        fixture.conversation_id,
+        fixture.user,
+        &[assistant],
+    )
+    .unwrap();
+    assert_eq!(raw.len(), 1);
+    assert_eq!(raw[0].status.as_deref(), Some("completed"));
+    assert!(raw[0].content_enc.is_none());
+    assert_eq!(raw[0].token_count, Some(0));
+}
+
+#[test]
+#[ignore = "requires AEAD_TAMPER_TEST_DATABASE_URL pointing at disposable migrated local Postgres"]
+fn db_compaction_terminal_unmatched_legacy_call_is_coverable() {
+    let mut fixture = Fixture::new();
+    let finished = fixture.response(ResponseStatus::Failed);
+    let uuid = Uuid::new_v4();
+    diesel::insert_into(tool_calls::table)
+        .values((
+            tool_calls::uuid.eq(uuid),
+            tool_calls::conversation_id.eq(fixture.conversation_id),
+            tool_calls::response_id.eq(Some(finished.id)),
+            tool_calls::user_id.eq(fixture.user),
+            tool_calls::name.eq("web_search"),
+            tool_calls::arguments_enc.eq(Some(vec![7_u8, 8, 9])),
+            tool_calls::argument_tokens.eq(1),
+            tool_calls::status.eq("incomplete"),
+            tool_calls::created_at.eq(at(0)),
+        ))
+        .execute(&mut fixture.conn)
+        .unwrap();
+    let item = ContextItemKey {
+        kind: ContextItemKind::ToolCall,
+        uuid,
+    };
+    let snapshot = fixture.snapshot();
+    assert!(snapshot.items[0].is_settled_for(None, &[]));
+    let candidate = fixture.candidate(&snapshot, vec![item], None);
+    published(fixture.publish(candidate));
+    let after = fixture.snapshot();
+    assert_eq!(keys(&after), vec![item]);
+    assert_eq!(after.items[0].item_status.as_deref(), Some("incomplete"));
+}
+
+#[test]
+#[ignore = "requires AEAD_TAMPER_TEST_DATABASE_URL pointing at disposable migrated local Postgres"]
+fn db_compaction_queued_and_unknown_standalone_rows_remain_protected() {
+    for status in [ResponseStatus::Queued, ResponseStatus::InProgress] {
+        let mut fixture = Fixture::new();
+        let unrelated = fixture.response(status);
+        let assistant = fixture.assistant_item(Some(unrelated.id), at(0), "completed");
+        let snapshot = fixture.snapshot();
+        assert!(!snapshot.items[0].is_settled_for(None, &snapshot.active_response_uuids));
+        let candidate = fixture.candidate(&snapshot, vec![assistant], None);
+        assert!(matches!(
+            fixture.publish(candidate),
+            CompactionPublishResult::Conflict
+        ));
+        assert!(fixture.snapshot().checkpoint.is_none());
+    }
+    let mut fixture = Fixture::new();
+    let assistant = fixture.assistant_item(None, at(0), "in_progress");
+    let snapshot = fixture.snapshot();
+    assert!(!snapshot.items[0].is_settled_for(None, &[]));
+    let candidate = fixture.candidate(&snapshot, vec![assistant], None);
+    assert!(matches!(
+        fixture.publish(candidate),
+        CompactionPublishResult::Conflict
+    ));
+    assert!(fixture.snapshot().checkpoint.is_none());
 }
 
 #[test]

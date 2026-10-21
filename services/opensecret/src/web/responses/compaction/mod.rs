@@ -7,10 +7,13 @@ pub(crate) mod policy;
 mod summary;
 
 use crate::{
+    billing::{BillingError, ChatBillingAccess},
+    db::DBError,
     encrypt::{decrypt_aead_v1, derive_key, encrypt_aead_v1},
     model_config::ReasoningReplay,
     models::response_compaction::{
-        CompactionCheckpoint, CompactionPublishResult, CompactionSnapshot, NewCompactionCheckpoint,
+        CompactionCheckpoint, CompactionError, CompactionPublishResult, CompactionSnapshot,
+        NewCompactionCheckpoint,
     },
     tokens::{count_tokens, model_max_ctx},
     web::responses::{
@@ -23,6 +26,7 @@ use crate::{
 };
 use base64::{engine::general_purpose::STANDARD, Engine};
 use context::{CheckpointPayload, ContextItem, ContextItemKey, ContextItemKind};
+use executor::SummaryExecutionError;
 pub(super) use executor::{is_context_rejection, SummaryExecutor};
 use policy::CompactionPolicy;
 use secp256k1::SecretKey;
@@ -35,7 +39,10 @@ use std::{
 use uuid::Uuid;
 
 const MAX_SUMMARY_CALLS_PER_RESPONSE: usize = 32;
-const MAX_PUBLICATION_ATTEMPTS: usize = 2;
+const MAX_PUBLICATION_CONFLICTS: usize = 2;
+const MAX_SOURCE_RACE_RETRIES: usize = 2;
+const MAX_PREPARATION_STEPS: usize =
+    MAX_SUMMARY_CALLS_PER_RESPONSE + MAX_PUBLICATION_CONFLICTS + MAX_SOURCE_RACE_RETRIES + 2;
 const ENVELOPE_VERSION: u32 = 1;
 
 /// One allowance for the entire logical Response, including all tool turns and
@@ -80,6 +87,9 @@ pub(super) fn policy_for(
         .max_output_tokens
         .and_then(|value| usize::try_from(value).ok())
         .unwrap_or(0);
+    if output > window {
+        return Err(ApiError::MessageExceedsContextLimit);
+    }
     let mut policy = CompactionPolicy::from_context_window(window, output, 2_048.min(window / 16));
     let enabled = match body.context_management.as_deref() {
         None => true,
@@ -232,6 +242,159 @@ fn authoritative_urls(
     urls
 }
 
+fn durable_urls(
+    snapshot: &context::ContextSnapshot,
+    previous: Option<&CheckpointEnvelope>,
+    covered: &[ContextItemKey],
+) -> Vec<String> {
+    let covered: HashSet<_> = covered.iter().copied().collect();
+    let raw: Vec<_> = snapshot
+        .items
+        .iter()
+        .filter(|item| covered.contains(&item.key))
+        .flat_map(|item| item.prompt_messages.iter().cloned())
+        .collect();
+    let mut urls = super::tools::collect_kagi_allowed_urls_from_prompt(&raw);
+    if let Some(previous) = previous {
+        for url in &previous.allowed_urls {
+            if urls.len() >= super::tools::MAX_PROMPT_ALLOWED_URLS {
+                break;
+            }
+            urls.insert(url.clone());
+        }
+    }
+    let mut urls: Vec<_> = urls.into_iter().collect();
+    urls.sort();
+    urls
+}
+
+fn validate_required_input(
+    snapshot: &context::ContextSnapshot,
+    policy: &CompactionPolicy,
+) -> Result<(), ApiError> {
+    let required = snapshot
+        .items
+        .iter()
+        .filter(|item| {
+            item.key == snapshot.current_user
+                || (item.protected_input && item.response_uuid == Some(snapshot.current_response))
+        })
+        .map(|item| item.estimated_tokens)
+        .fold(snapshot.instruction_tokens, usize::saturating_add);
+    if required > policy.input_budget {
+        return Err(ApiError::MessageExceedsContextLimit);
+    }
+    Ok(())
+}
+
+fn validate_billing_before_helpers(
+    access: Option<ChatBillingAccess>,
+    prompt_tokens: usize,
+) -> Result<(), ApiError> {
+    match access
+        .map(|access| access.check_with_tokens(i32::try_from(prompt_tokens).unwrap_or(i32::MAX)))
+    {
+        Some(Err(BillingError::UsageLimitExceeded)) => Err(ApiError::UsageLimitReached),
+        Some(Err(BillingError::FreeTokenLimitExceeded)) => Err(ApiError::FreeTokenLimitExceeded),
+        _ => Ok(()),
+    }
+}
+
+fn may_use_original_prompt(
+    error: &SummaryExecutionError,
+    forced: bool,
+    original_tokens: usize,
+    input_budget: usize,
+    cancelled: bool,
+    expired: bool,
+) -> bool {
+    !forced
+        && original_tokens <= input_budget
+        && !cancelled
+        && !expired
+        && error.can_fallback_to_uncompacted()
+}
+
+fn validate_forced_progress(
+    forced: bool,
+    progressed: bool,
+    non_reducing: bool,
+) -> Result<(), ApiError> {
+    if forced && !progressed {
+        return Err(if non_reducing {
+            ApiError::ServiceUnavailable
+        } else {
+            ApiError::MessageExceedsContextLimit
+        });
+    }
+    Ok(())
+}
+
+/// Select and summarize one independently publishable prefix. A tiny historical
+/// exchange can be cheaper verbatim than a structured checkpoint; leave it raw
+/// and still allow a large completed active tool prefix to make progress.
+async fn reducing_checkpoint(
+    executor: &SummaryExecutor<'_>,
+    snapshot: &context::ContextSnapshot,
+    checkpoint: &Option<CheckpointPayload>,
+    policy: &CompactionPolicy,
+    plan: context::ContextPlan,
+    original_tokens: usize,
+    non_reducing: &mut HashSet<Vec<ContextItemKey>>,
+) -> Result<Option<CheckpointPayload>, SummaryExecutionError> {
+    for work in plan.summary_work {
+        let needs_history_fold = work.kind == context::SectionKind::Active
+            && checkpoint
+                .as_ref()
+                .and_then(|value| value.active.as_ref())
+                .is_some_and(|section| section.anchor != Some(snapshot.current_user));
+        if needs_history_fold || non_reducing.contains(&work.covered) {
+            continue;
+        }
+        let summary = executor.summarize(&work, policy).await?;
+        let coverage = work.covered.clone();
+        let one = context::ContextPlan {
+            summary_work: vec![work],
+        };
+        let next = context::complete_plan(checkpoint, &one, &[summary])
+            .map_err(|_| SummaryExecutionError::Unsafe(ApiError::InternalServerError))?;
+        let (_, next_tokens) = context::project(snapshot, &Some(next.clone()))
+            .map_err(|_| SummaryExecutionError::Unsafe(ApiError::InternalServerError))?;
+        if next_tokens < original_tokens {
+            return Ok(Some(next));
+        }
+        // This is a size/progress check, not an extra output-token allowance.
+        // Never commit a summary that makes this projection larger.
+        non_reducing.insert(coverage);
+    }
+    Ok(None)
+}
+
+fn finish_prompt(
+    executor: &SummaryExecutor<'_>,
+    conversation_id: i64,
+    current_response_uuid: Uuid,
+    mut messages: Vec<Value>,
+    estimated_tokens: usize,
+    allowed_urls: HashSet<String>,
+) -> Result<PreparedPrompt, ApiError> {
+    normalize_tool_call_ids_for_model(&mut messages, &executor.body.model);
+    let compactions = executor
+        .state
+        .db
+        .list_response_compactions(conversation_id, executor.user.uuid, current_response_uuid)
+        .map_err(|_| ApiError::InternalServerError)?
+        .iter()
+        .map(CompactionOutput::from)
+        .collect();
+    Ok(PreparedPrompt {
+        messages,
+        estimated_tokens,
+        compactions,
+        allowed_urls,
+    })
+}
+
 /// Both initial and post-tool starts use this preparation service. `incoming`
 /// is supplied only before the initial user/image items have been persisted.
 #[allow(clippy::too_many_arguments)]
@@ -244,13 +407,21 @@ pub(super) async fn prepare_prompt(
     internal_instructions: &str,
     reasoning_replay: ReasoningReplay,
     incoming: &[ContextItem],
+    billing_access: Option<ChatBillingAccess>,
     mut force: bool,
 ) -> Result<PreparedPrompt, ApiError> {
     let (mut policy, enabled) = policy_for(executor.body)?;
     if force {
         policy.keep_recent_tokens = 0;
     }
-    for _ in 0..MAX_PUBLICATION_ATTEMPTS {
+    let mut publication_conflicts = 0;
+    let mut source_races = 0;
+    let mut non_reducing = HashSet::new();
+    let mut made_progress = false;
+    for _ in 0..MAX_PREPARATION_STEPS {
+        if executor.execution.is_cancelled() || tokio::time::Instant::now() >= executor.deadline {
+            return Err(ApiError::ServiceUnavailable);
+        }
         let source = executor
             .state
             .db
@@ -270,11 +441,20 @@ pub(super) async fn prepare_prompt(
             .map(|item| item.key)
             .filter(|key| !covered.contains(key))
             .collect();
-        let raw = executor
-            .state
-            .db
-            .load_compaction_items(conversation_id, executor.user.uuid, &keys)
-            .map_err(|_| ApiError::InternalServerError)?;
+        let raw = match executor.state.db.load_compaction_items(
+            conversation_id,
+            executor.user.uuid,
+            &keys,
+        ) {
+            Ok(raw) => raw,
+            Err(DBError::CompactionError(CompactionError::InvalidSelection))
+                if source_races < MAX_SOURCE_RACE_RETRIES =>
+            {
+                source_races += 1;
+                continue;
+            }
+            Err(_) => return Err(ApiError::InternalServerError),
+        };
         let (instructions, tokens) = load_instruction_messages(
             executor.state.db.as_ref(),
             conversation_id,
@@ -300,17 +480,63 @@ pub(super) async fn prepare_prompt(
             &checkpoint,
         )?;
         snapshot.items.extend(incoming.iter().cloned());
+        validate_required_input(&snapshot, &policy)?;
         let allowed_urls = authoritative_urls(&snapshot, opened.as_ref());
-        let plan = context::plan(&snapshot, &checkpoint, &policy, force)
-            .map_err(|_| ApiError::InternalServerError)?;
+        let (original_messages, original_tokens) =
+            context::project(&snapshot, &checkpoint).map_err(|_| ApiError::InternalServerError)?;
+        validate_billing_before_helpers(billing_access, original_tokens)?;
+        let plan = context::plan_batch(
+            &snapshot,
+            &checkpoint,
+            &policy,
+            force,
+            policy.summary_input_budget,
+        )
+        .map_err(|_| ApiError::InternalServerError)?;
         let mut final_checkpoint = checkpoint.clone();
-        if enabled && !plan.summary_work.is_empty() {
-            let mut summaries = Vec::with_capacity(plan.summary_work.len());
-            for work in &plan.summary_work {
-                summaries.push(executor.summarize(work, &policy).await?);
+        let mut published = false;
+        // Publish each complete section/prefix before beginning another. A later
+        // helper failure retains this progress for the next request.
+        let candidate = if enabled {
+            match reducing_checkpoint(
+                executor,
+                &snapshot,
+                &checkpoint,
+                &policy,
+                plan,
+                original_tokens,
+                &mut non_reducing,
+            )
+            .await
+            {
+                Ok(candidate) => candidate,
+                Err(error)
+                    if may_use_original_prompt(
+                        &error,
+                        force,
+                        original_tokens,
+                        policy.input_budget,
+                        executor.execution.is_cancelled(),
+                        tokio::time::Instant::now() >= executor.deadline,
+                    ) =>
+                {
+                    tracing::warn!(response_uuid = %current_response_uuid,
+                            "Advisory compaction unavailable; retaining complete fitting prompt");
+                    return finish_prompt(
+                        executor,
+                        conversation_id,
+                        current_response_uuid,
+                        original_messages,
+                        original_tokens,
+                        allowed_urls,
+                    );
+                }
+                Err(error) => return Err(error.into_api_error()),
             }
-            let next = context::complete_plan(&checkpoint, &plan, &summaries)
-                .map_err(|_| ApiError::InternalServerError)?;
+        } else {
+            None
+        };
+        if let Some(next) = candidate {
             let covered_items = covered_keys(&next);
             let digest = source
                 .coverage_fingerprint(&covered_items)
@@ -336,11 +562,7 @@ pub(super) async fn prepare_prompt(
                 origin_response_uuid: current_response_uuid,
                 after_item_uuid,
                 source_fingerprint: digest,
-                allowed_urls: {
-                    let mut urls: Vec<_> = allowed_urls.iter().cloned().collect();
-                    urls.sort();
-                    urls
-                },
+                allowed_urls: durable_urls(&snapshot, opened.as_ref(), &covered_items),
                 payload: next.clone(),
             };
             let bytes = serde_json::to_vec(&envelope).map_err(|_| ApiError::InternalServerError)?;
@@ -376,6 +598,10 @@ pub(super) async fn prepare_prompt(
                 .map_err(|_| ApiError::InternalServerError)?;
             match publication {
                 CompactionPublishResult::Conflict => {
+                    publication_conflicts += 1;
+                    if publication_conflicts > MAX_PUBLICATION_CONFLICTS {
+                        return Err(ApiError::ServiceUnavailable);
+                    }
                     tracing::debug!(response_uuid = %current_response_uuid, "Compaction checkpoint publication conflicted; replanning");
                     continue;
                 }
@@ -384,12 +610,24 @@ pub(super) async fn prepare_prompt(
                         generation = record.generation, covered_items = covered_keys(&next).len(),
                         summary_tokens, forced = force, "Responses compaction checkpoint published");
                     final_checkpoint = Some(next);
+                    published = true;
+                    made_progress = true;
                 }
             }
         }
-        let (mut messages, estimated_tokens) = context::project(&snapshot, &final_checkpoint)
+        let (messages, estimated_tokens) = context::project(&snapshot, &final_checkpoint)
             .map_err(|_| ApiError::InternalServerError)?;
+        if published && force {
+            // A provider rejection can reveal tokenizer undercount even when our
+            // estimate fits. Finish the eligible forced prefixes before the one
+            // main retry rather than trusting that estimate after a single batch.
+            continue;
+        }
         if estimated_tokens > policy.input_budget {
+            if published {
+                // This prefix is durable even if the next bounded batch fails.
+                continue;
+            }
             if enabled && !force {
                 policy.keep_recent_tokens = 0;
                 policy.trigger_tokens = 0;
@@ -397,23 +635,21 @@ pub(super) async fn prepare_prompt(
                 // Replan on a fresh snapshot; no accepted main request is replayed.
                 continue;
             }
-            return Err(ApiError::MessageExceedsContextLimit);
+            return Err(if non_reducing.is_empty() {
+                ApiError::MessageExceedsContextLimit
+            } else {
+                ApiError::ServiceUnavailable
+            });
         }
-        normalize_tool_call_ids_for_model(&mut messages, &executor.body.model);
-        let compactions = executor
-            .state
-            .db
-            .list_response_compactions(conversation_id, executor.user.uuid, current_response_uuid)
-            .map_err(|_| ApiError::InternalServerError)?
-            .iter()
-            .map(CompactionOutput::from)
-            .collect();
-        return Ok(PreparedPrompt {
+        validate_forced_progress(force, made_progress, !non_reducing.is_empty())?;
+        return finish_prompt(
+            executor,
+            conversation_id,
+            current_response_uuid,
             messages,
             estimated_tokens,
-            compactions,
             allowed_urls,
-        });
+        );
     }
     Err(ApiError::ServiceUnavailable)
 }
@@ -421,6 +657,161 @@ pub(super) async fn prepare_prompt(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn input_snapshot() -> context::ContextSnapshot {
+        let current_response = Uuid::new_v4();
+        let current_user = ContextItemKey {
+            kind: ContextItemKind::User,
+            uuid: Uuid::new_v4(),
+        };
+        let mut image = ContextItem::from_prompt(
+            ContextItemKey {
+                kind: ContextItemKind::ToolOutput,
+                uuid: Uuid::new_v4(),
+            },
+            Some(current_response),
+            vec![],
+            30,
+            true,
+            Some(Uuid::new_v4()),
+        );
+        image.protected_input = true;
+        context::ContextSnapshot {
+            instructions: vec![],
+            instruction_tokens: 10,
+            items: vec![
+                ContextItem::from_prompt(
+                    ContextItemKey {
+                        kind: ContextItemKind::User,
+                        uuid: Uuid::new_v4(),
+                    },
+                    None,
+                    vec![
+                        serde_json::json!({"role":"user","content":"https://covered.example/source"}),
+                    ],
+                    1_000,
+                    true,
+                    None,
+                ),
+                ContextItem::from_prompt(
+                    current_user,
+                    Some(current_response),
+                    vec![
+                        serde_json::json!({"role":"user","content":"https://current.example/unpersisted"}),
+                    ],
+                    20,
+                    false,
+                    None,
+                ),
+                image,
+            ],
+            current_user,
+            current_response,
+        }
+    }
+
+    #[test]
+    fn protected_input_must_fit_before_history_helpers_can_run() {
+        let snapshot = input_snapshot();
+        let mut policy = CompactionPolicy::from_context_window(100, 40, 0);
+        assert!(validate_required_input(&snapshot, &policy).is_ok());
+        policy.input_budget = 59;
+        assert!(matches!(
+            validate_required_input(&snapshot, &policy),
+            Err(ApiError::MessageExceedsContextLimit)
+        ));
+        // Compaction may reduce history, but cannot make room by dropping image
+        // descriptions, the exact current user message or real instructions.
+        policy.input_budget = 1_000;
+        assert!(validate_required_input(&snapshot, &policy).is_ok());
+    }
+
+    #[test]
+    fn advisory_fallback_requires_a_complete_fitting_prompt_and_live_execution() {
+        let unavailable = SummaryExecutionError::InvalidSummary;
+        assert!(may_use_original_prompt(
+            &unavailable,
+            false,
+            100,
+            100,
+            false,
+            false
+        ));
+        for (forced, tokens, cancelled, expired) in [
+            (true, 100, false, false),
+            (false, 101, false, false),
+            (false, 100, true, false),
+            (false, 100, false, true),
+        ] {
+            assert!(!may_use_original_prompt(
+                &unavailable,
+                forced,
+                tokens,
+                100,
+                cancelled,
+                expired
+            ));
+        }
+        for error in [
+            SummaryExecutionError::Cancelled,
+            SummaryExecutionError::Deadline,
+            SummaryExecutionError::Unsafe(ApiError::UsageLimitReached),
+        ] {
+            assert!(!may_use_original_prompt(
+                &error, false, 100, 100, false, false
+            ));
+        }
+    }
+
+    #[test]
+    fn provider_rejected_prompt_requires_real_progress_before_the_single_retry() {
+        assert!(matches!(
+            validate_forced_progress(true, false, false),
+            Err(ApiError::MessageExceedsContextLimit)
+        ));
+        assert!(matches!(
+            validate_forced_progress(true, false, true),
+            Err(ApiError::ServiceUnavailable)
+        ));
+        assert!(validate_forced_progress(true, true, true).is_ok());
+        assert!(validate_forced_progress(true, true, false).is_ok());
+        assert!(validate_forced_progress(false, false, true).is_ok());
+    }
+
+    #[test]
+    fn checkpoint_url_authority_excludes_unpersisted_and_uncovered_inputs() {
+        let mut snapshot = input_snapshot();
+        let covered = snapshot.items[0].key;
+        snapshot.items.push(ContextItem::from_prompt(
+            ContextItemKey { kind: ContextItemKind::Assistant, uuid: Uuid::new_v4() },
+            None, vec![serde_json::json!({"role":"assistant","content":"https://generated.example/forbidden"})],
+            10, true, None,
+        ));
+        let durable = durable_urls(&snapshot, None, &[covered]);
+        assert_eq!(durable, vec!["https://covered.example/source"]);
+        let runtime = authoritative_urls(&snapshot, None);
+        assert!(runtime.contains("https://current.example/unpersisted"));
+        assert!(!runtime.contains("https://generated.example/forbidden"));
+        assert!(durable_urls(&snapshot, None, &[]).is_empty());
+    }
+
+    #[test]
+    fn existing_billing_rejections_precede_paid_compaction() {
+        assert!(matches!(
+            validate_billing_before_helpers(Some(ChatBillingAccess::for_tests(false, false)), 1),
+            Err(ApiError::UsageLimitReached)
+        ));
+        assert!(matches!(
+            validate_billing_before_helpers(Some(ChatBillingAccess::for_tests(true, true)), 20_001),
+            Err(ApiError::FreeTokenLimitExceeded)
+        ));
+        assert!(validate_billing_before_helpers(
+            Some(ChatBillingAccess::for_tests(true, false)),
+            100_000
+        )
+        .is_ok());
+        assert!(validate_billing_before_helpers(None, 100_000).is_ok());
+    }
 
     fn checkpoint_fixture() -> (CompactionSnapshot, SecretKey) {
         use crate::models::response_compaction::CompactionSourceMetadata;
