@@ -9628,7 +9628,8 @@ mod state_tests {
     }
 
     /// A queued turn that starts after a completion and then fails must
-    /// not leave the earlier completion's marker behind.
+    /// not leave the earlier completion's marker behind: the failure's
+    /// marker replaces it.
     #[gpui::test]
     fn test_later_failed_run_clears_an_earlier_unread_completion(cx: &mut TestAppContext) {
         cx.executor().allow_parking();
@@ -9651,10 +9652,13 @@ mod state_tests {
                 AgentRunEvent::Finished(AgentRunTerminal::Failed),
                 cx,
             );
-            assert_eq!(this.session_activity("s2"), None);
+            assert_eq!(this.session_activity("s2"), Some(SessionActivity::Failed));
+            assert!(this.completed_unread_sessions.is_empty());
         });
     }
 
+    /// A failure off screen marks the task until it is opened; a stop
+    /// marks nothing, and neither counts as an unread completion.
     #[gpui::test]
     fn test_only_successful_background_completion_becomes_unread(cx: &mut TestAppContext) {
         cx.executor().allow_parking();
@@ -9679,6 +9683,84 @@ mod state_tests {
             );
 
             assert!(this.completed_unread_sessions.is_empty());
+            assert_eq!(
+                this.session_activity("failed"),
+                Some(SessionActivity::Failed)
+            );
+            assert_eq!(this.session_activity("cancelled"), None);
+        });
+    }
+
+    /// A failure on the open task is in front of the user: no marker.
+    /// Opening a task that failed off screen clears its marker.
+    #[gpui::test]
+    fn test_failed_marker_clears_when_the_task_is_opened(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        use maple_agent::agent::{AgentRunEvent, AgentRunTerminal};
+
+        let screen = screen(cx);
+        screen.update(cx, |this, cx| {
+            this.sessions = vec![
+                summary_at("s1", "A", "/work/alpha"),
+                summary_at("s2", "B", "/work/beta"),
+            ];
+            this.selected_session = Some("s1".to_string());
+            for session in ["s1", "s2"] {
+                this.handle_run_event(session, "run", AgentRunEvent::Started, cx);
+                this.handle_run_event(
+                    session,
+                    "run",
+                    AgentRunEvent::Finished(AgentRunTerminal::Failed),
+                    cx,
+                );
+            }
+            assert_eq!(this.session_activity("s1"), None);
+            assert_eq!(this.session_activity("s2"), Some(SessionActivity::Failed));
+            assert_eq!(
+                this.sidebar.read(cx).session_activity("s2"),
+                Some(SessionActivity::Failed)
+            );
+
+            this.set_active_session(
+                summary_at("s2", "B", "/work/beta"),
+                Vec::new(),
+                HashMap::new(),
+                cx,
+            );
+            assert_eq!(this.session_activity("s2"), None);
+            assert_eq!(this.sidebar.read(cx).session_activity("s2"), None);
+        });
+    }
+
+    /// A question puts its task's row in the needs-you state ahead of the
+    /// run it paused; answering it, or the run ending, clears that.
+    #[gpui::test]
+    fn test_waiting_question_marks_its_task_until_resolved(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        use maple_agent::agent::AgentRunEvent;
+
+        let screen = screen(cx);
+        screen.update(cx, |this, cx| {
+            this.sessions = vec![summary("s1", "One")];
+            this.selected_session = Some("other".to_string());
+            this.handle_run_event("s1", "run", AgentRunEvent::Started, cx);
+            this.apply_service_event(one_question("q1", "Which file?"), cx);
+            assert_eq!(this.session_activity("s1"), Some(SessionActivity::NeedsYou));
+            assert_eq!(
+                this.sidebar.read(cx).session_activity("s1"),
+                Some(SessionActivity::NeedsYou)
+            );
+
+            this.apply_service_event(
+                AgentServiceEvent::QuestionResolved {
+                    request_id: "req-q1".to_string(),
+                },
+                cx,
+            );
+            assert_eq!(
+                this.sidebar.read(cx).session_activity("s1"),
+                Some(SessionActivity::Running)
+            );
         });
     }
 

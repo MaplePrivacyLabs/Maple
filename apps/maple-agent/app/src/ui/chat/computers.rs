@@ -258,8 +258,8 @@ impl ChatScreen {
                 .update(cx, |sidebar, cx| sidebar.set_computers(computers, cx));
         }
         if visible
-            && let Some(id) = &self.selected_session
-            && self.completed_unread_sessions.remove(id)
+            && let Some(id) = self.selected_session.clone()
+            && self.mark_seen(&id)
         {
             self.sync_sidebar(cx);
         }

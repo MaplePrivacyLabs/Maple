@@ -185,8 +185,41 @@ pub(super) enum SidebarEvent {
 /// Activity a task row indicates beside its title.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum SessionActivity {
+    /// A question waits for the user's answer.
+    NeedsYou,
     Running,
+    /// The last run failed and the task was not opened since.
+    Failed,
     CompletedUnread,
+}
+
+/// Which tasks wait on the user, run, or ended while nobody watched. The
+/// screen owns these sets and pushes them together.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(super) struct TaskActivity {
+    pub(super) running: HashSet<String>,
+    /// Tasks with a question waiting for an answer.
+    pub(super) waiting: HashSet<String>,
+    pub(super) failed: HashSet<String>,
+    pub(super) unread: HashSet<String>,
+}
+
+impl TaskActivity {
+    /// What a task's row shows. A question outranks the run it paused,
+    /// and a run outranks how the previous one ended.
+    pub(super) fn of(&self, session_id: &str) -> Option<SessionActivity> {
+        if self.waiting.contains(session_id) {
+            Some(SessionActivity::NeedsYou)
+        } else if self.running.contains(session_id) {
+            Some(SessionActivity::Running)
+        } else if self.failed.contains(session_id) {
+            Some(SessionActivity::Failed)
+        } else if self.unread.contains(session_id) {
+            Some(SessionActivity::CompletedUnread)
+        } else {
+            None
+        }
+    }
 }
 
 /// What an inline rename edits.
@@ -600,10 +633,7 @@ pub(super) struct Sidebar {
     // What the screen pushes in.
     sessions: Vec<AgentSessionSummary>,
     selected: Option<String>,
-    /// Tasks with a run in flight.
-    running: HashSet<String>,
-    /// Tasks that finished while not on screen.
-    unread: HashSet<String>,
+    activity: TaskActivity,
     recent_roots: Vec<String>,
     application_vim_enabled: bool,
     /// Application Vim's region is the sidebar, so rows show its
@@ -936,8 +966,7 @@ impl Sidebar {
             chat,
             sessions: Vec::new(),
             selected: None,
-            running: HashSet::new(),
-            unread: HashSet::new(),
+            activity: TaskActivity::default(),
             recent_roots: Vec::new(),
             application_vim_enabled,
             vim_active: false,
@@ -1046,20 +1075,14 @@ impl Sidebar {
         cx.notify();
     }
 
-    /// Which tasks run and which finished unread; both drive the row
-    /// indicator and the active section.
-    pub(super) fn set_activity(
-        &mut self,
-        running: HashSet<String>,
-        unread: HashSet<String>,
-        cx: &mut Context<Self>,
-    ) {
-        if self.running == running && self.unread == unread {
+    /// Which tasks wait on the user, run, or ended unseen. All of it
+    /// drives the row indicator; running also decides the active section.
+    pub(super) fn set_activity(&mut self, activity: TaskActivity, cx: &mut Context<Self>) {
+        if self.activity == activity {
             return;
         }
-        let sections_changed = self.running != running;
-        self.running = running;
-        self.unread = unread;
+        let sections_changed = self.activity.running != activity.running;
+        self.activity = activity;
         if sections_changed {
             self.rebuild_sections();
         }
@@ -1542,13 +1565,7 @@ impl Sidebar {
     // ---- Sections --------------------------------------------------------
 
     pub(super) fn session_activity(&self, session_id: &str) -> Option<SessionActivity> {
-        if self.running.contains(session_id) {
-            Some(SessionActivity::Running)
-        } else if self.unread.contains(session_id) {
-            Some(SessionActivity::CompletedUnread)
-        } else {
-            None
-        }
+        self.activity.of(session_id)
     }
 
     pub(super) fn set_archived_expanded(&mut self, expanded: bool, cx: &mut Context<Self>) {
@@ -1662,7 +1679,7 @@ impl Sidebar {
             }
             // The cached count updates when a run ends. Its first run
             // already makes the task visible while that count is still zero.
-            if session.message_count == 0 && !self.running.contains(&session.id) {
+            if session.message_count == 0 && !self.activity.running.contains(&session.id) {
                 continue;
             }
             if scoped.is_some_and(|scoped| scoped != root) {
@@ -1794,7 +1811,7 @@ impl Sidebar {
     /// task active the moment a run starts on it; the running set covers
     /// the frame before its updated record lands.
     fn session_is_active(&self, session: &AgentSessionSummary) -> bool {
-        self.running.contains(&session.id) || session.state != AgentTaskState::Settled
+        self.activity.running.contains(&session.id) || session.state != AgentTaskState::Settled
     }
 
     /// Project bounded local-cache rows through the selected grouping.
@@ -4406,18 +4423,27 @@ fn row_fade_background(color: u32) -> gpui::Background {
     )
 }
 
-/// A spinner while the task runs, a dot once it completed unseen. The
-/// spinner keeps the sidebar repainting while any task runs; `spinner_id`
-/// is prebuilt so render allocates nothing.
+/// A coral dot while a question waits, a spinner while the task runs, an
+/// alert once a run failed unseen, and a green dot once one completed
+/// unseen. Each state has its own shape, so none relies on color alone.
+/// The spinner keeps the sidebar repainting while any task runs;
+/// `spinner_id` is prebuilt so render allocates nothing.
 fn activity_indicator(spinner_id: &SharedString, activity: SessionActivity) -> AnyElement {
-    match activity {
-        SessionActivity::Running => spinner_with_id(spinner_id.clone(), px(13.), theme::accent()),
-        SessionActivity::CompletedUnread => div()
+    let dot = |color: u32| {
+        div()
             .size(px(8.))
             .flex_none()
             .rounded_full()
-            .bg(gpui::rgb(theme::status_success()))
-            .into_any_element(),
+            .bg(gpui::rgb(color))
+            .into_any_element()
+    };
+    match activity {
+        SessionActivity::NeedsYou => dot(theme::accent()),
+        SessionActivity::Running => spinner_with_id(spinner_id.clone(), px(13.), theme::accent()),
+        SessionActivity::Failed => {
+            icon("circle-alert", px(13.), theme::status_error()).into_any_element()
+        }
+        SessionActivity::CompletedUnread => dot(theme::status_success()),
     }
 }
 
