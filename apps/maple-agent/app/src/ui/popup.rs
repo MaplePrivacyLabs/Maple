@@ -31,6 +31,9 @@
 //! - Assistive technology sees a button that reports whether its popup is
 //!   expanded, a named menu of named items, and the highlighted item as the
 //!   focused one.
+//!
+//! [`hover_panel`] shares menu placement and occlusion without taking focus.
+//! Its owner manages the hover lifecycle.
 
 use std::cell::Cell;
 use std::rc::Rc;
@@ -642,6 +645,8 @@ pub(crate) enum Placement {
     AboveStart,
     /// At a point in window coordinates, for a right-click.
     At(Point<Pixels>),
+    /// Right of the trigger, sharing its top edge; flips left when needed.
+    Beside,
 }
 
 impl Placement {
@@ -661,6 +666,7 @@ impl Placement {
             Placement::BelowEnd => (trigger, true, false, GAP),
             Placement::AboveStart => (trigger, false, true, GAP),
             Placement::At(position) => (Bounds::new(position, Size::default()), true, true, px(0.)),
+            Placement::Beside => return beside(trigger, size, window, margin),
         };
         let room_below = window.height - margin - anchor.bottom() - gap;
         let room_above = anchor.top() - gap - margin;
@@ -689,6 +695,28 @@ impl Placement {
     }
 }
 
+/// Top-aligned beside the trigger, flipping left and clamping when needed.
+fn beside(
+    trigger: Bounds<Pixels>,
+    size: Size<Pixels>,
+    window: Size<Pixels>,
+    margin: Pixels,
+) -> Point<Pixels> {
+    let room_right = window.width - margin - trigger.right() - GAP;
+    let room_left = trigger.left() - GAP - margin;
+    let x = if first_side(true, size.width, room_right, room_left) {
+        trigger.right() + GAP
+    } else {
+        trigger.left() - GAP - size.width
+    };
+    let x = x.min(window.width - margin - size.width).max(margin);
+    let y = trigger
+        .top()
+        .min(window.height - margin - size.height)
+        .max(margin);
+    point(x.round(), y.round())
+}
+
 /// Whether a panel `length` long goes on the first of two sides, which
 /// leave `first` and `second` room: the preferred side when it fits there,
 /// the other when only that one fits, and the roomier one when neither
@@ -701,6 +729,16 @@ fn first_side(prefer_first: bool, length: Pixels, first: Pixels, second: Pixels)
     };
     let stays = length <= preferred || length > other && preferred >= other;
     stays == prefer_first
+}
+
+/// Place an occluding panel inside a `relative` row without taking focus.
+pub(crate) fn hover_panel(panel: impl IntoElement, placement: Placement) -> AnyElement {
+    Float {
+        panel: Some(panel.into_any_element()),
+        placement,
+        priority: 1,
+    }
+    .into_any_element()
 }
 
 /// Draws a menu panel above everything, where [`Placement::origin`] puts

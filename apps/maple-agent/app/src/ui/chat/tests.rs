@@ -16,6 +16,12 @@ mod state_tests {
         RecentProjectRoot,
     };
 
+    /// A point on a task row's title, left of its buttons (given by the
+    /// row's menu button), where the pointer shows the row's hover card.
+    fn on_title(menu_button: gpui::Bounds<gpui::Pixels>) -> gpui::Point<gpui::Pixels> {
+        gpui::point(menu_button.left() - px(120.), menu_button.center().y)
+    }
+
     fn summary(id: &str, title: &str) -> AgentSessionSummary {
         summary_at(id, title, "/tmp/proj")
     }
@@ -5957,6 +5963,293 @@ mod state_tests {
             ),
             "the press ran s1's Rename"
         );
+    }
+
+    fn hovered(
+        sidebar: &Entity<sidebar::Sidebar>,
+        cx: &mut gpui::VisualTestContext,
+    ) -> Option<String> {
+        sidebar.update(cx, |sidebar, _| sidebar.hovered().map(str::to_string))
+    }
+
+    fn advance_hover_clock(cx: &mut gpui::VisualTestContext, ms: u64) {
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(ms));
+        cx.run_until_parked();
+    }
+
+    #[gpui::test]
+    fn test_hover_card_follows_the_pointer_and_closes_after_leaving(cx: &mut TestAppContext) {
+        let (chat, cx) = chat_window(cx, |this, cx| {
+            this.sessions = vec![summary("s1", "One"), summary("s2", "Two")];
+            this.sync_sidebar(cx);
+        });
+        let sidebar = chat.update(cx, |this, _| this.sidebar.clone());
+        let first = on_title(cx.debug_bounds("menu-session-s1").expect("s1"));
+        let second = on_title(cx.debug_bounds("menu-session-s2").expect("s2"));
+        let away = gpui::point(px(1100.), px(700.));
+        cx.simulate_mouse_move(first, None, Default::default());
+        assert!(cx.debug_bounds("card-session-s1").is_some());
+        cx.simulate_mouse_move(away, None, Default::default());
+        advance_hover_clock(cx, 100);
+        cx.simulate_mouse_move(second, None, Default::default());
+        advance_hover_clock(cx, 250);
+        assert_eq!(hovered(&sidebar, cx).as_deref(), Some("s2"));
+        assert!(cx.debug_bounds("card-session-s1").is_none());
+
+        let card = cx.debug_bounds("card-session-s2").expect("s2's card");
+        cx.simulate_mouse_move(
+            gpui::point(card.left() - px(2.), card.top() + px(10.)),
+            None,
+            Default::default(),
+        );
+        advance_hover_clock(cx, 100);
+        cx.simulate_mouse_move(card.center(), None, Default::default());
+        advance_hover_clock(cx, 1_000);
+        assert_eq!(hovered(&sidebar, cx).as_deref(), Some("s2"));
+        for at in [second, card.center()] {
+            cx.simulate_mouse_move(at, None, Default::default());
+            advance_hover_clock(cx, 250);
+            assert_eq!(hovered(&sidebar, cx).as_deref(), Some("s2"));
+            assert!(cx.debug_bounds("card-session-s2").is_some());
+        }
+        cx.simulate_mouse_move(away, None, Default::default());
+        advance_hover_clock(cx, 100);
+        assert_eq!(hovered(&sidebar, cx).as_deref(), Some("s2"));
+        advance_hover_clock(cx, 150);
+        assert_eq!(hovered(&sidebar, cx), None);
+        assert!(cx.debug_bounds("card-session-s2").is_none());
+    }
+
+    #[gpui::test]
+    fn test_hover_card_opens_the_folder_from_an_inactive_window(cx: &mut TestAppContext) {
+        let (chat, cx) = chat_window(cx, |this, cx| {
+            this.sessions = vec![summary("s1", "One"), summary_at("s2", "Two", "/tmp/other")];
+            this.sync_sidebar(cx);
+        });
+        let sidebar = chat.update(cx, |this, _| this.sidebar.clone());
+        let at = on_title(cx.debug_bounds("menu-session-s2").expect("the row"));
+        cx.simulate_mouse_move(at, None, Default::default());
+        press(cx, "card-folder-s2");
+        assert_eq!(
+            sidebar.update(cx, |sidebar, _| sidebar.folders_opened().to_vec()),
+            vec!["/tmp/other".to_string()]
+        );
+        assert_eq!(
+            chat.update(cx, |this, _| this.selected_session.clone())
+                .as_deref(),
+            Some("s1")
+        );
+        cx.deactivate_window();
+        cx.run_until_parked();
+        assert_eq!(hovered(&sidebar, cx), None);
+        assert!(cx.debug_bounds("card-session-s2").is_none());
+        cx.update(|window, _| window.activate_window());
+        cx.run_until_parked();
+        assert_eq!(hovered(&sidebar, cx), None);
+
+        cx.deactivate_window();
+        cx.run_until_parked();
+        cx.simulate_mouse_move(at + gpui::point(px(1.), px(0.)), None, Default::default());
+        let folder = cx.debug_bounds("card-folder-s2").expect("the folder line");
+        cx.simulate_mouse_move(folder.center(), None, Default::default());
+        cx.simulate_event(gpui::MouseDownEvent {
+            button: gpui::MouseButton::Left,
+            position: folder.center(),
+            click_count: 1,
+            first_mouse: true,
+            ..Default::default()
+        });
+        cx.simulate_event(gpui::MouseUpEvent {
+            button: gpui::MouseButton::Left,
+            position: folder.center(),
+            click_count: 1,
+            ..Default::default()
+        });
+        cx.run_until_parked();
+        assert_eq!(
+            sidebar.update(cx, |sidebar, _| sidebar.folders_opened().to_vec()),
+            vec!["/tmp/other".to_string(); 2]
+        );
+        assert_eq!(
+            chat.update(cx, |this, _| this.selected_session.clone())
+                .as_deref(),
+            Some("s1"),
+            "the click opens the folder, not the task"
+        );
+    }
+
+    #[gpui::test]
+    fn test_hover_card_wraps_long_local_and_remote_paths(cx: &mut TestAppContext) {
+        let component = "a".repeat(200);
+        let (_chat, cx) = chat_window(cx, |this, cx| {
+            this.sessions = vec![
+                summary_at("s0", "Task", &format!("/tmp/{component}/nested/project")),
+                summary_at(
+                    "s1",
+                    "Task",
+                    &format!(r"C:\Users\Alex\{component}\nested\project"),
+                ),
+            ];
+            this.sync_sidebar(cx);
+        });
+        for (row_id, folder_id) in [
+            ("menu-session-s0", "card-folder-s0"),
+            ("menu-session-s1", "card-folder-s1"),
+        ] {
+            let row = cx.debug_bounds(row_id).expect("row");
+            cx.simulate_mouse_move(on_title(row), None, Default::default());
+            assert!(
+                cx.debug_bounds(folder_id).expect("folder").size.height > px(100.),
+                "long components wrap past the old two-line clamp"
+            );
+        }
+    }
+
+    #[gpui::test]
+    fn test_hover_card_gives_way_to_buttons_menus_and_rename(cx: &mut TestAppContext) {
+        let (chat, cx) = chat_window(cx, |this, cx| {
+            this.sessions = vec![summary("s1", "One")];
+            this.sync_sidebar(cx);
+        });
+        let sidebar = chat.update(cx, |this, _| this.sidebar.clone());
+        let at = on_title(cx.debug_bounds("menu-session-s1").expect("the row"));
+        let nudge = |cx: &mut gpui::VisualTestContext| {
+            cx.simulate_mouse_move(at + gpui::point(px(1.), px(0.)), None, Default::default());
+        };
+        nudge(cx);
+        let rename = cx.debug_bounds("rename-session-s1").expect("rename");
+        cx.simulate_mouse_move(rename.center(), None, Default::default());
+        advance_hover_clock(cx, 250);
+        assert_eq!(hovered(&sidebar, cx), None);
+        nudge(cx);
+        assert_eq!(hovered(&sidebar, cx).as_deref(), Some("s1"));
+
+        sidebar.update(cx, |sidebar, cx| sidebar.open_task_menu_for_test("s1", cx));
+        cx.run_until_parked();
+        nudge(cx);
+        assert_eq!(hovered(&sidebar, cx), None, "menus suppress the card");
+        sidebar.update(cx, |sidebar, cx| {
+            sidebar.close_popups(cx);
+            sidebar.begin_rename(RenameTarget::Task("s1".to_string()), cx);
+        });
+        cx.run_until_parked();
+        nudge(cx);
+        assert_eq!(hovered(&sidebar, cx), None, "rename suppresses the card");
+        sidebar.update(cx, |sidebar, cx| sidebar.cancel_rename(cx));
+        cx.run_until_parked();
+        nudge(cx);
+        assert_eq!(hovered(&sidebar, cx).as_deref(), Some("s1"));
+    }
+
+    #[gpui::test]
+    fn test_hover_card_refreshes_only_while_visible(cx: &mut TestAppContext) {
+        let (chat, cx) = chat_window(cx, |this, cx| {
+            this.sessions = vec![summary("s1", "One")];
+            this.sync_sidebar(cx);
+        });
+        let sidebar = chat.update(cx, |this, _| this.sidebar.clone());
+        let notified = std::rc::Rc::new(std::cell::Cell::new(0));
+        cx.update(|_, cx| {
+            let notified = notified.clone();
+            cx.observe(&sidebar, move |_, _| notified.set(notified.get() + 1))
+                .detach();
+        });
+        let at = on_title(cx.debug_bounds("menu-session-s1").expect("the row"));
+        cx.simulate_mouse_move(at, None, Default::default());
+        let before = notified.get();
+        advance_hover_clock(cx, 60_000);
+        assert_eq!(notified.get(), before, "unchanged age does not repaint");
+        let age = sidebar.update(cx, |sidebar, _| sidebar.card_age().unwrap().to_string());
+        sidebar.update(cx, |sidebar, _| sidebar.set_updated_ms_for_test("s1", 1));
+        advance_hover_clock(cx, 60_000);
+        assert!(
+            notified.get() > before,
+            "the timer refreshes changed activity"
+        );
+        assert_ne!(
+            sidebar.update(cx, |sidebar, _| sidebar.card_age().unwrap().to_string()),
+            age,
+            "the timer updates the card's age"
+        );
+        sidebar.update(cx, |sidebar, cx| sidebar.end_hover(cx));
+        cx.run_until_parked();
+        let before = notified.get();
+        sidebar.update(cx, |sidebar, _| sidebar.set_updated_ms_for_test("s1", 0));
+        advance_hover_clock(cx, 120_000);
+        assert_eq!(notified.get(), before, "ending hover cancels its timer");
+    }
+
+    #[gpui::test]
+    fn test_hover_card_ends_when_rows_move_or_keyboard_navigation_scrolls(cx: &mut TestAppContext) {
+        let now = chrono::Utc::now().timestamp_millis();
+        let (chat, cx) = chat_window(cx, |this, cx| {
+            this.sessions = (0..40)
+                .map(|ix| {
+                    let mut task = summary(&format!("s{ix}"), &format!("Task {ix}"));
+                    task.updated_ms = now - (ix + 1) * 60_000;
+                    task
+                })
+                .collect();
+            this.selected_session = Some("s38".to_string());
+            this.sync_sidebar(cx);
+        });
+        let sidebar = chat.update(cx, |this, _| this.sidebar.clone());
+        let at = on_title(cx.debug_bounds("menu-session-s0").expect("the first row"));
+        let nudge = |cx: &mut gpui::VisualTestContext, dx: f32| {
+            cx.simulate_mouse_move(at + gpui::point(px(dx), px(0.)), None, Default::default());
+        };
+        nudge(cx, 0.);
+        chat.update(cx, |this, cx| {
+            this.sessions[1].updated_ms = now;
+            this.sync_sidebar(cx);
+        });
+        cx.run_until_parked();
+        assert_eq!(hovered(&sidebar, cx), None);
+        nudge(cx, 1.);
+        assert_eq!(hovered(&sidebar, cx).as_deref(), Some("s1"));
+        chat.update(cx, |this, cx| {
+            this.sessions.retain(|task| task.id != "s1");
+            this.sync_sidebar(cx);
+        });
+        cx.run_until_parked();
+        assert_eq!(hovered(&sidebar, cx), None);
+        assert!(cx.debug_bounds("card-session-s1").is_none());
+        nudge(cx, 0.);
+        assert_eq!(hovered(&sidebar, cx).as_deref(), Some("s0"));
+        cx.simulate_event(gpui::ScrollWheelEvent {
+            position: at,
+            delta: gpui::ScrollDelta::Pixels(gpui::point(px(0.), px(-600.))),
+            ..Default::default()
+        });
+        cx.run_until_parked();
+        assert_eq!(hovered(&sidebar, cx), None);
+        nudge(cx, 0.);
+        assert!(hovered(&sidebar, cx).is_some());
+        chat.update(cx, |this, cx| this.step_task(1, cx));
+        cx.run_until_parked();
+        assert_eq!(hovered(&sidebar, cx), None);
+        assert!(sidebar.update(cx, |sidebar, _| sidebar.list().logical_scroll_top().item_ix) > 0);
+    }
+
+    #[gpui::test]
+    fn test_hover_card_ends_when_the_sidebar_collapses(cx: &mut TestAppContext) {
+        let (chat, cx) = chat_window(cx, |this, cx| {
+            this.sessions = vec![summary("s1", "One")];
+            this.sync_sidebar(cx);
+        });
+        let sidebar = chat.update(cx, |this, _| this.sidebar.clone());
+        let at = on_title(cx.debug_bounds("menu-session-s1").expect("the row"));
+        cx.simulate_mouse_move(at, None, Default::default());
+        assert_eq!(hovered(&sidebar, cx).as_deref(), Some("s1"));
+        chat.update(cx, |this, cx| this.toggle_sidebar_visibility(cx));
+        cx.run_until_parked();
+        assert_eq!(hovered(&sidebar, cx), None);
+        chat.update(cx, |this, cx| this.toggle_sidebar_visibility(cx));
+        cx.run_until_parked();
+        assert!(cx.debug_bounds("card-session-s1").is_none());
+        cx.simulate_mouse_move(at + gpui::point(px(1.), px(0.)), None, Default::default());
+        assert!(cx.debug_bounds("card-session-s1").is_some());
     }
 
     /// The header's project menu closes on a press outside it, like every

@@ -928,6 +928,10 @@ impl ChatScreen {
             return;
         }
         self.sidebar_collapsed = collapsed;
+        if collapsed {
+            // Its rows leave the window without seeing the pointer leave.
+            self.sidebar.update(cx, |sidebar, cx| sidebar.end_hover(cx));
+        }
         cx.notify();
     }
 
@@ -4017,7 +4021,8 @@ impl ChatScreen {
         let Some((row, request)) = self.task_step_target(delta, cx) else {
             return;
         };
-        self.sidebar.read(cx).reveal_row(row);
+        self.sidebar
+            .update(cx, |sidebar, cx| sidebar.reveal_row(row, cx));
         if request.computer.as_deref() == self.backend.remote_host() {
             if let Destination::Task(id) = request.destination {
                 self.select_session(&id, cx);
@@ -6339,7 +6344,12 @@ impl Render for ChatScreen {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // Refreshed every frame; activation changes force a redraw, so
         // this tracks focus closely enough to gate notifications.
-        self.window_active = window.is_window_active();
+        let was_active = std::mem::replace(&mut self.window_active, window.is_window_active());
+        if was_active && !self.window_active {
+            // Another app took over under a still pointer, which reports
+            // nothing; the sidebar's hover card goes with the window's focus.
+            self.sidebar.update(cx, |sidebar, cx| sidebar.end_hover(cx));
+        }
         let vim_in_sidebar = self.application_vim_enabled
             && self.application_vim.region == self::navigation::ChatRegion::Sidebar;
         self.sidebar

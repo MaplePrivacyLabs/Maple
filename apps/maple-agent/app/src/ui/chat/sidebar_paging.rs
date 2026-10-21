@@ -95,6 +95,44 @@ mod tests {
     }
 
     #[gpui::test]
+    fn paged_hover_tracks_activity_and_ends_when_a_live_task_moves_it(cx: &mut gpui::TestAppContext) {
+        let _settings = crate::settings::SETTINGS_IO_LOCK.lock();
+        cx.executor().allow_parking();
+        let backend =
+            Arc::new(AgentBackend::for_test("http://127.0.0.1:9".into(), String::new()).unwrap());
+        let chat = cx.new(|cx| ChatScreen::new_without_start(backend, "user".into(), cx));
+        let sidebar = chat.read_with(cx, |chat, _| chat.sidebar.clone());
+        sidebar.update(cx, |sidebar, cx| {
+            sidebar.reset_persisted_for_test();
+            sidebar.pages = SidebarPages {
+                enabled: true,
+                ..SidebarPages::default()
+            };
+            let now = now_ms();
+            let mut first = page_summary("first");
+            first.updated_ms = now - 60_000;
+            sidebar.apply_task_page(PageKind::Active, vec![first], false);
+            sidebar.rebuild_sections();
+            sidebar.claim_hover(&Arc::from("first"), cx);
+            assert_eq!(sidebar.card_age(), Some("1m"));
+
+            let mut latest = summary("first", AgentTaskState::Active);
+            latest.updated_ms = now;
+            sidebar.apply_live_summary(latest, cx);
+            assert_eq!(sidebar.card_age(), Some("now"));
+
+            sidebar.apply_task_page(PageKind::Active, vec![page_summary("older")], true);
+            sidebar.rebuild_sections();
+            assert_eq!(sidebar.hovered(), Some("first"));
+
+            let mut newer = summary("newer", AgentTaskState::Active);
+            newer.updated_ms = now + 1;
+            sidebar.apply_live_summary(newer, cx);
+            assert_eq!(sidebar.hovered(), None);
+        });
+    }
+
+    #[gpui::test]
     fn live_task_insert_preserves_the_loaded_cursor_boundary(cx: &mut gpui::TestAppContext) {
         let _settings = crate::settings::SETTINGS_IO_LOCK.lock();
         cx.executor().allow_parking();

@@ -60,9 +60,10 @@ pub(crate) struct BrowseState {
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
+use std::time::Duration;
 
 use gpui::{
-    AnyElement, AppContext, Context, Div, Entity, EventEmitter, Focusable, SharedString,
+    AnyElement, AppContext, Context, Div, Entity, EventEmitter, Focusable, Pixels, SharedString,
     Subscription, Task, WeakEntity, Window, div, prelude::*, px,
 };
 use maple_agent::agent::{
@@ -74,7 +75,7 @@ use super::navigation::SidebarTarget;
 use super::{ChatScreen, section_label};
 use crate::backend::AgentBackend;
 use crate::ui::icons::{icon, spinner_with_id, wordmark};
-use crate::ui::popup::{Menu, MenuItem, Placement, Popup};
+use crate::ui::popup::{self, Menu, MenuItem, Placement, Popup};
 use crate::ui::text_input::TextInput;
 use crate::ui::theme;
 use crate::ui::titlebar;
@@ -169,6 +170,9 @@ pub(super) struct SidebarRow {
     /// Animation id of the running indicator.
     pub(super) spinner_id: SharedString,
     pub(super) pin_id: SharedString,
+    card_id: SharedString,
+    card_folder_id: SharedString,
+    actions_id: SharedString,
     pub(super) menu_id: SharedString,
     /// Id of the overflow-menu panel itself.
     pub(super) menu_panel_id: SharedString,
@@ -181,6 +185,7 @@ pub(super) struct SidebarRow {
     pub(super) title: SharedString,
     /// Display name of the task's project, shown on every row.
     pub(super) project_name: SharedString,
+    path: SharedString,
     /// Lower-cased title, matched against the sidebar filter.
     pub(super) search: String,
 }
@@ -196,6 +201,9 @@ impl SidebarRow {
             step_id: SharedString::from(format!("step-session-{id}")),
             spinner_id: SharedString::from(format!("spinner-session-{id}")),
             pin_id: SharedString::from(format!("pin-session-{id}")),
+            card_id: SharedString::from(format!("card-session-{id}")),
+            card_folder_id: SharedString::from(format!("card-folder-{id}")),
+            actions_id: SharedString::from(format!("actions-session-{id}")),
             menu_id: SharedString::from(format!("menu-session-{id}")),
             menu_panel_id: SharedString::from(format!("task-menu-{id}")),
             menu_rename_id: SharedString::from(format!("rename-task-{id}")),
@@ -206,6 +214,7 @@ impl SidebarRow {
             menu_reopen_id: SharedString::from(format!("reopen-task-{id}")),
             title: SharedString::from(session.title.clone()),
             project_name: SharedString::from(project_name.to_string()),
+            path: SharedString::from(session.project_root.clone()),
             search: session.title.to_lowercase(),
         }
     }
@@ -213,6 +222,21 @@ impl SidebarRow {
 
 /// The switcher's "All projects" row.
 const ALL_PROJECTS_ID: &str = "switcher-all-projects";
+
+const CARD_AGE_REFRESH: Duration = Duration::from_secs(60);
+// Enough time to cross the gap, shorter than a button's tooltip delay.
+const CARD_CLOSE_DELAY: Duration = Duration::from_millis(200);
+
+struct HoveredTask {
+    session: Arc<str>,
+    entry: usize,
+    age: SharedString,
+    on_row: bool,
+    on_card: bool,
+    // Dropping these tasks cancels the pending close and age refresh.
+    closing: Option<Task<()>>,
+    _age_refresh: Task<()>,
+}
 
 /// The sidebar's popup menus. One is open at a time; a project's own menu
 /// opens inside the switcher (see `Sidebar::project_popup`).
@@ -412,6 +436,8 @@ pub(super) struct Sidebar {
     active_expanded: bool,
     settled_expanded: bool,
     archived_expanded: bool,
+    hovered: Option<HoveredTask>,
+    on_row_actions: Option<Arc<str>>,
     switcher_roots: Vec<SwitcherRoot>,
     computer_switcher_roots: Vec<Vec<SwitcherRoot>>,
     scope_label: SharedString,
@@ -434,6 +460,9 @@ pub(super) struct Sidebar {
     /// Task renames sent to the backend, for tests.
     #[cfg(test)]
     renames_sent: Vec<(String, String)>,
+    /// Folders the sidebar asked the file manager to open, for tests.
+    #[cfg(test)]
+    folders_opened: Vec<String>,
     // Persisted in the app settings.
     pinned_tasks: Vec<String>,
     /// Latest owner metadata seen per path, independent of current membership.
@@ -584,6 +613,7 @@ impl Sidebar {
         self.archived_expanded = state.archived_expanded;
         // A project filter belongs to the previous execution computer.
         self.project_filter = None;
+        self.end_hover(cx);
         if self.pages.enabled && scope_changed {
             self.refresh_pages(cx);
         }
@@ -623,6 +653,14 @@ impl Sidebar {
             this.search_changed(&input, cx)
         })
         .detach();
+        let list = gpui::ListState::new(0, gpui::ListAlignment::Top, px(200.));
+        // Scrolling moves the rows under a still pointer, which reports
+        // nothing until it moves; the hover ends and its next move claims
+        // whichever row is under it.
+        let sidebar = cx.entity().downgrade();
+        list.set_scroll_handler(move |_event, _window, cx| {
+            sidebar.update(cx, |this, cx| this.end_hover(cx)).ok();
+        });
         Self {
             pages: SidebarPages::default(),
             group_pages: ComputerPages::default(),
@@ -640,7 +678,7 @@ impl Sidebar {
             recent_roots: Vec::new(),
             application_vim_enabled,
             vim_active: false,
-            list: gpui::ListState::new(0, gpui::ListAlignment::Top, px(200.)),
+            list,
             entries: Vec::new(),
             rows: Vec::new(),
             pinned_rows: Vec::new(),
@@ -651,6 +689,8 @@ impl Sidebar {
             active_expanded: true,
             settled_expanded: true,
             archived_expanded: false,
+            hovered: None,
+            on_row_actions: None,
             switcher_roots: Vec::new(),
             computer_switcher_roots: Vec::new(),
             scope_label: "All projects".into(),
@@ -666,6 +706,8 @@ impl Sidebar {
             rename_focus_out: None,
             #[cfg(test)]
             renames_sent: Vec::new(),
+            #[cfg(test)]
+            folders_opened: Vec::new(),
             pinned_tasks: remote_settings
                 .as_ref()
                 .map_or_else(|| settings.pinned_tasks.clone(), |s| s.pinned_tasks.clone()),
@@ -983,7 +1025,10 @@ impl Sidebar {
         Some(rows[target].clone())
     }
 
-    pub(super) fn reveal_row(&self, row: usize) {
+    /// Scroll `row` into view. The rows move under a still pointer, so
+    /// this ends the hover the way a wheel scroll does.
+    pub(super) fn reveal_row(&mut self, row: usize, cx: &mut Context<Self>) {
+        self.end_hover(cx);
         self.list.scroll_to_reveal_item(row);
     }
 
@@ -1032,6 +1077,16 @@ impl Sidebar {
             Some(SidebarPopup::Task(session)) => Some(&**session),
             _ => None,
         }
+    }
+
+    #[cfg(test)]
+    pub(super) fn hovered(&self) -> Option<&str> {
+        self.hovered.as_ref().map(|hovered| &*hovered.session)
+    }
+
+    #[cfg(test)]
+    pub(super) fn card_age(&self) -> Option<&str> {
+        self.hovered.as_ref().map(|hovered| hovered.age.as_ref())
     }
 
     #[cfg(test)]
@@ -1105,6 +1160,11 @@ impl Sidebar {
     }
 
     #[cfg(test)]
+    pub(super) fn folders_opened(&self) -> &[String] {
+        &self.folders_opened
+    }
+
+    #[cfg(test)]
     pub(super) fn rename_target(&self) -> Option<RenameTarget> {
         self.rename.clone()
     }
@@ -1122,7 +1182,22 @@ impl Sidebar {
 
     #[cfg(test)]
     pub(super) fn open_task_menu_for_test(&mut self, session_id: &str, cx: &mut Context<Self>) {
-        self.popup.open(SidebarPopup::Task(session_id.into()), cx);
+        if !self.popup.is_open(&SidebarPopup::Task(session_id.into())) {
+            self.toggle_task_menu(session_id.into(), cx);
+        }
+    }
+
+    /// Move a task's activity time without the screen's sync, so only the
+    /// hover card's own refresh can see it.
+    #[cfg(test)]
+    pub(super) fn set_updated_ms_for_test(&mut self, session_id: &str, updated_ms: i64) {
+        if let Some(session) = self
+            .sessions
+            .iter_mut()
+            .find(|session| session.id == session_id)
+        {
+            session.updated_ms = updated_ms;
+        }
     }
 
     #[cfg(test)]
@@ -1405,6 +1480,11 @@ impl Sidebar {
         if self.application_vim_enabled {
             self.vim_reconcile();
         }
+        // A row that left or moved in the list never reports the pointer
+        // leaving it; one that stayed may have new activity.
+        if self.hovered.is_some() {
+            self.refresh_card_age(now_ms());
+        }
     }
 
     /// A row changed its height (a rename field came or went): let the
@@ -1436,6 +1516,7 @@ impl Sidebar {
             && self.rows.iter().zip(&self.sessions).all(|(row, session)| {
                 *row.id == *session.id
                     && row.title.as_ref() == session.title
+                    && row.path.as_ref() == session.project_root
                     && self.root_name_matches(&session.project_root, &row.project_name)
             });
         if fresh {
@@ -1575,6 +1656,7 @@ impl Sidebar {
 
     /// Open or close the project switcher menu from its header.
     pub(super) fn toggle_switcher_menu(&mut self, cx: &mut Context<Self>) {
+        self.end_hover(cx);
         self.project_popup.close(cx);
         self.popup.toggle(SidebarPopup::Switcher, cx);
     }
@@ -1585,6 +1667,7 @@ impl Sidebar {
         if open == self.switcher_menu_open() {
             return;
         }
+        self.end_hover(cx);
         self.project_popup.close(cx);
         if open {
             let current = self
@@ -1640,6 +1723,7 @@ impl Sidebar {
                 .unwrap_or_default(),
             RenameTarget::Project(target) => self.project_name(target),
         };
+        self.end_hover(cx);
         let chat = self.chat.clone();
         let sidebar = cx.entity().downgrade();
         let escape = sidebar.clone();
@@ -1804,6 +1888,12 @@ impl Sidebar {
 
     /// Show the project's folder in the file manager.
     fn open_folder(&mut self, root: &str, cx: &mut Context<Self>) {
+        // Tests record the request instead of opening a window.
+        #[cfg(test)]
+        if cfg!(test) {
+            self.folders_opened.push(root.to_string());
+            return;
+        }
         let path = root.to_string();
         self.call(
             async move {
@@ -1854,8 +1944,142 @@ impl Sidebar {
         );
     }
 
+    // Every move can reclaim a hover ended by scrolling or a menu.
+    fn claim_hover(&mut self, session_id: &Arc<str>, cx: &mut Context<Self>) {
+        if self.card_suppressed() || self.on_row_actions.as_ref() == Some(session_id) {
+            return;
+        }
+        if let Some(hovered) = &mut self.hovered
+            && hovered.session == *session_id
+        {
+            if !hovered.on_row {
+                hovered.on_row = true;
+                self.hover_moved(cx);
+            }
+            return;
+        }
+        let Some(entry) = self.task_entry(session_id) else {
+            return;
+        };
+        self.hovered = Some(HoveredTask {
+            session: Arc::clone(session_id),
+            entry,
+            age: SharedString::default(),
+            on_row: true,
+            on_card: false,
+            closing: None,
+            _age_refresh: cx.spawn(async move |this, cx| {
+                loop {
+                    cx.background_executor().timer(CARD_AGE_REFRESH).await;
+                    if this
+                        .update(cx, |this, cx| {
+                            if this.refresh_card_age(now_ms()) {
+                                cx.notify();
+                            }
+                        })
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
+            }),
+        });
+        self.refresh_card_age(now_ms());
+        cx.notify();
+    }
+
+    /// The pointer left a task row. Rows report in no fixed order, so
+    /// leaving a row touches only its own hover.
+    fn release_hover(&mut self, session_id: &Arc<str>, cx: &mut Context<Self>) {
+        if let Some(hovered) = &mut self.hovered
+            && hovered.session == *session_id
+        {
+            hovered.on_row = false;
+            self.hover_moved(cx);
+        }
+    }
+
+    fn set_on_row_actions(&mut self, session_id: &Arc<str>, on: bool, cx: &mut Context<Self>) {
+        if on {
+            self.on_row_actions = Some(Arc::clone(session_id));
+            self.release_hover(session_id, cx);
+        } else if self.on_row_actions.as_ref() == Some(session_id) {
+            self.on_row_actions = None;
+        }
+    }
+
+    fn set_on_card(&mut self, on: bool, cx: &mut Context<Self>) {
+        if let Some(hovered) = &mut self.hovered {
+            hovered.on_card = on;
+            self.hover_moved(cx);
+        }
+    }
+
+    fn hover_moved(&mut self, cx: &mut Context<Self>) {
+        let Some(hovered) = &mut self.hovered else {
+            return;
+        };
+        if hovered.on_row || hovered.on_card {
+            hovered.closing = None;
+        } else if hovered.closing.is_none() {
+            hovered.closing = Some(cx.spawn(async move |this, cx| {
+                cx.background_executor().timer(CARD_CLOSE_DELAY).await;
+                this.update(cx, |this, cx| this.end_hover(cx)).ok();
+            }));
+        }
+    }
+
+    pub(super) fn end_hover(&mut self, cx: &mut Context<Self>) {
+        if self.hovered.take().is_some() {
+            cx.notify();
+        }
+    }
+
+    fn task_entry(&self, session_id: &str) -> Option<usize> {
+        self.entries.iter().position(|entry| {
+            matches!(entry, SidebarEntry::Task(task)
+                if self
+                    .sessions
+                    .get(task.session)
+                    .is_some_and(|session| *session.id == *session_id))
+        })
+    }
+
+    /// Bring the hover card's age up to `now`, or end the hover when its
+    /// row left the list or moved in it. Reports whether the card changed.
+    pub(super) fn refresh_card_age(&mut self, now: i64) -> bool {
+        let Some(hovered) = &self.hovered else {
+            return false;
+        };
+        let updated_ms = self
+            .task_entry(&hovered.session)
+            .filter(|entry| *entry == hovered.entry)
+            .and_then(|entry| match &self.entries[entry] {
+                SidebarEntry::Task(task) => self.sessions.get(task.session),
+                _ => None,
+            })
+            .map(|session| session.updated_ms);
+        let Some(updated_ms) = updated_ms else {
+            self.hovered = None;
+            return true;
+        };
+        let age = age_label(now, updated_ms);
+        let hovered = self.hovered.as_mut().unwrap();
+        if age == hovered.age {
+            return false;
+        }
+        hovered.age = age;
+        true
+    }
+
+    // Project menus are nested inside the switcher.
+    fn card_suppressed(&self) -> bool {
+        self.popup.open_key().is_some() || self.rename.is_some()
+    }
+
     /// Open or close the overflow menu of one task row.
     fn toggle_task_menu(&mut self, session_id: Arc<str>, cx: &mut Context<Self>) {
+        self.end_hover(cx);
         self.popup.toggle(SidebarPopup::Task(session_id), cx);
     }
 
@@ -2165,7 +2389,7 @@ impl Sidebar {
         let row = self.vim_target_row(&target);
         self.vim_selected = Some(target);
         if let Some(row) = row {
-            self.list.scroll_to_reveal_item(row);
+            self.reveal_row(row, cx);
         }
         cx.notify();
         true
@@ -2183,7 +2407,7 @@ impl Sidebar {
             return false;
         };
         self.vim_selected = Some(target);
-        self.list.scroll_to_reveal_item(row);
+        self.reveal_row(row, cx);
         cx.notify();
         true
     }
@@ -2195,13 +2419,13 @@ impl Sidebar {
     }
 
     /// Scroll the selected target into view.
-    pub(super) fn vim_reveal(&self) {
+    pub(super) fn vim_reveal(&mut self, cx: &mut Context<Self>) {
         if let Some(row) = self
             .vim_selected
             .as_ref()
             .and_then(|target| self.vim_target_row(target))
         {
-            self.list.scroll_to_reveal_item(row);
+            self.reveal_row(row, cx);
         }
     }
 
@@ -2212,7 +2436,7 @@ impl Sidebar {
             Some(SidebarTarget::Archived) => self.set_archived_expanded(expanded, cx),
             _ => {}
         }
-        self.vim_reveal();
+        self.vim_reveal(cx);
     }
 
     fn vim_reconcile(&mut self) {
@@ -2754,7 +2978,17 @@ impl Sidebar {
         let activity = (!archived)
             .then(|| self.session_activity(&row.id))
             .flatten();
+        let card = self
+            .hovered
+            .as_ref()
+            .filter(|hovered| hovered.session == row.id)
+            .map(|hovered| {
+                // Another computer's folder cannot open on this one.
+                let local = self.backend.remote_host().is_none();
+                task_card(row, &hovered.age, local, cx)
+            });
         let session_id = Arc::clone(&row.id);
+        let hover_id = Arc::clone(&row.id);
         let step_id = Arc::clone(&row.id);
         let rename_id = Arc::clone(&row.id);
         let rung = TaskRung::of(task);
@@ -2794,6 +3028,18 @@ impl Sidebar {
                     style
                         .bg(gpui::rgb(theme::bg_sidebar_row_hover()))
                         .cursor_pointer()
+                })
+            })
+            .on_mouse_move({
+                let hover_id = Arc::clone(&hover_id);
+                cx.listener(move |this, _event, _window, cx| this.claim_hover(&hover_id, cx))
+            })
+            .on_hover({
+                let hover_id = Arc::clone(&hover_id);
+                cx.listener(move |this, hovered: &bool, _window, cx| {
+                    if !*hovered {
+                        this.release_hover(&hover_id, cx);
+                    }
                 })
             })
             .on_click(cx.listener(move |_this, _event, _window, cx| {
@@ -2845,6 +3091,12 @@ impl Sidebar {
                                 .cursor_pointer()
                         })
                         .tooltip(widgets::tooltip("Unpin", None))
+                        .on_hover({
+                            let hover_id = Arc::clone(&hover_id);
+                            cx.listener(move |this, on: &bool, _window, cx| {
+                                this.set_on_row_actions(&hover_id, *on, cx);
+                            })
+                        })
                         .on_click(cx.listener(move |this, _event, _window, cx| {
                             cx.stop_propagation();
                             this.toggle_task_pin(&pin_id, cx);
@@ -2855,6 +3107,7 @@ impl Sidebar {
             .when(!renaming, |el| {
                 el.child(
                     div()
+                        .id(row.actions_id.clone())
                         .absolute()
                         .top_0()
                         .bottom_0()
@@ -2870,6 +3123,9 @@ impl Sidebar {
                         .group_hover(row.group.clone(), |style| {
                             style.bg(gpui::rgb(theme::bg_sidebar_row_hover()))
                         })
+                        .on_hover(cx.listener(move |this, on: &bool, _window, cx| {
+                            this.set_on_row_actions(&hover_id, *on, cx);
+                        }))
                         .child(self.task_menu_trigger(row, task, window, cx))
                         .child(row_action(
                             row.rename_id.clone(),
@@ -2893,6 +3149,7 @@ impl Sidebar {
                         )),
                 )
             })
+            .children(card)
     }
 
     /// The collapse button in the top row.
@@ -3106,6 +3363,151 @@ fn activity_indicator(spinner_id: &SharedString, activity: SessionActivity) -> A
             .bg(gpui::rgb(theme::status_success()))
             .into_any_element(),
     }
+}
+
+/// Width of a task row's hover card.
+const CARD_WIDTH: Pixels = px(300.);
+
+/// The current time in Unix milliseconds, as session records stamp it.
+fn now_ms() -> i64 {
+    chrono::Utc::now().timestamp_millis()
+}
+
+/// Time since `then_ms`, short: "now", "5m", "3h", "2d", "3w", "1y".
+/// Empty when the time is unknown.
+fn age_label(now_ms: i64, then_ms: i64) -> SharedString {
+    const MINUTE: i64 = 60_000;
+    const HOUR: i64 = 60 * MINUTE;
+    const DAY: i64 = 24 * HOUR;
+    const WEEK: i64 = 7 * DAY;
+    const YEAR: i64 = 365 * DAY;
+    if then_ms <= 0 {
+        return SharedString::default();
+    }
+    let age = now_ms - then_ms;
+    if age < MINUTE {
+        return "now".into();
+    }
+    let (count, unit) = if age < HOUR {
+        (age / MINUTE, 'm')
+    } else if age < DAY {
+        (age / HOUR, 'h')
+    } else if age < WEEK {
+        (age / DAY, 'd')
+    } else if age < YEAR {
+        (age / WEEK, 'w')
+    } else {
+        (age / YEAR, 'y')
+    };
+    format!("{count}{unit}").into()
+}
+
+/// The task's title, age, project, and folder in a panel beside its row.
+fn task_card(
+    row: &SidebarRow,
+    age: &SharedString,
+    can_open: bool,
+    cx: &mut Context<Sidebar>,
+) -> AnyElement {
+    let path = row.path.clone();
+    let folder = div()
+        .id(row.card_folder_id.clone())
+        .debug_selector(|| row.card_folder_id.to_string())
+        .flex()
+        .items_start()
+        .gap_2()
+        .px_2()
+        .py_1p5()
+        .rounded(theme::RADIUS_SM)
+        .child(div().flex_none().h_5().flex().items_center().child(icon(
+            "folder",
+            px(13.),
+            theme::text_muted(),
+        )))
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .flex()
+                .flex_col()
+                .child(
+                    div()
+                        .line_clamp(1)
+                        .text_ellipsis()
+                        .text_color(gpui::rgb(theme::text_secondary()))
+                        .child(row.project_name.clone()),
+                )
+                .child(
+                    div()
+                        .font_family(crate::assets::FONT_MONO)
+                        .text_xs()
+                        .text_color(gpui::rgb(theme::text_muted()))
+                        .child(row.path.clone()),
+                ),
+        )
+        .when(can_open, |folder| {
+            folder
+                .role(gpui::Role::Button)
+                .aria_label("Open folder")
+                .cursor_pointer()
+                .hover(|style| style.bg(gpui::rgb(theme::bg_sidebar_row_hover())))
+                .on_click(cx.listener(move |this, _event, _window, cx| {
+                    cx.stop_propagation();
+                    this.open_folder(&path, cx);
+                }))
+        });
+    let card = div()
+        .id(row.card_id.clone())
+        .debug_selector(|| row.card_id.to_string())
+        .occlude()
+        .role(gpui::Role::Group)
+        .aria_label(row.title.clone())
+        .w(CARD_WIDTH)
+        .p_1p5()
+        .rounded(theme::RADIUS_MD)
+        .bg(gpui::rgb(theme::bg_elevated()))
+        .border_1()
+        .border_color(gpui::rgb(theme::border()))
+        .shadow_md()
+        .flex()
+        .flex_col()
+        .gap_0p5()
+        .text_sm()
+        // A selected row's title weight would carry over to the card.
+        .font_weight(gpui::FontWeight::NORMAL)
+        .text_color(gpui::rgb(theme::text_primary()))
+        .on_hover(cx.listener(|this, on: &bool, _window, cx| this.set_on_card(*on, cx)))
+        .child(
+            div()
+                .flex()
+                .items_start()
+                .gap_3()
+                .px_2()
+                .pt_1p5()
+                .pb_1()
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .line_clamp(3)
+                        .text_ellipsis()
+                        .child(row.title.clone()),
+                )
+                // The title's first line is 20 px tall: centered in one,
+                // the age sits level with it.
+                .child(
+                    div()
+                        .flex_none()
+                        .h_5()
+                        .flex()
+                        .items_center()
+                        .text_xs()
+                        .text_color(gpui::rgb(theme::text_muted()))
+                        .child(age.clone()),
+                ),
+        )
+        .child(folder);
+    popup::hover_panel(card, Placement::Beside)
 }
 
 /// Small icon button that shows only while the pointer is over its row.
