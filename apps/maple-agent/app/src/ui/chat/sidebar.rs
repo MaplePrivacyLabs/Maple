@@ -76,6 +76,7 @@ pub(crate) struct BrowseState {
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
+use std::time::Duration;
 
 use gpui::{
     AnyElement, AppContext, Context, Div, Entity, EventEmitter, Focusable, SharedString,
@@ -90,7 +91,8 @@ use super::navigation::SidebarTarget;
 use super::{ChatScreen, section_label};
 use crate::backend::AgentBackend;
 use crate::settings::{SidebarGroup, SidebarItemKey, SidebarOrder, SidebarSort, SidebarView};
-use crate::ui::icons::{icon, spinner_with_id, wordmark};
+use crate::ui::icons::{icon, wordmark};
+use crate::ui::motion;
 use crate::ui::popup::{Menu, MenuItem, Placement, Popup};
 use crate::ui::text_input::TextInput;
 use crate::ui::theme;
@@ -4423,28 +4425,65 @@ fn row_fade_background(color: u32) -> gpui::Background {
     )
 }
 
-/// A coral dot while a question waits, a spinner while the task runs, an
-/// alert once a run failed unseen, and a green dot once one completed
-/// unseen. Each state has its own shape, so none relies on color alone.
-/// The spinner keeps the sidebar repainting while any task runs;
-/// `spinner_id` is prebuilt so render allocates nothing.
+/// One breath of the running ring's dot.
+const RUNNING_BREATH: Duration = Duration::from_millis(1600);
+
+/// A coral dot while a question waits, a ring with a breathing dot while
+/// the task runs, an alert once a run failed unseen, and a green dot once
+/// one completed unseen. The two dots differ by color; the ring and the
+/// alert differ by shape. The ring runs on the shared low-rate clock, so
+/// any number of running rows cost one repaint per interval; `spinner_id`
+/// is prebuilt so render allocates nothing. Every state sits centered in
+/// one box the size of the largest, so the center stays put as states
+/// change.
 fn activity_indicator(spinner_id: &SharedString, activity: SessionActivity) -> AnyElement {
     let dot = |color: u32| {
         div()
             .size(px(8.))
-            .flex_none()
             .rounded_full()
             .bg(gpui::rgb(color))
             .into_any_element()
     };
-    match activity {
-        SessionActivity::NeedsYou => dot(theme::accent()),
-        SessionActivity::Running => spinner_with_id(spinner_id.clone(), px(13.), theme::accent()),
-        SessionActivity::Failed => {
-            icon("circle-alert", px(13.), theme::status_error()).into_any_element()
-        }
-        SessionActivity::CompletedUnread => dot(theme::status_success()),
-    }
+    div()
+        .size(px(13.))
+        .flex_none()
+        .flex()
+        .items_center()
+        .justify_center()
+        .child(match activity {
+            SessionActivity::NeedsYou => dot(theme::accent()),
+            SessionActivity::Running => running_ring(spinner_id.clone()),
+            SessionActivity::Failed => {
+                icon("circle-alert", px(13.), theme::status_error()).into_any_element()
+            }
+            SessionActivity::CompletedUnread => dot(theme::status_success()),
+        })
+        .into_any_element()
+}
+
+/// The running state: a coral ring whose center dot fades in and out. A
+/// fade reads as smooth at the shared clock's low frame rate, where a
+/// turning arc steps visibly.
+fn running_ring(id: SharedString) -> AnyElement {
+    motion::ticker(id, RUNNING_BREATH, |phase| {
+        div()
+            .size(px(12.))
+            .flex()
+            .items_center()
+            .justify_center()
+            .rounded_full()
+            .border_1()
+            .border_color(gpui::rgb(theme::accent()))
+            .child(
+                div()
+                    .size(px(6.))
+                    .rounded_full()
+                    .bg(gpui::rgb(theme::accent()))
+                    .opacity(motion::pulse(phase, 0., 0.3, 1.)),
+            )
+            .into_any_element()
+    })
+    .into_any_element()
 }
 
 /// The strip over a row's end that holds its hover buttons, with the
