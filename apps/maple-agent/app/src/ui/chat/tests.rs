@@ -2246,6 +2246,10 @@ mod state_tests {
             this.handle_service_event(question("q2"), cx);
             assert_eq!(this.pending_questions.len(), 3);
             assert_eq!(this.pending_questions[0].request_id, "q1");
+            assert_eq!(
+                this.sidebar.read(cx).session_activity("s1"),
+                Some(SessionActivity::NeedsYou)
+            );
             // Answering pops the head and leaves the rest queued.
             this.answer_question("first".to_string(), cx);
             assert_eq!(this.pending_questions.len(), 2);
@@ -2260,6 +2264,7 @@ mod state_tests {
             this.answer_question("third".to_string(), cx);
             assert!(this.pending_questions.is_empty());
             assert!(this.pending_question_input.is_none());
+            assert_eq!(this.sidebar.read(cx).session_activity("s1"), None);
         });
     }
 
@@ -4694,8 +4699,20 @@ mod state_tests {
         let backend = backend_with_mcp_servers(cx, "remove-waiting-project", Vec::new());
         let alpha = mcp_project("remove-waiting-alpha");
         let beta = mcp_project("remove-waiting-beta");
+        // A task in each project, both carrying unseen markers. The test
+        // runtime is not running, so the archived project's task is
+        // already archived and the archive asks the backend for nothing.
+        let mut alpha_task = summary_at("alpha-task", "Alpha", &alpha);
+        alpha_task.state = AgentTaskState::Archived;
+        let beta_task = summary_at("beta-task", "Beta", &beta);
+        let (alpha_id, beta_id) = (alpha_task.id.clone(), beta_task.id.clone());
         let (chat, cx) = chat_window_in(cx, backend, |this, cx| {
             this.selected_session = None;
+            this.sessions = vec![alpha_task, beta_task];
+            for id in [&alpha_id, &beta_id] {
+                this.completed_unread_sessions.insert(id.clone());
+                this.failed_unread_sessions.insert(id.clone());
+            }
             this.project_root = Some(alpha.clone());
             this.recent_roots = vec![recent_root(&alpha), recent_root(&beta)];
             this.draft = true;
@@ -4721,9 +4738,16 @@ mod state_tests {
             assert!(this.pending_first_send.is_none());
             assert_eq!(this.selected_session, None);
             assert!(
-                this.sessions.is_empty(),
+                this.sessions
+                    .iter()
+                    .all(|session| session.id == alpha_id || session.id == beta_id),
                 "no task was created for the withdrawn send"
             );
+            // The archived project's markers go with it; the other's stay.
+            assert!(!this.completed_unread_sessions.contains(&alpha_id));
+            assert!(!this.failed_unread_sessions.contains(&alpha_id));
+            assert!(this.completed_unread_sessions.contains(&beta_id));
+            assert!(this.failed_unread_sessions.contains(&beta_id));
             assert!(
                 this.prompt_history
                     .iter()
