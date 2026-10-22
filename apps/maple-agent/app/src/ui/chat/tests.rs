@@ -6333,6 +6333,40 @@ mod state_tests {
             );
         });
     }
+    /// The file manager runs on this computer: a project on a paired
+    /// computer never offers "Open folder", even while that computer is
+    /// the active one.
+    #[gpui::test]
+    fn only_a_local_project_offers_open_folder(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        for (backend, computer) in [
+            (
+                crate::backend::AgentBackend::for_test("http://127.0.0.1:9".into(), String::new()),
+                None,
+            ),
+            (
+                crate::backend::AgentBackend::remote_for_test("east"),
+                Some("east"),
+            ),
+        ] {
+            let backend = Arc::new(backend.expect("backend"));
+            let chat = cx.new(|cx| {
+                let _guard = SETTINGS_LOCK.lock();
+                ChatScreen::new_without_start(backend, "user".to_string(), cx)
+            });
+            chat.update(cx, |this, cx| {
+                let menu = this
+                    .sidebar
+                    .read(cx)
+                    .project_menu_labels_for_test(&ProjectTarget {
+                        computer: computer.map(str::to_string),
+                        path: "/shared".into(),
+                    });
+                assert_eq!(menu.contains(&"Open folder"), computer.is_none());
+                assert!(menu.contains(&"Remove project"));
+            });
+        }
+    }
 
     #[gpui::test]
     fn inactive_project_rename_previews_and_failures_are_isolated_by_computer(

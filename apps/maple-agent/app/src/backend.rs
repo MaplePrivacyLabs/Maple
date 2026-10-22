@@ -303,6 +303,14 @@ impl AgentBackend {
         }
     }
 
+    /// A UI test backend that reports itself as connected to `peer`.
+    #[cfg(test)]
+    pub fn remote_for_test(peer: &str) -> Result<Self, String> {
+        let mut backend = Self::for_test("http://127.0.0.1:9".into(), String::new())?;
+        backend.remote_host = Some(peer.to_string());
+        Ok(backend)
+    }
+
     pub fn new(api_url: String, _harness_instructions: String) -> Result<Self, String> {
         let api_url = maple_agent::maple_api::validate_api_url(&api_url)?;
         let runtime = Runtime::new().map_err(|e| format!("Could not start host client: {e}"))?;

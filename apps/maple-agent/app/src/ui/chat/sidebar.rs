@@ -2023,14 +2023,18 @@ impl Sidebar {
         if target.computer.as_deref() != self.backend.remote_host() {
             return items;
         }
-        let open_root = root.clone();
         let remove_root = root.clone();
-        items.push(SidebarMenuItem {
-            id: target.element_id("open-project"),
-            icon: "folder-open",
-            label: "Open folder",
-            on_click: Box::new(move |this, cx| this.open_folder(&open_root, cx)),
-        });
+        // The file manager runs on this computer, so a paired computer's
+        // folder cannot be revealed from here.
+        if self.backend.remote_host().is_none() {
+            let open_root = root.clone();
+            items.push(SidebarMenuItem {
+                id: target.element_id("open-project"),
+                icon: "folder-open",
+                label: "Open folder",
+                on_click: Box::new(move |this, cx| this.open_folder(&open_root, cx)),
+            });
+        }
         if let Some(status) = self
             .menu_trust
             .as_ref()
