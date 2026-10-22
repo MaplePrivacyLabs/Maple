@@ -1,5 +1,9 @@
 //! Pure compaction budgets. These budgets never change a caller's output cap.
 
+/// A helper batch bounds database payload transfer as well as token work. One
+/// indivisible source group may exceed this target; no history is truncated.
+pub const MAX_SOURCE_BATCH_BYTES: usize = 8 * 1024 * 1024;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CompactionPolicy {
     /// Hard main input budget, after only the caller's requested output.

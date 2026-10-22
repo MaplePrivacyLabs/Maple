@@ -77,7 +77,7 @@ pub enum CompactionError {
     Responses(#[from] ResponsesError),
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct CompactionSourceMetadata {
     pub key: ContextItemKey,
     pub id: i64,

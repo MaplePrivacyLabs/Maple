@@ -4,7 +4,7 @@
 //! replayed verbatim or explicitly covered by a successfully published summary.
 //! This module performs no persistence, inference, billing, or tool execution.
 
-use super::policy::CompactionPolicy;
+use super::policy::{CompactionPolicy, MAX_SOURCE_BATCH_BYTES};
 use crate::tokens::count_tokens;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -24,6 +24,9 @@ pub struct ContextItem {
     /// Historical data only; private reasoning is never summary source material.
     pub summary_messages: Vec<Value>,
     pub estimated_tokens: usize,
+    /// Database ciphertext size, independently of its projected model tokens.
+    /// Images may contribute large ciphertext but only a small prompt marker.
+    pub source_bytes: usize,
     pub settled: bool,
     pub tool_call_id: Option<Uuid>,
     /// Request-derived input provenance (for example, automatic descriptions).
@@ -33,6 +36,9 @@ pub struct ContextItem {
     /// A finished historical tool attempt without its counterpart is retained as
     /// an identity, not replayed as an invalid provider tool exchange.
     pub historical_unmatched: bool,
+    /// Metadata-only items participate in planning, but must never masquerade as
+    /// an empty verbatim message in the final provider prompt.
+    pub payload_loaded: bool,
 }
 
 impl ContextItem {
@@ -65,10 +71,12 @@ impl ContextItem {
             prompt_messages,
             summary_messages,
             estimated_tokens,
+            source_bytes: estimated_tokens.saturating_mul(4),
             settled,
             tool_call_id,
             protected_input: false,
             historical_unmatched: false,
+            payload_loaded: true,
         }
     }
 }
@@ -364,6 +372,13 @@ pub fn project(
     checkpoint: &Option<CheckpointPayload>,
 ) -> Result<(Vec<Value>, usize), ContextError> {
     let covered = validated_coverage(snapshot, checkpoint)?;
+    if snapshot
+        .items
+        .iter()
+        .any(|item| !covered.contains(&item.key) && !item.payload_loaded)
+    {
+        return Err(ContextError::Snapshot("uncovered payload is not loaded"));
+    }
     let mut messages = snapshot.instructions.clone();
     let active_after = checkpoint
         .as_ref()
@@ -386,6 +401,53 @@ pub fn project(
         messages,
         projected_token_estimate(snapshot, checkpoint, &covered),
     ))
+}
+
+/// Estimate a complete projection from metadata without constructing messages.
+/// Unlike `project`, this is safe for explicitly unloaded planning items.
+pub fn estimate_tokens(
+    snapshot: &ContextSnapshot,
+    checkpoint: &Option<CheckpointPayload>,
+) -> Result<usize, ContextError> {
+    let covered = validated_coverage(snapshot, checkpoint)?;
+    Ok(projected_token_estimate(snapshot, checkpoint, &covered))
+}
+
+/// Hydrate only the planned helper input. Pure planning may have inserted an
+/// older active memory after its anchor; retain that insertion after replacing
+/// the raw source placeholders. Reasoning identities need no private payload:
+/// reasoning text is never summary source material.
+pub fn hydrate_plan(
+    plan: &ContextPlan,
+    snapshot: &ContextSnapshot,
+) -> Result<ContextPlan, ContextError> {
+    let by_key: HashMap<_, _> = snapshot.items.iter().map(|item| (item.key, item)).collect();
+    let mut hydrated = plan.clone();
+    for work in &mut hydrated.summary_work {
+        for item in &mut work.items {
+            let source = by_key
+                .get(&item.key)
+                .ok_or(ContextError::Snapshot("summary source is absent"))?;
+            if !source.payload_loaded && source.key.kind != ContextItemKind::Reasoning {
+                return Err(ContextError::Snapshot("summary payload is not loaded"));
+            }
+            let raw_messages = if item.key.kind == ContextItemKind::Reasoning {
+                0
+            } else {
+                item.prompt_messages.len()
+            };
+            let injected = item
+                .summary_messages
+                .get(raw_messages..)
+                .ok_or(ContextError::Snapshot(
+                    "summary source projection is invalid",
+                ))?
+                .to_vec();
+            *item = (**source).clone();
+            item.summary_messages.extend(injected);
+        }
+    }
+    Ok(hydrated)
 }
 
 fn projected_token_estimate(
@@ -480,6 +542,9 @@ pub fn plan_batch(
     let mut history = Vec::new();
     let mut active = Vec::new();
     let mut history_tokens = 0usize;
+    let mut active_tokens = 0usize;
+    let mut history_bytes = 0usize;
+    let mut active_bytes = 0usize;
     let mut group_index = 0usize;
     while let Some(group) = groups.get(group_index) {
         if group.end >= current {
@@ -510,7 +575,15 @@ pub fn plan_batch(
             .filter(|item| !covered.contains(&item.key))
             .map(|item| item.estimated_tokens)
             .fold(0usize, usize::saturating_add);
-        if history_tokens > 0 && history_tokens.saturating_add(tokens) > max_history_batch_tokens {
+        let bytes = items
+            .iter()
+            .filter(|item| !covered.contains(&item.key))
+            .map(|item| item.source_bytes)
+            .fold(0usize, usize::saturating_add);
+        if !history.is_empty()
+            && (history_tokens.saturating_add(tokens) > max_history_batch_tokens
+                || history_bytes.saturating_add(bytes) > MAX_SOURCE_BATCH_BYTES)
+        {
             break;
         }
         history.extend(
@@ -520,6 +593,7 @@ pub fn plan_batch(
                 .cloned(),
         );
         history_tokens = history_tokens.saturating_add(tokens);
+        history_bytes = history_bytes.saturating_add(bytes);
         group_index = last + 1;
     }
     for (index, group) in groups.iter().enumerate() {
@@ -547,12 +621,30 @@ pub fn plan_batch(
         if !eligible || retained.contains(&index) {
             break;
         }
+        let tokens = items
+            .iter()
+            .filter(|item| !covered.contains(&item.key))
+            .map(|item| item.estimated_tokens)
+            .fold(0usize, usize::saturating_add);
+        let bytes = items
+            .iter()
+            .filter(|item| !covered.contains(&item.key))
+            .map(|item| item.source_bytes)
+            .fold(0usize, usize::saturating_add);
+        if !active.is_empty()
+            && (active_tokens.saturating_add(tokens) > max_history_batch_tokens
+                || active_bytes.saturating_add(bytes) > MAX_SOURCE_BATCH_BYTES)
+        {
+            break;
+        }
         active.extend(
             items
                 .iter()
                 .filter(|item| !covered.contains(&item.key))
                 .cloned(),
         );
+        active_tokens = active_tokens.saturating_add(tokens);
+        active_bytes = active_bytes.saturating_add(bytes);
     }
     let folds_previous_active = old_active.is_some_and(|section| {
         section
@@ -1324,6 +1416,159 @@ mod tests {
         assert!(!third.summary_work[0]
             .covered
             .contains(&snapshot.current_user));
+    }
+
+    #[test]
+    fn bounded_active_batches_advance_one_complete_tool_prefix_at_a_time() {
+        let mut items = vec![item(ContextItemKind::User, 1, 100)];
+        items.extend(tool_pair(2, 3, 300));
+        items.extend(tool_pair(4, 5, 300));
+        items.extend(tool_pair(6, 7, 300));
+        let snapshot = snapshot(items, 1);
+        let mut policy = policy();
+        policy.keep_recent_tokens = 0;
+        let mut checkpoint = None;
+        for (call, output) in [(2, 3), (4, 5), (6, 7)] {
+            // An atomic pair exceeds this budget, but it remains indivisible.
+            let plan = plan_batch(&snapshot, &checkpoint, &policy, true, 500).unwrap();
+            assert_eq!(plan.summary_work.len(), 1);
+            let work = &plan.summary_work[0];
+            assert_eq!(work.kind, SectionKind::Active);
+            assert_eq!(
+                work.items.iter().map(|item| item.key).collect::<Vec<_>>(),
+                vec![
+                    key(ContextItemKind::ToolCall, call),
+                    key(ContextItemKind::ToolOutput, output)
+                ],
+            );
+            checkpoint =
+                Some(complete_plan(&checkpoint, &plan, &["completed lookup".into()]).unwrap());
+        }
+        assert!(plan_batch(&snapshot, &checkpoint, &policy, true, 500)
+            .unwrap()
+            .summary_work
+            .is_empty());
+        let projected = project(&snapshot, &checkpoint).unwrap().0;
+        assert_eq!(projected[1], snapshot.items[0].prompt_messages[0]);
+        assert_eq!(checkpoint.unwrap().active.unwrap().covered.len(), 6);
+    }
+
+    #[test]
+    fn ciphertext_byte_budget_bounds_low_token_history_and_active_batches() {
+        let mut first = item(ContextItemKind::User, 1, 100);
+        let mut second = item(ContextItemKind::User, 2, 100);
+        first.source_bytes = 6 * 1024 * 1024;
+        second.source_bytes = 6 * 1024 * 1024;
+        let history = snapshot(vec![first, second, item(ContextItemKind::User, 3, 100)], 3);
+        let mut policy = policy();
+        policy.keep_recent_tokens = 0;
+        let first = plan_batch(&history, &None, &policy, true, 64_000).unwrap();
+        assert_eq!(first.summary_work[0].items.len(), 1);
+        assert_eq!(
+            first.summary_work[0].items[0].key,
+            key(ContextItemKind::User, 1)
+        );
+        let checkpoint =
+            Some(complete_plan(&None, &first, &["first image history".into()]).unwrap());
+        let second = plan_batch(&history, &checkpoint, &policy, true, 64_000).unwrap();
+        assert_eq!(second.summary_work[0].items.len(), 1);
+        assert_eq!(
+            second.summary_work[0].items[0].key,
+            key(ContextItemKind::User, 2)
+        );
+
+        let mut items = vec![item(ContextItemKind::User, 1, 100)];
+        for (call, output) in [(2, 3), (4, 5)] {
+            let mut pair = tool_pair(call, output, 100);
+            pair[0].source_bytes = 0;
+            pair[1].source_bytes = 6 * 1024 * 1024;
+            items.extend(pair);
+        }
+        let active = snapshot(items, 1);
+        let plan = plan_batch(&active, &None, &policy, true, 64_000).unwrap();
+        assert_eq!(plan.summary_work[0].items.len(), 2);
+        assert_eq!(
+            plan.summary_work[0].items[1].key,
+            key(ContextItemKind::ToolOutput, 3)
+        );
+    }
+
+    #[test]
+    fn plan_hydration_preserves_folded_active_memory_after_its_source() {
+        let mut items = vec![item(ContextItemKind::User, 1, 100)];
+        items.extend(tool_pair(2, 3, 300));
+        items.push(item(ContextItemKind::User, 4, 100));
+        let hydrated = snapshot(items, 4);
+        let checkpoint = Some(CheckpointPayload {
+            active: Some(CheckpointSection {
+                summary: "previous active lookup".into(),
+                covered: vec![
+                    key(ContextItemKind::ToolCall, 2),
+                    key(ContextItemKind::ToolOutput, 3),
+                ],
+                anchor: Some(key(ContextItemKind::User, 1)),
+            }),
+            ..CheckpointPayload::default()
+        });
+        let mut metadata = hydrated.clone();
+        for item in &mut metadata.items {
+            item.prompt_messages.clear();
+            item.summary_messages.clear();
+            item.payload_loaded = false;
+        }
+        let mut policy = policy();
+        policy.keep_recent_tokens = 0;
+        let plan = plan_batch(&metadata, &checkpoint, &policy, true, 50).unwrap();
+        assert!(plan.summary_work[0].folds_previous_active);
+        assert_eq!(plan.summary_work[0].items[0].summary_messages.len(), 1);
+        let work = hydrate_plan(&plan, &hydrated).unwrap();
+        let messages = &work.summary_work[0].items[0].summary_messages;
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[0]["content"], "item-1");
+        assert!(messages[1]["content"]
+            .as_str()
+            .unwrap()
+            .contains("previous active lookup"));
+        // Hydrating an already hydrated plan also preserves one insertion.
+        let repeated = hydrate_plan(&work, &hydrated).unwrap();
+        assert_eq!(
+            repeated.summary_work[0].items[0].summary_messages,
+            *messages
+        );
+    }
+
+    #[test]
+    fn helper_hydration_never_requires_or_exposes_private_reasoning_payload() {
+        let mut reasoning = item(ContextItemKind::Reasoning, 2, 0);
+        reasoning.prompt_messages.clear();
+        reasoning.payload_loaded = false;
+        let hydrated = snapshot(
+            vec![
+                item(ContextItemKind::User, 1, 100),
+                reasoning,
+                item(ContextItemKind::Assistant, 3, 600),
+                item(ContextItemKind::User, 4, 100),
+            ],
+            4,
+        );
+        let mut metadata = hydrated.clone();
+        for item in &mut metadata.items {
+            item.prompt_messages.clear();
+            item.summary_messages.clear();
+            item.payload_loaded = false;
+        }
+        let mut policy = policy();
+        policy.keep_recent_tokens = 0;
+        let plan = plan_batch(&metadata, &None, &policy, true, 1_000).unwrap();
+        let work = hydrate_plan(&plan, &hydrated).unwrap();
+        assert!(work.summary_work[0]
+            .items
+            .iter()
+            .find(|item| item.key.kind == ContextItemKind::Reasoning)
+            .unwrap()
+            .summary_messages
+            .is_empty());
+        assert!(project(&hydrated, &None).is_err());
     }
 
     #[test]

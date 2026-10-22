@@ -128,6 +128,147 @@ pub fn snapshot_from_raw(
     active_response_uuids: &[Uuid],
     checkpoint: &Option<CheckpointPayload>,
 ) -> Result<ContextSnapshot, crate::ApiError> {
+    build_snapshot(
+        instructions,
+        instruction_tokens,
+        metadata,
+        raw,
+        Some(user_key),
+        model,
+        reasoning_replay,
+        current_user,
+        current_response,
+        active_response_uuids,
+        checkpoint,
+        true,
+    )
+}
+
+/// Build the complete structural planning view without fetching ciphertext.
+/// Explicit unloaded markers prevent using this view as a provider prompt.
+#[allow(clippy::too_many_arguments)]
+pub fn snapshot_from_metadata(
+    instructions: Vec<Value>,
+    instruction_tokens: usize,
+    metadata: &[CompactionSourceMetadata],
+    model: &str,
+    reasoning_replay: ReasoningReplay,
+    current_user: ContextItemKey,
+    current_response: Uuid,
+    active_response_uuids: &[Uuid],
+    checkpoint: &Option<CheckpointPayload>,
+) -> Result<ContextSnapshot, crate::ApiError> {
+    build_snapshot(
+        instructions,
+        instruction_tokens,
+        metadata,
+        Vec::new(),
+        None,
+        model,
+        reasoning_replay,
+        current_user,
+        current_response,
+        active_response_uuids,
+        checkpoint,
+        false,
+    )
+}
+
+/// Hydrate selected rows for bounded helper work while keeping every unselected
+/// source identity and estimate visible to the planner. This remains a partial
+/// view until every uncovered payload is present.
+#[allow(clippy::too_many_arguments)]
+pub fn snapshot_from_selected(
+    instructions: Vec<Value>,
+    instruction_tokens: usize,
+    metadata: &[CompactionSourceMetadata],
+    raw: Vec<RawThreadMessage>,
+    user_key: &secp256k1::SecretKey,
+    model: &str,
+    reasoning_replay: ReasoningReplay,
+    current_user: ContextItemKey,
+    current_response: Uuid,
+    active_response_uuids: &[Uuid],
+    checkpoint: &Option<CheckpointPayload>,
+) -> Result<ContextSnapshot, crate::ApiError> {
+    build_snapshot(
+        instructions,
+        instruction_tokens,
+        metadata,
+        raw,
+        Some(user_key),
+        model,
+        reasoning_replay,
+        current_user,
+        current_response,
+        active_response_uuids,
+        checkpoint,
+        false,
+    )
+}
+
+fn source_token_estimate(source: &CompactionSourceMetadata) -> usize {
+    stored_token_count(source.token_count)
+        .filter(|tokens| *tokens > 0)
+        // A ciphertext byte is a conservative planning token for legacy rows
+        // without usable counts. Hydration replaces this with the real existing
+        // projection estimate, including omitted image payloads.
+        .unwrap_or_else(|| usize::try_from(source.encrypted_bytes.max(0)).unwrap_or(usize::MAX))
+}
+
+fn replay_reasoning(policy: ReasoningReplay, index: usize, current_position: usize) -> bool {
+    match policy {
+        ReasoningReplay::None => false,
+        ReasoningReplay::CurrentTurn => index > current_position,
+        ReasoningReplay::All => true,
+    }
+}
+
+/// Select only ciphertext that can appear in the final provider projection.
+/// Non-replayed reasoning remains a canonical identity for atomic checkpoint
+/// coverage, but neither its ciphertext nor its private text is needed here.
+pub fn prompt_source_keys(
+    metadata: &[CompactionSourceMetadata],
+    checkpoint: &Option<CheckpointPayload>,
+    current_user: ContextItemKey,
+    reasoning_replay: ReasoningReplay,
+) -> Vec<ContextItemKey> {
+    let covered: HashSet<_> = checkpoint
+        .iter()
+        .flat_map(|checkpoint| checkpoint.history.iter().chain(checkpoint.active.iter()))
+        .flat_map(|section| section.covered.iter().copied())
+        .collect();
+    let current_position = metadata
+        .iter()
+        .position(|source| source.key == current_user)
+        .unwrap_or(metadata.len());
+    metadata
+        .iter()
+        .enumerate()
+        .filter(|(index, source)| {
+            !covered.contains(&source.key)
+                && (source.key.kind != ContextItemKind::Reasoning
+                    || replay_reasoning(reasoning_replay, *index, current_position))
+        })
+        .map(|(_, source)| source.key)
+        .collect()
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_snapshot(
+    instructions: Vec<Value>,
+    instruction_tokens: usize,
+    metadata: &[CompactionSourceMetadata],
+    raw: Vec<RawThreadMessage>,
+    user_key: Option<&secp256k1::SecretKey>,
+    model: &str,
+    reasoning_replay: ReasoningReplay,
+    current_user: ContextItemKey,
+    current_response: Uuid,
+    active_response_uuids: &[Uuid],
+    checkpoint: &Option<CheckpointPayload>,
+    require_all_payloads: bool,
+) -> Result<ContextSnapshot, crate::ApiError> {
     let covered = checkpoint
         .iter()
         .flat_map(|checkpoint| {
@@ -187,6 +328,7 @@ pub fn snapshot_from_raw(
             settled,
             source.tool_call_id,
         );
+        item.source_bytes = usize::try_from(source.encrypted_bytes.max(0)).unwrap_or(usize::MAX);
         item.protected_input = source.tool_name.as_deref() == Some("read_image")
             && matches!(
                 source.key.kind,
@@ -204,12 +346,54 @@ pub fn snapshot_from_raw(
             items.push(item);
             continue;
         }
-        let row = raw_by_key
-            .remove(&source.key)
-            .ok_or(crate::ApiError::InternalServerError)?;
+        if source.key.kind == ContextItemKind::Reasoning
+            && !replay_reasoning(reasoning_replay, index, current_position)
+        {
+            // Preserve the canonical identity without reading/decrypting text
+            // excluded by this model's replay policy. Strict final projection
+            // requires every payload that is actually eligible for replay.
+            item.source_bytes = 0;
+            items.push(item);
+            continue;
+        }
         let unrelated_active = source.response_uuid.is_some_and(|response| {
             response != current_response && active_response_uuids.contains(&response)
         });
+        let row = match raw_by_key.remove(&source.key) {
+            Some(row) => row,
+            None if require_all_payloads => return Err(crate::ApiError::InternalServerError),
+            None => {
+                item.payload_loaded = false;
+                if source.key.kind == ContextItemKind::Reasoning {
+                    if replay_reasoning(reasoning_replay, index, current_position) {
+                        let reasoning =
+                            pending
+                                .entry(source.response_uuid)
+                                .or_insert(PendingReasoning {
+                                    content: String::new(),
+                                    tok: 0,
+                                });
+                        reasoning.tok = reasoning.tok.saturating_add(source_token_estimate(source));
+                    }
+                } else {
+                    let reasoning = pending.remove(&source.response_uuid);
+                    if !(unmatched && (unrelated_active || item.historical_unmatched)) {
+                        item.estimated_tokens = source_token_estimate(source).saturating_add(
+                            reasoning
+                                .filter(|_| {
+                                    matches!(
+                                        source.key.kind,
+                                        ContextItemKind::Assistant | ContextItemKind::ToolCall
+                                    )
+                                })
+                                .map_or(0, |reasoning| reasoning.tok),
+                        );
+                    }
+                }
+                items.push(item);
+                continue;
+            }
+        };
         if unmatched && (unrelated_active || item.historical_unmatched) {
             pending.remove(&source.response_uuid);
             items.push(item);
@@ -234,16 +418,15 @@ pub fn snapshot_from_raw(
             continue;
         };
         let content = String::from_utf8_lossy(
-            &decrypt_with_key(user_key, encrypted)
-                .map_err(|_| crate::ApiError::InternalServerError)?,
+            &decrypt_with_key(
+                user_key.ok_or(crate::ApiError::InternalServerError)?,
+                encrypted,
+            )
+            .map_err(|_| crate::ApiError::InternalServerError)?,
         )
         .into_owned();
         if source.key.kind == ContextItemKind::Reasoning {
-            let replay = match reasoning_replay {
-                ReasoningReplay::None => false,
-                ReasoningReplay::CurrentTurn => index > current_position,
-                ReasoningReplay::All => true,
-            };
+            let replay = replay_reasoning(reasoning_replay, index, current_position);
             if replay && !content.is_empty() {
                 let tokens =
                     stored_token_count(row.token_count).unwrap_or_else(|| count_tokens(&content));
@@ -320,6 +503,7 @@ pub fn snapshot_from_raw(
         };
         item.prompt_messages = format_chat_messages(vec![message])?;
         let protected_input = item.protected_input;
+        let source_bytes = item.source_bytes;
         item = ContextItem::from_prompt(
             item.key,
             item.response_uuid,
@@ -329,6 +513,7 @@ pub fn snapshot_from_raw(
             item.tool_call_id,
         );
         item.protected_input = protected_input;
+        item.source_bytes = source_bytes;
         items.push(item);
     }
     // Tool IDs are normalized once on the complete final prompt, not separately
@@ -889,6 +1074,346 @@ mod tests {
             tool_name: metadata.tool_name.clone(),
         };
         (metadata, row)
+    }
+
+    #[tokio::test]
+    async fn metadata_planning_hydrates_only_selected_work_and_never_projects_missing_history() {
+        use super::super::compaction::{context, policy::CompactionPolicy};
+
+        let key = secp256k1::SecretKey::from_slice(&[7; 32]).unwrap();
+        let (prior, row) = snapshot_fixture(ContextItemKind::User, 1, None, "\"prior\"").await;
+        let (current, _) = snapshot_fixture(ContextItemKind::User, 2, None, "\"current\"").await;
+        let metadata = vec![prior.clone(), current.clone()];
+        let response = Uuid::new_v4();
+        let planning = snapshot_from_metadata(
+            Vec::new(),
+            0,
+            &metadata,
+            "deepseek-v4-1-flash",
+            ReasoningReplay::None,
+            current.key,
+            response,
+            &[],
+            &None,
+        )
+        .unwrap();
+        assert!(planning.items.iter().all(|item| !item.payload_loaded));
+        assert_eq!(context::estimate_tokens(&planning, &None).unwrap(), 20);
+        assert!(context::project(&planning, &None).is_err());
+
+        let mut policy = CompactionPolicy::from_context_window(20_000, 0, 0);
+        policy.keep_recent_tokens = 0;
+        let plan = context::plan_batch(&planning, &None, &policy, true, 10).unwrap();
+        assert_eq!(plan.summary_work[0].items.len(), 1);
+        assert_eq!(plan.summary_work[0].items[0].key, prior.key);
+        assert!(context::hydrate_plan(&plan, &planning).is_err());
+        let partial = snapshot_from_selected(
+            Vec::new(),
+            0,
+            &metadata,
+            vec![row],
+            &key,
+            "deepseek-v4-1-flash",
+            ReasoningReplay::None,
+            current.key,
+            response,
+            &[],
+            &None,
+        )
+        .unwrap();
+        assert!(partial.items[0].payload_loaded);
+        assert!(!partial.items[1].payload_loaded);
+        let hydrated = context::hydrate_plan(&plan, &partial).unwrap();
+        assert_eq!(
+            hydrated.summary_work[0].items[0].summary_messages[0]["content"],
+            "prior"
+        );
+        assert!(context::project(&partial, &None).is_err());
+        assert!(snapshot_from_raw(
+            Vec::new(),
+            0,
+            &metadata,
+            Vec::new(),
+            &key,
+            "deepseek-v4-1-flash",
+            ReasoningReplay::None,
+            current.key,
+            response,
+            &[],
+            &None,
+        )
+        .is_err());
+    }
+
+    #[tokio::test]
+    async fn metadata_token_estimates_use_usable_counts_then_conservative_ciphertext_bytes() {
+        let (mut source, _) = snapshot_fixture(ContextItemKind::User, 1, None, "\"image\"").await;
+        source.encrypted_bytes = 1_000_000;
+        source.token_count = Some(12);
+        assert_eq!(source_token_estimate(&source), 12);
+        for unusable in [None, Some(0), Some(-1)] {
+            source.token_count = unusable;
+            assert_eq!(source_token_estimate(&source), 1_000_000);
+        }
+        source.encrypted_bytes = 0;
+        assert_eq!(source_token_estimate(&source), 0);
+    }
+
+    #[tokio::test]
+    async fn legacy_inline_images_require_complete_projection_before_an_overflow_decision() {
+        use super::super::compaction::context;
+
+        let key = secp256k1::SecretKey::from_slice(&[7; 32]).unwrap();
+        let image_content = json!([
+            {"type": "input_text", "text": "historical diagram"},
+            {"type": "input_image", "image_url": format!("data:image/png;base64,{}", "A".repeat(64 * 1024))},
+        ])
+        .to_string();
+        let current_response = Uuid::from_u128(1_000);
+        for legacy_count in [None, Some(0)] {
+            let (mut prior, mut prior_row) =
+                snapshot_fixture(ContextItemKind::User, 1, None, &image_content).await;
+            prior.token_count = legacy_count;
+            prior_row.token_count = legacy_count;
+            let (current, current_row) = snapshot_fixture(
+                ContextItemKind::User,
+                2,
+                Some(current_response),
+                "\"continue\"",
+            )
+            .await;
+            let metadata = vec![prior, current.clone()];
+            let planning = snapshot_from_metadata(
+                Vec::new(),
+                0,
+                &metadata,
+                "deepseek-v4-1-flash",
+                ReasoningReplay::None,
+                current.key,
+                current_response,
+                &[],
+                &None,
+            )
+            .unwrap();
+            // This also crosses the free-plan token gate. It is a conservative
+            // planning estimate, rather than evidence that the prompt fails.
+            assert!(context::estimate_tokens(&planning, &None).unwrap() > 20_000);
+            assert!(context::project(&planning, &None).is_err());
+            assert!(snapshot_from_raw(
+                Vec::new(),
+                0,
+                &metadata,
+                Vec::new(),
+                &key,
+                "deepseek-v4-1-flash",
+                ReasoningReplay::None,
+                current.key,
+                current_response,
+                &[],
+                &None,
+            )
+            .is_err());
+            let complete = snapshot_from_raw(
+                Vec::new(),
+                0,
+                &metadata,
+                vec![prior_row, current_row],
+                &key,
+                "deepseek-v4-1-flash",
+                ReasoningReplay::None,
+                current.key,
+                current_response,
+                &[],
+                &None,
+            )
+            .unwrap();
+            let (messages, tokens) = context::project(&complete, &None).unwrap();
+            assert!(tokens < 20_000);
+            assert_eq!(
+                tokens,
+                count_tokens("historical diagram")
+                    + count_tokens(MODEL_IMAGE_OMITTED_PLACEHOLDER)
+                    + 10,
+            );
+            assert_eq!(messages[0]["content"][0]["text"], "historical diagram");
+            assert_eq!(
+                messages[0]["content"][1]["text"],
+                MODEL_IMAGE_OMITTED_PLACEHOLDER
+            );
+            assert_eq!(messages[1]["content"], "continue");
+            assert!(!serde_json::to_string(&messages)
+                .unwrap()
+                .contains("data:image/png"));
+        }
+    }
+
+    #[tokio::test]
+    async fn metadata_reasoning_estimates_follow_the_existing_replay_policy() {
+        let old_response = Uuid::from_u128(500);
+        let current_response = Uuid::from_u128(1_000);
+        let mut metadata = Vec::new();
+        for (kind, id, response, tokens) in [
+            (ContextItemKind::User, 1, old_response, 10),
+            (ContextItemKind::Reasoning, 2, old_response, 13),
+            (ContextItemKind::Assistant, 3, old_response, 23),
+            (ContextItemKind::User, 4, current_response, 10),
+            (ContextItemKind::Reasoning, 5, current_response, 17),
+            (ContextItemKind::Assistant, 6, current_response, 29),
+        ] {
+            let (mut source, _) = snapshot_fixture(kind, id, Some(response), "\"source\"").await;
+            source.token_count = Some(tokens);
+            metadata.push(source);
+        }
+        for (replay, old_tokens, current_tokens) in [
+            (ReasoningReplay::None, 23, 29),
+            (ReasoningReplay::CurrentTurn, 23, 46),
+            (ReasoningReplay::All, 36, 46),
+        ] {
+            let snapshot = snapshot_from_metadata(
+                Vec::new(),
+                0,
+                &metadata,
+                "deepseek-v4-1-flash",
+                replay,
+                metadata[3].key,
+                current_response,
+                &[],
+                &None,
+            )
+            .unwrap();
+            assert_eq!(snapshot.items[1].estimated_tokens, 0);
+            assert_eq!(snapshot.items[4].estimated_tokens, 0);
+            assert_eq!(snapshot.items[2].estimated_tokens, old_tokens);
+            assert_eq!(snapshot.items[5].estimated_tokens, current_tokens);
+            assert!(snapshot
+                .items
+                .iter()
+                .all(|item| item.summary_messages.is_empty()));
+        }
+    }
+
+    #[tokio::test]
+    async fn strict_projection_loads_only_reasoning_allowed_by_model_replay_policy() {
+        use super::super::compaction::context;
+
+        let key = secp256k1::SecretKey::from_slice(&[7; 32]).unwrap();
+        let old_response = Uuid::from_u128(500);
+        let current_response = Uuid::from_u128(1_000);
+        for (replay, replay_old, replay_current, expected_tokens) in [
+            (ReasoningReplay::None, false, false, 40),
+            (ReasoningReplay::CurrentTurn, false, true, 57),
+            (ReasoningReplay::All, true, true, 70),
+        ] {
+            for omit_replayed_reasoning in [false, true] {
+                let mut metadata = Vec::new();
+                let mut raw = Vec::new();
+                for (kind, id, response, content, tokens) in [
+                    (
+                        ContextItemKind::User,
+                        1,
+                        old_response,
+                        "\"old question\"",
+                        10,
+                    ),
+                    (
+                        ContextItemKind::Reasoning,
+                        2,
+                        old_response,
+                        "private old reasoning",
+                        13,
+                    ),
+                    (
+                        ContextItemKind::Assistant,
+                        3,
+                        old_response,
+                        "old answer",
+                        10,
+                    ),
+                    (
+                        ContextItemKind::User,
+                        4,
+                        current_response,
+                        "\"current question\"",
+                        10,
+                    ),
+                    (
+                        ContextItemKind::Reasoning,
+                        5,
+                        current_response,
+                        "private current reasoning",
+                        17,
+                    ),
+                    (
+                        ContextItemKind::Assistant,
+                        6,
+                        current_response,
+                        "current answer",
+                        10,
+                    ),
+                ] {
+                    let (mut source, mut row) =
+                        snapshot_fixture(kind, id, Some(response), content).await;
+                    source.token_count = Some(tokens);
+                    row.token_count = Some(tokens);
+                    metadata.push(source);
+                    raw.push(row);
+                }
+                let current_user = metadata[3].key;
+                let selected = prompt_source_keys(&metadata, &None, current_user, replay);
+                assert_eq!(selected.contains(&metadata[1].key), replay_old);
+                assert_eq!(selected.contains(&metadata[4].key), replay_current);
+                let raw = raw
+                    .into_iter()
+                    .filter(|row| {
+                        let kind = ContextItemKind::from_db_type(&row.message_type).unwrap();
+                        selected.contains(&ContextItemKey {
+                            kind,
+                            uuid: row.uuid,
+                        }) && !(omit_replayed_reasoning && kind == ContextItemKind::Reasoning)
+                    })
+                    .collect();
+                let snapshot = snapshot_from_raw(
+                    Vec::new(),
+                    0,
+                    &metadata,
+                    raw,
+                    &key,
+                    "deepseek-v4-1-flash",
+                    replay,
+                    current_user,
+                    current_response,
+                    &[],
+                    &None,
+                );
+                if omit_replayed_reasoning && (replay_old || replay_current) {
+                    assert!(snapshot.is_err());
+                    continue;
+                }
+                let snapshot = snapshot.unwrap();
+                assert!(snapshot.items.iter().all(|item| item.payload_loaded));
+                let (messages, tokens) = context::project(&snapshot, &None).unwrap();
+                assert_eq!(tokens, expected_tokens);
+                assert_eq!(messages.len(), 4);
+                assert_eq!(messages[1].get("reasoning").is_some(), replay_old);
+                assert_eq!(messages[3].get("reasoning").is_some(), replay_current);
+                assert_eq!(messages[1]["content"], "old answer");
+                assert_eq!(messages[3]["content"], "current answer");
+
+                let checkpoint = Some(CheckpointPayload {
+                    history: Some(context::CheckpointSection {
+                        summary: "old question and answer".into(),
+                        covered: metadata[..3].iter().map(|source| source.key).collect(),
+                        anchor: None,
+                    }),
+                    ..CheckpointPayload::default()
+                });
+                assert!(
+                    prompt_source_keys(&metadata, &checkpoint, current_user, replay)
+                        .iter()
+                        .all(|key| !metadata[..3].iter().any(|source| source.key == *key))
+                );
+            }
+        }
     }
 
     #[tokio::test]

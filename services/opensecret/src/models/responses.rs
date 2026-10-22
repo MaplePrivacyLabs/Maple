@@ -1253,7 +1253,7 @@ impl NewReasoningItem {
 // ============================================================================
 
 // For the UNION ALL query to get all thread messages
-#[derive(QueryableByName, Debug)]
+#[derive(QueryableByName, Debug, Clone)]
 pub struct RawThreadMessage {
     #[diesel(sql_type = diesel::sql_types::Text)]
     pub message_type: String,

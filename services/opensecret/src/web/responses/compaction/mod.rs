@@ -4,6 +4,7 @@
 pub(crate) mod context;
 mod executor;
 pub(crate) mod policy;
+mod source;
 mod summary;
 
 use crate::{
@@ -18,7 +19,8 @@ use crate::{
     tokens::{count_tokens, model_max_ctx},
     web::responses::{
         context_builder::{
-            load_instruction_messages, normalize_tool_call_ids_for_model, snapshot_from_raw,
+            load_instruction_messages, normalize_tool_call_ids_for_model, prompt_source_keys,
+            snapshot_from_metadata, snapshot_from_raw, snapshot_from_selected,
         },
         handlers::ResponsesCreateRequest,
     },
@@ -34,7 +36,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
     collections::HashSet,
-    sync::atomic::{AtomicBool, AtomicUsize, Ordering},
+    sync::{
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+        Mutex,
+    },
 };
 use uuid::Uuid;
 
@@ -51,6 +56,7 @@ const ENVELOPE_VERSION: u32 = 1;
 pub(super) struct CompactionBudget {
     calls: AtomicUsize,
     paid_work: AtomicBool,
+    sources: Mutex<source::SourceLoader>,
 }
 
 impl CompactionBudget {
@@ -300,6 +306,15 @@ fn validate_billing_before_helpers(
     }
 }
 
+fn may_attempt_uncompacted_fallback(
+    error: &SummaryExecutionError,
+    forced: bool,
+    cancelled: bool,
+    expired: bool,
+) -> bool {
+    !forced && !cancelled && !expired && error.can_fallback_to_uncompacted()
+}
+
 fn may_use_original_prompt(
     error: &SummaryExecutionError,
     forced: bool,
@@ -308,11 +323,8 @@ fn may_use_original_prompt(
     cancelled: bool,
     expired: bool,
 ) -> bool {
-    !forced
-        && original_tokens <= input_budget
-        && !cancelled
-        && !expired
-        && error.can_fallback_to_uncompacted()
+    original_tokens <= input_budget
+        && may_attempt_uncompacted_fallback(error, forced, cancelled, expired)
 }
 
 fn validate_forced_progress(
@@ -358,7 +370,7 @@ async fn reducing_checkpoint(
         };
         let next = context::complete_plan(checkpoint, &one, &[summary])
             .map_err(|_| SummaryExecutionError::Unsafe(ApiError::InternalServerError))?;
-        let (_, next_tokens) = context::project(snapshot, &Some(next.clone()))
+        let next_tokens = context::estimate_tokens(snapshot, &Some(next.clone()))
             .map_err(|_| SummaryExecutionError::Unsafe(ApiError::InternalServerError))?;
         if next_tokens < original_tokens {
             return Ok(Some(next));
@@ -393,6 +405,78 @@ fn finish_prompt(
         compactions,
         allowed_urls,
     })
+}
+
+/// Metadata and request-owned input remain available while individual batches
+/// are hydrated. Only `complete=true` can produce a provider-ready projection.
+struct PromptSource<'a> {
+    source: &'a CompactionSnapshot,
+    user_key: &'a SecretKey,
+    model: &'a str,
+    reasoning_replay: ReasoningReplay,
+    current_user: ContextItemKey,
+    current_response: Uuid,
+    instructions: Vec<Value>,
+    instruction_tokens: usize,
+    incoming: &'a [ContextItem],
+}
+
+impl PromptSource<'_> {
+    fn build(
+        &self,
+        raw: Vec<crate::models::responses::RawThreadMessage>,
+        checkpoint: &Option<CheckpointPayload>,
+        complete: bool,
+    ) -> Result<context::ContextSnapshot, ApiError> {
+        if !complete && raw.is_empty() {
+            let mut snapshot = snapshot_from_metadata(
+                self.instructions.clone(),
+                self.instruction_tokens,
+                &self.source.items,
+                self.model,
+                self.reasoning_replay,
+                self.current_user,
+                self.current_response,
+                &self.source.active_response_uuids,
+                checkpoint,
+            )?;
+            snapshot.items.extend(self.incoming.iter().cloned());
+            return Ok(snapshot);
+        }
+        let builder = if complete {
+            snapshot_from_raw
+        } else {
+            snapshot_from_selected
+        };
+        let mut snapshot = builder(
+            self.instructions.clone(),
+            self.instruction_tokens,
+            &self.source.items,
+            raw,
+            self.user_key,
+            self.model,
+            self.reasoning_replay,
+            self.current_user,
+            self.current_response,
+            &self.source.active_response_uuids,
+            checkpoint,
+        )?;
+        snapshot.items.extend(self.incoming.iter().cloned());
+        Ok(snapshot)
+    }
+}
+
+fn load_source_items(
+    executor: &SummaryExecutor<'_>,
+    source: &CompactionSnapshot,
+    keys: &[ContextItemKey],
+) -> Result<Vec<crate::models::responses::RawThreadMessage>, DBError> {
+    executor
+        .budget
+        .sources
+        .lock()
+        .map_err(|_| DBError::CompactionError(CompactionError::InvalidSelection))?
+        .load(executor.state.db.as_ref(), source, keys)
 }
 
 /// Both initial and post-tool starts use this preparation service. `incoming`
@@ -435,17 +519,105 @@ pub(super) async fn prepare_prompt(
             .unwrap_or_default()
             .into_iter()
             .collect();
-        let keys: Vec<_> = source
+        let uncovered: HashSet<_> = source
             .items
             .iter()
             .map(|item| item.key)
             .filter(|key| !covered.contains(key))
             .collect();
-        let raw = match executor.state.db.load_compaction_items(
+        let (instructions, tokens) = load_instruction_messages(
+            executor.state.db.as_ref(),
             conversation_id,
             executor.user.uuid,
-            &keys,
-        ) {
+            user_key,
+            executor.body.instructions.as_deref(),
+            Some(internal_instructions),
+        )?;
+        let input = PromptSource {
+            source: &source,
+            user_key,
+            model: &executor.body.model,
+            reasoning_replay,
+            current_user: ContextItemKey {
+                kind: ContextItemKind::User,
+                uuid: current_user_uuid,
+            },
+            current_response: current_response_uuid,
+            instructions,
+            instruction_tokens: tokens,
+            incoming,
+        };
+        // Validate fresh metadata before reuse. This state belongs to one logical
+        // Response, including its initial preparation, retries and tool steps.
+        let cached = {
+            let mut loader = executor
+                .budget
+                .sources
+                .lock()
+                .map_err(|_| ApiError::InternalServerError)?;
+            loader.retain(&source, &uncovered);
+            loader.cached(&source)
+        };
+        let mut snapshot = input.build(cached, &checkpoint, false)?;
+        let plan = if enabled {
+            context::plan_batch(
+                &snapshot,
+                &checkpoint,
+                &policy,
+                force,
+                policy.summary_input_budget,
+            )
+            .map_err(|_| ApiError::InternalServerError)?
+        } else {
+            context::ContextPlan {
+                summary_work: Vec::new(),
+            }
+        };
+        let plan = context::ContextPlan {
+            summary_work: plan
+                .summary_work
+                .into_iter()
+                .filter(|work| {
+                    let needs_history_fold = work.kind == context::SectionKind::Active
+                        && checkpoint
+                            .as_ref()
+                            .and_then(|value| value.active.as_ref())
+                            .is_some_and(|section| section.anchor != Some(snapshot.current_user));
+                    !non_reducing.contains(&work.covered) && !needs_history_fold
+                })
+                .collect(),
+        };
+        // Fetch only the planned batches and required current input. The raw
+        // suffix is loaded only once we have a complete fitting main prompt.
+        let selected: HashSet<_> = plan
+            .summary_work
+            .iter()
+            .flat_map(|work| {
+                work.items
+                    .iter()
+                    .filter(|item| item.key.kind != ContextItemKind::Reasoning)
+                    .map(|item| item.key)
+            })
+            .chain(
+                snapshot
+                    .items
+                    .iter()
+                    .filter(|item| {
+                        !plan.summary_work.is_empty()
+                            && (item.key == snapshot.current_user
+                                || (item.protected_input
+                                    && item.response_uuid == Some(current_response_uuid)))
+                    })
+                    .map(|item| item.key),
+            )
+            .collect();
+        let keys: Vec<_> = source
+            .items
+            .iter()
+            .map(|item| item.key)
+            .filter(|key| uncovered.contains(key) && selected.contains(key))
+            .collect();
+        let raw = match load_source_items(executor, &source, &keys) {
             Ok(raw) => raw,
             Err(DBError::CompactionError(CompactionError::InvalidSelection))
                 if source_races < MAX_SOURCE_RACE_RETRIES =>
@@ -455,44 +627,60 @@ pub(super) async fn prepare_prompt(
             }
             Err(_) => return Err(ApiError::InternalServerError),
         };
-        let (instructions, tokens) = load_instruction_messages(
-            executor.state.db.as_ref(),
-            conversation_id,
-            executor.user.uuid,
-            user_key,
-            executor.body.instructions.as_deref(),
-            Some(internal_instructions),
-        )?;
-        let mut snapshot = snapshot_from_raw(
-            instructions,
-            tokens,
-            &source.items,
-            raw,
-            user_key,
-            &executor.body.model,
-            reasoning_replay,
-            ContextItemKey {
-                kind: ContextItemKind::User,
-                uuid: current_user_uuid,
-            },
-            current_response_uuid,
-            &source.active_response_uuids,
-            &checkpoint,
-        )?;
-        snapshot.items.extend(incoming.iter().cloned());
-        validate_required_input(&snapshot, &policy)?;
-        let allowed_urls = authoritative_urls(&snapshot, opened.as_ref());
-        let (original_messages, original_tokens) =
-            context::project(&snapshot, &checkpoint).map_err(|_| ApiError::InternalServerError)?;
-        validate_billing_before_helpers(billing_access, original_tokens)?;
-        let plan = context::plan_batch(
-            &snapshot,
-            &checkpoint,
-            &policy,
-            force,
-            policy.summary_input_budget,
-        )
-        .map_err(|_| ApiError::InternalServerError)?;
+        // Keep cached suffix estimates without asking the DB for that suffix.
+        let mut raw_by_key = executor
+            .budget
+            .sources
+            .lock()
+            .map_err(|_| ApiError::InternalServerError)?
+            .cached(&source)
+            .into_iter()
+            .map(|row| ((row.message_type.clone(), row.uuid), row))
+            .collect::<std::collections::HashMap<_, _>>();
+        for row in raw {
+            raw_by_key.insert((row.message_type.clone(), row.uuid), row);
+        }
+        snapshot = input.build(raw_by_key.into_values().collect(), &checkpoint, false)?;
+        if !plan.summary_work.is_empty() {
+            validate_required_input(&snapshot, &policy)?;
+        }
+        let mut original_tokens = context::estimate_tokens(&snapshot, &checkpoint)
+            .map_err(|_| ApiError::InternalServerError)?;
+        if !plan.summary_work.is_empty() {
+            match validate_billing_before_helpers(billing_access, original_tokens) {
+                Err(ApiError::FreeTokenLimitExceeded)
+                    if snapshot.items.iter().any(|item| !item.payload_loaded) =>
+                {
+                    // Conservative metadata estimates may overstate omitted
+                    // image payloads. Confirm an account denial from the real
+                    // complete projection before starting paid helper work.
+                    let keys = prompt_source_keys(
+                        &source.items,
+                        &checkpoint,
+                        input.current_user,
+                        reasoning_replay,
+                    );
+                    let raw = match load_source_items(executor, &source, &keys) {
+                        Ok(raw) => raw,
+                        Err(DBError::CompactionError(CompactionError::InvalidSelection))
+                            if source_races < MAX_SOURCE_RACE_RETRIES =>
+                        {
+                            source_races += 1;
+                            continue;
+                        }
+                        Err(_) => return Err(ApiError::InternalServerError),
+                    };
+                    snapshot = input.build(raw, &checkpoint, true)?;
+                    original_tokens = context::estimate_tokens(&snapshot, &checkpoint)
+                        .map_err(|_| ApiError::InternalServerError)?;
+                    validate_billing_before_helpers(billing_access, original_tokens)?;
+                }
+                result => result?,
+            }
+        }
+        let plan =
+            context::hydrate_plan(&plan, &snapshot).map_err(|_| ApiError::InternalServerError)?;
+        let mut advisory_failure = None;
         let mut final_checkpoint = checkpoint.clone();
         let mut published = false;
         // Publish each complete section/prefix before beginning another. A later
@@ -511,25 +699,18 @@ pub(super) async fn prepare_prompt(
             {
                 Ok(candidate) => candidate,
                 Err(error)
-                    if may_use_original_prompt(
+                    if may_attempt_uncompacted_fallback(
                         &error,
                         force,
-                        original_tokens,
-                        policy.input_budget,
                         executor.execution.is_cancelled(),
                         tokio::time::Instant::now() >= executor.deadline,
                     ) =>
                 {
-                    tracing::warn!(response_uuid = %current_response_uuid,
-                            "Advisory compaction unavailable; retaining complete fitting prompt");
-                    return finish_prompt(
-                        executor,
-                        conversation_id,
-                        current_response_uuid,
-                        original_messages,
-                        original_tokens,
-                        allowed_urls,
-                    );
+                    // Materialize and recheck the complete original prompt
+                    // before using an advisory fallback. Metadata estimates do
+                    // not authorize omitting unhydrated history.
+                    advisory_failure = Some(error);
+                    None
                 }
                 Err(error) => return Err(error.into_api_error()),
             }
@@ -615,7 +796,7 @@ pub(super) async fn prepare_prompt(
                 }
             }
         }
-        let (messages, estimated_tokens) = context::project(&snapshot, &final_checkpoint)
+        let estimated_tokens = context::estimate_tokens(&snapshot, &final_checkpoint)
             .map_err(|_| ApiError::InternalServerError)?;
         if published && force {
             // A provider rejection can reveal tokenizer undercount even when our
@@ -623,16 +804,47 @@ pub(super) async fn prepare_prompt(
             // main retry rather than trusting that estimate after a single batch.
             continue;
         }
-        if estimated_tokens > policy.input_budget {
-            if published {
-                // This prefix is durable even if the next bounded batch fails.
+        if published && estimated_tokens > policy.input_budget {
+            // This prefix is durable even if the next bounded batch fails.
+            continue;
+        }
+        // A conservative planning estimate alone cannot reject a prompt. On a
+        // no-progress/disabled path materialize the complete projection first.
+        validate_forced_progress(force, made_progress, !non_reducing.is_empty())?;
+        let final_covered: HashSet<_> = final_checkpoint
+            .as_ref()
+            .map(covered_keys)
+            .unwrap_or_default()
+            .into_iter()
+            .collect();
+        let keys = prompt_source_keys(
+            &source.items,
+            &final_checkpoint,
+            input.current_user,
+            reasoning_replay,
+        );
+        let raw = match load_source_items(executor, &source, &keys) {
+            Ok(raw) => raw,
+            Err(DBError::CompactionError(CompactionError::InvalidSelection))
+                if source_races < MAX_SOURCE_RACE_RETRIES =>
+            {
+                source_races += 1;
                 continue;
+            }
+            Err(_) => return Err(ApiError::InternalServerError),
+        };
+        let complete = input.build(raw, &final_checkpoint, true)?;
+        validate_required_input(&complete, &policy)?;
+        let (messages, estimated_tokens) = context::project(&complete, &final_checkpoint)
+            .map_err(|_| ApiError::InternalServerError)?;
+        if estimated_tokens > policy.input_budget {
+            if let Some(error) = advisory_failure {
+                return Err(error.into_api_error());
             }
             if enabled && !force {
                 policy.keep_recent_tokens = 0;
                 policy.trigger_tokens = 0;
                 force = true;
-                // Replan on a fresh snapshot; no accepted main request is replayed.
                 continue;
             }
             return Err(if non_reducing.is_empty() {
@@ -641,7 +853,31 @@ pub(super) async fn prepare_prompt(
                 ApiError::ServiceUnavailable
             });
         }
-        validate_forced_progress(force, made_progress, !non_reducing.is_empty())?;
+        if let Some(error) = advisory_failure {
+            if !may_use_original_prompt(
+                &error,
+                force,
+                estimated_tokens,
+                policy.input_budget,
+                executor.execution.is_cancelled(),
+                tokio::time::Instant::now() >= executor.deadline,
+            ) {
+                return Err(error.into_api_error());
+            }
+            tracing::warn!(response_uuid = %current_response_uuid,
+                "Advisory compaction unavailable; retaining complete fitting prompt");
+        }
+        let mut allowed_urls = authoritative_urls(&complete, opened.as_ref());
+        for url in durable_urls(
+            &snapshot,
+            None,
+            &final_covered.iter().copied().collect::<Vec<_>>(),
+        ) {
+            if allowed_urls.len() >= super::tools::MAX_PROMPT_ALLOWED_URLS {
+                break;
+            }
+            allowed_urls.insert(url);
+        }
         return finish_prompt(
             executor,
             conversation_id,
