@@ -1366,6 +1366,27 @@ mod tests {
     }
 
     #[test]
+    fn gpt_oss_omitted_compaction_controls_use_the_native_default_threshold() {
+        let body: ResponsesCreateRequest = serde_json::from_value(json!({
+            "model": "gpt-oss-120b",
+            "input": "Continue the conversation.",
+            "conversation": Uuid::new_v4(),
+        }))
+        .unwrap();
+        assert!(body.context_management.is_none());
+        assert!(body.max_output_tokens.is_none());
+
+        let (policy, enabled) = crate::web::responses::compaction::policy_for(&body).unwrap();
+        assert!(enabled);
+        assert_eq!(policy.input_budget, 131_072);
+        assert_eq!(policy.trigger_tokens, 103_219);
+        assert_eq!(policy.keep_recent_tokens, 20_000);
+        assert_eq!(policy.summary_input_budget, 64_000);
+        assert!(body.context_management.is_none());
+        assert!(body.max_output_tokens.is_none());
+    }
+
+    #[test]
     fn compaction_context_management_empty_list_disables_without_changing_main_allowance() {
         let mut body = responses_request_for_model("deepseek-v4-1-flash");
         body.max_output_tokens = Some(12_345);
@@ -1497,7 +1518,7 @@ mod tests {
     #[test]
     fn compaction_keeps_selected_reasoning_and_native_output_allowance() {
         let messages = [json!({"role":"user","content":"Summarize history"})];
-        for model in ["deepseek-v4-1-flash", "glm-5-3", "kimi-k3"] {
+        for model in ["deepseek-v4-1-flash", "glm-5-3", "kimi-k3", "gpt-oss-120b"] {
             for effort in [None, Some("low"), Some("high")] {
                 let mut body = match effort {
                     Some(effort) => responses_request_with_effort(model, effort),
@@ -1516,6 +1537,64 @@ mod tests {
                 assert_eq!(main["max_tokens"], 128);
                 assert!(helper.get("max_tokens").is_none());
                 assert!(helper.get("max_completion_tokens").is_none());
+            }
+        }
+    }
+
+    #[test]
+    fn gpt_oss_compaction_preserves_generation_policy_without_main_caps_or_tools() {
+        let main_messages = [json!({"role":"user","content":"Continue the story."})];
+        let helper_messages = [json!({"role":"user","content":"Summarize completed history."})];
+        for (effort, expected_effort) in [
+            (None, None),
+            (Some("low"), Some("low")),
+            (Some("high"), Some("high")),
+        ] {
+            for output_cap in [None, Some(128), Some(65_537)] {
+                let mut body = match effort {
+                    Some(effort) => responses_request_with_effort("gpt-oss-120b", effort),
+                    None => responses_request_for_model("gpt-oss-120b"),
+                };
+                body.temperature = Some(0.37);
+                body.top_p = Some(0.83);
+                body.max_output_tokens = output_cap;
+                body.tool_choice = Some("required".to_owned());
+                body.tools = Some(json!([{ "type": "web_search" }]));
+                body.parallel_tool_calls = true;
+                let original_body = serde_json::to_value(&body).unwrap();
+
+                let main = build_model_turn_request(&body, &main_messages, true);
+                assert_eq!(
+                    main.get("reasoning_effort")
+                        .and_then(serde_json::Value::as_str),
+                    expected_effort,
+                );
+                assert_eq!(main["temperature"], 0.37);
+                assert_eq!(main["top_p"], 0.83);
+                assert_eq!(main["max_tokens"], json!(output_cap));
+                assert!(!main["tools"].as_array().unwrap().is_empty());
+
+                let helper = super::build_compaction_model_request(&body, &helper_messages);
+                let mut expected = main.clone();
+                expected["messages"] = json!(helper_messages);
+                expected["stream"] = json!(false);
+                for field in [
+                    "max_tokens",
+                    "stream_options",
+                    "tools",
+                    "tool_choice",
+                    "parallel_tool_calls",
+                ] {
+                    expected.as_object_mut().unwrap().remove(field);
+                    assert!(
+                        helper.get(field).is_none(),
+                        "unexpected helper field: {field}"
+                    );
+                }
+                assert_eq!(helper, expected);
+                assert!(helper.get("max_completion_tokens").is_none());
+                assert_eq!(serde_json::to_value(&body).unwrap(), original_body);
+                assert_eq!(build_model_turn_request(&body, &main_messages, true), main,);
             }
         }
     }

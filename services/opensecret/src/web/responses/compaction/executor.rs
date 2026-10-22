@@ -28,6 +28,48 @@ use tokio::time::Instant;
 const MAX_FRAGMENT_REDUCTIONS: usize = 3;
 const MAX_SUMMARY_TEXT_BYTES: usize = 256 * 1024;
 
+fn log_summary_rejection(
+    error: summary::SummaryError,
+    response: &serde_json::Value,
+    user_id: uuid::Uuid,
+    response_id: uuid::Uuid,
+    elapsed_ms: u64,
+) {
+    tracing::warn!(event = "responses.compaction.helper_rejected", %user_id,
+        %response_id, reason = error.category(), elapsed_ms,
+        metadata = ?summary::response_metadata(response),
+        "Compaction summary response was rejected");
+}
+
+fn log_summary_provider_failure(
+    error: &CompletionExecutionError,
+    user_id: uuid::Uuid,
+    response_id: uuid::Uuid,
+    elapsed_ms: u64,
+) {
+    // The wrapped error and upstream diagnostics may contain private strings.
+    // Only implementation-owned enums, UUIDs and the numeric status escape.
+    let (public_error, terminal) = match error {
+        CompletionExecutionError::Request(error) => (error, None),
+        CompletionExecutionError::Attempt {
+            public_error,
+            terminal,
+        } => (public_error, Some(terminal)),
+    };
+    if let Some(crate::inference::AttemptTerminal::Failed { attempt, failure }) = terminal {
+        tracing::warn!(event = "responses.compaction.helper_failed", %user_id, %response_id,
+            request_id = %attempt.request_id, execution_id = %attempt.execution_id,
+            attempt_id = %attempt.attempt_id, reason = super::telemetry::api_error_category(public_error),
+            failure_kind = ?failure.kind, failure_stage = ?failure.stage, status = failure.status,
+            replay_safety = ?failure.replay_safety, elapsed_ms,
+            "Compaction summary provider call failed");
+    } else {
+        tracing::warn!(event = "responses.compaction.helper_failed", %user_id, %response_id,
+            reason = super::telemetry::api_error_category(public_error), elapsed_ms,
+            "Compaction summary provider call could not finish");
+    }
+}
+
 /// Keep advisory availability failures separate from conditions that must stop
 /// the entire logical Response. Public errors never contain summary/source text.
 #[derive(Debug)]
@@ -41,6 +83,17 @@ pub(super) enum SummaryExecutionError {
 }
 
 impl SummaryExecutionError {
+    pub(super) fn category(&self) -> &'static str {
+        match self {
+            Self::Cancelled => "cancelled",
+            Self::Deadline => "deadline",
+            Self::Capacity => "helper_call_limit",
+            Self::InvalidSummary => "invalid_summary",
+            Self::Provider(_) => "provider_failure",
+            Self::Unsafe(_) => "safety_failure",
+        }
+    }
+
     pub(super) fn can_fallback_to_uncompacted(&self) -> bool {
         match self {
             Self::Capacity | Self::InvalidSummary => true,
@@ -130,6 +183,7 @@ impl SummaryExecutor<'_> {
         work: &SummaryWork,
         policy: &CompactionPolicy,
     ) -> Result<String, SummaryExecutionError> {
+        let started = Instant::now();
         self.check_execution()?;
         let messages: Vec<_> = work
             .items
@@ -144,10 +198,19 @@ impl SummaryExecutor<'_> {
         // A conservative byte-sized first partition is followed by request-size
         // estimates and a narrowly classified provider-overflow safety net.
         let fragment_bytes = policy.summary_input_budget.saturating_mul(2).max(4);
-        let pieces = summary::transcript_fragments(&messages, fragment_bytes)
-            .map_err(|_| SummaryExecutionError::Unsafe(ApiError::InternalServerError))?;
+        let pieces = summary::transcript_fragments(&messages, fragment_bytes).map_err(|error| {
+            tracing::warn!(event = "responses.compaction.helper_failed", user_id = %self.user.uuid,
+                response_id = %self.execution.response_id(), reason = error.category(),
+                stage = "transcript_preparation", "Compaction summary transcript could not be prepared");
+            SummaryExecutionError::Unsafe(ApiError::InternalServerError)
+        })?;
         let mut fragments = fragment_batches(pieces, fragment_bytes);
+        tracing::info!(event = "responses.compaction.helper_batch_started", user_id = %self.user.uuid,
+            response_id = %self.execution.response_id(), source_items = work.items.len(),
+            source_messages = messages.len(), fragments = fragments.len(), input_budget = policy.summary_input_budget,
+            previous_summary_present = work.previous_summary.is_some(), "Compaction summary batch started");
         let mut previous = work.previous_summary.clone();
+        let mut completed_fragments = 0usize;
         while let Some((fragment, reductions)) = fragments.pop_front() {
             self.check_execution()?;
             let messages = summary::fragment_summary_messages(&fragment, previous.as_deref());
@@ -156,6 +219,10 @@ impl SummaryExecutor<'_> {
                     .map_err(|_| SummaryExecutionError::Unsafe(ApiError::InternalServerError))?,
             );
             if estimate > policy.summary_input_budget {
+                tracing::debug!(event = "responses.compaction.helper_fragment_split", user_id = %self.user.uuid,
+                    response_id = %self.execution.response_id(), estimated_tokens = estimate,
+                    input_budget = policy.summary_input_budget, reductions, reason = "estimated_input_limit",
+                    "Compaction summary fragment needs a smaller input");
                 split_front(&mut fragments, fragment, reductions)?;
                 continue;
             }
@@ -163,6 +230,11 @@ impl SummaryExecutor<'_> {
                 .begin_call()
                 .map_err(|_| SummaryExecutionError::Capacity)?;
             let request = build_compaction_model_request(self.body, &messages);
+            let call_started = Instant::now();
+            tracing::info!(event = "responses.compaction.helper_call_started", user_id = %self.user.uuid,
+                response_id = %self.execution.response_id(), fragment_index = completed_fragments,
+                fragments_pending = fragments.len(), estimated_tokens = estimate, reductions,
+                "Compaction summary provider call started");
             let billing = BillingContext::new(AuthMethod::Jwt, self.body.model.clone());
             let execution =
                 CompletionExecutionContext::new(billing, self.routing, self.cache_policy);
@@ -187,27 +259,72 @@ impl SummaryExecutor<'_> {
             };
             let response = tokio::select! {
                 biased;
-                _ = self.execution.cancelled() => return Err(SummaryExecutionError::Cancelled),
-                _ = tokio::time::sleep_until(self.deadline) => return Err(SummaryExecutionError::Deadline),
+                _ = self.execution.cancelled() => {
+                    tracing::info!(event = "responses.compaction.helper_cancelled", user_id = %self.user.uuid,
+                        response_id = %self.execution.response_id(), stage = "awaiting_provider",
+                        elapsed_ms = call_started.elapsed().as_millis() as u64,
+                        "Compaction summary provider call cancelled");
+                    return Err(SummaryExecutionError::Cancelled);
+                },
+                _ = tokio::time::sleep_until(self.deadline) => {
+                    tracing::warn!(event = "responses.compaction.helper_deadline", user_id = %self.user.uuid,
+                        response_id = %self.execution.response_id(), stage = "awaiting_provider",
+                        elapsed_ms = call_started.elapsed().as_millis() as u64,
+                        "Compaction summary provider call reached its deadline");
+                    return Err(SummaryExecutionError::Deadline);
+                },
                 response = response => response,
             };
             match response {
                 Ok(response) => {
-                    let next = summary::parse_summary_response(&response)
-                        .map_err(|_| SummaryExecutionError::InvalidSummary)?;
+                    let next = summary::parse_summary_response(&response).map_err(|error| {
+                        log_summary_rejection(
+                            error,
+                            &response,
+                            self.user.uuid,
+                            self.execution.response_id(),
+                            call_started.elapsed().as_millis() as u64,
+                        );
+                        SummaryExecutionError::InvalidSummary
+                    })?;
                     // Native model/provider generation limits are not cl100k
                     // limits. Keep only the independent untrusted byte bound.
                     if next.len() > MAX_SUMMARY_TEXT_BYTES {
+                        tracing::warn!(event = "responses.compaction.helper_rejected", user_id = %self.user.uuid,
+                            response_id = %self.execution.response_id(), reason = "output_byte_limit",
+                            output_bytes = next.len(), output_byte_limit = MAX_SUMMARY_TEXT_BYTES,
+                            "Compaction summary response exceeded its byte limit");
                         return Err(SummaryExecutionError::InvalidSummary);
                     }
+                    tracing::info!(event = "responses.compaction.helper_call_completed", user_id = %self.user.uuid,
+                        response_id = %self.execution.response_id(), fragment_index = completed_fragments,
+                        output_bytes = next.len(), elapsed_ms = call_started.elapsed().as_millis() as u64,
+                        metadata = ?summary::response_metadata(&response),
+                        "Compaction summary provider call completed");
+                    completed_fragments += 1;
                     previous = Some(next);
                 }
                 Err(error) if is_context_rejection(&error) => {
+                    tracing::warn!(event = "responses.compaction.helper_fragment_split", user_id = %self.user.uuid,
+                        response_id = %self.execution.response_id(), reason = "provider_input_limit", reductions,
+                        elapsed_ms = call_started.elapsed().as_millis() as u64,
+                        "Compaction summary provider rejected the input size");
                     split_front(&mut fragments, fragment, reductions)?;
                 }
-                Err(error) => return Err(SummaryExecutionError::Provider(Box::new(error))),
+                Err(error) => {
+                    log_summary_provider_failure(
+                        &error,
+                        self.user.uuid,
+                        self.execution.response_id(),
+                        call_started.elapsed().as_millis() as u64,
+                    );
+                    return Err(SummaryExecutionError::Provider(Box::new(error)));
+                }
             }
         }
+        tracing::info!(event = "responses.compaction.helper_batch_completed", user_id = %self.user.uuid,
+            response_id = %self.execution.response_id(), completed_fragments,
+            elapsed_ms = started.elapsed().as_millis() as u64, "Compaction summary batch completed");
         previous.ok_or(SummaryExecutionError::Unsafe(
             ApiError::MessageExceedsContextLimit,
         ))
@@ -215,9 +332,15 @@ impl SummaryExecutor<'_> {
 
     fn check_execution(&self) -> Result<(), SummaryExecutionError> {
         if self.execution.is_cancelled() {
+            tracing::info!(event = "responses.compaction.helper_cancelled", user_id = %self.user.uuid,
+                response_id = %self.execution.response_id(), stage = "before_fragment",
+                "Compaction summary execution cancelled");
             return Err(SummaryExecutionError::Cancelled);
         }
         if Instant::now() >= self.deadline {
+            tracing::warn!(event = "responses.compaction.helper_deadline", user_id = %self.user.uuid,
+                response_id = %self.execution.response_id(), stage = "before_fragment",
+                "Compaction summary execution reached its deadline");
             return Err(SummaryExecutionError::Deadline);
         }
         Ok(())
@@ -287,6 +410,60 @@ mod tests {
     };
     use serde_json::json;
     use uuid::Uuid;
+
+    #[test]
+    fn rejected_summary_logs_only_allowlisted_metadata() {
+        let user_id = Uuid::new_v4();
+        let response_id = Uuid::new_v4();
+        let response = json!({
+            "id": "PRIVATE_PROVIDER_ID", "error": {"message": "PRIVATE_PROVIDER_ERROR"},
+            "choices": [{"finish_reason": "PRIVATE_FINISH_REASON", "message": {
+                "role": "PRIVATE_ROLE", "content": "PRIVATE_SUMMARY_AND_USER_DATA",
+                "reasoning": "PRIVATE_REASONING", "refusal": "PRIVATE_REFUSAL",
+                "tool_calls": [{"id": "PRIVATE_TOOL_ID", "function": {"name": "PRIVATE_TOOL_NAME", "arguments": "PRIVATE_TOOL_ARGUMENTS"}}]
+            }}]
+        });
+        let text = super::super::telemetry::capture_logs(|| {
+            log_summary_rejection(
+                summary::SummaryError::IncompleteResponse,
+                &response,
+                user_id,
+                response_id,
+                42,
+            );
+        });
+        assert!(text.contains("responses.compaction.helper_rejected"));
+        assert!(text.contains("incomplete_response"));
+        assert!(text.contains(&user_id.to_string()));
+        assert!(text.contains(&response_id.to_string()));
+        assert!(text.contains("elapsed_ms=42"));
+        assert!(text.contains("finish: \"other\""));
+        assert!(
+            !text.contains("PRIVATE_"),
+            "provider/user data escaped metadata filtering"
+        );
+    }
+
+    #[test]
+    fn provider_failure_logs_keep_correlation_without_upstream_strings() {
+        let failure = AttemptFailure::new(
+            AttemptFailureKind::HttpStatus,
+            AttemptStage::AwaitingResponse,
+            ReplaySafety::NotProvenPreAcceptance,
+        )
+        .with_upstream_response(503, None, Some("PRIVATE_UPSTREAM_ID".to_owned()));
+        let error = failed(failure);
+        let user_id = Uuid::new_v4();
+        let response_id = Uuid::new_v4();
+        let text = super::super::telemetry::capture_logs(|| {
+            log_summary_provider_failure(&error, user_id, response_id, 57);
+        });
+        assert!(text.contains("responses.compaction.helper_failed"));
+        assert!(text.contains("failure_kind=HttpStatus"));
+        assert!(text.contains("status=503"));
+        assert!(text.contains(&response_id.to_string()));
+        assert!(!text.contains("PRIVATE_"));
+    }
 
     const INPUT_OVERFLOW: &str = "This model's maximum context length is 100 tokens. However, you requested 1 output tokens and your prompt contains 100 input tokens, for a total of 101 tokens. Please reduce the length of the input prompt or the number of requested output tokens. (parameter=input_tokens, value=100)";
 

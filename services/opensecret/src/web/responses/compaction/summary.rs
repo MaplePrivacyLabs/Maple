@@ -59,8 +59,111 @@ pub(super) enum SummaryError {
     ToolCallingResponse,
     #[error("summary completion is empty")]
     EmptyResponse,
-    #[error("summary completion has an invalid checkpoint structure")]
-    InvalidStructure,
+}
+
+impl SummaryError {
+    /// Static diagnostic codes only: never format model-controlled text.
+    pub(super) fn category(self) -> &'static str {
+        match self {
+            Self::InvalidMessage => "invalid_message",
+            Self::UnsupportedRole => "unsupported_role",
+            Self::UnsupportedContent => "unsupported_content",
+            Self::InvalidChunkBudget => "invalid_chunk_budget",
+            Self::InvalidResponse => "invalid_response",
+            Self::IncompleteResponse => "incomplete_response",
+            Self::ToolCallingResponse => "tool_calling_response",
+            Self::EmptyResponse => "empty_response",
+        }
+    }
+}
+
+/// This deliberately cannot retain any string from a provider response. Its
+/// Debug representation is safe for enclave logs, including malformed answers.
+#[derive(Debug, PartialEq, Eq)]
+pub(super) struct SummaryResponseMetadata {
+    choices: usize,
+    finish: &'static str,
+    content_kind: &'static str,
+    content_bytes: usize,
+    required_headings_present: u16,
+    required_heading_occurrences: usize,
+    required_headings_ordered: bool,
+    empty_sections: u16,
+    refusal_present: bool,
+    tool_calls: usize,
+}
+
+pub(super) fn response_metadata(body: &Value) -> SummaryResponseMetadata {
+    let choices = body.get("choices").and_then(Value::as_array);
+    let choice = choices.and_then(|values| values.first());
+    let message = choice.and_then(|choice| choice.get("message"));
+    let content = message.and_then(|message| message.get("content"));
+    let text = content
+        .and_then(|content| summary_text(content).ok())
+        .unwrap_or_default();
+    let lines: Vec<_> = text.lines().map(str::trim).collect();
+    let headings: Vec<_> = lines
+        .iter()
+        .enumerate()
+        .filter_map(|(line, text)| {
+            REQUIRED_HEADINGS
+                .iter()
+                .position(|heading| heading == text)
+                .map(|index| (line, index))
+        })
+        .collect();
+    let mut present = 0;
+    let mut empty_sections = 0;
+    for (index, (line, heading)) in headings.iter().enumerate() {
+        present |= 1 << heading;
+        if REQUIRED_HEADINGS[*heading] == "## Progress" {
+            continue;
+        }
+        let end = headings
+            .get(index + 1)
+            .map_or(lines.len(), |(line, _)| *line);
+        if !lines[line + 1..end].iter().any(|line| !line.is_empty()) {
+            empty_sections |= 1 << heading;
+        }
+    }
+    SummaryResponseMetadata {
+        choices: choices.map_or(0, Vec::len),
+        finish: match choice
+            .and_then(|choice| choice.get("finish_reason"))
+            .and_then(Value::as_str)
+        {
+            Some("stop") => "stop",
+            Some("length") => "length",
+            Some("tool_calls") => "tool_calls",
+            Some("function_call") => "function_call",
+            Some("content_filter") => "content_filter",
+            Some(_) => "other",
+            None => "missing",
+        },
+        content_kind: match content {
+            Some(Value::String(_)) => "text",
+            Some(Value::Array(_)) => "blocks",
+            Some(Value::Null) => "null",
+            None => "missing",
+            Some(_) => "other",
+        },
+        content_bytes: text.len(),
+        required_headings_present: present,
+        required_heading_occurrences: headings.len(),
+        required_headings_ordered: headings.len() == REQUIRED_HEADINGS.len()
+            && headings
+                .iter()
+                .enumerate()
+                .all(|(expected, (_, actual))| expected == *actual),
+        empty_sections,
+        refusal_present: message
+            .and_then(|message| message.get("refusal"))
+            .is_some_and(|value| !value.is_null()),
+        tool_calls: message
+            .and_then(|message| message.get("tool_calls"))
+            .and_then(Value::as_array)
+            .map_or(0, Vec::len),
+    }
 }
 
 fn private_reasoning_block(kind: &str) -> bool {
@@ -332,38 +435,6 @@ fn summary_data_messages(transcript: Value, previous_summary: Option<&str>) -> V
     ]
 }
 
-/// This checks the instructed shape, not the truth or completeness of model
-/// prose. In particular, valid headings are not proof against prompt injection.
-fn validate_summary_structure(text: &str) -> Result<(), SummaryError> {
-    let lines: Vec<_> = text.lines().map(str::trim).collect();
-    let headings: Vec<_> = lines
-        .iter()
-        .enumerate()
-        .filter(|(_, line)| REQUIRED_HEADINGS.contains(line))
-        .collect();
-    if headings.len() != REQUIRED_HEADINGS.len()
-        || headings
-            .iter()
-            .zip(REQUIRED_HEADINGS)
-            .any(|((_, actual), expected)| **actual != expected)
-    {
-        return Err(SummaryError::InvalidStructure);
-    }
-    for (index, (start, heading)) in headings.iter().enumerate() {
-        // Progress is the parent heading for Done/In Progress/Blocked.
-        if **heading == "## Progress" {
-            continue;
-        }
-        let end = headings
-            .get(index + 1)
-            .map_or(lines.len(), |(next, _)| *next);
-        if !lines[*start + 1..end].iter().any(|line| !line.is_empty()) {
-            return Err(SummaryError::InvalidStructure);
-        }
-    }
-    Ok(())
-}
-
 fn summary_text(content: &Value) -> Result<String, SummaryError> {
     match content {
         Value::String(text) => Ok(text.clone()),
@@ -441,13 +512,57 @@ pub(super) fn parse_summary_response(body: &Value) -> Result<String, SummaryErro
     if text.is_empty() {
         return Err(SummaryError::EmptyResponse);
     }
-    validate_summary_structure(text)?;
+    // Like Pi, request a useful structure but accept completed visible text.
+    // Markdown headings do not establish summary quality or a security boundary.
     Ok(text.to_owned())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn response_diagnostics_distinguish_missing_reordered_and_empty_sections() {
+        let valid = json!({"choices": [{"finish_reason": "stop", "message": {
+            "role": "assistant", "content": EMPTY_CHECKPOINT,
+        }}]});
+        let metadata = response_metadata(&valid);
+        assert_eq!(
+            metadata.required_headings_present,
+            (1 << REQUIRED_HEADINGS.len()) - 1
+        );
+        assert_eq!(metadata.required_heading_occurrences, 9);
+        assert!(metadata.required_headings_ordered);
+        assert_eq!(metadata.empty_sections, 0);
+        let mut empty = valid.clone();
+        empty["choices"][0]["message"]["content"] =
+            json!(EMPTY_CHECKPOINT.replace("### Blocked\n(none)", "### Blocked"));
+        assert_eq!(response_metadata(&empty).empty_sections, 1 << 5);
+        assert!(parse_summary_response(&empty).is_ok());
+        let mut missing = valid.clone();
+        missing["choices"][0]["message"]["content"] =
+            json!(EMPTY_CHECKPOINT.replace("## Critical Context", "## PRIVATE_CUSTOM_HEADING"));
+        let missing = response_metadata(&missing);
+        assert_eq!(missing.required_headings_present, (1 << 8) - 1);
+        assert!(!missing.required_headings_ordered);
+        assert!(!format!("{missing:?}").contains("PRIVATE_"));
+    }
+
+    #[test]
+    fn gpt_oss_reasoning_remains_private_and_is_not_checkpoint_content() {
+        let body = json!({"choices": [{"finish_reason": "stop", "message": {
+            "role": "assistant", "content": EMPTY_CHECKPOINT,
+            "reasoning": "PRIVATE_REASONING", "reasoning_content": "PRIVATE_REASONING_CONTENT"
+        }}], "usage": {"completion_tokens": 1234}});
+        assert_eq!(parse_summary_response(&body).unwrap(), EMPTY_CHECKPOINT);
+        assert!(!format!("{:?}", response_metadata(&body)).contains("PRIVATE_"));
+        let mut reasoning_only = body;
+        reasoning_only["choices"][0]["message"]["content"] = Value::Null;
+        assert!(matches!(
+            parse_summary_response(&reasoning_only),
+            Err(SummaryError::EmptyResponse)
+        ));
+    }
 
     fn completion(content: Value, finish_reason: Value) -> Value {
         json!({ "choices": [{
@@ -687,19 +802,20 @@ mod tests {
     }
 
     #[test]
-    fn rejects_non_summary_prose_and_missing_empty_or_reordered_sections() {
-        for invalid in [
-            "I cannot summarize this conversation.".to_owned(),
-            "The answer is 42.".to_owned(),
-            "## Goal\nAnswer the question.".to_owned(),
+    fn completed_summary_format_is_advisory_like_pi() {
+        let summaries = [
+            "The user is writing a story. A bridge has opened. Continue the journey.".to_owned(),
+            "# Goal\nContinue the story.\n# Progress\nThe bridge is open.".to_owned(),
+            "### Done\nThe bridge is open.\n### Blocked\n(none)".to_owned(),
             EMPTY_CHECKPOINT.replace("## Next Steps\n(none)\n\n", ""),
             EMPTY_CHECKPOINT.replace("## Key Decisions\n(none)", "## Key Decisions"),
             EMPTY_CHECKPOINT.replace("## Goal", "## Next Steps"),
             EMPTY_CHECKPOINT.replace("## Goal\n(none)", "## Constraints & Preferences\n(none)"),
-        ] {
+        ];
+        for summary in summaries {
             assert_eq!(
-                parse_summary_response(&completion(json!(invalid), json!("stop"))),
-                Err(SummaryError::InvalidStructure)
+                parse_summary_response(&completion(json!(summary), json!("stop"))).unwrap(),
+                summary
             );
         }
         let reordered = EMPTY_CHECKPOINT
@@ -707,8 +823,8 @@ mod tests {
             .replace("## Constraints & Preferences", "## Goal")
             .replace("## temporary", "## Constraints & Preferences");
         assert_eq!(
-            parse_summary_response(&completion(json!(reordered), json!("stop"))),
-            Err(SummaryError::InvalidStructure)
+            parse_summary_response(&completion(json!(reordered), json!("stop"))).unwrap(),
+            reordered
         );
     }
 
@@ -729,7 +845,9 @@ mod tests {
     fn identity_only_coverage_has_a_valid_local_summary_without_losing_previous_memory() {
         for previous in [None, Some(" \n\t")] {
             let checkpoint = identity_only_checkpoint(previous);
-            validate_summary_structure(&checkpoint).unwrap();
+            let metadata = response_metadata(&completion(json!(checkpoint), json!("stop")));
+            assert!(metadata.required_headings_ordered);
+            assert_eq!(metadata.empty_sections, 0);
             assert_eq!(checkpoint, EMPTY_CHECKPOINT);
         }
         let previous =

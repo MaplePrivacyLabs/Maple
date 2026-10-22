@@ -837,6 +837,64 @@ mod tests {
     }
 
     #[test]
+    fn gpt_oss_default_threshold_only_plans_eligible_history_after_the_boundary() {
+        let body: crate::web::responses::handlers::ResponsesCreateRequest =
+            serde_json::from_value(json!({
+                "model": "gpt-oss-120b",
+                "input": "Continue the conversation.",
+                "conversation": Uuid::new_v4(),
+            }))
+            .unwrap();
+        assert!(body.context_management.is_none());
+        assert!(body.max_output_tokens.is_none());
+        let (policy, enabled) = super::super::policy_for(&body).unwrap();
+        assert!(enabled);
+        assert_eq!(policy.trigger_tokens, 103_219);
+
+        for (total_tokens, should_compact) in [(103_218, false), (103_219, false), (103_220, true)]
+        {
+            let snapshot = snapshot(
+                vec![
+                    item(ContextItemKind::User, 1, 40_000),
+                    item(ContextItemKind::Assistant, 2, total_tokens - 60_010),
+                    item(ContextItemKind::User, 3, 20_000),
+                ],
+                3,
+            );
+            let planned = plan_batch(
+                &snapshot,
+                &None,
+                &policy,
+                false,
+                policy.summary_input_budget,
+            )
+            .unwrap();
+            assert_eq!(
+                !planned.summary_work.is_empty(),
+                should_compact,
+                "input tokens: {total_tokens}",
+            );
+            if should_compact {
+                assert_eq!(planned.summary_work.len(), 1);
+                assert_eq!(planned.summary_work[0].kind, SectionKind::History);
+                assert_eq!(
+                    planned.summary_work[0].covered,
+                    vec![key(ContextItemKind::User, 1)],
+                );
+                assert!(!planned.summary_work[0]
+                    .covered
+                    .contains(&snapshot.current_user));
+            }
+            // Planning alone neither drops history nor changes the current
+            // request; only a successful checkpoint can replace these items.
+            let (messages, projected_tokens) = project(&snapshot, &None).unwrap();
+            assert_eq!(projected_tokens, total_tokens);
+            assert_eq!(messages.len(), 4);
+            assert_eq!(messages[3], snapshot.items[2].prompt_messages[0]);
+        }
+    }
+
+    #[test]
     fn planning_does_not_discard_unsummarized_source_even_above_budget() {
         let snapshot = snapshot(
             vec![

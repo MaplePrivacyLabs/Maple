@@ -4,6 +4,7 @@ use super::{
     compaction::context::{
         CheckpointPayload, ContextItem, ContextItemKey, ContextItemKind, ContextSnapshot,
     },
+    compaction::telemetry,
     constants::{ROLE_ASSISTANT, ROLE_SYSTEM, ROLE_USER},
     conversions::{MessageContentConverter, MODEL_IMAGE_OMITTED_PLACEHOLDER},
     types::MessageContent,
@@ -76,24 +77,33 @@ pub fn load_instruction_messages<D: DBConnection + ?Sized>(
     override_instructions: Option<&str>,
     internal_instructions: Option<&str>,
 ) -> Result<(Vec<Value>, usize), crate::ApiError> {
+    let started = std::time::Instant::now();
+    let mut instruction_source = "none";
     let instruction = if let Some(text) = override_instructions {
+        instruction_source = "request_override";
         Some((text.to_owned(), count_tokens(text)))
     } else if let Some(project) = db
         .get_project_instruction_for_conversation(conversation_id, user_id)
         .map_err(|_| crate::ApiError::InternalServerError)?
     {
+        instruction_source = "project";
         Some(decrypt_instruction(
             user_key,
             &project.prompt_enc,
             project.prompt_tokens,
         )?)
     } else {
-        db.get_default_user_instruction(user_id)
+        let instruction = db
+            .get_default_user_instruction(user_id)
             .map_err(|_| crate::ApiError::InternalServerError)?
             .map(|instruction| {
                 decrypt_instruction(user_key, &instruction.prompt_enc, instruction.prompt_tokens)
             })
-            .transpose()?
+            .transpose()?;
+        if instruction.is_some() {
+            instruction_source = "user_default";
+        }
+        instruction
     };
     let instruction = match (internal_instructions, instruction) {
         (Some(internal), Some((existing, _))) => {
@@ -104,10 +114,21 @@ pub fn load_instruction_messages<D: DBConnection + ?Sized>(
         (Some(internal), None) => Some((internal.to_owned(), count_tokens(internal))),
         (None, instruction) => instruction,
     };
-    Ok(match instruction {
+    let result = match instruction {
         Some((content, tokens)) => (vec![json!({"role":ROLE_SYSTEM,"content":content})], tokens),
         None => (Vec::new(), 0),
-    })
+    };
+    tracing::debug!(
+        event = "responses.recall.instructions_loaded",
+        user_uuid = %user_id,
+        conversation_id,
+        instruction_source,
+        internal_instructions_present = internal_instructions.is_some(),
+        instruction_tokens = result.1,
+        elapsed_ms = telemetry::elapsed_ms(started),
+        "Responses instruction metadata loaded"
+    );
+    Ok(result)
 }
 
 /// Decrypt only supplied uncovered rows while retaining complete typed metadata.
@@ -256,6 +277,73 @@ pub fn prompt_source_keys(
 
 #[allow(clippy::too_many_arguments)]
 fn build_snapshot(
+    instructions: Vec<Value>,
+    instruction_tokens: usize,
+    metadata: &[CompactionSourceMetadata],
+    raw: Vec<RawThreadMessage>,
+    user_key: Option<&secp256k1::SecretKey>,
+    model: &str,
+    reasoning_replay: ReasoningReplay,
+    current_user: ContextItemKey,
+    current_response: Uuid,
+    active_response_uuids: &[Uuid],
+    checkpoint: &Option<CheckpointPayload>,
+    require_all_payloads: bool,
+) -> Result<ContextSnapshot, crate::ApiError> {
+    let started = std::time::Instant::now();
+    let payload_rows = raw.len();
+    let payload_bytes = raw
+        .iter()
+        .map(|row| row.content_enc.as_ref().map_or(0, Vec::len))
+        .fold(0usize, usize::saturating_add);
+    let result = build_snapshot_inner(
+        instructions,
+        instruction_tokens,
+        metadata,
+        raw,
+        user_key,
+        model,
+        reasoning_replay,
+        current_user,
+        current_response,
+        active_response_uuids,
+        checkpoint,
+        require_all_payloads,
+    );
+    match &result {
+        Ok(snapshot) => tracing::debug!(
+            event = "responses.recall.snapshot_built",
+            response_uuid = %current_response,
+            model_id = telemetry::model_id(model),
+            source_items = metadata.len(),
+            payload_rows,
+            payload_bytes,
+            complete = require_all_payloads,
+            unloaded_items = snapshot.items.iter().filter(|item| !item.payload_loaded).count(),
+            checkpoint_present = checkpoint.is_some(),
+            reasoning_replay = match reasoning_replay { ReasoningReplay::None => "none", ReasoningReplay::CurrentTurn => "current_turn", ReasoningReplay::All => "all" },
+            elapsed_ms = telemetry::elapsed_ms(started),
+            "Responses recall snapshot built"
+        ),
+        Err(error) => tracing::warn!(
+            event = "responses.recall.snapshot_failed",
+            response_uuid = %current_response,
+            model_id = telemetry::model_id(model),
+            source_items = metadata.len(),
+            payload_rows,
+            payload_bytes,
+            complete = require_all_payloads,
+            checkpoint_present = checkpoint.is_some(),
+            error_category = telemetry::api_error_category(error),
+            elapsed_ms = telemetry::elapsed_ms(started),
+            "Responses recall snapshot failed"
+        ),
+    }
+    result
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_snapshot_inner(
     instructions: Vec<Value>,
     instruction_tokens: usize,
     metadata: &[CompactionSourceMetadata],
@@ -757,10 +845,7 @@ fn normalize_tool_call_ids_for_kimi(messages: &mut [Value]) {
                         *tool_call_id = Value::String(kimi_id.clone());
                     }
                 } else {
-                    warn!(
-                        "Leaving unmatched tool_call_id {} unchanged during Kimi ID normalization",
-                        original_id
-                    );
+                    warn!("Leaving unmatched tool_call_id unchanged during Kimi ID normalization");
                 }
             }
             _ => {}
@@ -1074,6 +1159,72 @@ mod tests {
             tool_name: metadata.tool_name.clone(),
         };
         (metadata, row)
+    }
+
+    #[tokio::test]
+    async fn recall_observability_never_emits_content_summaries_or_client_identifiers() {
+        use super::super::compaction::context::{CheckpointSection, CHECKPOINT_VERSION};
+
+        let key = secp256k1::SecretKey::from_slice(&[7; 32]).unwrap();
+        let response_uuid = Uuid::new_v4();
+        let user_text = "PRIVATE_RECALL_USER_CONTENT";
+        let summary_text = "PRIVATE_RECALL_SUMMARY_CONTENT";
+        let instructions = "PRIVATE_RECALL_INSTRUCTION_CONTENT";
+        let client_tool_id = "PRIVATE_CLIENT_TOOL_IDENTIFIER";
+        let (prior, _) = snapshot_fixture(ContextItemKind::User, 1, None, "\"prior\"").await;
+        let (current, row) = snapshot_fixture(
+            ContextItemKind::User,
+            2,
+            Some(response_uuid),
+            &serde_json::to_string(user_text).unwrap(),
+        )
+        .await;
+        let ciphertext = hex::encode(row.content_enc.as_ref().unwrap());
+        let checkpoint = Some(CheckpointPayload {
+            version: CHECKPOINT_VERSION,
+            history: Some(CheckpointSection {
+                summary: summary_text.into(),
+                covered: vec![prior.key],
+                anchor: None,
+            }),
+            active: None,
+        });
+        let logs = telemetry::capture_logs(|| {
+            let snapshot = snapshot_from_raw(
+                vec![json!({"role":"system", "content":instructions})],
+                10,
+                &[prior, current.clone()],
+                vec![row],
+                &key,
+                "gpt-oss-120b",
+                ReasoningReplay::None,
+                current.key,
+                response_uuid,
+                &[],
+                &checkpoint,
+            )
+            .unwrap();
+            assert_eq!(snapshot.items[1].prompt_messages[0]["content"], user_text);
+            let mut unmatched =
+                vec![json!({"role":"tool", "tool_call_id":client_tool_id,"content":user_text})];
+            normalize_tool_call_ids_for_model(&mut unmatched, "kimi-k3");
+        });
+        assert!(logs.contains("responses.recall.snapshot_built"));
+        assert!(logs.contains("payload_rows=1"));
+        assert!(logs.contains("checkpoint_present=true"));
+        assert!(logs.contains(&response_uuid.to_string()));
+        for sensitive in [
+            user_text,
+            summary_text,
+            instructions,
+            client_tool_id,
+            &ciphertext,
+        ] {
+            assert!(
+                !logs.contains(sensitive),
+                "private data appeared in recall telemetry"
+            );
+        }
     }
 
     #[tokio::test]

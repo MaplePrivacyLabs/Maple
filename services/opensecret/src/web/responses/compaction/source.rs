@@ -1,7 +1,7 @@
 //! Response-local ciphertext reuse. Fresh source metadata remains authoritative;
 //! neither cached payloads nor transport batches replace checkpoint validation.
 
-use super::policy::MAX_SOURCE_BATCH_BYTES;
+use super::{policy::MAX_SOURCE_BATCH_BYTES, telemetry};
 use crate::{
     db::{DBConnection, DBError},
     models::{
@@ -42,6 +42,14 @@ struct CachedItem {
     raw: RawThreadMessage,
 }
 
+#[derive(Default)]
+struct LoadStats {
+    cache_hits: usize,
+    fetch_batches: usize,
+    fetched_rows: usize,
+    fetched_bytes: usize,
+}
+
 /// Owned by a single logical Response, including its completed tool steps.
 /// Large items remain valid input but bypass the bounded cache. Transport batches
 /// limit estimated ciphertext bytes; a single larger row cannot be split in SQL.
@@ -60,12 +68,23 @@ impl SourceLoader {
         source: &CompactionSnapshot,
         uncovered: &HashSet<ContextItemKey>,
     ) {
+        let previous_rows = self.items.len();
+        let previous_bytes = self.cached_bytes;
         let scope = Scope::from(source);
         if self.scope != Some(scope) {
             self.items.clear();
             self.insertion_order.clear();
             self.cached_bytes = 0;
             self.scope = Some(scope);
+            if previous_rows > 0 {
+                tracing::debug!(
+                    event = "responses.compaction.source_cache_invalidated",
+                    reason = "scope_changed",
+                    invalidated_rows = previous_rows,
+                    invalidated_bytes = previous_bytes,
+                    "Responses source cache invalidated"
+                );
+            }
             return;
         }
         let metadata: HashMap<_, _> = source.items.iter().map(|item| (item.key, item)).collect();
@@ -82,6 +101,17 @@ impl SourceLoader {
             .values()
             .map(|item| payload_bytes(&item.raw))
             .sum();
+        if previous_rows != self.items.len() {
+            tracing::debug!(
+                event = "responses.compaction.source_cache_invalidated",
+                reason = "covered_missing_or_changed",
+                invalidated_rows = previous_rows.saturating_sub(self.items.len()),
+                invalidated_bytes = previous_bytes.saturating_sub(self.cached_bytes),
+                cached_rows = self.items.len(),
+                cached_bytes = self.cached_bytes,
+                "Responses source cache entries invalidated"
+            );
+        }
     }
 
     /// Hydrate token planning only from rows validated against the fresh snapshot.
@@ -118,6 +148,44 @@ impl SourceLoader {
         keys: &[ContextItemKey],
         mut fetch: impl FnMut(&[ContextItemKey]) -> Result<Vec<RawThreadMessage>, DBError>,
     ) -> Result<Vec<RawThreadMessage>, DBError> {
+        let started = std::time::Instant::now();
+        let mut stats = LoadStats::default();
+        let result = self.load_inner(source, keys, &mut fetch, &mut stats);
+        match &result {
+            Ok(_) => tracing::debug!(
+                event = "responses.compaction.sources_loaded",
+                requested_rows = keys.len(),
+                cache_hits = stats.cache_hits,
+                fetch_batches = stats.fetch_batches,
+                fetched_rows = stats.fetched_rows,
+                fetched_bytes = stats.fetched_bytes,
+                cached_rows = self.items.len(),
+                cached_bytes = self.cached_bytes,
+                elapsed_ms = telemetry::elapsed_ms(started),
+                "Responses source payload load completed"
+            ),
+            Err(error) => tracing::warn!(
+                event = "responses.compaction.sources_failed",
+                error_category = telemetry::db_error_category(error),
+                requested_rows = keys.len(),
+                cache_hits = stats.cache_hits,
+                fetch_batches = stats.fetch_batches,
+                fetched_rows = stats.fetched_rows,
+                fetched_bytes = stats.fetched_bytes,
+                elapsed_ms = telemetry::elapsed_ms(started),
+                "Responses source payload load failed"
+            ),
+        }
+        result
+    }
+
+    fn load_inner(
+        &mut self,
+        source: &CompactionSnapshot,
+        keys: &[ContextItemKey],
+        fetch: &mut impl FnMut(&[ContextItemKey]) -> Result<Vec<RawThreadMessage>, DBError>,
+        stats: &mut LoadStats,
+    ) -> Result<Vec<RawThreadMessage>, DBError> {
         // Reuse requires the full fresh metadata, including status, token count,
         // rendering fields and ciphertext digest, rather than just row identity.
         self.retain(source, &source.items.iter().map(|item| item.key).collect());
@@ -133,6 +201,7 @@ impl SourceLoader {
         let mut batch_bytes = 0usize;
         for key in keys {
             if let Some(cached) = self.items.get(key) {
+                stats.cache_hits = stats.cache_hits.saturating_add(1);
                 result.insert(*key, cached.raw.clone());
                 continue;
             }
@@ -142,7 +211,7 @@ impl SourceLoader {
                 && (batch.len() == MAX_BATCH_ROWS
                     || batch_bytes.saturating_add(bytes) > MAX_SOURCE_BATCH_BYTES)
             {
-                self.fetch_batch(&batch, &metadata, &mut fetch, &mut result)?;
+                self.fetch_batch(&batch, &metadata, fetch, &mut result, stats)?;
                 batch.clear();
                 batch_bytes = 0;
             }
@@ -150,7 +219,7 @@ impl SourceLoader {
             batch_bytes = batch_bytes.saturating_add(bytes);
         }
         if !batch.is_empty() {
-            self.fetch_batch(&batch, &metadata, &mut fetch, &mut result)?;
+            self.fetch_batch(&batch, &metadata, fetch, &mut result, stats)?;
         }
         keys.iter()
             .map(|key| result.remove(key).ok_or_else(invalid_selection))
@@ -163,8 +232,15 @@ impl SourceLoader {
         metadata: &HashMap<ContextItemKey, &CompactionSourceMetadata>,
         fetch: &mut impl FnMut(&[ContextItemKey]) -> Result<Vec<RawThreadMessage>, DBError>,
         result: &mut HashMap<ContextItemKey, RawThreadMessage>,
+        stats: &mut LoadStats,
     ) -> Result<(), DBError> {
+        stats.fetch_batches = stats.fetch_batches.saturating_add(1);
         let rows = fetch(batch)?;
+        stats.fetched_rows = stats.fetched_rows.saturating_add(rows.len());
+        stats.fetched_bytes = rows
+            .iter()
+            .map(payload_bytes)
+            .fold(stats.fetched_bytes, usize::saturating_add);
         if rows.len() != batch.len() {
             return Err(invalid_selection());
         }
@@ -352,6 +428,47 @@ mod tests {
             result,
             Err(DBError::CompactionError(CompactionError::InvalidSelection))
         )
+    }
+
+    #[test]
+    fn source_observability_records_work_counts_without_payloads_or_error_text() {
+        let sentinel = "PRIVATE_SOURCE_CIPHERTEXT_AND_TOOL";
+        let mut first = row(1, 100);
+        first.content_enc = Some(sentinel.as_bytes().to_vec());
+        first.tool_name = Some(sentinel.into());
+        first.model = Some(sentinel.into());
+        let rows = vec![first, row(2, 80)];
+        let source = snapshot(&rows);
+        let mut loader = SourceLoader::default();
+        let logs = telemetry::capture_logs(|| {
+            loader
+                .load_with(&source, &[source.items[0].key], |batch| {
+                    Ok(fetch(&rows, batch))
+                })
+                .unwrap();
+            loader
+                .load_with(&source, &[source.items[0].key], |_| {
+                    panic!("must use cache")
+                })
+                .unwrap();
+            let result = loader.load_with(&source, &[source.items[1].key], |_| {
+                Err(DBError::QueryError(
+                    diesel::result::Error::DeserializationError(
+                        std::io::Error::other(sentinel).into(),
+                    ),
+                ))
+            });
+            assert!(result.is_err());
+        });
+        assert!(logs.contains("responses.compaction.sources_loaded"));
+        assert!(logs.contains("cache_hits=1"));
+        assert!(logs.contains("fetch_batches=1"));
+        assert!(logs.contains("fetched_rows=1"));
+        assert!(logs.contains("responses.compaction.sources_failed"));
+        assert!(logs.contains("database_query"));
+        assert!(!logs.contains(sentinel));
+        assert!(!logs.contains(&source.items[0].content_fingerprint));
+        assert!(!logs.contains(&hex::encode(sentinel)));
     }
 
     #[test]
