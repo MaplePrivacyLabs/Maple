@@ -128,6 +128,12 @@ pub(super) enum SidebarEvent {
     },
     /// Delete a task for good; the screen confirms first.
     DeleteTask(String),
+    /// Set or clear a task's unread marker, as if a run had just ended
+    /// unseen or the task had been opened.
+    SetUnread {
+        session_id: String,
+        unread: bool,
+    },
     /// Remove a project; the screen confirms first.
     RemoveRoot(String),
     /// Trust or untrust a project.
@@ -160,12 +166,8 @@ pub(super) enum RenameTarget {
 pub(super) struct SidebarRow {
     pub(super) id: Arc<str>,
     pub(super) element_id: SharedString,
-    /// Hover group that reveals the row's action buttons.
+    /// Hover group that reveals the row's menu button.
     pub(super) group: SharedString,
-    pub(super) rename_id: SharedString,
-    /// The hover button that moves the task one rung along
-    /// active, settled, archived, deleted.
-    pub(super) step_id: SharedString,
     /// Animation id of the running indicator.
     pub(super) spinner_id: SharedString,
     pub(super) pin_id: SharedString,
@@ -174,10 +176,14 @@ pub(super) struct SidebarRow {
     pub(super) menu_panel_id: SharedString,
     pub(super) menu_rename_id: SharedString,
     pub(super) menu_pin_id: SharedString,
+    pub(super) menu_unread_id: SharedString,
+    pub(super) menu_folder_id: SharedString,
     pub(super) menu_settle_id: SharedString,
     pub(super) menu_archive_id: SharedString,
     pub(super) menu_delete_id: SharedString,
     pub(super) menu_reopen_id: SharedString,
+    menu_actions: Vec<TaskMenuAction>,
+    project_root: Arc<str>,
     pub(super) title: SharedString,
     /// Display name of the task's project, shown on every row.
     pub(super) project_name: SharedString,
@@ -192,23 +198,35 @@ impl SidebarRow {
             id: Arc::from(id.as_str()),
             element_id: SharedString::from(format!("session-{id}")),
             group: SharedString::from(format!("task-row-{id}")),
-            rename_id: SharedString::from(format!("rename-session-{id}")),
-            step_id: SharedString::from(format!("step-session-{id}")),
             spinner_id: SharedString::from(format!("spinner-session-{id}")),
             pin_id: SharedString::from(format!("pin-session-{id}")),
             menu_id: SharedString::from(format!("menu-session-{id}")),
             menu_panel_id: SharedString::from(format!("task-menu-{id}")),
             menu_rename_id: SharedString::from(format!("rename-task-{id}")),
             menu_pin_id: SharedString::from(format!("pin-task-{id}")),
+            menu_unread_id: SharedString::from(format!("unread-task-{id}")),
+            menu_folder_id: SharedString::from(format!("open-folder-task-{id}")),
             menu_settle_id: SharedString::from(format!("settle-task-{id}")),
             menu_archive_id: SharedString::from(format!("archive-task-{id}")),
             menu_delete_id: SharedString::from(format!("delete-task-{id}")),
             menu_reopen_id: SharedString::from(format!("reopen-task-{id}")),
+            menu_actions: Vec::new(),
+            project_root: Arc::from(session.project_root.as_str()),
             title: SharedString::from(session.title.clone()),
             project_name: SharedString::from(project_name.to_string()),
             search: session.title.to_lowercase(),
         }
     }
+}
+
+#[derive(Clone, Copy)]
+enum TaskMenuAction {
+    Rename,
+    Pin,
+    Unread,
+    Folder,
+    Move(TaskMove),
+    Separator,
 }
 
 /// The switcher's "All projects" row.
@@ -219,7 +237,8 @@ const ALL_PROJECTS_ID: &str = "switcher-all-projects";
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum SidebarPopup {
     Switcher,
-    /// A task row's overflow menu, by the row's shared id.
+    /// A task row's menu, by the row's shared id. It opens under the row's
+    /// "…" button, or at the pointer on a right-click.
     Task(Arc<str>),
 }
 
@@ -255,9 +274,8 @@ pub(super) struct SidebarTaskEntry {
 }
 
 /// Where a task sits on the ladder active, settled, archived, deleted.
-/// The hover button steps one rung forward; the overflow menu reaches
-/// every later rung and comes back only to active. The pinned section
-/// is a view of active tasks, not a rung of its own.
+/// The task menu reaches every later rung and comes back only to active.
+/// The pinned section is a view of active tasks, not a rung of its own.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum TaskRung {
     Active,
@@ -265,20 +283,13 @@ pub(super) enum TaskRung {
     Archived,
 }
 
-/// Where a menu item or the hover button sends a task.
+/// Where a menu item sends a task.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum TaskMove {
     Active,
     Settled,
     Archived,
     Deleted,
-}
-
-/// The one-rung-forward move of a task: the hover button's icon and
-/// short label.
-pub(super) struct TaskStep {
-    pub(super) icon: &'static str,
-    pub(super) row_label: &'static str,
 }
 
 impl TaskRung {
@@ -289,32 +300,6 @@ impl TaskRung {
             Self::Settled
         } else {
             Self::Active
-        }
-    }
-
-    /// The rung after this one.
-    pub(super) fn next(self) -> TaskMove {
-        match self {
-            Self::Active => TaskMove::Settled,
-            Self::Settled => TaskMove::Archived,
-            Self::Archived => TaskMove::Deleted,
-        }
-    }
-
-    pub(super) fn step(self) -> TaskStep {
-        match self {
-            Self::Active => TaskStep {
-                icon: "check",
-                row_label: "Settle",
-            },
-            Self::Settled => TaskStep {
-                icon: "archive",
-                row_label: "Archive",
-            },
-            Self::Archived => TaskStep {
-                icon: "trash-2",
-                row_label: "Delete",
-            },
         }
     }
 }
@@ -357,12 +342,16 @@ impl SidebarSection {
 
 type MenuAction = Box<dyn Fn(&mut Sidebar, &mut Context<Sidebar>)>;
 
-/// One action of a sidebar overflow menu, as the task and project menus
-/// list them.
+/// One action of a sidebar menu, as the task and project menus list
+/// them.
 struct SidebarMenuItem {
     id: SharedString,
     icon: &'static str,
     label: &'static str,
+    /// The letter that picks the item while its menu is open.
+    shortcut: Option<&'static str>,
+    /// Shown in the error color (Delete).
+    destructive: bool,
     on_click: MenuAction,
 }
 
@@ -418,6 +407,9 @@ pub(super) struct Sidebar {
     project_filter: Option<String>,
     // Menus.
     popup: Popup<Sidebar, SidebarPopup>,
+    /// Where a right-click opened the task menu; `None` hangs it under the
+    /// row's "…" button.
+    task_menu_at: Option<gpui::Point<gpui::Pixels>>,
     /// A project's overflow menu, keyed by execution computer and path.
     project_popup: Popup<Sidebar, ProjectTarget>,
     /// Trust status of the project whose menu is open, once it loads.
@@ -623,6 +615,17 @@ impl Sidebar {
             this.search_changed(&input, cx)
         })
         .detach();
+        let list = gpui::ListState::new(0, gpui::ListAlignment::Top, px(200.));
+        // A menu hangs off its row: scrolling the list closes it, so it
+        // never drifts from its row or leaves hover state behind.
+        let sidebar = cx.weak_entity();
+        list.set_scroll_handler(move |_, _, cx| {
+            sidebar
+                .update(cx, |sidebar, cx| {
+                    sidebar.close_popups(cx);
+                })
+                .ok();
+        });
         Self {
             pages: SidebarPages::default(),
             group_pages: ComputerPages::default(),
@@ -640,7 +643,7 @@ impl Sidebar {
             recent_roots: Vec::new(),
             application_vim_enabled,
             vim_active: false,
-            list: gpui::ListState::new(0, gpui::ListAlignment::Top, px(200.)),
+            list,
             entries: Vec::new(),
             rows: Vec::new(),
             pinned_rows: Vec::new(),
@@ -656,6 +659,7 @@ impl Sidebar {
             scope_label: "All projects".into(),
             project_filter: None,
             popup: Popup::new(|this| &mut this.popup, cx),
+            task_menu_at: None,
             project_popup: Popup::new(|this| &mut this.project_popup, cx),
             menu_trust: None,
             filter: String::new(),
@@ -983,7 +987,10 @@ impl Sidebar {
         Some(rows[target].clone())
     }
 
-    pub(super) fn reveal_row(&self, row: usize) {
+    /// Scroll `row` into view. A menu hangs off its row, so moving the
+    /// list closes one that is open, as a wheel scroll does.
+    pub(super) fn reveal_row(&mut self, row: usize, cx: &mut Context<Self>) {
+        self.close_popups(cx);
         self.list.scroll_to_reveal_item(row);
     }
 
@@ -1122,7 +1129,7 @@ impl Sidebar {
 
     #[cfg(test)]
     pub(super) fn open_task_menu_for_test(&mut self, session_id: &str, cx: &mut Context<Self>) {
-        self.popup.open(SidebarPopup::Task(session_id.into()), cx);
+        self.open_task_menu(session_id.into(), None, cx);
     }
 
     #[cfg(test)]
@@ -1376,6 +1383,34 @@ impl Sidebar {
         if self.computers.len() > 1 && self.project_filter.is_none() {
             entries = self.computer_entries();
         }
+        for entry in &entries {
+            if let SidebarEntry::Task(task) = entry {
+                let rung = TaskRung::of(*task);
+                let mut actions = vec![TaskMenuAction::Rename];
+                if rung == TaskRung::Active {
+                    actions.push(TaskMenuAction::Pin);
+                }
+                if rung != TaskRung::Archived {
+                    actions.push(TaskMenuAction::Unread);
+                }
+                if self.backend.remote_host().is_none() {
+                    actions.extend([TaskMenuAction::Separator, TaskMenuAction::Folder]);
+                }
+                actions.extend([
+                    TaskMenuAction::Separator,
+                    TaskMenuAction::Move(if rung == TaskRung::Active {
+                        TaskMove::Settled
+                    } else {
+                        TaskMove::Active
+                    }),
+                ]);
+                if rung != TaskRung::Archived {
+                    actions.push(TaskMenuAction::Move(TaskMove::Archived));
+                }
+                actions.push(TaskMenuAction::Move(TaskMove::Deleted));
+                self.rows[task.session].menu_actions = actions;
+            }
+        }
         let old = std::mem::replace(&mut self.entries, entries);
         if self.application_vim_enabled {
             self.rebuild_vim_targets();
@@ -1435,6 +1470,7 @@ impl Sidebar {
         let fresh = self.rows.len() == self.sessions.len()
             && self.rows.iter().zip(&self.sessions).all(|(row, session)| {
                 *row.id == *session.id
+                    && *row.project_root == *session.project_root
                     && row.title.as_ref() == session.title
                     && self.root_name_matches(&session.project_root, &row.project_name)
             });
@@ -1477,6 +1513,11 @@ impl Sidebar {
         self.rebuild_sections();
         cx.notify();
         true
+    }
+
+    /// Whether any of the sidebar's menus is open.
+    fn menu_open(&self) -> bool {
+        self.popup.open_key().is_some() || self.project_popup.open_key().is_some()
     }
 
     /// Close whichever popup menu is open. Reports whether one was.
@@ -1854,104 +1895,91 @@ impl Sidebar {
         );
     }
 
-    /// Open or close the overflow menu of one task row.
+    /// Open or close a task row's menu from its "…" button.
     fn toggle_task_menu(&mut self, session_id: Arc<str>, cx: &mut Context<Self>) {
+        self.task_menu_at = None;
         self.popup.toggle(SidebarPopup::Task(session_id), cx);
     }
 
-    /// The overflow menu of a task row: rename, then where the task can
-    /// go. Active tasks pin, settle, archive, or delete; settled tasks
-    /// reopen, archive, or delete; archived tasks reopen or delete.
-    fn task_menu_items(&self, task: SidebarTaskEntry) -> Vec<SidebarMenuItem> {
-        let Some(row) = self.rows.get(task.session) else {
-            return Vec::new();
+    /// Open a task row's menu, at `at` where the row was right-clicked or
+    /// under its "…" button.
+    fn open_task_menu(
+        &mut self,
+        session_id: Arc<str>,
+        at: Option<gpui::Point<gpui::Pixels>>,
+        cx: &mut Context<Self>,
+    ) {
+        self.task_menu_at = at;
+        self.popup.open(SidebarPopup::Task(session_id), cx);
+    }
+
+    /// Build an item from the cached action order, keeping stateful labels live.
+    fn task_menu_item(
+        &self,
+        task: SidebarTaskEntry,
+        action: TaskMenuAction,
+    ) -> Option<SidebarMenuItem> {
+        let row = self.rows.get(task.session)?;
+        let mark_unread = !self.unread.contains(&*row.id);
+        let (id, icon, label, key) = match action {
+            TaskMenuAction::Rename => (&row.menu_rename_id, "pencil", "Rename", "R"),
+            TaskMenuAction::Pin => (
+                &row.menu_pin_id,
+                "pin",
+                if task.pinned { "Unpin" } else { "Pin" },
+                "P",
+            ),
+            TaskMenuAction::Unread => (
+                &row.menu_unread_id,
+                "eye",
+                if mark_unread {
+                    "Mark as unread"
+                } else {
+                    "Mark as read"
+                },
+                "U",
+            ),
+            TaskMenuAction::Folder => (&row.menu_folder_id, "folder-open", "Open folder", "O"),
+            TaskMenuAction::Move(to) => match to {
+                TaskMove::Settled => (&row.menu_settle_id, "check", "Settle", "S"),
+                TaskMove::Active if TaskRung::of(task) == TaskRung::Archived => {
+                    (&row.menu_reopen_id, "archive-restore", "Unarchive", "A")
+                }
+                TaskMove::Active => (&row.menu_reopen_id, "undo-2", "Reopen", "S"),
+                TaskMove::Archived => (&row.menu_archive_id, "archive", "Archive", "A"),
+                TaskMove::Deleted => (&row.menu_delete_id, "trash-2", "Delete", "D"),
+            },
+            TaskMenuAction::Separator => return None,
         };
-        let rung = TaskRung::of(task);
-        let rename_id = row.id.to_string();
-        let mut items = vec![SidebarMenuItem {
-            id: row.menu_rename_id.clone(),
-            icon: "pencil",
-            label: "Rename task",
-            on_click: Box::new(move |this, cx| {
-                this.begin_rename(RenameTarget::Task(rename_id.clone()), cx)
+        let session_id = row.id.clone();
+        let on_click: MenuAction = match action {
+            TaskMenuAction::Rename => Box::new(move |this, cx| {
+                this.begin_rename(RenameTarget::Task(session_id.to_string()), cx)
             }),
-        }];
-        if rung == TaskRung::Active {
-            let pinned_id = row.id.to_string();
-            let pinned = task.pinned;
-            items.push(SidebarMenuItem {
-                id: row.menu_pin_id.clone(),
-                icon: "pin",
-                label: if pinned { "Unpin task" } else { "Pin task" },
-                on_click: Box::new(move |this, cx| this.toggle_task_pin(&pinned_id, cx)),
-            });
-        }
-        let moves: &[(TaskMove, &SharedString, &'static str, &'static str)] = match rung {
-            TaskRung::Active => &[
-                (
-                    TaskMove::Settled,
-                    &row.menu_settle_id,
-                    "check",
-                    "Settle task",
-                ),
-                (
-                    TaskMove::Archived,
-                    &row.menu_archive_id,
-                    "archive",
-                    "Archive task",
-                ),
-                (
-                    TaskMove::Deleted,
-                    &row.menu_delete_id,
-                    "trash-2",
-                    "Delete task",
-                ),
-            ],
-            TaskRung::Settled => &[
-                (
-                    TaskMove::Active,
-                    &row.menu_reopen_id,
-                    "undo-2",
-                    "Reopen task",
-                ),
-                (
-                    TaskMove::Archived,
-                    &row.menu_archive_id,
-                    "archive",
-                    "Archive task",
-                ),
-                (
-                    TaskMove::Deleted,
-                    &row.menu_delete_id,
-                    "trash-2",
-                    "Delete task",
-                ),
-            ],
-            TaskRung::Archived => &[
-                (
-                    TaskMove::Active,
-                    &row.menu_reopen_id,
-                    "undo-2",
-                    "Reopen task",
-                ),
-                (
-                    TaskMove::Deleted,
-                    &row.menu_delete_id,
-                    "trash-2",
-                    "Delete task",
-                ),
-            ],
+            TaskMenuAction::Pin => Box::new(move |this, cx| this.toggle_task_pin(&session_id, cx)),
+            TaskMenuAction::Unread => Box::new(move |_, cx| {
+                cx.emit(SidebarEvent::SetUnread {
+                    session_id: session_id.to_string(),
+                    unread: mark_unread,
+                });
+            }),
+            TaskMenuAction::Folder => {
+                let root = row.project_root.clone();
+                Box::new(move |this, cx| this.open_folder(&root, cx))
+            }
+            TaskMenuAction::Move(to) => {
+                Box::new(move |this, cx| this.move_task(&session_id, to, cx))
+            }
+            TaskMenuAction::Separator => return None,
         };
-        for &(to, id, icon, label) in moves {
-            let session_id = row.id.to_string();
-            items.push(SidebarMenuItem {
-                id: id.clone(),
-                icon,
-                label,
-                on_click: Box::new(move |this, cx| this.move_task(&session_id, to, cx)),
-            });
-        }
-        items
+        Some(SidebarMenuItem {
+            id: id.clone(),
+            icon,
+            label,
+            shortcut: Some(key),
+            destructive: matches!(action, TaskMenuAction::Move(TaskMove::Deleted)),
+            on_click,
+        })
     }
 
     /// Send a task to a rung. The runtime owns the state, so every move
@@ -1992,18 +2020,14 @@ impl Sidebar {
     pub(super) fn task_menu_labels_for_test(&self, session_id: &str) -> Vec<&'static str> {
         self.task_menu_entry(session_id)
             .map(|task| {
-                self.task_menu_items(task)
-                    .into_iter()
+                self.rows[task.session]
+                    .menu_actions
+                    .iter()
+                    .filter_map(|&action| self.task_menu_item(task, action))
                     .map(|item| item.label)
                     .collect()
             })
             .unwrap_or_default()
-    }
-
-    #[cfg(test)]
-    pub(super) fn row_step_label_for_test(&self, session_id: &str) -> Option<&'static str> {
-        self.task_menu_entry(session_id)
-            .map(|task| TaskRung::of(task).step().row_label)
     }
 
     /// The overflow menu of one switcher project row.
@@ -2014,6 +2038,8 @@ impl Sidebar {
             id: target.element_id("rename-project"),
             icon: "pencil",
             label: "Rename project",
+            shortcut: None,
+            destructive: false,
             on_click: Box::new(move |this, cx| {
                 this.begin_rename(RenameTarget::Project(rename_target.clone()), cx)
             }),
@@ -2029,6 +2055,8 @@ impl Sidebar {
             id: target.element_id("open-project"),
             icon: "folder-open",
             label: "Open folder",
+            shortcut: None,
+            destructive: false,
             on_click: Box::new(move |this, cx| this.open_folder(&open_root, cx)),
         });
         if let Some(status) = self
@@ -2046,6 +2074,8 @@ impl Sidebar {
                 } else {
                     "Trust project"
                 },
+                shortcut: None,
+                destructive: false,
                 on_click: Box::new(move |_, cx| {
                     cx.emit(SidebarEvent::SetTrust {
                         path: path.clone(),
@@ -2058,6 +2088,8 @@ impl Sidebar {
             id: SharedString::from(format!("remove-project-{root}")),
             icon: "trash-2",
             label: "Remove project",
+            shortcut: None,
+            destructive: false,
             on_click: Box::new(move |_, cx| {
                 cx.emit(SidebarEvent::RemoveRoot(remove_root.clone()));
             }),
@@ -2658,29 +2690,34 @@ impl Sidebar {
             .children(menu)
     }
 
-    /// A task row's overflow button, with the task's menu under it while
-    /// open: rename, then where the task can go.
+    /// A task row's "…" button, with the task's menu while open: under
+    /// the button, or where a right-click on the row opened it.
     fn task_menu_trigger(
         &self,
         row: &SidebarRow,
         task: SidebarTaskEntry,
+        open: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Div {
-        let key = SidebarPopup::Task(row.id.clone());
-        let open = self.popup.is_open(&key);
         let menu = open.then(|| {
-            let menu = Menu::new(row.menu_panel_id.clone(), px(180.))
+            let mut menu = Menu::new(row.menu_panel_id.clone(), px(200.))
                 .label("Task options")
-                .application_vim(self.application_vim_enabled)
-                .items(self.task_menu_items(task).into_iter().map(menu_item));
-            self.popup.render(menu, Placement::BelowEnd, window, cx)
+                .application_vim(self.application_vim_enabled);
+            for &action in &row.menu_actions {
+                menu = match self.task_menu_item(task, action) {
+                    Some(item) => menu.item(menu_item(item)),
+                    None => menu.separator(),
+                };
+            }
+            let placement = self.task_menu_at.map_or(Placement::BelowEnd, Placement::At);
+            self.popup.render(menu, placement, window, cx)
         });
         let session = row.id.clone();
         div()
             .relative()
             .child(self.popup.trigger(
-                key,
+                SidebarPopup::Task(row.id.clone()),
                 row_menu_button(row.menu_id.clone(), &row.group, "More", open),
                 cx,
                 move |this, _, cx| this.toggle_task_menu(session.clone(), cx),
@@ -2732,9 +2769,7 @@ impl Sidebar {
         )
     }
 
-    /// One task row: title, its project, and hover actions. The last
-    /// hover button moves the task one rung forward; the overflow menu
-    /// reaches every later rung and the way back to active.
+    /// A task row with its menu and inline rename field.
     fn render_task_row(
         &self,
         task: SidebarTaskEntry,
@@ -2755,16 +2790,18 @@ impl Sidebar {
             .then(|| self.session_activity(&row.id))
             .flatten();
         let session_id = Arc::clone(&row.id);
-        let step_id = Arc::clone(&row.id);
-        let rename_id = Arc::clone(&row.id);
-        let rung = TaskRung::of(task);
-        let step = rung.step();
+        let menu_id = Arc::clone(&row.id);
         let pin_id = row.pin_id.clone();
         let rename_field = self.task_rename_field(&row.id, cx);
         let renaming = rename_field.is_some();
+        let menu_open =
+            matches!(self.popup.open_key(), Some(SidebarPopup::Task(open)) if *open == row.id);
+        // The menu owns hover until it closes.
+        let hover = !renaming && !self.menu_open();
         div()
             .relative()
             .w_full()
+            .debug_selector(|| row.element_id.to_string())
             .id(row.element_id.clone())
             .role(gpui::Role::ListBoxOption)
             .accessibility_id(row.id.to_string())
@@ -2786,10 +2823,13 @@ impl Sidebar {
                 row.bg(gpui::rgb(theme::bg_sidebar_row_selected()))
                     .font_weight(gpui::FontWeight::MEDIUM)
             })
+            .when(menu_open, |row| {
+                row.bg(gpui::rgb(theme::bg_sidebar_row_hover()))
+            })
             .text_color(gpui::rgb(theme::text_primary()))
             // A row being renamed is a text field: no hover highlight and
             // no hover actions over it, so the edit is plain to see.
-            .when(!renaming, |el| {
+            .when(hover, |el| {
                 el.hover(|style| {
                     style
                         .bg(gpui::rgb(theme::bg_sidebar_row_hover()))
@@ -2799,6 +2839,15 @@ impl Sidebar {
             .on_click(cx.listener(move |_this, _event, _window, cx| {
                 cx.emit(SidebarEvent::Select(session_id.to_string()));
             }))
+            // A field's right-click is its own (Paste, Cut).
+            .when(!renaming, |el| {
+                el.on_mouse_down(
+                    gpui::MouseButton::Right,
+                    cx.listener(move |this, event: &gpui::MouseDownEvent, _window, cx| {
+                        this.open_task_menu(menu_id.clone(), Some(event.position), cx);
+                    }),
+                )
+            })
             // The rename field takes the title's line; the project line
             // stays under it.
             .child(
@@ -2852,7 +2901,7 @@ impl Sidebar {
                         .child(icon("pin", px(13.), theme::accent())),
                 )
             })
-            .when(!renaming, |el| {
+            .when(hover || menu_open, |el| {
                 el.child(
                     div()
                         .absolute()
@@ -2870,27 +2919,10 @@ impl Sidebar {
                         .group_hover(row.group.clone(), |style| {
                             style.bg(gpui::rgb(theme::bg_sidebar_row_hover()))
                         })
-                        .child(self.task_menu_trigger(row, task, window, cx))
-                        .child(row_action(
-                            row.rename_id.clone(),
-                            &row.group,
-                            "pencil",
-                            "Rename",
-                            cx.listener(move |this, _event, _window, cx| {
-                                cx.stop_propagation();
-                                this.begin_rename(RenameTarget::Task(rename_id.to_string()), cx);
-                            }),
-                        ))
-                        .child(row_action(
-                            row.step_id.clone(),
-                            &row.group,
-                            step.icon,
-                            step.row_label,
-                            cx.listener(move |this, _event, _window, cx| {
-                                cx.stop_propagation();
-                                this.move_task(&step_id, rung.next(), cx);
-                            }),
-                        )),
+                        .when(menu_open, |overlay| {
+                            overlay.bg(gpui::rgb(theme::bg_sidebar_row_hover()))
+                        })
+                        .child(self.task_menu_trigger(row, task, menu_open, window, cx)),
                 )
             })
     }
@@ -3108,20 +3140,7 @@ fn activity_indicator(spinner_id: &SharedString, activity: SessionActivity) -> A
     }
 }
 
-/// Small icon button that shows only while the pointer is over its row.
-pub(super) fn row_action(
-    id: SharedString,
-    group: &SharedString,
-    icon_name: &'static str,
-    label: &'static str,
-    on_click: impl Fn(&gpui::ClickEvent, &mut Window, &mut gpui::App) + 'static,
-) -> gpui::Stateful<Div> {
-    row_button(id, group, icon_name, label)
-        .tooltip(widgets::tooltip(label, None))
-        .on_click(on_click)
-}
-
-/// A row's overflow button: [`row_action`]'s look, but it stays visible
+/// A row's overflow button: [`row_button`]'s look, but it stays visible
 /// and pressed while its menu is open, and shows no tooltip over the menu.
 fn row_menu_button(
     id: SharedString,
@@ -3175,14 +3194,25 @@ fn menu_item(item: SidebarMenuItem) -> MenuItem<Sidebar> {
         id,
         icon,
         label,
+        shortcut,
+        destructive,
         on_click,
     } = item;
-    MenuItem::new(
+    let item = MenuItem::new(
         id,
         label,
         move |this: &mut Sidebar, _: &mut Window, cx: &mut Context<Sidebar>| on_click(this, cx),
     )
-    .icon(icon)
+    .icon(icon);
+    let item = match shortcut {
+        Some(key) => item.shortcut(key),
+        None => item,
+    };
+    if destructive {
+        item.destructive()
+    } else {
+        item
+    }
 }
 
 /// Field-wise equality for session rows; the summary type has no

@@ -16,9 +16,10 @@
 //!   right-click menu) counts as inside.
 //! - The open popup holds keyboard focus. Up and Down (`j`/`k` under
 //!   Application Vim) move the highlight, Home and End (`g g`/`G`) jump,
-//!   Enter or Space picks, Escape closes, and a typed letter jumps to the
-//!   next row that starts with it. The pointer moves the same highlight. A
-//!   text field inside the menu keeps its own keys.
+//!   Enter or Space picks, Escape closes, and a typed letter picks the row
+//!   with that shortcut, or else jumps to the next row that starts with
+//!   it. The pointer moves the same highlight. A text field inside the
+//!   menu keeps its own keys.
 //! - One popup per window. Whatever takes focus next (another popup, a
 //!   dialog, a text field) closes the open one. When a popup that holds
 //!   focus closes, focus returns to where it was before it opened, also
@@ -462,6 +463,7 @@ impl<V: 'static, K: Clone + PartialEq + 'static> Popup<V, K> {
                         enabled: item.enabled,
                         keep_open: item.keep_open,
                         initial: initial(&item.label),
+                        shortcut: item.shortcut.and_then(initial),
                         child: children.len(),
                     });
                     children.push(item_row(item, highlighted, get, cx));
@@ -890,6 +892,10 @@ pub(crate) struct MenuItem<V: 'static> {
     state: Option<ItemState>,
     enabled: bool,
     keep_open: bool,
+    /// The key that picks the row while the menu is open, as shown.
+    shortcut: Option<&'static str>,
+    /// Show enabled labels and icons in the error color.
+    destructive: bool,
     trailing: Option<AnyElement>,
     style: Option<RowStyle>,
     on_select: OnSelect<V>,
@@ -917,6 +923,8 @@ impl<V: 'static> MenuItem<V> {
             state: None,
             enabled: true,
             keep_open: false,
+            shortcut: None,
+            destructive: false,
             trailing: None,
             style: None,
             on_select: Rc::new(on_select),
@@ -965,6 +973,18 @@ impl<V: 'static> MenuItem<V> {
         self
     }
 
+    /// Show a letter shortcut that takes precedence over type-ahead.
+    pub(crate) fn shortcut(mut self, key: &'static str) -> Self {
+        self.shortcut = Some(key);
+        self
+    }
+
+    /// Show the row as destructive, in the error color.
+    pub(crate) fn destructive(mut self) -> Self {
+        self.destructive = true;
+        self
+    }
+
     /// A control of the row's own at its end, such as a "…" button. A
     /// press on it is the control's alone.
     pub(crate) fn trailing(mut self, element: impl IntoElement) -> Self {
@@ -988,6 +1008,7 @@ struct Pick<V: 'static> {
     enabled: bool,
     keep_open: bool,
     initial: Option<char>,
+    shortcut: Option<char>,
     child: usize,
 }
 
@@ -1012,6 +1033,8 @@ fn item_row<V: 'static, K: Clone + PartialEq + 'static>(
         state,
         enabled,
         keep_open,
+        shortcut,
+        destructive,
         trailing,
         style,
         on_select,
@@ -1021,10 +1044,10 @@ fn item_row<V: 'static, K: Clone + PartialEq + 'static>(
         Some(ItemState::Current(_)) => Role::MenuItemRadio,
         Some(ItemState::Switch(_)) => Role::MenuItemCheckBox,
     };
-    let text = if enabled {
-        theme::text_primary()
-    } else {
-        theme::text_muted()
+    let (text, icon_color) = match (enabled, destructive) {
+        (true, true) => (theme::status_error(), theme::status_error()),
+        (true, false) => (theme::text_primary(), theme::text_secondary()),
+        (false, _) => (theme::text_muted(), theme::text_secondary()),
     };
     let hovered_id = id.clone();
     let row_element = div()
@@ -1072,7 +1095,7 @@ fn item_row<V: 'static, K: Clone + PartialEq + 'static>(
                     on_select(view, window, cx);
                 }))
         })
-        .children(icon_name.map(|name| icon(name, widgets::ROW_ICON, theme::text_secondary())))
+        .children(icon_name.map(|name| icon(name, widgets::ROW_ICON, icon_color)))
         .map(|row| match content {
             Some(content) => row.child(div().flex_1().min_w_0().child(content)),
             None => row.child(
@@ -1102,6 +1125,12 @@ fn item_row<V: 'static, K: Clone + PartialEq + 'static>(
                     })),
             ),
         })
+        .children(shortcut.map(|key| {
+            div()
+                .flex_none()
+                .text_color(gpui::rgb(theme::text_muted()))
+                .child(key)
+        }))
         .children(trailing.map(|trailing| {
             // The row's own control, such as a "…" button. A press on it is
             // the control's alone: the row neither shows as pressed nor
@@ -1190,10 +1219,11 @@ fn pick<V: 'static, K: Clone + PartialEq + 'static>(
     (item.on_select)(view, window, cx);
 }
 
-/// A letter typed into the menu highlights the next item that starts with
-/// it. Other typing stops here too: it must not reach a text field under
-/// the menu. Only while the menu itself has focus, so a field inside the
-/// menu still takes its typing.
+/// A letter typed into the menu picks the item with that shortcut, or
+/// else highlights the next item that starts with it. Other typing stops
+/// here too: it must not reach a text field under the menu. Only while
+/// the menu itself has focus, so a field inside the menu still takes its
+/// typing.
 fn type_ahead<V: 'static, K: Clone + PartialEq + 'static>(
     view: &mut V,
     get: fn(&mut V) -> &mut Popup<V, K>,
@@ -1215,6 +1245,13 @@ fn type_ahead<V: 'static, K: Clone + PartialEq + 'static>(
     };
     cx.stop_propagation();
     let typed = initial(typed);
+    if let Some(row) = picks
+        .iter()
+        .position(|item| item.shortcut.is_some() && item.shortcut == typed)
+    {
+        pick(view, get, picks, row, window, cx);
+        return;
+    }
     let popup = get(view);
     let rows = picks.len();
     let start = popup.highlighted_row(picks).map_or(0, |row| row + 1);

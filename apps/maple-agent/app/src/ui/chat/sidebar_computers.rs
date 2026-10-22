@@ -1271,9 +1271,11 @@ impl Sidebar {
                         row.aria_active_descendant()
                             .bg(gpui::rgb(theme::bg_sidebar_row_hover()))
                     })
-                    .hover(|s| {
-                        s.bg(gpui::rgb(theme::bg_sidebar_row_hover()))
-                            .cursor_pointer()
+                    .when(!self.menu_open(), |row| {
+                        row.hover(|s| {
+                            s.bg(gpui::rgb(theme::bg_sidebar_row_hover()))
+                                .cursor_pointer()
+                        })
                     })
                     .on_click(cx.listener(move |_, _, _, cx| {
                         cx.emit(SidebarEvent::Navigate(request.clone()))

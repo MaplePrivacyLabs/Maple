@@ -887,6 +887,9 @@ impl ChatScreen {
                 self.sessions = self.sidebar.read(cx).navigation_sessions();
                 self.request_delete_task(&id, cx);
             }
+            SidebarEvent::SetUnread { session_id, unread } => {
+                self.set_unread(&session_id, unread, cx)
+            }
             SidebarEvent::RemoveRoot(root) => self.request_remove_root(&root, cx),
             SidebarEvent::SetTrust { path, trusted } => self.set_project_trust(path, trusted, cx),
             SidebarEvent::ChooseProject => self.choose_root_dialog(cx),
@@ -914,6 +917,18 @@ impl ChatScreen {
         });
         self.refresh_selected_title();
         cx.emit(NavigationChanged);
+    }
+
+    /// The task menu reads or sets the marker a completed run leaves.
+    fn set_unread(&mut self, session_id: &str, unread: bool, cx: &mut Context<Self>) {
+        let changed = if unread {
+            self.completed_unread_sessions.insert(session_id.to_string())
+        } else {
+            self.completed_unread_sessions.remove(session_id)
+        };
+        if changed {
+            self.sync_sidebar(cx);
+        }
     }
 
     fn sync_sidebar_selection(&mut self, cx: &mut Context<Self>) {
@@ -4017,7 +4032,8 @@ impl ChatScreen {
         let Some((row, request)) = self.task_step_target(delta, cx) else {
             return;
         };
-        self.sidebar.read(cx).reveal_row(row);
+        self.sidebar
+            .update(cx, |sidebar, cx| sidebar.reveal_row(row, cx));
         if request.computer.as_deref() == self.backend.remote_host() {
             if let Destination::Task(id) = request.destination {
                 self.select_session(&id, cx);
@@ -6220,7 +6236,8 @@ impl ChatScreen {
                     self.active_runs.remove(session_id);
                     // The marker follows the latest terminal: only a
                     // successful completion off screen sets it. Opening the
-                    // task (`set_active_session`) is the only other writer.
+                    // task (`set_active_session`) and the task menu (`set_unread`)
+                    // are the only other writers.
                     self.completed_unread_sessions.remove(session_id);
                     if matches!(terminal, maple_agent::agent::AgentRunTerminal::Completed)
                         && !(self.visible && self.is_selected(session_id))

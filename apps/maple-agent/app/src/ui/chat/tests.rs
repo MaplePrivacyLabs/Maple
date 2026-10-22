@@ -5315,10 +5315,7 @@ mod state_tests {
         });
     }
 
-    /// The hover button steps a task one rung forward along active,
-    /// settled, archived, deleted. The overflow menu reaches every later
-    /// rung and comes back only to active: no settle or unsettle on an
-    /// archived task, no pin on a settled one.
+    /// Each rung offers only its available actions.
     #[gpui::test]
     fn test_task_ladder_actions_follow_the_rung(cx: &mut TestAppContext) {
         cx.executor().allow_parking();
@@ -5336,28 +5333,32 @@ mod state_tests {
                 .update(cx, |sidebar, cx| sidebar.set_archived_expanded(true, cx));
             let sidebar = this.sidebar.read(cx);
 
-            assert_eq!(sidebar.row_step_label_for_test("s1"), Some("Settle"));
             assert_eq!(
                 sidebar.task_menu_labels_for_test("s1"),
-                vec![
-                    "Rename task",
-                    "Pin task",
-                    "Settle task",
-                    "Archive task",
-                    "Delete task"
+                [
+                    "Rename",
+                    "Pin",
+                    "Mark as unread",
+                    "Open folder",
+                    "Settle",
+                    "Archive",
+                    "Delete",
                 ]
             );
-
-            assert_eq!(sidebar.row_step_label_for_test("s2"), Some("Archive"));
             assert_eq!(
                 sidebar.task_menu_labels_for_test("s2"),
-                vec!["Rename task", "Reopen task", "Archive task", "Delete task"]
+                [
+                    "Rename",
+                    "Mark as unread",
+                    "Open folder",
+                    "Reopen",
+                    "Archive",
+                    "Delete",
+                ]
             );
-
-            assert_eq!(sidebar.row_step_label_for_test("s3"), Some("Delete"));
             assert_eq!(
                 sidebar.task_menu_labels_for_test("s3"),
-                vec!["Rename task", "Reopen task", "Delete task"]
+                ["Rename", "Open folder", "Unarchive", "Delete"]
             );
         });
     }
@@ -5543,10 +5544,6 @@ mod state_tests {
             this.sidebar
                 .update(cx, |sidebar, cx| sidebar.toggle_task_pin("s1", cx));
             assert_eq!(this.sidebar_pinned(cx), vec![0]);
-            assert_eq!(
-                this.sidebar.read(cx).row_step_label_for_test("s1"),
-                Some("Settle")
-            );
 
             // The pin drops at once; the row moves when the runtime's
             // record lands.
@@ -5558,10 +5555,6 @@ mod state_tests {
             this.settle_task("s1", cx);
             assert_eq!(this.sidebar_settled(cx), vec![0]);
             assert_eq!(this.sidebar_active(cx), vec![1]);
-            assert_eq!(
-                this.sidebar.read(cx).row_step_label_for_test("s1"),
-                Some("Archive")
-            );
 
             this.unsettle_task("s1", cx);
             assert!(this.sidebar_pinned(cx).is_empty());
@@ -5712,14 +5705,190 @@ mod state_tests {
             cx.simulate_keystrokes(keys);
             assert!(sidebar.update(cx, |sidebar, _| sidebar.task_menu().is_none()));
         };
-        // Rows: Rename, Pin, Settle, Archive, Delete.
-        pick(cx, "down down down enter");
-        // Rows: Rename, Reopen, Archive, Delete.
+        pick(cx, "down down down down down enter");
         chat.update(cx, |this, cx| this.settle_task("s1", cx));
-        pick(cx, "down down enter");
+        pick(cx, "down down down down enter");
         chat.update(cx, |this, cx| this.unsettle_task("s1", cx));
         pick(cx, "down down enter");
         assert_eq!(chat.update(cx, |this, cx| this.sidebar_pinned(cx)), vec![0]);
+    }
+
+    /// Right-click opens at the pointer, survives release, and switches tasks.
+    #[gpui::test]
+    fn test_right_clicking_a_task_row_opens_its_menu(cx: &mut TestAppContext) {
+        let (chat, cx) = chat_window(cx, |this, cx| {
+            this.sessions = vec![summary("s1", "One"), summary("s2", "Two")];
+            this.sync_sidebar(cx);
+        });
+        for (row, menu, open) in [
+            ("session-s2", "task-menu-s2", "Task(s2)"),
+            ("session-s1", "task-menu-s1", "Task(s1)"),
+        ] {
+            let bounds = on_screen(cx, row);
+            let at = gpui::point(bounds.left() + px(20.), bounds.center().y);
+            cx.simulate_mouse_down(at, gpui::MouseButton::Right, gpui::Modifiers::default());
+            cx.executor()
+                .advance_clock(std::time::Duration::from_millis(16));
+            cx.run_until_parked();
+            let panel = on_screen(cx, menu);
+            assert!(
+                (panel.origin.x - at.x).abs() <= px(1.) && (panel.origin.y - at.y).abs() <= px(1.)
+            );
+            let released = at + gpui::point(px(1.), px(-1.));
+            cx.simulate_mouse_move(
+                released,
+                Some(gpui::MouseButton::Right),
+                gpui::Modifiers::default(),
+            );
+            cx.simulate_mouse_up(
+                released,
+                gpui::MouseButton::Right,
+                gpui::Modifiers::default(),
+            );
+            cx.executor()
+                .advance_clock(std::time::Duration::from_millis(160));
+            cx.run_until_parked();
+            assert_eq!(open_menu(&chat, cx), open);
+        }
+        cx.simulate_keystrokes("escape");
+        assert_eq!(open_menu(&chat, cx), "");
+        press(cx, "menu-session-s1");
+        assert_eq!(open_menu(&chat, cx), "Task(s1)");
+        cx.simulate_click(gpui::point(px(1100.), px(700.)), gpui::Modifiers::default());
+        cx.run_until_parked();
+        assert_eq!(open_menu(&chat, cx), "");
+        right_click(cx, "session-s1");
+        assert_eq!(open_menu(&chat, cx), "Task(s1)");
+    }
+
+    /// Menu letters dispatch the corresponding task actions.
+    #[gpui::test]
+    fn test_task_menu_letters_pick_their_items(cx: &mut TestAppContext) {
+        let events = std::rc::Rc::new(std::cell::RefCell::new(Vec::<String>::new()));
+        let sink = events.clone();
+        let (chat, cx) = chat_window(cx, move |this, cx| {
+            cx.subscribe(&this.sidebar, move |_, _, event: &SidebarEvent, _| {
+                let event = match event {
+                    SidebarEvent::SetState { session_id, state } => {
+                        format!("{session_id} {state:?}")
+                    }
+                    SidebarEvent::DeleteTask(session_id) => format!("{session_id} deleted"),
+                    SidebarEvent::SetUnread { session_id, unread } => {
+                        format!("{session_id} unread {unread}")
+                    }
+                    _ => return,
+                };
+                sink.borrow_mut().push(event);
+            })
+            .detach();
+            this.sessions = vec![summary("s1", "One"), summary("s2", "Archived")];
+            this.sessions[1].state = AgentTaskState::Archived;
+            this.sync_sidebar(cx);
+            this.sidebar
+                .update(cx, |sidebar, cx| sidebar.set_archived_expanded(true, cx));
+        });
+        let sidebar = chat.update(cx, |this, _| this.sidebar.clone());
+        let pick = |cx: &mut gpui::VisualTestContext, id: &str, key: &str| {
+            sidebar.update(cx, |sidebar, cx| sidebar.open_task_menu_for_test(id, cx));
+            cx.run_until_parked();
+            cx.simulate_keystrokes(key);
+            assert!(
+                sidebar.update(cx, |sidebar, _| sidebar.task_menu().is_none()),
+                "{key} closes the menu"
+            );
+            cx.run_until_parked();
+            std::mem::take(&mut *events.borrow_mut())
+        };
+
+        // R hands the keyboard to the rename field: menu letters typed
+        // into it are text, not actions.
+        assert!(pick(cx, "s1", "r").is_empty());
+        assert!(matches!(
+            sidebar.update(cx, |sidebar, _| sidebar.rename_target()),
+            Some(RenameTarget::Task(ref target)) if target == "s1"
+        ));
+        cx.simulate_input("Pause and drop");
+        cx.run_until_parked();
+        let field = sidebar.update(cx, |sidebar, _| sidebar.inputs().last().cloned());
+        assert_eq!(
+            field.map(|field| field.read_with(cx, |field, _| field.text())),
+            Some("Pause and drop".to_string())
+        );
+        assert!(events.borrow().is_empty(), "{:?}", events.borrow());
+        assert!(
+            chat.update(cx, |this, cx| this.sidebar_pinned(cx))
+                .is_empty()
+        );
+        chat.update(cx, |this, cx| this.cancel_rename(cx));
+
+        assert!(pick(cx, "s1", "p").is_empty());
+        assert_eq!(chat.update(cx, |this, cx| this.sidebar_pinned(cx)), vec![0]);
+        assert!(pick(cx, "s1", "p").is_empty());
+        assert!(
+            chat.update(cx, |this, cx| this.sidebar_pinned(cx))
+                .is_empty()
+        );
+        for (unread, label, event) in [
+            (true, "Mark as read", "s1 unread true"),
+            (false, "Mark as unread", "s1 unread false"),
+        ] {
+            assert_eq!(pick(cx, "s1", "u"), [event]);
+            assert_eq!(
+                chat.update(cx, |this, _| this.completed_unread_sessions.contains("s1")),
+                unread
+            );
+            assert!(sidebar.update(cx, |sidebar, _| {
+                sidebar.task_menu_labels_for_test("s1").contains(&label)
+            }));
+        }
+        assert_eq!(pick(cx, "s1", "s"), ["s1 Settled"]);
+        chat.update(cx, |this, cx| this.settle_task("s1", cx));
+        assert_eq!(pick(cx, "s1", "s"), ["s1 Active"]);
+        assert_eq!(pick(cx, "s1", "a"), ["s1 Archived"]);
+        assert_eq!(pick(cx, "s1", "d"), ["s1 deleted"]);
+        chat.update(cx, |this, _| {
+            assert_eq!(
+                this.confirm,
+                Some(dialogs::ConfirmDialog::DeleteTask("s1".into()))
+            );
+            assert_eq!(this.sessions.len(), 2);
+            this.confirm = None;
+        });
+        assert_eq!(pick(cx, "s2", "a"), ["s2 Active"]);
+
+        // A press picks the same items.
+        sidebar.update(cx, |sidebar, cx| sidebar.open_task_menu_for_test("s2", cx));
+        press(cx, "delete-task-s2");
+        cx.run_until_parked();
+        assert_eq!(*events.borrow(), ["s2 deleted"]);
+    }
+
+    /// Reordering keeps the same task's menu; removing the task closes it.
+    #[gpui::test]
+    fn test_task_menu_follows_its_task(cx: &mut TestAppContext) {
+        let (chat, cx) = chat_window(cx, |this, cx| {
+            this.sessions = vec![summary("s1", "One"), summary("s2", "Two")];
+            this.sync_sidebar(cx);
+        });
+        press(cx, "menu-session-s2");
+        let row_before = on_screen(cx, "session-s2");
+        let panel_before = on_screen(cx, "task-menu-s2");
+        chat.update(cx, |this, cx| {
+            this.sessions[1].updated_ms = 10;
+            this.sync_sidebar(cx);
+            assert_eq!(this.sidebar_active(cx), vec![1, 0]);
+        });
+        let row_after = on_screen(cx, "session-s2");
+        let panel_after = on_screen(cx, "task-menu-s2");
+        let row_movement = row_after.top() - row_before.top();
+        let panel_movement = panel_after.top() - panel_before.top();
+        assert!(row_movement < px(0.));
+        assert!((panel_movement - row_movement).abs() <= px(1.));
+        assert_eq!(open_menu(&chat, cx), "Task(s2)");
+        chat.update(cx, |this, cx| this.remove_session("s2", cx));
+        cx.update(|window, _| window.refresh());
+        cx.run_until_parked();
+        assert_eq!(open_menu(&chat, cx), "");
     }
 
     /// Opened from the keyboard, the switcher starts on the current scope;
@@ -5776,14 +5945,34 @@ mod state_tests {
     /// those bounds back; one extra frame covers a park that finished
     /// before that paint.
     fn press(cx: &mut gpui::VisualTestContext, selector: &'static str) {
-        let bounds = (0..2)
+        let at = on_screen(cx, selector).center();
+        cx.simulate_click(at, gpui::Modifiers::default());
+    }
+
+    /// Right-click the middle of the element with `selector`.
+    fn right_click(cx: &mut gpui::VisualTestContext, selector: &'static str) {
+        let at = on_screen(cx, selector).center();
+        right_click_at(cx, at);
+    }
+
+    fn right_click_at(cx: &mut gpui::VisualTestContext, at: gpui::Point<gpui::Pixels>) {
+        cx.simulate_mouse_down(at, gpui::MouseButton::Right, gpui::Modifiers::default());
+        cx.simulate_mouse_up(at, gpui::MouseButton::Right, gpui::Modifiers::default());
+    }
+
+    /// The bounds of the element with `selector`, once a refreshed frame
+    /// has drawn it (see [`press`]).
+    fn on_screen(
+        cx: &mut gpui::VisualTestContext,
+        selector: &'static str,
+    ) -> gpui::Bounds<gpui::Pixels> {
+        (0..2)
             .find_map(|_| {
                 cx.update(|window, _| window.refresh());
                 cx.run_until_parked();
                 cx.debug_bounds(selector)
             })
-            .unwrap_or_else(|| panic!("{selector} is not on screen"));
-        cx.simulate_click(bounds.center(), gpui::Modifiers::default());
+            .unwrap_or_else(|| panic!("{selector} is not on screen"))
     }
 
     #[gpui::test]
@@ -5928,8 +6117,7 @@ mod state_tests {
     }
 
     /// A task menu reaches over the rows below it. A press on one of its
-    /// items lands on the item, not on the overflow button of the row
-    /// underneath.
+    /// items lands on the item, not on the row underneath.
     #[gpui::test]
     fn test_a_press_on_a_menu_item_reaches_the_item(cx: &mut TestAppContext) {
         let (chat, cx) = chat_window(cx, |this, cx| {
@@ -5941,14 +6129,19 @@ mod state_tests {
             this.sync_sidebar(cx);
         });
         press(cx, "menu-session-s1");
-        let beneath = cx.debug_bounds("menu-session-s2").expect("s2's button");
+        let beneath = cx.debug_bounds("session-s2").expect("s2's row");
         let rename = cx.debug_bounds("rename-task-s1").expect("s1's Rename item");
         assert!(
-            rename.contains(&beneath.center()),
-            "the fixture puts s2's button under s1's Rename item"
+            beneath.contains(&rename.center()),
+            "the fixture puts s1's Rename item over s2's row"
         );
-        cx.simulate_click(beneath.center(), gpui::Modifiers::default());
-        assert_eq!(open_menu(&chat, cx), "", "s2's menu did not open");
+        cx.simulate_click(rename.center(), gpui::Modifiers::default());
+        assert_eq!(open_menu(&chat, cx), "");
+        assert_ne!(
+            chat.update(cx, |this, _| this.selected_session.clone()),
+            Some("s2".to_string()),
+            "the press did not select s2"
+        );
         let sidebar = chat.update(cx, |this, _| this.sidebar.clone());
         assert!(
             matches!(
@@ -6483,8 +6676,8 @@ mod state_tests {
         rename(cx, "Pressed");
         cx.update(|window, _| window.refresh());
         cx.run_until_parked();
-        let other_row = cx.debug_bounds("menu-session-s2").expect("s2's row");
-        let on_row = other_row.center() - gpui::point(gpui::px(80.), gpui::px(0.));
+        let other_row = cx.debug_bounds("session-s2").expect("s2's row");
+        let on_row = other_row.center();
         cx.simulate_mouse_down(on_row, gpui::MouseButton::Left, gpui::Modifiers::default());
         cx.simulate_mouse_up(on_row, gpui::MouseButton::Left, gpui::Modifiers::default());
         cx.run_until_parked();
@@ -6566,13 +6759,13 @@ mod state_tests {
             this.sync_sidebar(cx);
         });
         let sidebar = chat.update(cx, |this, _| this.sidebar.clone());
-        let rename_button = |cx: &mut gpui::VisualTestContext| {
+        let menu_button = |cx: &mut gpui::VisualTestContext| {
             cx.update(|window, _| window.refresh());
             cx.run_until_parked();
-            cx.debug_bounds("rename-session-s1")
+            cx.debug_bounds("menu-session-s1")
         };
         assert!(
-            rename_button(cx).is_some(),
+            menu_button(cx).is_some(),
             "a listed row has its hover actions"
         );
 
@@ -6580,7 +6773,7 @@ mod state_tests {
             sidebar.begin_rename(RenameTarget::Task("s1".into()), cx)
         });
         cx.run_until_parked();
-        assert!(rename_button(cx).is_none(), "a row being renamed has none");
+        assert!(menu_button(cx).is_none(), "a row being renamed has none");
         cx.simulate_input("Fresh");
         let field = sidebar.update(cx, |sidebar, _| sidebar.inputs().last().cloned());
         assert_eq!(
@@ -6590,7 +6783,7 @@ mod state_tests {
         );
 
         chat.update(cx, |this, cx| this.cancel_rename(cx));
-        assert!(rename_button(cx).is_some(), "the actions come back after");
+        assert!(menu_button(cx).is_some(), "the actions come back after");
     }
 
     /// A project's rename field sits in the switcher. Escape ends the

@@ -29,6 +29,7 @@ assets!(
     "icons/cua-mark-black.svg",
     "icons/cua-mark-white.svg",
     "icons/ellipsis.svg",
+    "icons/eye.svg",
     "icons/folder-open.svg",
     "icons/folder-plus.svg",
     "icons/folder.svg",
