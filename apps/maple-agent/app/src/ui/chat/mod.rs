@@ -976,10 +976,12 @@ impl ChatScreen {
     }
 
     /// Push only the row indicators: a question arrived or went away.
+    /// Other computers' sidebars show them too.
     fn sync_sidebar_activity(&mut self, cx: &mut Context<Self>) {
         let activity = self.task_activity();
         self.sidebar
             .update(cx, |sidebar, cx| sidebar.set_activity(activity, cx));
+        cx.emit(NavigationChanged);
     }
 
     /// Which tasks wait on the user, run, or ended unseen.

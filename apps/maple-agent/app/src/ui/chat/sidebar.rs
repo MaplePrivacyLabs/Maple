@@ -198,12 +198,12 @@ pub(super) enum SessionActivity {
 /// Which tasks wait on the user, run, or ended while nobody watched. The
 /// screen owns these sets and pushes them together.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub(super) struct TaskActivity {
-    pub(super) running: HashSet<String>,
+pub(crate) struct TaskActivity {
+    pub(crate) running: HashSet<String>,
     /// Tasks with a question waiting for an answer.
-    pub(super) waiting: HashSet<String>,
-    pub(super) failed: HashSet<String>,
-    pub(super) unread: HashSet<String>,
+    pub(crate) waiting: HashSet<String>,
+    pub(crate) failed: HashSet<String>,
+    pub(crate) unread: HashSet<String>,
 }
 
 impl TaskActivity {
@@ -1667,7 +1667,7 @@ impl Sidebar {
         for (index, session) in self.sessions.iter().enumerate() {
             if self.pages.enabled
                 && !self.pages.contains(&session.id, filtering)
-                && !self.running.contains(&session.id)
+                && !self.activity.running.contains(&session.id)
                 && self.selected.as_ref() != Some(&session.id)
             {
                 continue;
@@ -1744,7 +1744,7 @@ impl Sidebar {
         if let Some(prefix) = self.local_task_prefix() {
             listed.retain(|&ix| {
                 let task = &self.sessions[ix];
-                self.running.contains(&task.id)
+                self.activity.running.contains(&task.id)
                     || self.selected.as_ref() == Some(&task.id)
                     || self.pages.is_live(&task.id)
                     || prefix.allows(&self.task_prefix_position(
