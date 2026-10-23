@@ -198,7 +198,7 @@ pub(super) struct SidebarRow {
     pub(super) menu_delete_id: SharedString,
     pub(super) menu_reopen_id: SharedString,
     pub(super) title: SharedString,
-    /// Display name of the task's project, shown on every row.
+    /// Display name of the task's project, for search and accessibility.
     pub(super) project_name: SharedString,
     /// Lower-cased title, matched against the sidebar filter.
     pub(super) search: String,
@@ -230,6 +230,11 @@ impl SidebarRow {
     }
 }
 
+// Folder tasks start at the header's name, after its icon and gap.
+const FOLDER_HEADER_PADDING: gpui::Rems = gpui::rems(1.);
+const FOLDER_HEADER_GAP: gpui::Rems = gpui::rems(0.5);
+const FOLDER_ICON_SIZE: gpui::Pixels = px(16.);
+
 /// The switcher's "All projects" row.
 const ALL_PROJECTS_ID: &str = "switcher-all-projects";
 
@@ -259,6 +264,8 @@ pub(super) enum SidebarEntry {
     /// A section label, shown only when the section has rows.
     SectionLabel(SidebarSection),
     Task(SidebarTaskEntry),
+    /// An expanded folder whose non-archived task coverage is complete and empty.
+    FolderEmpty(usize),
     ArchivedHeader,
     /// Placeholder row when no task row is listed.
     Empty(SidebarEmpty),
@@ -272,6 +279,8 @@ pub(super) struct SidebarTaskEntry {
     pub(super) pinned: bool,
     pub(super) settled: bool,
     pub(super) archived: bool,
+    /// Space after the last visible task in a section.
+    pub(super) gap_after: bool,
 }
 
 /// Where a task sits on the ladder active, settled, archived, deleted.
@@ -348,13 +357,22 @@ pub(super) enum SidebarEmpty {
     NoMatches,
 }
 
-/// A named section of the inbox: pinned tasks, active work, and the
-/// settled rest.
+/// A named section of the task list: pinned tasks, then project folders.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum SidebarSection {
     Pinned,
     Active,
     Settled,
+    /// A project's tasks, by index into the switcher roots.
+    Folder(usize),
+}
+
+/// Hover follows section membership across independently rendered list rows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SidebarHoverSection {
+    Projects,
+    Section(SidebarSection),
+    Archived,
 }
 
 impl SidebarSection {
@@ -363,6 +381,7 @@ impl SidebarSection {
             Self::Pinned => "Pinned",
             Self::Active => "Active",
             Self::Settled => "Settled",
+            Self::Folder(_) => "Tasks",
         }
     }
 
@@ -371,6 +390,7 @@ impl SidebarSection {
             Self::Pinned => "section-toggle-pinned",
             Self::Active => "section-toggle-active",
             Self::Settled => "section-toggle-settled",
+            Self::Folder(_) => "section-toggle-tasks",
         }
     }
 }
@@ -386,16 +406,21 @@ struct SidebarMenuItem {
     on_click: MenuAction,
 }
 
-/// One project the switcher menu lists: the root path, its display name,
-/// and the element ids its row and menus use. Built when the sections
-/// rebuild, never per frame.
+/// One project the switcher menu lists or a folder group heads: the root
+/// path, its display name, and the element ids its rows and menus use.
+/// Built when the sections rebuild, never per frame.
 pub(super) struct SwitcherRoot {
     target: ProjectTarget,
     root: String,
     name: SharedString,
     row_id: SharedString,
+    /// Hover group of the switcher row or the folder header.
     row_group: SharedString,
     menu_id: SharedString,
+    folder_id: SharedString,
+    new_task_id: SharedString,
+    new_task_label: SharedString,
+    empty_id: SharedString,
 }
 
 pub(super) struct Sidebar {
@@ -424,14 +449,22 @@ pub(super) struct Sidebar {
     list: gpui::ListState,
     entries: Vec<SidebarEntry>,
     heading_gaps: Vec<bool>,
+    entry_sections: Vec<Option<SidebarHoverSection>>,
+    hovered_section: Option<SidebarHoverSection>,
+    hovered_entry: Option<usize>,
+    hover_scroll_top: gpui::ListOffset,
     rows: Vec<SidebarRow>,
     pinned_rows: Vec<usize>,
-    active_rows: Vec<usize>,
-    settled_rows: Vec<usize>,
+    /// The grouping's sections under the Projects header, in display
+    /// order.
+    sections: Vec<(SidebarSection, Vec<usize>)>,
     archived_rows: Vec<usize>,
     pinned_expanded: bool,
     active_expanded: bool,
     settled_expanded: bool,
+    collapsed_roots: HashSet<String>,
+    /// Whether the list under the Projects header shows.
+    projects_expanded: bool,
     archived_expanded: bool,
     switcher_roots: Vec<SwitcherRoot>,
     computer_switcher_roots: Vec<Vec<SwitcherRoot>>,
@@ -441,6 +474,7 @@ pub(super) struct Sidebar {
     popup: Popup<Sidebar, SidebarPopup>,
     /// A project's overflow menu, keyed by execution computer and path.
     project_popup: Popup<Sidebar, ProjectTarget>,
+    project_menu_at: Option<gpui::Point<gpui::Pixels>>,
     /// Trust status of the project whose menu is open, once it loads.
     menu_trust: Option<AgentProjectTrustStatus>,
     // Search and rename.
@@ -496,6 +530,10 @@ impl SwitcherRoot {
             row_id: target.element_id("switcher"),
             row_group: target.element_id("switcher-project-row"),
             menu_id: target.element_id("menu-project"),
+            folder_id: target.element_id("folder"),
+            new_task_id: target.element_id("new-task-in"),
+            new_task_label: format!("New task in {name}").into(),
+            empty_id: target.element_id("folder-empty"),
             target,
             name,
         }
@@ -669,6 +707,24 @@ impl Sidebar {
             this.search_changed(&input, cx)
         })
         .detach();
+        let list = gpui::ListState::new(0, gpui::ListAlignment::Top, px(200.));
+        let sidebar = cx.weak_entity();
+        list.set_scroll_handler(move |_, _, cx| {
+            let sidebar = sidebar.clone();
+            // ListState is still borrowed while its scroll handler runs.
+            cx.defer(move |cx| {
+                sidebar
+                    .update(cx, |this, cx| {
+                        let top = this.list.logical_scroll_top();
+                        if top.item_ix != this.hover_scroll_top.item_ix
+                            || top.offset_in_item != this.hover_scroll_top.offset_in_item
+                        {
+                            this.set_hovered_entry(None, cx);
+                        }
+                    })
+                    .ok();
+            });
+        });
         Self {
             pages: SidebarPages::default(),
             group_pages: ComputerPages::default(),
@@ -686,17 +742,22 @@ impl Sidebar {
             recent_roots: Vec::new(),
             application_vim_enabled,
             vim_active: false,
-            list: gpui::ListState::new(0, gpui::ListAlignment::Top, px(200.)),
+            list,
             entries: Vec::new(),
             heading_gaps: Vec::new(),
+            entry_sections: Vec::new(),
+            hovered_section: None,
+            hovered_entry: None,
+            hover_scroll_top: gpui::ListOffset::default(),
             rows: Vec::new(),
             pinned_rows: Vec::new(),
-            active_rows: Vec::new(),
-            settled_rows: Vec::new(),
+            sections: Vec::new(),
             archived_rows: Vec::new(),
             pinned_expanded: true,
             active_expanded: true,
             settled_expanded: true,
+            collapsed_roots: HashSet::new(),
+            projects_expanded: true,
             archived_expanded: false,
             switcher_roots: Vec::new(),
             computer_switcher_roots: Vec::new(),
@@ -704,6 +765,7 @@ impl Sidebar {
             project_filter: None,
             popup: Popup::new(|this| &mut this.popup, cx),
             project_popup: Popup::new(|this| &mut this.project_popup, cx),
+            project_menu_at: None,
             menu_trust: None,
             filter: String::new(),
             search_input,
@@ -1032,7 +1094,8 @@ impl Sidebar {
         Some(rows[target].clone())
     }
 
-    pub(super) fn reveal_row(&self, row: usize) {
+    pub(super) fn reveal_row(&mut self, row: usize, cx: &mut Context<Self>) {
+        self.set_hovered_entry(None, cx);
         self.list.scroll_to_reveal_item(row);
     }
 
@@ -1042,18 +1105,55 @@ impl Sidebar {
     }
 
     #[cfg(test)]
+    pub(super) fn section_rows(&self, section: SidebarSection) -> &[usize] {
+        if section == SidebarSection::Pinned {
+            return &self.pinned_rows;
+        }
+        self.sections
+            .iter()
+            .find(|(candidate, _)| *candidate == section)
+            .map_or(&[], |(_, rows)| rows)
+    }
+
+    #[cfg(test)]
     pub(super) fn pinned_rows(&self) -> &[usize] {
-        &self.pinned_rows
+        self.section_rows(SidebarSection::Pinned)
     }
 
     #[cfg(test)]
-    pub(super) fn active_rows(&self) -> &[usize] {
-        &self.active_rows
+    pub(super) fn active_rows(&self) -> Vec<usize> {
+        self.entries
+            .iter()
+            .filter_map(|entry| match entry {
+                SidebarEntry::Task(task) if !task.pinned && !task.settled && !task.archived => {
+                    Some(task.session)
+                }
+                _ => None,
+            })
+            .collect()
     }
 
     #[cfg(test)]
-    pub(super) fn settled_rows(&self) -> &[usize] {
-        &self.settled_rows
+    pub(super) fn settled_rows(&self) -> Vec<usize> {
+        self.entries
+            .iter()
+            .filter_map(|entry| match entry {
+                SidebarEntry::Task(task) if task.settled => Some(task.session),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The folder groups' project names, in display order.
+    #[cfg(test)]
+    pub(super) fn folder_names(&self) -> Vec<&str> {
+        self.sections
+            .iter()
+            .filter_map(|(section, _)| match section {
+                SidebarSection::Folder(index) => Some(self.switcher_roots[*index].name.as_ref()),
+                _ => None,
+            })
+            .collect()
     }
 
     #[cfg(test)]
@@ -1071,7 +1171,11 @@ impl Sidebar {
         self.project_filter.as_deref()
     }
 
-    pub(super) fn switcher_menu_open(&self) -> bool {
+    fn sidebar_menu_open(&self) -> bool {
+        self.popup.open_key().is_some() || self.project_popup.open_key().is_some()
+    }
+
+    pub(super) fn header_menu_open(&self) -> bool {
         self.popup.is_open(&SidebarPopup::Switcher)
     }
 
@@ -1194,6 +1298,11 @@ impl Sidebar {
     }
 
     #[cfg(test)]
+    pub(super) fn vim_targets_for_test(&self) -> Vec<SidebarTarget> {
+        self.vim_order.clone()
+    }
+
+    #[cfg(test)]
     pub(super) fn vim_projection_is_empty(&self) -> bool {
         self.vim_selected.is_none() && self.vim_by_row.is_empty() && self.vim_order.is_empty()
     }
@@ -1229,7 +1338,7 @@ impl Sidebar {
 
     pub(super) fn focus_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.search_visible = true;
-        self.reveal_row(1);
+        self.reveal_row(1, cx);
         self.list.remeasure_items(1..2);
         let handle = self.search_input.read(cx).focus_handle(cx);
         handle.focus(window, cx);
@@ -1261,12 +1370,9 @@ impl Sidebar {
         true
     }
 
-    /// Rebuild the sidebar sections: pinned tasks first, then the active
-    /// inbox, then the settled rest. Rows are one flat list across
-    /// projects and each row names its project. The order is derived,
-    /// never written back, and changes only when activity or the user
-    /// changes it. Called when sessions, roots, names, or the filter
-    /// change, not per render.
+    /// Rebuild pinned tasks and project folders, each newest activity
+    /// first. Called when sessions, roots, names, or the filter change,
+    /// not per render.
     fn rebuild_sections(&mut self) {
         self.sync_rows();
         let filter = self.filter.as_str();
@@ -1274,8 +1380,7 @@ impl Sidebar {
         let scoped = self.project_filter.as_deref();
         let pinned_ids: HashSet<&str> = self.pinned_tasks.iter().map(String::as_str).collect();
         let mut pinned = Vec::new();
-        let mut active = Vec::new();
-        let mut settled = Vec::new();
+        let mut listed = Vec::new();
         let mut archived = Vec::new();
         let mut session_roots: Vec<&str> = Vec::new();
         let mut seen_roots: HashSet<&str> = HashSet::new();
@@ -1316,27 +1421,10 @@ impl Sidebar {
                 archived.push(index);
             } else if pinned_ids.contains(session.id.as_str()) {
                 pinned.push(index);
-            } else if self.session_is_active(session) {
-                active.push(index);
             } else {
-                settled.push(index);
+                listed.push(index);
             }
         }
-        let by_update = |ix: &usize| {
-            std::cmp::Reverse(
-                self.sessions
-                    .get(*ix)
-                    .map(|session| session.updated_ms)
-                    .unwrap_or(0),
-            )
-        };
-        pinned.sort_by_cached_key(by_update);
-        active.sort_by_cached_key(by_update);
-        settled.sort_by_cached_key(by_update);
-        self.pinned_rows = pinned;
-        self.active_rows = active;
-        self.settled_rows = settled;
-        self.archived_rows = archived;
         self.scope_label = self
             .project_filter
             .as_deref()
@@ -1347,17 +1435,73 @@ impl Sidebar {
         let mut fresh_roots: Vec<&str> = session_roots
             .iter()
             .copied()
+            .chain(self.project_metadata.keys().map(String::as_str))
             .filter(|root| !recent_roots.contains(root))
             .collect();
         fresh_roots.sort_unstable();
+        fresh_roots.dedup();
         self.switcher_roots = self
             .recent_roots
             .iter()
             .map(String::as_str)
             .chain(fresh_roots.iter().copied())
-            .filter(|root| seen_roots.contains(root) || recent_roots.contains(root))
+            .filter(|root| !self.removed_projects.contains(*root))
             .map(|root| SwitcherRoot::new(self.project_target(root), self.root_name(root).into()))
             .collect();
+        let order = |&ix: &usize| std::cmp::Reverse(self.sessions[ix].updated_ms);
+        pinned.sort_by_key(order);
+        listed.sort_by_key(order);
+        if self.computers.len() <= 1 {
+            archived.sort_by_key(order);
+        }
+        if self.computers.len() > 1 {
+            let (active, settled) = listed
+                .into_iter()
+                .partition(|&ix| self.session_is_active(&self.sessions[ix]));
+            self.sections = vec![
+                (SidebarSection::Active, active),
+                (SidebarSection::Settled, settled),
+            ];
+        } else {
+            let folder_of: HashMap<&str, usize> = self
+                .switcher_roots
+                .iter()
+                .enumerate()
+                .map(|(index, root)| (root.root.as_str(), index))
+                .collect();
+            // Each root's newest activity, pinned tasks included, and
+            // its unpinned rows.
+            let mut folders = vec![(None, Vec::new()); self.switcher_roots.len()];
+            for (position, &ix) in pinned.iter().chain(&listed).enumerate() {
+                let session = &self.sessions[ix];
+                if let Some(&folder) = folder_of.get(session.project_root.as_str()) {
+                    let (latest, rows) = &mut folders[folder];
+                    *latest = (*latest).max(Some(session.updated_ms));
+                    if position >= pinned.len() {
+                        rows.push(ix);
+                    }
+                }
+            }
+            let mut folders: Vec<_> = folders
+                .into_iter()
+                .enumerate()
+                .filter(|(index, (_, rows))| {
+                    let root = &self.switcher_roots[*index];
+                    scoped.is_none_or(|scoped| scoped == root.root)
+                        && (!rows.is_empty()
+                            || !filtering
+                            || root.name.to_lowercase().contains(filter))
+                })
+                .collect();
+            // The folder with the latest activity leads.
+            folders.sort_by_key(|(_, (latest, _))| std::cmp::Reverse(*latest));
+            self.sections = folders
+                .into_iter()
+                .map(|(index, (_, rows))| (SidebarSection::Folder(index), rows))
+                .collect();
+        }
+        self.pinned_rows = pinned;
+        self.archived_rows = archived;
         self.rebuild_computer_switcher_roots();
         self.rebuild_entries();
     }
@@ -1373,48 +1517,73 @@ impl Sidebar {
     /// span that changed, so the scroll position and the measured
     /// heights of untouched rows survive every rebuild.
     fn rebuild_entries(&mut self) {
-        let mut entries = vec![
-            SidebarEntry::NewTask,
-            SidebarEntry::Search,
-            SidebarEntry::ProjectsHeader,
-        ];
-        let tasks = |entries: &mut Vec<SidebarEntry>,
-                     section: SidebarSection,
-                     rows: &[usize],
-                     expanded: bool| {
-            if rows.is_empty() {
+        self.hovered_entry = None;
+        self.hovered_section = None;
+        let mut entries = vec![SidebarEntry::NewTask, SidebarEntry::Search];
+        let empty_known = self.filter.is_empty() && self.pages.non_archived_complete();
+        let pinned_roots: HashSet<&str> = self
+            .pinned_rows
+            .iter()
+            .map(|&ix| self.sessions[ix].project_root.as_str())
+            .collect();
+        let tasks = |entries: &mut Vec<SidebarEntry>, section: SidebarSection, rows: &[usize]| {
+            if rows.is_empty() && !matches!(section, SidebarSection::Folder(_)) {
                 return;
             }
             entries.push(SidebarEntry::SectionLabel(section));
-            if expanded {
+            if self.section_expanded(section) {
+                if rows.is_empty()
+                    && empty_known
+                    && let SidebarSection::Folder(index) = section
+                    && !pinned_roots.contains(self.switcher_roots[index].root.as_str())
+                {
+                    entries.push(SidebarEntry::FolderEmpty(index));
+                }
                 entries.extend(rows.iter().map(|&session| {
                     SidebarEntry::Task(SidebarTaskEntry {
                         session,
                         pinned: section == SidebarSection::Pinned,
-                        settled: section == SidebarSection::Settled,
+                        settled: section != SidebarSection::Pinned
+                            && !self.session_is_active(&self.sessions[session]),
                         archived: false,
+                        gap_after: false,
                     })
                 }));
             }
         };
-        tasks(
-            &mut entries,
-            SidebarSection::Pinned,
-            &self.pinned_rows,
-            self.section_expanded(SidebarSection::Pinned),
-        );
-        tasks(
-            &mut entries,
-            SidebarSection::Active,
-            &self.active_rows,
-            self.section_expanded(SidebarSection::Active),
-        );
-        tasks(
-            &mut entries,
-            SidebarSection::Settled,
-            &self.settled_rows,
-            self.section_expanded(SidebarSection::Settled),
-        );
+        if self.computers.len() > 1 {
+            entries.push(SidebarEntry::ProjectsHeader);
+            tasks(&mut entries, SidebarSection::Pinned, &self.pinned_rows);
+            for (section, rows) in &self.sections {
+                tasks(&mut entries, *section, rows);
+            }
+        } else {
+            // Pinned work sits above the Projects header, which folds the rest.
+            tasks(&mut entries, SidebarSection::Pinned, &self.pinned_rows);
+            if self.section_expanded(SidebarSection::Pinned)
+                && self.pages.has_more(PageKind::Pinned)
+            {
+                entries.push(SidebarEntry::LoadMore(PageKind::Pinned));
+            }
+            entries.push(SidebarEntry::ProjectsHeader);
+            if self.projects_expanded {
+                for (section, rows) in &self.sections {
+                    tasks(&mut entries, *section, rows);
+                }
+                if self.pages.enabled {
+                    for kind in [
+                        PageKind::Active,
+                        PageKind::Settled,
+                        PageKind::Search,
+                        PageKind::Projects,
+                    ] {
+                        if self.pages.has_more(kind) {
+                            entries.push(SidebarEntry::LoadMore(kind));
+                        }
+                    }
+                }
+            }
+        }
         if !self.archived_rows.is_empty() || (self.pages.enabled && self.filter.is_empty()) {
             entries.push(SidebarEntry::ArchivedHeader);
             if self.archived_expanded {
@@ -1424,11 +1593,12 @@ impl Sidebar {
                         archived: true,
                         pinned: false,
                         settled: false,
+                        gap_after: false,
                     })
                 }));
             }
         }
-        if self.pages.enabled {
+        if self.computers.len() > 1 && self.pages.enabled {
             for (kind, expanded) in [
                 (PageKind::Pinned, self.pinned_expanded),
                 (PageKind::Active, self.active_expanded),
@@ -1440,12 +1610,19 @@ impl Sidebar {
                     entries.push(SidebarEntry::LoadMore(kind));
                 }
             }
+        } else if self.archived_expanded && self.pages.has_more(PageKind::Archived) {
+            entries.push(SidebarEntry::LoadMore(PageKind::Archived));
         }
-        if !entries.iter().any(|entry| {
-            matches!(entry, SidebarEntry::Task(_))
-                || (!self.pages.enabled && matches!(entry, SidebarEntry::ArchivedHeader))
-        }) && !self.pages.any_loading()
-        {
+        // Folded sections still hold tasks; only an empty list says so.
+        let empty = if self.computers.len() > 1 {
+            !entries.iter().any(|entry| {
+                matches!(entry, SidebarEntry::Task(_))
+                    || (!self.pages.enabled && matches!(entry, SidebarEntry::ArchivedHeader))
+            })
+        } else {
+            self.pinned_rows.is_empty() && self.archived_rows.is_empty() && self.sections.is_empty()
+        };
+        if empty && !self.pages.any_loading() {
             entries.push(SidebarEntry::Empty(if self.filter.is_empty() {
                 SidebarEmpty::NoTasks
             } else {
@@ -1455,6 +1632,29 @@ impl Sidebar {
         if self.computers.len() > 1 && self.project_filter.is_none() {
             entries = self.computer_entries();
         }
+        for ix in 0..entries.len() {
+            let last =
+                !matches!(entries.get(ix + 1), Some(SidebarEntry::Task(task)) if !task.archived);
+            if let SidebarEntry::Task(task) = &mut entries[ix] {
+                task.gap_after = !task.archived && last;
+            }
+        }
+        let mut section = None;
+        self.entry_sections = entries
+            .iter()
+            .map(|entry| {
+                match entry {
+                    SidebarEntry::ProjectsHeader => section = Some(SidebarHoverSection::Projects),
+                    SidebarEntry::SectionLabel(label) => {
+                        section = Some(SidebarHoverSection::Section(*label))
+                    }
+                    SidebarEntry::ArchivedHeader => section = Some(SidebarHoverSection::Archived),
+                    SidebarEntry::Task(_) | SidebarEntry::OtherTask(_) => {}
+                    _ => section = None,
+                }
+                section
+            })
+            .collect();
         let heading_gaps = entries
             .iter()
             .enumerate()
@@ -1520,6 +1720,12 @@ impl Sidebar {
                         .get(task.session)
                         .is_some_and(|session| session.id == *id))
             }),
+            RenameTarget::Project(target) if self.computers.len() <= 1 => {
+                self.entries.iter().position(|entry| {
+                    matches!(entry, SidebarEntry::SectionLabel(SidebarSection::Folder(index))
+                        if self.switcher_roots.get(*index).is_some_and(|root| root.target == *target))
+                })
+            }
             RenameTarget::Project(_) => self
                 .entries
                 .iter()
@@ -1658,6 +1864,10 @@ impl Sidebar {
     /// Whether a collapsible section shows its rows.
     fn section_expanded(&self, section: SidebarSection) -> bool {
         match section {
+            SidebarSection::Folder(index) => self
+                .switcher_roots
+                .get(index)
+                .is_none_or(|root| !self.collapsed_roots.contains(&root.root)),
             SidebarSection::Pinned => self.pinned_expanded,
             SidebarSection::Active => self.active_expanded,
             SidebarSection::Settled => self.settled_expanded,
@@ -1665,25 +1875,75 @@ impl Sidebar {
     }
 
     fn toggle_section_expanded(&mut self, section: SidebarSection, cx: &mut Context<Self>) {
-        match section {
-            SidebarSection::Pinned => self.pinned_expanded = !self.pinned_expanded,
-            SidebarSection::Active => self.active_expanded = !self.active_expanded,
-            SidebarSection::Settled => self.settled_expanded = !self.settled_expanded,
+        self.set_section_expanded(section, !self.section_expanded(section), cx);
+    }
+
+    fn set_section_expanded(
+        &mut self,
+        section: SidebarSection,
+        expanded: bool,
+        cx: &mut Context<Self>,
+    ) {
+        if let SidebarSection::Folder(index) = section {
+            let Some(root) = self.switcher_roots.get(index).map(|root| root.root.clone()) else {
+                return;
+            };
+            if expanded {
+                self.collapsed_roots.remove(&root);
+            } else {
+                self.collapsed_roots.insert(root);
+            }
+        } else {
+            match section {
+                SidebarSection::Pinned => self.pinned_expanded = expanded,
+                SidebarSection::Active => self.active_expanded = expanded,
+                SidebarSection::Settled => self.settled_expanded = expanded,
+                SidebarSection::Folder(_) => unreachable!(),
+            }
         }
         self.rebuild_entries();
         cx.notify();
     }
 
-    /// Open or close the project switcher menu from its header.
-    pub(super) fn toggle_switcher_menu(&mut self, cx: &mut Context<Self>) {
+    /// Show or fold one folder group; `None` flips it.
+    pub(super) fn set_folder_expanded(
+        &mut self,
+        root: &str,
+        expanded: Option<bool>,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(index) = self
+            .switcher_roots
+            .iter()
+            .position(|item| item.root == root)
+        else {
+            return;
+        };
+        let section = SidebarSection::Folder(index);
+        let expanded = expanded.unwrap_or(!self.section_expanded(section));
+        self.set_section_expanded(section, expanded, cx);
+    }
+
+    /// Show or fold the whole list under the Projects header.
+    pub(super) fn set_projects_expanded(&mut self, expanded: bool, cx: &mut Context<Self>) {
+        if self.projects_expanded != expanded {
+            self.projects_expanded = expanded;
+            self.rebuild_entries();
+            cx.notify();
+        }
+    }
+
+    /// Open or close the Projects header's menu from its button.
+    pub(super) fn toggle_header_menu(&mut self, cx: &mut Context<Self>) {
         self.project_popup.close(cx);
         self.popup.toggle(SidebarPopup::Switcher, cx);
     }
 
-    /// Open or close the project switcher from the keyboard. Opening
-    /// highlights the current scope, like a native popup button.
-    pub(super) fn set_switcher_menu_open(&mut self, open: bool, cx: &mut Context<Self>) {
-        if open == self.switcher_menu_open() {
+    /// Open or close the Projects header's menu from the keyboard.
+    /// Opening the switcher highlights the current scope, like a native
+    /// popup button.
+    pub(super) fn set_header_menu_open(&mut self, open: bool, cx: &mut Context<Self>) {
+        if open == self.header_menu_open() {
             return;
         }
         self.project_popup.close(cx);
@@ -1703,11 +1963,21 @@ impl Sidebar {
         }
     }
 
+    /// Activate the Projects header: paired computers open the switcher;
+    /// a single computer folds its project list.
+    pub(super) fn activate_projects(&mut self, cx: &mut Context<Self>) {
+        if self.computers.len() > 1 {
+            self.set_header_menu_open(!self.header_menu_open(), cx);
+        } else {
+            self.set_projects_expanded(!self.projects_expanded, cx);
+        }
+    }
+
     /// Scope the sidebar to one project, or show every project again.
     pub(super) fn set_project_filter(&mut self, root: Option<String>, cx: &mut Context<Self>) {
         self.project_filter = root.filter(|root| !root.is_empty());
         self.project_popup.close(cx);
-        if self.switcher_menu_open() {
+        if self.popup.is_open(&SidebarPopup::Switcher) {
             self.popup.close(cx);
         }
         if self.pages.enabled {
@@ -1744,9 +2014,8 @@ impl Sidebar {
         let chat = self.chat.clone();
         let sidebar = cx.entity().downgrade();
         let escape = sidebar.clone();
-        // A project's field sits in the switcher, which keeps the keyboard
-        // when the rename ends.
-        let in_switcher = matches!(target, RenameTarget::Project(_));
+        // Switcher renames keep the menu's keyboard focus.
+        let in_switcher = self.renames_in_switcher(&target);
         let application_vim_enabled = self.application_vim_enabled;
         let input = cx.new(move |cx| {
             let mut input = TextInput::new("Name", cx)
@@ -1799,6 +2068,13 @@ impl Sidebar {
         cx.notify();
     }
 
+    /// Whether a rename's field sits in the switcher menu: a project's,
+    /// while paired computers list their projects there. A folder
+    /// header's field ends the way a task's does.
+    fn renames_in_switcher(&self, target: &RenameTarget) -> bool {
+        matches!(target, RenameTarget::Project(_)) && self.computers.len() > 1
+    }
+
     /// Drop the rename field. Reports whether one was open.
     pub(super) fn cancel_rename(&mut self, cx: &mut Context<Self>) -> bool {
         let Some(target) = self.rename.take() else {
@@ -1808,19 +2084,18 @@ impl Sidebar {
         true
     }
 
-    /// Put things back once a rename is over: the row's height, and the
-    /// switcher's focus, which a project's field had.
+    /// Restore the row's height and, for switcher renames, menu focus.
     fn end_rename(&mut self, target: &RenameTarget, cx: &mut Context<Self>) {
         self.rename_input = None;
         self.rename_focus_out = None;
         self.remeasure(target);
-        if matches!(target, RenameTarget::Project(_)) {
+        if self.renames_in_switcher(target) {
             self.popup.refocus(cx);
         }
         cx.notify();
     }
 
-    /// The pointer or focus left a task's rename field: commit it, unless
+    /// The pointer or focus left an inline rename field: commit it, unless
     /// the field's own right-click menu took them (Paste, Cut).
     fn leave_rename(&mut self, cx: &mut Context<Self>) {
         let menu_open = self
@@ -1930,9 +2205,26 @@ impl Sidebar {
     /// Open or close a project's overflow menu. Its trust row appears once
     /// the project's trust status loads.
     fn toggle_project_menu(&mut self, root: &ProjectTarget, cx: &mut Context<Self>) {
-        if !self.project_popup.toggle(root.clone(), cx) {
-            return;
+        self.project_menu_at = None;
+        if self.project_popup.toggle(root.clone(), cx) {
+            self.load_menu_trust(root, cx);
         }
+    }
+
+    /// Open a folder header's project menu at the pointer.
+    fn open_project_menu_at(
+        &mut self,
+        root: &ProjectTarget,
+        position: gpui::Point<gpui::Pixels>,
+        cx: &mut Context<Self>,
+    ) {
+        self.hover_scroll_top = self.list.logical_scroll_top();
+        self.project_menu_at = Some(position);
+        self.project_popup.open(root.clone(), cx);
+        self.load_menu_trust(root, cx);
+    }
+
+    fn load_menu_trust(&mut self, root: &ProjectTarget, cx: &mut Context<Self>) {
         self.menu_trust = None;
         if root.computer.as_deref() != self.backend.remote_host() {
             return;
@@ -2107,7 +2399,7 @@ impl Sidebar {
             .map(|task| TaskRung::of(task).step().row_label)
     }
 
-    /// The overflow menu of one switcher project row.
+    /// The menu of one project, on a switcher row or a folder header.
     fn project_menu_items(&self, target: &ProjectTarget) -> Vec<SidebarMenuItem> {
         let rename_target = target.clone();
         let root = &target.path;
@@ -2193,7 +2485,13 @@ impl Sidebar {
                 SidebarEntry::NewTask => Some(SidebarTarget::NewTask),
                 SidebarEntry::Search => Some(SidebarTarget::Search),
                 SidebarEntry::ProjectsHeader => Some(SidebarTarget::Projects),
-                SidebarEntry::SectionLabel(_) | SidebarEntry::Empty(_) => None,
+                SidebarEntry::SectionLabel(SidebarSection::Folder(index)) => self
+                    .switcher_roots
+                    .get(index)
+                    .map(|root| SidebarTarget::Folder(root.root.clone())),
+                SidebarEntry::SectionLabel(_)
+                | SidebarEntry::Empty(_)
+                | SidebarEntry::FolderEmpty(_) => None,
                 SidebarEntry::LoadMore(kind) => {
                     Some(SidebarTarget::LoadMore(format!("page:{}", kind.label())))
                 }
@@ -2267,7 +2565,7 @@ impl Sidebar {
         let row = self.vim_target_row(&target);
         self.vim_selected = Some(target);
         if let Some(row) = row {
-            self.list.scroll_to_reveal_item(row);
+            self.reveal_row(row, cx);
         }
         cx.notify();
         true
@@ -2285,7 +2583,7 @@ impl Sidebar {
             return false;
         };
         self.vim_selected = Some(target);
-        self.list.scroll_to_reveal_item(row);
+        self.reveal_row(row, cx);
         cx.notify();
         true
     }
@@ -2297,24 +2595,30 @@ impl Sidebar {
     }
 
     /// Scroll the selected target into view.
-    pub(super) fn vim_reveal(&self) {
+    pub(super) fn vim_reveal(&mut self, cx: &mut Context<Self>) {
         if let Some(row) = self
             .vim_selected
             .as_ref()
             .and_then(|target| self.vim_target_row(target))
         {
-            self.list.scroll_to_reveal_item(row);
+            self.reveal_row(row, cx);
         }
     }
 
     /// Fold or unfold the selected target where that means something.
     pub(super) fn vim_set_expanded(&mut self, expanded: bool, cx: &mut Context<Self>) {
         match self.vim_selected.clone() {
-            Some(SidebarTarget::Projects) => self.set_switcher_menu_open(expanded, cx),
+            Some(SidebarTarget::Projects) if self.computers.len() > 1 => {
+                self.set_header_menu_open(expanded, cx)
+            }
+            Some(SidebarTarget::Projects) => self.set_projects_expanded(expanded, cx),
+            Some(SidebarTarget::Folder(root)) => {
+                self.set_folder_expanded(&root, Some(expanded), cx)
+            }
             Some(SidebarTarget::Archived) => self.set_archived_expanded(expanded, cx),
             _ => {}
         }
-        self.vim_reveal();
+        self.vim_reveal(cx);
     }
 
     fn vim_reconcile(&mut self) {
@@ -2415,6 +2719,7 @@ impl Sidebar {
     ) -> AnyElement {
         let selected = self.selected.as_deref();
         let chat = self.chat.clone();
+        // Adjacent folded headings keep only their pill margins.
         let heading_gap = self.heading_gaps.get(ix).copied().unwrap_or(false);
         let entry = match self.entries.get(ix).copied() {
             Some(
@@ -2487,23 +2792,38 @@ impl Sidebar {
                     .into_any_element()
             }
             Some(SidebarEntry::ProjectsHeader) => self.render_projects_header(window, cx),
+            Some(SidebarEntry::FolderEmpty(index)) => {
+                let id = self.switcher_roots[index].empty_id.clone();
+                return div()
+                    .id(id.clone())
+                    .w_full()
+                    .pl(
+                        (FOLDER_HEADER_PADDING + FOLDER_HEADER_GAP).to_pixels(window.rem_size())
+                            + FOLDER_ICON_SIZE,
+                    )
+                    .pr_6()
+                    .py_1()
+                    .text_sm()
+                    .text_color(gpui::rgb(theme::text_muted()))
+                    .child(div().child("No tasks"))
+                    .into_any_element();
+            }
             Some(SidebarEntry::Task(task)) => {
                 let application_selected = self.vim_selects_row(ix);
                 let row = self.render_task_row(task, selected, application_selected, window, cx);
-                let last_of_section = !task.archived
-                    && !matches!(
-                        self.entries.get(ix + 1),
-                        Some(SidebarEntry::Task(task)) if !task.archived
-                    );
                 div()
-                    .when(last_of_section, |row| row.mb_2())
+                    .when(task.gap_after, |row| row.mb_2())
                     .child(row)
                     .into_any_element()
+            }
+            Some(SidebarEntry::SectionLabel(SidebarSection::Folder(index))) => {
+                self.render_folder_header(index, window, cx)
             }
             Some(SidebarEntry::SectionLabel(section)) => {
                 let expanded = self.section_expanded(section);
                 div()
                     .id(gpui::SharedString::from(section.element_id()))
+                    .debug_selector(|| section.element_id().to_string())
                     .w_auto()
                     .mx_2()
                     .my(px(1.))
@@ -2521,16 +2841,13 @@ impl Sidebar {
                     })
                     .on_click(cx.listener(move |this, _event, _window, cx| {
                         this.toggle_section_expanded(section, cx);
+                        this.hover_heading(SidebarEntry::SectionLabel(section), cx);
                     }))
                     .child(section_label(section.label()))
-                    .child(icon(
-                        if expanded {
-                            "chevron-down"
-                        } else {
-                            "chevron-right"
-                        },
-                        px(14.),
-                        theme::text_secondary(),
+                    .child(self.section_chevron(
+                        expanded,
+                        section.element_id(),
+                        SidebarHoverSection::Section(section),
                     ))
                     .into_any_element()
             }
@@ -2594,6 +2911,7 @@ impl Sidebar {
                 };
                 div()
                     .id("archived-toggle")
+                    .debug_selector(|| "archived-toggle".into())
                     .role(gpui::Role::Button)
                     .aria_label(format!("Archived tasks {count_label}"))
                     .aria_expanded(expanded)
@@ -2614,6 +2932,7 @@ impl Sidebar {
                     })
                     .on_click(cx.listener(|this, _event, _window, cx| {
                         this.toggle_archived_visibility(cx);
+                        this.hover_heading(SidebarEntry::ArchivedHeader, cx);
                     }))
                     .child(section_label("Archived"))
                     .child(
@@ -2622,14 +2941,10 @@ impl Sidebar {
                             .text_color(gpui::rgb(theme::text_muted()))
                             .child(count_label),
                     )
-                    .child(icon(
-                        if expanded {
-                            "chevron-down"
-                        } else {
-                            "chevron-right"
-                        },
-                        px(14.),
-                        theme::text_secondary(),
+                    .child(self.section_chevron(
+                        expanded,
+                        "archived-toggle",
+                        SidebarHoverSection::Archived,
                     ))
                     .into_any_element()
             }
@@ -2643,14 +2958,27 @@ impl Sidebar {
         } else {
             entry
         };
-        if !self.application_vim_enabled {
-            return entry;
-        }
         let application_selected = self.vim_selects_row(ix);
-        let application_target = self.vim_target(ix).cloned();
+        let application_target = self
+            .application_vim_enabled
+            .then(|| self.vim_target(ix).cloned())
+            .flatten();
         let chat = self.chat.clone();
         div()
+            .id(("sidebar-entry", ix as u64))
             .w_full()
+            .on_hover(cx.listener(move |this, hovered: &bool, window, cx| {
+                if *hovered {
+                    this.set_hovered_entry(Some(ix), cx);
+                } else if this.hovered_entry == Some(ix) {
+                    // Let another row's enter run before clearing this hover.
+                    cx.defer_in(window, move |this, _window, cx| {
+                        if this.hovered_entry == Some(ix) {
+                            this.set_hovered_entry(None, cx);
+                        }
+                    });
+                }
+            }))
             .when_some(application_target, |row, target| {
                 row.on_mouse_down(gpui::MouseButton::Left, move |_event, window, cx| {
                     if let Some(chat) = chat.upgrade() {
@@ -2670,13 +2998,248 @@ impl Sidebar {
             .into_any_element()
     }
 
-    /// The project switcher row: names the scope the task list shows and
-    /// opens the menu that picks it. The overflow menu of one project
-    /// hangs off its row inside the switcher.
+    /// A heading stays under the pointer when its own rows fold or unfold.
+    fn hover_heading(&mut self, heading: SidebarEntry, cx: &mut Context<Self>) {
+        let entry = self.entries.iter().position(|entry| *entry == heading);
+        self.set_hovered_entry(entry, cx);
+    }
+
+    fn set_hovered_entry(&mut self, entry: Option<usize>, cx: &mut Context<Self>) {
+        self.hover_scroll_top = self.list.logical_scroll_top();
+        self.hovered_entry = entry;
+        let section = entry.and_then(|entry| self.entry_sections.get(entry).copied().flatten());
+        if self.hovered_section != section {
+            self.hovered_section = section;
+            cx.notify();
+        }
+    }
+
+    #[cfg(test)]
+    pub(super) fn section_hover_is_clear_for_test(&self) -> bool {
+        self.hovered_entry.is_none() && self.hovered_section.is_none()
+    }
+
+    fn section_hovered(&self, section: SidebarHoverSection) -> bool {
+        self.hovered_section == Some(section)
+            || (section == SidebarHoverSection::Projects
+                && matches!(self.hovered_section, Some(SidebarHoverSection::Section(label)) if label != SidebarSection::Pinned))
+    }
+
+    /// Reserve the chevron's space; a folded section always shows it.
+    fn section_chevron(
+        &self,
+        expanded: bool,
+        id: &'static str,
+        section: SidebarHoverSection,
+    ) -> AnyElement {
+        let chevron = div()
+            .id((id, 0_u64))
+            .flex_none()
+            .size(px(14.))
+            .flex()
+            .items_center()
+            .opacity(if !expanded || self.section_hovered(section) {
+                1.
+            } else {
+                0.
+            })
+            .child(icon(
+                if expanded {
+                    "chevron-down"
+                } else {
+                    "chevron-right"
+                },
+                px(14.),
+                theme::text_secondary(),
+            ));
+        chevron.into_any_element()
+    }
+
+    /// The Projects header: its label folds the list under it, and its
+    /// button adds a project.
     fn render_projects_header(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
-        let open = self.switcher_menu_open();
+        if self.computers.len() > 1 {
+            return self.render_switcher_header(window, cx);
+        }
+        let add = self.new_project_button().on_click(
+            cx.listener(|_this, _event, _window, cx| cx.emit(SidebarEvent::ChooseProject)),
+        );
+        let expanded = self.projects_expanded;
+        div()
+            .group("projects-header-actions")
+            .mt_3()
+            .mb_1()
+            .px_4()
+            .w_full()
+            .flex()
+            .items_center()
+            .gap_1()
+            .child(
+                div()
+                    .id("projects-header")
+                    .role(gpui::Role::Button)
+                    .aria_label("Projects")
+                    .aria_expanded(expanded)
+                    .debug_selector(|| "projects-header".to_string())
+                    .flex_1()
+                    .flex()
+                    .items_center()
+                    .gap_1()
+                    .py_1()
+                    .rounded(theme::RADIUS_SM)
+                    .hover(|style| style.cursor_pointer())
+                    .on_click(cx.listener(|this, _event, _window, cx| {
+                        this.set_projects_expanded(!this.projects_expanded, cx);
+                        this.hover_heading(SidebarEntry::ProjectsHeader, cx);
+                    }))
+                    .child(section_label("Projects"))
+                    .child(self.section_chevron(
+                        expanded,
+                        "projects-header-actions",
+                        SidebarHoverSection::Projects,
+                    )),
+            )
+            .child(add)
+            .into_any_element()
+    }
+
+    /// Add project stays visible until there is a project to browse.
+    fn new_project_button(&self) -> gpui::Stateful<Div> {
+        header_button("new-project", "folder-plus", "New project").when(
+            !self.switcher_roots.is_empty(),
+            |button| {
+                button
+                    .opacity(0.)
+                    .group_hover("projects-header-actions", |style| style.opacity(1.))
+            },
+        )
+    }
+
+    /// A folder group's header: the project's name, which folds its tasks,
+    /// with its overflow menu and a new task in it on hover.
+    fn render_folder_header(
+        &self,
+        index: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let Some(root) = self.switcher_roots.get(index) else {
+            return div().into_any_element();
+        };
+        let section = SidebarSection::Folder(index);
+        let expanded = self.section_expanded(section);
+        let rename_field = self.project_rename_field(&root.target).map(|field| {
+            field.on_mouse_down_out(cx.listener(|this, _event, _window, cx| {
+                this.leave_rename(cx);
+            }))
+        });
+        let renaming = rename_field.is_some();
+        // While a sidebar menu is open, only its owning header shows actions.
+        let menu_open = self.project_popup.is_open(&root.target);
+        let hover = !renaming && !self.sidebar_menu_open();
+        let new_task = root.target.clone();
+        let menu_target = root.target.clone();
+        let selector = root.folder_id.clone();
+        let header = div()
+            .debug_selector(|| selector.to_string())
+            .id(root.folder_id.clone())
+            .role(gpui::Role::Button)
+            .aria_label(root.name.clone())
+            .aria_expanded(expanded)
+            .group(root.row_group.clone())
+            .relative()
+            .w_auto()
+            .mx_2()
+            .my(px(1.))
+            .flex()
+            .items_center()
+            .gap(FOLDER_HEADER_GAP)
+            .px(FOLDER_HEADER_PADDING - gpui::rems(0.5))
+            .py_1()
+            .rounded(ROW_RADIUS)
+            .text_sm()
+            .text_color(gpui::rgb(theme::text_sidebar()))
+            .when(menu_open, |row| {
+                row.bg(gpui::rgb(theme::bg_sidebar_row_hover()))
+            })
+            .when(hover, |row| {
+                row.hover(|style| {
+                    style
+                        .bg(gpui::rgb(theme::bg_sidebar_row_hover()))
+                        .cursor_pointer()
+                })
+            })
+            .on_click(cx.listener(move |this, _event, _window, cx| {
+                this.toggle_section_expanded(section, cx);
+                this.hover_heading(SidebarEntry::SectionLabel(section), cx);
+            }))
+            .when(!renaming, |row| {
+                row.on_mouse_down(
+                    gpui::MouseButton::Right,
+                    cx.listener(move |this, event: &gpui::MouseDownEvent, _window, cx| {
+                        this.open_project_menu_at(&menu_target, event.position, cx);
+                    }),
+                )
+            })
+            .child(icon(
+                if expanded { "folder-open" } else { "folder" },
+                FOLDER_ICON_SIZE,
+                theme::text_secondary(),
+            ))
+            .map(|row| match rename_field {
+                Some(field) => row.child(field),
+                None => row.child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .line_clamp(1)
+                        .text_ellipsis()
+                        .child(root.name.clone()),
+                ),
+            })
+            .when(hover || menu_open, |row| {
+                row.child(
+                    hover_actions(&root.row_group, theme::bg_sidebar_row_hover())
+                        .when(menu_open, |strip| {
+                            strip.bg(gpui::rgb(theme::bg_sidebar_row_hover()))
+                        })
+                        .right_0()
+                        .rounded_r(ROW_RADIUS)
+                        .pr_2()
+                        .child(self.project_menu_trigger(root, window, cx))
+                        .child(
+                            row_button(
+                                root.new_task_id.clone(),
+                                &root.row_group,
+                                "square-pen",
+                                "New task",
+                            )
+                            .aria_label(root.new_task_label.clone())
+                            .tooltip(widgets::tooltip(root.new_task_label.clone(), None))
+                            .on_click(cx.listener(
+                                move |_this, _event, _window, cx| {
+                                    cx.stop_propagation();
+                                    cx.emit(SidebarEvent::Navigate(Navigate {
+                                        computer: new_task.computer.clone(),
+                                        destination: Destination::DraftProject(
+                                            new_task.path.clone(),
+                                        ),
+                                    }));
+                                },
+                            )),
+                        ),
+                )
+            });
+        header.into_any_element()
+    }
+
+    /// The project switcher row of paired computers: names the scope the
+    /// task list shows and opens the menu that picks it. The overflow menu
+    /// of one project hangs off its row inside the switcher.
+    fn render_switcher_header(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        let open = self.popup.is_open(&SidebarPopup::Switcher);
         let menu = open.then(|| {
-            let menu = self.switcher_menu(window, cx);
+            let menu = self.computer_switcher_menu(window, cx);
             self.popup.render(menu, Placement::BelowStart, window, cx)
         });
         let header = div()
@@ -2727,102 +3290,27 @@ impl Sidebar {
             .child(
                 self.popup
                     .trigger(SidebarPopup::Switcher, header, cx, |this, _, cx| {
-                        this.toggle_switcher_menu(cx)
+                        this.toggle_header_menu(cx)
                     }),
             )
             .child(
                 // A sibling over the header's end, not a button inside a
                 // button. It blocks the pointer, so a press on it never
                 // reaches the header behind it.
-                div()
-                    .id("new-project")
-                    .role(gpui::Role::Button)
-                    .aria_label("New project")
+                header_button("new-project", "folder-plus", "New project")
                     .occlude()
                     .absolute()
                     .right_4()
                     .top_0()
                     .bottom_0()
                     .my_auto()
-                    .size_6()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .rounded(theme::RADIUS_SM)
-                    .hover(|style| {
-                        style
-                            .bg(gpui::rgb(theme::bg_sidebar_row_hover()))
-                            .cursor_pointer()
-                    })
-                    .tooltip(widgets::tooltip("New project", None))
                     .on_click(cx.listener(|_this, _event, _window, cx| {
                         cx.stop_propagation();
                         cx.emit(SidebarEvent::ChooseProject);
-                    }))
-                    .child(icon("folder-plus", px(16.), theme::text_secondary())),
+                    })),
             )
             .children(menu)
             .into_any_element()
-    }
-
-    /// The menu the project switcher opens: every project, each with an
-    /// overflow menu of its own, plus a way back to all projects.
-    fn switcher_menu(&self, window: &mut Window, cx: &mut Context<Self>) -> Menu<Self> {
-        if self.computers.len() > 1 {
-            return self.computer_switcher_menu(window, cx);
-        }
-        let mut menu = Menu::new("switcher-menu", px(260.))
-            .label("Projects")
-            .max_height(px(360.))
-            .application_vim(self.application_vim_enabled)
-            .item(
-                MenuItem::new(
-                    ALL_PROJECTS_ID,
-                    "All projects",
-                    |this: &mut Self, _: &mut Window, cx: &mut Context<Self>| {
-                        this.set_project_filter(None, cx);
-                    },
-                )
-                .current(self.project_filter.is_none()),
-            );
-        for root in &self.switcher_roots {
-            let pick = root.root.clone();
-            let group = root.row_group.clone();
-            let mut item = MenuItem::new(
-                root.row_id.clone(),
-                root.name.clone(),
-                move |this: &mut Self, _: &mut Window, cx: &mut Context<Self>| {
-                    this.set_project_filter(Some(pick.clone()), cx);
-                },
-            )
-            .current(self.project_filter.as_deref() == Some(root.root.as_str()))
-            // The row's overflow button shows while the row is hovered.
-            .style(move |row| row.group(group))
-            .trailing(self.project_menu_trigger(root, window, cx));
-            if let Some(field) = self.project_rename_field(&root.target) {
-                item = item.content(field);
-            }
-            menu = menu.item(item);
-        }
-        if self.pages.has_more(PageKind::Projects) {
-            menu = menu.item(MenuItem::new(
-                "switcher-more-projects",
-                "Load more projects",
-                |this: &mut Self, _: &mut Window, cx: &mut Context<Self>| {
-                    this.load_page(PageKind::Projects, cx)
-                },
-            ));
-        }
-        menu.item(
-            MenuItem::new(
-                "switcher-new-project",
-                "New project…",
-                |_: &mut Self, _: &mut Window, cx: &mut Context<Self>| {
-                    cx.emit(SidebarEvent::ChooseProject);
-                },
-            )
-            .icon("folder-plus"),
-        )
     }
 
     /// A switcher row's overflow button, with the project's menu under it
@@ -2844,23 +3332,30 @@ impl Sidebar {
                         .into_iter()
                         .map(menu_item),
                 );
-            self.project_popup
-                .render(menu, Placement::BelowEnd, window, cx)
+            let placement = self
+                .project_menu_at
+                .map_or(Placement::BelowEnd, Placement::At);
+            self.project_popup.render(menu, placement, window, cx)
         });
         let toggle = root.target.clone();
         div()
             .relative()
-            .child(self.project_popup.trigger(
-                root.target.clone(),
-                row_menu_button(
-                    root.menu_id.clone(),
-                    &root.row_group,
-                    "Project options",
-                    open,
+            .child(
+                self.project_popup.trigger(
+                    root.target.clone(),
+                    row_menu_button(
+                        root.menu_id.clone(),
+                        &root.row_group,
+                        "Project options",
+                        open,
+                    )
+                    .when(self.computers.len() > 1 && !open, |button| {
+                        button.tooltip(widgets::tooltip("Project options", None))
+                    }),
+                    cx,
+                    move |this, _, cx| this.toggle_project_menu(&toggle, cx),
                 ),
-                cx,
-                move |this, _, cx| this.toggle_project_menu(&toggle, cx),
-            ))
+            )
             .children(menu)
     }
 
@@ -2885,12 +3380,17 @@ impl Sidebar {
         let session = row.id.clone();
         div()
             .relative()
-            .child(self.popup.trigger(
-                key,
-                row_menu_button(row.menu_id.clone(), &row.group, "More", open),
-                cx,
-                move |this, _, cx| this.toggle_task_menu(session.clone(), cx),
-            ))
+            .child(
+                self.popup.trigger(
+                    key,
+                    row_menu_button(row.menu_id.clone(), &row.group, "More", open)
+                        .when(!open, |button| {
+                            button.tooltip(widgets::tooltip("More", None))
+                        }),
+                    cx,
+                    move |this, _, cx| this.toggle_task_menu(session.clone(), cx),
+                ),
+            )
             .children(menu)
     }
 
@@ -2954,7 +3454,9 @@ impl Sidebar {
             pinned: is_pinned,
             settled: _,
             archived,
+            ..
         } = task;
+        let folder_task = self.computers.len() <= 1 && !is_pinned && !archived;
         let row = &self.rows[index];
         let is_selected = selected == Some(&*row.id);
         let activity = (!archived)
@@ -2979,6 +3481,7 @@ impl Sidebar {
             .mx_2()
             .my(px(1.))
             .id(row.element_id.clone())
+            .debug_selector(|| row.element_id.to_string())
             .role(gpui::Role::ListBoxOption)
             .accessibility_id(row.id.to_string())
             .aria_label(row.title.clone())
@@ -2990,7 +3493,14 @@ impl Sidebar {
             .items_center()
             .gap_1p5()
             .when(archived, |row| row.pl_4())
-            .when(!archived, |row| row.pl_6())
+            .when(!archived && !folder_task, |row| row.pl_6())
+            .when(folder_task, |row| {
+                row.pl(
+                    (FOLDER_HEADER_PADDING + FOLDER_HEADER_GAP - gpui::rems(0.5))
+                        .to_pixels(window.rem_size())
+                        + FOLDER_ICON_SIZE,
+                )
+            })
             .pr_4()
             .py_1()
             .rounded(ROW_RADIUS)
@@ -3007,8 +3517,7 @@ impl Sidebar {
             .on_click(cx.listener(move |_this, _event, _window, cx| {
                 cx.emit(SidebarEvent::Select(session_id.to_string()));
             }))
-            // The rename field takes the title's line; the project line
-            // stays under it.
+            // The rename field takes the title's line.
             .child(
                 div()
                     .flex_1()
@@ -3019,20 +3528,6 @@ impl Sidebar {
                         Some(field) => column.child(field),
                         None => column
                             .child(div().line_clamp(1).text_ellipsis().child(row.title.clone())),
-                    })
-                    .when(self.computers.len() <= 1, |column| {
-                        column.child(
-                            div()
-                                .text_xs()
-                                .text_color(gpui::rgb(if is_selected {
-                                    theme::text_secondary()
-                                } else {
-                                    theme::text_muted()
-                                }))
-                                .line_clamp(1)
-                                .text_ellipsis()
-                                .child(row.project_name.clone()),
-                        )
                     }),
             )
             .when_some(activity, |row_element, activity| {
@@ -3062,20 +3557,12 @@ impl Sidebar {
             })
             .when(!renaming, |el| {
                 el.child(
-                    div()
-                        .absolute()
-                        .top_0()
-                        .bottom_0()
+                    hover_actions(&row.group, hover_bg)
                         .when(is_pinned, |overlay| overlay.right(px(26.)))
                         .when(!is_pinned, |overlay| {
                             overlay.right_0().rounded_r(ROW_RADIUS)
                         })
-                        .flex()
-                        .items_center()
-                        .gap_1p5()
-                        .pl_2()
                         .pr_4()
-                        .group_hover(row.group.clone(), |style| style.bg(gpui::rgb(hover_bg)))
                         .child(self.task_menu_trigger(row, task, window, cx))
                         .child(row_action(
                             row.rename_id.clone(),
@@ -3114,9 +3601,13 @@ impl Render for Sidebar {
         // First, so the rename field's focus request below wins over a menu
         // handing focus back.
         self.sync_popup_focus(window, cx);
-        // A project's rename field lives in the switcher and ends with it,
-        // however the switcher closed.
-        if matches!(self.rename, Some(RenameTarget::Project(_))) && !self.switcher_menu_open() {
+        // Paired project renames end with their switcher.
+        if self
+            .rename
+            .as_ref()
+            .is_some_and(|target| self.renames_in_switcher(target))
+            && !self.header_menu_open()
+        {
             self.rename = None;
             self.rename_input = None;
         }
@@ -3125,10 +3616,13 @@ impl Render for Sidebar {
             if let Some(input) = self.rename_input.clone() {
                 let handle = input.read(cx).focus_handle(cx);
                 window.focus(&handle, cx);
-                // A project's field ends with the switcher around it; a
-                // task's field ends where focus goes next. Deferred, so the
-                // commit never drops this subscription inside its own call.
-                if matches!(self.rename, Some(RenameTarget::Task(_))) {
+                // Inline fields commit on blur; switcher fields end with
+                // their menu. Defer so the subscription is not dropped here.
+                if self
+                    .rename
+                    .as_ref()
+                    .is_some_and(|target| !self.renames_in_switcher(target))
+                {
                     self.rename_focus_out =
                         Some(
                             cx.on_focus_out(&handle, window, |_this, _event, window, cx| {
@@ -3178,6 +3672,11 @@ impl Render for Sidebar {
             .child(
                 div()
                     .id("session-list")
+                    .on_hover(cx.listener(|this, hovered: &bool, _window, cx| {
+                        if !*hovered {
+                            this.set_hovered_entry(None, cx);
+                        }
+                    }))
                     .role(gpui::Role::ListBox)
                     .aria_label("Tasks")
                     .aria_orientation(gpui::Orientation::Vertical)
@@ -3211,6 +3710,20 @@ fn activity_indicator(spinner_id: &SharedString, activity: SessionActivity) -> A
     }
 }
 
+/// The strip over a row's end that holds its hover buttons, with the
+/// row's hover color behind them so they cover the title.
+fn hover_actions(group: &SharedString, hover_bg: u32) -> Div {
+    div()
+        .absolute()
+        .top_0()
+        .bottom_0()
+        .flex()
+        .items_center()
+        .gap_1p5()
+        .pl_2()
+        .group_hover(group.clone(), |style| style.bg(gpui::rgb(hover_bg)))
+}
+
 /// Small icon button that shows only while the pointer is over its row.
 pub(super) fn row_action(
     id: SharedString,
@@ -3225,22 +3738,43 @@ pub(super) fn row_action(
 }
 
 /// A row's overflow button: [`row_action`]'s look, but it stays visible
-/// and pressed while its menu is open, and shows no tooltip over the menu.
+/// and pressed while its menu is open. Callers may add a tooltip while closed.
 fn row_menu_button(
     id: SharedString,
     group: &SharedString,
     label: &'static str,
     open: bool,
 ) -> gpui::Stateful<Div> {
-    row_button(id, group, "ellipsis", label)
-        .when(open, |button| {
-            button
-                .opacity(1.)
-                .bg(gpui::rgb(theme::bg_sidebar_row_selected()))
+    row_button(id, group, "ellipsis", label).when(open, |button| {
+        button
+            .opacity(1.)
+            .bg(gpui::rgb(theme::bg_sidebar_row_selected()))
+    })
+}
+
+/// An icon button of the Projects header.
+fn header_button(
+    id: &'static str,
+    icon_name: &'static str,
+    label: &'static str,
+) -> gpui::Stateful<Div> {
+    div()
+        .id(id)
+        .role(gpui::Role::Button)
+        .aria_label(label)
+        .flex_none()
+        .size_6()
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded(theme::RADIUS_SM)
+        .hover(|style| {
+            style
+                .bg(gpui::rgb(theme::bg_sidebar_row_hover()))
+                .cursor_pointer()
         })
-        .when(!open, |button| {
-            button.tooltip(widgets::tooltip(label, None))
-        })
+        .tooltip(widgets::tooltip(label, None))
+        .child(icon(icon_name, px(16.), theme::text_secondary()))
 }
 
 /// The small icon button a sidebar row shows while it is hovered.
@@ -3342,6 +3876,11 @@ mod tests {
         let chat = cx.new(|cx| ChatScreen::new_without_start(backend, "user".into(), cx));
         let sidebar = chat.update(cx, |chat, _| chat.sidebar.clone());
         sidebar.update(cx, |sidebar, cx| {
+            sidebar.computers = Arc::new(vec![
+                Computer::pending("east".into(), "East".into(), None),
+                Computer::pending("west".into(), "West".into(), None),
+            ]);
+            sidebar.project_filter = Some("/tmp/proj".into());
             sidebar.application_vim_enabled = true;
             sidebar.list = gpui::ListState::new(0, gpui::ListAlignment::Top, px(0.));
             let sessions = (0..102)

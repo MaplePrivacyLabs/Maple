@@ -326,6 +326,9 @@ impl Sidebar {
         computers: Arc<Vec<Computer>>,
         cx: &mut Context<Self>,
     ) {
+        let scope_changed = self.computers.len() > 1
+            && computers.len() <= 1
+            && self.project_filter.take().is_some();
         let changed = computer_revision(&self.computers) != computer_revision(&computers)
             || existing_snapshot_changed(&self.computers, &computers);
         if changed {
@@ -338,13 +341,14 @@ impl Sidebar {
             });
         }
         self.computers = computers;
-        if changed {
+        if scope_changed && self.pages.enabled {
+            self.refresh_pages(cx);
+        } else if changed {
             self.revalidate_computer_pages(cx);
         } else {
             self.ensure_computer_pages(cx);
         }
-        self.rebuild_computer_switcher_roots();
-        self.rebuild_entries();
+        self.rebuild_sections();
         self.list.remeasure_items(0..self.entries.len());
         cx.notify();
     }
@@ -1091,6 +1095,7 @@ impl Sidebar {
                     pinned: task.pinned_ms.is_some(),
                     settled: state == AgentTaskState::Settled,
                     archived: state == AgentTaskState::Archived,
+                    gap_after: false,
                 }));
             }
         } else {

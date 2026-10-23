@@ -4106,7 +4106,8 @@ impl ChatScreen {
         let Some((row, request)) = self.task_step_target(delta, cx) else {
             return;
         };
-        self.sidebar.read(cx).reveal_row(row);
+        self.sidebar
+            .update(cx, |sidebar, cx| sidebar.reveal_row(row, cx));
         if request.computer.as_deref() == self.backend.remote_host() {
             if let Destination::Task(id) = request.destination {
                 self.select_session(&id, cx);

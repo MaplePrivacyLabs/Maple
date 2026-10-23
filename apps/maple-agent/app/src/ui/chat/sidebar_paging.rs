@@ -95,6 +95,359 @@ mod tests {
     }
 
     #[gpui::test]
+    fn known_empty_folders_wait_for_complete_task_pages(cx: &mut gpui::TestAppContext) {
+        let _settings = crate::settings::SETTINGS_IO_LOCK.lock();
+        cx.executor().allow_parking();
+        let backend =
+            Arc::new(AgentBackend::for_test("http://127.0.0.1:9".into(), String::new()).unwrap());
+        let chat = cx.new(|cx| ChatScreen::new_without_start(backend, "user".into(), cx));
+        let sidebar = chat.read_with(cx, |chat, _| chat.sidebar.clone());
+        sidebar.update(cx, |sidebar, cx| {
+            sidebar.reset_persisted_for_test();
+            sidebar.pages.enabled = true;
+            sidebar.set_application_vim_enabled(true, cx);
+            sidebar.set_project_name_for_test("/empty", "Empty");
+            let note = SidebarEntry::FolderEmpty(0);
+            assert!(
+                !sidebar.entries.contains(&note),
+                "unrequested pages are unknown"
+            );
+            for kind in [PageKind::Active, PageKind::Settled, PageKind::Pinned] {
+                sidebar.pages.ready.insert(kind);
+                sidebar.rebuild_sections();
+                assert_eq!(sidebar.entries.contains(&note), kind == PageKind::Pinned);
+            }
+            let row = sidebar
+                .entries
+                .iter()
+                .position(|entry| *entry == note)
+                .unwrap();
+            assert!(sidebar.vim_by_row[row].is_none());
+            assert!(sidebar.entry_sections[row].is_none());
+            for kind in [PageKind::Active, PageKind::Settled, PageKind::Pinned] {
+                sidebar.pages.next.insert(kind, "more".into());
+                sidebar.rebuild_sections();
+                assert!(!sidebar.entries.contains(&note), "continuation is unknown");
+                sidebar.pages.next.remove(&kind);
+                sidebar.pages.loading.insert(kind);
+                sidebar.rebuild_sections();
+                assert!(
+                    !sidebar.entries.contains(&note),
+                    "in-flight pages are unknown"
+                );
+                sidebar.pages.loading.remove(&kind);
+                sidebar.pages.failed.insert(kind);
+                sidebar.rebuild_sections();
+                assert!(!sidebar.entries.contains(&note), "failed pages are unknown");
+                sidebar.pages.failed.remove(&kind);
+            }
+            sidebar.pages.pin_batches.push_back(vec!["pin".into()]);
+            sidebar.rebuild_sections();
+            assert!(!sidebar.entries.contains(&note));
+            sidebar.pages.pin_batches.clear();
+            sidebar.set_folder_expanded("/empty", Some(false), cx);
+            assert!(!sidebar.entries.contains(&note));
+            sidebar.set_folder_expanded("/empty", Some(true), cx);
+            assert!(sidebar.entries.contains(&note));
+            sidebar.set_projects_expanded(false, cx);
+            assert!(!sidebar.entries.contains(&note));
+            sidebar.set_projects_expanded(true, cx);
+            sidebar.set_filter_for_test("empty", cx);
+            assert!(
+                !sidebar.entries.contains(&note),
+                "search never shows the note"
+            );
+            sidebar.set_filter_for_test("", cx);
+            assert!(sidebar.entries.contains(&note));
+            sidebar.apply_task_page(
+                PageKind::Pinned,
+                vec![TaskSummary {
+                    project_root: "/empty".into(),
+                    ..page_summary("pin")
+                }],
+                false,
+            );
+            sidebar.rebuild_sections();
+            assert!(
+                !sidebar.entries.contains(&note),
+                "a pinned-only project is not empty"
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn scoped_pages_exclude_retained_tasks_from_other_projects(cx: &mut gpui::TestAppContext) {
+        let _settings = crate::settings::SETTINGS_IO_LOCK.lock();
+        cx.executor().allow_parking();
+        let backend =
+            Arc::new(AgentBackend::for_test("http://127.0.0.1:9".into(), String::new()).unwrap());
+        let chat = cx.new(|cx| ChatScreen::new_without_start(backend, "user".into(), cx));
+        let sidebar = chat.read_with(cx, |chat, _| chat.sidebar.clone());
+        sidebar.update(cx, |sidebar, cx| {
+            sidebar.reset_persisted_for_test();
+            sidebar.computers = Arc::new(vec![
+                Computer::pending("one".into(), "One".into(), None),
+                Computer::pending("two".into(), "Two".into(), None),
+            ]);
+            for state in [
+                AgentTaskState::Active,
+                AgentTaskState::Settled,
+                AgentTaskState::Archived,
+            ] {
+                sidebar.sessions = vec![
+                    AgentSessionSummary {
+                        project_root: "/a".into(),
+                        ..summary("running-a", AgentTaskState::Active)
+                    },
+                    AgentSessionSummary {
+                        project_root: "/a".into(),
+                        ..summary("selected-a", state)
+                    },
+                ];
+                sidebar.running = HashSet::from(["running-a".into()]);
+                sidebar.selected = Some("selected-a".into());
+                sidebar.project_filter = Some("/b".into());
+                sidebar.refresh_pages(cx);
+                assert_eq!(sidebar.sessions.len(), 2, "both A tasks remain cached");
+                sidebar.pinned_tasks = vec!["running-a".into()];
+                sidebar.apply_task_page(
+                    PageKind::Active,
+                    vec![TaskSummary {
+                        project_root: "/b".into(),
+                        ..page_summary("b")
+                    }],
+                    false,
+                );
+                sidebar.archived_expanded = true;
+                sidebar.rebuild_sections();
+                let shown: Vec<_> = sidebar
+                    .entries
+                    .iter()
+                    .filter_map(|entry| match entry {
+                        SidebarEntry::Task(task) => {
+                            Some(sidebar.sessions[task.session].id.as_str())
+                        }
+                        _ => None,
+                    })
+                    .collect();
+                assert_eq!(shown, ["b"]);
+                assert!(sidebar.pinned_rows.is_empty());
+                assert!(sidebar.archived_rows.is_empty());
+                assert!(sidebar.folder_names().is_empty());
+                assert_eq!(sidebar.active_rows(), [2]);
+                assert!(
+                    sidebar
+                        .entries
+                        .contains(&SidebarEntry::SectionLabel(SidebarSection::Active))
+                );
+                let generation = sidebar.pages.generation;
+                sidebar.set_computers(Arc::new(Vec::new()), cx);
+                assert!(sidebar.project_filter.is_none());
+                assert_eq!(sidebar.pages.generation, generation + 1);
+                assert!(!sidebar.pages.contains("b", false));
+                assert_eq!(
+                    sidebar.sessions.len(),
+                    2,
+                    "only live A tasks survive refresh"
+                );
+                assert_eq!(sidebar.folder_names(), ["a"]);
+                sidebar.set_computers(
+                    Arc::new(vec![
+                        Computer::pending("one".into(), "One".into(), None),
+                        Computer::pending("two".into(), "Two".into(), None),
+                    ]),
+                    cx,
+                );
+            }
+        });
+    }
+
+    #[gpui::test]
+    fn metadata_only_project_pages_add_visible_folders(cx: &mut gpui::TestAppContext) {
+        let _settings = crate::settings::SETTINGS_IO_LOCK.lock();
+        cx.executor().allow_parking();
+        let backend =
+            Arc::new(AgentBackend::for_test("http://127.0.0.1:9".into(), String::new()).unwrap());
+        let chat = cx.new(|cx| ChatScreen::new_without_start(backend, "user".into(), cx));
+        let sidebar = chat.read_with(cx, |chat, _| chat.sidebar.clone());
+        sidebar.update(cx, |sidebar, cx| {
+            sidebar.reset_persisted_for_test();
+            sidebar.pages.enabled = true;
+            let project = |root: &str| maple_agent::store::ProjectSummary {
+                root: root.into(),
+                display_name: None,
+                name_revision: 1,
+                last_used_ms: 1,
+                is_default_workspace: false,
+                position: None,
+                truncated: false,
+            };
+            sidebar.apply_project_page(
+                maple_agent::store::NavigationProjectPage {
+                    projects: vec![project("/a")],
+                    next_cursor: Some("next".into()),
+                },
+                false,
+                cx,
+            );
+            sidebar.rebuild_sections();
+            assert_eq!(sidebar.folder_names(), ["a"]);
+            assert!(
+                sidebar
+                    .entries
+                    .contains(&SidebarEntry::SectionLabel(SidebarSection::Folder(0)))
+            );
+            assert!(
+                sidebar
+                    .entries
+                    .contains(&SidebarEntry::LoadMore(PageKind::Projects))
+            );
+            sidebar.apply_project_page(
+                maple_agent::store::NavigationProjectPage {
+                    projects: vec![project("/b")],
+                    next_cursor: None,
+                },
+                true,
+                cx,
+            );
+            sidebar.rebuild_sections();
+            assert_eq!(sidebar.folder_names(), ["a", "b"]);
+            assert_eq!(
+                sidebar
+                    .entries
+                    .iter()
+                    .filter(|entry| matches!(
+                        entry,
+                        SidebarEntry::SectionLabel(SidebarSection::Folder(_))
+                    ))
+                    .count(),
+                2
+            );
+            assert!(
+                !sidebar
+                    .entries
+                    .iter()
+                    .any(|entry| matches!(entry, SidebarEntry::Empty(_)))
+            );
+            sidebar.apply_task_page(
+                PageKind::Active,
+                vec![TaskSummary {
+                    project_root: "/b".into(),
+                    ..page_summary("b-task")
+                }],
+                false,
+            );
+            sidebar.rebuild_sections();
+            assert_eq!(sidebar.folder_names(), ["b", "a"]);
+            sidebar.set_filter_for_test("a", cx);
+            assert_eq!(sidebar.folder_names(), ["a"]);
+            sidebar.set_filter_for_test("unmatched", cx);
+            assert!(sidebar.folder_names().is_empty());
+        });
+    }
+
+    /// Folder projection must not consume cursors or strand tasks between pages.
+    #[gpui::test]
+    fn folder_pages_preserve_continuations_and_fold_boundaries(cx: &mut gpui::TestAppContext) {
+        let _settings = crate::settings::SETTINGS_IO_LOCK.lock();
+        cx.executor().allow_parking();
+        let backend =
+            Arc::new(AgentBackend::for_test("http://127.0.0.1:9".into(), String::new()).unwrap());
+        let chat = cx.new(|cx| ChatScreen::new_without_start(backend, "user".into(), cx));
+        let sidebar = chat.read_with(cx, |chat, _| chat.sidebar.clone());
+        sidebar.update(cx, |sidebar, cx| {
+            sidebar.reset_persisted_for_test();
+            sidebar.pages = SidebarPages {
+                enabled: true,
+                ..SidebarPages::default()
+            };
+            sidebar.selected = None;
+            let row = |id: &str, root: &str| TaskSummary {
+                project_root: root.into(),
+                ..page_summary(id)
+            };
+            sidebar.apply_task_page(PageKind::Pinned, vec![row("pin", "/a")], false);
+            sidebar.apply_task_page(PageKind::Active, vec![row("a1", "/a")], false);
+            sidebar.apply_task_page(
+                PageKind::Settled,
+                vec![TaskSummary {
+                    state: "settled".into(),
+                    ..row("b1", "/b")
+                }],
+                false,
+            );
+            sidebar.apply_task_page(
+                PageKind::Archived,
+                vec![TaskSummary {
+                    state: "archived".into(),
+                    ..row("old", "/a")
+                }],
+                false,
+            );
+            for kind in [
+                PageKind::Pinned,
+                PageKind::Active,
+                PageKind::Settled,
+                PageKind::Archived,
+                PageKind::Projects,
+            ] {
+                sidebar.pages.next.insert(kind, "continuation".into());
+            }
+            sidebar.archived_expanded = true;
+            sidebar.rebuild_sections();
+            assert_eq!(sidebar.folder_names(), ["a", "b"]);
+            assert_eq!(sidebar.pinned_rows.len(), 1);
+            assert_eq!(sidebar.archived_rows.len(), 1);
+            sidebar.apply_task_page(
+                PageKind::Active,
+                vec![row("a2", "/a"), row("c1", "/c")],
+                true,
+            );
+            sidebar.rebuild_sections();
+            assert_eq!(sidebar.folder_names(), ["a", "b", "c"]);
+            assert_eq!(
+                sidebar
+                    .sections
+                    .iter()
+                    .map(|(_, rows)| rows.len())
+                    .sum::<usize>(),
+                4
+            );
+            let more = |sidebar: &Sidebar| {
+                sidebar
+                    .entries
+                    .iter()
+                    .filter_map(|entry| match entry {
+                        SidebarEntry::LoadMore(kind) => Some(*kind),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(
+                more(sidebar),
+                [
+                    PageKind::Pinned,
+                    PageKind::Active,
+                    PageKind::Settled,
+                    PageKind::Projects,
+                    PageKind::Archived
+                ]
+            );
+            sidebar.set_projects_expanded(false, cx);
+            assert_eq!(more(sidebar), [PageKind::Pinned, PageKind::Archived]);
+            assert!(
+                !sidebar
+                    .entries
+                    .iter()
+                    .any(|entry| matches!(entry, SidebarEntry::Empty(_)))
+            );
+            sidebar.set_projects_expanded(true, cx);
+            assert_eq!(sidebar.pages.ids[&PageKind::Active], ["a1", "a2", "c1"]);
+            assert_eq!(sidebar.pages.next[&PageKind::Active], "continuation");
+        });
+    }
+
+    #[gpui::test]
     fn live_task_insert_preserves_the_loaded_cursor_boundary(cx: &mut gpui::TestAppContext) {
         let _settings = crate::settings::SETTINGS_IO_LOCK.lock();
         cx.executor().allow_parking();
@@ -152,7 +505,7 @@ mod tests {
                         assert!(loaded.contains(id), "lost loaded boundary {id}");
                         assert!(sidebar.sessions.iter().any(|row| &row.id == id));
                     }
-                    assert_eq!(sidebar.active_rows.len(), count + 2);
+                    assert_eq!(sidebar.active_rows().len(), count + 2);
                     assert_eq!(sidebar.pinned_rows.len(), 1);
                     assert_eq!(sidebar.pages.next.contains_key(&PageKind::Active), has_more);
                     assert!(!sidebar.pages.ids[&PageKind::Settled].contains(&"moved".into()));
@@ -219,6 +572,13 @@ impl SidebarPages {
             || self.failed.contains(&kind)
             || self.loading.contains(&kind)
             || (kind == PageKind::Pinned && !self.pin_batches.is_empty())
+    }
+    /// Full coverage for the tasks shown in project folders, including pins.
+    pub(super) fn non_archived_complete(&self) -> bool {
+        !self.enabled
+            || [PageKind::Active, PageKind::Settled, PageKind::Pinned]
+                .into_iter()
+                .all(|kind| self.ready.contains(&kind) && !self.has_more(kind))
     }
     pub(super) fn loading(&self, kind: PageKind) -> bool {
         self.loading.contains(&kind)

@@ -33,6 +33,8 @@ pub(super) enum SidebarTarget {
     NewTask,
     Search,
     Projects,
+    /// A folder group's header, by project root.
+    Folder(String),
     Task(String),
     Archived,
     LoadMore(String),
@@ -564,8 +566,10 @@ impl ChatScreen {
                 Some(SidebarTarget::NewTask) => self.new_session(cx),
                 Some(SidebarTarget::Search) => self.focus_sidebar_search(window, cx),
                 Some(SidebarTarget::Projects) => self.sidebar.update(cx, |sidebar, cx| {
-                    let open = sidebar.switcher_menu_open();
-                    sidebar.set_switcher_menu_open(!open, cx);
+                    sidebar.activate_projects(cx);
+                }),
+                Some(SidebarTarget::Folder(root)) => self.sidebar.update(cx, |sidebar, cx| {
+                    sidebar.set_folder_expanded(&root, None, cx);
                 }),
                 Some(SidebarTarget::Computer(request)) => cx.emit(request),
                 Some(SidebarTarget::Task(task_id)) => self.select_session(&task_id, cx),
@@ -984,9 +988,11 @@ impl ChatScreen {
         self.focus_application_vim(window, cx);
     }
 
-    fn reveal_application_selection(&self, cx: &gpui::App) {
+    fn reveal_application_selection(&self, cx: &mut Context<Self>) {
         match self.application_vim.region {
-            ChatRegion::Sidebar => self.sidebar.read(cx).vim_reveal(),
+            ChatRegion::Sidebar => self
+                .sidebar
+                .update(cx, |sidebar, cx| sidebar.vim_reveal(cx)),
             ChatRegion::Transcript => {
                 if let Some(item_id) = self.selected_transcript_id()
                     && let Some(&(row, _)) = self.timeline_index.get(item_id)
