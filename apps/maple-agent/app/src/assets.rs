@@ -34,6 +34,7 @@ assets!(
     "icons/folder.svg",
     "icons/globe.svg",
     "icons/image.svg",
+    "icons/list-filter.svg",
     "icons/loader-circle.svg",
     "icons/lock.svg",
     "icons/mic.svg",

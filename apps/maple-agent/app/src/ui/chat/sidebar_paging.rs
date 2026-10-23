@@ -104,6 +104,7 @@ mod tests {
         let sidebar = chat.read_with(cx, |chat, _| chat.sidebar.clone());
         sidebar.update(cx, |sidebar, cx| {
             sidebar.reset_persisted_for_test();
+            sidebar.view = SidebarView::default();
             sidebar.pages.enabled = true;
             sidebar.set_application_vim_enabled(true, cx);
             sidebar.set_project_name_for_test("/empty", "Empty");
@@ -185,6 +186,7 @@ mod tests {
         let sidebar = chat.read_with(cx, |chat, _| chat.sidebar.clone());
         sidebar.update(cx, |sidebar, cx| {
             sidebar.reset_persisted_for_test();
+            sidebar.view = SidebarView::default();
             sidebar.computers = Arc::new(vec![
                 Computer::pending("one".into(), "One".into(), None),
                 Computer::pending("two".into(), "Two".into(), None),
@@ -272,6 +274,7 @@ mod tests {
         let sidebar = chat.read_with(cx, |chat, _| chat.sidebar.clone());
         sidebar.update(cx, |sidebar, cx| {
             sidebar.reset_persisted_for_test();
+            sidebar.view = SidebarView::default();
             sidebar.pages.enabled = true;
             let project = |root: &str| maple_agent::store::ProjectSummary {
                 root: root.into(),
@@ -329,6 +332,16 @@ mod tests {
                     .iter()
                     .any(|entry| matches!(entry, SidebarEntry::Empty(_)))
             );
+            for group in [SidebarGroup::Status, SidebarGroup::Recent] {
+                sidebar.view.group = group;
+                sidebar.rebuild_sections();
+                assert!(
+                    sidebar
+                        .entries
+                        .contains(&SidebarEntry::Empty(SidebarEmpty::NoTasks))
+                );
+            }
+            sidebar.view.group = SidebarGroup::Folder;
             sidebar.apply_task_page(
                 PageKind::Active,
                 vec![TaskSummary {
@@ -357,6 +370,7 @@ mod tests {
         let sidebar = chat.read_with(cx, |chat, _| chat.sidebar.clone());
         sidebar.update(cx, |sidebar, cx| {
             sidebar.reset_persisted_for_test();
+            sidebar.view = SidebarView::default();
             sidebar.pages = SidebarPages {
                 enabled: true,
                 ..SidebarPages::default()
@@ -444,6 +458,15 @@ mod tests {
             sidebar.set_projects_expanded(true, cx);
             assert_eq!(sidebar.pages.ids[&PageKind::Active], ["a1", "a2", "c1"]);
             assert_eq!(sidebar.pages.next[&PageKind::Active], "continuation");
+            sidebar.view.group = SidebarGroup::Status;
+            sidebar.rebuild_sections();
+            sidebar.toggle_section_expanded(SidebarSection::Active, cx);
+            assert!(!more(sidebar).contains(&PageKind::Active));
+            assert!(more(sidebar).contains(&PageKind::Settled));
+            sidebar.view.group = SidebarGroup::Recent;
+            sidebar.rebuild_sections();
+            assert!(more(sidebar).contains(&PageKind::Active));
+            assert_eq!(sidebar.section_rows(SidebarSection::Recents).len(), 4);
         });
     }
 

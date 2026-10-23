@@ -13,6 +13,40 @@ pub struct RemoteSidebarSettings {
     pub pinned_tasks: Vec<String>,
 }
 
+/// How the sidebar groups and orders tasks: its View options menu.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct SidebarView {
+    pub group: SidebarGroup,
+    pub sort: SidebarSort,
+    pub ascending: bool,
+    /// The project line under each title. `None` shows it except when
+    /// grouped by folder, whose header already names the project.
+    pub metadata: Option<bool>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SidebarGroup {
+    /// Active, settled: the task ladder.
+    Status,
+    #[serde(alias = "none")]
+    Recent,
+    #[default]
+    #[serde(other)]
+    Folder,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SidebarSort {
+    Created,
+    Name,
+    #[default]
+    #[serde(other)]
+    Updated,
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct AppSettings {
     /// Whether tool cards show input/output payloads by default.
@@ -47,6 +81,8 @@ pub struct AppSettings {
     /// `/work/project` is not the same project as that path on this computer.
     #[serde(default)]
     pub remote_sidebars: std::collections::HashMap<String, RemoteSidebarSettings>,
+    #[serde(default)]
+    pub sidebar_view: SidebarView,
     /// Whether run completion and questions raise desktop notifications
     /// while the window is not focused.
     #[serde(default = "default_desktop_notifications")]
@@ -246,6 +282,7 @@ impl Default for AppSettings {
             pinned_tasks: Vec::new(),
             project_names: std::collections::HashMap::new(),
             remote_sidebars: std::collections::HashMap::new(),
+            sidebar_view: SidebarView::default(),
             desktop_notifications: default_desktop_notifications(),
             automatic_update_downloads: default_automatic_update_downloads(),
             password_notification_details: false,
@@ -805,6 +842,41 @@ mod tests {
     use super::*;
 
     #[test]
+    fn the_sidebar_view_round_trips_and_defaults_to_folders() {
+        let settings: AppSettings = serde_json::from_str("{}").unwrap();
+        assert_eq!(settings.sidebar_view, SidebarView::default());
+        assert_eq!(settings.sidebar_view.group, SidebarGroup::Folder);
+        let view = SidebarView {
+            group: SidebarGroup::Recent,
+            sort: SidebarSort::Name,
+            ascending: true,
+            metadata: Some(false),
+        };
+        let json = serde_json::to_value(AppSettings {
+            sidebar_view: view,
+            ..AppSettings::default()
+        })
+        .unwrap();
+        assert_eq!(json["sidebar_view"]["group"], "recent");
+        let settings: AppSettings = serde_json::from_value(json).unwrap();
+        assert_eq!(settings.sidebar_view, view);
+    }
+
+    #[test]
+    fn sidebar_view_reads_legacy_and_unknown_choices() {
+        let legacy: AppSettings =
+            serde_json::from_str(r#"{"sidebar_view":{"group":"none"}}"#).unwrap();
+        assert_eq!(legacy.sidebar_view.group, SidebarGroup::Recent);
+        for group in ["date", "unknown"] {
+            let settings: AppSettings = serde_json::from_value(serde_json::json!({
+                "sidebar_view": {"group": group, "sort": "unknown"}
+            }))
+            .unwrap();
+            assert_eq!(settings.sidebar_view, SidebarView::default());
+        }
+    }
+
+    #[test]
     fn remote_sidebar_preferences_cannot_override_owner_project_names() {
         let mut settings: RemoteSidebarSettings = serde_json::from_str(
             r#"{"display_name":"Lab","pinned_tasks":["task-1"],"project_names":{"/work/one":"Old alias"}}"#,
@@ -958,6 +1030,13 @@ mod tests {
         install_test_store(store.clone());
         update_settings_in_background(|settings| settings.tts_voice = "neutral_male".into());
         update_settings_in_background(|settings| settings.tts_speed = 1.5);
+        let view = SidebarView {
+            group: SidebarGroup::Recent,
+            sort: SidebarSort::Name,
+            ascending: true,
+            metadata: Some(false),
+        };
+        update_settings_in_background(move |settings| settings.sidebar_view = view);
         update_settings_in_background(|settings| settings.automatic_update_downloads = false);
         update_settings_in_background(|settings| {
             settings
@@ -967,6 +1046,7 @@ mod tests {
         update_settings_and_wait(|_| {});
         let reloaded = load_host_settings(&store, None).unwrap();
         assert_eq!(reloaded.tts_voice, "neutral_male");
+        assert_eq!(reloaded.sidebar_view, view);
         assert!((reloaded.tts_speed - 1.5).abs() < 0.01);
         assert!(!reloaded.automatic_update_downloads);
         assert_eq!(

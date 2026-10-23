@@ -566,7 +566,8 @@ impl ChatScreen {
                 Some(SidebarTarget::NewTask) => self.new_session(cx),
                 Some(SidebarTarget::Search) => self.focus_sidebar_search(window, cx),
                 Some(SidebarTarget::Projects) => self.sidebar.update(cx, |sidebar, cx| {
-                    sidebar.activate_projects(cx);
+                    let open = sidebar.header_menu_open();
+                    sidebar.set_header_menu_open(!open, cx);
                 }),
                 Some(SidebarTarget::Folder(root)) => self.sidebar.update(cx, |sidebar, cx| {
                     sidebar.set_folder_expanded(&root, None, cx);

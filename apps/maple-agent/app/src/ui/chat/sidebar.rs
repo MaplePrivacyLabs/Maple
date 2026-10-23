@@ -76,6 +76,7 @@ use super::commands::ChatCommand;
 use super::navigation::SidebarTarget;
 use super::{ChatScreen, section_label};
 use crate::backend::AgentBackend;
+use crate::settings::{SidebarGroup, SidebarSort, SidebarView};
 use crate::ui::icons::{icon, spinner_with_id, wordmark};
 use crate::ui::popup::{Menu, MenuItem, Placement, Popup};
 use crate::ui::text_input::TextInput;
@@ -198,7 +199,7 @@ pub(super) struct SidebarRow {
     pub(super) menu_delete_id: SharedString,
     pub(super) menu_reopen_id: SharedString,
     pub(super) title: SharedString,
-    /// Display name of the task's project, for search and accessibility.
+    /// Display name of the task's project, for metadata, search and accessibility.
     pub(super) project_name: SharedString,
     /// Lower-cased title, matched against the sidebar filter.
     pub(super) search: String,
@@ -243,6 +244,8 @@ const ALL_PROJECTS_ID: &str = "switcher-all-projects";
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum SidebarPopup {
     Switcher,
+    /// The View options menu: grouping, order, what rows show.
+    View,
     /// A task row's overflow menu, by the row's shared id.
     Task(Arc<str>),
 }
@@ -357,12 +360,15 @@ pub(super) enum SidebarEmpty {
     NoMatches,
 }
 
-/// A named section of the task list: pinned tasks, then project folders.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// A named section of the task list: pinned tasks, then the sections of
+/// the chosen grouping.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(super) enum SidebarSection {
     Pinned,
     Active,
     Settled,
+    /// One flat list of recent tasks.
+    Recents,
     /// A project's tasks, by index into the switcher roots.
     Folder(usize),
 }
@@ -381,6 +387,7 @@ impl SidebarSection {
             Self::Pinned => "Pinned",
             Self::Active => "Active",
             Self::Settled => "Settled",
+            Self::Recents => "Recents",
             Self::Folder(_) => "Tasks",
         }
     }
@@ -390,6 +397,7 @@ impl SidebarSection {
             Self::Pinned => "section-toggle-pinned",
             Self::Active => "section-toggle-active",
             Self::Settled => "section-toggle-settled",
+            Self::Recents => "section-toggle-recents",
             Self::Folder(_) => "section-toggle-tasks",
         }
     }
@@ -459,13 +467,13 @@ pub(super) struct Sidebar {
     /// order.
     sections: Vec<(SidebarSection, Vec<usize>)>,
     archived_rows: Vec<usize>,
-    pinned_expanded: bool,
-    active_expanded: bool,
-    settled_expanded: bool,
+    /// Folded sections other than folders, which fold by root below.
+    collapsed: HashSet<SidebarSection>,
     collapsed_roots: HashSet<String>,
     /// Whether the list under the Projects header shows.
     projects_expanded: bool,
     archived_expanded: bool,
+    view: SidebarView,
     switcher_roots: Vec<SwitcherRoot>,
     computer_switcher_roots: Vec<Vec<SwitcherRoot>>,
     scope_label: SharedString,
@@ -753,12 +761,11 @@ impl Sidebar {
             pinned_rows: Vec::new(),
             sections: Vec::new(),
             archived_rows: Vec::new(),
-            pinned_expanded: true,
-            active_expanded: true,
-            settled_expanded: true,
+            collapsed: HashSet::new(),
             collapsed_roots: HashSet::new(),
             projects_expanded: true,
             archived_expanded: false,
+            view: settings.sidebar_view,
             switcher_roots: Vec::new(),
             computer_switcher_roots: Vec::new(),
             scope_label: "All projects".into(),
@@ -1121,27 +1128,13 @@ impl Sidebar {
     }
 
     #[cfg(test)]
-    pub(super) fn active_rows(&self) -> Vec<usize> {
-        self.entries
-            .iter()
-            .filter_map(|entry| match entry {
-                SidebarEntry::Task(task) if !task.pinned && !task.settled && !task.archived => {
-                    Some(task.session)
-                }
-                _ => None,
-            })
-            .collect()
+    pub(super) fn active_rows(&self) -> &[usize] {
+        self.section_rows(SidebarSection::Active)
     }
 
     #[cfg(test)]
-    pub(super) fn settled_rows(&self) -> Vec<usize> {
-        self.entries
-            .iter()
-            .filter_map(|entry| match entry {
-                SidebarEntry::Task(task) if task.settled => Some(task.session),
-                _ => None,
-            })
-            .collect()
+    pub(super) fn settled_rows(&self) -> &[usize] {
+        self.section_rows(SidebarSection::Settled)
     }
 
     /// The folder groups' project names, in display order.
@@ -1154,6 +1147,16 @@ impl Sidebar {
                 _ => None,
             })
             .collect()
+    }
+
+    #[cfg(test)]
+    pub(super) fn view(&self) -> SidebarView {
+        self.view
+    }
+
+    #[cfg(test)]
+    pub(super) fn show_metadata_for_test(&self) -> bool {
+        self.show_metadata()
     }
 
     #[cfg(test)]
@@ -1175,8 +1178,18 @@ impl Sidebar {
         self.popup.open_key().is_some() || self.project_popup.open_key().is_some()
     }
 
+    /// The menu the Projects header opens: the switcher while paired
+    /// computers list their projects there, else the View options.
+    fn header_popup(&self) -> SidebarPopup {
+        if self.computers.len() > 1 {
+            SidebarPopup::Switcher
+        } else {
+            SidebarPopup::View
+        }
+    }
+
     pub(super) fn header_menu_open(&self) -> bool {
-        self.popup.is_open(&SidebarPopup::Switcher)
+        self.popup.is_open(&self.header_popup())
     }
 
     #[cfg(test)]
@@ -1244,6 +1257,11 @@ impl Sidebar {
     /// process reads; a fixture starts from nothing persisted.
     #[cfg(test)]
     pub(super) fn reset_persisted_for_test(&mut self) {
+        // Most fixtures check the task ladder, so they group by status.
+        self.view = SidebarView {
+            group: SidebarGroup::Status,
+            ..SidebarView::default()
+        };
         self.pinned_tasks.clear();
         self.project_metadata.clear();
         self.task_project_labels.clear();
@@ -1370,9 +1388,8 @@ impl Sidebar {
         true
     }
 
-    /// Rebuild pinned tasks and project folders, each newest activity
-    /// first. Called when sessions, roots, names, or the filter change,
-    /// not per render.
+    /// Rebuild pinned tasks and the view's grouped, sorted sections when
+    /// sessions, roots, names, the filter, or the view change, never per frame.
     fn rebuild_sections(&mut self) {
         self.sync_rows();
         let filter = self.filter.as_str();
@@ -1448,59 +1465,87 @@ impl Sidebar {
             .filter(|root| !self.removed_projects.contains(*root))
             .map(|root| SwitcherRoot::new(self.project_target(root), self.root_name(root).into()))
             .collect();
-        let order = |&ix: &usize| std::cmp::Reverse(self.sessions[ix].updated_ms);
-        pinned.sort_by_key(order);
-        listed.sort_by_key(order);
+        let order = |a: &usize, b: &usize| {
+            let order = match if self.computers.len() > 1 {
+                SidebarSort::Updated
+            } else {
+                self.view.sort
+            } {
+                SidebarSort::Name => self.rows[*a].search.cmp(&self.rows[*b].search),
+                SidebarSort::Created => self.sessions[*a]
+                    .created_ms
+                    .cmp(&self.sessions[*b].created_ms),
+                SidebarSort::Updated => self.sessions[*a]
+                    .updated_ms
+                    .cmp(&self.sessions[*b].updated_ms),
+            };
+            if self.computers.len() <= 1 && self.view.ascending {
+                order
+            } else {
+                order.reverse()
+            }
+        };
+        pinned.sort_by(order);
+        listed.sort_by(order);
         if self.computers.len() <= 1 {
-            archived.sort_by_key(order);
+            archived.sort_by(order);
         }
-        if self.computers.len() > 1 {
-            let (active, settled) = listed
-                .into_iter()
-                .partition(|&ix| self.session_is_active(&self.sessions[ix]));
-            self.sections = vec![
-                (SidebarSection::Active, active),
-                (SidebarSection::Settled, settled),
-            ];
+        let mut sections = Vec::new();
+        match if self.computers.len() > 1 {
+            SidebarGroup::Status
         } else {
-            let folder_of: HashMap<&str, usize> = self
-                .switcher_roots
-                .iter()
-                .enumerate()
-                .map(|(index, root)| (root.root.as_str(), index))
-                .collect();
-            // Each root's newest activity, pinned tasks included, and
-            // its unpinned rows.
-            let mut folders = vec![(None, Vec::new()); self.switcher_roots.len()];
-            for (position, &ix) in pinned.iter().chain(&listed).enumerate() {
-                let session = &self.sessions[ix];
-                if let Some(&folder) = folder_of.get(session.project_root.as_str()) {
-                    let (latest, rows) = &mut folders[folder];
-                    *latest = (*latest).max(Some(session.updated_ms));
-                    if position >= pinned.len() {
-                        rows.push(ix);
+            self.view.group
+        } {
+            SidebarGroup::Status => {
+                let (active, settled) = listed
+                    .into_iter()
+                    .partition(|&ix| self.session_is_active(&self.sessions[ix]));
+                sections.push((SidebarSection::Active, active));
+                sections.push((SidebarSection::Settled, settled));
+            }
+            SidebarGroup::Recent => sections.push((SidebarSection::Recents, listed)),
+            SidebarGroup::Folder => {
+                let folder_of: HashMap<&str, usize> = self
+                    .switcher_roots
+                    .iter()
+                    .enumerate()
+                    .map(|(index, root)| (root.root.as_str(), index))
+                    .collect();
+                // Each root's newest activity, pinned tasks included, and
+                // its unpinned rows.
+                let mut folders = vec![(None, Vec::new()); self.switcher_roots.len()];
+                for (position, &ix) in pinned.iter().chain(&listed).enumerate() {
+                    let session = &self.sessions[ix];
+                    if let Some(&folder) = folder_of.get(session.project_root.as_str()) {
+                        let (latest, rows) = &mut folders[folder];
+                        *latest = (*latest).max(Some(session.updated_ms));
+                        if position >= pinned.len() {
+                            rows.push(ix);
+                        }
                     }
                 }
+                let mut folders: Vec<_> = folders
+                    .into_iter()
+                    .enumerate()
+                    .filter(|(index, (_, rows))| {
+                        let root = &self.switcher_roots[*index];
+                        scoped.is_none_or(|scoped| scoped == root.root)
+                            && (!rows.is_empty()
+                                || !filtering
+                                || root.name.to_lowercase().contains(filter))
+                    })
+                    .collect();
+                // The folder with the latest activity leads.
+                folders.sort_by_key(|(_, (latest, _))| std::cmp::Reverse(*latest));
+                sections.extend(
+                    folders
+                        .into_iter()
+                        .map(|(index, (_, rows))| (SidebarSection::Folder(index), rows)),
+                );
             }
-            let mut folders: Vec<_> = folders
-                .into_iter()
-                .enumerate()
-                .filter(|(index, (_, rows))| {
-                    let root = &self.switcher_roots[*index];
-                    scoped.is_none_or(|scoped| scoped == root.root)
-                        && (!rows.is_empty()
-                            || !filtering
-                            || root.name.to_lowercase().contains(filter))
-                })
-                .collect();
-            // The folder with the latest activity leads.
-            folders.sort_by_key(|(_, (latest, _))| std::cmp::Reverse(*latest));
-            self.sections = folders
-                .into_iter()
-                .map(|(index, (_, rows))| (SidebarSection::Folder(index), rows))
-                .collect();
         }
         self.pinned_rows = pinned;
+        self.sections = sections;
         self.archived_rows = archived;
         self.rebuild_computer_switcher_roots();
         self.rebuild_entries();
@@ -1571,13 +1616,21 @@ impl Sidebar {
                     tasks(&mut entries, *section, rows);
                 }
                 if self.pages.enabled {
-                    for kind in [
-                        PageKind::Active,
-                        PageKind::Settled,
-                        PageKind::Search,
-                        PageKind::Projects,
+                    for (kind, expanded) in [
+                        (
+                            PageKind::Active,
+                            self.view.group != SidebarGroup::Status
+                                || self.section_expanded(SidebarSection::Active),
+                        ),
+                        (
+                            PageKind::Settled,
+                            self.view.group != SidebarGroup::Status
+                                || self.section_expanded(SidebarSection::Settled),
+                        ),
+                        (PageKind::Search, !self.filter.is_empty()),
+                        (PageKind::Projects, true),
                     ] {
-                        if self.pages.has_more(kind) {
+                        if expanded && self.pages.has_more(kind) {
                             entries.push(SidebarEntry::LoadMore(kind));
                         }
                     }
@@ -1600,9 +1653,18 @@ impl Sidebar {
         }
         if self.computers.len() > 1 && self.pages.enabled {
             for (kind, expanded) in [
-                (PageKind::Pinned, self.pinned_expanded),
-                (PageKind::Active, self.active_expanded),
-                (PageKind::Settled, self.settled_expanded),
+                (
+                    PageKind::Pinned,
+                    self.section_expanded(SidebarSection::Pinned),
+                ),
+                (
+                    PageKind::Active,
+                    self.section_expanded(SidebarSection::Active),
+                ),
+                (
+                    PageKind::Settled,
+                    self.section_expanded(SidebarSection::Settled),
+                ),
                 (PageKind::Archived, self.archived_expanded),
                 (PageKind::Search, !self.filter.is_empty()),
             ] {
@@ -1620,7 +1682,11 @@ impl Sidebar {
                     || (!self.pages.enabled && matches!(entry, SidebarEntry::ArchivedHeader))
             })
         } else {
-            self.pinned_rows.is_empty() && self.archived_rows.is_empty() && self.sections.is_empty()
+            self.pinned_rows.is_empty()
+                && self.archived_rows.is_empty()
+                && self.sections.iter().all(|(section, rows)| {
+                    !matches!(section, SidebarSection::Folder(_)) && rows.is_empty()
+                })
         };
         if empty && !self.pages.any_loading() {
             entries.push(SidebarEntry::Empty(if self.filter.is_empty() {
@@ -1868,9 +1934,7 @@ impl Sidebar {
                 .switcher_roots
                 .get(index)
                 .is_none_or(|root| !self.collapsed_roots.contains(&root.root)),
-            SidebarSection::Pinned => self.pinned_expanded,
-            SidebarSection::Active => self.active_expanded,
-            SidebarSection::Settled => self.settled_expanded,
+            section => !self.collapsed.contains(&section),
         }
     }
 
@@ -1893,13 +1957,10 @@ impl Sidebar {
             } else {
                 self.collapsed_roots.insert(root);
             }
+        } else if expanded {
+            self.collapsed.remove(&section);
         } else {
-            match section {
-                SidebarSection::Pinned => self.pinned_expanded = expanded,
-                SidebarSection::Active => self.active_expanded = expanded,
-                SidebarSection::Settled => self.settled_expanded = expanded,
-                SidebarSection::Folder(_) => unreachable!(),
-            }
+            self.collapsed.insert(section);
         }
         self.rebuild_entries();
         cx.notify();
@@ -1933,10 +1994,33 @@ impl Sidebar {
         }
     }
 
+    /// Whether task rows show their project line.
+    fn show_metadata(&self) -> bool {
+        self.view
+            .metadata
+            .unwrap_or(self.view.group != SidebarGroup::Folder)
+    }
+
+    /// Change the view, keep it in the app settings, and rebuild what it
+    /// shapes. The project line changes row heights, so every row is
+    /// measured again.
+    pub(super) fn set_view(&mut self, view: SidebarView, cx: &mut Context<Self>) {
+        if self.view == view {
+            return;
+        }
+        self.view = view;
+        self.rebuild_sections();
+        self.list.remeasure_items(0..self.entries.len());
+        cx.notify();
+        crate::settings::update_settings_in_background(move |settings| {
+            settings.sidebar_view = view
+        });
+    }
+
     /// Open or close the Projects header's menu from its button.
     pub(super) fn toggle_header_menu(&mut self, cx: &mut Context<Self>) {
         self.project_popup.close(cx);
-        self.popup.toggle(SidebarPopup::Switcher, cx);
+        self.popup.toggle(self.header_popup(), cx);
     }
 
     /// Open or close the Projects header's menu from the keyboard.
@@ -1947,7 +2031,9 @@ impl Sidebar {
             return;
         }
         self.project_popup.close(cx);
-        if open {
+        if open && self.header_popup() == SidebarPopup::View {
+            self.popup.open(SidebarPopup::View, cx);
+        } else if open {
             let current = self
                 .project_filter
                 .as_deref()
@@ -1960,16 +2046,6 @@ impl Sidebar {
                 .open_highlighted(SidebarPopup::Switcher, current, cx);
         } else {
             self.popup.close(cx);
-        }
-    }
-
-    /// Activate the Projects header: paired computers open the switcher;
-    /// a single computer folds its project list.
-    pub(super) fn activate_projects(&mut self, cx: &mut Context<Self>) {
-        if self.computers.len() > 1 {
-            self.set_header_menu_open(!self.header_menu_open(), cx);
-        } else {
-            self.set_projects_expanded(!self.projects_expanded, cx);
         }
     }
 
@@ -3056,15 +3132,25 @@ impl Sidebar {
     }
 
     /// The Projects header: its label folds the list under it, and its
-    /// button adds a project.
+    /// buttons open the View options and add a project.
     fn render_projects_header(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         if self.computers.len() > 1 {
             return self.render_switcher_header(window, cx);
         }
+        let open = self.popup.is_open(&SidebarPopup::View);
+        let menu = open.then(|| {
+            self.popup
+                .render(self.view_menu(), Placement::BelowEnd, window, cx)
+        });
         let add = self.new_project_button().on_click(
             cx.listener(|_this, _event, _window, cx| cx.emit(SidebarEvent::ChooseProject)),
         );
         let expanded = self.projects_expanded;
+        let label = if self.view.group == SidebarGroup::Folder {
+            "Projects"
+        } else {
+            "Tasks"
+        };
         div()
             .group("projects-header-actions")
             .mt_3()
@@ -3078,7 +3164,7 @@ impl Sidebar {
                 div()
                     .id("projects-header")
                     .role(gpui::Role::Button)
-                    .aria_label("Projects")
+                    .aria_label(label)
                     .aria_expanded(expanded)
                     .debug_selector(|| "projects-header".to_string())
                     .flex_1()
@@ -3092,20 +3178,115 @@ impl Sidebar {
                         this.set_projects_expanded(!this.projects_expanded, cx);
                         this.hover_heading(SidebarEntry::ProjectsHeader, cx);
                     }))
-                    .child(section_label("Projects"))
+                    .child(section_label(label))
                     .child(self.section_chevron(
                         expanded,
                         "projects-header-actions",
                         SidebarHoverSection::Projects,
                     )),
             )
+            .child(
+                div()
+                    .relative()
+                    .child(self.popup.trigger(
+                        SidebarPopup::View,
+                        self.view_button(open),
+                        cx,
+                        |this, _, cx| this.toggle_header_menu(cx),
+                    ))
+                    .children(menu),
+            )
             .child(add)
             .into_any_element()
     }
 
+    fn view_button(&self, open: bool) -> gpui::Stateful<Div> {
+        header_button("view-options", "list-filter", "View options", open)
+            .debug_selector(|| "view-options".into())
+            .when(!open, |button| {
+                button
+                    .opacity(0.)
+                    .group_hover("projects-header-actions", |style| style.opacity(1.))
+            })
+    }
+
+    /// The View options menu: one list of labeled sections, the current
+    /// choice of each checked.
+    fn view_menu(&self) -> Menu<Self> {
+        let view = self.view;
+        let choice = |id: &'static str, label: &'static str, current: bool, next: SidebarView| {
+            MenuItem::new(id, label, move |this: &mut Self, _: &mut Window, cx| {
+                this.set_view(next, cx)
+            })
+            .current(current)
+        };
+        let mut menu = Menu::new("view-menu", px(220.))
+            .label("View options")
+            .application_vim(self.application_vim_enabled)
+            .header("Group by");
+        for (id, label, group) in [
+            ("view-group-folder", "Folder", SidebarGroup::Folder),
+            ("view-group-status", "Status", SidebarGroup::Status),
+            ("view-group-recent", "Recent", SidebarGroup::Recent),
+        ] {
+            menu = menu.item(choice(
+                id,
+                label,
+                view.group == group,
+                SidebarView { group, ..view },
+            ));
+        }
+        menu = menu.separator().header("Sort by");
+        for (id, label, sort) in [
+            ("view-sort-updated", "Last updated", SidebarSort::Updated),
+            ("view-sort-created", "Date created", SidebarSort::Created),
+            ("view-sort-name", "Name", SidebarSort::Name),
+        ] {
+            menu = menu.item(choice(
+                id,
+                label,
+                view.sort == sort,
+                SidebarView { sort, ..view },
+            ));
+        }
+        for (id, label, ascending) in [
+            ("view-sort-descending", "Descending", false),
+            ("view-sort-ascending", "Ascending", true),
+        ] {
+            menu = menu.item(choice(
+                id,
+                label,
+                view.ascending == ascending,
+                SidebarView { ascending, ..view },
+            ));
+        }
+        let metadata = self.show_metadata();
+        menu.separator()
+            .header("Show")
+            .item(choice(
+                "view-show-metadata",
+                "Metadata",
+                metadata,
+                SidebarView {
+                    metadata: Some(!metadata),
+                    ..view
+                },
+            ))
+            .separator()
+            .item(
+                choice(
+                    "view-reset",
+                    "Reset to defaults",
+                    false,
+                    SidebarView::default(),
+                )
+                .enabled(view != SidebarView::default()),
+            )
+    }
+
     /// Add project stays visible until there is a project to browse.
     fn new_project_button(&self) -> gpui::Stateful<Div> {
-        header_button("new-project", "folder-plus", "New project").when(
+        header_button("new-project", "folder-plus", "New project", false).when(
             !self.switcher_roots.is_empty(),
             |button| {
                 button
@@ -3297,7 +3478,7 @@ impl Sidebar {
                 // A sibling over the header's end, not a button inside a
                 // button. It blocks the pointer, so a press on it never
                 // reaches the header behind it.
-                header_button("new-project", "folder-plus", "New project")
+                header_button("new-project", "folder-plus", "New project", false)
                     .occlude()
                     .absolute()
                     .right_4()
@@ -3456,7 +3637,10 @@ impl Sidebar {
             archived,
             ..
         } = task;
-        let folder_task = self.computers.len() <= 1 && !is_pinned && !archived;
+        let folder_task = self.computers.len() <= 1
+            && self.view.group == SidebarGroup::Folder
+            && !is_pinned
+            && !archived;
         let row = &self.rows[index];
         let is_selected = selected == Some(&*row.id);
         let activity = (!archived)
@@ -3528,7 +3712,24 @@ impl Sidebar {
                         Some(field) => column.child(field),
                         None => column
                             .child(div().line_clamp(1).text_ellipsis().child(row.title.clone())),
-                    }),
+                    })
+                    .when(
+                        self.computers.len() <= 1 && self.show_metadata(),
+                        |column| {
+                            column.child(
+                                div()
+                                    .text_xs()
+                                    .text_color(gpui::rgb(if is_selected {
+                                        theme::text_secondary()
+                                    } else {
+                                        theme::text_muted()
+                                    }))
+                                    .line_clamp(1)
+                                    .text_ellipsis()
+                                    .child(row.project_name.clone()),
+                            )
+                        },
+                    ),
             )
             .when_some(activity, |row_element, activity| {
                 row_element.child(activity_indicator(&row.spinner_id, activity))
@@ -3752,11 +3953,13 @@ fn row_menu_button(
     })
 }
 
-/// An icon button of the Projects header.
+/// An icon button of the Projects header. It stays pressed, without its
+/// tooltip, while its menu is open.
 fn header_button(
     id: &'static str,
     icon_name: &'static str,
     label: &'static str,
+    open: bool,
 ) -> gpui::Stateful<Div> {
     div()
         .id(id)
@@ -3773,7 +3976,12 @@ fn header_button(
                 .bg(gpui::rgb(theme::bg_sidebar_row_hover()))
                 .cursor_pointer()
         })
-        .tooltip(widgets::tooltip(label, None))
+        .when(open, |button| {
+            button.bg(gpui::rgb(theme::bg_sidebar_row_selected()))
+        })
+        .when(!open, |button| {
+            button.tooltip(widgets::tooltip(label, None))
+        })
         .child(icon(icon_name, px(16.), theme::text_secondary()))
 }
 
