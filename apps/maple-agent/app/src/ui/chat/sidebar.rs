@@ -80,6 +80,17 @@ use crate::ui::theme;
 use crate::ui::titlebar;
 use crate::ui::widgets;
 
+/// Geometry shared by the expanded wordmark row and the collapsed mark.
+pub(super) const WORDMARK_LEFT: gpui::Pixels = px(16.);
+pub(super) const WORDMARK_HEIGHT: gpui::Pixels = px(16.);
+pub(super) const TOP_ROW_HEIGHT: gpui::Pixels = px(28.);
+pub(super) const TOP_ROW_GUTTER: gpui::Pixels = px(12.);
+
+pub(super) fn wordmark_row_top() -> gpui::Pixels {
+    titlebar::top_row_top(TOP_ROW_GUTTER)
+        .max(super::CHAT_HEADER_HEIGHT - (TOP_ROW_HEIGHT - WORDMARK_HEIGHT) / 2.)
+}
+
 pub(super) fn session_from_summary(
     summary: &maple_agent::store::TaskSummary,
 ) -> AgentSessionSummary {
@@ -2895,41 +2906,6 @@ impl Sidebar {
             })
     }
 
-    /// The collapse button in the top row.
-    fn render_toggle(&self) -> gpui::Stateful<Div> {
-        let chat = self.chat.clone();
-        div()
-            .id("sidebar-toggle")
-            .flex_none()
-            .size_7()
-            .flex()
-            .items_center()
-            .justify_center()
-            .rounded(theme::RADIUS_SM)
-            .hover(|style| {
-                style
-                    .bg(gpui::rgb(theme::bg_sidebar_row_hover()))
-                    .cursor_pointer()
-            })
-            .active(|style| style.bg(gpui::rgb(theme::bg_sidebar_row_selected())))
-            // Inside a drag region: a press here is a click, not a drag.
-            .on_mouse_down(gpui::MouseButton::Left, |_event, _window, cx| {
-                cx.stop_propagation();
-            })
-            .tooltip(widgets::tooltip_for_action(
-                "Toggle sidebar",
-                &super::ToggleSidebar,
-            ))
-            .on_click(move |_event, window, cx| {
-                if let Some(chat) = chat.upgrade() {
-                    chat.update(cx, |chat, cx| {
-                        chat.execute_command(ChatCommand::ToggleSidebar, window, cx);
-                    });
-                }
-            })
-            .child(icon("panel-left", px(16.), theme::text_secondary()))
-    }
-
     /// Sidebar footer: just the settings gear.
     fn render_footer(&self) -> Div {
         let chat = self.chat.clone();
@@ -3019,14 +2995,23 @@ impl Render for Sidebar {
                     .flex()
                     .items_center()
                     .justify_between()
-                    .pl_4()
-                    .pr_3()
+                    .pl(WORDMARK_LEFT)
+                    .pr(TOP_ROW_GUTTER)
                     // The wordmark row sits under the traffic lights, not
                     // beside them; the space above it is still the bar.
-                    .pt(titlebar::top_row_top(px(12.)))
+                    .pt(wordmark_row_top())
                     .pb_2()
-                    .child(wordmark(px(16.), theme::text_primary()))
-                    .child(self.render_toggle()),
+                    .child(
+                        div()
+                            .flex_none()
+                            .h(TOP_ROW_HEIGHT)
+                            .flex()
+                            .items_center()
+                            .child(
+                                wordmark(WORDMARK_HEIGHT, theme::text_primary())
+                                    .debug_selector(|| "sidebar-wordmark".to_string()),
+                            ),
+                    ),
             ))
             .child(
                 div()

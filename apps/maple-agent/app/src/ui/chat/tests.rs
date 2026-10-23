@@ -5893,6 +5893,295 @@ mod state_tests {
         assert!(cx.debug_bounds("permission-mode-toggle").is_none());
     }
 
+    /// A collapsed sidebar leaves a rail whose Maple mark shows it again;
+    /// the expanded sidebar replaces the rail.
+    #[gpui::test]
+    fn collapsed_sidebar_rail_expands_it(cx: &mut TestAppContext) {
+        let (chat, cx) = chat_window(cx, |this, cx| {
+            this.sessions = vec![summary("s1", "One")];
+            this.sync_sidebar(cx);
+            this.set_sidebar_collapsed(true, cx);
+        });
+        cx.run_until_parked();
+        let mark = cx.debug_bounds("show-sidebar").expect("the rail's mark");
+        let rail = cx.debug_bounds("sidebar-rail").expect("the rail");
+        let header = cx.debug_bounds("chat-header").expect("the header");
+        assert_eq!(rail.top(), header.bottom());
+        assert_eq!(rail.left(), px(0.));
+        assert_eq!(rail.size.width, SIDEBAR_RAIL_WIDTH);
+        assert_eq!(rail.bottom(), px(800.));
+        assert!(mark.right() <= SIDEBAR_RAIL_WIDTH);
+
+        press(cx, "show-sidebar");
+        assert!(!cx.update(|_window, app| chat.read(app).sidebar_collapsed));
+        cx.update(|window, _| window.refresh());
+        cx.run_until_parked();
+        assert!(cx.debug_bounds("show-sidebar").is_none());
+    }
+
+    /// Collapsing removes only the rest of the wordmark: the M keeps the
+    /// same scale and origin, including device-pixel rounding.
+    #[gpui::test]
+    fn collapsed_sidebar_mark_matches_the_wordmark(cx: &mut TestAppContext) {
+        let (chat, cx) = chat_window(cx, |this, cx| {
+            this.sessions = vec![summary("s1", "One")];
+            this.sync_sidebar(cx);
+        });
+        let wordmark = cx.debug_bounds("sidebar-wordmark").expect("wordmark");
+        let wordmark_svg = include_str!("../../../assets/icons/maple-wordmark.svg");
+        let mark_svg = include_str!("../../../assets/icons/maple-mark.svg");
+        for svg in [wordmark_svg, mark_svg] {
+            assert!(svg.contains("viewBox=\"0 0 248 50\""));
+            assert!(svg.contains("transform=\"translate(0, 1.2)\""));
+        }
+        let m_path = wordmark_svg
+            .split("<path ")
+            .nth(1)
+            .unwrap()
+            .split("/>")
+            .next()
+            .unwrap();
+        assert!(mark_svg.contains(m_path));
+        chat.update(cx, |this, cx| this.set_sidebar_collapsed(true, cx));
+        cx.run_until_parked();
+        let mark = cx.debug_bounds("sidebar-rail-mark").expect("rail mark SVG");
+        assert_eq!(mark, wordmark);
+
+        press(cx, "show-sidebar");
+        cx.update(|window, _| window.refresh());
+        cx.run_until_parked();
+        assert_eq!(cx.debug_bounds("sidebar-wordmark"), Some(wordmark));
+    }
+
+    /// The collapsed header keeps its commands before the title in both
+    /// pane layouts; expanding keeps only the same fixed toggle.
+    #[gpui::test]
+    fn collapsed_sidebar_header_toolbar(cx: &mut TestAppContext) {
+        let (chat, cx) = chat_window(cx, |this, cx| {
+            this.sessions = vec![summary("s1", "One")];
+            this.sync_sidebar(cx);
+        });
+        for has_history in [false, true] {
+            chat.update(cx, |this, cx| {
+                this.replace_timeline(if has_history {
+                    vec![user_item("u1", "hi")]
+                } else {
+                    Vec::new()
+                });
+                this.set_sidebar_collapsed(true, cx);
+            });
+            cx.run_until_parked();
+            let toggle = cx.debug_bounds("header-sidebar-toggle").expect("toggle");
+            let new_task = cx.debug_bounds("header-new-task").expect("new task");
+            let title = cx.debug_bounds("header-title").expect("title");
+            let project = cx.debug_bounds("root-picker").expect("project");
+            assert_eq!(
+                cx.debug_bounds("sidebar-rail").unwrap().top(),
+                cx.debug_bounds("chat-header").unwrap().bottom()
+            );
+            assert_eq!(toggle.left(), SIDEBAR_RAIL_WIDTH + SIDEBAR_COLLAPSED_INSET);
+            assert!(toggle.right() < new_task.left());
+            assert_eq!(new_task.right() + px(25.), title.left());
+            assert!(title.right() < project.left());
+            assert_eq!(toggle.center().y, title.center().y);
+
+            press(cx, "header-sidebar-toggle");
+            assert!(!cx.update(|_, app| chat.read(app).sidebar_collapsed));
+            cx.run_until_parked();
+            assert_eq!(cx.debug_bounds("header-sidebar-toggle"), Some(toggle));
+            assert!(cx.debug_bounds("header-new-task").is_none());
+            assert!(cx.debug_bounds("root-picker").is_some());
+            assert_eq!(
+                cx.debug_bounds("header-title").unwrap().left(),
+                SIDEBAR_WIDTH + px(16.)
+            );
+        }
+    }
+
+    /// The same header toggle survives either transition and remains a
+    /// keyboard target when expanded.
+    #[gpui::test]
+    fn collapsed_sidebar_toggle_keeps_its_bounds(cx: &mut TestAppContext) {
+        let (chat, cx) = chat_window(cx, |this, cx| {
+            this.sessions = vec![summary("s1", "One")];
+            this.sync_sidebar(cx);
+        });
+        let toggle = cx
+            .debug_bounds("header-sidebar-toggle")
+            .expect("expanded toggle");
+        let composer = cx.update(|_, app| chat.read(app).composer.clone().unwrap());
+        let composer_focus = cx.update(|_, app| composer.read(app).focus_handle(app));
+        for key in ["enter", "space"] {
+            composer.update(cx, |input, cx| input.set_text("Unsent draft", cx));
+            cx.run_until_parked();
+            cx.update(|window, app| window.focus(&composer_focus, app));
+            cx.simulate_keystrokes("tab tab");
+            assert_eq!(
+                cx.update(|window, app| window.focused(app).unwrap().tab_index),
+                3
+            );
+            cx.simulate_keystrokes(key);
+            cx.update(|window, app| {
+                window.dispatch_event(
+                    gpui::PlatformInput::KeyUp(gpui::KeyUpEvent {
+                        keystroke: gpui::Keystroke::parse(key).unwrap(),
+                    }),
+                    app,
+                );
+            });
+            cx.run_until_parked();
+            assert!(cx.update(|_, app| chat.read(app).sidebar_collapsed));
+            assert_eq!(cx.debug_bounds("header-sidebar-toggle"), Some(toggle));
+            assert_eq!(
+                ["header-sidebar-toggle", "sidebar-toggle"]
+                    .into_iter()
+                    .filter(|selector| cx.debug_bounds(selector).is_some())
+                    .count(),
+                1
+            );
+            assert_eq!(composer.update(cx, |input, _| input.text()), "Unsent draft");
+            press(cx, "header-sidebar-toggle");
+            assert!(!cx.update(|_, app| chat.read(app).sidebar_collapsed));
+            cx.run_until_parked();
+            assert_eq!(cx.debug_bounds("header-sidebar-toggle"), Some(toggle));
+            assert_eq!(
+                ["header-sidebar-toggle", "sidebar-toggle"]
+                    .into_iter()
+                    .filter(|selector| cx.debug_bounds(selector).is_some())
+                    .count(),
+                1
+            );
+            assert!(cx.debug_bounds("header-new-task").is_none());
+        }
+        // An expanded-header press reaches the toggle rather than the
+        // sidebar's drag region beneath it.
+        press(cx, "header-sidebar-toggle");
+        assert!(cx.update(|_, app| chat.read(app).sidebar_collapsed));
+    }
+
+    /// The header's New task button starts the same draft as the sidebar.
+    #[gpui::test]
+    fn collapsed_sidebar_header_starts_a_draft(cx: &mut TestAppContext) {
+        let (chat, cx) = chat_window(cx, |this, cx| {
+            this.sessions = vec![summary_at("s1", "One", "/work/alpha")];
+            this.project_root = Some("/work/alpha".to_string());
+            this.replace_timeline(vec![user_item("u1", "hi")]);
+            this.sync_sidebar(cx);
+            this.set_sidebar_collapsed(true, cx);
+        });
+        press(cx, "header-new-task");
+        chat.update(cx, |this, _| {
+            assert!(this.sidebar_collapsed);
+            assert_eq!(this.selected_session, None);
+            assert_eq!(this.selected_title.as_ref(), "New Task");
+            assert!(this.timeline.is_empty());
+            assert!(!this.session_setup_pending);
+            assert_eq!(this.sessions.len(), 1);
+            assert_eq!(this.project_root.as_deref(), Some("/work/alpha"));
+        });
+    }
+
+    /// Tab reaches both header buttons; Enter and Space activate on release
+    /// without forwarding a character to the composer.
+    #[gpui::test]
+    fn collapsed_sidebar_header_buttons_take_the_keyboard(cx: &mut TestAppContext) {
+        let (chat, cx) = chat_window(cx, |this, cx| {
+            this.sessions = vec![summary_at("s1", "One", "/work/alpha")];
+            this.project_root = Some("/work/alpha".to_string());
+            this.sync_sidebar(cx);
+        });
+        let composer = cx.update(|_, app| chat.read(app).composer.clone().unwrap());
+        let composer_focus = cx.update(|_, app| composer.read(app).focus_handle(app));
+        for (tabs, tab_index, new_task) in [("tab tab", 3, false), ("tab tab tab", 4, true)] {
+            for key in ["enter", "space"] {
+                chat.update(cx, |this, cx| {
+                    this.selected_session = Some("s1".to_string());
+                    this.draft = false;
+                    this.replace_timeline(vec![user_item("u1", "hi")]);
+                    this.sync_sidebar(cx);
+                    this.set_sidebar_collapsed(true, cx);
+                    cx.notify();
+                });
+                composer.update(cx, |input, cx| input.set_text("Unsent draft", cx));
+                cx.run_until_parked();
+                cx.update(|window, app| window.focus(&composer_focus, app));
+                cx.simulate_keystrokes(tabs);
+                let button_focus = cx.update(|window, app| window.focused(app).unwrap());
+                assert_eq!(button_focus.tab_index, tab_index, "Tab reaches the button");
+                cx.simulate_keystrokes("shift-tab");
+                assert_eq!(
+                    cx.update(|window, app| window.focused(app).unwrap().tab_index),
+                    tab_index - 1
+                );
+                cx.simulate_keystrokes("tab");
+
+                cx.simulate_keystrokes(key);
+                assert_eq!(composer.update(cx, |input, _| input.text()), "Unsent draft");
+                assert_eq!(
+                    cx.update(|window, app| window.focused(app)),
+                    Some(button_focus),
+                    "key-down keeps focus on the button"
+                );
+                cx.update(|window, app| {
+                    let keystroke = gpui::Keystroke::parse(key).unwrap();
+                    window.dispatch_event(
+                        gpui::PlatformInput::KeyUp(gpui::KeyUpEvent { keystroke }),
+                        app,
+                    );
+                });
+                cx.run_until_parked();
+                chat.update(cx, |this, _| {
+                    assert_eq!(
+                        this.sidebar_collapsed, new_task,
+                        "{key} activates the button"
+                    );
+                    assert_eq!(this.draft, new_task);
+                    assert_eq!(
+                        this.selected_session.as_deref(),
+                        if new_task { None } else { Some("s1") }
+                    );
+                    assert_eq!(this.timeline.is_empty(), new_task);
+                    assert_eq!(this.sessions.len(), 1);
+                    assert_eq!(this.project_root.as_deref(), Some("/work/alpha"));
+                });
+                assert_eq!(composer.update(cx, |input, _| input.text()), "Unsent draft");
+            }
+        }
+    }
+
+    /// Tab reaches the rail's mark, and Enter or Space on it shows the
+    /// sidebar.
+    #[gpui::test]
+    fn collapsed_sidebar_rail_mark_takes_the_keyboard(cx: &mut TestAppContext) {
+        let (chat, cx) = chat_window(cx, |this, cx| {
+            this.sessions = vec![summary("s1", "One")];
+            this.sync_sidebar(cx);
+        });
+        let composer = cx.update(|_window, app| chat.read(app).composer.clone().unwrap());
+        let composer_focus = cx.update(|_window, app| composer.read(app).focus_handle(app));
+        for key in ["enter", "space"] {
+            chat.update(cx, |this, cx| this.set_sidebar_collapsed(true, cx));
+            cx.run_until_parked();
+            cx.update(|window, app| window.focus(&composer_focus, app));
+            cx.simulate_keystrokes("tab");
+            assert!(!cx.update(|window, _| composer_focus.is_focused(window)));
+
+            // A keyboard click lands on the key's release.
+            cx.simulate_keystrokes(key);
+            cx.update(|window, app| {
+                let keystroke = gpui::Keystroke::parse(key).unwrap();
+                window.dispatch_event(
+                    gpui::PlatformInput::KeyUp(gpui::KeyUpEvent { keystroke }),
+                    app,
+                );
+            });
+            assert!(
+                !cx.update(|_window, app| chat.read(app).sidebar_collapsed),
+                "{key} on the mark shows the sidebar"
+            );
+        }
+    }
+
     /// Issue #997: a second press on the button that opened a menu closes
     /// it. Before, the menu's outside-press handler closed it on the way
     /// down and the button's click opened it again.
@@ -7732,7 +8021,8 @@ mod state_tests {
         wheel_at(cx, 600., 300., wheel_pixels(400.));
         for (place, x, y, moves) in [
             ("the transcript", 600., 300., 100.),
-            ("the left margin", 40., 300., 100.),
+            // Past the collapsed rail.
+            ("the left margin", 80., 300., 100.),
             ("the gutter beside the text", 160., 300., 100.),
             ("the scrollbar strip", 1195., 300., 100.),
             ("the margin beside the composer", 1150., 790., 100.),
@@ -7940,7 +8230,7 @@ mod state_tests {
             Some(before),
             "a wheel over the card leaves the transcript alone"
         );
-        wheel_at(cx, 40., y, wheel_pixels(100.));
+        wheel_at(cx, 80., y, wheel_pixels(100.));
         assert_eq!(
             row_top(&chat, cx, ix).map(|after| after - before),
             Some(px(100.)),

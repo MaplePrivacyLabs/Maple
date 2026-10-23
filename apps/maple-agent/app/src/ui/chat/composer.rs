@@ -110,20 +110,87 @@ impl ChatScreen {
         titlebar::drag_region(
             div()
                 .id("chat-header")
+                .debug_selector(|| "chat-header".to_string())
+                .relative()
                 .flex()
                 .items_center()
                 .justify_between()
                 .gap_3()
-                .h(px(40.))
+                .h(super::CHAT_HEADER_HEIGHT)
                 .flex_none()
                 .pl_4()
                 .pr_3()
+                .bg(gpui::rgb(theme::bg_sidebar()))
                 .when(self.sidebar_collapsed, |row| {
                     row.pl(SIDEBAR_COLLAPSED_INSET)
                 }),
         )
         .child(
             div()
+                .flex()
+                .items_center()
+                .gap_1()
+                .when(!self.sidebar_collapsed, |toolbar| {
+                    toolbar
+                        .absolute()
+                        .left(
+                            super::SIDEBAR_RAIL_WIDTH + SIDEBAR_COLLAPSED_INSET
+                                - super::SIDEBAR_WIDTH,
+                        )
+                        .top((super::CHAT_HEADER_HEIGHT - super::sidebar::TOP_ROW_HEIGHT) / 2.)
+                })
+                .children(
+                    [
+                        (
+                            "header-sidebar-toggle",
+                            "panel-left",
+                            "Toggle sidebar",
+                            &super::ToggleSidebar as &dyn gpui::Action,
+                            ChatCommand::ToggleSidebar,
+                            3,
+                        ),
+                        (
+                            "header-new-task",
+                            "square-pen",
+                            "New task",
+                            &super::NewTask,
+                            ChatCommand::NewTask,
+                            4,
+                        ),
+                    ]
+                    .into_iter()
+                    .filter(|(_, _, _, _, command, _)| {
+                        self.sidebar_collapsed || matches!(command, ChatCommand::ToggleSidebar)
+                    })
+                    .map(|(id, name, label, action, command, tab_index)| {
+                        widgets::icon_button_for_action(
+                            id,
+                            name,
+                            label,
+                            px(16.),
+                            theme::text_secondary(),
+                            action,
+                        )
+                        .debug_selector(move || id.to_string())
+                        .tab_index(tab_index)
+                        .on_mouse_down(gpui::MouseButton::Left, |_event, _window, cx| {
+                            cx.stop_propagation();
+                        })
+                        .on_key_down(Self::sidebar_button_key_down)
+                        .on_click(cx.listener(
+                            move |this, _event, window, cx| {
+                                this.execute_command(command, window, cx);
+                            },
+                        ))
+                    }),
+                ),
+        )
+        .when(self.sidebar_collapsed, |row| {
+            row.child(div().w(px(1.)).h_4().bg(gpui::rgb(theme::border())))
+        })
+        .child(
+            div()
+                .debug_selector(|| "header-title".to_string())
                 // Sized by its text, like the chips: nowrap gives it a
                 // real intrinsic width (a clamped, shrinkable title
                 // measured as 0 px and vanished). The cap keeps a long

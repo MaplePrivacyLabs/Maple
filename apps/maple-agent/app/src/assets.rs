@@ -37,6 +37,7 @@ assets!(
     "icons/loader-circle.svg",
     "icons/lock.svg",
     "icons/mic.svg",
+    "icons/maple-mark.svg",
     "icons/maple-wordmark.svg",
     "icons/maximize-2.svg",
     "icons/minimize-2.svg",

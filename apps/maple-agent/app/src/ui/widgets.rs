@@ -24,7 +24,7 @@ use super::theme;
 
 /// How long an icon-only control waits before showing its tooltip. Icons
 /// are their own label, so the hint should come quickly.
-const ICON_TOOLTIP_DELAY: Duration = Duration::from_millis(300);
+pub const ICON_TOOLTIP_DELAY: Duration = Duration::from_millis(300);
 
 fn accent() -> Hsla {
     gpui::rgb(theme::accent()).into()
