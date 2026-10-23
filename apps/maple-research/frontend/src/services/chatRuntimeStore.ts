@@ -1,3 +1,5 @@
+import type { ChatCompactionMarker } from "./chatCompaction";
+
 export type ChatRuntimeKey = string;
 
 const EMPTY_CHAT_RUNTIME_KEYS: readonly ChatRuntimeKey[] = Object.freeze([]);
@@ -34,6 +36,11 @@ export type ChatRuntimeSnapshot<TConversation, TMessage, TComposer> = Readonly<{
   assistantStreaming: boolean;
   historyLoaded: boolean;
   runToken: number | null;
+  /** Presentation metadata is separate from canonical messages and their cursors. */
+  compactions?: readonly ChatCompactionMarker[];
+  compactionHistoryCursor?: string;
+  hasMoreCompactionHistory?: boolean;
+  compactingMessageId?: string;
 }>;
 
 export type ChatRuntimeInitialState<TConversation, TMessage, TComposer> = Partial<
@@ -571,6 +578,7 @@ export class ChatRuntimeStore<TConversation, TMessage, TComposer> {
         ...entry.snapshot,
         isGenerating: true,
         currentResponseId: undefined,
+        compactingMessageId: undefined,
         error: null,
         assistantStreaming: false
       },
@@ -656,6 +664,7 @@ export class ChatRuntimeStore<TConversation, TMessage, TComposer> {
         ...completed,
         isGenerating: false,
         currentResponseId: undefined,
+        compactingMessageId: undefined,
         assistantStreaming: false
       },
       {
@@ -695,6 +704,7 @@ export class ChatRuntimeStore<TConversation, TMessage, TComposer> {
         ...entry.snapshot,
         isGenerating: false,
         currentResponseId: undefined,
+        compactingMessageId: undefined,
         assistantStreaming: false
       },
       {

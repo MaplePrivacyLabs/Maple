@@ -32,8 +32,8 @@ use crate::models::project_settings::{
     EmailSettings, NewProjectSetting, ProjectSetting, ProjectSettingError, SettingCategory,
 };
 use crate::models::response_compaction::{
-    CompactionCheckpoint, CompactionError, CompactionPublishResult, CompactionSnapshot,
-    ContextItemKey, NewCompactionCheckpoint,
+    CompactionCheckpoint, CompactionError, CompactionMarkerMetadata, CompactionPublishResult,
+    CompactionSnapshot, ContextItemKey, NewCompactionCheckpoint,
 };
 use crate::models::responses::{
     validate_conversation_project_limit, AssistantMessage, Conversation, ConversationProject,
@@ -770,6 +770,14 @@ pub trait DBConnection {
         user_id: Uuid,
         response_uuid: Uuid,
     ) -> Result<Vec<CompactionCheckpoint>, DBError>;
+    fn list_conversation_compaction_markers(
+        &self,
+        conversation_id: i64,
+        user_id: Uuid,
+        limit: i64,
+        after: Option<Uuid>,
+        order: &str,
+    ) -> Result<Vec<CompactionMarkerMetadata>, DBError>;
     fn publish_compaction_checkpoint(
         &self,
         checkpoint: NewCompactionCheckpoint,
@@ -3120,6 +3128,19 @@ impl DBConnection for PostgresConnection {
     ) -> Result<CompactionPublishResult, DBError> {
         let conn = &mut self.db.get().map_err(|_| DBError::ConnectionError)?;
         CompactionCheckpoint::publish(conn, checkpoint).map_err(DBError::from)
+    }
+
+    fn list_conversation_compaction_markers(
+        &self,
+        conversation_id: i64,
+        user_id: Uuid,
+        limit: i64,
+        after: Option<Uuid>,
+        order: &str,
+    ) -> Result<Vec<CompactionMarkerMetadata>, DBError> {
+        let conn = &mut self.db.get().map_err(|_| DBError::ConnectionError)?;
+        CompactionCheckpoint::list_markers(conn, conversation_id, user_id, limit, after, order)
+            .map_err(DBError::from)
     }
 
     // Optimized context reconstruction (metadata-based)

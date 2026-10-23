@@ -175,6 +175,22 @@ pub struct CompactionCheckpoint {
     pub after_item_uuid: Option<Uuid>,
 }
 
+/// Public marker projection. Its SQL deliberately never selects checkpoint
+/// ciphertext, summaries, source fingerprints or covered conversation items.
+#[derive(Debug, Clone, QueryableByName)]
+pub struct CompactionMarkerMetadata {
+    #[diesel(sql_type = diesel::sql_types::Uuid)]
+    pub uuid: Uuid,
+    #[diesel(sql_type = diesel::sql_types::Uuid)]
+    pub origin_response_uuid: Uuid,
+    #[diesel(sql_type = Nullable<diesel::sql_types::Uuid>)]
+    pub after_item_uuid: Option<Uuid>,
+    #[diesel(sql_type = Timestamptz)]
+    pub created_at: DateTime<Utc>,
+    #[diesel(sql_type = BigInt)]
+    pub generation: i64,
+}
+
 /// The envelope is encrypted by the user-key owner, including the row/conversation
 /// identities and exact covered keys. Plaintext coverage is used only for this CAS.
 pub struct NewCompactionCheckpoint {
@@ -536,6 +552,59 @@ impl CompactionSnapshot {
 }
 
 impl CompactionCheckpoint {
+    /// Generation is the stable cursor order; canonical item cursors remain
+    /// independent. `limit` includes the handler's single look-ahead row.
+    pub fn list_markers(
+        conn: &mut PgConnection,
+        conversation_id: i64,
+        user_id: Uuid,
+        limit: i64,
+        after: Option<Uuid>,
+        order: &str,
+    ) -> Result<Vec<CompactionMarkerMetadata>, CompactionError> {
+        if !(1..=101).contains(&limit) || !matches!(order, "asc" | "desc") {
+            return Err(CompactionError::InvalidSelection);
+        }
+        conversation_identity(conn, conversation_id, user_id, false)?;
+        #[derive(QueryableByName)]
+        struct Cursor {
+            #[diesel(sql_type = BigInt)]
+            generation: i64,
+        }
+        let generation = match after {
+            Some(uuid) => Some(
+                diesel::sql_query("SELECT generation FROM conversation_summaries s WHERE conversation_id=$1 AND user_id=$2 AND uuid=$3 AND format_version=1 AND EXISTS (SELECT 1 FROM responses r WHERE r.uuid=s.origin_response_uuid AND r.conversation_id=s.conversation_id AND r.user_id=s.user_id)")
+                    .bind::<BigInt, _>(conversation_id)
+                    .bind::<diesel::sql_types::Uuid, _>(user_id)
+                    .bind::<diesel::sql_types::Uuid, _>(uuid)
+                    .get_result::<Cursor>(conn)
+                    .optional()?
+                    .ok_or(CompactionError::InvalidSelection)?
+                    .generation,
+            ),
+            None => None,
+        };
+        // These SQL fragments come only from the validated order enum above.
+        let (comparison, direction) = if order == "asc" {
+            (">", "ASC")
+        } else {
+            ("<", "DESC")
+        };
+        diesel::sql_query(format!(
+            "SELECT uuid, origin_response_uuid, after_item_uuid, created_at, generation FROM conversation_summaries s \
+             WHERE conversation_id=$1 AND user_id=$2 AND format_version=1 \
+             AND EXISTS (SELECT 1 FROM responses r WHERE r.uuid=s.origin_response_uuid \
+                 AND r.conversation_id=s.conversation_id AND r.user_id=s.user_id) \
+             AND ($3::bigint IS NULL OR generation {comparison} $3) ORDER BY generation {direction} LIMIT $4"
+        ))
+        .bind::<BigInt, _>(conversation_id)
+        .bind::<diesel::sql_types::Uuid, _>(user_id)
+        .bind::<Nullable<BigInt>, _>(generation)
+        .bind::<BigInt, _>(limit)
+        .load(conn)
+        .map_err(CompactionError::from)
+    }
+
     fn head(
         conn: &mut PgConnection,
         conversation_id: i64,
