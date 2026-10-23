@@ -250,6 +250,13 @@ enum SidebarPopup {
     Task(Arc<str>),
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ViewSubmenu {
+    Group,
+    Sort,
+    Show,
+}
+
 /// One row of the virtualized sidebar list, in display order. Rebuilt
 /// with the sections and when a section folds; the list builds only the
 /// rows on screen.
@@ -483,6 +490,7 @@ pub(super) struct Sidebar {
     /// A project's overflow menu, keyed by execution computer and path.
     project_popup: Popup<Sidebar, ProjectTarget>,
     project_menu_at: Option<gpui::Point<gpui::Pixels>>,
+    view_popup: Popup<Sidebar, ViewSubmenu>,
     /// Trust status of the project whose menu is open, once it loads.
     menu_trust: Option<AgentProjectTrustStatus>,
     // Search and rename.
@@ -773,6 +781,7 @@ impl Sidebar {
             popup: Popup::new(|this| &mut this.popup, cx),
             project_popup: Popup::new(|this| &mut this.project_popup, cx),
             project_menu_at: None,
+            view_popup: Popup::new(|this| &mut this.view_popup, cx),
             menu_trust: None,
             filter: String::new(),
             search_input,
@@ -1190,6 +1199,11 @@ impl Sidebar {
 
     pub(super) fn header_menu_open(&self) -> bool {
         self.popup.is_open(&self.header_popup())
+    }
+
+    #[cfg(test)]
+    pub(super) fn view_submenu_open(&self) -> bool {
+        self.view_popup.open_key().is_some()
     }
 
     #[cfg(test)]
@@ -1855,7 +1869,8 @@ impl Sidebar {
     /// Close whichever popup menu is open. Reports whether one was.
     pub(super) fn close_popups(&mut self, cx: &mut Context<Self>) -> bool {
         let project = self.project_popup.close(cx);
-        self.popup.close(cx) || project
+        let view = self.view_popup.close(cx);
+        self.popup.close(cx) || project || view
     }
 
     /// Run a backend future and hand its result back on this thread.
@@ -3140,7 +3155,7 @@ impl Sidebar {
         let open = self.popup.is_open(&SidebarPopup::View);
         let menu = open.then(|| {
             self.popup
-                .render(self.view_menu(), Placement::BelowEnd, window, cx)
+                .render(self.view_menu(window, cx), Placement::BelowEnd, window, cx)
         });
         let add = self.new_project_button().on_click(
             cx.listener(|_this, _event, _window, cx| cx.emit(SidebarEvent::ChooseProject)),
@@ -3210,9 +3225,10 @@ impl Sidebar {
             })
     }
 
-    /// The View options menu: one list of labeled sections, the current
-    /// choice of each checked.
-    fn view_menu(&self) -> Menu<Self> {
+    /// The View options menu, with each set of choices in its own submenu.
+    fn view_menu(&self, window: &mut Window, cx: &mut Context<Self>) -> Menu<Self> {
+        use ViewSubmenu::{Group, Show, Sort};
+
         let view = self.view;
         let choice = |id: &'static str, label: &'static str, current: bool, next: SidebarView| {
             MenuItem::new(id, label, move |this: &mut Self, _: &mut Window, cx| {
@@ -3220,40 +3236,42 @@ impl Sidebar {
             })
             .current(current)
         };
-        let mut menu = Menu::new("view-menu", px(220.))
-            .label("View options")
-            .application_vim(self.application_vim_enabled)
-            .header("Group by");
+        let mut group_menu = Menu::new("view-group-menu", px(220.))
+            .label("Group by")
+            .application_vim(self.application_vim_enabled);
         for (id, label, group) in [
             ("view-group-folder", "Folder", SidebarGroup::Folder),
             ("view-group-status", "Status", SidebarGroup::Status),
             ("view-group-recent", "Recent", SidebarGroup::Recent),
         ] {
-            menu = menu.item(choice(
+            group_menu = group_menu.item(choice(
                 id,
                 label,
                 view.group == group,
                 SidebarView { group, ..view },
             ));
         }
-        menu = menu.separator().header("Sort by");
+        let mut sort_menu = Menu::new("view-sort-menu", px(220.))
+            .label("Sort by")
+            .application_vim(self.application_vim_enabled);
         for (id, label, sort) in [
             ("view-sort-updated", "Last updated", SidebarSort::Updated),
             ("view-sort-created", "Date created", SidebarSort::Created),
             ("view-sort-name", "Name", SidebarSort::Name),
         ] {
-            menu = menu.item(choice(
+            sort_menu = sort_menu.item(choice(
                 id,
                 label,
                 view.sort == sort,
                 SidebarView { sort, ..view },
             ));
         }
+        sort_menu = sort_menu.separator();
         for (id, label, ascending) in [
             ("view-sort-descending", "Descending", false),
             ("view-sort-ascending", "Ascending", true),
         ] {
-            menu = menu.item(choice(
+            sort_menu = sort_menu.item(choice(
                 id,
                 label,
                 view.ascending == ascending,
@@ -3261,8 +3279,9 @@ impl Sidebar {
             ));
         }
         let metadata = self.show_metadata();
-        menu.separator()
-            .header("Show")
+        let show_menu = Menu::new("view-show-menu", px(220.))
+            .label("Show")
+            .application_vim(self.application_vim_enabled)
             .item(choice(
                 "view-show-metadata",
                 "Metadata",
@@ -3271,7 +3290,32 @@ impl Sidebar {
                     metadata: Some(!metadata),
                     ..view
                 },
-            ))
+            ));
+        Menu::new("view-menu", px(220.))
+            .label("View options")
+            .application_vim(self.application_vim_enabled)
+            .item(
+                self.view_popup
+                    .submenu(Group, "view-group", "Group by", group_menu, window, cx)
+                    .value(match view.group {
+                        SidebarGroup::Folder => "Folder",
+                        SidebarGroup::Status => "Status",
+                        SidebarGroup::Recent => "Recent",
+                    }),
+            )
+            .item(
+                self.view_popup
+                    .submenu(Sort, "view-sort", "Sort by", sort_menu, window, cx)
+                    .value(match view.sort {
+                        SidebarSort::Updated => "Last updated",
+                        SidebarSort::Created => "Date created",
+                        SidebarSort::Name => "Name",
+                    }),
+            )
+            .item(
+                self.view_popup
+                    .submenu(Show, "view-show", "Show", show_menu, window, cx),
+            )
             .separator()
             .item(
                 choice(
@@ -3794,6 +3838,7 @@ impl Sidebar {
     pub(super) fn sync_popup_focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.popup.sync_focus(window, cx);
         self.project_popup.sync_focus(window, cx);
+        self.view_popup.sync_focus(window, cx);
     }
 }
 

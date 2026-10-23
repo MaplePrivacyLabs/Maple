@@ -458,13 +458,6 @@ impl<V: 'static, K: Clone + PartialEq + 'static> Popup<V, K> {
 
     /// A parent row and its child menu, using this popup for the next level.
     /// Sync this popup's focus after the outer popup's, even while closed.
-    #[cfg_attr(
-        not(test),
-        allow(
-            dead_code,
-            reason = "The submenu API is exercised by its fixture until a caller adopts it."
-        )
-    )]
     pub(crate) fn submenu(
         &self,
         key: K,
@@ -1129,7 +1122,6 @@ impl<V: 'static> MenuItem<V> {
     }
 
     /// The current choice, shown beside a submenu's chevron.
-    #[cfg_attr(not(test), allow(dead_code, reason = "Part of the submenu API."))]
     pub(crate) fn value(mut self, value: impl Into<SharedString>) -> Self {
         if let Some(submenu) = &mut self.submenu {
             submenu.value = Some(value.into());

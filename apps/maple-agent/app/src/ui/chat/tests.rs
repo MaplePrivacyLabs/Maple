@@ -6231,7 +6231,7 @@ mod state_tests {
     }
 
     /// Application Vim opens View options from the Projects header and
-    /// its j and Enter pick a grouping.
+    /// its arrows, j and Enter pick a grouping in a submenu.
     #[gpui::test]
     fn test_application_vim_drives_the_view_menu(cx: &mut TestAppContext) {
         use crate::settings::SidebarGroup;
@@ -6256,13 +6256,22 @@ mod state_tests {
         });
         cx.simulate_keystrokes("enter");
         assert_eq!(open_menu(&chat, cx), "View");
-        // Rows: Folder, Status, Recent, …
-        cx.simulate_keystrokes("j j enter");
+        // Enter on the header opens View options; Right enters Group by.
+        cx.simulate_keystrokes("j right");
+        assert!(sidebar.update(cx, |sidebar, _| sidebar.view_submenu_open()));
+        cx.simulate_keystrokes("left");
+        assert!(!sidebar.update(cx, |sidebar, _| sidebar.view_submenu_open()));
+        assert_eq!(
+            sidebar.update(cx, |sidebar, _| sidebar.popup_highlight()),
+            Some("view-group".into())
+        );
+        cx.simulate_keystrokes("right j enter");
         assert_eq!(
             sidebar.update(cx, |sidebar, _| sidebar.view().group),
             SidebarGroup::Status
         );
         assert_eq!(open_menu(&chat, cx), "");
+        assert!(!sidebar.update(cx, |sidebar, _| sidebar.view_submenu_open()));
         chat.update(cx, |this, cx| {
             this.set_computers(identical_path_project_catalog(), cx)
         });
@@ -6278,8 +6287,7 @@ mod state_tests {
         cx.simulate_keystrokes("escape");
     }
 
-    /// The View options button opens one menu; its items change the view
-    /// and Reset to defaults brings the defaults back.
+    /// Picking a View option closes the chain; reset restores the defaults.
     #[gpui::test]
     fn test_the_view_menu_sets_and_resets_the_view(cx: &mut TestAppContext) {
         use crate::settings::{SidebarGroup, SidebarSort, SidebarView};
@@ -6292,14 +6300,27 @@ mod state_tests {
             |cx: &mut gpui::VisualTestContext| sidebar.update(cx, |sidebar, _| sidebar.view());
         press(cx, "view-options");
         assert_eq!(open_menu(&chat, cx), "View");
+        let closed = |cx: &mut gpui::VisualTestContext| {
+            assert_eq!(open_menu(&chat, cx), "");
+            assert!(!sidebar.update(cx, |sidebar, _| sidebar.view_submenu_open()));
+        };
+        press(cx, "view-sort");
         press(cx, "view-sort-name");
         assert_eq!(view(cx).sort, SidebarSort::Name);
+        closed(cx);
+        press(cx, "view-options");
+        press(cx, "view-sort");
+        press(cx, "view-sort-ascending");
+        assert!(view(cx).ascending);
+        closed(cx);
         press(cx, "view-options");
         press(cx, "view-reset");
         assert_eq!(view(cx), SidebarView::default());
         assert_eq!(view(cx).group, SidebarGroup::Folder);
         press(cx, "view-options");
+        press(cx, "view-group");
         press(cx, "view-group-recent");
+        closed(cx);
         assert_eq!(view(cx).group, SidebarGroup::Recent);
         assert!(sidebar.update(cx, |sidebar, _| sidebar.entries().contains(
             &crate::ui::chat::sidebar::SidebarEntry::SectionLabel(
@@ -6307,8 +6328,10 @@ mod state_tests {
             )
         )));
         press(cx, "view-options");
+        press(cx, "view-show");
         press(cx, "view-show-metadata");
         assert_eq!(view(cx).metadata, Some(false));
+        closed(cx);
     }
 
     /// A folder header's menu opens from its "…" button,
