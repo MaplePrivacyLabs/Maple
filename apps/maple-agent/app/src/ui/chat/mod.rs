@@ -922,7 +922,8 @@ impl ChatScreen {
     /// The task menu reads or sets the marker a completed run leaves.
     fn set_unread(&mut self, session_id: &str, unread: bool, cx: &mut Context<Self>) {
         let changed = if unread {
-            self.completed_unread_sessions.insert(session_id.to_string())
+            self.completed_unread_sessions
+                .insert(session_id.to_string())
         } else {
             self.completed_unread_sessions.remove(session_id)
         };

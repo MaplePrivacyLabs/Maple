@@ -5863,6 +5863,32 @@ mod state_tests {
         assert_eq!(*events.borrow(), ["s2 deleted"]);
     }
 
+    /// Pressing a pinned row's Unpin button removes its pin without selecting it.
+    #[gpui::test]
+    fn test_a_pinned_rows_strip_unpins_it(cx: &mut TestAppContext) {
+        let (chat, cx) = chat_window(cx, |this, cx| {
+            this.sessions = vec![summary("s1", "One")];
+            this.sync_sidebar(cx);
+            this.sidebar
+                .update(cx, |sidebar, cx| sidebar.toggle_task_pin("s1", cx));
+        });
+        assert_eq!(chat.update(cx, |this, cx| this.sidebar_pinned(cx)), vec![0]);
+        let selected = chat.update(cx, |this, _| this.selected_session.clone());
+        let row = on_screen(cx, "session-s1");
+        cx.simulate_mouse_move(row.center(), None, gpui::Modifiers::default());
+        press(cx, "pin-session-s1");
+        cx.run_until_parked();
+        assert!(
+            chat.update(cx, |this, cx| this.sidebar_pinned(cx))
+                .is_empty()
+        );
+        assert_eq!(
+            chat.update(cx, |this, _| this.selected_session.clone()),
+            selected
+        );
+        assert_eq!(open_menu(&chat, cx), "");
+    }
+
     /// Reordering keeps the same task's menu; removing the task closes it.
     #[gpui::test]
     fn test_task_menu_follows_its_task(cx: &mut TestAppContext) {

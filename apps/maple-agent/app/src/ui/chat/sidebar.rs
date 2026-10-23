@@ -2676,17 +2676,22 @@ impl Sidebar {
         let toggle = root.target.clone();
         div()
             .relative()
-            .child(self.project_popup.trigger(
-                root.target.clone(),
-                row_menu_button(
-                    root.menu_id.clone(),
-                    &root.row_group,
-                    "Project options",
-                    open,
+            .child(
+                self.project_popup.trigger(
+                    root.target.clone(),
+                    row_menu_button(
+                        root.menu_id.clone(),
+                        &root.row_group,
+                        "Project options",
+                        open,
+                    )
+                    .when(!open, |button| {
+                        button.tooltip(widgets::tooltip("Project options", None))
+                    }),
+                    cx,
+                    move |this, _, cx| this.toggle_project_menu(&toggle, cx),
                 ),
-                cx,
-                move |this, _, cx| this.toggle_project_menu(&toggle, cx),
-            ))
+            )
             .children(menu)
     }
 
@@ -2718,7 +2723,7 @@ impl Sidebar {
             .relative()
             .child(self.popup.trigger(
                 SidebarPopup::Task(row.id.clone()),
-                row_menu_button(row.menu_id.clone(), &row.group, "More", open),
+                row_menu_button(row.menu_id.clone(), &row.group, "Task options", open),
                 cx,
                 move |this, _, cx| this.toggle_task_menu(session.clone(), cx),
             ))
@@ -2791,7 +2796,7 @@ impl Sidebar {
             .flatten();
         let session_id = Arc::clone(&row.id);
         let menu_id = Arc::clone(&row.id);
-        let pin_id = row.pin_id.clone();
+        let unpin_id = Arc::clone(&row.id);
         let rename_field = self.task_rename_field(&row.id, cx);
         let renaming = rename_field.is_some();
         let menu_open =
@@ -2879,50 +2884,38 @@ impl Sidebar {
             .when_some(activity, |row_element, activity| {
                 row_element.child(activity_indicator(&row.spinner_id, activity))
             })
-            .when(is_pinned, |row| {
-                row.child(
-                    div()
-                        .id(pin_id.clone())
-                        .size_5()
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .rounded(theme::RADIUS_SM)
-                        .hover(|style| {
-                            style
-                                .bg(gpui::rgb(theme::bg_sidebar_row_selected()))
-                                .cursor_pointer()
-                        })
-                        .tooltip(widgets::tooltip("Unpin", None))
-                        .on_click(cx.listener(move |this, _event, _window, cx| {
-                            cx.stop_propagation();
-                            this.toggle_task_pin(&pin_id, cx);
-                        }))
-                        .child(icon("pin", px(13.), theme::accent())),
-                )
-            })
             .when(hover || menu_open, |el| {
                 el.child(
                     div()
                         .absolute()
                         .top_0()
                         .bottom_0()
-                        .when(is_pinned, |overlay| overlay.right(px(26.)))
-                        .when(!is_pinned, |overlay| {
-                            overlay.right_0().rounded_r(theme::RADIUS_MD)
-                        })
+                        .right_0()
                         .flex()
                         .items_center()
                         .gap_1p5()
                         .pl_2()
                         .pr_6()
+                        .rounded_r(theme::RADIUS_MD)
                         .group_hover(row.group.clone(), |style| {
                             style.bg(gpui::rgb(theme::bg_sidebar_row_hover()))
                         })
                         .when(menu_open, |overlay| {
                             overlay.bg(gpui::rgb(theme::bg_sidebar_row_hover()))
                         })
-                        .child(self.task_menu_trigger(row, task, menu_open, window, cx)),
+                        .child(self.task_menu_trigger(row, task, menu_open, window, cx))
+                        // The Pinned section names a pinned row at rest; on
+                        // hover the pin unpins it.
+                        .when(is_pinned, |overlay| {
+                            overlay.child(
+                                row_button(row.pin_id.clone(), &row.group, "pin", "Unpin")
+                                    .tooltip(widgets::tooltip("Unpin", None))
+                                    .on_click(cx.listener(move |this, _event, _window, cx| {
+                                        cx.stop_propagation();
+                                        this.toggle_task_pin(&unpin_id, cx);
+                                    })),
+                            )
+                        }),
                 )
             })
     }
@@ -3141,22 +3134,18 @@ fn activity_indicator(spinner_id: &SharedString, activity: SessionActivity) -> A
 }
 
 /// A row's overflow button: [`row_button`]'s look, but it stays visible
-/// and pressed while its menu is open, and shows no tooltip over the menu.
+/// and pressed while its menu is open.
 fn row_menu_button(
     id: SharedString,
     group: &SharedString,
     label: &'static str,
     open: bool,
 ) -> gpui::Stateful<Div> {
-    row_button(id, group, "ellipsis", label)
-        .when(open, |button| {
-            button
-                .opacity(1.)
-                .bg(gpui::rgb(theme::bg_sidebar_row_selected()))
-        })
-        .when(!open, |button| {
-            button.tooltip(widgets::tooltip(label, None))
-        })
+    row_button(id, group, "ellipsis", label).when(open, |button| {
+        button
+            .opacity(1.)
+            .bg(gpui::rgb(theme::bg_sidebar_row_selected()))
+    })
 }
 
 /// The small icon button a sidebar row shows while it is hovered.
