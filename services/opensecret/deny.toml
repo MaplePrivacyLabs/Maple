@@ -5,6 +5,10 @@ unsound = "all"
 unmaintained = "none"
 ignore = [
     { id = "RUSTSEC-2023-0071", reason = "No patched rsa release; Tinfoil uses RSA public-key verification only, while the advisory affects private-key operations" },
+    # Reviewed for Tinfoil f0fef79eec6a5a2c8592cf8aff4b90ab556acfbc and
+    # EHBP 93cc1fa1ad61e19f9a34fb23cb5b5d5635d3edb0. This exception is local
+    # to the backend; an advisory-ID ignore does not enforce these source pins.
+    { id = "RUSTSEC-2026-0387", reason = "Pinned Tinfoil f0fef79 uses crypto-bigint 0.5.5 only for public-input P-256/P-384 attestation and Sigstore verification. Production EHBP key agreement uses X25519/dalek. Re-review when Tinfoil/EHBP pins, crypto consumers or HPKE suite selection change; remove after upgrading the affected dependency." },
 ]
 
 [bans]
