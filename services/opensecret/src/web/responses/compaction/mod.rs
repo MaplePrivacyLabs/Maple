@@ -1,6 +1,7 @@
 //! Server-owned conversation checkpoints. Planning is pure, helper inference is
 //! explicit paid work, and a fenced DB publication is the only coverage commit.
 
+mod attempt;
 pub(crate) mod context;
 mod executor;
 pub(crate) mod policy;
@@ -27,6 +28,7 @@ use crate::{
     },
     ApiError,
 };
+use attempt::{AttemptKey, SourceRaceAction, SourceRevision, StagedCheckpoint};
 use base64::{engine::general_purpose::STANDARD, Engine};
 use context::{CheckpointPayload, ContextItem, ContextItemKey, ContextItemKind};
 use executor::SummaryExecutionError;
@@ -59,6 +61,8 @@ pub(super) struct CompactionBudget {
     calls: AtomicUsize,
     paid_work: AtomicBool,
     sources: Mutex<source::SourceLoader>,
+    non_reducing: Mutex<HashSet<AttemptKey>>,
+    advisory_failed: AtomicBool,
 }
 
 impl CompactionBudget {
@@ -81,6 +85,36 @@ impl CompactionBudget {
 
     pub fn has_paid_work(&self) -> bool {
         self.paid_work.load(Ordering::Acquire)
+    }
+
+    fn optional_work_enabled(&self, forced: bool) -> bool {
+        forced || !self.advisory_failed.load(Ordering::Acquire)
+    }
+
+    fn suppress_optional_work(&self) {
+        self.advisory_failed.store(true, Ordering::Release);
+    }
+
+    fn may_retry_candidate(&self, key: &AttemptKey, forced: bool) -> Result<bool, ApiError> {
+        Ok(forced
+            || !self
+                .non_reducing
+                .lock()
+                .map_err(|_| ApiError::InternalServerError)?
+                .contains(key))
+    }
+
+    fn remember_non_reducing(&self, key: AttemptKey) -> Result<(), ApiError> {
+        let mut attempts = self
+            .non_reducing
+            .lock()
+            .map_err(|_| ApiError::InternalServerError)?;
+        // Each entry requires at least one paid helper call. Keep the memory
+        // bound explicit even if execution policy changes independently later.
+        if attempts.len() < MAX_SUMMARY_CALLS_PER_RESPONSE {
+            attempts.insert(key);
+        }
+        Ok(())
     }
 }
 
@@ -368,85 +402,100 @@ fn validate_forced_progress(
     Ok(())
 }
 
-/// Select and summarize one independently publishable prefix. A tiny historical
-/// exchange can be cheaper verbatim than a structured checkpoint; leave it raw
-/// and still allow a large completed active tool prefix to make progress.
-async fn reducing_checkpoint(
+struct CandidateCheckpoint {
+    payload: CheckpointPayload,
+    source_tokens: Vec<(ContextItemKey, usize)>,
+    attempt: AttemptKey,
+}
+
+/// Summarize one bounded prefix. A non-reducing candidate may be carried only
+/// in memory into the next bounded batch; it is never published on its own.
+async fn summarize_checkpoint(
     executor: &SummaryExecutor<'_>,
-    snapshot: &context::ContextSnapshot,
     checkpoint: &Option<CheckpointPayload>,
     policy: &CompactionPolicy,
     plan: context::ContextPlan,
-    original_tokens: usize,
-    non_reducing: &mut HashSet<Vec<ContextItemKey>>,
-) -> Result<Option<CheckpointPayload>, SummaryExecutionError> {
-    for work in plan.summary_work {
-        let needs_history_fold = work.kind == context::SectionKind::Active
-            && checkpoint
-                .as_ref()
-                .and_then(|value| value.active.as_ref())
-                .is_some_and(|section| section.anchor != Some(snapshot.current_user));
-        if needs_history_fold || non_reducing.contains(&work.covered) {
-            tracing::debug!(
-                event = "responses.compaction.candidate_skipped",
-                reason = if needs_history_fold {
-                    "history_fold_required"
-                } else {
-                    "previously_non_reducing"
-                },
-                covered_items = work.covered.len(),
-                "Responses compaction candidate skipped"
-            );
-            continue;
+    attempt: Option<AttemptKey>,
+) -> Result<Option<CandidateCheckpoint>, SummaryExecutionError> {
+    let Some(work) = plan.summary_work.into_iter().next() else {
+        return Ok(None);
+    };
+    let attempt = attempt.ok_or(SummaryExecutionError::Unsafe(ApiError::InternalServerError))?;
+    let section = match work.kind {
+        context::SectionKind::History => "history",
+        context::SectionKind::Active => "active",
+    };
+    tracing::info!(
+        event = "responses.compaction.candidate_started",
+        section,
+        source_items = work.items.len(),
+        covered_items = work.covered.len(),
+        folds_previous_active = work.folds_previous_active,
+        has_previous_summary = work.previous_summary.is_some(),
+        "Responses compaction candidate started"
+    );
+    let summary = executor.summarize(&work, policy).await?;
+    complete_candidate(checkpoint, work, summary, attempt).map(Some)
+}
+
+fn complete_candidate(
+    checkpoint: &Option<CheckpointPayload>,
+    work: context::SummaryWork,
+    summary: String,
+    attempt: AttemptKey,
+) -> Result<CandidateCheckpoint, SummaryExecutionError> {
+    let source_tokens = work
+        .items
+        .iter()
+        .map(|item| (item.key, item.estimated_tokens))
+        .collect();
+    let one = context::ContextPlan {
+        summary_work: vec![work],
+    };
+    let payload = context::complete_plan(checkpoint, &one, &[summary])
+        .map_err(|_| SummaryExecutionError::Unsafe(ApiError::InternalServerError))?;
+    Ok(CandidateCheckpoint {
+        payload,
+        source_tokens,
+        attempt,
+    })
+}
+
+fn attempt_key(
+    source: &CompactionSnapshot,
+    covered: &[ContextItemKey],
+    model: &str,
+    replay: ReasoningReplay,
+) -> Result<AttemptKey, ApiError> {
+    Ok(AttemptKey::new(
+        source.checkpoint.as_ref().map(|record| record.uuid),
+        source
+            .coverage_fingerprint(covered)
+            .map_err(|_| ApiError::InternalServerError)?,
+        model,
+        replay,
+    ))
+}
+
+fn candidate_urls(
+    snapshot: &context::ContextSnapshot,
+    opened: Option<&CheckpointEnvelope>,
+    covered: &[ContextItemKey],
+    staged: Option<&StagedCheckpoint>,
+) -> Vec<String> {
+    let mut urls = staged
+        .map(|draft| draft.allowed_urls.clone())
+        .unwrap_or_default();
+    let mut seen: HashSet<_> = urls.iter().cloned().collect();
+    for url in durable_urls(snapshot, opened, covered) {
+        if urls.len() >= super::tools::MAX_PROMPT_ALLOWED_URLS {
+            break;
         }
-        let section = match work.kind {
-            context::SectionKind::History => "history",
-            context::SectionKind::Active => "active",
-        };
-        let summary_started = std::time::Instant::now();
-        tracing::info!(
-            event = "responses.compaction.candidate_started",
-            section,
-            source_items = work.items.len(),
-            covered_items = work.covered.len(),
-            folds_previous_active = work.folds_previous_active,
-            has_previous_summary = work.previous_summary.is_some(),
-            "Responses compaction candidate started"
-        );
-        let summary = executor.summarize(&work, policy).await?;
-        let coverage = work.covered.clone();
-        let one = context::ContextPlan {
-            summary_work: vec![work],
-        };
-        let next = context::complete_plan(checkpoint, &one, &[summary])
-            .map_err(|_| SummaryExecutionError::Unsafe(ApiError::InternalServerError))?;
-        let next_tokens = context::estimate_tokens(snapshot, &Some(next.clone()))
-            .map_err(|_| SummaryExecutionError::Unsafe(ApiError::InternalServerError))?;
-        if next_tokens < original_tokens {
-            tracing::info!(
-                event = "responses.compaction.candidate_reduced",
-                section,
-                original_tokens,
-                projected_tokens = next_tokens,
-                saved_tokens = original_tokens.saturating_sub(next_tokens),
-                elapsed_ms = telemetry::elapsed_ms(summary_started),
-                "Responses compaction candidate reduced prompt"
-            );
-            return Ok(Some(next));
+        if seen.insert(url.clone()) {
+            urls.push(url);
         }
-        // This is a size/progress check, not an extra output-token allowance.
-        // Never commit a summary that makes this projection larger.
-        non_reducing.insert(coverage);
-        tracing::warn!(
-            event = "responses.compaction.candidate_non_reducing",
-            section,
-            original_tokens,
-            projected_tokens = next_tokens,
-            elapsed_ms = telemetry::elapsed_ms(summary_started),
-            "Responses compaction candidate did not reduce prompt"
-        );
     }
-    Ok(None)
+    urls
 }
 
 fn finish_prompt(
@@ -642,7 +691,9 @@ async fn prepare_prompt_inner(
     );
     let mut publication_conflicts = 0;
     let mut source_races = 0;
-    let mut non_reducing = HashSet::new();
+    let mut non_reducing = false;
+    let mut staged: Option<StagedCheckpoint> = None;
+    let mut fallback_only = false;
     let mut made_progress = false;
     for preparation_step in 0..MAX_PREPARATION_STEPS {
         if executor.execution.is_cancelled() || tokio::time::Instant::now() >= executor.deadline {
@@ -686,7 +737,18 @@ async fn prepare_prompt_inner(
         );
         let checkpoint_started = std::time::Instant::now();
         let opened = open_checkpoint(&source, user_key)?;
-        let checkpoint = opened.as_ref().map(|envelope| envelope.payload.clone());
+        let durable_checkpoint = opened.as_ref().map(|envelope| envelope.payload.clone());
+        let revision = SourceRevision::new(&source);
+        if staged
+            .as_ref()
+            .is_some_and(|draft| !draft.matches(&revision))
+        {
+            staged = None;
+        }
+        let checkpoint = staged
+            .as_ref()
+            .map(|draft| draft.payload.clone())
+            .or_else(|| durable_checkpoint.clone());
         let covered: HashSet<_> = checkpoint
             .as_ref()
             .map(covered_keys)
@@ -746,8 +808,11 @@ async fn prepare_prompt_inner(
             loader.cached(&source)
         };
         let mut snapshot = input.build(cached, &checkpoint, false)?;
+        if let Some(draft) = &staged {
+            draft.restore_source_tokens(&mut snapshot);
+        }
         let planning_tokens = context::estimate_tokens(&snapshot, &checkpoint).ok();
-        let plan = if enabled {
+        let plan = if enabled && !fallback_only && executor.budget.optional_work_enabled(force) {
             context::plan_batch(
                 &snapshot,
                 &checkpoint,
@@ -761,19 +826,30 @@ async fn prepare_prompt_inner(
                 summary_work: Vec::new(),
             }
         };
+        let mut planned_work = Vec::new();
+        let mut selected_attempt = None;
+        for work in plan.summary_work {
+            let needs_history_fold = work.kind == context::SectionKind::Active
+                && checkpoint
+                    .as_ref()
+                    .and_then(|value| value.active.as_ref())
+                    .is_some_and(|section| section.anchor != Some(snapshot.current_user));
+            let key = attempt_key(
+                &source,
+                &work.covered,
+                &executor.body.model,
+                reasoning_replay,
+            )?;
+            if !needs_history_fold && executor.budget.may_retry_candidate(&key, force)? {
+                selected_attempt = Some(key);
+                planned_work.push(work);
+                // Hydrate only this bounded batch, never both a historical
+                // image batch and an active batch at the same time.
+                break;
+            }
+        }
         let plan = context::ContextPlan {
-            summary_work: plan
-                .summary_work
-                .into_iter()
-                .filter(|work| {
-                    let needs_history_fold = work.kind == context::SectionKind::Active
-                        && checkpoint
-                            .as_ref()
-                            .and_then(|value| value.active.as_ref())
-                            .is_some_and(|section| section.anchor != Some(snapshot.current_user));
-                    !non_reducing.contains(&work.covered) && !needs_history_fold
-                })
-                .collect(),
+            summary_work: planned_work,
         };
         let planned_items = plan
             .summary_work
@@ -795,7 +871,7 @@ async fn prepare_prompt_inner(
                     && planning_tokens.is_some_and(|tokens| tokens < policy.trigger_tokens)
                 {
                     "below_threshold"
-                } else if !non_reducing.is_empty() {
+                } else if non_reducing {
                     "no_reducing_candidate"
                 } else {
                     "no_eligible_prefix"
@@ -855,10 +931,20 @@ async fn prepare_prompt_inner(
             .collect();
         let raw = match load_source_items(executor, &source, &keys) {
             Ok(raw) => raw,
-            Err(DBError::CompactionError(CompactionError::InvalidSelection))
-                if source_races < MAX_SOURCE_RACE_RETRIES =>
-            {
-                source_races += 1;
+            Err(DBError::CompactionError(CompactionError::InvalidSelection)) => {
+                match attempt::source_race_action(
+                    &mut source_races,
+                    MAX_SOURCE_RACE_RETRIES,
+                    force,
+                    fallback_only,
+                ) {
+                    SourceRaceAction::Replan => {}
+                    SourceRaceAction::FreshFallback => {
+                        fallback_only = true;
+                        staged = None;
+                    }
+                    SourceRaceAction::Fail => return Err(ApiError::InternalServerError),
+                }
                 tracing::warn!(
                     event = "responses.compaction.source_replan",
                     phase = "planned_batch",
@@ -883,10 +969,13 @@ async fn prepare_prompt_inner(
             raw_by_key.insert((row.message_type.clone(), row.uuid), row);
         }
         snapshot = input.build(raw_by_key.into_values().collect(), &checkpoint, false)?;
+        if let Some(draft) = &staged {
+            draft.restore_source_tokens(&mut snapshot);
+        }
         if !plan.summary_work.is_empty() {
             validate_required_input(&snapshot, &policy)?;
         }
-        let mut original_tokens = context::estimate_tokens(&snapshot, &checkpoint)
+        let mut original_tokens = context::estimate_tokens(&snapshot, &durable_checkpoint)
             .map_err(|_| ApiError::InternalServerError)?;
         if !plan.summary_work.is_empty() {
             match validate_billing_before_helpers(billing_access, original_tokens) {
@@ -898,16 +987,28 @@ async fn prepare_prompt_inner(
                     // complete projection before starting paid helper work.
                     let keys = prompt_source_keys(
                         &source.items,
-                        &checkpoint,
+                        &durable_checkpoint,
                         input.current_user,
                         reasoning_replay,
                     );
                     let raw = match load_source_items(executor, &source, &keys) {
                         Ok(raw) => raw,
-                        Err(DBError::CompactionError(CompactionError::InvalidSelection))
-                            if source_races < MAX_SOURCE_RACE_RETRIES =>
-                        {
-                            source_races += 1;
+                        Err(DBError::CompactionError(CompactionError::InvalidSelection)) => {
+                            match attempt::source_race_action(
+                                &mut source_races,
+                                MAX_SOURCE_RACE_RETRIES,
+                                force,
+                                fallback_only,
+                            ) {
+                                SourceRaceAction::Replan => {}
+                                SourceRaceAction::FreshFallback => {
+                                    fallback_only = true;
+                                    staged = None;
+                                }
+                                SourceRaceAction::Fail => {
+                                    return Err(ApiError::InternalServerError)
+                                }
+                            }
                             tracing::warn!(
                                 event = "responses.compaction.source_replan",
                                 phase = "billing_validation",
@@ -918,8 +1019,8 @@ async fn prepare_prompt_inner(
                         }
                         Err(_) => return Err(ApiError::InternalServerError),
                     };
-                    snapshot = input.build(raw, &checkpoint, true)?;
-                    original_tokens = context::estimate_tokens(&snapshot, &checkpoint)
+                    snapshot = input.build(raw, &durable_checkpoint, true)?;
+                    original_tokens = context::estimate_tokens(&snapshot, &durable_checkpoint)
                         .map_err(|_| ApiError::InternalServerError)?;
                     validate_billing_before_helpers(billing_access, original_tokens)?;
                 }
@@ -929,21 +1030,13 @@ async fn prepare_prompt_inner(
         let plan =
             context::hydrate_plan(&plan, &snapshot).map_err(|_| ApiError::InternalServerError)?;
         let mut advisory_failure = None;
-        let mut final_checkpoint = checkpoint.clone();
+        let mut final_checkpoint = durable_checkpoint.clone();
         let mut published = false;
+        let mut published_urls = Vec::new();
         // Publish each complete section/prefix before beginning another. A later
         // helper failure retains this progress for the next request.
         let candidate = if enabled {
-            match reducing_checkpoint(
-                executor,
-                &snapshot,
-                &checkpoint,
-                &policy,
-                plan,
-                original_tokens,
-                &mut non_reducing,
-            )
-            .await
+            match summarize_checkpoint(executor, &checkpoint, &policy, plan, selected_attempt).await
             {
                 Ok(candidate) => candidate,
                 Err(error)
@@ -980,8 +1073,40 @@ async fn prepare_prompt_inner(
         } else {
             None
         };
-        if let Some(next) = candidate {
+        if let Some(candidate) = candidate {
+            let next = candidate.payload;
+            let next_tokens = context::estimate_tokens(&snapshot, &Some(next.clone()))
+                .map_err(|_| ApiError::InternalServerError)?;
             let covered_items = covered_keys(&next);
+            let urls = candidate_urls(&snapshot, opened.as_ref(), &covered_items, staged.as_ref());
+            if next_tokens >= original_tokens {
+                executor.budget.remember_non_reducing(candidate.attempt)?;
+                non_reducing = true;
+                tracing::warn!(
+                    event = "responses.compaction.candidate_non_reducing",
+                    original_tokens,
+                    projected_tokens = next_tokens,
+                    "Responses provisional prefix needs a later bounded batch"
+                );
+                if let Some(draft) = staged.as_mut() {
+                    draft.advance(next, candidate.source_tokens, urls);
+                } else {
+                    staged = Some(StagedCheckpoint::new(
+                        revision,
+                        next,
+                        candidate.source_tokens,
+                        urls,
+                    ));
+                }
+                continue;
+            }
+            tracing::info!(
+                event = "responses.compaction.candidate_reduced",
+                original_tokens,
+                projected_tokens = next_tokens,
+                saved_tokens = original_tokens.saturating_sub(next_tokens),
+                "Responses combined candidate reduces the durable projection"
+            );
             let digest = source
                 .coverage_fingerprint(&covered_items)
                 .map_err(|_| ApiError::InternalServerError)?;
@@ -1006,7 +1131,7 @@ async fn prepare_prompt_inner(
                 origin_response_uuid: current_response_uuid,
                 after_item_uuid,
                 source_fingerprint: digest,
-                allowed_urls: durable_urls(&snapshot, opened.as_ref(), &covered_items),
+                allowed_urls: urls,
                 payload: next.clone(),
             };
             let bytes = serde_json::to_vec(&envelope).map_err(|_| ApiError::InternalServerError)?;
@@ -1031,7 +1156,7 @@ async fn prepare_prompt_inner(
                         .map_err(|_| ApiError::InternalServerError)?,
                     expected_head_uuid: source.checkpoint.as_ref().map(|record| record.uuid),
                     covered_items,
-                    previous_covered_items: checkpoint
+                    previous_covered_items: durable_checkpoint
                         .as_ref()
                         .map(covered_keys)
                         .unwrap_or_default(),
@@ -1062,8 +1187,12 @@ async fn prepare_prompt_inner(
                         "Responses compaction checkpoint publication conflicted"
                     );
                     if publication_conflicts > MAX_PUBLICATION_CONFLICTS {
-                        return Err(ApiError::ServiceUnavailable);
+                        if force || fallback_only {
+                            return Err(ApiError::ServiceUnavailable);
+                        }
+                        fallback_only = true;
                     }
+                    staged = None;
                     continue;
                 }
                 CompactionPublishResult::Published(record) => {
@@ -1072,8 +1201,10 @@ async fn prepare_prompt_inner(
                         summary_tokens, forced = force, elapsed_ms = telemetry::elapsed_ms(publication_started),
                         "Responses compaction checkpoint published");
                     final_checkpoint = Some(next);
+                    published_urls = envelope.allowed_urls.clone();
                     published = true;
                     made_progress = true;
+                    staged = None;
                 }
             }
         }
@@ -1104,7 +1235,7 @@ async fn prepare_prompt_inner(
         }
         // A conservative planning estimate alone cannot reject a prompt. On a
         // no-progress/disabled path materialize the complete projection first.
-        validate_forced_progress(force, made_progress, !non_reducing.is_empty())?;
+        validate_forced_progress(force, made_progress, non_reducing)?;
         let final_covered: HashSet<_> = final_checkpoint
             .as_ref()
             .map(covered_keys)
@@ -1119,10 +1250,20 @@ async fn prepare_prompt_inner(
         );
         let raw = match load_source_items(executor, &source, &keys) {
             Ok(raw) => raw,
-            Err(DBError::CompactionError(CompactionError::InvalidSelection))
-                if source_races < MAX_SOURCE_RACE_RETRIES =>
-            {
-                source_races += 1;
+            Err(DBError::CompactionError(CompactionError::InvalidSelection)) => {
+                match attempt::source_race_action(
+                    &mut source_races,
+                    MAX_SOURCE_RACE_RETRIES,
+                    force,
+                    fallback_only,
+                ) {
+                    SourceRaceAction::Replan => {}
+                    SourceRaceAction::FreshFallback => {
+                        fallback_only = true;
+                        staged = None;
+                    }
+                    SourceRaceAction::Fail => return Err(ApiError::InternalServerError),
+                }
                 tracing::warn!(
                     event = "responses.compaction.source_replan",
                     phase = "final_projection",
@@ -1138,6 +1279,9 @@ async fn prepare_prompt_inner(
         let (messages, estimated_tokens) = context::project(&complete, &final_checkpoint)
             .map_err(|_| ApiError::InternalServerError)?;
         if estimated_tokens > policy.input_budget {
+            if fallback_only {
+                return Err(ApiError::ServiceUnavailable);
+            }
             if let Some(error) = advisory_failure {
                 return Err(error.into_api_error());
             }
@@ -1149,12 +1293,13 @@ async fn prepare_prompt_inner(
                     input_budget = policy.input_budget,
                     "Responses complete prompt requires forced compaction"
                 );
+                staged = None;
                 policy.keep_recent_tokens = 0;
                 policy.trigger_tokens = 0;
                 force = true;
                 continue;
             }
-            return Err(if non_reducing.is_empty() {
+            return Err(if !non_reducing {
                 ApiError::MessageExceedsContextLimit
             } else {
                 ApiError::ServiceUnavailable
@@ -1178,8 +1323,18 @@ async fn prepare_prompt_inner(
                 input_budget = policy.input_budget,
                 "Advisory compaction unavailable; retaining complete fitting prompt"
             );
+            executor.budget.suppress_optional_work();
+        }
+        if fallback_only {
+            executor.budget.suppress_optional_work();
         }
         let mut allowed_urls = authoritative_urls(&complete, opened.as_ref());
+        for url in published_urls {
+            if allowed_urls.len() >= super::tools::MAX_PROMPT_ALLOWED_URLS {
+                break;
+            }
+            allowed_urls.insert(url);
+        }
         for url in durable_urls(
             &snapshot,
             None,
@@ -1316,6 +1471,22 @@ mod tests {
                 &error, false, 100, 100, false, false
             ));
         }
+        assert!(may_use_original_prompt(
+            &SummaryExecutionError::InputLimit,
+            false,
+            100,
+            100,
+            false,
+            false
+        ));
+        assert!(!may_use_original_prompt(
+            &SummaryExecutionError::InputLimit,
+            true,
+            100,
+            100,
+            false,
+            false
+        ));
     }
 
     #[test]
@@ -1905,5 +2076,378 @@ mod tests {
         }
         assert!(budget.has_paid_work());
         assert!(budget.begin_call().is_err());
+    }
+
+    #[test]
+    fn unchanged_optional_failures_are_not_repaid_on_later_tool_preparations() {
+        let budget = CompactionBudget::default();
+        let key = AttemptKey::new(None, [1; 32], "model", ReasoningReplay::None);
+        assert!(budget.may_retry_candidate(&key, false).unwrap());
+        budget.begin_call().unwrap();
+        budget.remember_non_reducing(key.clone()).unwrap();
+        assert!(!budget.may_retry_candidate(&key, false).unwrap());
+        // The rejected prefix does not suppress changed source/model work.
+        let changed = AttemptKey::new(None, [2; 32], "model", ReasoningReplay::None);
+        assert!(budget.may_retry_candidate(&changed, false).unwrap());
+        assert!(budget.may_retry_candidate(&key, true).unwrap());
+
+        budget.suppress_optional_work();
+        for _ in 0..30 {
+            if budget.optional_work_enabled(false) {
+                budget.begin_call().unwrap();
+            }
+        }
+        assert_eq!(budget.calls.load(Ordering::Acquire), 1);
+        // A later mandatory fit still gets the remaining shared allowance.
+        assert!(budget.optional_work_enabled(true));
+        budget.begin_call().unwrap();
+        assert_eq!(budget.calls.load(Ordering::Acquire), 2);
+    }
+
+    #[test]
+    fn active_candidate_memo_uses_the_selected_work_not_combined_history_coverage() {
+        let (mut source, user_key) = checkpoint_fixture();
+        let checkpoint = open_checkpoint(&source, &user_key)
+            .unwrap()
+            .map(|value| value.payload);
+        let response = Uuid::new_v4();
+        for (id, kind) in [(3, ContextItemKind::User), (4, ContextItemKind::Assistant)] {
+            let mut metadata = source.items[0].clone();
+            metadata.key = ContextItemKey {
+                kind,
+                uuid: Uuid::from_u128(id),
+            };
+            metadata.id = id as i64;
+            metadata.response_uuid = Some(response);
+            metadata.response_status = Some("in_progress".into());
+            metadata.content_fingerprint = format!("synthetic-active-{id}");
+            source.items.push(metadata);
+        }
+        let snapshot = context::ContextSnapshot {
+            instructions: vec![], instruction_tokens: 0,
+            current_user: source.items[2].key, current_response: response,
+            items: source.items.iter().map(|metadata| ContextItem::from_prompt(
+                metadata.key, metadata.response_uuid,
+                vec![serde_json::json!({"role":if metadata.key.kind == ContextItemKind::User {"user"} else {"assistant"}, "content":"ok"})],
+                1, true, None,
+            )).collect(),
+        };
+        let policy = CompactionPolicy {
+            input_budget: 10_000,
+            trigger_tokens: 0,
+            keep_recent_tokens: 0,
+            summary_input_budget: 5_000,
+        };
+        let plan = context::plan_batch(
+            &snapshot,
+            &checkpoint,
+            &policy,
+            false,
+            policy.summary_input_budget,
+        )
+        .unwrap();
+        // This fixture deliberately keeps a historical suffix outside the
+        // durable checkpoint too. Select the completed active work explicitly:
+        // its attempt identity must not acquire unrelated history coverage.
+        assert!(checkpoint.as_ref().unwrap().history.is_some());
+        let work = plan
+            .summary_work
+            .into_iter()
+            .find(|work| work.kind == context::SectionKind::Active)
+            .expect("completed active work remains independently planned");
+        let selected_key = attempt_key(
+            &source,
+            &work.covered,
+            "gpt-oss-120b",
+            ReasoningReplay::None,
+        )
+        .unwrap();
+        let candidate =
+            complete_candidate(&checkpoint, work, "Done.".into(), selected_key.clone()).unwrap();
+        assert!(
+            context::estimate_tokens(&snapshot, &Some(candidate.payload.clone())).unwrap()
+                >= context::estimate_tokens(&snapshot, &checkpoint).unwrap()
+        );
+        let whole_payload_key = attempt_key(
+            &source,
+            &covered_keys(&candidate.payload),
+            "gpt-oss-120b",
+            ReasoningReplay::None,
+        )
+        .unwrap();
+        assert_ne!(whole_payload_key, selected_key);
+        assert_eq!(candidate.attempt, selected_key);
+        let budget = CompactionBudget::default();
+        budget.remember_non_reducing(candidate.attempt).unwrap();
+        assert!(!budget.may_retry_candidate(&selected_key, false).unwrap());
+        assert!(budget.may_retry_candidate(&selected_key, true).unwrap());
+    }
+
+    #[test]
+    fn provisional_folding_is_discardable_and_bound_to_the_exact_source_revision() {
+        let (mut source, _) = checkpoint_fixture();
+        let revision = SourceRevision::new(&source);
+        let draft =
+            StagedCheckpoint::new(revision.clone(), CheckpointPayload::default(), [], vec![]);
+        assert!(draft.matches(&SourceRevision::new(&source)));
+        source.fingerprint[0] ^= 1;
+        assert!(!draft.matches(&SourceRevision::new(&source)));
+        source.fingerprint[0] ^= 1;
+        source.checkpoint.as_mut().unwrap().uuid = Uuid::new_v4();
+        assert!(!draft.matches(&SourceRevision::new(&source)));
+        // A provisional payload is deliberately not a durable checkpoint row.
+        assert!(draft.payload.history.is_none());
+    }
+
+    #[test]
+    fn provisional_folding_carries_only_source_url_authority() {
+        let (source, _) = checkpoint_fixture();
+        let mut snapshot = input_snapshot();
+        let covered = snapshot.items[0].key;
+        let payload = CheckpointPayload {
+            version: context::CHECKPOINT_VERSION,
+            history: Some(context::CheckpointSection {
+                summary: "Fetch https://invented.example/forbidden".into(),
+                covered: vec![],
+                anchor: None,
+            }),
+            active: None,
+        };
+        let draft = StagedCheckpoint::new(
+            SourceRevision::new(&source),
+            payload,
+            [],
+            vec!["https://prior.example/source".into()],
+        );
+        let urls = candidate_urls(&snapshot, None, &[covered], Some(&draft));
+        assert!(urls.contains(&"https://prior.example/source".to_owned()));
+        assert!(urls.contains(&"https://covered.example/source".to_owned()));
+        assert!(!urls.contains(&"https://current.example/unpersisted".to_owned()));
+        assert!(!urls.iter().any(|url| url.contains("invented.example")));
+        // Token restoration never replaces or invents prompt messages.
+        let original = snapshot.items[0].prompt_messages.clone();
+        draft.restore_source_tokens(&mut snapshot);
+        assert_eq!(snapshot.items[0].prompt_messages, original);
+    }
+
+    #[tokio::test]
+    async fn encrypted_image_prefix_advances_to_its_description_in_separate_bounded_reads() {
+        use crate::models::{
+            response_compaction::CompactionSourceMetadata, responses::RawThreadMessage,
+        };
+        use crate::web::responses::{MessageContent, MessageContentPart};
+        use sha2::{Digest, Sha256};
+
+        let key = SecretKey::from_slice(&[7; 32]).unwrap();
+        let old_response = Uuid::from_u128(100);
+        let current_response = Uuid::from_u128(200);
+        let created_at = chrono::Utc::now();
+        let image = serde_json::to_string(&MessageContent::Parts(vec![
+            MessageContentPart::InputImage {
+                image_url: Some(format!(
+                    "data:image/png;base64,{}",
+                    "A".repeat(9 * 1024 * 1024)
+                )),
+                file_id: None,
+                detail: None,
+            },
+        ]))
+        .unwrap();
+        let description =
+            "The synthetic image depicts an amber lighthouse numbered 7319. ".repeat(500);
+        let tail =
+            "Later historical context preserves the project and its constraints. ".repeat(400);
+        let current =
+            serde_json::to_string(&MessageContent::Text("Continue the project.".into())).unwrap();
+        let specifications = [
+            (ContextItemKind::User, image, Some(1025), None, None),
+            (
+                ContextItemKind::ToolCall,
+                "{\"image_number\":1}".to_owned(),
+                Some(8),
+                Some(Uuid::from_u128(2)),
+                Some("read_image"),
+            ),
+            (
+                ContextItemKind::ToolOutput,
+                description.clone(),
+                Some(count_tokens(&description) as i32),
+                Some(Uuid::from_u128(2)),
+                Some("read_image"),
+            ),
+            (
+                ContextItemKind::Assistant,
+                tail.clone(),
+                Some(count_tokens(&tail) as i32),
+                None,
+                None,
+            ),
+            (ContextItemKind::User, current, Some(8), None, None),
+        ];
+        let mut rows = Vec::new();
+        let mut metadata = Vec::new();
+        for (index, (kind, text, tokens, call, name)) in specifications.into_iter().enumerate() {
+            let ciphertext = crate::encrypt::encrypt_with_key(&key, text.as_bytes()).await;
+            let uuid = Uuid::from_u128(index as u128 + 1);
+            let response = if index == 4 {
+                current_response
+            } else {
+                old_response
+            };
+            let fingerprint = hex::encode(Sha256::digest(&ciphertext));
+            rows.push(RawThreadMessage {
+                message_type: kind.as_str().into(),
+                id: index as i64 + 1,
+                uuid,
+                response_uuid: Some(response),
+                content_enc: Some(ciphertext.clone()),
+                status: Some("completed".into()),
+                created_at,
+                model: None,
+                token_count: tokens,
+                tool_call_id: call,
+                finish_reason: None,
+                tool_name: name.map(str::to_owned),
+            });
+            metadata.push(CompactionSourceMetadata {
+                key: ContextItemKey { kind, uuid },
+                id: index as i64 + 1,
+                created_at,
+                updated_at: created_at,
+                token_count: tokens,
+                item_status: Some("completed".into()),
+                response_uuid: Some(response),
+                response_status: Some(
+                    if index == 4 {
+                        "in_progress"
+                    } else {
+                        "completed"
+                    }
+                    .into(),
+                ),
+                tool_call_id: call,
+                tool_name: name.map(str::to_owned),
+                model: None,
+                finish_reason: None,
+                encrypted_bytes: ciphertext.len() as i64,
+                content_fingerprint: fingerprint,
+            });
+        }
+        let mut source = CompactionSnapshot {
+            conversation_id: 1,
+            conversation_uuid: Uuid::from_u128(300),
+            user_id: Uuid::from_u128(400),
+            items: metadata,
+            active_response_uuids: vec![current_response],
+            fingerprint: [0; 32],
+            checkpoint: None,
+        };
+        source.fingerprint = source
+            .coverage_fingerprint(&source.items.iter().map(|item| item.key).collect::<Vec<_>>())
+            .unwrap();
+        let input = PromptSource {
+            source: &source,
+            user_key: &key,
+            model: "gpt-oss-120b",
+            reasoning_replay: ReasoningReplay::None,
+            current_user: source.items[4].key,
+            current_response,
+            instructions: vec![],
+            instruction_tokens: 0,
+            incoming: &[],
+        };
+        let policy = CompactionPolicy {
+            input_budget: 2_000,
+            trigger_tokens: 1_600,
+            keep_recent_tokens: 0,
+            summary_input_budget: 512,
+        };
+        let first = input
+            .build(vec![rows[0].clone(), rows[4].clone()], &None, false)
+            .unwrap();
+        assert_eq!(first.items[0].estimated_tokens, 10); // Ignore the legacy image estimate.
+        assert!(first.items[0].source_bytes > policy::MAX_SOURCE_BATCH_BYTES);
+        let first_plan =
+            context::plan_batch(&first, &None, &policy, true, policy.summary_input_budget).unwrap();
+        assert_eq!(first_plan.summary_work[0].items.len(), 1);
+        assert_eq!(first_plan.summary_work[0].items[0].key, source.items[0].key);
+        let first_payload =
+            context::complete_plan(&None, &first_plan, &["Image uploaded.".into()]).unwrap();
+        let original_tokens = context::estimate_tokens(&first, &None).unwrap();
+        assert!(
+            context::estimate_tokens(&first, &Some(first_payload.clone())).unwrap()
+                >= original_tokens
+        );
+        let draft = StagedCheckpoint::new(
+            SourceRevision::new(&source),
+            first_payload.clone(),
+            [(first.items[0].key, first.items[0].estimated_tokens)],
+            vec![],
+        );
+
+        // The next materialization has only the tool pair and required input;
+        // the 9 MiB image row is neither selected again nor held in the draft.
+        let mut second = input
+            .build(
+                vec![rows[1].clone(), rows[2].clone(), rows[4].clone()],
+                &Some(first_payload.clone()),
+                false,
+            )
+            .unwrap();
+        draft.restore_source_tokens(&mut second);
+        let second_plan = context::plan_batch(
+            &second,
+            &Some(first_payload.clone()),
+            &policy,
+            true,
+            policy.summary_input_budget,
+        )
+        .unwrap();
+        assert_eq!(
+            second_plan.summary_work[0]
+                .items
+                .iter()
+                .map(|item| item.key)
+                .collect::<Vec<_>>(),
+            vec![source.items[1].key, source.items[2].key]
+        );
+        assert!(
+            second_plan.summary_work[0]
+                .items
+                .iter()
+                .map(|item| item.source_bytes)
+                .sum::<usize>()
+                < policy::MAX_SOURCE_BATCH_BYTES
+        );
+        assert!(second_plan.summary_work[0].items[0].summary_messages[0]["tool_calls"].is_array());
+        assert!(
+            second_plan.summary_work[0].items[1].summary_messages[0]["content"]
+                .as_str()
+                .unwrap()
+                .contains("7319")
+        );
+        let combined = context::complete_plan(
+            &Some(first_payload),
+            &second_plan,
+            &["The uploaded image depicts an amber lighthouse numbered 7319.".into()],
+        )
+        .unwrap();
+        assert!(
+            context::estimate_tokens(&second, &Some(combined.clone())).unwrap()
+                < context::estimate_tokens(&second, &None).unwrap()
+        );
+        assert_eq!(
+            covered_keys(&combined),
+            vec![
+                source.items[0].key,
+                source.items[1].key,
+                source.items[2].key
+            ]
+        );
+        // Discarding the unpublished draft still reconstructs every original row.
+        let full = input.build(rows.clone(), &None, true).unwrap();
+        assert_eq!(context::project(&full, &None).unwrap().0.len(), 5);
+        assert_eq!(source.items.len(), 5);
+        assert!(rows[0].content_enc.as_ref().unwrap().len() > 9 * 1024 * 1024);
     }
 }

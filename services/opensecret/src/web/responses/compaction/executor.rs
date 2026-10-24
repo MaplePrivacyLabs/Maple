@@ -4,7 +4,7 @@
 
 use super::{context::SummaryWork, policy::CompactionPolicy, summary, CompactionBudget};
 use crate::{
-    inference::{AttemptFailureKind, AttemptStage},
+    inference::{AttemptFailureKind, AttemptStage, AttemptTerminal},
     models::users::User,
     tokens::count_tokens,
     web::{
@@ -77,6 +77,7 @@ pub(super) enum SummaryExecutionError {
     Cancelled,
     Deadline,
     Capacity,
+    InputLimit,
     InvalidSummary,
     Provider(Box<CompletionExecutionError>),
     Unsafe(ApiError),
@@ -88,6 +89,7 @@ impl SummaryExecutionError {
             Self::Cancelled => "cancelled",
             Self::Deadline => "deadline",
             Self::Capacity => "helper_call_limit",
+            Self::InputLimit => "helper_input_limit",
             Self::InvalidSummary => "invalid_summary",
             Self::Provider(_) => "provider_failure",
             Self::Unsafe(_) => "safety_failure",
@@ -96,7 +98,7 @@ impl SummaryExecutionError {
 
     pub(super) fn can_fallback_to_uncompacted(&self) -> bool {
         match self {
-            Self::Capacity | Self::InvalidSummary => true,
+            Self::Capacity | Self::InputLimit | Self::InvalidSummary => true,
             Self::Provider(error) => match error.as_ref() {
                 CompletionExecutionError::Request(ApiError::ServiceUnavailable)
                 | CompletionExecutionError::Request(ApiError::InferenceCapacity { .. }) => true,
@@ -144,6 +146,7 @@ impl SummaryExecutionError {
         match self {
             Self::Provider(error) => (*error).into_api_error(),
             Self::Unsafe(error) => error,
+            Self::InputLimit => ApiError::MessageExceedsContextLimit,
             Self::Cancelled | Self::Deadline | Self::Capacity | Self::InvalidSummary => {
                 ApiError::ServiceUnavailable
             }
@@ -223,7 +226,7 @@ impl SummaryExecutor<'_> {
                     response_id = %self.execution.response_id(), estimated_tokens = estimate,
                     input_budget = policy.summary_input_budget, reductions, reason = "estimated_input_limit",
                     "Compaction summary fragment needs a smaller input");
-                split_front(&mut fragments, fragment, reductions)?;
+                split_front_for_estimate(&mut fragments, fragment, reductions)?;
                 continue;
             }
             self.budget
@@ -249,13 +252,9 @@ impl SummaryExecutor<'_> {
                     execution,
                     self.execution.clone(),
                 )
-                .await?;
-                match completion.stream.recv().await {
-                    Some(CompletionChunk::FullResponse(response)) => Ok(response),
-                    _ => Err(CompletionExecutionError::Request(
-                        ApiError::ServiceUnavailable,
-                    )),
-                }
+                .await
+                .map_err(|error| SummaryExecutionError::Provider(Box::new(error)))?;
+                collect_summary_stream(&mut completion.stream).await
             };
             let response = tokio::select! {
                 biased;
@@ -296,6 +295,13 @@ impl SummaryExecutor<'_> {
                             "Compaction summary response exceeded its byte limit");
                         return Err(SummaryExecutionError::InvalidSummary);
                     }
+                    if !summary_fits_next_helper_input(&next, policy) {
+                        tracing::warn!(event = "responses.compaction.helper_rejected", user_id = %self.user.uuid,
+                            response_id = %self.execution.response_id(), reason = "next_helper_input_limit",
+                            output_bytes = next.len(), input_budget = policy.summary_input_budget,
+                            "Compaction summary cannot fit a later bounded helper input");
+                        return Err(SummaryExecutionError::InvalidSummary);
+                    }
                     tracing::info!(event = "responses.compaction.helper_call_completed", user_id = %self.user.uuid,
                         response_id = %self.execution.response_id(), fragment_index = completed_fragments,
                         output_bytes = next.len(), elapsed_ms = call_started.elapsed().as_millis() as u64,
@@ -304,22 +310,23 @@ impl SummaryExecutor<'_> {
                     completed_fragments += 1;
                     previous = Some(next);
                 }
-                Err(error) if is_context_rejection(&error) => {
+                Err(SummaryExecutionError::Provider(error)) if is_context_rejection(&error) => {
                     tracing::warn!(event = "responses.compaction.helper_fragment_split", user_id = %self.user.uuid,
                         response_id = %self.execution.response_id(), reason = "provider_input_limit", reductions,
                         elapsed_ms = call_started.elapsed().as_millis() as u64,
                         "Compaction summary provider rejected the input size");
                     split_front(&mut fragments, fragment, reductions)?;
                 }
-                Err(error) => {
+                Err(SummaryExecutionError::Provider(error)) => {
                     log_summary_provider_failure(
                         &error,
                         self.user.uuid,
                         self.execution.response_id(),
                         call_started.elapsed().as_millis() as u64,
                     );
-                    return Err(SummaryExecutionError::Provider(Box::new(error)));
+                    return Err(SummaryExecutionError::Provider(error));
                 }
+                Err(error) => return Err(error),
             }
         }
         tracing::info!(event = "responses.compaction.helper_batch_completed", user_id = %self.user.uuid,
@@ -347,6 +354,70 @@ impl SummaryExecutor<'_> {
     }
 }
 
+fn invalid_stream_summary(error: summary::SummaryError) -> SummaryExecutionError {
+    tracing::warn!(
+        event = "responses.compaction.helper_rejected",
+        reason = error.category(),
+        "Compaction summary stream was rejected"
+    );
+    SummaryExecutionError::InvalidSummary
+}
+
+async fn collect_summary_stream(
+    stream: &mut tokio::sync::mpsc::Receiver<CompletionChunk>,
+) -> Result<serde_json::Value, SummaryExecutionError> {
+    let mut summary = summary::SummaryStreamAccumulator::new(MAX_SUMMARY_TEXT_BYTES);
+    while let Some(chunk) = stream.recv().await {
+        match chunk {
+            CompletionChunk::StreamChunk(chunk) => {
+                summary.observe(&chunk).map_err(invalid_stream_summary)?;
+            }
+            // The existing completion processor owns usage publication. Wait
+            // for its terminal after billing, rather than treating finish_reason
+            // or a partial answer as a completed, durable summary.
+            CompletionChunk::Usage(_) => {}
+            CompletionChunk::Terminal(AttemptTerminal::Failed { attempt, failure }) => {
+                let public_error =
+                    crate::web::provider_error::PublicProviderError::from_failure(&failure)
+                        .map(ApiError::InferenceProvider)
+                        .unwrap_or(ApiError::InternalServerError);
+                return Err(SummaryExecutionError::Provider(Box::new(
+                    CompletionExecutionError::Attempt {
+                        terminal: AttemptTerminal::Failed { attempt, failure },
+                        public_error,
+                    },
+                )));
+            }
+            CompletionChunk::Terminal(AttemptTerminal::Completed { .. }) => {
+                return summary.into_response().map_err(invalid_stream_summary);
+            }
+            CompletionChunk::FullResponse(_) => {
+                return Err(invalid_stream_summary(
+                    summary::SummaryError::InvalidResponse,
+                ));
+            }
+        }
+    }
+    Err(invalid_stream_summary(
+        summary::SummaryError::IncompleteResponse,
+    ))
+}
+
+/// A generation allowance is not a helper-input budget. Before publishing a
+/// checkpoint, ensure that a later update can carry this whole summary plus the
+/// existing instructions and a useful fragment of new transcript. This check
+/// never changes the provider's output limit or the caller's answer allowance.
+fn summary_fits_next_helper_input(text: &str, policy: &CompactionPolicy) -> bool {
+    const NEXT_FRAGMENT_RESERVE_TOKENS: usize = 512;
+    let request = summary::fragment_summary_messages(&[], Some(text));
+    serde_json::to_string(&request)
+        .map(|request| {
+            count_tokens(&request).saturating_add(NEXT_FRAGMENT_RESERVE_TOKENS)
+                <= policy.summary_input_budget
+        })
+        .unwrap_or(false)
+}
+
 fn fragment_batches(
     pieces: Vec<summary::TranscriptFragment>,
     max_bytes: usize,
@@ -371,29 +442,53 @@ fn fragment_batches(
 
 fn split_front(
     fragments: &mut VecDeque<(Vec<summary::TranscriptFragment>, usize)>,
-    mut fragment: Vec<summary::TranscriptFragment>,
+    fragment: Vec<summary::TranscriptFragment>,
     reductions: usize,
 ) -> Result<(), SummaryExecutionError> {
     if reductions >= MAX_FRAGMENT_REDUCTIONS {
-        return Err(SummaryExecutionError::Unsafe(
-            ApiError::MessageExceedsContextLimit,
-        ));
+        return Err(SummaryExecutionError::InputLimit);
     }
+    let (left, right) = split_fragment(fragment)?;
+    fragments.push_front((right, reductions + 1));
+    fragments.push_front((left, reductions + 1));
+    Ok(())
+}
+
+/// A growing previous summary changes the useful source fragment size. Pure
+/// input fitting is lossless and spends no provider rejection/retry allowance:
+/// every split strictly reduces item count or UTF-8 text length, so it terminates
+/// at a fitting fragment or a minimal fragment that cannot fit the instructions.
+fn split_front_for_estimate(
+    fragments: &mut VecDeque<(Vec<summary::TranscriptFragment>, usize)>,
+    fragment: Vec<summary::TranscriptFragment>,
+    provider_reductions: usize,
+) -> Result<(), SummaryExecutionError> {
+    let (left, right) = split_fragment(fragment)?;
+    fragments.push_front((right, provider_reductions));
+    fragments.push_front((left, provider_reductions));
+    Ok(())
+}
+
+fn split_fragment(
+    mut fragment: Vec<summary::TranscriptFragment>,
+) -> Result<
+    (
+        Vec<summary::TranscriptFragment>,
+        Vec<summary::TranscriptFragment>,
+    ),
+    SummaryExecutionError,
+> {
     let (left, right) = if fragment.len() > 1 {
         let right = fragment.split_off(fragment.len() / 2);
         (fragment, right)
     } else {
-        let piece = fragment.pop().ok_or(SummaryExecutionError::Unsafe(
-            ApiError::MessageExceedsContextLimit,
-        ))?;
+        let piece = fragment.pop().ok_or(SummaryExecutionError::InputLimit)?;
         let (left, right) = piece
             .split()
-            .map_err(|_| SummaryExecutionError::Unsafe(ApiError::MessageExceedsContextLimit))?;
+            .map_err(|_| SummaryExecutionError::InputLimit)?;
         (vec![left], vec![right])
     };
-    fragments.push_front((right, reductions + 1));
-    fragments.push_front((left, reductions + 1));
-    Ok(())
+    Ok((left, right))
 }
 
 #[cfg(test)]
@@ -410,6 +505,162 @@ mod tests {
     };
     use serde_json::json;
     use uuid::Uuid;
+
+    fn summary_stream_chunk(content: &str, finish: serde_json::Value) -> CompletionChunk {
+        CompletionChunk::StreamChunk(json!({"choices": [{"index": 0, "delta": {
+            "role": "assistant", "content": content,
+        }, "finish_reason": finish}]}))
+    }
+
+    #[tokio::test]
+    async fn summary_stream_waits_for_successful_terminal_after_finish_and_usage() {
+        let (tx, mut rx) = tokio::sync::mpsc::channel(4);
+        tx.send(summary_stream_chunk("Visible summary", json!("stop")))
+            .await
+            .unwrap();
+        let collecting = tokio::spawn(async move { collect_summary_stream(&mut rx).await });
+        tokio::task::yield_now().await;
+        assert!(!collecting.is_finished());
+        tx.send(CompletionChunk::Usage(
+            crate::web::openai::CompletionUsage {
+                prompt_tokens: 10,
+                completion_tokens: 20,
+                cached_prompt_tokens: None,
+            },
+        ))
+        .await
+        .unwrap();
+        tx.send(CompletionChunk::Terminal(AttemptTerminal::Completed {
+            attempt: attempt(),
+            evidence: CompletionEvidence::ProviderDone,
+        }))
+        .await
+        .unwrap();
+        let result = collecting.await.unwrap().unwrap();
+        assert_eq!(
+            summary::parse_summary_response(&result).unwrap(),
+            "Visible summary"
+        );
+    }
+
+    #[tokio::test]
+    async fn summary_stream_does_not_publish_finished_text_after_failed_or_missing_terminal() {
+        let (tx, mut rx) = tokio::sync::mpsc::channel(4);
+        tx.send(summary_stream_chunk("partial", json!("stop")))
+            .await
+            .unwrap();
+        tx.send(CompletionChunk::Terminal(AttemptTerminal::Failed {
+            attempt: attempt(),
+            failure: AttemptFailure::new(
+                AttemptFailureKind::UnexpectedEof,
+                AttemptStage::Stream,
+                ReplaySafety::NotProvenPreAcceptance,
+            ),
+        }))
+        .await
+        .unwrap();
+        drop(tx);
+        assert!(matches!(
+            collect_summary_stream(&mut rx).await,
+            Err(SummaryExecutionError::Provider(_))
+        ));
+
+        let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+        tx.send(summary_stream_chunk("partial", json!("stop")))
+            .await
+            .unwrap();
+        drop(tx);
+        assert!(matches!(
+            collect_summary_stream(&mut rx).await,
+            Err(SummaryExecutionError::InvalidSummary)
+        ));
+    }
+
+    #[tokio::test]
+    async fn summary_stream_rejects_full_response_and_oversized_visible_output() {
+        let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+        tx.send(CompletionChunk::FullResponse(json!({"choices": []})))
+            .await
+            .unwrap();
+        assert!(matches!(
+            collect_summary_stream(&mut rx).await,
+            Err(SummaryExecutionError::InvalidSummary)
+        ));
+        let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+        tx.send(summary_stream_chunk(
+            &"x".repeat(MAX_SUMMARY_TEXT_BYTES + 1),
+            json!("stop"),
+        ))
+        .await
+        .unwrap();
+        assert!(matches!(
+            collect_summary_stream(&mut rx).await,
+            Err(SummaryExecutionError::InvalidSummary)
+        ));
+    }
+
+    #[test]
+    fn checkpoint_must_fit_a_later_helper_input_without_capping_generation() {
+        let policy = CompactionPolicy::from_context_window(20_000, 0, 2048);
+        assert!(summary_fits_next_helper_input(
+            "A useful compact checkpoint.",
+            &policy
+        ));
+        let too_large = "historical fact ".repeat(10_000);
+        assert!(too_large.len() < MAX_SUMMARY_TEXT_BYTES);
+        assert!(!summary_fits_next_helper_input(&too_large, &policy));
+        let no_room_for_instructions = CompactionPolicy {
+            summary_input_budget: 512,
+            ..policy
+        };
+        assert!(!summary_fits_next_helper_input(
+            "small",
+            &no_room_for_instructions
+        ));
+    }
+
+    #[test]
+    fn grown_summary_repartitions_large_new_input_without_spending_provider_reductions() {
+        let policy = CompactionPolicy::from_context_window(20_000, 0, 2048);
+        let previous = "fact ".repeat(8_000);
+        assert!(summary_fits_next_helper_input(&previous, &policy));
+        let message = json!({"role": "tool", "tool_call_id": "call_1", "content": "new data ".repeat(20_000)});
+        let original = summary::serialize_transcript(std::slice::from_ref(&message)).unwrap();
+        let pieces = summary::transcript_fragments(&[message], usize::MAX).unwrap();
+        let mut pending = fragment_batches(pieces, usize::MAX);
+        let mut splits = 0;
+        let fitted = loop {
+            let (fragment, reductions) = pending.pop_front().unwrap();
+            assert_eq!(reductions, 0);
+            let request = summary::fragment_summary_messages(&fragment, Some(&previous));
+            if count_tokens(&serde_json::to_string(&request).unwrap())
+                <= policy.summary_input_budget
+            {
+                break fragment;
+            }
+            split_front_for_estimate(&mut pending, fragment, reductions).unwrap();
+            splits += 1;
+        };
+        assert!(
+            splits > MAX_FRAGMENT_REDUCTIONS,
+            "pure fitting must exceed the old paid-rejection split allowance"
+        );
+        let mut all = fitted;
+        for (fragment, reductions) in pending {
+            assert_eq!(reductions, 0);
+            all.extend(fragment);
+        }
+        let request = summary::fragment_summary_messages(&all, None);
+        let data: serde_json::Value =
+            serde_json::from_str(request[1]["content"].as_str().unwrap()).unwrap();
+        let restored: String = data["conversation"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|piece| piece["serialized_message_fragment"].as_str().unwrap())
+            .collect();
+        assert_eq!(restored, original);
+    }
 
     #[test]
     fn rejected_summary_logs_only_allowlisted_metadata() {
@@ -554,6 +805,7 @@ mod tests {
         }
         for error in [
             SummaryExecutionError::Capacity,
+            SummaryExecutionError::InputLimit,
             SummaryExecutionError::InvalidSummary,
             SummaryExecutionError::Provider(Box::new(CompletionExecutionError::Request(
                 ApiError::ServiceUnavailable,
@@ -619,9 +871,7 @@ mod tests {
         let (fragment, _) = reduced.pop_front().unwrap();
         assert!(matches!(
             split_front(&mut reduced, fragment, MAX_FRAGMENT_REDUCTIONS),
-            Err(SummaryExecutionError::Unsafe(
-                ApiError::MessageExceedsContextLimit
-            ))
+            Err(SummaryExecutionError::InputLimit)
         ));
     }
 

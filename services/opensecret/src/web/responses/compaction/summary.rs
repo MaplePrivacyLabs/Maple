@@ -59,6 +59,8 @@ pub(super) enum SummaryError {
     ToolCallingResponse,
     #[error("summary completion is empty")]
     EmptyResponse,
+    #[error("summary completion exceeded its visible-text byte limit")]
+    ResponseTooLarge,
 }
 
 impl SummaryError {
@@ -73,6 +75,7 @@ impl SummaryError {
             Self::IncompleteResponse => "incomplete_response",
             Self::ToolCallingResponse => "tool_calling_response",
             Self::EmptyResponse => "empty_response",
+            Self::ResponseTooLarge => "output_byte_limit",
         }
     }
 }
@@ -517,9 +520,284 @@ pub(super) fn parse_summary_response(body: &Value) -> Result<String, SummaryErro
     Ok(text.to_owned())
 }
 
+/// Collect only visible text from the existing normalized completion stream.
+/// Reasoning is deliberately neither retained nor used as checkpoint content.
+/// A successful provider terminal remains the executor's separate requirement.
+pub(super) struct SummaryStreamAccumulator {
+    text: String,
+    max_text_bytes: usize,
+    finished: bool,
+}
+
+impl SummaryStreamAccumulator {
+    pub(super) fn new(max_text_bytes: usize) -> Self {
+        Self {
+            text: String::new(),
+            max_text_bytes,
+            finished: false,
+        }
+    }
+
+    fn append_text(&mut self, text: &str) -> Result<(), SummaryError> {
+        if text.len() > self.max_text_bytes.saturating_sub(self.text.len()) {
+            return Err(SummaryError::ResponseTooLarge);
+        }
+        if self.finished && !text.is_empty() {
+            return Err(SummaryError::InvalidResponse);
+        }
+        self.text.push_str(text);
+        Ok(())
+    }
+
+    pub(super) fn observe(&mut self, body: &Value) -> Result<(), SummaryError> {
+        if body.get("error").is_some_and(|error| !error.is_null()) {
+            return Err(SummaryError::InvalidResponse);
+        }
+        let choices = body
+            .get("choices")
+            .and_then(Value::as_array)
+            .ok_or(SummaryError::InvalidResponse)?;
+        // The normalized provider stream may finish with an empty usage frame.
+        if choices.is_empty() {
+            return Ok(());
+        }
+        if choices.len() != 1 {
+            return Err(SummaryError::InvalidResponse);
+        }
+        let choice = &choices[0];
+        if choice
+            .get("index")
+            .is_some_and(|index| index.as_u64() != Some(0))
+        {
+            return Err(SummaryError::InvalidResponse);
+        }
+        let delta = choice
+            .get("delta")
+            .filter(|delta| delta.is_object())
+            .ok_or(SummaryError::InvalidResponse)?;
+        if delta
+            .get("role")
+            .is_some_and(|role| !role.is_null() && role.as_str() != Some("assistant"))
+            || delta
+                .get("refusal")
+                .is_some_and(|refusal| !refusal.is_null())
+        {
+            return Err(SummaryError::InvalidResponse);
+        }
+        match delta.get("tool_calls") {
+            None | Some(Value::Null) => {}
+            Some(Value::Array(calls)) if calls.is_empty() => {}
+            _ => return Err(SummaryError::ToolCallingResponse),
+        }
+        if delta
+            .get("function_call")
+            .is_some_and(|call| !call.is_null())
+        {
+            return Err(SummaryError::ToolCallingResponse);
+        }
+        match delta.get("content") {
+            None | Some(Value::Null) => {}
+            Some(Value::String(text)) => self.append_text(text)?,
+            Some(Value::Array(blocks)) => {
+                for block in blocks {
+                    if !matches!(
+                        block.get("type").and_then(Value::as_str),
+                        Some("text" | "output_text")
+                    ) {
+                        return Err(SummaryError::InvalidResponse);
+                    }
+                    self.append_text(
+                        block
+                            .get("text")
+                            .and_then(Value::as_str)
+                            .ok_or(SummaryError::InvalidResponse)?,
+                    )?;
+                }
+            }
+            _ => return Err(SummaryError::InvalidResponse),
+        }
+        match choice.get("finish_reason") {
+            None | Some(Value::Null) => {}
+            Some(Value::String(reason)) if reason == "stop" && !self.finished => {
+                self.finished = true;
+            }
+            Some(Value::String(reason))
+                if matches!(reason.as_str(), "tool_calls" | "function_call") =>
+            {
+                return Err(SummaryError::ToolCallingResponse);
+            }
+            _ => return Err(SummaryError::IncompleteResponse),
+        }
+        Ok(())
+    }
+
+    pub(super) fn into_response(self) -> Result<Value, SummaryError> {
+        if !self.finished {
+            return Err(SummaryError::IncompleteResponse);
+        }
+        if self.text.trim().is_empty() {
+            return Err(SummaryError::EmptyResponse);
+        }
+        Ok(json!({"choices": [{"finish_reason": "stop", "message": {
+            "role": "assistant", "content": self.text,
+        }}]}))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn stream_chunk(delta: Value, finish_reason: Value) -> Value {
+        json!({"choices": [{"index": 0, "delta": delta, "finish_reason": finish_reason}]})
+    }
+
+    #[test]
+    fn streaming_summary_keeps_only_visible_text_and_requires_stop() {
+        let mut stream = SummaryStreamAccumulator::new(256);
+        stream
+            .observe(&stream_chunk(
+                json!({"role": "assistant", "reasoning": "PRIVATE_REASONING"}),
+                Value::Null,
+            ))
+            .unwrap();
+        stream
+            .observe(&stream_chunk(
+                json!({"role": null, "content": "Visible "}),
+                Value::Null,
+            ))
+            .unwrap();
+        stream
+            .observe(&stream_chunk(
+                json!({"content": [{"type": "text", "text": "checkpoint"}]}),
+                json!("stop"),
+            ))
+            .unwrap();
+        stream
+            .observe(&json!({"choices": [], "usage": {"completion_tokens": 12}}))
+            .unwrap();
+        let body = stream.into_response().unwrap();
+        assert_eq!(parse_summary_response(&body).unwrap(), "Visible checkpoint");
+        assert!(!body.to_string().contains("PRIVATE_"));
+    }
+
+    #[test]
+    fn streaming_summary_discards_arbitrarily_many_reasoning_deltas_without_consuming_visible_budget(
+    ) {
+        let mut stream = SummaryStreamAccumulator::new(8);
+        let reasoning = stream_chunk(json!({"reasoning": "r".repeat(1024)}), Value::Null);
+        for _ in 0..512 {
+            stream.observe(&reasoning).unwrap();
+            assert!(stream.text.is_empty());
+        }
+        stream
+            .observe(&stream_chunk(json!({"content": "summary"}), json!("stop")))
+            .unwrap();
+        assert_eq!(
+            parse_summary_response(&stream.into_response().unwrap()).unwrap(),
+            "summary"
+        );
+    }
+
+    #[test]
+    fn streaming_summary_bounds_visible_bytes_before_retaining_the_next_chunk() {
+        let mut stream = SummaryStreamAccumulator::new(8);
+        stream
+            .observe(&stream_chunk(json!({"content": "éé"}), Value::Null))
+            .unwrap();
+        assert_eq!(stream.text.len(), 4);
+        assert_eq!(
+            stream.observe(&stream_chunk(json!({"content": "abcde"}), Value::Null)),
+            Err(SummaryError::ResponseTooLarge)
+        );
+        assert_eq!(stream.text, "éé");
+    }
+
+    #[test]
+    fn streaming_summary_rejects_wrong_role_refusal_tools_and_finish() {
+        for (delta, finish, expected) in [
+            (
+                json!({"role": "user"}),
+                Value::Null,
+                SummaryError::InvalidResponse,
+            ),
+            (
+                json!({"refusal": "PRIVATE_REFUSAL"}),
+                Value::Null,
+                SummaryError::InvalidResponse,
+            ),
+            (
+                json!({"tool_calls": [{"function": {"name": "PRIVATE_TOOL"}}]}),
+                Value::Null,
+                SummaryError::ToolCallingResponse,
+            ),
+            (
+                json!({"function_call": {"name": "PRIVATE_TOOL"}}),
+                Value::Null,
+                SummaryError::ToolCallingResponse,
+            ),
+            (
+                json!({"content": "partial"}),
+                json!("length"),
+                SummaryError::IncompleteResponse,
+            ),
+            (
+                json!({}),
+                json!("tool_calls"),
+                SummaryError::ToolCallingResponse,
+            ),
+        ] {
+            let mut stream = SummaryStreamAccumulator::new(256);
+            assert_eq!(stream.observe(&stream_chunk(delta, finish)), Err(expected));
+            assert!(!format!("{expected:?}").contains("PRIVATE_"));
+        }
+    }
+
+    #[test]
+    fn streaming_summary_rejects_missing_terminal_content_and_invalid_choice_shapes() {
+        let mut partial = SummaryStreamAccumulator::new(256);
+        partial
+            .observe(&stream_chunk(json!({"content": "partial"}), Value::Null))
+            .unwrap();
+        assert!(matches!(
+            partial.into_response(),
+            Err(SummaryError::IncompleteResponse)
+        ));
+        let mut empty = SummaryStreamAccumulator::new(256);
+        empty
+            .observe(&stream_chunk(
+                json!({"reasoning": "PRIVATE_REASONING"}),
+                json!("stop"),
+            ))
+            .unwrap();
+        assert!(matches!(
+            empty.into_response(),
+            Err(SummaryError::EmptyResponse)
+        ));
+        for body in [
+            json!({"choices": [{"index": 1, "delta": {"content": "wrong choice"}}]}),
+            json!({"choices": [{"delta": {}}, {"delta": {}}]}),
+            json!({"choices": [{"delta": null}]}),
+            json!({"error": {"message": "PRIVATE_ERROR"}}),
+        ] {
+            assert_eq!(
+                SummaryStreamAccumulator::new(256).observe(&body),
+                Err(SummaryError::InvalidResponse)
+            );
+        }
+    }
+
+    #[test]
+    fn streaming_summary_does_not_accept_content_after_finish() {
+        let mut stream = SummaryStreamAccumulator::new(256);
+        stream
+            .observe(&stream_chunk(json!({"content": "done"}), json!("stop")))
+            .unwrap();
+        assert_eq!(
+            stream.observe(&stream_chunk(json!({"content": "late"}), Value::Null)),
+            Err(SummaryError::InvalidResponse)
+        );
+    }
 
     #[test]
     fn response_diagnostics_distinguish_missing_reordered_and_empty_sections() {

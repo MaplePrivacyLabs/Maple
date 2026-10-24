@@ -579,13 +579,12 @@ pub(super) fn build_compaction_model_request(
     messages: &[Value],
 ) -> Value {
     let mut request = build_model_turn_request(body, messages, false);
-    request["stream"] = json!(false);
+    request["stream"] = json!(true);
     if let Some(object) = request.as_object_mut() {
         // Like Pi's summarizer, retain the selected model/thinking policy and
         // use its ordinary output allowance. The answer's caller-supplied cap
         // must not become a separate limit on the internal summary.
         object.remove("max_tokens");
-        object.remove("stream_options");
     }
     request
 }
@@ -1486,13 +1485,9 @@ mod tests {
             assert!(!main["tools"].as_array().unwrap().is_empty());
             assert!(helper.get("max_tokens").is_none());
             assert_eq!(helper["messages"], json!(helper_messages));
-            assert_eq!(helper["stream"], false);
-            for field in [
-                "tools",
-                "tool_choice",
-                "parallel_tool_calls",
-                "stream_options",
-            ] {
+            assert_eq!(helper["stream"], true);
+            assert_eq!(helper["stream_options"]["include_usage"], true);
+            for field in ["tools", "tool_choice", "parallel_tool_calls"] {
                 assert!(
                     helper.get(field).is_none(),
                     "unexpected helper field: {field}"
@@ -1577,14 +1572,8 @@ mod tests {
                 let helper = super::build_compaction_model_request(&body, &helper_messages);
                 let mut expected = main.clone();
                 expected["messages"] = json!(helper_messages);
-                expected["stream"] = json!(false);
-                for field in [
-                    "max_tokens",
-                    "stream_options",
-                    "tools",
-                    "tool_choice",
-                    "parallel_tool_calls",
-                ] {
+                expected["stream"] = json!(true);
+                for field in ["max_tokens", "tools", "tool_choice", "parallel_tool_calls"] {
                     expected.as_object_mut().unwrap().remove(field);
                     assert!(
                         helper.get(field).is_none(),
@@ -2489,7 +2478,10 @@ mod tests {
         let terminal = ResponseTerminal::Completed {
             finish_reason: "length".to_string(),
         };
-        let forwarder = forward_authoritative_response_terminal(Uuid::new_v4(), &tx_client, rx_ack);
+        let forwarder =
+            forward_authoritative_response_terminal(Uuid::new_v4(), &tx_client, rx_ack, || {
+                Ok(Vec::new())
+            });
         tokio::pin!(forwarder);
 
         assert!(futures::poll!(forwarder.as_mut()).is_pending());
@@ -2531,7 +2523,9 @@ mod tests {
             let (tx_ack, rx_ack) = oneshot::channel();
             tx_ack.send(Ok(Some(terminal.clone()))).unwrap();
             let forwarder =
-                forward_authoritative_response_terminal(Uuid::new_v4(), &tx_client, rx_ack);
+                forward_authoritative_response_terminal(Uuid::new_v4(), &tx_client, rx_ack, || {
+                    Ok(Vec::new())
+                });
             tokio::pin!(forwarder);
             assert!(futures::poll!(forwarder.as_mut()).is_pending());
 
@@ -2567,11 +2561,119 @@ mod tests {
             }
             timeout(
                 Duration::from_secs(1),
-                forward_authoritative_response_terminal(Uuid::new_v4(), &tx_client, rx_ack),
+                forward_authoritative_response_terminal(Uuid::new_v4(), &tx_client, rx_ack, || {
+                    panic!("unacknowledged response must not read checkpoints")
+                }),
             )
             .await
             .unwrap();
             assert!(rx_client.try_recv().is_err());
+        }
+    }
+
+    #[tokio::test]
+    async fn failed_or_cancelled_response_recovers_published_checkpoints_before_terminal() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        for terminal in [
+            ResponseTerminal::Failed(PublicResponseFailure::DeadlineExceeded),
+            ResponseTerminal::Failed(PublicResponseFailure::Internal),
+            ResponseTerminal::Cancelled,
+        ] {
+            let outputs: Vec<_> = (0..2)
+                .map(|_| super::CompactionOutput {
+                    id: Uuid::new_v4(),
+                    encrypted_content: "opaque-published-checkpoint".into(),
+                    after_item_uuid: Some(Uuid::new_v4()),
+                })
+                .collect();
+            let expected_ids: Vec<_> = outputs.iter().map(|output| output.id.to_string()).collect();
+            let (tx_client, mut rx_client) = mpsc::channel(1);
+            // The first batch was already announced. A later batch was saved,
+            // then preparation failed before its successful return value.
+            tx_client
+                .send(StorageMessage::Compaction(outputs[0].clone()))
+                .await
+                .unwrap();
+            let reads = AtomicUsize::new(0);
+            let (tx_ack, rx_ack) = oneshot::channel();
+            let forwarder =
+                forward_authoritative_response_terminal(Uuid::new_v4(), &tx_client, rx_ack, || {
+                    reads.fetch_add(1, Ordering::SeqCst);
+                    Ok(outputs)
+                });
+            tokio::pin!(forwarder);
+            assert!(futures::poll!(forwarder.as_mut()).is_pending());
+            assert_eq!(reads.load(Ordering::SeqCst), 0);
+            tx_ack.send(Ok(Some(terminal.clone()))).unwrap();
+
+            let consume = async {
+                let mut state = ClientResponseState::default();
+                let mut received = 0;
+                loop {
+                    match rx_client.recv().await.unwrap() {
+                        StorageMessage::Compaction(output) => {
+                            received += 1;
+                            state.push_compaction(output);
+                        }
+                        StorageMessage::Terminal(observed) => {
+                            assert_eq!(observed, terminal);
+                            break;
+                        }
+                        _ => panic!("unexpected event in checkpoint recovery"),
+                    }
+                }
+                assert_eq!(received, 3);
+                let ids: Vec<_> = state
+                    .build_output_items()
+                    .iter()
+                    .map(|item| item.id.clone())
+                    .collect();
+                assert_eq!(ids, expected_ids);
+            };
+            timeout(Duration::from_secs(1), async {
+                futures::join!(forwarder, consume);
+            })
+            .await
+            .unwrap();
+            assert_eq!(reads.load(Ordering::SeqCst), 1);
+        }
+    }
+
+    #[tokio::test]
+    async fn checkpoint_recovery_failure_keeps_the_authoritative_failure_terminal() {
+        let (tx_client, mut rx_client) = mpsc::channel(1);
+        let (tx_ack, rx_ack) = oneshot::channel();
+        let terminal = ResponseTerminal::Failed(PublicResponseFailure::DeadlineExceeded);
+        tx_ack.send(Ok(Some(terminal.clone()))).unwrap();
+        forward_authoritative_response_terminal(Uuid::new_v4(), &tx_client, rx_ack, || {
+            Err(crate::db::DBError::ConnectionError)
+        })
+        .await;
+        assert!(
+            matches!(rx_client.recv().await, Some(StorageMessage::Terminal(observed)) if observed == terminal)
+        );
+    }
+
+    #[tokio::test]
+    async fn completed_or_disconnected_response_does_not_reload_checkpoints() {
+        for connected in [true, false] {
+            let (tx_client, rx_client) = mpsc::channel(1);
+            let receiver = connected.then_some(rx_client);
+            let (tx_ack, rx_ack) = oneshot::channel();
+            let terminal = if connected {
+                ResponseTerminal::Completed {
+                    finish_reason: "stop".into(),
+                }
+            } else {
+                ResponseTerminal::Failed(PublicResponseFailure::Internal)
+            };
+            tx_ack.send(Ok(Some(terminal))).unwrap();
+            forward_authoritative_response_terminal(Uuid::new_v4(), &tx_client, rx_ack, || {
+                panic!("completed or disconnected response must not recover checkpoints")
+            })
+            .await;
+            drop(receiver);
         }
     }
 
@@ -6565,7 +6667,13 @@ async fn supervise_response_execution(
         return;
     }
 
-    forward_authoritative_response_terminal(response_uuid, &tx_client, terminal_ack).await;
+    forward_authoritative_response_terminal(response_uuid, &tx_client, terminal_ack, || {
+        state
+            .db
+            .list_response_compactions(context.conversation.id, user.uuid, response_uuid)
+            .map(|records| records.iter().map(CompactionOutput::from).collect())
+    })
+    .await;
 }
 
 /// Only the storage acknowledgement may authorize a client terminal. The
@@ -6575,6 +6683,7 @@ async fn forward_authoritative_response_terminal(
     response_uuid: Uuid,
     tx_client: &mpsc::Sender<StorageMessage>,
     terminal_ack: oneshot::Receiver<Result<Option<ResponseTerminal>, String>>,
+    recover_checkpoints: impl FnOnce() -> Result<Vec<CompactionOutput>, DBError>,
 ) {
     let authoritative = match terminal_ack.await {
         Ok(Ok(Some(terminal))) => terminal,
@@ -6600,6 +6709,32 @@ async fn forward_authoritative_response_terminal(
             return;
         }
     };
+
+    // A later helper can fail, time out or be cancelled after an earlier batch
+    // was published. Recover the same owner-scoped opaque outputs used by GET,
+    // after terminal storage has acknowledged this Response still exists.
+    // Already-announced UUIDs are deduplicated by ClientResponseState.
+    if !matches!(authoritative, ResponseTerminal::Completed { .. }) && !tx_client.is_closed() {
+        match recover_checkpoints() {
+            Ok(outputs) => {
+                for output in outputs {
+                    if tx_client
+                        .send(StorageMessage::Compaction(output))
+                        .await
+                        .is_err()
+                    {
+                        return;
+                    }
+                }
+            }
+            Err(error) => warn!(
+                event = "responses.compaction.terminal_recovery_failed",
+                %response_uuid,
+                error_category = compaction::telemetry::db_error_category(&error),
+                "Could not recover durable compaction outputs before terminal"
+            ),
+        }
+    }
 
     // This is the sole client-terminal writer. Awaiting the send preserves all
     // preceding data under backpressure while the stream remains connected.
