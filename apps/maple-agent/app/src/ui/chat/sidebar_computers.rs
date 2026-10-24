@@ -1183,6 +1183,11 @@ impl Sidebar {
         selected: bool,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        let hover_bg = if selected {
+            theme::bg_sidebar_row_selected_hover()
+        } else {
+            theme::bg_sidebar_row_hover()
+        };
         match entry {
             SidebarEntry::ComputerMore(index) => {
                 let action = self.group_pages.more[index].clone();
@@ -1204,10 +1209,7 @@ impl Sidebar {
                             .bg(gpui::rgb(theme::bg_sidebar_row_hover()))
                     })
                     .when(!loading, |row| {
-                        row.hover(|s| {
-                            s.cursor_pointer()
-                                .bg(gpui::rgb(theme::bg_sidebar_row_hover()))
-                        })
+                        row.hover(|s| s.cursor_pointer().bg(gpui::rgb(hover_bg)))
                     })
                     .on_click(cx.listener(move |this, _, _, cx| {
                         if !loading {
@@ -1239,10 +1241,7 @@ impl Sidebar {
                         row.aria_active_descendant()
                             .bg(gpui::rgb(theme::bg_sidebar_row_hover()))
                     })
-                    .hover(|s| {
-                        s.bg(gpui::rgb(theme::bg_sidebar_row_hover()))
-                            .cursor_pointer()
-                    })
+                    .hover(|s| s.bg(gpui::rgb(hover_bg)).cursor_pointer())
                     .on_click(cx.listener(move |_, _, _, cx| {
                         cx.emit(SidebarEvent::Navigate(request.clone()))
                     }))
@@ -1283,10 +1282,7 @@ impl Sidebar {
                         row.aria_active_descendant()
                             .bg(gpui::rgb(theme::bg_sidebar_row_hover()))
                     })
-                    .hover(|s| {
-                        s.bg(gpui::rgb(theme::bg_sidebar_row_hover()))
-                            .cursor_pointer()
-                    })
+                    .hover(|s| s.bg(gpui::rgb(hover_bg)).cursor_pointer())
                     .on_click(cx.listener(move |_, _, _, cx| {
                         cx.emit(SidebarEvent::Navigate(request.clone()))
                     }))
@@ -1327,10 +1323,7 @@ impl Sidebar {
                     .gap_1()
                     .text_xs()
                     .text_color(gpui::rgb(theme::text_secondary()))
-                    .hover(|s| {
-                        s.bg(gpui::rgb(theme::bg_sidebar_row_hover()))
-                            .cursor_pointer()
-                    })
+                    .hover(|s| s.bg(gpui::rgb(hover_bg)).cursor_pointer())
                     .on_click(cx.listener(move |_, _, _, cx| {
                         cx.emit(SidebarEvent::Navigate(request.clone()))
                     }))

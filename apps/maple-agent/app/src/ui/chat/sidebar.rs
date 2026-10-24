@@ -2946,6 +2946,11 @@ impl Sidebar {
         let pin_id = row.pin_id.clone();
         let rename_field = self.task_rename_field(&row.id, cx);
         let renaming = rename_field.is_some();
+        let hover_bg = if is_selected {
+            theme::bg_sidebar_row_selected_hover()
+        } else {
+            theme::bg_sidebar_row_hover()
+        };
         div()
             .relative()
             .w_auto()
@@ -2976,11 +2981,7 @@ impl Sidebar {
             // A row being renamed is a text field: no hover highlight and
             // no hover actions over it, so the edit is plain to see.
             .when(!renaming, |el| {
-                el.hover(|style| {
-                    style
-                        .bg(gpui::rgb(theme::bg_sidebar_row_hover()))
-                        .cursor_pointer()
-                })
+                el.hover(|style| style.bg(gpui::rgb(hover_bg)).cursor_pointer())
             })
             .on_click(cx.listener(move |_this, _event, _window, cx| {
                 cx.emit(SidebarEvent::Select(session_id.to_string()));
@@ -3053,9 +3054,7 @@ impl Sidebar {
                         .gap_1p5()
                         .pl_2()
                         .pr_4()
-                        .group_hover(row.group.clone(), |style| {
-                            style.bg(gpui::rgb(theme::bg_sidebar_row_hover()))
-                        })
+                        .group_hover(row.group.clone(), |style| style.bg(gpui::rgb(hover_bg)))
                         .child(self.task_menu_trigger(row, task, window, cx))
                         .child(row_action(
                             row.rename_id.clone(),

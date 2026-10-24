@@ -242,6 +242,7 @@ tokens! {
     bg_sidebar_chrome: 0x1e1e24, 0xffffff;
     bg_sidebar_row_hover: 0x32323a, 0xe8e8ed;
     bg_sidebar_row_selected: 0x3a3a44, 0xd1d2dc;
+    bg_sidebar_row_selected_hover: 0x43434e, 0xc5c6d1;
 
     /// Display headings (Array face): pebble-300 on dark, pebble-800 on
     /// light, as the brand kit sets its section titles.
