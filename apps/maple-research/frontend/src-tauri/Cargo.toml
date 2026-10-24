@@ -105,6 +105,10 @@ maple-sdk = { path = "../../../../sdk/rust" }
 # tauri-plugin-deep-link sees OAuth/payment redirects. Remove the patch once
 # upstream stops unwrapping those calls.
 #
+# It also carries tauri-apps/tao#1376 for iOS: in the scene life cycle a URL that
+# cold-launches the app arrives in the scene connection options, which tao 0.37
+# ignores, so OAuth callbacks that relaunch Maple were dropped.
+#
 # Vendored from crates.io tao 0.37.1 (sha256
 # f37f381f4e048e6cdf038b5705f8cf14ad108279d46eb968140a7b291aba9400, upstream
 # 37b7e8bc90a0); Maple's changes follow the vendoring commit. The vendored
