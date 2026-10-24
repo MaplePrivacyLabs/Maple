@@ -274,6 +274,30 @@ async fn system_one_classifies_over_the_accounts_transport() {
 }
 
 #[tokio::test]
+async fn decision_models_classify_text_through_the_same_api() {
+    let transport = FakeTransport::new(vec![json_reply(200, Vec::new(), SYSTEM_ONE_REPLY)]);
+    let registry = maple_model_registry(transport.clone(), []);
+    for id in ["decision-small", "decision-medium", "decision-large"] {
+        let model = registry
+            .find_classifier(MAPLE_PROVIDER, id)
+            .expect("decision model is registered");
+        assert!(!model.supports_images(), "{id}");
+        assert_eq!(model.context_window, 32_768, "{id}");
+    }
+    let model = registry
+        .find_classifier(MAPLE_PROVIDER, "decision-medium")
+        .unwrap();
+    let result = registry
+        .classify(&model, urgent_ticket(), pi_ai::ClassifierOptions::default())
+        .await;
+    assert!(!result.is_failure(), "{result:?}");
+    let requests = transport.requests.lock().unwrap();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].uri, SYSTEM_ONE_PATH);
+    assert_eq!(requests[0].body["model"], "decision-medium");
+}
+
+#[tokio::test]
 async fn a_failed_system_one_request_keeps_its_body_out_of_the_error() {
     let transport = FakeTransport::new(vec![json_reply(
         422,

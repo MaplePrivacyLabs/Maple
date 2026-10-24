@@ -167,10 +167,13 @@ logical request and is not installed as mutable client state.
 
 ### System One decisions
 
-`system_one` answers typed questions about a JSON state with one masked
-single-token decision each, returning calibrated probabilities instead of text
-(`POST /v1/systemone`, Continuum GLM-5.3-Flash). Questions and choice options
-keep the order you give them:
+`system_one` answers typed questions about a JSON state with probabilities
+instead of text (`POST /v1/systemone`). The default model, `glm-5-3-flash`,
+reads one masked single-token decision per question on Continuum and
+calibrates it; `with_model("decision-medium")` (or `decision-small`,
+`decision-large`) uses Tinfoil's decision models, which read text only and take
+up to 26 options per choice. Questions and choice options keep the order you
+give them:
 
 ```rust
 use maple_sdk::{SystemOneAnswer, SystemOneQuestion, SystemOneRequest};
@@ -198,8 +201,9 @@ if let Some(SystemOneAnswer::Choice { choice, confidence, .. }) = response.answe
 
 The client's configured credential is used (API key or signed-in session);
 `system_one_with_api_key` encrypts an explicit key inside one request. Optional
-request fields are `images` (`data:` URLs shown with the state) and
-`temperature` (`1` returns raw probabilities). A rejected request is
+request fields are `images` (`data:` URLs shown with the state,
+`glm-5-3-flash` only) and `temperature` (`1`, the decision models' default,
+returns raw probabilities). A rejected request is
 `Error::Api` with the backend's status (422 for schema problems, 413 for size
 limits, chat's statuses for quota and capacity) and body;
 `Error::api_error_code` returns its `system_one_*` code. The example

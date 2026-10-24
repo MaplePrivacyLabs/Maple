@@ -169,13 +169,15 @@ impl SystemOneQuestion {
 /// per-type limits.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SystemOneRequest {
-    /// Defaults to the only supported model, `glm-5-3-flash`.
+    /// `glm-5-3-flash` when unset. `decision-small`, `decision-medium` and
+    /// `decision-large` read text only and take at most 26 options per choice.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
     /// Any JSON; embedded in the prompt as given.
     pub state: Value,
     pub questions: OrderedEntries<SystemOneQuestion>,
-    /// Up to 4 `data:` image URLs, 4 MiB each and 8 MiB in total, shown with the state.
+    /// Up to 4 `data:` image URLs, 4 MiB each and 8 MiB in total, shown with the state
+    /// (`glm-5-3-flash` only).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub images: Vec<String>,
     /// Calibration temperature override; `1` returns the raw probabilities.
@@ -218,7 +220,9 @@ impl SystemOneRequest {
 /// The answer to one question. Every variant reports the calibration
 /// `temperature` applied and `option_mass`, the share of the model's next-token
 /// probability that fell on the offered options (low values mean the prompt did
-/// not fit the question well).
+/// not fit the question well). The decision models report temperature 1 unless
+/// the request sets one, and an `option_mass` of 1: they score only the offered
+/// options.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum SystemOneAnswer {
@@ -260,7 +264,8 @@ pub struct SystemOneUsage {
     pub input_tokens: u64,
     pub output_tokens: u64,
     pub cached_tokens: u64,
-    /// Upstream inference requests made: one per question, more for wide choices.
+    /// Upstream inference requests made: one per question on `glm-5-3-flash` (more for
+    /// wide choices), one per call on the decision models.
     pub requests: u64,
 }
 

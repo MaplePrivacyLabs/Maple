@@ -268,10 +268,13 @@ curl http://localhost:8080/v1/systemone \
   }'
 ```
 
-Typed questions (`noul`, `choice`, `score`) answered with calibrated
-probabilities on Continuum GLM-5.3-Flash; request and response follow the
-TypeSafe System One schema, with optional `images` (`data:` URLs) and
-`temperature` fields. Rejections keep the backend's status and
+Typed questions (`noul`, `choice`, `score`) answered with probabilities
+instead of text; request and response follow the TypeSafe System One schema,
+with optional `images` (`data:` URLs) and `temperature` fields. `model` picks
+the engine: `glm-5-3-flash` (the default, on Continuum, calibrated, up to 255
+options per choice) or Tinfoil's `decision-small`, `decision-medium` and
+`decision-large` (text only, up to 26 options per choice, one upstream request
+per call). Rejections keep the backend's status and
 `x-opensecret-error-code` header, for example `422` with
 `system_one_too_many_questions`, or `system_one_unknown_field` naming a
 misspelled key.

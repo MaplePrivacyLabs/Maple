@@ -44,13 +44,19 @@ export type SystemOneQuestion =
   SystemOneNoulQuestion | SystemOneChoiceQuestion | SystemOneScoreQuestion;
 
 export type SystemOneRequest = {
-  /** Defaults to the only supported model, `glm-5-3-flash`. */
+  /**
+   * `glm-5-3-flash` when unset. `decision-small`, `decision-medium` and
+   * `decision-large` read text only and take at most 26 options per choice.
+   */
   model?: string;
   /** Any JSON; embedded in the prompt as given. */
   state: unknown;
   /** Up to 64 questions, answered in the order given. */
   questions: Record<string, SystemOneQuestion>;
-  /** Up to 4 `data:` image URLs, 4 MiB each and 8 MiB in total, shown with the state. */
+  /**
+   * Up to 4 `data:` image URLs, 4 MiB each and 8 MiB in total, shown with the
+   * state (`glm-5-3-flash` only).
+   */
   images?: string[];
   /** Calibration temperature override; `1` returns the raw probabilities. */
   temperature?: number;
@@ -59,7 +65,9 @@ export type SystemOneRequest = {
 /**
  * Every answer reports the calibration `temperature` applied and `option_mass`,
  * the share of the model's next-token probability that fell on the offered
- * options (low values mean the prompt did not fit the question well).
+ * options (low values mean the prompt did not fit the question well). The
+ * decision models report temperature 1 unless the request sets one, and an
+ * `option_mass` of 1: they score only the offered options.
  */
 export type SystemOneNoulAnswer = {
   type: "noul";
@@ -107,7 +115,10 @@ export type SystemOneUsage = {
   input_tokens: number;
   output_tokens: number;
   cached_tokens: number;
-  /** Upstream inference requests made: one per question, more for wide choices. */
+  /**
+   * Upstream inference requests made: one per question on `glm-5-3-flash` (more
+   * for wide choices), one per call on the decision models.
+   */
   requests: number;
 };
 

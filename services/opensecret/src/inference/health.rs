@@ -260,16 +260,26 @@ impl ShadowHealthState {
         let mut route_health = HashMap::new();
         let mut capacity = HashMap::new();
 
-        for model in registry.completion_models() {
-            for route in model.routes {
-                let route_key = RouteKey {
-                    provider: route.provider,
-                    provider_model_id: route.provider_model_id.to_string(),
-                };
-                let pool = CapacityPoolKey::ProviderModel(route_key.clone());
-                route_health.entry(route_key.clone()).or_default();
-                capacity.entry(pool).or_default();
-            }
+        // Decision-model routes serve System One only, but their health and capacity are
+        // tracked the same way.
+        let routes = registry
+            .completion_models()
+            .iter()
+            .flat_map(|model| model.routes)
+            .chain(
+                registry
+                    .decision_models()
+                    .iter()
+                    .flat_map(|model| model.routes),
+            );
+        for route in routes {
+            let route_key = RouteKey {
+                provider: route.provider,
+                provider_model_id: route.provider_model_id.to_string(),
+            };
+            let pool = CapacityPoolKey::ProviderModel(route_key.clone());
+            route_health.entry(route_key.clone()).or_default();
+            capacity.entry(pool).or_default();
         }
 
         Self {
@@ -2450,6 +2460,21 @@ mod tests {
             }
         }
         assert_eq!(state.cardinality(), cardinality);
+    }
+
+    #[test]
+    fn decision_model_routes_are_tracked_like_completion_routes() {
+        let state = ShadowHealthState::new(&crate::provider_registry::PROVIDER_REGISTRY);
+        for model in crate::provider_registry::PROVIDER_REGISTRY.decision_models() {
+            let id = model.public_model_id;
+            let route = route(ProviderId::Tinfoil, id, id);
+            match state.try_claim_probe(&route.route_key()) {
+                ProbeClaimResult::Ready(_) => {}
+                other => panic!("decision route {id} must be known, got {other:?}"),
+            }
+            let report = state.observe_terminal(&completed(route), ShadowObservationMode::Update);
+            assert_ne!(report.signal, ShadowSignal::UnknownRoute, "{id}");
+        }
     }
 
     #[test]

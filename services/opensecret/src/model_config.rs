@@ -439,6 +439,51 @@ pub const POWERFUL_MODEL_ID: &str = GLM_5_3_MODEL_ID;
 pub const KIMI_K3_MODEL_ID: &str = "kimi-k3";
 pub const DEEPSEEK_V4_1_FLASH_MODEL_ID: &str = "deepseek-v4-1-flash";
 pub const DEEPSEEK_V4_1_FLASH_UNCENSORED_MODEL_ID: &str = "deepseek-v4-1-flash-1017-uncensored";
+pub const DECISION_SMALL_MODEL_ID: &str = "decision-small";
+pub const DECISION_MEDIUM_MODEL_ID: &str = "decision-medium";
+pub const DECISION_LARGE_MODEL_ID: &str = "decision-large";
+
+/// A typed-decision model: it answers System One questions and nothing else, so it is in
+/// neither chat catalog and never resolves as a completion model. The limits are those of
+/// the serving deployment (Tinfoil's vLLM d3 family behind `/v1/decisions`): text only, at
+/// most 26 lettered options per choice, and one question's prompt within the context window.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct DecisionModel {
+    pub(crate) id: &'static str,
+    pub(crate) access: ModelAccessTier,
+    /// Tokens one question's prompt (state, question and options) may take.
+    pub(crate) context_window: usize,
+    pub(crate) max_choice_options: usize,
+}
+
+impl DecisionModel {
+    const fn pro(id: &'static str) -> Self {
+        Self {
+            id,
+            access: ModelAccessTier::Pro,
+            context_window: 32_768,
+            max_choice_options: 26,
+        }
+    }
+}
+
+const DECISION_MODELS: &[DecisionModel] = &[
+    DecisionModel::pro(DECISION_SMALL_MODEL_ID),
+    DecisionModel::pro(DECISION_MEDIUM_MODEL_ID),
+    DecisionModel::pro(DECISION_LARGE_MODEL_ID),
+];
+
+pub(crate) fn decision_model(model: &str) -> Option<DecisionModel> {
+    DECISION_MODELS
+        .iter()
+        .find(|entry| entry.id == model)
+        .copied()
+}
+
+#[cfg(test)]
+pub(crate) fn decision_models() -> &'static [DecisionModel] {
+    DECISION_MODELS
+}
 
 const FREE_MODEL_ALIAS_TARGETS: ModelAliasTargets = ModelAliasTargets {
     quick: QUICK_MODEL_ID,
@@ -709,6 +754,9 @@ impl ModelPlan {
 
     pub(crate) fn allows_model(self, model: &str) -> bool {
         let canonical = alias_target(model).unwrap_or(model);
+        if let Some(decision) = decision_model(canonical) {
+            return decision.access.is_available_to(self);
+        }
         model_entry(canonical).is_none_or(|entry| entry.access.is_available_to(self))
     }
 }
@@ -1727,6 +1775,35 @@ mod tests {
             );
             assert!(ModelPlan::Paid.allows_model(model), "paid model: {model}");
         }
+    }
+
+    #[test]
+    fn decision_models_are_pro_and_never_chat_models() {
+        let ids: Vec<&str> = decision_models().iter().map(|model| model.id).collect();
+        assert_eq!(
+            ids,
+            [
+                DECISION_SMALL_MODEL_ID,
+                DECISION_MEDIUM_MODEL_ID,
+                DECISION_LARGE_MODEL_ID
+            ]
+        );
+        let catalog = model_catalog_response(ModelPlan::Paid, true);
+        let openai = openai_models_response(true);
+        for model in decision_models() {
+            assert_eq!(decision_model(model.id), Some(*model));
+            assert!(!ModelPlan::Free.allows_model(model.id), "{}", model.id);
+            assert!(ModelPlan::Paid.allows_model(model.id), "{}", model.id);
+            assert_eq!(model.context_window, 32_768);
+            assert_eq!(model.max_choice_options, 26);
+            // Not a completion model: chat and Responses cannot resolve it, and neither
+            // catalog lists it.
+            assert_eq!(resolve_public_model_id(model.id), None);
+            assert!(model_capabilities(model.id).is_none());
+            assert!(!has_model(&catalog, model.id));
+            assert!(!has_model(&openai, model.id));
+        }
+        assert_eq!(decision_model(GLM_5_3_FLASH_MODEL_ID), None);
     }
 
     #[test]

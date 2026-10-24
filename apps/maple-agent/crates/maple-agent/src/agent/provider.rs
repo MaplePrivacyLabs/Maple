@@ -42,8 +42,17 @@ const MAPLE_BASE_URL: &str = "/v1";
 const CHAT_COMPLETIONS_PATH: &str = "/v1/chat/completions";
 /// Where Pi's System One classifier posts: `{base_url}/systemone`.
 const SYSTEM_ONE_PATH: &str = "/v1/systemone";
-/// The model System One answers with, the only one Maple's API serves.
+/// The model System One answers with by default.
 pub(crate) const SYSTEM_ONE_MODEL_ID: &str = "glm-5-3-flash";
+/// The decision models Maple's System One API also serves (Tinfoil's), with
+/// their names: text only, at most 26 options per choice, and a 32,768-token
+/// context per question.
+const SYSTEM_ONE_DECISION_MODELS: [(&str, &str); 3] = [
+    ("decision-small", "Decision Small"),
+    ("decision-medium", "Decision Medium"),
+    ("decision-large", "Decision Large"),
+];
+const DECISION_MODEL_CONTEXT_WINDOW: u64 = 32_768;
 
 pub(crate) const AUTHENTICATION_ERROR_MESSAGE: &str = "Maple authentication failed";
 pub(crate) const CREDITS_EXHAUSTED_MESSAGE: &str = "Maple credits are exhausted";
@@ -144,7 +153,9 @@ pub(crate) fn maple_model_registry(
         system_one::API,
         Arc::new(SystemOne::new(Arc::new(MapleTransport { transport }))),
     );
-    registry.register_classifier_models([system_one_model()]);
+    registry.register_classifier_models(
+        std::iter::once(system_one_model()).chain(system_one_decision_models()),
+    );
     registry
 }
 
@@ -163,6 +174,23 @@ pub(crate) fn system_one_model() -> ClassifierModel {
         context_window: DEFAULT_CONTEXT_WINDOW,
         headers: Default::default(),
     }
+}
+
+/// The decision models as Pi classifier models: they judge text only.
+fn system_one_decision_models() -> impl Iterator<Item = ClassifierModel> {
+    SYSTEM_ONE_DECISION_MODELS
+        .into_iter()
+        .map(|(id, name)| ClassifierModel {
+            id: id.to_string(),
+            name: name.to_string(),
+            api: system_one::API.to_string(),
+            provider: MAPLE_PROVIDER.to_string(),
+            base_url: MAPLE_BASE_URL.to_string(),
+            input: vec![InputModality::Text],
+            cost: Default::default(),
+            context_window: DECISION_MODEL_CONTEXT_WINDOW,
+            headers: Default::default(),
+        })
 }
 
 /// OpenSecret authenticates the account itself; Pi passes no key.

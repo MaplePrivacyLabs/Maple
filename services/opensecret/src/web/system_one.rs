@@ -1,35 +1,45 @@
 //! System One decisions: `POST /v1/systemone`.
 //!
 //! A TypeSafe-compatible subset (state + typed `noul` / `choice` / `score` questions in,
-//! typed answers with probabilities out) implemented as one masked, single-token chat
-//! completion per question against Continuum's GLM-5.3-Flash. The model never generates
-//! text: the prompt numbers the options, the assistant turn is prefilled with `answer=`,
-//! sampling is restricted to the option-number tokens, and the distribution is read from
-//! their log-probabilities. Prompt layout, prefill, and calibration follow Privatemode's
-//! reference implementation (edgelesssys/privatemode-decisions at 45f4273, 2026-10-05) so
-//! its benchmark and calibration numbers apply here.
+//! typed answers with probabilities out). The request's `model` picks one of two engines
+//! behind the same request and response shape:
 //!
-//! First-pass MVP: the provider and model are fixed, the request bypasses the completion
-//! router on purpose (only this deployment honors the masked logprob read), and nothing
-//! here touches the chat API. Route health is still consulted: every upstream send claims a
-//! probe on the Continuum route and reports its outcome, so an open circuit breaker rejects
+//! - `glm-5-3-flash` (the default): one masked, single-token chat completion per question
+//!   against Continuum's GLM-5.3-Flash, described below.
+//! - `decision-small`, `decision-medium`, `decision-large`: Tinfoil's decision models, one
+//!   `/v1/decisions` request for all questions (see `decisions`). They read text only and
+//!   take at most 26 options per choice; their probabilities come from a trained
+//!   classification head, so they are reported raw (temperature 1) with an `option_mass` of 1.
+//!
+//! GLM-5.3-Flash never generates text: the prompt numbers the options, the assistant turn is
+//! prefilled with `answer=`, sampling is restricted to the option-number tokens, and the
+//! distribution is read from their log-probabilities. Prompt layout, prefill, and
+//! calibration follow Privatemode's reference implementation
+//! (edgelesssys/privatemode-decisions at 45f4273, 2026-10-05) so its benchmark and
+//! calibration numbers apply here.
+//!
+//! Each model has fixed routes: the request bypasses the completion router on purpose (only
+//! Continuum honors the masked logprob read, only Tinfoil serves the decision models), and
+//! nothing here touches the chat API. Route health is still consulted: every upstream send
+//! claims a probe on its route and reports its outcome, so an open circuit breaker rejects
 //! requests up front and our failures feed the shared health state.
 //!
-//! Probabilities are calibrated by default: raw one-token probabilities are overconfident,
-//! so the log-probabilities are divided by the reference benchmark's temperature for the
-//! number of options (`temperature: 1` in the request keeps them raw). Each answer reports
+//! GLM-5.3-Flash's probabilities are calibrated by default: raw one-token probabilities are
+//! overconfident, so the log-probabilities are divided by the reference benchmark's
+//! temperature for the number of options (`temperature: 1` in the request keeps them raw). Each answer reports
 //! the temperature used and `option_mass`, the probability the model put on the option
 //! tokens before the mask (low means the prompt did not fit the model).
 //!
 //! Limits mirror TypeSafe's where the backing model allows: 64 questions per request, 255
-//! options per choice (labelled with single-token numbers, see `OPTION_NUMBERS`), 10 score
-//! levels, 32k-token state.
+//! options per choice (labelled with single-token numbers, see `OPTION_NUMBERS`; 26 on the
+//! decision models), 10 score levels, 32k-token state.
 //!
 //! Billing and failure policy: usage is published per upstream request as it completes,
-//! exactly as chat does. The first failing question stops the remaining ones and fails the
+//! exactly as chat does (one request per question on GLM-5.3-Flash, one per call on the
+//! decision models). The first failing question stops the remaining ones and fails the
 //! whole request; usage the provider already consumed stays billed, and no partial answers
-//! are returned. A `noul` is asked as a plain two-option choice with `true` listed first, so
-//! any position bias of the model always leans the same way.
+//! are returned. On GLM-5.3-Flash a `noul` is asked as a plain two-option choice with `true`
+//! listed first, so any position bias of the model always leans the same way.
 
 use crate::inference::health::{ProbeClaimResult, ProbeLease, ShadowObservationMode};
 use crate::inference::{
@@ -37,7 +47,7 @@ use crate::inference::{
     InferenceAttempt, InferenceExecution, InferenceIntent, InferenceSurface, ReplaySafety,
     RouteIdentity, WorkloadClass,
 };
-use crate::model_config::GLM_5_3_FLASH_MODEL_ID;
+use crate::model_config::{decision_model, DecisionModel, GLM_5_3_FLASH_MODEL_ID};
 use crate::models::users::User;
 use crate::provider_cache::CacheNamespaceRoot;
 use crate::provider_client::{ProviderRequest, ProviderRequestError};
@@ -76,11 +86,14 @@ use std::time::{Duration, Instant};
 use tokio::sync::Semaphore;
 use tracing::{debug, error, warn};
 
+mod decisions;
+
 const SYSTEM_ONE_PATH: &str = "/v1/systemone";
 
-/// The only public model id accepted in requests (and echoed in responses). The provider's
-/// own id for it comes from the registry route, never from the request.
-const PUBLIC_MODEL_ID: &str = GLM_5_3_FLASH_MODEL_ID;
+/// The default model, answered by the masked-logprob engine on Continuum. The decision
+/// models are in `model_config`. A provider's own id for a model comes from the registry
+/// route, never from the request.
+const GLM_MODEL_ID: &str = GLM_5_3_FLASH_MODEL_ID;
 
 // Request limits. The state and question limits follow TypeSafe's (state plus the longest
 // question within 32k tokens; a 255-option choice with descriptions is several thousand
@@ -101,6 +114,10 @@ const MAX_QUESTION_BYTES: usize = 512 * 1024;
 /// Prompt tokens the request may send upstream in total, summed over every read of every
 /// question (preamble excluded).
 const MAX_UPSTREAM_PROMPT_TOKENS: usize = 200_000;
+/// Room left in a decision model's context for its own prompt around the state and the
+/// question. The token counts here are cl100k estimates of a different tokenizer, so the
+/// check is conservative; the provider still rejects anything over its window.
+const DECISION_PROMPT_MARGIN: usize = 1_024;
 
 /// Privatemode reports at most this many `logprob_token_ids` per response; longer reads
 /// are split into several requests over the same masked forward pass and merged.
@@ -238,7 +255,8 @@ pub enum SystemOneRequestError {
     EmptyQuestionName,
     DuplicateQuestion,
     QuestionTooLarge,
-    BadOptionCount,
+    /// The most options the requested model takes per choice.
+    BadOptionCount(usize),
     EmptyOptionLabel,
     DuplicateOption,
     BadLevelCount,
@@ -247,6 +265,10 @@ pub enum SystemOneRequestError {
     ImageTooLarge,
     PromptBudgetExceeded,
     BadTemperature,
+    /// The requested model reads text only.
+    ImagesUnsupported,
+    /// The state plus one question exceed the requested model's context window (in tokens).
+    ContextExceeded(usize),
 }
 
 impl SystemOneRequestError {
@@ -255,7 +277,8 @@ impl SystemOneRequestError {
             Self::StateTooLarge
             | Self::QuestionTooLarge
             | Self::ImageTooLarge
-            | Self::PromptBudgetExceeded => StatusCode::PAYLOAD_TOO_LARGE,
+            | Self::PromptBudgetExceeded
+            | Self::ContextExceeded(_) => StatusCode::PAYLOAD_TOO_LARGE,
             _ => StatusCode::UNPROCESSABLE_ENTITY,
         }
     }
@@ -274,7 +297,7 @@ impl SystemOneRequestError {
             Self::EmptyQuestionName => "system_one_empty_question_name",
             Self::DuplicateQuestion => "system_one_duplicate_question",
             Self::QuestionTooLarge => "system_one_question_too_large",
-            Self::BadOptionCount => "system_one_bad_option_count",
+            Self::BadOptionCount(_) => "system_one_bad_option_count",
             Self::EmptyOptionLabel => "system_one_empty_option_label",
             Self::DuplicateOption => "system_one_duplicate_option",
             Self::BadLevelCount => "system_one_bad_level_count",
@@ -283,6 +306,8 @@ impl SystemOneRequestError {
             Self::ImageTooLarge => "system_one_image_too_large",
             Self::PromptBudgetExceeded => "system_one_prompt_budget_exceeded",
             Self::BadTemperature => "system_one_bad_temperature",
+            Self::ImagesUnsupported => "system_one_images_unsupported",
+            Self::ContextExceeded(_) => "system_one_context_exceeded",
         }
     }
 
@@ -293,7 +318,9 @@ impl SystemOneRequestError {
             Self::MissingField(detail) => Cow::Owned(format!("Missing field {detail}.")),
             Self::UnknownQuestionType => fixed("Question type must be `noul`, `choice` or `score`."),
             Self::MalformedBody => fixed("The request body does not match the System One schema."),
-            Self::UnsupportedModel => fixed("Only the glm-5-3-flash model is supported."),
+            Self::UnsupportedModel => fixed(
+                "model must be glm-5-3-flash, decision-small, decision-medium or decision-large.",
+            ),
             Self::MissingState => fixed("A non-null state is required."),
             Self::StateTooLarge => fixed("The state exceeds 32,000 tokens or 1 MiB."),
             Self::NoQuestions => fixed("At least one question is required."),
@@ -301,7 +328,9 @@ impl SystemOneRequestError {
             Self::EmptyQuestionName => fixed("Question names must be non-empty strings."),
             Self::DuplicateQuestion => fixed("Question names must be unique."),
             Self::QuestionTooLarge => fixed("A question with its criteria exceeds 16,000 tokens or 512 KiB."),
-            Self::BadOptionCount => fixed("A choice needs between 2 and 255 options."),
+            Self::BadOptionCount(max) => {
+                Cow::Owned(format!("A choice needs between 2 and {max} options."))
+            }
             Self::EmptyOptionLabel => fixed("Option labels must be non-empty strings."),
             Self::DuplicateOption => fixed("Option labels within a question must be unique."),
             Self::BadLevelCount => fixed("A score needs between 2 and 10 levels."),
@@ -312,6 +341,12 @@ impl SystemOneRequestError {
                 "The questions and state together exceed the 200,000 upstream prompt tokens one request may use. Send fewer questions or a smaller state.",
             ),
             Self::BadTemperature => fixed("temperature must be a positive finite number."),
+            Self::ImagesUnsupported => {
+                fixed("This model reads text only; send images to glm-5-3-flash.")
+            }
+            Self::ContextExceeded(window) => Cow::Owned(format!(
+                "The state and one question together exceed this model's {window}-token context."
+            )),
         }
     }
 }
@@ -492,8 +527,43 @@ impl Lowered {
     }
 }
 
+/// The model a request asked for, which decides the engine that answers it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SystemOneModel {
+    /// GLM-5.3-Flash's masked logprob read (`GLM_MODEL_ID`, the default).
+    Glm,
+    /// One of Tinfoil's decision models.
+    Decision(DecisionModel),
+}
+
+impl SystemOneModel {
+    fn resolve(model: Option<&str>) -> Result<Self, SystemOneRequestError> {
+        match model {
+            None | Some(GLM_MODEL_ID) => Ok(Self::Glm),
+            Some(model) => decision_model(model)
+                .map(Self::Decision)
+                .ok_or(SystemOneRequestError::UnsupportedModel),
+        }
+    }
+
+    fn id(self) -> &'static str {
+        match self {
+            Self::Glm => GLM_MODEL_ID,
+            Self::Decision(model) => model.id,
+        }
+    }
+
+    fn max_choice_options(self) -> usize {
+        match self {
+            Self::Glm => MAX_CHOICE_OPTIONS,
+            Self::Decision(model) => model.max_choice_options,
+        }
+    }
+}
+
 /// Everything the handler has checked before any billing lookup or upstream request.
 struct Prepared {
+    model: SystemOneModel,
     questions: Vec<Lowered>,
     temperature: Option<f64>,
 }
@@ -516,17 +586,14 @@ fn render_description(value: &Value) -> Option<String> {
 fn prepare_request(request: &SystemOneRequest) -> Result<Prepared, SystemOneRequestError> {
     use SystemOneRequestError as E;
 
-    if request
-        .model
-        .as_deref()
-        .is_some_and(|model| model != PUBLIC_MODEL_ID)
-    {
-        return Err(E::UnsupportedModel);
-    }
+    let model = SystemOneModel::resolve(request.model.as_deref())?;
     if let Some(temperature) = request.temperature {
         if !(temperature.is_finite() && temperature > 0.0) {
             return Err(E::BadTemperature);
         }
+    }
+    if !request.images.is_empty() && matches!(model, SystemOneModel::Decision(_)) {
+        return Err(E::ImagesUnsupported);
     }
     if request.images.len() > MAX_IMAGES {
         return Err(E::TooManyImages);
@@ -557,7 +624,10 @@ fn prepare_request(request: &SystemOneRequest) -> Result<Prepared, SystemOneRequ
     if state_tokens > MAX_STATE_TOKENS {
         return Err(E::StateTooLarge);
     }
-    let questions = lower_questions(&request.questions)?;
+    let questions = lower_questions(&request.questions, model.max_choice_options())?;
+    if let SystemOneModel::Decision(_) = model {
+        check_decision_levels(&questions)?;
+    }
 
     let mut budget = 0usize;
     for question in &questions {
@@ -570,21 +640,54 @@ fn prepare_request(request: &SystemOneRequest) -> Result<Prepared, SystemOneRequ
         if question_tokens > MAX_QUESTION_TOKENS {
             return Err(E::QuestionTooLarge);
         }
-        // Each read re-sends the whole prompt: the question block leads it and closes it.
-        let per_read = state_tokens + 2 * question_tokens;
-        budget = budget
-            .saturating_add(per_read.saturating_mul(plan_reads(question.options.len()).len()));
+        let prompt_tokens = match model {
+            // Each read re-sends the whole prompt: the question block leads it and closes it.
+            SystemOneModel::Glm => (state_tokens + 2 * question_tokens)
+                .saturating_mul(plan_reads(question.options.len()).len()),
+            // One read per question, over the state and the question; the provider counts
+            // (and bills) the state again for every question.
+            SystemOneModel::Decision(decision) => {
+                let prompt = state_tokens + question_tokens;
+                if prompt + DECISION_PROMPT_MARGIN > decision.context_window {
+                    return Err(E::ContextExceeded(decision.context_window));
+                }
+                prompt
+            }
+        };
+        budget = budget.saturating_add(prompt_tokens);
     }
     if budget > MAX_UPSTREAM_PROMPT_TOKENS {
         return Err(E::PromptBudgetExceeded);
     }
     Ok(Prepared {
+        model,
         questions,
         temperature: request.temperature,
     })
 }
 
-fn lower_questions(questions: &Entries<Question>) -> Result<Vec<Lowered>, SystemOneRequestError> {
+/// A decision model shows each score level by its text alone, so, as d3 requires, every
+/// level needs a distinct non-blank text. GLM numbers its levels and takes any text.
+fn check_decision_levels(questions: &[Lowered]) -> Result<(), SystemOneRequestError> {
+    for question in questions.iter().filter(|q| q.kind == Kind::Score) {
+        let mut seen = std::collections::HashSet::with_capacity(question.options.len());
+        for (_, text) in &question.options {
+            let text = text.as_deref().unwrap_or_default();
+            if text.trim().is_empty() {
+                return Err(SystemOneRequestError::EmptyOptionLabel);
+            }
+            if !seen.insert(text) {
+                return Err(SystemOneRequestError::DuplicateOption);
+            }
+        }
+    }
+    Ok(())
+}
+
+fn lower_questions(
+    questions: &Entries<Question>,
+    max_choice_options: usize,
+) -> Result<Vec<Lowered>, SystemOneRequestError> {
     use SystemOneRequestError as E;
 
     if questions.0.is_empty() {
@@ -633,8 +736,8 @@ fn lower_questions(questions: &Entries<Question>) -> Result<Vec<Lowered>, System
                 instructions,
                 criteria,
             } => {
-                if criteria.0.len() < MIN_OPTIONS || criteria.0.len() > MAX_CHOICE_OPTIONS {
-                    return Err(E::BadOptionCount);
+                if criteria.0.len() < MIN_OPTIONS || criteria.0.len() > max_choice_options {
+                    return Err(E::BadOptionCount(max_choice_options));
                 }
                 let mut labels = std::collections::HashSet::with_capacity(criteria.0.len());
                 for (label, _) in &criteria.0 {
@@ -1092,8 +1195,9 @@ fn answer_body(lowered: &Lowered, probabilities: &[f64], temperature: f64, mass:
 // Upstream calls
 // ---------------------------------------------------------------------------
 
-/// What every question of one request shares.
-struct SystemOneCall<'a> {
+/// What every upstream request of one System One request shares: the caller, how usage is
+/// billed and cached, and the route whose health each send claims and reports.
+struct Upstream<'a> {
     state: &'a Arc<AppState>,
     user: &'a User,
     billing_context: &'a BillingContext,
@@ -1101,6 +1205,11 @@ struct SystemOneCall<'a> {
     proxy: &'a ProxyConfig,
     route: &'a RouteIdentity,
     execution: InferenceExecution,
+}
+
+/// What every question of one GLM-5.3-Flash request shares.
+struct SystemOneCall<'a> {
+    upstream: Upstream<'a>,
     provider_model_id: &'a str,
     state_raw: &'a RawValue,
     images: &'a [String],
@@ -1194,7 +1303,7 @@ impl SystemOneCall<'_> {
             match decode_read(&outcome.body, read_ids) {
                 Ok(values) => {
                     logprobs[read].copy_from_slice(&values);
-                    self.observe(
+                    self.upstream.observe(
                         AttemptTerminal::Completed {
                             attempt: outcome.attempt,
                             evidence: CompletionEvidence::NonStreamingResponse,
@@ -1213,7 +1322,7 @@ impl SystemOneCall<'_> {
                         AttemptFailureKind::InvalidResponse,
                         AttemptStage::ResponseBody,
                     );
-                    self.observe(
+                    self.upstream.observe(
                         AttemptTerminal::Failed {
                             attempt: outcome.attempt,
                             failure,
@@ -1240,9 +1349,7 @@ impl SystemOneCall<'_> {
         Ok((question.index, question.name, answer, totals))
     }
 
-    /// One masked single-token completion: claims the route's health probe, sends, bills
-    /// the usage, and returns the parsed body. Failures are reported to route health here;
-    /// successes are reported by the caller once the body has decoded.
+    /// One masked single-token completion, sent and billed through `Upstream::send`.
     async fn send_read(
         &self,
         question: &Lowered,
@@ -1250,6 +1357,33 @@ impl SystemOneCall<'_> {
         allowed: &[u32],
         read: &[u32],
         totals: &mut UsageTotals,
+    ) -> Result<ReadOutcome, ApiError> {
+        let body = build_upstream_body(self.provider_model_id, prompt, self.images, allowed, read);
+        self.upstream
+            .send(
+                "/v1/chat/completions",
+                body,
+                question.index,
+                totals,
+                extract_usage,
+            )
+            .await
+    }
+}
+
+impl Upstream<'_> {
+    /// One upstream POST of `body` to `path`: claims the route's health probe, sends with
+    /// the provider-managed fields applied, bills the usage `usage_of` reads from the
+    /// response, and returns the parsed body. Failures are reported to route health here;
+    /// successes are reported by the caller once the body has decoded. `index` is the
+    /// question the logs name.
+    async fn send(
+        &self,
+        path: &str,
+        mut body: Map<String, Value>,
+        index: usize,
+        totals: &mut UsageTotals,
+        usage_of: fn(&Value) -> Option<CompletionUsage>,
     ) -> Result<ReadOutcome, ApiError> {
         let _permit = UPSTREAM_PERMITS
             .acquire()
@@ -1267,15 +1401,13 @@ impl SystemOneCall<'_> {
             } => {
                 debug!(
                     "system one route unavailable before send: question={} reason={:?}",
-                    question.index, reason
+                    index, reason
                 );
                 return Err(probe_api_error(retry_after));
             }
         };
         let attempt = self.execution.begin_attempt(self.route.clone());
 
-        let mut body =
-            build_upstream_body(self.provider_model_id, prompt, self.images, allowed, read);
         apply_provider_managed_request_fields(
             &mut body,
             &self.proxy.provider_name,
@@ -1291,7 +1423,7 @@ impl SystemOneCall<'_> {
             .provider_client
             .send(
                 self.proxy,
-                ProviderRequest::new(Method::POST, "/v1/chat/completions", READ_TIMEOUT)
+                ProviderRequest::new(Method::POST, path, READ_TIMEOUT)
                     .content_type("application/json")
                     .body(payload),
             )
@@ -1303,7 +1435,7 @@ impl SystemOneCall<'_> {
                     Err(e) => {
                         error!(
                             "Failed to read system one upstream response: question={}: {e}",
-                            question.index
+                            index
                         );
                         let (failure, api_error) = local_failure(
                             AttemptFailureKind::ResponseBody,
@@ -1315,7 +1447,7 @@ impl SystemOneCall<'_> {
                 };
                 match serde_json::from_slice::<Value>(&bytes) {
                     Ok(body) => {
-                        let usage = extract_usage(&body).unwrap_or(CompletionUsage {
+                        let usage = usage_of(&body).unwrap_or(CompletionUsage {
                             prompt_tokens: 0,
                             completion_tokens: 0,
                             cached_prompt_tokens: None,
@@ -1338,7 +1470,7 @@ impl SystemOneCall<'_> {
                     Err(e) => {
                         error!(
                             "Failed to parse system one upstream response: question={}: {}",
-                            question.index,
+                            index,
                             crate::log_redaction::JsonErrorSummary(&e)
                         );
                         let (failure, api_error) = local_failure(
@@ -1356,7 +1488,7 @@ impl SystemOneCall<'_> {
             Err(error) => {
                 error!(
                     "system one upstream request failed: question={}: {error:?}",
-                    question.index
+                    index
                 );
                 error
             }
@@ -1385,7 +1517,7 @@ impl SystemOneCall<'_> {
 /// logprob read.
 fn continuum_route(state: &AppState) -> Result<(&'static ModelRouteSpec, ProxyConfig), ApiError> {
     let route = PROVIDER_REGISTRY
-        .completion_model(PUBLIC_MODEL_ID)
+        .completion_model(GLM_MODEL_ID)
         .and_then(|model| {
             model
                 .routes
@@ -1393,7 +1525,7 @@ fn continuum_route(state: &AppState) -> Result<(&'static ModelRouteSpec, ProxyCo
                 .find(|route| route.provider == ProviderId::Continuum && route.enabled)
         });
     let Some(route) = route else {
-        error!("system one unavailable: no enabled Continuum route for {PUBLIC_MODEL_ID}");
+        error!("system one unavailable: no enabled Continuum route for {GLM_MODEL_ID}");
         return Err(ApiError::ServiceUnavailable);
     };
     let Some(proxy) = state.proxy_router.continuum_proxy() else {
@@ -1401,6 +1533,27 @@ fn continuum_route(state: &AppState) -> Result<(&'static ModelRouteSpec, ProxyCo
         return Err(ApiError::ServiceUnavailable);
     };
     Ok((route, proxy))
+}
+
+/// The registry's enabled Tinfoil route for a decision model, and the attested in-process
+/// Tinfoil client's proxy configuration. Like Continuum's, the route is fixed per model.
+fn decision_route(
+    state: &AppState,
+    model: DecisionModel,
+) -> Result<(&'static ModelRouteSpec, ProxyConfig), ApiError> {
+    let route = PROVIDER_REGISTRY.decision_model(model.id).and_then(|spec| {
+        spec.routes
+            .iter()
+            .find(|route| route.provider == ProviderId::Tinfoil && route.enabled)
+    });
+    let Some(route) = route else {
+        error!(
+            "system one unavailable: no enabled Tinfoil route for {}",
+            model.id
+        );
+        return Err(ApiError::ServiceUnavailable);
+    };
+    Ok((route, state.proxy_router.get_tinfoil_proxy()))
 }
 
 /// Shared outcome of checking `NUMBER_TOKEN_IDS` against the serving tokenizer. Its lock is
@@ -1667,54 +1820,89 @@ async fn system_one(
         "system one",
     )
     .await?;
-    ensure_completion_model_access(PUBLIC_MODEL_ID, model_plan)?;
+    let model_id = prepared.model.id();
+    ensure_completion_model_access(model_id, model_plan)?;
+    let billing_context = BillingContext::new(auth_method, model_id.to_string());
+    let execution = InferenceIntent::new(
+        user.uuid,
+        model_id,
+        model_id,
+        model_plan,
+        InferenceSurface::Internal,
+        WorkloadClass::Interactive,
+    )
+    .begin_execution();
 
-    let (route_spec, proxy) = continuum_route(&state)?;
-    verify_number_tokens(&state, &proxy, route_spec.provider_model_id).await?;
-    let route = RouteIdentity::new(
-        ProviderId::Continuum,
-        PUBLIC_MODEL_ID,
-        route_spec.provider_model_id,
-        route_spec.response_model_id,
-        RouteSelectionSource::StaticSplit,
-        None,
-    );
-    let billing_context = BillingContext::new(auth_method, PUBLIC_MODEL_ID.to_string());
-    let call = SystemOneCall {
-        state: &state,
-        user: &user,
-        billing_context: &billing_context,
-        cache_policy: &cache_policy,
-        proxy: &proxy,
-        route: &route,
-        execution: InferenceIntent::new(
-            user.uuid,
-            PUBLIC_MODEL_ID,
-            PUBLIC_MODEL_ID,
-            model_plan,
-            InferenceSurface::Internal,
-            WorkloadClass::Interactive,
-        )
-        .begin_execution(),
-        provider_model_id: route_spec.provider_model_id,
-        state_raw: &request.state,
-        images: &request.images,
-        temperature: prepared.temperature,
-    };
-    let (answers, totals) =
-        tokio::time::timeout(REQUEST_DEADLINE, call.answer_all(prepared.questions))
+    let answered = match prepared.model {
+        SystemOneModel::Glm => {
+            let (route_spec, proxy) = continuum_route(&state)?;
+            verify_number_tokens(&state, &proxy, route_spec.provider_model_id).await?;
+            let route = RouteIdentity::new(
+                ProviderId::Continuum,
+                GLM_MODEL_ID,
+                route_spec.provider_model_id,
+                route_spec.response_model_id,
+                RouteSelectionSource::StaticSplit,
+                None,
+            );
+            let call = SystemOneCall {
+                upstream: Upstream {
+                    state: &state,
+                    user: &user,
+                    billing_context: &billing_context,
+                    cache_policy: &cache_policy,
+                    proxy: &proxy,
+                    route: &route,
+                    execution,
+                },
+                provider_model_id: route_spec.provider_model_id,
+                state_raw: &request.state,
+                images: &request.images,
+                temperature: prepared.temperature,
+            };
+            tokio::time::timeout(REQUEST_DEADLINE, call.answer_all(prepared.questions)).await
+        }
+        SystemOneModel::Decision(model) => {
+            let (route_spec, proxy) = decision_route(&state, model)?;
+            let route = RouteIdentity::new(
+                ProviderId::Tinfoil,
+                model.id,
+                route_spec.provider_model_id,
+                route_spec.response_model_id,
+                RouteSelectionSource::StaticSplit,
+                None,
+            );
+            let call = decisions::DecisionCall {
+                upstream: Upstream {
+                    state: &state,
+                    user: &user,
+                    billing_context: &billing_context,
+                    cache_policy: &cache_policy,
+                    proxy: &proxy,
+                    route: &route,
+                    execution,
+                },
+                provider_model_id: route_spec.provider_model_id,
+                temperature: prepared.temperature,
+            };
+            tokio::time::timeout(
+                REQUEST_DEADLINE,
+                call.answer_all(&request, prepared.questions),
+            )
             .await
-            .map_err(|_| {
-                error!(
-                    "system one request exceeded its {}s deadline",
-                    REQUEST_DEADLINE.as_secs()
-                );
-                deadline_error()
-            })??;
+        }
+    };
+    let (answers, totals) = answered.map_err(|_| {
+        error!(
+            "system one request exceeded its {}s deadline",
+            REQUEST_DEADLINE.as_secs()
+        );
+        deadline_error()
+    })??;
 
     let response = ResponseBody {
         id: format!("so_{}", uuid::Uuid::new_v4()),
-        model: PUBLIC_MODEL_ID,
+        model: model_id,
         answers,
         usage: totals,
     };
@@ -1843,7 +2031,7 @@ mod tests {
             ),
             (
                 json!({"state": "s", "questions": {"q": {"type": "choice", "instructions": "x", "criteria": {"only": null}}}}),
-                E::BadOptionCount,
+                E::BadOptionCount(255),
             ),
             (
                 json!({"state": "s", "questions": {"q": {"type": "choice", "instructions": "x", "criteria": {" ": null, "b": null}}}}),
@@ -2223,7 +2411,7 @@ mod tests {
         };
         let body = ResponseBody {
             id: "so_test".into(),
-            model: PUBLIC_MODEL_ID,
+            model: GLM_MODEL_ID,
             answers: Entries(vec![
                 ("zebra".into(), answer_body(&choice, &[0.6, 0.4], 1.0, 0.9)),
                 ("apple".into(), answer_body(&choice, &[0.1, 0.9], 1.0, 0.9)),

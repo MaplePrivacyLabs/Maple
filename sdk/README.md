@@ -192,9 +192,11 @@ different callback. Native Apple sign-in and the Rust SDK are unchanged.
 ### System One decisions
 
 `systemOne` answers typed questions (`noul`, `choice`, `score`) about a JSON
-state with calibrated probabilities instead of text (`POST /v1/systemone`,
-Continuum GLM-5.3-Flash). It uses the signed-in session, or an API key through
-`options.apiKey`; `useOpenSecret().systemOne` is the same function:
+state with probabilities instead of text (`POST /v1/systemone`). `model` is
+`glm-5-3-flash` by default (Continuum, calibrated, takes `images`) or one of
+Tinfoil's `decision-small`, `decision-medium` and `decision-large` (text only,
+up to 26 options per choice). It uses the signed-in session, or an API key
+through `options.apiKey`; `useOpenSecret().systemOne` is the same function:
 
 ```ts
 import { systemOne, SystemOneError } from "@mapleai/sdk";

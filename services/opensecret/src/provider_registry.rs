@@ -5,6 +5,7 @@
 //! completion model.
 
 use crate::model_config::{
+    DECISION_LARGE_MODEL_ID, DECISION_MEDIUM_MODEL_ID, DECISION_SMALL_MODEL_ID,
     DEEPSEEK_V4_1_FLASH_MODEL_ID, DEEPSEEK_V4_1_FLASH_UNCENSORED_MODEL_ID, GLM_5_3_FLASH_MODEL_ID,
     GLM_5_3_MODEL_ID, KIMI_K3_MODEL_ID, QUICK_MODEL_ID,
 };
@@ -107,10 +108,19 @@ const fn completion_model(
     }
 }
 
+/// The routes of a typed-decision model. These serve System One only and never take part in
+/// completion routing; they are here so route health covers them like every other route.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct DecisionModelSpec {
+    pub(crate) public_model_id: &'static str,
+    pub(crate) routes: &'static [ModelRouteSpec],
+}
+
 #[derive(Debug)]
 pub(crate) struct ProviderRegistry {
     providers: &'static [ProviderSpec],
     completion_models: &'static [CompletionModelSpec],
+    decision_models: &'static [DecisionModelSpec],
 }
 
 impl ProviderRegistry {
@@ -130,6 +140,16 @@ impl ProviderRegistry {
 
     pub(crate) fn completion_models(&self) -> &'static [CompletionModelSpec] {
         self.completion_models
+    }
+
+    pub(crate) fn decision_model(&self, public_model_id: &str) -> Option<&DecisionModelSpec> {
+        self.decision_models
+            .iter()
+            .find(|model| model.public_model_id == public_model_id)
+    }
+
+    pub(crate) fn decision_models(&self) -> &'static [DecisionModelSpec] {
+        self.decision_models
     }
 }
 
@@ -276,6 +296,7 @@ const DUAL_INSTANCE_TEST_MODELS: &[CompletionModelSpec] = &[completion_model(
 pub(crate) static DUAL_INSTANCE_TEST_REGISTRY: ProviderRegistry = ProviderRegistry {
     providers: PROVIDERS,
     completion_models: DUAL_INSTANCE_TEST_MODELS,
+    decision_models: &[],
 };
 
 const LLAMA3_3_70B_ROUTES: &[ModelRouteSpec] = &[ModelRouteSpec {
@@ -309,9 +330,42 @@ const COMPLETION_MODELS: &[CompletionModelSpec] = &[
     completion_model("gpt-oss-safeguard-120b", GPT_OSS_SAFEGUARD_120B_ROUTES),
 ];
 
+// Tinfoil serves the decision models under the same names as our public IDs. They have no
+// other provider.
+const fn tinfoil_decision_route(model: &'static str) -> ModelRouteSpec {
+    ModelRouteSpec {
+        provider: ProviderId::Tinfoil,
+        provider_model_id: model,
+        response_model_id: model,
+        weight: 100,
+        enabled: true,
+    }
+}
+
+const DECISION_SMALL_ROUTES: &[ModelRouteSpec] = &[tinfoil_decision_route(DECISION_SMALL_MODEL_ID)];
+const DECISION_MEDIUM_ROUTES: &[ModelRouteSpec] =
+    &[tinfoil_decision_route(DECISION_MEDIUM_MODEL_ID)];
+const DECISION_LARGE_ROUTES: &[ModelRouteSpec] = &[tinfoil_decision_route(DECISION_LARGE_MODEL_ID)];
+
+const DECISION_MODELS: &[DecisionModelSpec] = &[
+    DecisionModelSpec {
+        public_model_id: DECISION_SMALL_MODEL_ID,
+        routes: DECISION_SMALL_ROUTES,
+    },
+    DecisionModelSpec {
+        public_model_id: DECISION_MEDIUM_MODEL_ID,
+        routes: DECISION_MEDIUM_ROUTES,
+    },
+    DecisionModelSpec {
+        public_model_id: DECISION_LARGE_MODEL_ID,
+        routes: DECISION_LARGE_ROUTES,
+    },
+];
+
 pub(crate) static PROVIDER_REGISTRY: ProviderRegistry = ProviderRegistry {
     providers: PROVIDERS,
     completion_models: COMPLETION_MODELS,
+    decision_models: DECISION_MODELS,
 };
 
 #[cfg(test)]
@@ -592,5 +646,31 @@ mod tests {
             auto_model_candidates(ModelSelectionMode::AutoPowerful, ModelPlan::Paid).unwrap(),
             [GLM_5_3_MODEL_ID, KIMI_K3_MODEL_ID]
         );
+    }
+
+    #[test]
+    fn decision_models_have_one_tinfoil_route_each_and_are_not_completion_models() {
+        use crate::model_config::decision_models;
+        let registered: Vec<&str> = PROVIDER_REGISTRY
+            .decision_models()
+            .iter()
+            .map(|model| model.public_model_id)
+            .collect();
+        let configured: Vec<&str> = decision_models().iter().map(|model| model.id).collect();
+        assert_eq!(registered, configured);
+        for id in configured {
+            let model = PROVIDER_REGISTRY.decision_model(id).expect("registered");
+            assert_eq!(model.routes.len(), 1, "{id}");
+            let route = model.routes[0];
+            assert_eq!(route.provider, ProviderId::Tinfoil);
+            assert_eq!(route.provider_model_id, id);
+            assert_eq!(route.response_model_id, id);
+            assert!(route.enabled);
+            assert!(PROVIDER_REGISTRY.completion_model(id).is_none(), "{id}");
+        }
+        assert!(PROVIDER_REGISTRY
+            .decision_model(GLM_5_3_FLASH_MODEL_ID)
+            .is_none());
+        assert!(DUAL_INSTANCE_TEST_REGISTRY.decision_models().is_empty());
     }
 }
