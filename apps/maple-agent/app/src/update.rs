@@ -1234,10 +1234,18 @@ mod tests {
             assert!(controller.remote_status().blocked.is_none());
             assert_eq!(controller.remote_status().offered, Some(target));
             let installed = root.path().canonicalize().unwrap().join("Maple Agent.app");
-            assert!(matches!(
-                maple_agent_updater::installer::acquire_install_lock(&installed),
-                Err(maple_agent_updater::installer::InstallError::Busy)
-            ));
+            let contention = match maple_agent_updater::installer::acquire_install_lock(&installed)
+            {
+                Ok(_) => panic!("a refused remote update released its installation lock"),
+                Err(error) => error,
+            };
+            assert!(
+                matches!(
+                    &contention,
+                    maple_agent_updater::installer::InstallError::Busy
+                ),
+                "unexpected retained-lock result: {contention:?}"
+            );
             assert_eq!(
                 std::fs::read(root.path().join("Maple Agent.app/sentinel")).unwrap(),
                 b"current application"
