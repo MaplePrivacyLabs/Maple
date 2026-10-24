@@ -126,6 +126,10 @@ maple-sdk = { path = "../../../../sdk/rust" }
 # receive null objects from real Android launch/deep-link flows, aborting the
 # process before tauri-plugin-deep-link sees OAuth/payment redirects. Remove
 # this once Tauri resolves to a Tao release containing the upstream fix.
+#
+# It also carries tauri-apps/tao#1376 for iOS: in the scene life cycle a URL that
+# cold-launches the app arrives in the scene connection options, which tao 0.37
+# ignores, so OAuth callbacks that relaunch Maple were dropped.
 # The vendored library uses this application's Cargo.lock; its upstream
 # standalone lockfile is intentionally omitted.
 tao = { path = "patches/tao-0.37.1" }
