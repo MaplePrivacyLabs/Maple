@@ -79,6 +79,6 @@ tinfoil = { git = "https://github.com/MaplePrivacyLabs/tinfoil-rs.git", rev = "f
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 
 [dev-dependencies]
-openssl = "0.10.78"
+openssl = "0.10.80"
 syn = { version = "2", features = ["full", "visit"] }
 proptest = { version = "=1.6.0", default-features = false, features = ["std"] }

@@ -4,6 +4,8 @@ frozenLockfile = true
 ignoreScripts = true
 auto = "disable"
 minimumReleaseAge = 604800
+# Reviewed security fix for GHSA-w74x-v6f9-j3xg and related URI normalization advisories.
+minimumReleaseAgeExcludes = ["fast-uri"]
 
 [test]
 preload = [

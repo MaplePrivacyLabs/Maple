@@ -146,3 +146,32 @@ describe("ThinkingBlock labels", () => {
     expect(completed).not.toContain("thinking-shimmer");
   });
 });
+
+describe("MarkdownContent math", () => {
+  it("renders inline and display math through the patched KaTeX renderer", () => {
+    const rendered = renderMarkdown("Inline $x^2$\n\n$$\n\\frac{1}{2}\n$$");
+
+    expect(rendered).toContain('class="katex"');
+    expect(rendered).toContain('class="katex-display"');
+    expect(rendered).toContain("<math");
+  });
+
+  it("does not inherit trusted rendering from a polluted Object prototype", () => {
+    const previous = Object.getOwnPropertyDescriptor(Object.prototype, "trust");
+    Object.defineProperty(Object.prototype, "trust", {
+      value: true,
+      configurable: true
+    });
+    try {
+      const rendered = renderMarkdown("$\\href{https://example.com/untrusted}{unsafe}$");
+
+      expect(rendered).not.toContain('href="https://example.com/untrusted"');
+    } finally {
+      if (previous) {
+        Object.defineProperty(Object.prototype, "trust", previous);
+      } else {
+        Reflect.deleteProperty(Object.prototype, "trust");
+      }
+    }
+  });
+});
