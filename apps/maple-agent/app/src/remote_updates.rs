@@ -4,7 +4,8 @@
 
 use crate::remote::update::{
     BlockedReason, InstallAccepted, InstallRequest, OperationState, ReleaseIdentity,
-    RemoteInstallAuthority, RemoteUpdateOperation, RemoteUpdateStatus, UpdateState,
+    RemoteInstallAuthority, RemoteUpdateOperation, RemoteUpdateStatus, RunningApplication,
+    UpdateState,
 };
 use maple_agent::store::{Store, StoreState, lifecycle::StoreMode};
 use serde::{Deserialize, Serialize};
@@ -88,6 +89,7 @@ pub(crate) struct Broker {
     store: Option<Arc<Store>>,
     directory: Option<PathBuf>,
     state: Arc<Mutex<State>>,
+    running: RunningApplication,
 }
 impl Broker {
     pub(crate) fn new(store: Option<Arc<Store>>) -> Self {
@@ -99,6 +101,7 @@ impl Broker {
             store,
             directory,
             state: Arc::new(Mutex::new(State::default())),
+            running: RunningApplication::current(),
         }
     }
 
@@ -109,31 +112,43 @@ impl Broker {
         let state = self.state.clone();
         let directory = self.directory.clone();
         let store = self.store.clone();
+        let running = self.running.clone();
         tokio::task::spawn_blocking(move || {
-            let mut state = state.lock().map_err(|_| "Remote update coordinator is unavailable")?;
+            let mut state = state
+                .lock()
+                .map_err(|_| "Remote update coordinator is unavailable")?;
             if !state.loaded {
                 let directory = directory.as_deref().ok_or("Local storage is unavailable")?;
-                state.receipts = read_journal(directory)?;
-                // A crash or lost acknowledgement never grants permission to replay.
-                for receipt in state.receipts.values_mut() {
-                    if !matches!(receipt.operation.state, OperationState::Succeeded | OperationState::Failed) {
-                        receipt.operation.state = OperationState::Failed;
-                        receipt.operation.message = Some("Previous update was interrupted; check the remote computer before trying again.".into());
-                    }
+                let mut receipts = read_journal(directory)?;
+                if reconcile_startup(&mut receipts, &running) {
+                    // Persist before publishing the reconciled outcome. A later
+                    // local upgrade must not turn an observed success back into
+                    // an interrupted operation. A failed write serves no work.
+                    write_journal(directory, &receipts)?;
                 }
+                state.receipts = receipts;
                 state.loaded = true;
             }
             let before = state.clone();
             expire_requests(&mut state);
             let result = effect(&mut state, store.as_deref());
-            if result.is_err() { *state = before; return result; }
+            if result.is_err() {
+                *state = before;
+                return result;
+            }
             if before.receipts != state.receipts
-                && let Err(error) = write_journal(directory.as_deref().ok_or("Local storage is unavailable")?, &state.receipts)
+                && let Err(error) = write_journal(
+                    directory.as_deref().ok_or("Local storage is unavailable")?,
+                    &state.receipts,
+                )
             {
-                *state = before; return Err(error);
+                *state = before;
+                return Err(error);
             }
             result
-        }).await.map_err(|_| "Remote update coordinator stopped".to_string())?
+        })
+        .await
+        .map_err(|_| "Remote update coordinator stopped".to_string())?
     }
 
     pub(crate) async fn attach(&self, account: String) -> Result<DesktopLease, String> {
@@ -208,6 +223,12 @@ impl Broker {
                 .ok_or("Remote update request is unavailable")?;
             if receipt.account_binding != scope_binding("account", &request.expected_account) || receipt.lease != request.lease {
                 return Err("Remote update ownership changed".into());
+            }
+            if matches!(receipt.operation.state, OperationState::Succeeded | OperationState::Failed) {
+                return Ok(());
+            }
+            if receipt.operation.state != OperationState::Installing {
+                return Err("The remote update was not claimed by this desktop".into());
             }
             receipt.operation.state = OperationState::Failed;
             // Successful replacement ends the old host; an alive host has no
@@ -475,6 +496,47 @@ impl Broker {
     }
 }
 
+fn reconcile_startup(
+    receipts: &mut BTreeMap<String, Receipt>,
+    running: &RunningApplication,
+) -> bool {
+    let mut changed = false;
+    for receipt in receipts.values_mut() {
+        if matches!(
+            receipt.operation.state,
+            OperationState::Succeeded | OperationState::Failed
+        ) {
+            continue;
+        }
+        let target = &receipt.operation.target;
+        let observed_target = receipt.operation.state == OperationState::Installing
+            && running.version == target.version
+            && running.source_sha == target.source_sha
+            && running
+                .build
+                .as_ref()
+                .is_none_or(|build| *build == target.build);
+        if observed_target {
+            receipt.operation.state = OperationState::Succeeded;
+            // This reports the running target; it does not invent a packaging
+            // build when the executable's runtime metadata has none, or claim
+            // which install path caused that version to start.
+            receipt.operation.message =
+                Some("The requested version and source are running on this computer.".into());
+        } else {
+            receipt.operation.state = OperationState::Failed;
+            receipt.operation.message = Some(
+                "Previous update was interrupted; check the remote computer before trying again."
+                    .into(),
+            );
+        }
+        changed = true;
+    }
+    // Reconciliation is outcome reporting only. It never recreates a lease,
+    // captured authority, acknowledgement or queued installation.
+    changed
+}
+
 fn lease<'a>(state: &'a mut State, account: &str, id: &str) -> Result<&'a mut Lease, String> {
     let lease = state
         .lease
@@ -572,12 +634,14 @@ fn private_directory_component(path: &Path) -> Result<(), String> {
     match std::fs::symlink_metadata(path) {
         Ok(_) => {}
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            let mut builder = std::fs::DirBuilder::new();
+            let builder = std::fs::DirBuilder::new();
             #[cfg(unix)]
-            {
+            let builder = {
                 use std::os::unix::fs::DirBuilderExt;
+                let mut builder = builder;
                 builder.mode(0o700);
-            }
+                builder
+            };
             match builder.create(path) {
                 Ok(()) => {}
                 Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
@@ -600,14 +664,16 @@ fn private_directory_component(path: &Path) -> Result<(), String> {
     Ok(())
 }
 fn open_options() -> std::fs::OpenOptions {
-    let mut options = std::fs::OpenOptions::new();
+    let options = std::fs::OpenOptions::new();
     #[cfg(unix)]
-    {
+    let options = {
         use std::os::unix::fs::OpenOptionsExt;
+        let mut options = options;
         options
             .mode(0o600)
             .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK);
-    }
+        options
+    };
     options
 }
 fn verify_file(file: &std::fs::File) -> Result<(), String> {
@@ -726,6 +792,20 @@ mod tests {
             manifest_sha256: "b".repeat(64),
         }
     }
+    fn running_target() -> RunningApplication {
+        let target = target();
+        RunningApplication {
+            version: target.version,
+            build: Some(target.build),
+            source_sha: target.source_sha,
+            platform: "fixture-platform".into(),
+        }
+    }
+    fn reopen_as(store: Arc<Store>, running: RunningApplication) -> Broker {
+        let mut broker = Broker::new(Some(store));
+        broker.running = running;
+        broker
+    }
     async fn desktop(broker: &Broker) -> DesktopLease {
         let lease = broker.attach("alice".into()).await.unwrap();
         broker
@@ -840,6 +920,206 @@ mod tests {
                 .unwrap()
                 .operation
                 .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn observed_success_is_durable_and_survives_a_later_local_upgrade() {
+        let (_directory, store, broker) = fixture();
+        let lease = desktop(&broker).await;
+        let id = receipt(&broker, &lease, OperationState::Queued).await;
+        assert_eq!(
+            broker
+                .take(take_request(&lease))
+                .await
+                .unwrap()
+                .unwrap()
+                .operation_id,
+            id
+        );
+        let journal = broker.directory.clone().unwrap();
+        drop(broker);
+
+        let reopened = reopen_as(store.clone(), running_target());
+        // A read-only status request is enough to reconcile and durably save
+        // startup success; no subsequent queue/publication mutation is needed.
+        let outcome = reopened
+            .status("alice", "paired-peer")
+            .await
+            .unwrap()
+            .operation
+            .unwrap();
+        assert_eq!(outcome.state, OperationState::Succeeded);
+        assert_eq!(
+            read_journal(&journal).unwrap()[&id].operation.state,
+            OperationState::Succeeded
+        );
+        assert!(reopened.state.lock().unwrap().authorities.is_empty());
+        let new_lease = desktop(&reopened).await;
+        assert!(
+            reopened
+                .take(take_request(&new_lease))
+                .await
+                .unwrap()
+                .is_none()
+        );
+        drop(reopened);
+
+        let mut later = running_target();
+        later.version = "0.2.0".into();
+        later.build = Some("700".into());
+        later.source_sha = "d".repeat(40);
+        let later_host = reopen_as(store, later);
+        assert_eq!(
+            later_host
+                .status("alice", "paired-peer")
+                .await
+                .unwrap()
+                .operation
+                .unwrap()
+                .state,
+            OperationState::Succeeded
+        );
+        assert_eq!(
+            read_journal(&journal).unwrap()[&id].operation.state,
+            OperationState::Succeeded
+        );
+    }
+
+    #[tokio::test]
+    async fn startup_preserves_unknown_build_honestly_but_requires_matching_known_identity() {
+        for mismatch in [None, Some("version"), Some("source"), Some("build")] {
+            let (_directory, store, broker) = fixture();
+            let lease = desktop(&broker).await;
+            let id = receipt(&broker, &lease, OperationState::Installing).await;
+            let journal = broker.directory.clone().unwrap();
+            drop(broker);
+            let mut running = running_target();
+            match mismatch {
+                None => running.build = None, // Actual executables currently omit packaging build.
+                Some("version") => running.version = "0.0.9".into(),
+                Some("source") => running.source_sha = "c".repeat(40),
+                Some("build") => running.build = Some("601".into()),
+                _ => unreachable!(),
+            }
+            let reopened = reopen_as(store.clone(), running);
+            let expected = if mismatch.is_none() {
+                OperationState::Succeeded
+            } else {
+                OperationState::Failed
+            };
+            assert_eq!(
+                reopened
+                    .status("alice", "paired-peer")
+                    .await
+                    .unwrap()
+                    .operation
+                    .unwrap()
+                    .state,
+                expected
+            );
+            assert_eq!(
+                read_journal(&journal).unwrap()[&id].operation.state,
+                expected
+            );
+            drop(reopened);
+            // A later startup may not reinterpret an already terminal result.
+            let later = reopen_as(store, running_target());
+            assert_eq!(
+                later
+                    .status("alice", "paired-peer")
+                    .await
+                    .unwrap()
+                    .operation
+                    .unwrap()
+                    .state,
+                expected
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn startup_fails_unclaimed_work_and_never_recreates_install_admission() {
+        let (_directory, store, broker) = fixture();
+        let lease = desktop(&broker).await;
+        let pending = receipt(&broker, &lease, OperationState::PendingAck).await;
+        let queued = receipt(&broker, &lease, OperationState::Queued).await;
+        let installing = receipt(&broker, &lease, OperationState::Installing).await;
+        let journal = broker.directory.clone().unwrap();
+        drop(broker);
+        let reopened = reopen_as(store, running_target());
+        reopened.status("alice", "paired-peer").await.unwrap();
+        let saved = read_journal(&journal).unwrap();
+        assert_eq!(saved[&pending].operation.state, OperationState::Failed);
+        assert_eq!(saved[&queued].operation.state, OperationState::Failed);
+        assert_eq!(
+            saved[&installing].operation.state,
+            OperationState::Succeeded
+        );
+        let lease = desktop(&reopened).await;
+        assert!(reopened.take(take_request(&lease)).await.unwrap().is_none());
+        assert!(
+            reopened
+                .authorize_stop(
+                    *Uuid::parse_str(&installing).unwrap().as_bytes(),
+                    Some("alice".into())
+                )
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn repeated_completion_is_idempotent_and_cannot_overwrite_terminal_success() {
+        let (_directory, _store, broker) = fixture();
+        let lease = desktop(&broker).await;
+        let id = receipt(&broker, &lease, OperationState::Installing).await;
+        let completion = || CompleteRequest {
+            expected_account: "alice".into(),
+            lease: lease.id.clone(),
+            operation_id: id.clone(),
+            error: None,
+        };
+        broker.complete(completion()).await.unwrap();
+        broker.complete(completion()).await.unwrap();
+        assert_eq!(
+            broker
+                .status("alice", "paired-peer")
+                .await
+                .unwrap()
+                .operation
+                .unwrap()
+                .state,
+            OperationState::Failed
+        );
+        let key = id.clone();
+        broker
+            .access(move |state, _| {
+                state.receipts.get_mut(&key).unwrap().operation.state = OperationState::Succeeded;
+                Ok(())
+            })
+            .await
+            .unwrap();
+        broker.complete(completion()).await.unwrap();
+        assert_eq!(
+            broker
+                .status("alice", "paired-peer")
+                .await
+                .unwrap()
+                .operation
+                .unwrap()
+                .state,
+            OperationState::Succeeded
+        );
+        let pending = receipt(&broker, &lease, OperationState::PendingAck).await;
+        assert!(
+            broker
+                .complete(CompleteRequest {
+                    operation_id: pending,
+                    ..completion()
+                })
+                .await
+                .is_err()
         );
     }
 

@@ -115,6 +115,8 @@ struct InstallationFailure {
     message: String,
     manual: bool,
     recover_host: bool,
+    // Only a known pre-stop refusal may retain the exact verified staging.
+    retry_ready: bool,
 }
 impl From<maple_agent_updater::installer::InstallError> for InstallationFailure {
     fn from(error: maple_agent_updater::installer::InstallError) -> Self {
@@ -122,6 +124,7 @@ impl From<maple_agent_updater::installer::InstallError> for InstallationFailure 
             manual: error.requires_manual_installation(),
             message: error.to_string(),
             recover_host: false,
+            retry_ready: false,
         }
     }
 }
@@ -131,6 +134,7 @@ impl From<String> for InstallationFailure {
             message,
             manual: false,
             recover_host: false,
+            retry_ready: false,
         }
     }
 }
@@ -205,7 +209,7 @@ impl Controller {
             Some(BlockedReason::UnsupportedInstallation)
         } else {
             match snapshot.state {
-                State::Ready | State::Installing => None,
+                State::Ready | State::Installing | State::Current | State::Idle => None,
                 State::Disabled => Some(BlockedReason::UpdatesDisabled),
                 State::Checking | State::Downloading => Some(BlockedReason::Busy),
                 _ => Some(BlockedReason::UpdateNotReady),
@@ -668,24 +672,58 @@ impl Controller {
         let Ok(_operation) = self.0.operation.try_lock() else {
             return Ok(None);
         };
+        let previous = self.snapshot();
+        let expected = remote.as_ref().map(|(target, _)| target.clone());
         let result = self.install_inner(backend, remote).await;
         if let Some(path) = self.restart_path() {
             return Ok(Some(path));
         }
         if let Err(error) = &result {
-            if let Some(service) = self.0.service.get() {
-                let release = self.0.releases.lock().await.release.clone();
-                if let Some(release) = release {
-                    self.installation_failed(service, &release, error.clone())
-                        .await;
-                } else {
-                    self.fail(error.message.clone());
-                }
-            } else {
-                self.fail(error.message.clone());
-            }
+            self.failed_install(previous, expected.as_ref(), error)
+                .await;
         }
         result.map_err(|error| error.message)
+    }
+
+    async fn failed_install(
+        &self,
+        previous: Snapshot,
+        remote: Option<&crate::remote::update::ReleaseIdentity>,
+        error: &InstallationFailure,
+    ) {
+        if error.retry_ready
+            && !error.recover_host
+            && !error.manual
+            && previous.state == State::Ready
+            && let Some(expected) = remote
+            && previous.remote_candidate.as_ref() == Some(expected)
+        {
+            let releases = self.0.releases.lock().await;
+            let retained = releases
+                .prepared
+                .as_ref()
+                .is_some_and(|prepared| release_identity(&prepared.release) == *expected)
+                && releases.installation.is_some()
+                && releases.install_lock.is_some();
+            drop(releases);
+            if retained {
+                // The operation gate is still held. Staging was revalidated
+                // before the refusal, and every future attempt checks it again.
+                // Report this attempt's failure through its receipt, not a
+                // misleading local installation error or restart instruction.
+                self.publish(previous);
+                return;
+            }
+        }
+        if let Some(service) = self.0.service.get() {
+            let release = self.0.releases.lock().await.release.clone();
+            if let Some(release) = release {
+                self.installation_failed(service, &release, error.clone())
+                    .await;
+                return;
+            }
+        }
+        self.fail(error.message.clone());
     }
     async fn install_inner(
         &self,
@@ -745,6 +783,17 @@ impl Controller {
         let fresh = match service.updater.revalidate(&prepared).await {
             Ok(fresh) => fresh,
             Err(_) => {
+                if remote.is_some() {
+                    let mut releases = self.0.releases.lock().await;
+                    releases.installation = Some(preparation);
+                    releases.install_lock = Some(lock);
+                    return Err(InstallationFailure {
+                        message: "Could not revalidate the update. Maple is still running.".into(),
+                        manual: false,
+                        recover_host: false,
+                        retry_ready: true,
+                    });
+                }
                 discard_preparation(preparation).await;
                 return Err("Could not revalidate the update. Maple is still running.".into());
             }
@@ -791,7 +840,6 @@ impl Controller {
         let controller = self.clone();
         let updater = service.updater.clone();
         let result = tokio::task::spawn_blocking(move || {
-            let _lock = lock;
             // Refresh effective permissions after the asynchronous discovery
             // check, before stopping a healthy host or closing admission.
             if let Err(error) = maple_agent_updater::installer::preflight_installation(&prepared.installed_path) {
@@ -800,16 +848,30 @@ impl Controller {
             }
             let manual_failure = std::cell::Cell::new(false);
             let fence = match remote {
-                Some((_, operation)) => crate::host::acquire_remote_update_fence(&api_url, operation),
-                None => crate::host::acquire_update_fence(&api_url),
+                Some((_, operation)) => crate::host::acquire_remote_update_fence(&api_url, operation)
+                    .map_err(|error| InstallationFailure {
+                        message: error.message,
+                        manual: false,
+                        recover_host: !error.host_unchanged,
+                        retry_ready: error.host_unchanged,
+                    }),
+                None => crate::host::acquire_update_fence(&api_url)
+                    .map_err(|message| InstallationFailure { message, manual: false, recover_host: true, retry_ready: false }),
             };
             let mut host_fence = match fence {
                 Ok(fence) => Some(fence),
-                Err(message) => {
-                    let _ = maple_agent_updater::installer::discard_preparation(&preparation);
-                    return Err(InstallationFailure { message, manual: false, recover_host: true });
+                Err(error) => {
+                    if error.retry_ready {
+                        let mut releases = controller.0.releases.blocking_lock();
+                        releases.installation = Some(preparation);
+                        releases.install_lock = Some(lock);
+                    } else {
+                        let _ = maple_agent_updater::installer::discard_preparation(&preparation);
+                    }
+                    return Err(error);
                 }
             };
+            let _lock = lock;
             let result = updater.with_commit_guard(&prepared, || {
                 // replace performs the final payload/tree/codesign checks
                 // while both process fences and the commit guard are held.
@@ -831,7 +893,7 @@ impl Controller {
             if result.is_err() {
                 let _ = maple_agent_updater::installer::discard_preparation(&preparation);
             }
-            result.map_err(|message| InstallationFailure { message, manual: manual_failure.get(), recover_host: true })
+            result.map_err(|message| InstallationFailure { message, manual: manual_failure.get(), recover_host: true, retry_ready: false })
         }).await.map_err(|_| "Installation did not complete; retry or reinstall Maple".to_string())?;
         match result {
             Ok(path) => Ok(Some(path)),
@@ -848,7 +910,7 @@ impl Controller {
                     return Err(InstallationFailure {
                         message: format!(
                             "{}. Quit and reopen Maple to restore its host.",
-                            error.message
+                            error.message.trim_end_matches('.')
                         ),
                         ..error
                     });
@@ -856,7 +918,7 @@ impl Controller {
                 Err(InstallationFailure {
                     message: format!(
                         "{}. Quit and reopen Maple before continuing work.",
-                        error.message
+                        error.message.trim_end_matches('.')
                     ),
                     ..error
                 })
@@ -1085,6 +1147,160 @@ fn manual_macos_path(path: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Model the controller after preparation has passed, without replacing an
+    // application or bypassing the installer's separate validation tests.
+    async fn ready_remote_fixture(root: &Path) -> (Controller, Snapshot) {
+        let root = root.canonicalize().unwrap();
+        let installed = root.join("Maple Agent.app");
+        std::fs::create_dir(&installed).unwrap();
+        std::fs::write(installed.join("sentinel"), b"current application").unwrap();
+        let feed = "https://updates.trymaple.ai/agent/stable/latest.json"
+            .parse()
+            .unwrap();
+        let key =
+            include_str!("../../crates/maple-agent-updater/tests/fixtures/public-test-key.pub")
+                .to_owned();
+        let release = maple_agent_updater::manifest::verify_envelope(
+            include_bytes!("../../crates/maple-agent-updater/tests/fixtures/signed-envelope.json"),
+            &feed,
+            &[key],
+        )
+        .unwrap();
+        let artifact = release.artifact(Target::DarwinAarch64).unwrap().clone();
+        let staging = root.join(".maple-agent-update-abcdefghijklmnop");
+        std::fs::create_dir(&staging).unwrap();
+        let payload = staging.join("payload");
+        let controller = Controller::new(true);
+        {
+            let mut releases = controller.0.releases.lock().await;
+            releases.release = Some(release.clone());
+            releases.prepared = Some(PreparedUpdate {
+                release: release.clone(),
+                payload_path: root.join("authenticated-download"),
+                installed_path: installed.clone(),
+            });
+            releases.installation = Some(maple_agent_updater::installer::InstallPreparation {
+                installed_path: installed.clone(),
+                staging_dir: staging.clone(),
+                payload_path: payload,
+                staged_path: staging.join("Maple Agent.app"),
+                version: release.manifest.version.clone(),
+                build: release.manifest.build.clone(),
+                size: artifact.size,
+                sha256: artifact.sha256,
+            });
+            releases.install_lock =
+                Some(maple_agent_updater::installer::acquire_install_lock(&installed).unwrap());
+        }
+        let mut ready = Snapshot::new(State::Ready, "v0.0.2 is ready to install");
+        ready.version = Some(release.manifest.version.clone());
+        ready.remote_candidate = Some(release_identity(&release));
+        ready.primary = Some(UpdateAction::Restart);
+        ready.primary_label = "Restart to Update";
+        ready.show_banner = true;
+        controller.publish(ready.clone());
+        (controller, ready)
+    }
+
+    #[tokio::test]
+    async fn remote_pre_stop_refusals_retain_ready_candidate_and_install_lock() {
+        for message in [
+            "This computer is busy with a local operation. Try again after it finishes.",
+            "Remote access revoked",
+            "Could not revalidate the update. Maple is still running.",
+        ] {
+            let root = tempfile::tempdir().unwrap();
+            let (controller, ready) = ready_remote_fixture(root.path()).await;
+            let target = ready.remote_candidate.clone().unwrap();
+            controller.publish(Snapshot::new(State::Installing, "Preparing update"));
+            controller
+                .failed_install(
+                    ready.clone(),
+                    Some(&target),
+                    &InstallationFailure {
+                        message: message.into(),
+                        manual: false,
+                        recover_host: false,
+                        retry_ready: true,
+                    },
+                )
+                .await;
+            assert_eq!(controller.snapshot(), ready);
+            assert_eq!(
+                controller.remote_status().state,
+                crate::remote::update::UpdateState::Ready
+            );
+            assert!(controller.remote_status().blocked.is_none());
+            assert_eq!(controller.remote_status().offered, Some(target));
+            let installed = root.path().canonicalize().unwrap().join("Maple Agent.app");
+            assert!(matches!(
+                maple_agent_updater::installer::acquire_install_lock(&installed),
+                Err(maple_agent_updater::installer::InstallError::Busy)
+            ));
+            assert_eq!(
+                std::fs::read(root.path().join("Maple Agent.app/sentinel")).unwrap(),
+                b"current application"
+            );
+            assert!(!controller.snapshot().label.contains("Quit and reopen"));
+        }
+    }
+
+    #[tokio::test]
+    async fn uncertain_shutdown_or_changed_candidate_never_restores_ready() {
+        for scenario in [
+            "uncertain",
+            "different candidate",
+            "missing staging",
+            "local install",
+        ] {
+            let root = tempfile::tempdir().unwrap();
+            let (controller, ready) = ready_remote_fixture(root.path()).await;
+            let target = ready.remote_candidate.clone().unwrap();
+            {
+                let mut releases = controller.0.releases.lock().await;
+                if scenario == "different candidate" {
+                    releases
+                        .prepared
+                        .as_mut()
+                        .unwrap()
+                        .release
+                        .envelope
+                        .push('\n');
+                } else if scenario == "missing staging" {
+                    releases.installation = None;
+                }
+            }
+            controller.publish(Snapshot::new(State::Installing, "Preparing update"));
+            controller
+                .failed_install(
+                    ready,
+                    (scenario != "local install").then_some(&target),
+                    &InstallationFailure {
+                        message: "Installation did not complete".into(),
+                        manual: false,
+                        recover_host: scenario == "uncertain",
+                        retry_ready: true,
+                    },
+                )
+                .await;
+            assert_eq!(controller.snapshot().state, State::Error, "{scenario}");
+            assert_eq!(
+                controller.remote_status().blocked,
+                Some(crate::remote::update::BlockedReason::UpdateNotReady)
+            );
+        }
+    }
+
+    #[test]
+    fn current_and_unchecked_computers_have_no_false_missing_download_warning() {
+        let controller = Controller::new(true);
+        for state in [State::Current, State::Idle] {
+            controller.publish(Snapshot::new(state, "No prepared update"));
+            assert!(controller.remote_status().blocked.is_none());
+            assert!(controller.remote_status().offered.is_none());
+        }
+    }
 
     #[cfg(unix)]
     fn linux_bundle_fixture(parent: &Path) -> PathBuf {

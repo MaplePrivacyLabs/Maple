@@ -24,6 +24,25 @@ use tokio::sync::{Mutex as AsyncMutex, Semaphore, broadcast};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
+async fn query_peer_information<T, F>(
+    connect: impl std::future::Future<Output = Result<T, String>>,
+    probe: impl FnOnce(T) -> F,
+    limit: Duration,
+) -> Result<Option<super::update::PeerInfo>, String>
+where
+    F: std::future::Future<Output = Result<Option<super::update::PeerInfo>, String>>,
+{
+    let deadline = tokio::time::Instant::now() + limit;
+    let connection = tokio::time::timeout_at(deadline, connect)
+        .await
+        .map_err(|_| "The remote computer did not answer its connection check. Check that it is online, then refresh.".to_owned())??;
+    // Once connected, absence of the optional capability remains a safe
+    // fallback. Do not misclassify failure to connect as an old peer.
+    tokio::time::timeout_at(deadline, probe(connection))
+        .await
+        .unwrap_or(Ok(None))
+}
+
 pub struct Manager {
     node: AsyncMutex<Option<Arc<Node>>>,
     initializing: AsyncMutex<()>,
@@ -344,15 +363,20 @@ impl Manager {
                 .map_err(|_| "Invalid remote update request")?;
             let _account_guard = self.backend.account_gate.read().await;
             self.backend.authorize_account(&account)?;
-            let info = tokio::time::timeout(Duration::from_secs(5), async {
-                let link = self.connect(&peer).await?;
-                if link.node.account != account {
-                    return Err("The signed-in account changed".into());
-                }
-                Ok::<_, String>(super::streams::peer_info(&link.connection).await)
-            })
-            .await
-            .unwrap_or(Ok(None))?;
+            let info = query_peer_information(
+                self.connect(&peer),
+                |link| {
+                    let account = &account;
+                    async move {
+                        if link.node.account != *account {
+                            return Err("The signed-in account changed".into());
+                        }
+                        Ok(super::streams::peer_info(&link.connection).await)
+                    }
+                },
+                Duration::from_secs(5),
+            )
+            .await?;
             self.backend.authorize_account(&account)?;
             return serde_json::to_value(info)
                 .map_err(|_| "Could not display remote update status".into());
@@ -1222,6 +1246,39 @@ fn validate_devices(devices: &[RemoteDevice]) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn peer_info_connection_timeout_is_unreachable_not_legacy() {
+        let result = query_peer_information(
+            std::future::pending::<Result<(), String>>(),
+            |()| async { Ok(None) },
+            Duration::from_millis(20),
+        )
+        .await;
+        assert!(result.unwrap_err().contains("connection check"));
+    }
+
+    #[tokio::test]
+    async fn peer_info_probe_timeout_remains_optional_after_connection() {
+        let result = query_peer_information(
+            async { Ok(()) },
+            |()| std::future::pending::<Result<Option<super::super::update::PeerInfo>, String>>(),
+            Duration::from_millis(20),
+        )
+        .await;
+        assert_eq!(result.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn peer_info_account_errors_are_not_optional_capability_fallbacks() {
+        let result = query_peer_information(
+            async { Ok(()) },
+            |()| async { Err("The signed-in account changed".into()) },
+            Duration::from_secs(1),
+        )
+        .await;
+        assert_eq!(result.unwrap_err(), "The signed-in account changed");
+    }
 
     #[test]
     fn loopback_qualification_requires_every_local_debug_boundary() {

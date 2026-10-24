@@ -125,15 +125,7 @@ fn install_blocked(info: &PeerInfo, local: &crate::update::Snapshot) -> Option<S
     if let Some(reason) = &info.update.blocked {
         return Some(reason.message().into());
     }
-    if info.update.operation.as_ref().is_some_and(|operation| {
-        matches!(
-            operation.state,
-            OperationState::PendingAck
-                | OperationState::Queued
-                | OperationState::Installing
-                | OperationState::Unknown
-        )
-    }) {
+    if operation_pending(info) {
         return Some("A remote update request is already pending on this computer. Refresh its status before continuing.".into());
     }
     if info.update.state != UpdateState::Ready {
@@ -146,6 +138,18 @@ fn install_blocked(info: &PeerInfo, local: &crate::update::Snapshot) -> Option<S
         return Some("This release is already running on the remote computer.".into());
     }
     (!client_can_recover(target, local)).then(|| CLIENT_READINESS.into())
+}
+
+fn operation_pending(info: &PeerInfo) -> bool {
+    info.update.operation.as_ref().is_some_and(|operation| {
+        matches!(
+            operation.state,
+            OperationState::PendingAck
+                | OperationState::Queued
+                | OperationState::Installing
+                | OperationState::Unknown
+        )
+    })
 }
 
 impl ComputerUpdate {
@@ -175,7 +179,22 @@ impl ComputerUpdate {
         } else {
             info.update.state.label().into()
         };
-        self.blocked_label = install_blocked(info, local);
+        let blocked = install_blocked(info, local);
+        let healthy_without_offer = info.update.offered.is_none()
+            && matches!(
+                info.update.state,
+                UpdateState::Current | UpdateState::Idle | UpdateState::Checking
+            )
+            && matches!(
+                info.update.blocked,
+                None | Some(crate::remote::update::BlockedReason::UpdateNotReady)
+            )
+            && !operation_pending(info);
+        self.blocked_label = if healthy_without_offer {
+            None
+        } else {
+            blocked.clone()
+        };
         let pending = self
             .attempt
             .as_ref()
@@ -187,7 +206,7 @@ impl ComputerUpdate {
                 InstallPhase::Failed => false,
             });
         self.install_available =
-            self.phase == PeerInfoPhase::Loaded && !pending && self.blocked_label.is_none();
+            self.phase == PeerInfoPhase::Loaded && !pending && blocked.is_none();
     }
 
     fn reconcile_operation(&mut self) {
@@ -211,12 +230,13 @@ impl ComputerUpdate {
         let Some(attempt) = &mut self.attempt else {
             return;
         };
-        if info.running.matches_release(&attempt.request.target) {
-            attempt.phase = InstallPhase::Succeeded;
-            attempt.label = format!(
-                "v{} is now running on this computer.",
-                attempt.request.target.version
-            );
+        // Running a version is independent of the outcome of this request:
+        // a local install or another controller may have installed it. Only
+        // the matching durable receipt can establish this operation's result.
+        if matches!(
+            attempt.phase,
+            InstallPhase::Succeeded | InstallPhase::Failed
+        ) {
             return;
         }
         let Some(operation) = &info.update.operation else {
@@ -242,11 +262,17 @@ impl ComputerUpdate {
             }
             OperationState::Succeeded => {
                 attempt.phase = InstallPhase::Succeeded;
-                attempt.label = "The remote computer reports that the update finished. Refresh to check its running version.".into();
+                attempt.label = format!(
+                    "The remote computer confirmed that requested v{} was running after this earlier update request.",
+                    attempt.request.target.version
+                );
             }
             OperationState::Failed => {
                 attempt.phase = InstallPhase::Failed;
-                attempt.label = "The remote update did not finish. Check Maple on that computer before trying again.".into();
+                attempt.label = format!(
+                    "The earlier remote update request for v{} did not complete.",
+                    attempt.request.target.version
+                );
             }
             OperationState::Unknown => {}
         }

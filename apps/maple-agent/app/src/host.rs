@@ -1520,7 +1520,9 @@ impl OwnerContext {
             // A stale remote request has no authority to interrupt local work.
             // Refuse Busy without cancelling OAuth, recovery or store workers.
             self.operation.try_lock().map_err(|_| {
-                let error = "The remote computer is busy with a local operation. Try again after it finishes.".to_owned();
+                let error =
+                    "This computer is busy with a local operation. Try again after it finishes."
+                        .to_owned();
                 if let Some(reply) = update.as_mut().and_then(|u| u.accepted.take()) {
                     let _ = reply.send(Err(error.clone()));
                 }
@@ -1551,7 +1553,7 @@ impl OwnerContext {
         // No remote RPC/account reader is held by this stop control connection.
         let remote_admission = if is_remote_update {
             let admission = tokio::time::timeout(Duration::from_secs(1), self.admission.write()).await.map_err(|_| {
-                let error = "The remote computer is busy with a local operation. Try again after it finishes.".to_owned();
+                let error = "This computer is busy with a local operation. Try again after it finishes.".to_owned();
                 if let Some(reply) = update.as_mut().and_then(|u| u.accepted.take()) {
                     let _ = reply.send(Err(error.clone()));
                 }
@@ -1582,6 +1584,9 @@ impl OwnerContext {
         if is_remote_update {
             // Authorization and its local control acknowledgement both
             // succeeded. Only now may this request begin host shutdown.
+            if let Some(request) = &update {
+                request.started.store(true, Ordering::Release);
+            }
             self.shutdown_requested.store(true, Ordering::Release);
             stopping = Some(BusyOperation(&self.shutdown_requested));
             backend.cancel_oauth();
@@ -1657,6 +1662,9 @@ struct StopRequest {
     operation: Option<[u8; 16]>,
     accepted: Option<tokio::sync::oneshot::Sender<Result<(), String>>>,
     acknowledged: Option<tokio::sync::oneshot::Receiver<()>>,
+    // Shared only with the host's serve loop, never supplied by a client.
+    // Expected refusals before this point are not failed host shutdowns.
+    started: Arc<AtomicBool>,
 }
 impl StopRequest {
     fn local() -> Self {
@@ -1664,6 +1672,7 @@ impl StopRequest {
             operation: None,
             accepted: None,
             acknowledged: None,
+            started: Arc::new(AtomicBool::new(false)),
         }
     }
 }
@@ -1832,9 +1841,18 @@ async fn serve_runtime(
     loop {
         tokio::select! {
             Some(request) = stop_rx.recv() => {
+                let remote_update = request.operation.is_some();
+                let started = request.started.clone();
                 match owner.shutdown_with_update(&backend, &remote, &events, Some(request)).await {
                     Ok(()) => break,
-                    Err(error) => { log::error!("Maple could not finish shutdown; owner retained: {error}"); idle=tokio::time::Instant::now()+IDLE_GRACE; }
+                    Err(error) => {
+                        if remote_update && !started.load(Ordering::Acquire) {
+                            log::debug!("Remote update did not start host shutdown: {error}");
+                        } else {
+                            log::error!("Maple could not finish shutdown; owner retained: {error}");
+                        }
+                        idle=tokio::time::Instant::now()+IDLE_GRACE;
+                    }
                 }
             },
             _ = &mut shutdown => {
@@ -1991,6 +2009,7 @@ async fn serve_client_inner(
                 operation: Some(operation),
                 accepted: Some(accepted),
                 acknowledged: Some(confirmation),
+                started: Arc::new(AtomicBool::new(false)),
             })
             .await
             .map_err(|_| "Maple host is already stopping")?;
@@ -2348,22 +2367,72 @@ async fn request_stop_endpoint(endpoint: &ipc::Endpoint) -> Result<(), String> {
 /// The remote path requires explicit same-build host admission. Connection or
 /// authorization failure never falls back to unconditional administrative Stop.
 #[cfg(feature = "desktop")]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct RemoteUpdateStopError {
+    pub message: String,
+    /// True only when the request was not sent, or the same-build host
+    /// explicitly refused it before shutdown. Transport failures are uncertain.
+    pub host_unchanged: bool,
+}
+
+#[cfg(feature = "desktop")]
+impl RemoteUpdateStopError {
+    fn unchanged(message: String) -> Self {
+        Self {
+            message,
+            host_unchanged: true,
+        }
+    }
+
+    fn uncertain(message: String) -> Self {
+        Self {
+            message,
+            host_unchanged: false,
+        }
+    }
+}
+
+#[cfg(feature = "desktop")]
 async fn request_remote_stop_endpoint(
     endpoint: &ipc::Endpoint,
     operation: [u8; 16],
-) -> Result<(), String> {
+) -> Result<(), RemoteUpdateStopError> {
     let (mut connection, _) = connect(
         endpoint,
         ConnectionMode::RemoteUpdateStop { operation },
         false,
     )
-    .await?;
+    .await
+    .map_err(RemoteUpdateStopError::uncertain)?;
+    finish_remote_stop_connection(
+        &mut connection,
+        endpoint,
+        Duration::from_secs(45),
+        Duration::from_secs(45),
+    )
+    .await
+}
+
+/// Kept separate from connection establishment so each protocol stage can be
+/// tested with real framed IPC bytes. An explicit refusal is the only reply
+/// proving the still-running host is unchanged; a missing/malformed reply does
+/// not prove whether the request took effect.
+#[cfg(feature = "desktop")]
+async fn finish_remote_stop_connection(
+    connection: &mut (impl tokio::io::AsyncRead + Unpin),
+    endpoint: &ipc::Endpoint,
+    authorization_timeout: Duration,
+    drain_timeout: Duration,
+) -> Result<(), RemoteUpdateStopError> {
     let accepted: Result<(), String> =
-        tokio::time::timeout(Duration::from_secs(45), protocol::read(&mut connection))
+        tokio::time::timeout(authorization_timeout, protocol::read(&mut *connection))
             .await
-            .map_err(|_| "Remote update authorization timed out".to_owned())??;
-    accepted?;
-    tokio::time::timeout(Duration::from_secs(45), async {
+            .map_err(|_| {
+                RemoteUpdateStopError::uncertain("Remote update authorization timed out".to_owned())
+            })?
+            .map_err(RemoteUpdateStopError::uncertain)?;
+    accepted.map_err(RemoteUpdateStopError::unchanged)?;
+    tokio::time::timeout(drain_timeout, async {
         use tokio::io::AsyncReadExt;
         let mut byte = [0_u8];
         while connection
@@ -2382,9 +2451,11 @@ async fn request_remote_stop_endpoint(
     })
     .await
     .map_err(|_| {
-        "The remote host did not finish stopping. Keep Maple open and check the remote computer."
-            .to_owned()
+        RemoteUpdateStopError::uncertain(
+            "Maple did not finish stopping. Keep it open and check this computer.".to_owned(),
+        )
     })?
+    .map_err(RemoteUpdateStopError::uncertain)
 }
 
 pub fn stop(api_url: &str) -> Result<(), String> {
@@ -2429,15 +2500,34 @@ pub fn acquire_update_fence(api_url: &str) -> Result<HostUpdateFence, String> {
 pub(crate) fn acquire_remote_update_fence(
     api_url: &str,
     operation: [u8; 16],
-) -> Result<HostUpdateFence, String> {
-    let endpoint = ipc::Endpoint::new(api_url)?;
-    acquire_update_fence_endpoint(&endpoint, Duration::from_secs(45), || {
+) -> Result<HostUpdateFence, RemoteUpdateStopError> {
+    let endpoint = ipc::Endpoint::new(api_url).map_err(RemoteUpdateStopError::unchanged)?;
+    acquire_remote_update_fence_endpoint(&endpoint, Duration::from_secs(45), || {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
-            .map_err(|_| "Could not prepare remote update shutdown".to_owned())?;
+            .map_err(|_| {
+                RemoteUpdateStopError::unchanged(
+                    "Could not prepare remote update shutdown".to_owned(),
+                )
+            })?;
         runtime.block_on(request_remote_stop_endpoint(&endpoint, operation))
     })
+}
+
+#[cfg(feature = "desktop")]
+fn acquire_remote_update_fence_endpoint(
+    endpoint: &ipc::Endpoint,
+    timeout: Duration,
+    stop: impl FnOnce() -> Result<(), RemoteUpdateStopError>,
+) -> Result<HostUpdateFence, RemoteUpdateStopError> {
+    acquire_update_fence_staged(
+        endpoint,
+        timeout,
+        stop,
+        RemoteUpdateStopError::unchanged,
+        RemoteUpdateStopError::uncertain,
+    )
 }
 
 #[cfg(feature = "desktop")]
@@ -2446,14 +2536,32 @@ fn acquire_update_fence_endpoint(
     timeout: Duration,
     stop: impl FnOnce() -> Result<(), String>,
 ) -> Result<HostUpdateFence, String> {
-    let startup = endpoint.lock("startup.lock")?;
-    wait_update_lock(&startup, timeout, "Another Maple host is starting")?;
+    acquire_update_fence_staged(
+        endpoint,
+        timeout,
+        stop,
+        std::convert::identity,
+        std::convert::identity,
+    )
+}
+
+#[cfg(feature = "desktop")]
+fn acquire_update_fence_staged<E>(
+    endpoint: &ipc::Endpoint,
+    timeout: Duration,
+    stop: impl FnOnce() -> Result<(), E>,
+    before_stop: impl Fn(String) -> E,
+    after_stop: impl Fn(String) -> E,
+) -> Result<HostUpdateFence, E> {
+    let startup = endpoint.lock("startup.lock").map_err(&before_stop)?;
+    wait_update_lock(&startup, timeout, "Another Maple host is starting").map_err(before_stop)?;
     stop()?;
     // Stop acknowledgement and even socket EOF can precede the host's final
     // drop of ownership. Acquiring ownership proves the drain has completed
     // and prevents direct `host serve` attempts during the file replacement.
-    let ownership = endpoint.ownership_lock()?;
-    wait_update_lock(&ownership, timeout, "Maple host is still shutting down")?;
+    let ownership = endpoint.ownership_lock().map_err(&after_stop)?;
+    wait_update_lock(&ownership, timeout, "Maple host is still shutting down")
+        .map_err(after_stop)?;
     Ok(HostUpdateFence {
         _ownership: ownership,
         _startup: startup,
@@ -2490,6 +2598,190 @@ fn wait_update_lock(file: &std::fs::File, timeout: Duration, busy: &str) -> Resu
 mod update_install_tests {
     use super::*;
     use std::sync::atomic::AtomicBool;
+
+    #[tokio::test]
+    async fn remote_stop_explicit_refusal_proves_the_host_was_not_stopped() {
+        let root = tempfile::tempdir().unwrap();
+        let endpoint = ipc::Endpoint::for_test(root.path().to_path_buf());
+        let owner = endpoint.ownership_lock().unwrap();
+        owner.lock().unwrap();
+        let (mut client, mut server) = tokio::io::duplex(4096);
+        let (finished, waiting) = oneshot::channel();
+        let refusal = "This computer is busy with a local operation. Try again after it finishes.";
+        let response = async {
+            protocol::write(&mut server, &Err::<(), String>(refusal.into()))
+                .await
+                .unwrap();
+            // The client must return the explicit refusal without requiring
+            // EOF from a host that correctly remains alive.
+            let _ = waiting.await;
+        };
+        let request = async {
+            let error = finish_remote_stop_connection(
+                &mut client,
+                &endpoint,
+                Duration::from_secs(5),
+                Duration::from_millis(50),
+            )
+            .await
+            .unwrap_err();
+            assert_eq!(error.message, refusal);
+            assert!(error.host_unchanged);
+            assert!(matches!(
+                endpoint.ownership_lock().unwrap().try_lock(),
+                Err(std::fs::TryLockError::WouldBlock)
+            ));
+            let _ = finished.send(());
+        };
+        tokio::join!(response, request);
+    }
+
+    #[tokio::test]
+    async fn remote_stop_missing_invalid_or_timed_out_authorization_is_uncertain() {
+        let root = tempfile::tempdir().unwrap();
+        let endpoint = ipc::Endpoint::for_test(root.path().to_path_buf());
+        let (mut client, server) = tokio::io::duplex(4096);
+        drop(server);
+        let error = finish_remote_stop_connection(
+            &mut client,
+            &endpoint,
+            Duration::from_secs(5),
+            Duration::from_millis(50),
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            !error.host_unchanged,
+            "EOF before a reply is not an explicit refusal"
+        );
+
+        let (mut client, mut server) = tokio::io::duplex(4096);
+        protocol::write(&mut server, &serde_json::json!({"unexpected": true}))
+            .await
+            .unwrap();
+        let error = finish_remote_stop_connection(
+            &mut client,
+            &endpoint,
+            Duration::from_secs(5),
+            Duration::from_millis(50),
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            !error.host_unchanged,
+            "malformed replies cannot authorize safe retry"
+        );
+
+        let (mut client, _server) = tokio::io::duplex(4096);
+        let error = finish_remote_stop_connection(
+            &mut client,
+            &endpoint,
+            Duration::from_millis(20),
+            Duration::from_millis(50),
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            !error.host_unchanged,
+            "an unanswered request may have taken effect"
+        );
+    }
+
+    #[tokio::test]
+    async fn accepted_remote_stop_without_completed_drain_stays_uncertain() {
+        let root = tempfile::tempdir().unwrap();
+        let endpoint = ipc::Endpoint::for_test(root.path().to_path_buf());
+        let owner = endpoint.ownership_lock().unwrap();
+        owner.lock().unwrap();
+        for close_stream in [false, true] {
+            let (mut client, mut server) = tokio::io::duplex(4096);
+            protocol::write(&mut server, &Ok::<(), String>(()))
+                .await
+                .unwrap();
+            let _server = if close_stream {
+                drop(server);
+                None
+            } else {
+                Some(server)
+            };
+            let error = finish_remote_stop_connection(
+                &mut client,
+                &endpoint,
+                Duration::from_secs(5),
+                Duration::from_millis(50),
+            )
+            .await
+            .unwrap_err();
+            assert!(!error.host_unchanged);
+            assert!(matches!(
+                endpoint.ownership_lock().unwrap().try_lock(),
+                Err(std::fs::TryLockError::WouldBlock)
+            ));
+        }
+    }
+
+    #[test]
+    fn remote_fence_preserves_stop_stage_and_releases_startup_without_fallback() {
+        let root = tempfile::tempdir().unwrap();
+        let endpoint = ipc::Endpoint::for_test(root.path().to_path_buf());
+        for host_unchanged in [true, false] {
+            let calls = std::sync::atomic::AtomicUsize::new(0);
+            let result =
+                acquire_remote_update_fence_endpoint(&endpoint, Duration::from_millis(30), || {
+                    calls.fetch_add(1, Ordering::SeqCst);
+                    Err(RemoteUpdateStopError {
+                        message: "fixture stop result".into(),
+                        host_unchanged,
+                    })
+                });
+            let error = match result {
+                Ok(_) => panic!("failed stop unexpectedly acquired a fence"),
+                Err(error) => error,
+            };
+            assert_eq!(error.host_unchanged, host_unchanged);
+            assert_eq!(
+                calls.load(Ordering::SeqCst),
+                1,
+                "remote stop must never retry through ordinary Stop"
+            );
+            endpoint.lock("startup.lock").unwrap().try_lock().unwrap();
+        }
+        let owner = endpoint.ownership_lock().unwrap();
+        owner.lock().unwrap();
+        let result =
+            acquire_remote_update_fence_endpoint(&endpoint, Duration::from_millis(30), || Ok(()));
+        let error = match result {
+            Ok(_) => panic!("retained owner unexpectedly acquired a fence"),
+            Err(error) => error,
+        };
+        assert!(
+            !error.host_unchanged,
+            "ownership failure after accepted stop is uncertain"
+        );
+        endpoint.lock("startup.lock").unwrap().try_lock().unwrap();
+    }
+
+    #[test]
+    fn remote_fence_startup_failure_never_sends_a_stop() {
+        let root = tempfile::tempdir().unwrap();
+        let endpoint = ipc::Endpoint::for_test(root.path().to_path_buf());
+        let starting = endpoint.lock("startup.lock").unwrap();
+        starting.lock().unwrap();
+        let sent = AtomicBool::new(false);
+        let result =
+            acquire_remote_update_fence_endpoint(&endpoint, Duration::from_millis(20), || {
+                sent.store(true, Ordering::SeqCst);
+                Ok(())
+            });
+        let error = match result {
+            Ok(_) => panic!("busy startup unexpectedly acquired a fence"),
+            Err(error) => error,
+        };
+        assert!(error.host_unchanged);
+        assert!(!sent.load(Ordering::SeqCst));
+        drop(starting);
+        endpoint.lock("startup.lock").unwrap().try_lock().unwrap();
+    }
 
     #[tokio::test]
     async fn durable_store_shutdown_failure_prevents_update_and_preserves_owner() {
@@ -3656,6 +3948,7 @@ mod tests {
         let owner = OwnerContext::new(Some(&store));
         let account_reader = backend.account_gate.read().await;
         let (accepted, acceptance) = oneshot::channel();
+        let started = Arc::new(AtomicBool::new(false));
         let result = tokio::time::timeout(
             Duration::from_secs(5),
             owner.shutdown_with_update(
@@ -3666,6 +3959,7 @@ mod tests {
                     operation: Some(*uuid::Uuid::new_v4().as_bytes()),
                     accepted: Some(accepted),
                     acknowledged: None,
+                    started: started.clone(),
                 }),
             ),
         )
@@ -3676,6 +3970,7 @@ mod tests {
         assert_eq!(store.state(), StoreState::Open);
         assert!(!owner.shutdown_requested.load(Ordering::Acquire));
         assert!(!owner.busy.load(Ordering::Acquire));
+        assert!(!started.load(Ordering::Acquire));
         drop(account_reader);
     }
 
@@ -3707,6 +4002,7 @@ mod tests {
             let (release, waiting) = oneshot::channel();
             let local_operation = backend.pending_oauth_waiter_for_test(waiting, published.clone());
             let (accepted, acceptance) = oneshot::channel();
+            let started = Arc::new(AtomicBool::new(false));
             let result = tokio::time::timeout(
                 Duration::from_secs(5),
                 owner.shutdown_with_update(
@@ -3717,6 +4013,7 @@ mod tests {
                         operation: Some(*uuid::Uuid::new_v4().as_bytes()),
                         accepted: Some(accepted),
                         acknowledged: None,
+                        started: started.clone(),
                     }),
                 ),
             )
@@ -3726,6 +4023,7 @@ mod tests {
             assert!(acceptance.await.unwrap().unwrap_err().contains("busy"));
             assert!(!owner.shutdown_requested.load(Ordering::Acquire));
             assert!(!owner.busy.load(Ordering::Acquire));
+            assert!(!started.load(Ordering::Acquire));
             assert_eq!(store.state(), StoreState::Open);
             release.send(()).unwrap();
             assert!(

@@ -629,3 +629,159 @@ fn settings_reentry_adopts_pending_operation_without_enabling_another_install(
         }
     });
 }
+
+fn historical_info(state: Option<OperationState>) -> PeerInfo {
+    let mut info = ready_peer();
+    info.update.state = UpdateState::Current;
+    info.update.offered = None;
+    info.update.operation = state.map(|state| crate::remote::update::RemoteUpdateOperation {
+        operation_id: "11111111-1111-4111-8111-111111111111".into(),
+        target: target_release(),
+        state,
+        message: None,
+    });
+    info
+}
+
+fn historical_attempt(phase: InstallPhase) -> InstallAttempt {
+    InstallAttempt {
+        request: InstallRequest {
+            operation_id: "11111111-1111-4111-8111-111111111111".into(),
+            target: target_release(),
+        },
+        phase,
+        label: UNCONFIRMED_INSTALL.into(),
+    }
+}
+
+#[test]
+fn current_and_idle_without_offers_do_not_show_download_instructions() {
+    let local = crate::update::Snapshot::initial();
+    for state in [
+        UpdateState::Current,
+        UpdateState::Idle,
+        UpdateState::Checking,
+    ] {
+        for blocked in [
+            None,
+            Some(crate::remote::update::BlockedReason::UpdateNotReady),
+        ] {
+            let mut info = historical_info(None);
+            info.update.state = state;
+            info.update.blocked = blocked;
+            let mut update = ComputerUpdate {
+                phase: PeerInfoPhase::Loaded,
+                info: Some(info),
+                ..Default::default()
+            };
+            update.refresh_presentation(&local);
+            assert_eq!(update.update_label, state.label());
+            assert!(update.blocked_label.is_none());
+            assert!(
+                !update.install_available,
+                "hiding an irrelevant explanation must not enable installation"
+            );
+        }
+    }
+    for reason in [
+        crate::remote::update::BlockedReason::PasswordProtected,
+        crate::remote::update::BlockedReason::DesktopUnavailable,
+        crate::remote::update::BlockedReason::CoordinatorUnavailable,
+        crate::remote::update::BlockedReason::Busy,
+    ] {
+        let mut info = historical_info(None);
+        info.update.blocked = Some(reason);
+        let mut update = ComputerUpdate {
+            phase: PeerInfoPhase::Loaded,
+            info: Some(info),
+            ..Default::default()
+        };
+        update.refresh_presentation(&local);
+        assert_eq!(update.blocked_label.as_deref(), Some(reason.message()));
+        assert!(!update.install_available);
+    }
+}
+
+#[test]
+fn confirmed_remote_outcome_stays_historical_after_later_upgrade() {
+    let mut update = ComputerUpdate {
+        phase: PeerInfoPhase::Loaded,
+        info: Some(historical_info(Some(OperationState::Succeeded))),
+        ..Default::default()
+    };
+    update.reconcile_operation();
+    let confirmed = update.attempt.as_ref().unwrap().label.clone();
+    assert!(confirmed.contains("requested v0.0.7 was running"));
+    assert!(confirmed.contains("earlier update request"));
+    assert!(!confirmed.contains("now running"));
+    for status in [None, Some(OperationState::Failed)] {
+        let mut later = historical_info(status);
+        later.running.version = "0.0.8".into();
+        later.running.source_sha = "f".repeat(40);
+        later.running.build = Some("552".into());
+        update.info = Some(later);
+        update.reconcile_operation();
+        update.refresh_presentation(&crate::update::Snapshot::initial());
+        let attempt = update.attempt.as_ref().unwrap();
+        assert_eq!(attempt.phase, InstallPhase::Succeeded);
+        assert_eq!(attempt.label, confirmed);
+        assert_eq!(update.update_label, "Up to date");
+        assert!(update.blocked_label.is_none());
+        assert!(!update.install_available);
+    }
+}
+
+#[test]
+fn running_target_or_later_version_does_not_prove_an_old_request_succeeded() {
+    for phase in [InstallPhase::Uncertain, InstallPhase::Failed] {
+        for version in ["0.0.7", "0.0.8"] {
+            for state in [
+                None,
+                Some(OperationState::Failed),
+                Some(OperationState::Unknown),
+            ] {
+                let mut info = historical_info(state);
+                info.running.version = version.into();
+                info.running.source_sha = if version == "0.0.7" { "1" } else { "f" }.repeat(40);
+                info.running.build = Some(if version == "0.0.7" { "551" } else { "552" }.into());
+                let mut update = ComputerUpdate {
+                    phase: PeerInfoPhase::Loaded,
+                    info: Some(info),
+                    attempt: Some(historical_attempt(phase)),
+                    ..Default::default()
+                };
+                update.reconcile_operation();
+                let attempt = update.attempt.as_ref().unwrap();
+                assert_ne!(attempt.phase, InstallPhase::Succeeded);
+                assert!(!attempt.label.contains("completed"));
+                assert!(!attempt.label.contains("now running"));
+            }
+        }
+    }
+}
+
+#[test]
+fn only_matching_success_receipt_can_finish_a_nonterminal_request() {
+    for phase in [InstallPhase::Accepted, InstallPhase::Uncertain] {
+        let mut wrong = historical_info(Some(OperationState::Succeeded));
+        wrong.update.operation.as_mut().unwrap().operation_id =
+            "22222222-2222-4222-8222-222222222222".into();
+        let mut update = ComputerUpdate {
+            phase: PeerInfoPhase::Loaded,
+            info: Some(wrong),
+            attempt: Some(historical_attempt(phase)),
+            ..Default::default()
+        };
+        update.reconcile_operation();
+        assert_eq!(update.attempt.as_ref().unwrap().phase, phase);
+        let mut matching = historical_info(Some(OperationState::Succeeded));
+        matching.running.version = "0.0.8".into();
+        matching.running.source_sha = "f".repeat(40);
+        update.info = Some(matching);
+        update.reconcile_operation();
+        assert_eq!(
+            update.attempt.as_ref().unwrap().phase,
+            InstallPhase::Succeeded
+        );
+    }
+}

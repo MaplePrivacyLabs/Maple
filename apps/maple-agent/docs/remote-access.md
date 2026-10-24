@@ -130,9 +130,24 @@ another way to access the execution computer.
 A remote install request carries a stable operation ID and the exact candidate,
 never a download URL, signing key or executable path. The host persists admission
 and acknowledges the request before its desktop can consume it. A lost response
-is uncertain: the controller refreshes status and never automatically resends
-installation. Interrupted host receipts are not automatically resumed after a
-restart. A changed or withdrawn offer needs a fresh confirmation.
+is uncertain: choose **Refresh update status**; the controller never automatically
+resends installation. Interrupted host receipts are not automatically resumed
+after a restart. The restarted host records success only when it observes the
+requested version and source running, checking the package build when known.
+That recorded outcome survives later updates. A changed or withdrawn offer needs
+a fresh confirmation.
+
+A refusal before shutdown leaves the same verified download ready to try again;
+it does not require quitting a healthy execution host. Uncertain shutdowns still
+require checking that computer. If reporting a failed attempt is interrupted,
+the execution desktop retries only the completion report, never installation.
+Running-version visibility remains available when its update journal needs
+attention, while remote installation stays blocked.
+
+The journal currently retains at most 512 operation receipts per profile. Safe
+retention beyond that limit is a follow-up: old operation identities must not
+be forgotten while their target remains installable. Reaching the cap requires
+updating that computer locally.
 
 ## Transport and recovery
 

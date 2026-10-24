@@ -3,7 +3,10 @@
 use super::{
     manager::{Manager, Node},
     streams,
-    update::{InstallCommand, PeerInfo, ProtocolInfo, RemoteInstallAuthority, RunningApplication},
+    update::{
+        BlockedReason, InstallCommand, PeerInfo, ProtocolInfo, RemoteInstallAuthority,
+        RemoteUpdateStatus, RunningApplication,
+    },
     wire,
 };
 use crate::host::protocol::{self, Message, Request};
@@ -253,16 +256,12 @@ async fn serve_request(
         if request.send_id.is_some() || serde_json::from_value::<Empty>(request.params).is_err() {
             Err("Invalid remote information request".into())
         } else {
-            let info = PeerInfo {
-                protocol: ProtocolInfo::current(),
-                running: RunningApplication::current(),
-                update: node
-                    .backend
+            let info = peer_information(
+                node.backend
                     .remote_updates
                     .status(&node.account, &peer.to_string())
-                    .await?,
-            };
-            info.validate()?;
+                    .await,
+            )?;
             serde_json::to_value(info).map_err(|_| "Remote information unavailable".into())
         }
     } else if request.method == wire::Method::Subscribe {
@@ -300,6 +299,21 @@ async fn serve_request(
         .await?;
     }
     Ok(())
+}
+
+fn peer_information(update: Result<RemoteUpdateStatus, String>) -> Result<PeerInfo, String> {
+    // A damaged/unavailable receipt journal removes installation authority,
+    // not the independently baked identity. Never expose its private error.
+    let info = PeerInfo {
+        protocol: ProtocolInfo::current(),
+        running: RunningApplication::current(),
+        update: update.unwrap_or_else(|_| RemoteUpdateStatus {
+            blocked: Some(BlockedReason::CoordinatorUnavailable),
+            ..Default::default()
+        }),
+    };
+    info.validate()?;
+    Ok(info)
 }
 
 /// A response is not permission to stop until QUIC confirms its delivery.
@@ -642,6 +656,39 @@ async fn local_send(
 mod tests {
     use super::*;
     use tokio::io::AsyncWriteExt;
+
+    #[test]
+    fn peer_info_journal_failure_keeps_baked_identity_and_blocks_installation() {
+        let private_error = "journal-canary-account/private-path";
+        let info = peer_information(Err(private_error.into())).unwrap();
+        assert_eq!(info.running, RunningApplication::current());
+        assert_eq!(info.protocol, ProtocolInfo::current());
+        assert_eq!(
+            info.update.state,
+            super::super::update::UpdateState::Unknown
+        );
+        assert_eq!(
+            info.update.blocked,
+            Some(BlockedReason::CoordinatorUnavailable)
+        );
+        assert!(info.update.offered.is_none());
+        assert!(info.update.operation.is_none());
+        let response = serde_json::to_string(&info).unwrap();
+        assert!(!response.contains(private_error));
+        assert!(!response.contains("private-path"));
+    }
+
+    #[test]
+    fn peer_info_preserves_successful_status_including_password_block() {
+        let status = RemoteUpdateStatus {
+            state: super::super::update::UpdateState::Current,
+            blocked: Some(BlockedReason::PasswordProtected),
+            ..Default::default()
+        };
+        let info = peer_information(Ok(status.clone())).unwrap();
+        assert_eq!(info.update, status);
+        assert_eq!(info.running, RunningApplication::current());
+    }
 
     #[tokio::test]
     async fn delayed_remote_subscribe_cannot_steal_a_newer_navigation_intent() {

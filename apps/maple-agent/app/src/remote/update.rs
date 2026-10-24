@@ -155,6 +155,7 @@ pub enum BlockedReason {
     UpdateNotReady,
     Busy,
     DesktopUnavailable,
+    CoordinatorUnavailable,
     #[serde(other)]
     Unknown,
 }
@@ -173,6 +174,9 @@ impl BlockedReason {
             Self::UpdateNotReady => "A verified update is not ready on this computer.",
             Self::Busy => "The remote computer is busy. Try again after it finishes.",
             Self::DesktopUnavailable => "Open Maple on the remote computer before updating it.",
+            Self::CoordinatorUnavailable => {
+                "Remote update controls need attention on this computer. Update it locally."
+            }
             Self::Unknown => "The remote computer cannot install this update remotely.",
         }
     }

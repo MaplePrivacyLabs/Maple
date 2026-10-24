@@ -264,12 +264,26 @@ Agent native and headless suites:
 - Durable acknowledgement/claim ordering, failed journal writes, replay refusal,
   receipt and lease expiry, account/peer/grant/store scope, and unsafe journal
   files or symlinked parent directories.
+- Journal-backed startup success reconciliation and a later local upgrade;
+  mismatched version/source/known build and unclaimed requests never become
+  success or executable work. Status-only reconciliation is persisted.
+- Completion-report write/acknowledgement loss through the production desktop
+  polling bridge with an injected local-RPC fixture: heartbeats continue, the
+  same report is retried, and installation is not repeated. Account, lease and
+  retirement changes discard old reports.
+- Framed local-IPC refusal versus missing, malformed or timed-out authorization,
+  accepted-but-incomplete shutdown, startup locking and ownership retention.
+  Controller regressions keep the same prepared candidate ready only after a
+  known safe refusal; uncertain shutdown and changed candidates remain blocked.
 - A real password-wrapped SQLCipher store reopened through authenticated unlock:
   version/offer visibility remains available, while install/stop admission is
   denied. Refused remote stops leave unrelated maintenance and OAuth work alive.
 - Native GPUI consent/focus, stale account/grant/target replies, multiple
   computers, cross-platform release identity, uncertain outcomes and retention
   of the controller's manual updater choice.
+- Historical outcomes remain distinct from the currently running version;
+  unavailable update journals preserve version visibility without install
+  authority, and current computers have no contradictory download instruction.
 
 These checks do not constitute a signed packaged cross-computer update
 rehearsal. Qualify that separately with two signed versions on macOS and Linux:

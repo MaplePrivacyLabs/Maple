@@ -488,10 +488,15 @@ async fn urgent_body_is_bounded_and_reply_identity_is_checked() {
                 },
             )
             .await
-            .unwrap();
         };
-        let (response, ()) = tokio::join!(send, wrong_reply);
+        let (response, delivery) = tokio::join!(send, wrong_reply);
         assert!(matches!(response.unwrap(), Message::Closed { .. }));
+        // Rejecting the deliberately wrong ID drops the receive stream before
+        // FIN. QUIC may acknowledge delivery before that rejection, or report
+        // STOP_SENDING to the sender. Both preserve the client's refusal.
+        if let Err(error) = delivery {
+            assert_eq!(error, "Remote consumer rejected the reply");
+        }
     };
     let result = tokio::time::timeout(Duration::from_secs(5), exercise).await;
     tokio::join!(a.close(), b.close());
