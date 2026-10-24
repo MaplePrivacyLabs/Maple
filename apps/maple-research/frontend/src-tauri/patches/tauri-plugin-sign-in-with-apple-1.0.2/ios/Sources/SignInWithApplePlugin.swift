@@ -53,6 +53,6 @@ class SignInWithApplePlugin: Plugin {
 }
 
 @_cdecl("init_plugin_sign_in_with_apple")
-func initPlugin() -> Plugin {
+public func initPlugin() -> Plugin {
   return SignInWithApplePlugin()
 }
