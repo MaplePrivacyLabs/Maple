@@ -528,6 +528,11 @@ pub struct ChatScreen {
     snapshot_revision: u64,
     /// Virtualized transcript state; bottom-aligned like a chat log.
     list_state: gpui::ListState,
+    /// First and past-last transcript rows painted in view in the last
+    /// frame. A wheel outside the list reports them for paging and
+    /// images, as the list's own wheel reports its visible range; the
+    /// list's scroll top names no row while it rests at the end.
+    painted_rows: std::rc::Rc<std::cell::Cell<Option<(usize, usize)>>>,
     /// Set when the transcript should jump to its newest content on the
     /// next render (session switch or send); streaming follows only while
     /// the view is already at the bottom.
@@ -1271,6 +1276,7 @@ impl ChatScreen {
             loading_timeline: HashMap::new(),
             snapshot_revision: 0,
             list_state: transcript_list_state(),
+            painted_rows: std::rc::Rc::default(),
             tool_details: settings.tool_details,
             project_root: None,
             recent_roots: Vec::new(),
@@ -6330,7 +6336,15 @@ impl Render for ChatScreen {
                 .flex_1()
                 .h_full()
                 .min_w_0()
-                .child(self.render_header(window, cx))
+                // Whatever the pointer is over, a wheel that nothing there
+                // takes scrolls the transcript.
+                .on_scroll_wheel(cx.listener(Self::scroll_transcript_from_pane))
+                .child(
+                    // The header is the window's title bar; a wheel over it
+                    // scrolls nothing.
+                    self.render_header(window, cx)
+                        .on_scroll_wheel(|_, _, cx| cx.stop_propagation()),
+                )
                 .child(self.render_transcript(window, cx))
                 .children(self.render_send_preview())
                 .when(
@@ -6373,6 +6387,10 @@ impl Render for ChatScreen {
                                 .flex()
                                 .flex_col()
                         })
+                        // The composer, its cards and the palette keep their
+                        // own wheel; the space beside them scrolls the
+                        // transcript.
+                        .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
                         .children(self.render_btw_card(cx))
                         .children(self.render_subagents_card(cx))
                         .children(self.render_plan_card(cx))
@@ -6483,6 +6501,9 @@ impl Render for ChatScreen {
                 root.child(motion::fade_in(
                     div()
                         .id("lightbox")
+                        // Covers the screen: the pointer, wheel included,
+                        // reaches nothing underneath.
+                        .occlude()
                         .absolute()
                         .size_full()
                         .top_0()
