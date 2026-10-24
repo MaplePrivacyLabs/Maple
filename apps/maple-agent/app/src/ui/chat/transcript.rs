@@ -43,6 +43,10 @@ impl ChatScreen {
         let entity = cx.entity().downgrade();
         let selection = self.selection.clone();
         let transcript_focus = self.transcript_focus.clone();
+        // Rows note when they paint in view, so a wheel elsewhere in the
+        // pane can report the rows on screen like the list's own wheel.
+        self.painted_rows.set(None);
+        let painted_rows = self.painted_rows.clone();
         // Only the visible items (plus a small overdraw) are built each
         // frame; the list measures and caches the rest. Everything else is
         // read through the entity so nothing is cloned per frame.
@@ -126,11 +130,24 @@ impl ChatScreen {
                 }
                 None => div().into_any_element(),
             };
-            // The list spans the full width so the wheel scrolls it from
-            // the side margins too; each row keeps the composer's column.
+            // Only rows the list places in view are prepainted here; rows
+            // measured for overdraw are not, and a focused row kept alive
+            // off screen lands outside the mask.
+            let painted_rows = painted_rows.clone();
             div()
-                .w_full()
-                .child(div().max_w(CONTENT_WIDTH).mx_auto().px_6().child(row))
+                .child(row)
+                .on_children_prepainted(move |bounds, window, _cx| {
+                    let view = window.content_mask().bounds;
+                    let on_screen = bounds
+                        .first()
+                        .is_some_and(|row| row.top() < view.bottom() && row.bottom() > view.top());
+                    if on_screen {
+                        painted_rows.set(Some(match painted_rows.get() {
+                            Some((start, end)) => (start.min(ix), end.max(ix + 1)),
+                            None => (ix, ix + 1),
+                        }));
+                    }
+                })
                 .into_any_element()
         })
         .size_full();
@@ -173,9 +190,27 @@ impl ChatScreen {
                 )
             })
             .child(
-                // The list element does not apply padding itself; rows carry
-                // the content column and gutter (see the list closure).
-                div().flex_1().min_h_0().w_full().pb_4().child(list),
+                // The list element does not apply padding itself, so the
+                // gutter lives here. Same column width as the composer. On a
+                // wide window the width never changes, so a resize keeps
+                // every measured row; the pane scrolls the list from the
+                // margins (`scroll_transcript_from_pane`).
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .w_full()
+                    .max_w(CONTENT_WIDTH)
+                    .mx_auto()
+                    .px_6()
+                    .pb_4()
+                    .child(
+                        // The list's own wheel scrolls it; the pane's must
+                        // not scroll it a second time.
+                        div()
+                            .size_full()
+                            .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
+                            .child(list),
+                    ),
             )
             .child(crate::ui::scrollbar::scrollbar(
                 "transcript-scrollbar",
@@ -226,10 +261,13 @@ impl ChatScreen {
             .children(self.render_notice(cx).map(|notice| notice.mx_6().mb_2()))
     }
 
-    /// A wheel over the margins beside the composer scrolls the
-    /// transcript as the list's own wheel does: the same line height,
-    /// follow-tail release and re-engage at the bottom, and paging.
-    pub(super) fn scroll_transcript_from_margin(
+    /// A wheel anywhere in the chat pane that nothing under the pointer
+    /// takes for itself: the margins and gutters, the banners, the
+    /// message being sent, the space beside the composer. It scrolls the
+    /// transcript the way the list's own wheel does: the same 20 px
+    /// line, letting go of the tail on the way up and taking it again at
+    /// the bottom, and the rows on screen reported for paging and images.
+    pub(super) fn scroll_transcript_from_pane(
         &mut self,
         event: &gpui::ScrollWheelEvent,
         _window: &mut Window,
@@ -239,17 +277,26 @@ impl ChatScreen {
         if delta == px(0.) {
             return;
         }
-        let top = self.list_state.scroll_px_offset_for_scrollbar().y;
-        self.list_state
-            .set_offset_from_scrollbar(gpui::point(px(0.), top + delta));
-        let start = self.list_state.logical_scroll_top().item_ix;
-        let count = self.list_state.item_count();
-        let mut end = start;
-        while end < count && self.list_state.item_is_below_viewport(end) == Some(false) {
-            end += 1;
+        // Distances from the top. A list sent to its end holds a scroll
+        // top past the last row until its next layout; that reads as more
+        // than the range, so clamp to it.
+        let range = self.list_state.max_offset_for_scrollbar().y;
+        let top = (-self.list_state.scroll_px_offset_for_scrollbar().y)
+            .max(px(0.))
+            .min(range);
+        let target = (top - delta).max(px(0.)).min(range);
+        // At either end the wheel has nothing to move; leaving the list
+        // alone keeps a short transcript following its tail.
+        if target != top {
+            self.list_state
+                .set_offset_from_scrollbar(gpui::point(px(0.), -target));
+            cx.notify();
         }
-        self.transcript_scrolled(start, end, cx);
-        cx.notify();
+        // The list's own wheel reports the rows it last painted, also at
+        // the end where its scroll top names no row; report the same.
+        if let Some((start, end)) = self.painted_rows.get() {
+            self.transcript_scrolled(start, end, cx);
+        }
     }
 
     /// Pill over the bottom edge while the view is scrolled up, so a
@@ -1385,6 +1432,10 @@ pub(super) fn render_question_card(
     cx: &mut Context<ChatScreen>,
 ) -> Div {
     let mut card = div()
+        .debug_selector(|| "question-card".to_string())
+        // Like the composer, the card keeps its own wheel; the space
+        // beside it scrolls the transcript.
+        .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
         .my_3()
         .mx_auto()
         .w_full()

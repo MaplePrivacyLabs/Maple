@@ -7364,50 +7364,288 @@ mod state_tests {
         });
     }
 
+    /// A transcript several screens tall, in rows of varying height.
+    fn long_timeline() -> Vec<AgentTimelineItem> {
+        (0..120)
+            .map(|i| {
+                item(
+                    &format!("m{i}"),
+                    "message",
+                    Some(&format!(
+                        "Message {i}\n\n{}",
+                        "lorem ipsum dolor sit amet ".repeat(8 + i % 5 * 10)
+                    )),
+                )
+            })
+            .collect()
+    }
+
+    fn wheel_pixels(dy: f32) -> gpui::ScrollDelta {
+        gpui::ScrollDelta::Pixels(gpui::point(px(0.), px(dy)))
+    }
+
+    fn wheel_at(cx: &mut gpui::VisualTestContext, x: f32, y: f32, delta: gpui::ScrollDelta) {
+        cx.simulate_event(gpui::ScrollWheelEvent {
+            position: gpui::point(px(x), px(y)),
+            delta,
+            ..Default::default()
+        });
+        cx.run_until_parked();
+    }
+
+    /// The row at the top of the viewport, which a wheel up keeps on
+    /// screen.
+    fn reference_row(chat: &Entity<ChatScreen>, cx: &mut gpui::VisualTestContext) -> usize {
+        cx.update(|_window, app| chat.read(app).list_state.logical_scroll_top().item_ix)
+    }
+
+    /// Where transcript row `ix` sits in the window, while it is on screen.
+    fn row_top(
+        chat: &Entity<ChatScreen>,
+        cx: &mut gpui::VisualTestContext,
+        ix: usize,
+    ) -> Option<gpui::Pixels> {
+        cx.update(|_window, app| {
+            chat.read(app)
+                .list_state
+                .bounds_for_item(ix)
+                .map(|bounds| bounds.top())
+        })
+    }
+
+    fn following_tail(chat: &Entity<ChatScreen>, cx: &mut gpui::VisualTestContext) -> bool {
+        cx.update(|_window, app| chat.read(app).list_state.is_following_tail())
+    }
+
+    /// In the 1200 px test window the transcript and the composer share
+    /// the middle 900 px column. A wheel that nothing under the pointer
+    /// takes scrolls the transcript exactly as far as a wheel over the
+    /// transcript itself: the margins, the gutter beside the text, the
+    /// scrollbar strip, the space beside the composer. The header and the
+    /// composer keep their own wheel.
     #[gpui::test]
-    fn test_wheel_beside_the_composer_scrolls_the_transcript(cx: &mut TestAppContext) {
+    fn test_wheel_anywhere_in_the_pane_scrolls_the_transcript(cx: &mut TestAppContext) {
         let (chat, cx) = chat_window(cx, |chat, _cx| {
             chat.sidebar_collapsed = true;
-            let timeline = (0..40)
-                .map(|i| {
-                    item(
-                        &format!("m{i}"),
-                        "message",
-                        Some(&format!("Message {i}\n\nwith a second paragraph")),
-                    )
-                })
-                .collect();
-            chat.replace_timeline(timeline);
+            chat.replace_timeline(long_timeline());
         });
-        let top = |cx: &mut gpui::VisualTestContext| {
-            cx.update(|_window, app| {
-                let offset = chat.read(app).list_state.logical_scroll_top();
-                (offset.item_ix, offset.offset_in_item)
-            })
-        };
-        let wheel_up = |cx: &mut gpui::VisualTestContext, x: f32| {
-            cx.simulate_event(gpui::ScrollWheelEvent {
-                // Level with the composer column's bottom padding.
-                position: gpui::point(px(x), px(790.)),
-                delta: gpui::ScrollDelta::Pixels(gpui::point(px(0.), px(100.))),
-                ..Default::default()
-            });
-            cx.run_until_parked();
-        };
-        let pinned = top(cx);
+        // Off the tail, so a row near the top is a fixed point.
+        wheel_at(cx, 600., 300., wheel_pixels(400.));
+        for (place, x, y, moves) in [
+            ("the transcript", 600., 300., 100.),
+            ("the left margin", 40., 300., 100.),
+            ("the gutter beside the text", 160., 300., 100.),
+            ("the scrollbar strip", 1195., 300., 100.),
+            ("the margin beside the composer", 1150., 790., 100.),
+            ("the header", 600., 20., 0.),
+            ("the composer", 600., 790., 0.),
+        ] {
+            let ix = reference_row(&chat, cx);
+            let before = row_top(&chat, cx, ix).expect("the reference row is on screen");
+            wheel_at(cx, x, y, wheel_pixels(100.));
+            let after = row_top(&chat, cx, ix).expect("the reference row is on screen");
+            assert_eq!(after - before, px(moves), "a wheel over {place}");
+        }
 
-        // Over the composer column itself the transcript stays put.
-        wheel_up(cx, 600.);
-        assert_eq!(top(cx), pinned, "the composer column keeps its own wheel");
+        // Lines use the list's 20 px line.
+        let ix = reference_row(&chat, cx);
+        let before = row_top(&chat, cx, ix).expect("the reference row is on screen");
+        wheel_at(
+            cx,
+            1150.,
+            790.,
+            gpui::ScrollDelta::Lines(gpui::point(0., 3.)),
+        );
+        let after = row_top(&chat, cx, ix).expect("the reference row is on screen");
+        assert_eq!(after - before, px(60.), "three lines beside the composer");
 
-        // In the margin beside it the transcript scrolls up and lets go
-        // of the tail.
-        wheel_up(cx, 1150.);
-        let moved = top(cx);
-        assert_ne!(moved, pinned, "a wheel beside the composer must scroll");
+        // Up lets go of the tail; back at the bottom, the list takes it again.
+        assert!(!following_tail(&chat, cx));
+        for _ in 0..10 {
+            wheel_at(cx, 1150., 790., wheel_pixels(-400.));
+        }
         assert!(
-            cx.update(|_window, app| !chat.read(app).list_state.is_following_tail()),
-            "scrolling up from the margin must stop following the tail"
+            following_tail(&chat, cx),
+            "a wheel down to the end beside the composer takes the tail again"
+        );
+    }
+
+    /// The transcript list is only as wide as its column, so on a wide
+    /// window opening the sidebar (or resizing) keeps every measured row:
+    /// the scroll range holds and the scrollbar thumb dragged to the top
+    /// reaches the first row.
+    #[gpui::test]
+    fn test_sidebar_toggle_keeps_the_transcript_measured(cx: &mut TestAppContext) {
+        let (chat, cx) = chat_window(cx, |chat, _cx| {
+            chat.sidebar_collapsed = true;
+            chat.replace_timeline(vec![item("m0", "message", Some("hello"))]);
+        });
+        // A task opened after the first layout, with row estimates.
+        cx.update(|_window, app| {
+            chat.update(app, |chat, cx| {
+                chat.replace_timeline(long_timeline());
+                cx.notify();
+            })
+        });
+        cx.run_until_parked();
+        for _ in 0..10 {
+            wheel_at(cx, 600., 300., wheel_pixels(400.));
+        }
+        let range = |cx: &mut gpui::VisualTestContext| {
+            cx.update(|_window, app| chat.read(app).list_state.max_offset_for_scrollbar().y)
+        };
+        let before = range(cx);
+        cx.update(|_window, app| {
+            chat.update(app, |chat, cx| chat.set_sidebar_collapsed(false, cx))
+        });
+        cx.run_until_parked();
+        assert_eq!(
+            range(cx),
+            before,
+            "opening the sidebar keeps the measured rows"
+        );
+
+        cx.update(|_window, app| {
+            chat.update(app, |chat, cx| {
+                chat.list_state
+                    .set_offset_from_scrollbar(gpui::point(px(0.), px(0.)));
+                cx.notify();
+            })
+        });
+        cx.run_until_parked();
+        assert_eq!(
+            cx.update(|_window, app| chat.read(app).list_state.logical_scroll_top().item_ix),
+            0,
+            "the thumb dragged to the top reaches the first row"
+        );
+    }
+
+    /// At the bottom the list's scroll top names no row. A wheel beside
+    /// the composer still reports the rows on screen, the same rows the
+    /// list's own wheel reports, so images in view keep loading.
+    #[gpui::test]
+    fn test_wheel_at_the_bottom_reports_the_rows_on_screen(cx: &mut TestAppContext) {
+        let (chat, cx) = chat_window(cx, |chat, _cx| {
+            chat.sidebar_collapsed = true;
+            chat.replace_timeline(
+                (0..40)
+                    .map(|i| item(&format!("m{i}"), "message", Some(&format!("Short {i}"))))
+                    .collect(),
+            );
+        });
+        let viewport = |cx: &mut gpui::VisualTestContext| {
+            cx.update(|_window, app| chat.read(app).attachment_viewport.clone())
+        };
+        wheel_at(cx, 600., 300., wheel_pixels(-100.));
+        let from_list = viewport(cx);
+        assert!(
+            from_list.len() > 10,
+            "many short rows are on screen, got {from_list:?}"
+        );
+        cx.update(|_window, app| chat.update(app, |chat, _cx| chat.attachment_viewport = 0..0));
+        wheel_at(cx, 1150., 790., wheel_pixels(-100.));
+        assert_eq!(viewport(cx), from_list);
+    }
+
+    /// An open image covers the screen: a wheel anywhere leaves the
+    /// transcript underneath where it was.
+    #[gpui::test]
+    fn test_open_lightbox_holds_the_transcript(cx: &mut TestAppContext) {
+        let (chat, cx) = chat_window(cx, |chat, _cx| {
+            chat.sidebar_collapsed = true;
+            chat.replace_timeline(long_timeline());
+        });
+        wheel_at(cx, 600., 300., wheel_pixels(400.));
+        cx.update(|_window, app| {
+            chat.update(app, |chat, cx| {
+                let image = gpui::Image::from_bytes(gpui::ImageFormat::Png, png_bytes());
+                chat.open_lightbox(Arc::new(image), cx);
+            })
+        });
+        cx.run_until_parked();
+        let ix = reference_row(&chat, cx);
+        let before = row_top(&chat, cx, ix);
+        for (x, y) in [(600., 300.), (40., 300.), (1150., 790.)] {
+            wheel_at(cx, x, y, wheel_pixels(100.));
+        }
+        assert_eq!(row_top(&chat, cx, ix), before);
+    }
+
+    /// A message being sent shows in a bubble that scrolls itself. A
+    /// wheel over the bubble scrolls only the bubble; one beside it, the
+    /// transcript.
+    #[gpui::test]
+    fn test_sending_bubble_keeps_its_wheel(cx: &mut TestAppContext) {
+        let (chat, cx) = chat_window(cx, |chat, _cx| {
+            chat.sidebar_collapsed = true;
+            chat.replace_timeline(long_timeline());
+            chat.sending_previews.insert(
+                "send-1".to_string(),
+                sending::SendPreview::new(
+                    Some("s1".to_string()),
+                    &"A long message\n".repeat(40),
+                    &[],
+                ),
+            );
+        });
+        wheel_at(cx, 600., 200., wheel_pixels(400.));
+        let bubble = cx
+            .debug_bounds("pending-send-body")
+            .expect("the bubble shows");
+        let (x, y) = (f32::from(bubble.center().x), f32::from(bubble.center().y));
+        let ix = reference_row(&chat, cx);
+        let before = row_top(&chat, cx, ix).expect("the reference row is on screen");
+        wheel_at(cx, x, y, wheel_pixels(-100.));
+        assert_eq!(
+            row_top(&chat, cx, ix),
+            Some(before),
+            "a wheel over the bubble leaves the transcript alone"
+        );
+        wheel_at(cx, f32::from(bubble.left()) - 100., y, wheel_pixels(100.));
+        assert_eq!(
+            row_top(&chat, cx, ix).map(|after| after - before),
+            Some(px(100.)),
+            "a wheel beside the bubble scrolls the transcript"
+        );
+    }
+
+    /// A question card keeps its own wheel like the composer; the space
+    /// beside it scrolls the transcript.
+    #[gpui::test]
+    fn test_question_card_keeps_its_wheel(cx: &mut TestAppContext) {
+        let (chat, cx) = chat_window(cx, |chat, _cx| {
+            chat.sidebar_collapsed = true;
+            chat.replace_timeline(long_timeline());
+            chat.pending_questions = vec![crate::backend::PendingQuestion {
+                session_id: "s1".to_string(),
+                request_id: "q1".to_string(),
+                questions: vec![maple_agent::agent::AgentQuestion {
+                    multi_select: false,
+                    id: "pick".to_string(),
+                    header: "Question".to_string(),
+                    question: "Which one?".to_string(),
+                    options: Vec::new(),
+                }],
+            }];
+        });
+        wheel_at(cx, 600., 200., wheel_pixels(400.));
+        let card = cx
+            .debug_bounds("question-card")
+            .expect("the question card shows");
+        let y = f32::from(card.center().y);
+        let ix = reference_row(&chat, cx);
+        let before = row_top(&chat, cx, ix).expect("the reference row is on screen");
+        wheel_at(cx, f32::from(card.center().x), y, wheel_pixels(100.));
+        assert_eq!(
+            row_top(&chat, cx, ix),
+            Some(before),
+            "a wheel over the card leaves the transcript alone"
+        );
+        wheel_at(cx, 40., y, wheel_pixels(100.));
+        assert_eq!(
+            row_top(&chat, cx, ix).map(|after| after - before),
+            Some(px(100.)),
+            "a wheel beside the card scrolls the transcript"
         );
     }
 
@@ -7520,19 +7758,6 @@ mod state_tests {
             (moved.item_ix, moved.offset_in_item),
             (pinned.item_ix, pinned.offset_in_item),
             "an idle wheel must move the viewport, got {moved:?}"
-        );
-
-        // The side margins outside the 900px content column scroll too.
-        cx.simulate_event(gpui::ScrollWheelEvent {
-            position: gpui::point(px(40.), center.y),
-            delta: gpui::ScrollDelta::Pixels(gpui::point(px(0.), px(100.))),
-            ..Default::default()
-        });
-        let margin = cx.update(|_window, app| chat.read(app).list_state.logical_scroll_top());
-        assert_ne!(
-            (margin.item_ix, margin.offset_in_item),
-            (moved.item_ix, moved.offset_in_item),
-            "a wheel over the side margin must move the viewport, got {margin:?}"
         );
 
         // A streamed chunk lands. No repaint runs before the user's wheel
