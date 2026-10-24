@@ -95,7 +95,9 @@ mod tests {
     }
 
     #[gpui::test]
-    fn paged_hover_tracks_activity_and_ends_when_a_live_task_moves_it(cx: &mut gpui::TestAppContext) {
+    fn paged_hover_tracks_activity_and_ends_when_a_live_task_moves_it(
+        cx: &mut gpui::TestAppContext,
+    ) {
         let _settings = crate::settings::SETTINGS_IO_LOCK.lock();
         cx.executor().allow_parking();
         let backend =
