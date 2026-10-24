@@ -557,8 +557,9 @@ pub struct ChatScreen {
     /// Whether the project-trust question may open its dialog. Tests that
     /// drive typing turn it off, since the dialog rightly takes focus.
     trust_prompts: bool,
-    /// Host-owned folder browser shared by local and remote computers.
+    /// Host-owned folder browser for remote computers (and native-picker fallback).
     project_folder_dialog: Option<Entity<project_folder::ProjectFolderDialog>>,
+    root_picker_open: bool,
     root_selecting: bool,
     /// Header label for the project root; set when the root changes so
     /// render does not format it.
@@ -1301,6 +1302,7 @@ impl ChatScreen {
             timeline_index: HashMap::new(),
             selected_title: DEFAULT_TASK_TITLE.into(),
             project_folder_dialog: None,
+            root_picker_open: false,
             root_selecting: false,
             project_label: SharedString::from("Choose folder"),
             project_branch: None,
@@ -1753,12 +1755,108 @@ impl ChatScreen {
     }
 
     fn choose_root_dialog_with_intent(&mut self, draft_on_confirm: bool, cx: &mut Context<Self>) {
-        if self.project_folder_dialog.is_some() || self.root_selecting {
+        if self.root_picker_open || self.project_folder_dialog.is_some() || self.root_selecting {
             return;
         }
         if self.selected_session.is_none() && self.session_setup_pending {
             self.notice = Some("Wait for the new task to be created, then switch projects".into());
             cx.notify();
+            return;
+        }
+        self.popup.close(cx);
+        if self.backend.remote_host().is_none() {
+            self.choose_native_root_dialog(draft_on_confirm, cx);
+        } else {
+            self.show_folder_browser(draft_on_confirm, cx);
+        }
+    }
+
+    fn choose_native_root_dialog(&mut self, draft_on_confirm: bool, cx: &mut Context<Self>) {
+        // Use the platform picker: NSOpenPanel, Windows common dialog, or
+        // Linux portal. It is asynchronous and closes with the application.
+        self.root_picker_open = true;
+        let generation = self.selection_generation;
+        let receiver = cx.prompt_for_paths(gpui::PathPromptOptions {
+            files: false,
+            directories: true,
+            multiple: false,
+            prompt: None,
+        });
+        let bridge = cx.spawn(async move |this, cx| {
+            let picked = receiver.await;
+            this.update(cx, |this, cx| {
+                this.root_picker_open = false;
+                if this.selection_generation != generation || !this.visible {
+                    cx.notify();
+                    return;
+                }
+                match picked {
+                    Ok(Ok(Some(paths))) => {
+                        if let Some(path) = paths.into_iter().next() {
+                            let Some(path) = path.to_str().map(str::to_owned) else {
+                                this.notice = Some("This folder path is not valid Unicode".into());
+                                cx.notify();
+                                return;
+                            };
+                            let backend = this.backend.clone();
+                            let user_id = this.user_id.clone();
+                            this.root_selecting = true;
+                            this.call(
+                                async move { backend.select_project_root(&user_id, path).await },
+                                cx,
+                                move |this, result, cx| {
+                                    this.root_selecting = false;
+                                    if this.selection_generation == generation && this.visible {
+                                        match result {
+                                            Ok(registration) => this.finish_folder_selection(
+                                                registration,
+                                                draft_on_confirm,
+                                                cx,
+                                            ),
+                                            Err(error) => this.notice = Some(error.into()),
+                                        }
+                                    }
+                                    cx.notify();
+                                },
+                            );
+                        }
+                    }
+                    // Cancellation leaves the task, project and draft untouched.
+                    Ok(Ok(None)) | Err(_) => {}
+                    // A Linux desktop without a portal still has a usable chooser.
+                    Ok(Err(_)) => this.show_folder_browser(draft_on_confirm, cx),
+                }
+                cx.notify();
+            })
+            .ok();
+        });
+        crate::ui::task::retain(&self.bridged_tasks, bridge);
+        cx.notify();
+    }
+
+    fn finish_folder_selection(
+        &mut self,
+        registration: crate::backend::SelectedProject,
+        draft_on_confirm: bool,
+        cx: &mut Context<Self>,
+    ) {
+        if draft_on_confirm && !self.draft {
+            self.new_session(cx);
+        }
+        self.restore_selected_project(registration.project, cx);
+        self.refresh_roots(cx);
+        self.land_project_selection(registration.project_root, self.selection_generation, cx);
+        if self.navigation_only {
+            self.navigation_only = false;
+            self.booting = true;
+            self.refresh_slash_commands(cx);
+            self.start_runtime(cx);
+        }
+        self.screen_focus_pending = true;
+    }
+
+    fn show_folder_browser(&mut self, draft_on_confirm: bool, cx: &mut Context<Self>) {
+        if self.project_folder_dialog.is_some() {
             return;
         }
         self.popup.close(cx);
@@ -1795,23 +1893,7 @@ impl ChatScreen {
                 return;
             }
             if let project_folder::FolderDialogEvent::Selected(registration) = event {
-                if draft_on_confirm && !this.draft {
-                    this.new_session(cx);
-                }
-                this.restore_selected_project(registration.project.clone(), cx);
-                this.refresh_roots(cx);
-                this.land_project_selection(
-                    registration.project_root.clone(),
-                    this.selection_generation,
-                    cx,
-                );
-                if this.navigation_only {
-                    this.navigation_only = false;
-                    this.booting = true;
-                    this.refresh_slash_commands(cx);
-                    this.start_runtime(cx);
-                }
-                this.screen_focus_pending = true;
+                this.finish_folder_selection(registration.clone(), draft_on_confirm, cx);
             }
             cx.notify();
         })
@@ -2044,6 +2126,7 @@ impl ChatScreen {
             || self.draft
             || self.selection_generation != generation
             || self.project_folder_dialog.is_some()
+            || self.root_picker_open
         {
             return;
         }

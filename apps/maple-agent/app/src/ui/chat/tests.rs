@@ -4625,10 +4625,103 @@ mod state_tests {
         });
     }
 
+    fn remote_folder_screen(cx: &mut TestAppContext) -> Entity<ChatScreen> {
+        let _guard = SETTINGS_LOCK.lock();
+        cx.executor().allow_parking();
+        let backend = Arc::new(AgentBackend::for_remote_test("peer").unwrap());
+        cx.new(|cx| {
+            let mut screen = ChatScreen::new_inner(backend, "user".into(), cx);
+            screen.selected_session = Some("s1".into());
+            screen
+        })
+    }
+
+    fn remote_folder_window(
+        cx: &mut TestAppContext,
+        setup: impl FnOnce(&mut ChatScreen, &mut Context<ChatScreen>),
+    ) -> (Entity<ChatScreen>, &mut gpui::VisualTestContext) {
+        let backend = {
+            let _guard = SETTINGS_LOCK.lock();
+            Arc::new(AgentBackend::for_remote_test("peer").unwrap())
+        };
+        chat_window_in(cx, backend, setup)
+    }
+
+    #[gpui::test]
+    fn local_folder_picker_uses_native_dialog_and_cancel_preserves_context(
+        cx: &mut TestAppContext,
+    ) {
+        let (screen, cx) = chat_window(cx, |_, _| {});
+        let generation = screen.update(cx, |this, cx| {
+            assert!(this.fill_empty_composer("Keep this draft", cx));
+            this.choose_root_dialog_with_intent(true, cx);
+            this.choose_root_dialog(cx);
+            assert!(this.root_picker_open);
+            assert!(this.project_folder_dialog.is_none());
+            assert_eq!(this.selected_session.as_deref(), Some("s1"));
+            this.selection_generation
+        });
+        assert!(cx.did_prompt_for_paths());
+        cx.simulate_path_prompt_response(|options| {
+            assert!(options.directories);
+            assert!(!options.files && !options.multiple);
+            None
+        });
+        cx.run_until_parked();
+        assert!(
+            !cx.did_prompt_for_paths(),
+            "duplicate clicks must not queue another picker"
+        );
+        screen.update(cx, |this, cx| {
+            assert!(!this.root_picker_open);
+            assert!(this.project_folder_dialog.is_none());
+            assert_eq!(this.selected_session.as_deref(), Some("s1"));
+            assert_eq!(this.selection_generation, generation);
+            assert_eq!(this.composer_text(cx).as_deref(), Some("Keep this draft"));
+        });
+    }
+
+    #[gpui::test]
+    fn native_folder_picker_ignores_selection_after_navigation(cx: &mut TestAppContext) {
+        let screen = screen(cx);
+        screen.update(cx, |this, cx| {
+            this.choose_root_dialog(cx);
+            this.begin_navigation();
+            this.selected_session = Some("newer".into());
+        });
+        cx.simulate_path_prompt_response(|_| Some(vec![absolute_fixture_root("stale").into()]));
+        cx.run_until_parked();
+        screen.update(cx, |this, _| {
+            assert!(!this.root_picker_open && !this.root_selecting);
+            assert_eq!(this.selected_session.as_deref(), Some("newer"));
+        });
+    }
+
+    #[gpui::test]
+    fn native_folder_picker_blocks_initial_task_auto_selection(cx: &mut TestAppContext) {
+        let screen = screen(cx);
+        screen.update(cx, |this, cx| {
+            this.selected_session = None;
+            this.draft = false;
+            this.project_root = Some("/tmp/proj".into());
+            this.choose_root_dialog(cx);
+            this.apply_session_list(
+                vec![summary("latest", "Latest task")],
+                this.selection_generation,
+                cx,
+            );
+            assert!(this.selected_session.is_none());
+            assert!(this.loading_session.is_none());
+        });
+        cx.simulate_path_prompt_response(|_| None);
+        cx.run_until_parked();
+        assert!(!screen.update(cx, |this, _| this.root_picker_open));
+    }
+
     #[gpui::test]
     fn test_second_picker_click_is_ignored(cx: &mut TestAppContext) {
         cx.executor().allow_parking();
-        let screen = screen(cx);
+        let screen = remote_folder_screen(cx);
         screen.update(cx, |this, cx| {
             this.popup.open(ChatPopup::Project, cx);
             this.choose_root_dialog(cx);
@@ -4646,7 +4739,7 @@ mod state_tests {
     fn catalog_folder_picker_does_not_activate_runtime_or_replace_a_task_before_confirmation(
         cx: &mut TestAppContext,
     ) {
-        let screen = screen(cx);
+        let screen = remote_folder_screen(cx);
         screen.update(cx, |this, cx| {
             this.navigation_only = true;
             this.navigation_ready = true;
@@ -4663,7 +4756,7 @@ mod state_tests {
 
     #[gpui::test]
     fn stale_folder_selection_cannot_change_a_newer_navigation(cx: &mut TestAppContext) {
-        let screen = screen(cx);
+        let screen = remote_folder_screen(cx);
         let dialog = screen.update(cx, |this, cx| {
             this.choose_root_dialog(cx);
             this.project_folder_dialog.clone().unwrap()
@@ -4691,7 +4784,7 @@ mod state_tests {
     fn folder_picker_blocks_initial_auto_selection_and_stale_cancel_still_dismisses(
         cx: &mut TestAppContext,
     ) {
-        let screen = screen(cx);
+        let screen = remote_folder_screen(cx);
         let dialog = screen.update(cx, |this, cx| {
             this.selected_session = None;
             this.draft = false;
@@ -5884,7 +5977,7 @@ mod state_tests {
     /// the composer and never select a project until Use folder succeeds.
     #[gpui::test]
     fn test_the_project_path_field_keeps_its_typing(cx: &mut TestAppContext) {
-        let (chat, cx) = chat_window(cx, |_, _| {});
+        let (chat, cx) = remote_folder_window(cx, |_, _| {});
         chat.update(cx, |this, cx| this.choose_root_dialog(cx));
         cx.run_until_parked();
         let dialog = chat.update(cx, |this, _| this.project_folder_dialog.clone().unwrap());
@@ -5906,7 +5999,7 @@ mod state_tests {
 
     #[gpui::test]
     fn test_escape_in_the_path_field_closes_the_folder_dialog(cx: &mut TestAppContext) {
-        let (chat, cx) = chat_window(cx, |_, _| {});
+        let (chat, cx) = remote_folder_window(cx, |_, _| {});
         let composer = chat.update(cx, |this, cx| {
             this.composer.clone().unwrap().read(cx).focus_handle(cx)
         });
@@ -5920,7 +6013,8 @@ mod state_tests {
 
     #[gpui::test]
     fn test_application_vim_leaves_folder_path_typing_alone(cx: &mut TestAppContext) {
-        let (chat, cx) = chat_window(cx, |this, cx| this.set_application_vim_enabled(true, cx));
+        let (chat, cx) =
+            remote_folder_window(cx, |this, cx| this.set_application_vim_enabled(true, cx));
         chat.update(cx, |this, cx| this.choose_root_dialog(cx));
         cx.run_until_parked();
         let dialog = chat.update(cx, |this, _| this.project_folder_dialog.clone().unwrap());
@@ -5932,7 +6026,7 @@ mod state_tests {
 
     #[gpui::test]
     fn folder_dialog_blocks_chat_navigation_shortcuts(cx: &mut TestAppContext) {
-        let (chat, cx) = chat_window(cx, |_, _| {});
+        let (chat, cx) = remote_folder_window(cx, |_, _| {});
         chat.update(cx, |this, cx| this.choose_root_dialog(cx));
         cx.run_until_parked();
         let shortcut = if cfg!(target_os = "macos") {
@@ -5984,9 +6078,7 @@ mod state_tests {
         let chat = cx.new(|cx| {
             let _guard = SETTINGS_LOCK.lock();
             crate::desktop::register_key_bindings(cx);
-            let backend = Arc::new(
-                AgentBackend::for_test("http://127.0.0.1:9".into(), String::new()).unwrap(),
-            );
+            let backend = Arc::new(AgentBackend::for_remote_test("peer").unwrap());
             let mut chat = ChatScreen::new_without_start(backend, "user".into(), cx);
             chat.booting = false;
             chat.trust_prompts = false;
@@ -6046,7 +6138,7 @@ mod state_tests {
 
     #[gpui::test]
     fn test_the_folder_path_context_menu_takes_its_presses(cx: &mut TestAppContext) {
-        let (chat, cx) = chat_window(cx, |_, _| {});
+        let (chat, cx) = remote_folder_window(cx, |_, _| {});
         chat.update(cx, |this, cx| this.choose_root_dialog(cx));
         cx.run_until_parked();
         let dialog = chat.update(cx, |this, _| this.project_folder_dialog.clone().unwrap());

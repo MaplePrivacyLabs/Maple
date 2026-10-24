@@ -67,9 +67,11 @@ every thirty seconds also discovers empty projects selected by another desktop.
 This is an in-memory navigation cache, not offline transcript replication. Search,
 sidebar position and each computer's composer remain intact when switching.
 
-**New project…** opens the same folder browser for local and remote computers,
-starting in the selected computer's home directory. Browse folders, go to a
-parent or an absolute path, or create one new folder, then choose **Use folder**.
+**New project…** opens the operating system's folder picker for this computer.
+Remote computers use the built-in browser, starting at that computer's home.
+Browse folders, use the left arrow to go to the parent, enter an absolute path,
+or create one new folder, then choose **Use folder**. The built-in browser also
+serves as a fallback if the local platform picker is unavailable.
 Browsing does not change the current project or its trust; creation happens only
 when requested, and selecting a folder uses the existing project trust flow.
 The execution daemon resolves paths and performs filesystem operations. Folder

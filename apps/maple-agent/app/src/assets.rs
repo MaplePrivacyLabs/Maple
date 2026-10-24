@@ -16,6 +16,7 @@ macro_rules! assets {
 assets!(
     "icons/archive-restore.svg",
     "icons/archive.svg",
+    "icons/arrow-left.svg",
     "icons/arrow-up.svg",
     "icons/brain.svg",
     "icons/check.svg",

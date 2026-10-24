@@ -1,5 +1,5 @@
-//! The same host-owned folder chooser for local and paired computers. Paths
-//! stay opaque here: only the selected daemon resolves them or touches disk.
+//! Host-owned folder chooser for paired computers. Paths stay opaque here:
+//! only the selected daemon resolves them or touches disk.
 
 use std::{cell::RefCell, sync::Arc};
 
@@ -27,10 +27,10 @@ enum Busy {
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Control {
+    Up,
     Path,
     Go,
     Home,
-    Up,
     Hidden,
     List,
     Previous,
@@ -126,9 +126,9 @@ impl ProjectFolderDialog {
         let name_input = input(true, cx);
         cx.observe(&path_input, |_, _, cx| cx.notify()).detach();
         let controls = [
+            Control::Up,
             Control::Go,
             Control::Home,
-            Control::Up,
             Control::Hidden,
             Control::List,
             Control::Previous,
@@ -447,10 +447,10 @@ impl ProjectFolderDialog {
 
     fn tab_controls(&self) -> Vec<Control> {
         let mut controls = vec![
+            Control::Up,
             Control::Path,
             Control::Go,
             Control::Home,
-            Control::Up,
             Control::Hidden,
             Control::List,
         ];
@@ -671,6 +671,24 @@ impl Render for ProjectFolderDialog {
                             .items_center()
                             .gap_2()
                             .child(
+                                widgets::icon_button(
+                                    "project-folder-up",
+                                    "arrow-left",
+                                    "Back to parent folder",
+                                    widgets::ROW_ICON,
+                                    theme::text_secondary(),
+                                )
+                                .debug_selector(|| "project-folder-up".into())
+                                .track_focus(&self.focus(Control::Up, cx))
+                                .when(
+                                    self.page
+                                        .as_ref()
+                                        .is_none_or(|page| page.parent_path.is_none()),
+                                    |button| button.opacity(0.5),
+                                )
+                                .on_click(cx.listener(|this, _, _, cx| this.up(cx))),
+                            )
+                            .child(
                                 widgets::input_frame()
                                     .debug_selector(|| "project-folder-path".into())
                                     .flex_1()
@@ -695,16 +713,6 @@ impl Render for ProjectFolderDialog {
                             .child(
                                 small_button("project-folder-home", "Home", Control::Home)
                                     .on_click(cx.listener(|this, _, _, cx| this.open_home(cx))),
-                            )
-                            .child(
-                                small_button("project-folder-up", "Up", Control::Up)
-                                    .when(
-                                        self.page
-                                            .as_ref()
-                                            .is_none_or(|page| page.parent_path.is_none()),
-                                        |button| button.opacity(0.5),
-                                    )
-                                    .on_click(cx.listener(|this, _, _, cx| this.up(cx))),
                             )
                             .child(
                                 small_button(
@@ -1037,7 +1045,14 @@ mod tests {
     ) {
         let (dialog, cx) = window(cx);
         cx.simulate_keystrokes("shift-tab");
+        assert!(cx.update(|window, cx| dialog.read(cx).focus(Control::Up, cx).is_focused(window)));
+        let back = cx.debug_bounds("project-folder-up").unwrap();
+        let path = cx.debug_bounds("project-folder-path").unwrap();
+        assert!(back.right() <= path.left());
+        cx.simulate_keystrokes("shift-tab");
         assert!(cx.update(|window, cx| dialog.read(cx).focus(Control::Use, cx).is_focused(window)));
+        cx.simulate_keystrokes("tab");
+        assert!(cx.update(|window, cx| dialog.read(cx).focus(Control::Up, cx).is_focused(window)));
         cx.simulate_keystrokes("tab");
         assert!(
             cx.update(|window, cx| dialog.read(cx).focus(Control::Path, cx).is_focused(window))
