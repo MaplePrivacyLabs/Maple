@@ -1109,9 +1109,9 @@ impl Sidebar {
                     destination: Destination::Task(task.uuid.clone()),
                 },
                 id: format!("computer-{computer_index}-task-{}", task.uuid).into(),
-                title: latest
-                    .map_or_else(|| task.title.clone(), |session| session.title.clone())
-                    .into(),
+                title: one_line(
+                    latest.map_or(task.title.as_str(), |session| session.title.as_str()),
+                ),
                 pinned: task.pinned_ms.is_some(),
                 activity: if computer.running.contains(&task.uuid) {
                     Some(SessionActivity::Running)
@@ -1123,6 +1123,12 @@ impl Sidebar {
             });
             entries.push(SidebarEntry::OtherTask(index));
         }
+    }
+
+    /// The title on another computer's task row.
+    #[cfg(test)]
+    pub(in crate::ui::chat) fn other_task_title(&self, index: usize) -> Option<&str> {
+        Some(self.other_tasks.get(index)?.title.as_ref())
     }
 
     pub(in crate::ui::chat) fn computer_target(
@@ -1253,8 +1259,14 @@ impl Sidebar {
             SidebarEntry::OtherTask(index) => {
                 let task = &self.other_tasks[index];
                 let request = task.request.clone();
+                let row_bg = if selected {
+                    theme::bg_sidebar_row_hover()
+                } else {
+                    theme::bg_sidebar()
+                };
                 div()
                     .id(task.id.clone())
+                    .group(task.id.clone())
                     .role(gpui::Role::ListBoxOption)
                     .aria_label(task.title.clone())
                     .aria_selected(false)
@@ -1279,12 +1291,9 @@ impl Sidebar {
                         cx.emit(SidebarEvent::Navigate(request.clone()))
                     }))
                     .child(
-                        div()
+                        row_line(task.title.clone(), Some(&task.id), row_bg)
                             .flex_1()
-                            .min_w_0()
-                            .line_clamp(1)
-                            .text_ellipsis()
-                            .child(task.title.clone()),
+                            .min_w_0(),
                     )
                     .when_some(task.activity, |row, activity| {
                         row.child(activity_indicator(&task.id, activity))

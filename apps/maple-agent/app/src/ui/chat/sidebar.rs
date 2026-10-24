@@ -178,8 +178,9 @@ pub(super) struct SidebarRow {
     pub(super) menu_archive_id: SharedString,
     pub(super) menu_delete_id: SharedString,
     pub(super) menu_reopen_id: SharedString,
+    /// The title on one line (see [`one_line`]).
     pub(super) title: SharedString,
-    /// Display name of the task's project, shown on every row.
+    /// Display name of the task's project, shown on every row, on one line.
     pub(super) project_name: SharedString,
     /// Lower-cased title, matched against the sidebar filter.
     pub(super) search: String,
@@ -204,15 +205,27 @@ impl SidebarRow {
             menu_archive_id: SharedString::from(format!("archive-task-{id}")),
             menu_delete_id: SharedString::from(format!("delete-task-{id}")),
             menu_reopen_id: SharedString::from(format!("reopen-task-{id}")),
-            title: SharedString::from(session.title.clone()),
-            project_name: SharedString::from(project_name.to_string()),
+            title: one_line(&session.title),
+            project_name: one_line(project_name),
             search: session.title.to_lowercase(),
+        }
+    }
+
+    /// Preserve raw-title identity when line breaks are flattened.
+    fn built_from(&self, title: &str) -> bool {
+        if title.contains(['\r', '\n']) {
+            self.search == title.to_lowercase() && *self.title == *one_line(title)
+        } else {
+            !self.search.contains(['\r', '\n']) && *self.title == *title
         }
     }
 }
 
 /// The switcher's "All projects" row.
 const ALL_PROJECTS_ID: &str = "switcher-all-projects";
+
+/// How far a cut-off task title fades into its row.
+const ROW_FADE: gpui::Pixels = px(20.);
 
 /// The sidebar's popup menus. One is open at a time; a project's own menu
 /// opens inside the switcher (see `Sidebar::project_popup`).
@@ -1435,7 +1448,7 @@ impl Sidebar {
         let fresh = self.rows.len() == self.sessions.len()
             && self.rows.iter().zip(&self.sessions).all(|(row, session)| {
                 *row.id == *session.id
-                    && row.title.as_ref() == session.title
+                    && row.built_from(&session.title)
                     && self.root_name_matches(&session.project_root, &row.project_name)
             });
         if fresh {
@@ -1619,7 +1632,7 @@ impl Sidebar {
 
     /// Whether a cached row still has the current owner name or pending preview.
     fn root_name_matches(&self, root: &str, name: &str) -> bool {
-        self.root_name(root) == name
+        *one_line(&self.root_name(root)) == *name
     }
 
     // ---- Rename ------------------------------------------------------------
@@ -2762,6 +2775,12 @@ impl Sidebar {
         let pin_id = row.pin_id.clone();
         let rename_field = self.task_rename_field(&row.id, cx);
         let renaming = rename_field.is_some();
+        let row_bg = if is_selected {
+            theme::bg_sidebar_row_selected()
+        } else {
+            theme::bg_sidebar()
+        };
+        let hover_group = (!renaming).then_some(&row.group);
         div()
             .relative()
             .w_full()
@@ -2809,21 +2828,17 @@ impl Sidebar {
                     .flex_col()
                     .map(|column| match rename_field {
                         Some(field) => column.child(field),
-                        None => column
-                            .child(div().line_clamp(1).text_ellipsis().child(row.title.clone())),
+                        None => column.child(row_line(row.title.clone(), hover_group, row_bg)),
                     })
                     .when(self.computers.len() <= 1, |column| {
                         column.child(
-                            div()
+                            row_line(row.project_name.clone(), hover_group, row_bg)
                                 .text_xs()
                                 .text_color(gpui::rgb(if is_selected {
                                     theme::text_secondary()
                                 } else {
                                     theme::text_muted()
-                                }))
-                                .line_clamp(1)
-                                .text_ellipsis()
-                                .child(row.project_name.clone()),
+                                })),
                         )
                     }),
             )
@@ -2865,11 +2880,21 @@ impl Sidebar {
                         .flex()
                         .items_center()
                         .gap_1p5()
-                        .pl_2()
                         .pr_6()
                         .group_hover(row.group.clone(), |style| {
                             style.bg(gpui::rgb(theme::bg_sidebar_row_hover()))
                         })
+                        .child(
+                            div()
+                                .absolute()
+                                .top_0()
+                                .bottom_0()
+                                .right_full()
+                                .w(ROW_FADE)
+                                .group_hover(row.group.clone(), |style| {
+                                    style.bg(row_fade_background(theme::bg_sidebar_row_hover()))
+                                }),
+                        )
                         .child(self.task_menu_trigger(row, task, window, cx))
                         .child(row_action(
                             row.rename_id.clone(),
@@ -3091,6 +3116,44 @@ impl Render for Sidebar {
             )
             .child(self.render_footer())
     }
+}
+
+/// Replace each line break, including CRLF, with one space.
+fn one_line(text: &str) -> SharedString {
+    text.replace("\r\n", " ").replace(['\r', '\n'], " ").into()
+}
+
+/// Fade a line into its row background; renames omit the hover group.
+fn row_line(text: SharedString, hover_group: Option<&SharedString>, row_bg: u32) -> Div {
+    div()
+        .relative()
+        .overflow_hidden()
+        .whitespace_nowrap()
+        .child(text)
+        .child(
+            div()
+                .absolute()
+                .top_0()
+                .bottom_0()
+                .right_0()
+                .w(ROW_FADE)
+                .bg(row_fade_background(row_bg))
+                .when_some(hover_group, |fade, group| {
+                    fade.group_hover(group.clone(), |style| {
+                        style.bg(row_fade_background(theme::bg_sidebar_row_hover()))
+                    })
+                }),
+        )
+}
+
+/// Left to right from clear to `color`.
+fn row_fade_background(color: u32) -> gpui::Background {
+    let color = gpui::rgb(color);
+    gpui::linear_gradient(
+        90.,
+        gpui::linear_color_stop(color.alpha(0.), 0.),
+        gpui::linear_color_stop(color, 1.),
+    )
 }
 
 /// A spinner while the task runs, a dot once it completed unseen. The
