@@ -61,7 +61,7 @@ dataset identity and settings. No synthetic database or key is uploaded.
 scenarios and their sample counts, effective durability settings, and indexed
 plans with and without statistics. Missing scenarios cannot silently remove a
 slow operation. Linux CI compares medians at 10x its actual Linux reference;
-the scheduled `macos-26` full run uses 2x its actual macOS reference. Platform
+the scheduled `xcode-27` full run uses 2x its actual macOS reference. Platform
 mismatches are rejected. Native Mac small runs can use `--profile linux-ci
 --diagnostic` to validate workload evidence without comparing or recording a
 Linux runner gate.

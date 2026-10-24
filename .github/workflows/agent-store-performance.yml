@@ -41,7 +41,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include: ${{ fromJSON((github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && '[{"os":"blacksmith-8vcpu-ubuntu-2404","profile":"linux-ci","scale":"--ci"},{"os":"macos-26","profile":"macos-full","scale":"--full"}]' || '[{"os":"blacksmith-8vcpu-ubuntu-2404","profile":"linux-ci","scale":"--ci"}]') }}
+        include: ${{ fromJSON((github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && '[{"os":"blacksmith-8vcpu-ubuntu-2404","profile":"linux-ci","scale":"--ci"},{"os":"xcode-27","profile":"macos-full","scale":"--full"}]' || '[{"os":"blacksmith-8vcpu-ubuntu-2404","profile":"linux-ci","scale":"--ci"}]') }}
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || github.event_name == 'pull_request' || github.event_name == 'push'
     runs-on: ${{ matrix.os }}
     timeout-minutes: 240
@@ -59,6 +59,11 @@ jobs:
       - name: Verify pinned Nix runtime
         working-directory: .
         run: bash scripts/ci/verify-nix-runtime.sh
+
+      - name: Select pinned Xcode
+        if: runner.os == 'macOS'
+        working-directory: .
+        run: python3 scripts/ci/select-xcode.py
 
       - name: Cache benchmark dependencies
         uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2

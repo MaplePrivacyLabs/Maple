@@ -24,7 +24,7 @@ jobs:
     name: build-macos${{ github.event.action == 'labeled' && format(' (label {0})', github.event.label.name) || '' }}
     needs: changes
     if: ${{ always() && !cancelled() && github.event.action != 'labeled' && (needs.changes.result != 'success' || needs.changes.outputs.macos != 'false') }}
-    runs-on: blacksmith-6vcpu-macos-26
+    runs-on: blacksmith-6vcpu-macos-27
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # was v4
         with:
@@ -84,7 +84,7 @@ jobs:
     concurrency:
       group: research-dev-macos-pr-${{ github.event.pull_request.number }}
       cancel-in-progress: true
-    runs-on: blacksmith-6vcpu-macos-26
+    runs-on: blacksmith-6vcpu-macos-27
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # was v4
         with:

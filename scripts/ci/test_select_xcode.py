@@ -155,7 +155,8 @@ resolve_xcode_developer_dir
         selectors = []
         for path in sorted((ROOT / ".github/workflows").glob("*.yml")):
             workflow = json.loads(subprocess.check_output(["yq", "-o=json", ".", str(path)], text=True))
-            self.assertNotRegex(json.dumps(workflow), r"macos-14(?:-large|-xlarge)?")
+            # Apple lanes run on the Xcode 27 images; older macOS labels lack the pinned Xcode.
+            self.assertNotRegex(json.dumps(workflow), r"\bmacos-(?:14|26)(?:-large|-xlarge)?\b|vcpu-macos-26\b")
             for job_id, job in workflow["jobs"].items():
                 steps = job.get("steps", [])
                 for index, step in enumerate(steps):
@@ -169,6 +170,9 @@ resolve_xcode_developer_dir
                     self.assertEqual(len(checkout), 1, (path.name, job_id))
                     self.assertIs(checkout[0]["with"]["persist-credentials"], False)
         self.assertCountEqual(selectors, [
+            ("agent-ci.yml", "desktop"),
+            ("agent-ci.yml", "provider"),
+            ("agent-store-performance.yml", "performance"),
             ("agent-desktop-build.yml", "macos-build"),
             ("agent-desktop-build.yml", "macos"),
             ("agent-desktop-build.yml", "macos-unsigned"),

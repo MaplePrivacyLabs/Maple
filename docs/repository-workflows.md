@@ -165,21 +165,25 @@ for the baseline, tradeoffs and cold/warm validation procedure.
 ## macOS runners and Apple toolchain
 
 Research desktop/iOS builds, Agent release-binary jobs
-and native proxy macOS archives use ARM64 `blacksmith-6vcpu-macos-26` runners.
+and native proxy macOS archives use ARM64 `blacksmith-6vcpu-macos-27` runners.
 Artifact verifiers, TestFlight uploads, and Agent preview packaging/protected
-signing use standard GitHub `macos-26` runners. Research signed builders retain
+signing use GitHub's `xcode-27` image runners. Research signed builders retain
 their existing `desktop-signing` or `apple-signing` environment, so their
 provider receives that environment's secret context. Existing master pushes
 can build and upload independent Dev/Prod TestFlight artifacts after verification.
 The Agent's final signed-package provenance identifies its GitHub
 packaging/signing job; Blacksmith is trusted for prebuilt binary integrity.
-Research desktop and iOS builds select stable Xcode 26.5, build `17F42`, from
+Research desktop and iOS builds and the Agent's macOS jobs select stable Xcode 27.1,
+build `27A9275`, from
 [`scripts/ci/apple-toolchain.json`](../scripts/ci/apple-toolchain.json) through
 the shared selector, which aligns the runner's active `xcode-select` directory
 and `DEVELOPER_DIR`; the root Nix shell exports the same version and build
 for its Apple recipes. Tauri mobile tooling discovers the active Xcode directly.
 Do not rely on the runner's default Xcode or beta app
-names. The independent Agent shell selects a full installed Xcode, and the
+names; hosted images can keep a release under a suffixed name such as
+`Xcode_27.1_Release_Candidate.app`, which the selector accepts only when its
+build matches the pin. Xcode 27 builds iOS code for deployment targets 15.0 and
+later, so the iOS ONNX Runtime build targets 16.0 like the app. The independent Agent shell selects a full installed Xcode, and the
 SDK/proxy flakes own their Nix compiler and SDK inputs.
 
 The [iOS ONNX pins](../apps/maple-research/frontend/src-tauri/scripts/onnxruntime-pins.sh)

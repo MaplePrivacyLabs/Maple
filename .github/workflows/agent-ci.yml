@@ -83,7 +83,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [blacksmith-8vcpu-ubuntu-2404, macos-26, windows-latest]
+        os: [blacksmith-8vcpu-ubuntu-2404, xcode-27, windows-latest]
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
@@ -100,6 +100,11 @@ jobs:
         if: runner.os != 'Windows'
         working-directory: .
         run: bash scripts/ci/verify-nix-runtime.sh
+
+      - name: Select pinned Xcode
+        if: runner.os == 'macOS'
+        working-directory: .
+        run: python3 scripts/ci/select-xcode.py
 
       - name: Install pinned Windows Rust
         if: runner.os == 'Windows'
@@ -264,7 +269,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [blacksmith-8vcpu-ubuntu-2404, macos-26, windows-latest]
+        os: [blacksmith-8vcpu-ubuntu-2404, xcode-27, windows-latest]
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
@@ -281,6 +286,11 @@ jobs:
         if: runner.os != 'Windows'
         working-directory: .
         run: bash scripts/ci/verify-nix-runtime.sh
+
+      - name: Select pinned Xcode
+        if: runner.os == 'macOS'
+        working-directory: .
+        run: python3 scripts/ci/select-xcode.py
 
       - name: Install pinned Windows Rust
         if: runner.os == 'Windows'

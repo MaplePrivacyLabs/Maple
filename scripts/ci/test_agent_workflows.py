@@ -404,7 +404,7 @@ class AgentDesktopPackagingBoundaryTests(unittest.TestCase):
         jobs = config["jobs"]
         signed = jobs["macos"]
         self.assertEqual(signed["environment"], "desktop-signing")
-        self.assertEqual(signed["runs-on"], "macos-26")
+        self.assertEqual(signed["runs-on"], "xcode-27")
         condition = " ".join(signed["if"].split())
         self.assertIn(self.MASTER_GUARD, condition)
         self.assertIn("always() && !cancelled()", condition)
