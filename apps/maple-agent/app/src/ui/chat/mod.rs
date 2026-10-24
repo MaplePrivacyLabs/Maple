@@ -7263,12 +7263,10 @@ fn head_change_event(event: &notify::Event) -> bool {
         .any(|path| path.file_name().is_some_and(|name| name == "HEAD"))
 }
 
-/// Last path component of a project root, for chips and the sidebar.
-/// Upper-case section heading in the sidebar.
+/// Section heading in the sidebar.
 fn section_label(text: &'static str) -> Div {
     div()
-        .text_xs()
-        .font_weight(gpui::FontWeight::SEMIBOLD)
+        .text_sm()
         .text_color(gpui::rgb(theme::text_muted()))
         .child(text)
 }

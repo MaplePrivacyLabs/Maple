@@ -360,9 +360,9 @@ pub(super) enum SidebarSection {
 impl SidebarSection {
     pub(super) fn label(self) -> &'static str {
         match self {
-            Self::Pinned => "PINNED",
-            Self::Active => "ACTIVE",
-            Self::Settled => "SETTLED",
+            Self::Pinned => "Pinned",
+            Self::Active => "Active",
+            Self::Settled => "Settled",
         }
     }
 
@@ -423,6 +423,7 @@ pub(super) struct Sidebar {
     // The list and its sections.
     list: gpui::ListState,
     entries: Vec<SidebarEntry>,
+    heading_gaps: Vec<bool>,
     rows: Vec<SidebarRow>,
     pinned_rows: Vec<usize>,
     active_rows: Vec<usize>,
@@ -687,6 +688,7 @@ impl Sidebar {
             vim_active: false,
             list: gpui::ListState::new(0, gpui::ListAlignment::Top, px(200.)),
             entries: Vec::new(),
+            heading_gaps: Vec::new(),
             rows: Vec::new(),
             pinned_rows: Vec::new(),
             active_rows: Vec::new(),
@@ -1453,6 +1455,20 @@ impl Sidebar {
         if self.computers.len() > 1 && self.project_filter.is_none() {
             entries = self.computer_entries();
         }
+        let heading_gaps = entries
+            .iter()
+            .enumerate()
+            .map(|(ix, entry)| {
+                matches!(
+                    entry,
+                    SidebarEntry::SectionLabel(_) | SidebarEntry::ArchivedHeader
+                ) && !matches!(
+                    ix.checked_sub(1).and_then(|ix| entries.get(ix)),
+                    Some(SidebarEntry::SectionLabel(_) | SidebarEntry::ArchivedHeader)
+                )
+            })
+            .collect();
+        let old_gaps = std::mem::replace(&mut self.heading_gaps, heading_gaps);
         let old = std::mem::replace(&mut self.entries, entries);
         if self.application_vim_enabled {
             self.rebuild_vim_targets();
@@ -1478,6 +1494,14 @@ impl Sidebar {
                 prefix..old.len() - suffix,
                 self.entries.len() - prefix - suffix,
             );
+        }
+        // A retained heading can gain or lose its gap when its predecessor
+        // changes. Invalidate its cached height even when it is off screen.
+        if suffix > 0 {
+            let row = self.entries.len() - suffix;
+            if self.heading_gaps[row] != old_gaps[old.len() - suffix] {
+                self.list.remeasure_items(row..row + 1);
+            }
         }
         if self.application_vim_enabled {
             self.vim_reconcile();
@@ -2391,6 +2415,7 @@ impl Sidebar {
     ) -> AnyElement {
         let selected = self.selected.as_deref();
         let chat = self.chat.clone();
+        let heading_gap = self.heading_gaps.get(ix).copied().unwrap_or(false);
         let entry = match self.entries.get(ix).copied() {
             Some(
                 entry @ (SidebarEntry::ComputerProject(_)
@@ -2482,11 +2507,10 @@ impl Sidebar {
                     .w_auto()
                     .mx_2()
                     .my(px(1.))
-                    .mt_4()
+                    .when(heading_gap, |row| row.mt_3())
                     .flex()
                     .items_center()
-                    .gap_1p5()
-                    .mb_1()
+                    .gap_1()
                     .px_2()
                     .py_1()
                     .rounded(ROW_RADIUS)
@@ -2498,6 +2522,7 @@ impl Sidebar {
                     .on_click(cx.listener(move |this, _event, _window, cx| {
                         this.toggle_section_expanded(section, cx);
                     }))
+                    .child(section_label(section.label()))
                     .child(icon(
                         if expanded {
                             "chevron-down"
@@ -2507,7 +2532,6 @@ impl Sidebar {
                         px(14.),
                         theme::text_secondary(),
                     ))
-                    .child(section_label(section.label()))
                     .into_any_element()
             }
             Some(SidebarEntry::Empty(reason)) => {
@@ -2576,11 +2600,10 @@ impl Sidebar {
                     .w_auto()
                     .mx_2()
                     .my(px(1.))
-                    .mt_5()
+                    .when(heading_gap, |row| row.mt_3())
                     .flex()
                     .items_center()
-                    .gap_1p5()
-                    .mb_1()
+                    .gap_1()
                     .px_2()
                     .py_1()
                     .rounded(ROW_RADIUS)
@@ -2592,6 +2615,13 @@ impl Sidebar {
                     .on_click(cx.listener(|this, _event, _window, cx| {
                         this.toggle_archived_visibility(cx);
                     }))
+                    .child(section_label("Archived"))
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(gpui::rgb(theme::text_muted()))
+                            .child(count_label),
+                    )
                     .child(icon(
                         if expanded {
                             "chevron-down"
@@ -2601,13 +2631,6 @@ impl Sidebar {
                         px(14.),
                         theme::text_secondary(),
                     ))
-                    .child(section_label("ARCHIVED"))
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(gpui::rgb(theme::text_muted()))
-                            .child(count_label),
-                    )
                     .into_any_element()
             }
             None => div().into_any_element(),
@@ -3309,6 +3332,105 @@ fn remote_root_display_name(root: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{remote_root_display_name, root_display_name};
+
+    #[gpui::test]
+    fn sidebar_remeasures_an_offscreen_heading_when_its_gap_changes(cx: &mut gpui::TestAppContext) {
+        use super::*;
+        cx.executor().allow_parking();
+        let backend =
+            Arc::new(AgentBackend::for_test("http://127.0.0.1:9".into(), String::new()).unwrap());
+        let chat = cx.new(|cx| ChatScreen::new_without_start(backend, "user".into(), cx));
+        let sidebar = chat.update(cx, |chat, _| chat.sidebar.clone());
+        sidebar.update(cx, |sidebar, cx| {
+            sidebar.application_vim_enabled = true;
+            sidebar.list = gpui::ListState::new(0, gpui::ListAlignment::Top, px(0.));
+            let sessions = (0..102)
+                .map(|ix| AgentSessionSummary {
+                    id: format!("s{ix}"),
+                    title: format!("Task {ix}"),
+                    project_root: "/tmp/proj".into(),
+                    created_ms: 0,
+                    updated_ms: 0,
+                    message_count: 1,
+                    model: None,
+                    web_enabled: true,
+                    state: if ix == 101 {
+                        AgentTaskState::Settled
+                    } else {
+                        AgentTaskState::Active
+                    },
+                    acp: false,
+                })
+                .collect();
+            sidebar.pinned_tasks = (0..100).map(|ix| format!("s{ix}")).collect();
+            sidebar.set_sessions(sessions, cx);
+        });
+        let list = sidebar.update(cx, |sidebar, _| sidebar.list.clone());
+        struct Host(Entity<Sidebar>);
+        impl Render for Host {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                div()
+                    .w(px(300.))
+                    .h(px(400.))
+                    .flex()
+                    .flex_col()
+                    .child(self.0.clone())
+            }
+        }
+        let (_host, cx) = cx.add_window_view(|_, _| Host(sidebar.clone()));
+        cx.simulate_resize(gpui::size(px(300.), px(400.)));
+        let settled = |cx: &mut gpui::VisualTestContext| {
+            sidebar.update(cx, |sidebar, _| {
+                sidebar
+                    .entries
+                    .iter()
+                    .position(|entry| *entry == SidebarEntry::SectionLabel(SidebarSection::Settled))
+                    .unwrap()
+            })
+        };
+        let row = settled(cx);
+        sidebar.update(cx, |sidebar, cx| {
+            sidebar.list.scroll_to(gpui::ListOffset {
+                item_ix: row,
+                offset_in_item: px(0.),
+            });
+            cx.notify();
+        });
+        cx.run_until_parked();
+        let height = list.bounds_for_item(row).unwrap().size.height;
+        for expanded in [false, true] {
+            sidebar.update(cx, |sidebar, cx| {
+                sidebar.list.scroll_to(gpui::ListOffset::default());
+                cx.notify();
+            });
+            cx.run_until_parked();
+            let row = settled(cx);
+            assert!(list.item_is_below_viewport(row).unwrap());
+            assert!(list.bounds_for_item(row).is_some());
+            sidebar.update(cx, |sidebar, cx| {
+                sidebar.toggle_section_expanded(SidebarSection::Active, cx);
+            });
+            let row = settled(cx);
+            assert!(
+                list.bounds_for_item(row).is_none(),
+                "discard the off-screen heading's old measurement"
+            );
+            sidebar.update(cx, |sidebar, cx| {
+                sidebar.list.scroll_to(gpui::ListOffset {
+                    item_ix: row,
+                    offset_in_item: px(0.),
+                });
+                cx.notify();
+            });
+            cx.run_until_parked();
+            let measured = list.bounds_for_item(row).unwrap().size.height;
+            if expanded {
+                assert_eq!(measured, height);
+            } else {
+                assert!(measured < height, "adjacent headings lose the section gap");
+            }
+        }
+    }
 
     #[test]
     fn remote_project_labels_use_the_owners_path_syntax() {
