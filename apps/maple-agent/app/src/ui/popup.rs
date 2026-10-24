@@ -6,6 +6,9 @@
 //! the open menu as a [`Menu`] on every render. The state stays in the view
 //! and the rows are rebuilt each frame, so a switch turned on or a status
 //! that arrives late shows without rebuilding anything.
+//! A submenu row comes from the next level's [`Popup::submenu`], which
+//! attaches an ordinary child [`Menu`] beside the row. Its selection closes
+//! the submenu chain; other nested menus keep their usual selection behavior.
 //!
 //! What every popup gets:
 //!
@@ -32,15 +35,16 @@
 //!   expanded, a named menu of named items, and the highlighted item as the
 //!   focused one.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
+use std::time::Duration;
 
 use gpui::{
     AnyElement, App, AvailableSpace, Bounds, ClickEvent, Context, Div, Edges, ElementId,
     FocusHandle, GlobalElementId, HitboxBehavior, HitboxId, InspectorElementId, KeyDownEvent,
     LayoutId, MouseButton, MouseDownEvent, Pixels, Point, Position, Role, ScrollHandle,
-    SharedString, Size, Stateful, Style, Subscription, Toggled, WeakFocusHandle, Window, canvas,
-    div, point, prelude::*, px,
+    SharedString, Size, Stateful, Style, Subscription, Task, Toggled, WeakFocusHandle, Window,
+    canvas, div, point, prelude::*, px,
 };
 
 use super::icons::icon;
@@ -61,6 +65,8 @@ gpui::actions!(
         SelectFirst,
         SelectLast,
         Confirm,
+        OpenSubmenu,
+        CloseSubmenu,
         Cancel
     ]
 );
@@ -184,6 +190,13 @@ pub(crate) struct Popup<V: 'static, K: 'static> {
     reveal: Rc<Cell<Reveal>>,
     /// This popup has an entry in [`Popups`].
     registered: bool,
+    /// Only submenu selections dismiss ancestors; ordinary nested menus do not.
+    parent: Option<OnParent<V>>,
+    /// Only a child opened through `submenu` closes on an ordinary row's hover.
+    close_child: Option<OnSelect<V>>,
+    hover: Option<Task<()>>,
+    /// The current enabled submenu; timers never retain an obsolete opener.
+    hover_opener: RefCell<Option<(ElementId, OnSelect<V>)>>,
 }
 
 impl<V: 'static, K: Clone + PartialEq + 'static> Popup<V, K> {
@@ -199,6 +212,10 @@ impl<V: 'static, K: Clone + PartialEq + 'static> Popup<V, K> {
             scroll: ScrollHandle::new(),
             reveal: Rc::new(Cell::new(Reveal::Done)),
             registered: false,
+            parent: None,
+            close_child: None,
+            hover: None,
+            hover_opener: RefCell::new(None),
         }
     }
 
@@ -239,6 +256,10 @@ impl<V: 'static, K: Clone + PartialEq + 'static> Popup<V, K> {
     }
 
     fn open_with(&mut self, key: K, item: Option<ElementId>, cx: &mut Context<V>) {
+        self.parent = None;
+        self.close_child = None;
+        self.hover = None;
+        *self.hover_opener.get_mut() = None;
         if self.open.as_ref() != Some(&key) {
             self.scroll.set_offset(point(px(0.), px(0.)));
         }
@@ -269,6 +290,9 @@ impl<V: 'static, K: Clone + PartialEq + 'static> Popup<V, K> {
     /// focus, focus goes back on the owner's next render (see
     /// [`Self::sync_focus`]).
     pub(crate) fn close(&mut self, cx: &mut Context<V>) -> bool {
+        self.hover = None;
+        *self.hover_opener.get_mut() = None;
+        self.close_child = None;
         self.focus_pending = false;
         self.highlighted = None;
         if self.open.take().is_none() {
@@ -285,9 +309,14 @@ impl<V: 'static, K: Clone + PartialEq + 'static> Popup<V, K> {
         true
     }
 
+    fn closes_on_select(&self, submenu: bool, keep_open: bool) -> bool {
+        !submenu && (!keep_open || self.parent.is_some())
+    }
+
     /// Highlight `item`, or nothing.
     pub(crate) fn highlight(&mut self, item: Option<ElementId>, cx: &mut Context<V>) {
         if self.highlighted != item {
+            self.hover = None;
             self.highlighted = item;
             cx.notify();
         }
@@ -427,6 +456,72 @@ impl<V: 'static, K: Clone + PartialEq + 'static> Popup<V, K> {
             }))
     }
 
+    /// A parent row and its child menu, using this popup for the next level.
+    /// Sync this popup's focus after the outer popup's, even while closed.
+    #[cfg_attr(
+        not(test),
+        allow(
+            dead_code,
+            reason = "The submenu API is exercised by its fixture until a caller adopts it."
+        )
+    )]
+    pub(crate) fn submenu(
+        &self,
+        key: K,
+        id: impl Into<ElementId>,
+        label: impl Into<SharedString>,
+        menu: Menu<V>,
+        window: &mut Window,
+        cx: &mut Context<V>,
+    ) -> MenuItem<V> {
+        let expanded = self.is_open(&key);
+        let level = menu.priority.max(2);
+        let (panel, initial_menu) = if expanded {
+            (
+                Some(self.render(menu.level(level), Placement::Beside, window, cx)),
+                None,
+            )
+        } else {
+            (None, Some(menu))
+        };
+        let get = self.get;
+        let close_key = key.clone();
+        let mut item = MenuItem::new(id, label, |_, _, _| {});
+        item.keep_open = true;
+        item.submenu = Some(Box::new(Submenu {
+            close: Rc::new(move |view, _, cx| {
+                let popup = get(view);
+                if popup.parent.is_some() && popup.is_open(&close_key) {
+                    popup.close(cx);
+                }
+            }),
+            expanded,
+            panel,
+            value: None,
+            open: Rc::new(move |view, parent, cx| {
+                let popup = get(view);
+                if !popup.is_open(&key) {
+                    let initial = initial_menu.as_ref().and_then(|menu| {
+                        let mut first = menu.entries.iter().filter_map(|entry| match entry {
+                            Entry::Item(item) if item.enabled => Some(item),
+                            _ => None,
+                        });
+                        first
+                            .clone()
+                            .find(|item| matches!(item.state, Some(ItemState::Current(true))))
+                            .or_else(|| first.next())
+                            .map(|item| item.id.clone())
+                    });
+                    popup.open_with(key.clone(), initial, cx);
+                } else {
+                    popup.refocus(cx);
+                }
+                popup.parent = Some(parent);
+            }),
+        }));
+        item
+    }
+
     /// The open menu, placed and wired to this popup. Build it only while
     /// the popup is open.
     pub(crate) fn render(
@@ -450,17 +545,44 @@ impl<V: 'static, K: Clone + PartialEq + 'static> Popup<V, K> {
         // What the keyboard needs about each item: its id, its action,
         // whether it can be picked, the letter it starts with, and its
         // child index for scrolling it into view.
+        self.hover_opener.replace(None);
         let mut picks: Vec<Pick<V>> = Vec::new();
         let mut children: Vec<AnyElement> = Vec::with_capacity(entries.len());
         for entry in entries {
             match entry {
-                Entry::Item(item) => {
+                Entry::Item(mut item) => {
+                    if let Some(submenu) = &item.submenu {
+                        let open = submenu.open.clone();
+                        let close = submenu.close.clone();
+                        let id = item.id.clone();
+                        item.on_select = Rc::new(move |view, _, cx| {
+                            get(view).hover = None;
+                            get(view).highlight(Some(id.clone()), cx);
+                            get(view).close_child = Some(close.clone());
+                            open(
+                                view,
+                                Rc::new(move |view, exit, window, cx| {
+                                    get(view).hover = None;
+                                    get(view).close_child = None;
+                                    if matches!(exit, Exit::Select) {
+                                        close_menu(view, get, exit, window, cx);
+                                    }
+                                }),
+                                cx,
+                            );
+                        });
+                    }
                     let highlighted = self.highlighted.as_ref() == Some(&item.id);
+                    if highlighted && item.enabled && item.submenu.is_some() {
+                        self.hover_opener
+                            .replace(Some((item.id.clone(), item.on_select.clone())));
+                    }
                     picks.push(Pick {
                         id: item.id.clone(),
                         on_select: item.on_select.clone(),
                         enabled: item.enabled,
                         keep_open: item.keep_open,
+                        submenu: item.submenu.is_some(),
                         initial: initial(&item.label),
                         child: children.len(),
                     });
@@ -546,6 +668,29 @@ impl<V: 'static, K: Clone + PartialEq + 'static> Popup<V, K> {
             .on_action({
                 let picks = picks.clone();
                 let focus = self.focus.clone();
+                cx.listener(move |view, _: &OpenSubmenu, window, cx| {
+                    if !focus.is_focused(window) {
+                        cx.propagate();
+                    } else if let Some(row) = get(view).highlighted_row(&picks)
+                        && picks[row].submenu
+                    {
+                        pick(view, get, &picks, row, window, cx);
+                    }
+                })
+            })
+            .on_action({
+                let focus = self.focus.clone();
+                cx.listener(move |view, _: &CloseSubmenu, window, cx| {
+                    if focus.is_focused(window) && get(view).parent.is_some() {
+                        close_menu(view, get, Exit::Return, window, cx);
+                    } else {
+                        cx.propagate();
+                    }
+                })
+            })
+            .on_action({
+                let picks = picks.clone();
+                let focus = self.focus.clone();
                 cx.listener(move |view, _: &Confirm, window, cx| {
                     // Enter in a field inside the menu belongs to the field.
                     if !focus.is_focused(window) {
@@ -568,7 +713,7 @@ impl<V: 'static, K: Clone + PartialEq + 'static> Popup<V, K> {
                         cx.propagate();
                         return;
                     }
-                    get(view).close(cx);
+                    close_menu(view, get, Exit::Return, window, cx);
                 })
             })
             .on_key_down({
@@ -642,6 +787,8 @@ pub(crate) enum Placement {
     AboveStart,
     /// At a point in window coordinates, for a right-click.
     At(Point<Pixels>),
+    /// Right of the trigger, sharing its top edge; flips left when needed.
+    Beside,
 }
 
 impl Placement {
@@ -661,6 +808,7 @@ impl Placement {
             Placement::BelowEnd => (trigger, true, false, GAP),
             Placement::AboveStart => (trigger, false, true, GAP),
             Placement::At(position) => (Bounds::new(position, Size::default()), true, true, px(0.)),
+            Placement::Beside => return beside(trigger, size, window, margin),
         };
         let room_below = window.height - margin - anchor.bottom() - gap;
         let room_above = anchor.top() - gap - margin;
@@ -687,6 +835,27 @@ impl Placement {
         let y = if below { y.ceil() } else { y.floor() };
         point(x.round(), y)
     }
+}
+
+fn beside(
+    trigger: Bounds<Pixels>,
+    size: Size<Pixels>,
+    window: Size<Pixels>,
+    margin: Pixels,
+) -> Point<Pixels> {
+    let room_right = window.width - margin - trigger.right() - GAP;
+    let room_left = trigger.left() - GAP - margin;
+    let x = if first_side(true, size.width, room_right, room_left) {
+        trigger.right() + GAP
+    } else {
+        trigger.left() - GAP - size.width
+    };
+    let x = x.min(window.width - margin - size.width).max(margin);
+    let y = trigger
+        .top()
+        .min(window.height - margin - size.height)
+        .max(margin);
+    point(x.round(), y.round())
 }
 
 /// Whether a panel `length` long goes on the first of two sides, which
@@ -785,6 +954,35 @@ impl Element for Float {
 
 /// What picking a row does, with the owning view in hand.
 type OnSelect<V> = Rc<dyn Fn(&mut V, &mut Window, &mut Context<V>)>;
+type OnParent<V> = Rc<dyn Fn(&mut V, Exit, &mut Window, &mut Context<V>)>;
+type OpenChild<V> = Rc<dyn Fn(&mut V, OnParent<V>, &mut Context<V>)>;
+
+enum Exit {
+    Return,
+    Select,
+}
+
+struct Submenu<V: 'static> {
+    expanded: bool,
+    panel: Option<AnyElement>,
+    value: Option<SharedString>,
+    open: OpenChild<V>,
+    close: OnSelect<V>,
+}
+
+fn close_menu<V: 'static, K: Clone + PartialEq + 'static>(
+    view: &mut V,
+    get: fn(&mut V) -> &mut Popup<V, K>,
+    exit: Exit,
+    window: &mut Window,
+    cx: &mut Context<V>,
+) {
+    let parent = get(view).parent.take();
+    get(view).close(cx);
+    if let Some(parent) = parent {
+        parent(view, exit, window, cx);
+    }
+}
 /// A caller's adjustment to one row.
 type RowStyle = Box<dyn FnOnce(Stateful<Div>) -> Stateful<Div>>;
 
@@ -893,6 +1091,7 @@ pub(crate) struct MenuItem<V: 'static> {
     trailing: Option<AnyElement>,
     style: Option<RowStyle>,
     on_select: OnSelect<V>,
+    submenu: Option<Box<Submenu<V>>>,
 }
 
 #[derive(Clone, Copy)]
@@ -920,11 +1119,21 @@ impl<V: 'static> MenuItem<V> {
             trailing: None,
             style: None,
             on_select: Rc::new(on_select),
+            submenu: None,
         }
     }
 
     pub(crate) fn icon(mut self, name: &'static str) -> Self {
         self.icon = Some(name);
+        self
+    }
+
+    /// The current choice, shown beside a submenu's chevron.
+    #[cfg_attr(not(test), allow(dead_code, reason = "Part of the submenu API."))]
+    pub(crate) fn value(mut self, value: impl Into<SharedString>) -> Self {
+        if let Some(submenu) = &mut self.submenu {
+            submenu.value = Some(value.into());
+        }
         self
     }
 
@@ -987,6 +1196,7 @@ struct Pick<V: 'static> {
     on_select: OnSelect<V>,
     enabled: bool,
     keep_open: bool,
+    submenu: bool,
     initial: Option<char>,
     child: usize,
 }
@@ -1015,6 +1225,7 @@ fn item_row<V: 'static, K: Clone + PartialEq + 'static>(
         trailing,
         style,
         on_select,
+        submenu,
     } = item;
     let role = match state {
         None => Role::MenuItem,
@@ -1027,11 +1238,19 @@ fn item_row<V: 'static, K: Clone + PartialEq + 'static>(
         theme::text_muted()
     };
     let hovered_id = id.clone();
+    let opens_submenu = submenu.is_some();
+    let expanded = submenu.as_ref().is_some_and(|submenu| submenu.expanded);
     let row_element = div()
         .debug_selector(|| id.to_string())
         .id(id)
         .role(role)
         .aria_label(label.clone())
+        .when(opens_submenu, |row| {
+            row.aria_expanded(expanded).a11y_synthetic_children(|tree| {
+                tree.parent_node()
+                    .set_has_popup(gpui::accesskit::HasPopup::Menu);
+            })
+        })
         .when_some(state, |row, state| {
             let on = match state {
                 ItemState::Current(on) | ItemState::Switch(on) => on,
@@ -1052,12 +1271,48 @@ fn item_row<V: 'static, K: Clone + PartialEq + 'static>(
         .text_color(gpui::rgb(text))
         // The pointer highlights the row under it, and nothing over a
         // disabled row, the way a native menu does.
-        .on_hover(cx.listener(move |view, hovered: &bool, _, cx| {
+        .on_hover(cx.listener(move |view, hovered: &bool, window, cx| {
+            if *hovered
+                && !opens_submenu
+                && let Some(close) = get(view).close_child.take()
+            {
+                close(view, window, cx);
+            }
             let popup = get(view);
             if *hovered {
+                popup.hover = None;
                 popup.highlight(enabled.then(|| hovered_id.clone()), cx);
+                if enabled && opens_submenu {
+                    let id = hovered_id.clone();
+                    popup.hover = Some(cx.spawn_in(window, async move |view, cx| {
+                        cx.background_executor()
+                            .timer(Duration::from_millis(175))
+                            .await;
+                        view.update_in(cx, |view, window, cx| {
+                            let open = {
+                                let popup = get(view);
+                                let opener = popup.hover_opener.borrow();
+                                opener
+                                    .as_ref()
+                                    .filter(|(current, _)| {
+                                        popup.open.is_some()
+                                            && current == &id
+                                            && popup.highlighted.as_ref() == Some(current)
+                                    })
+                                    .map(|(_, open)| open.clone())
+                            };
+                            if let Some(open) = open {
+                                open(view, window, cx);
+                            }
+                        })
+                        .ok();
+                    }));
+                }
             } else if popup.highlighted.as_ref() == Some(&hovered_id) {
-                popup.highlight(None, cx);
+                popup.hover = None;
+                if !expanded {
+                    popup.highlight(None, cx);
+                }
             }
         }))
         .when(enabled, |row_element| {
@@ -1066,8 +1321,8 @@ fn item_row<V: 'static, K: Clone + PartialEq + 'static>(
                 .active(|style| style.bg(gpui::rgb(theme::bg_sidebar_row_selected())))
                 .on_click(cx.listener(move |view, _: &ClickEvent, window, cx| {
                     cx.stop_propagation();
-                    if !keep_open {
-                        get(view).close(cx);
+                    if get(view).closes_on_select(opens_submenu, keep_open) {
+                        close_menu(view, get, Exit::Select, window, cx);
                     }
                     on_select(view, window, cx);
                 }))
@@ -1125,7 +1380,21 @@ fn item_row<V: 'static, K: Clone + PartialEq + 'static>(
                     .into_any_element(),
                 ItemState::Switch(on) => widgets::switch_track(on).into_any_element(),
             }
-        }));
+        }))
+        .when_some(submenu, |row, submenu| {
+            row.children(submenu.value.map(|value| {
+                div()
+                    .text_color(gpui::rgb(theme::text_muted()))
+                    .child(value)
+            }))
+            .child(icon(
+                "chevron-right",
+                widgets::ROW_ICON,
+                theme::text_muted(),
+            ))
+            .children(submenu.panel)
+        })
+        .relative();
     match style {
         Some(style) => style(row_element).into_any_element(),
         None => row_element.into_any_element(),
@@ -1184,8 +1453,8 @@ fn pick<V: 'static, K: Clone + PartialEq + 'static>(
     let Some(item) = picks.get(row).filter(|item| item.enabled) else {
         return;
     };
-    if !item.keep_open {
-        get(view).close(cx);
+    if get(view).closes_on_select(item.submenu, item.keep_open) {
+        close_menu(view, get, Exit::Select, window, cx);
     }
     (item.on_select)(view, window, cx);
 }
@@ -1279,6 +1548,11 @@ mod tests {
     struct Host {
         popup: Popup<Host, Which>,
         nested: Popup<Host, ()>,
+        child: Popup<Host, u8>,
+        grandchild: Popup<Host, ()>,
+        submenus: bool,
+        group_enabled: bool,
+        placement: Placement,
         other: Entity<Other>,
         /// Whether the host draws the other view at all.
         show_other: bool,
@@ -1295,7 +1569,7 @@ mod tests {
     }
 
     impl Host {
-        fn menu_a(&self, cx: &mut Context<Host>) -> Menu<Host> {
+        fn menu_a(&self, window: &mut Window, cx: &mut Context<Host>) -> Menu<Host> {
             let pick = |name: &'static str| {
                 move |this: &mut Host, _: &mut Window, _: &mut Context<Host>| this.picked.push(name)
             };
@@ -1315,7 +1589,8 @@ mod tests {
             if self.lead {
                 menu = menu.item(MenuItem::new("a-lead", "Lead", pick("lead")));
             }
-            menu.item(MenuItem::new("a-one", "One", pick("one")))
+            let menu = menu
+                .item(MenuItem::new("a-one", "One", pick("one")))
                 .item(MenuItem::new("a-two", "Two", pick("two")).enabled(self.second_enabled))
                 .separator()
                 .item(MenuItem::new("a-three", "Three", pick("three")).trailing(more))
@@ -1328,7 +1603,40 @@ mod tests {
                         },
                     )
                     .switch(false),
-                )
+                );
+            if !self.submenus {
+                return menu;
+            }
+            let group = Menu::new("group-menu", px(180.))
+                .application_vim(self.vim)
+                .items([
+                    MenuItem::new("group-disabled", "Disabled", pick("disabled")).enabled(false),
+                    MenuItem::new("group-date", "Date", pick("date")),
+                    MenuItem::new("group-folder", "Folder", pick("folder")).current(true),
+                    MenuItem::new("group-switch", "Metadata", pick("metadata")).switch(false),
+                    self.grandchild.submenu(
+                        (),
+                        "deep",
+                        "More",
+                        Menu::new("deep-menu", px(160.))
+                            .level(3)
+                            .item(MenuItem::new("deep-one", "Deep choice", pick("deep"))),
+                        window,
+                        cx,
+                    ),
+                ]);
+            let sort = Menu::new("sort-menu", px(180.)).items([
+                MenuItem::new("sort-disabled", "Disabled", pick("disabled")).enabled(false),
+                MenuItem::new("sort-name", "Name", pick("name")),
+                MenuItem::new("sort-date", "Date", pick("date")),
+            ]);
+            menu.item(
+                self.child
+                    .submenu(1, "group", "Group by", group, window, cx)
+                    .value("Folder")
+                    .enabled(self.group_enabled),
+            )
+            .item(self.child.submenu(2, "sort", "Sort by", sort, window, cx))
         }
 
         fn menu_low(&self) -> Menu<Host> {
@@ -1348,6 +1656,8 @@ mod tests {
         fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
             self.popup.sync_focus(window, cx);
             self.nested.sync_focus(window, cx);
+            self.child.sync_focus(window, cx);
+            self.grandchild.sync_focus(window, cx);
             let trigger = |popup: &Popup<Host, Which>,
                            which: Which,
                            id: &'static str,
@@ -1369,7 +1679,7 @@ mod tests {
                 )
             };
             let menu_a = self.popup.is_open(&Which::A).then(|| {
-                let mut menu = self.menu_a(cx);
+                let mut menu = self.menu_a(window, cx);
                 if self.nested.is_open(&()) {
                     menu = menu.child(
                         div().relative().child(
@@ -1390,7 +1700,7 @@ mod tests {
                         ),
                     );
                 }
-                self.popup.render(menu, Placement::BelowStart, window, cx)
+                self.popup.render(menu, self.placement, window, cx)
             });
             let menu_b = self.popup.is_open(&Which::B).then(|| {
                 self.popup.render(
@@ -1483,6 +1793,11 @@ mod tests {
             Host {
                 popup: Popup::new(|this| &mut this.popup, cx),
                 nested: Popup::new(|this| &mut this.nested, cx),
+                child: Popup::new(|this| &mut this.child, cx),
+                grandchild: Popup::new(|this| &mut this.grandchild, cx),
+                submenus: false,
+                group_enabled: true,
+                placement: Placement::BelowStart,
                 other,
                 show_other: true,
                 picked: Vec::new(),
@@ -1524,6 +1839,223 @@ mod tests {
 
     fn focused(cx: &mut VisualTestContext) -> Option<FocusHandle> {
         cx.update(|window, cx| window.focused(cx))
+    }
+
+    fn submenu_setup(cx: &mut TestAppContext) -> (Entity<Host>, &mut VisualTestContext) {
+        let (host, cx) = setup(cx);
+        host.update(cx, |host, cx| {
+            host.submenus = true;
+            host.popup.open(Which::A, cx);
+        });
+        cx.run_until_parked();
+        (host, cx)
+    }
+
+    fn hover(cx: &mut VisualTestContext, selector: &'static str) {
+        let row = cx.debug_bounds(selector).expect(selector);
+        cx.simulate_mouse_move(row.center(), None, Modifiers::default());
+        cx.run_until_parked();
+    }
+
+    fn wait_hover(cx: &mut VisualTestContext, millis: u64) {
+        cx.executor().advance_clock(Duration::from_millis(millis));
+        cx.run_until_parked();
+    }
+
+    fn child(host: &Entity<Host>, cx: &mut VisualTestContext) -> Option<u8> {
+        host.update(cx, |host, _| host.child.open_key().copied())
+    }
+
+    #[gpui::test]
+    fn submenu_hover_waits_switches_and_cancels(cx: &mut TestAppContext) {
+        let (host, cx) = submenu_setup(cx);
+        hover(cx, "group");
+        wait_hover(cx, 174);
+        assert_eq!(child(&host, cx), None);
+        hover(cx, "sort");
+        wait_hover(cx, 174);
+        assert_eq!(child(&host, cx), None);
+        wait_hover(cx, 1);
+        assert_eq!(child(&host, cx), Some(2));
+        hover(cx, "group");
+        wait_hover(cx, 175);
+        let row = cx.debug_bounds("group").unwrap();
+        cx.simulate_mouse_move(
+            point(row.right() + GAP / 2., row.center().y),
+            None,
+            Modifiers::default(),
+        );
+        wait_hover(cx, 200);
+        hover(cx, "group-folder");
+        assert_eq!(child(&host, cx), Some(1));
+        hover(cx, "outside");
+        assert_eq!(open(&host, cx), Some(Which::A));
+        cx.simulate_keystrokes("escape");
+        hover(cx, "sort");
+        cx.simulate_keystrokes("escape");
+        wait_hover(cx, 200);
+        assert_eq!(child(&host, cx), None);
+        assert_eq!(open(&host, cx), None);
+    }
+
+    #[gpui::test]
+    fn submenu_hover_ignores_disabled_or_removed_rows(cx: &mut TestAppContext) {
+        let (host, cx) = submenu_setup(cx);
+        for removed in [false, true] {
+            hover(cx, "outside");
+            host.update(cx, |host, cx| {
+                host.submenus = true;
+                host.group_enabled = true;
+                cx.notify();
+            });
+            cx.run_until_parked();
+            hover(cx, "group");
+            wait_hover(cx, 100);
+            host.update(cx, |host, cx| {
+                host.submenus = !removed;
+                host.group_enabled = false;
+                cx.notify();
+            });
+            cx.run_until_parked();
+            wait_hover(cx, 100);
+            assert_eq!(child(&host, cx), None, "removed: {removed}");
+        }
+    }
+
+    #[gpui::test]
+    fn submenu_selections_dismiss_the_chain(cx: &mut TestAppContext) {
+        let (host, cx) = submenu_setup(cx);
+        for (keys, pick) in [
+            ("", "date"),
+            ("end right enter", "name"),
+            ("g right down enter", "metadata"),
+            ("g right end right enter", "deep"),
+        ] {
+            host.update(cx, |host, cx| host.popup.open(Which::A, cx));
+            cx.run_until_parked();
+            if keys.is_empty() {
+                click(cx, "group");
+                assert_eq!(
+                    host.update(cx, |host, _| host.child.highlighted.clone()),
+                    Some("group-folder".into())
+                );
+                click(cx, "group-date");
+            } else {
+                cx.simulate_keystrokes(keys);
+            }
+            host.update(cx, |host, _| {
+                assert_eq!(host.picked.last(), Some(&pick));
+                assert!(!host.popup.is_open(&Which::A));
+                assert!(host.child.open_key().is_none());
+                assert!(!host.grandchild.is_open(&()));
+            });
+        }
+        host.update(cx, |host, cx| {
+            host.placement = Placement::At(point(px(620.), px(100.)));
+            host.popup.open(Which::A, cx);
+        });
+        cx.run_until_parked();
+        click(cx, "sort");
+        let panel = cx.debug_bounds("sort-menu").expect("child panel");
+        let window = Bounds::new(point(px(0.), px(0.)), size(px(800.), px(600.)));
+        assert!(window.contains(&panel.origin) && window.contains(&panel.bottom_right()));
+        click(cx, "sort-name");
+        assert_eq!(
+            host.update(cx, |host, _| host.picked.last().copied()),
+            Some("name")
+        );
+        assert_eq!(open(&host, cx), None);
+    }
+
+    #[gpui::test]
+    fn submenu_keyboard_returns_focus_and_cancels_sibling_hover(cx: &mut TestAppContext) {
+        let (host, cx) = submenu_setup(cx);
+        let field = focus_field(&host, cx);
+        cx.run_until_parked();
+        host.update(cx, |host, cx| host.popup.open(Which::A, cx));
+        cx.run_until_parked();
+        cx.simulate_keystrokes("g right left");
+        assert_eq!(highlighted(&host, cx), Some("group".into()));
+        for key in ["left", "escape"] {
+            cx.simulate_keystrokes("g right d");
+            assert_eq!(
+                host.update(cx, |host, _| host.child.highlighted.clone()),
+                Some("group-date".into())
+            );
+            hover(cx, "sort");
+            wait_hover(cx, 100);
+            assert_eq!(child(&host, cx), Some(1));
+            cx.simulate_keystrokes(key);
+            wait_hover(cx, 200);
+            assert_eq!(child(&host, cx), None);
+            assert_eq!(highlighted(&host, cx), Some("sort".into()));
+            assert_eq!(
+                focused(cx),
+                Some(host.update(cx, |host, _| host.popup.focus.clone()))
+            );
+            hover(cx, "outside");
+        }
+        cx.simulate_keystrokes("end enter");
+        assert_eq!(child(&host, cx), Some(2));
+        cx.simulate_keystrokes("escape escape");
+        assert_eq!(open(&host, cx), None);
+        assert_eq!(focused(cx), Some(field));
+    }
+
+    #[gpui::test]
+    fn submenu_hovering_an_ordinary_row_returns_the_keyboard(cx: &mut TestAppContext) {
+        let (host, cx) = submenu_setup(cx);
+        cx.simulate_keystrokes("g right");
+        hover(cx, "a-one");
+        assert_eq!(child(&host, cx), None);
+        assert_eq!(highlighted(&host, cx), Some("a-one".into()));
+        cx.simulate_keystrokes("enter");
+        assert_eq!(host.update(cx, |host, _| host.picked.clone()), vec!["one"]);
+        assert_eq!(open(&host, cx), None);
+    }
+
+    #[gpui::test]
+    fn submenu_application_vim_walks_and_selects_in_the_child(cx: &mut TestAppContext) {
+        let (host, cx) = submenu_setup(cx);
+        host.update(cx, |host, cx| {
+            host.vim = true;
+            cx.notify();
+        });
+        cx.run_until_parked();
+        click(cx, "group");
+        for (keys, row) in [
+            ("k", "group-date"),
+            ("j", "group-folder"),
+            ("g g", "group-date"),
+            ("G", "deep"),
+        ] {
+            cx.simulate_keystrokes(keys);
+            assert_eq!(
+                host.update(cx, |host, _| host.child.highlighted.clone()),
+                Some(row.into())
+            );
+        }
+        cx.simulate_keystrokes("k enter");
+        assert_eq!(
+            host.update(cx, |host, _| host.picked.clone()),
+            vec!["metadata"]
+        );
+        assert_eq!(open(&host, cx), None);
+    }
+
+    #[gpui::test]
+    fn submenu_hover_keeps_ordinary_nested_popups_open(cx: &mut TestAppContext) {
+        let (host, cx) = submenu_setup(cx);
+        click(cx, "group");
+        host.update(cx, |host, cx| host.child.open(1, cx));
+        cx.run_until_parked();
+        hover(cx, "a-one");
+        assert_eq!(child(&host, cx), Some(1));
+        host.update(cx, |host, cx| host.child.close(cx));
+        click(cx, "a-sub");
+        hover(cx, "a-one");
+        assert!(host.update(cx, |host, _| host.nested.is_open(&())));
+        assert_eq!(open(&host, cx), Some(Which::A));
     }
 
     #[gpui::test]
