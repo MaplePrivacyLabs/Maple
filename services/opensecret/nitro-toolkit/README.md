@@ -71,10 +71,13 @@ not part of the application EIF. Their Dockerfiles pin the Python 3.13
 Bookworm multi-architecture image by digest. They install only the complete,
 hash-locked Python dependency closures in their respective `requirements.txt`
 files; `requirements.in` lists the direct imports and security constraints.
-The credential requester pins a reviewed `certifi` CA bundle because Botocore
-uses it for HTTPS Secrets Manager requests; its offline image test verifies the
-installed bundle and default CA path. The previously installed `iproute2`
-package is not used by either helper and is omitted from the refreshed images.
+Both parent helpers pin a reviewed `certifi` CA bundle for Botocore HTTPS
+requests. Their offline image tests verify the installed bundle and default
+Botocore CA path. Both check that the affected eMudhra G3 root is absent; the
+logger test also checks the alternate Comodo AAA trust root. This root-level
+mitigation does not replace CPython's key-level denylist against other
+cross-signs. The previously installed `iproute2` package is not used by either
+helper and is omitted from the refreshed images.
 The build removes pip and its `ensurepip` bootstrap wheel after checking
 dependencies, since the running helpers do not use them.
 
