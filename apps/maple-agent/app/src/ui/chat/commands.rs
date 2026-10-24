@@ -65,6 +65,17 @@ impl ChatScreen {
             }
             ChatCommand::ChooseProject => self.toggle_root_menu(cx),
             ChatCommand::CopySelection => self.copy_selected_text(cx),
+            ChatCommand::Escape
+                if self.sidebar.read(cx).search_input_focused(window, cx)
+                    && self
+                        .sidebar
+                        .update(cx, |sidebar, cx| sidebar.hide_empty_search(cx)) =>
+            {
+                if let Some(composer) = &self.composer {
+                    use gpui::Focusable;
+                    window.focus(&composer.read(cx).focus_handle(cx), cx);
+                }
+            }
             ChatCommand::Escape if self.application_vim_enabled => {
                 self.application_escape(window, cx)
             }

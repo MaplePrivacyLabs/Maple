@@ -157,6 +157,14 @@ impl ChatScreen {
                             ChatCommand::NewTask,
                             4,
                         ),
+                        (
+                            "header-search",
+                            "search",
+                            "Search",
+                            &super::FocusSearch,
+                            ChatCommand::FocusSearch,
+                            5,
+                        ),
                     ]
                     .into_iter()
                     .filter(|(_, _, _, _, command, _)| {

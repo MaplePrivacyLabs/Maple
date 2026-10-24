@@ -833,7 +833,11 @@ impl Sidebar {
         self.other_tasks.clear();
         self.group_pages.more.clear();
         self.computer_archived_count = 0;
-        let mut entries = vec![SidebarEntry::NewTask, SidebarEntry::ProjectsHeader];
+        let mut entries = vec![
+            SidebarEntry::NewTask,
+            SidebarEntry::Search,
+            SidebarEntry::ProjectsHeader,
+        ];
         let mut archived_entries = Vec::new();
         // These small clones let rendering append row projections without
         // borrowing the per-host paging cache for the whole rebuild.

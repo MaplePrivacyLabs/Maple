@@ -80,6 +80,8 @@ use crate::ui::theme;
 use crate::ui::titlebar;
 use crate::ui::widgets;
 
+const SEARCH_ROW_RADIUS: gpui::Pixels = px(6.);
+
 /// Geometry shared by the expanded wordmark row and the collapsed mark.
 pub(super) const WORDMARK_LEFT: gpui::Pixels = px(16.);
 pub(super) const WORDMARK_HEIGHT: gpui::Pixels = px(16.);
@@ -245,6 +247,7 @@ pub(super) enum SidebarEntry {
     ComputerMore(usize),
     LoadMore(PageKind),
     NewTask,
+    Search,
     /// The project switcher row above the sections.
     ProjectsHeader,
     /// A section label, shown only when the section has rows.
@@ -436,6 +439,8 @@ pub(super) struct Sidebar {
     // Search and rename.
     filter: String,
     search_input: Entity<TextInput>,
+    search_visible: bool,
+    search_focus_out: Option<Subscription>,
     rename: Option<RenameTarget>,
     rename_input: Option<Entity<TextInput>>,
     rename_focus_pending: bool,
@@ -591,6 +596,7 @@ impl Sidebar {
             || self.project_filter.is_some();
         self.search_input
             .update(cx, |input, cx| input.set_text(&state.search, cx));
+        self.search_visible = !state.search.is_empty();
         self.filter = filter;
         self.archived_expanded = state.archived_expanded;
         // A project filter belongs to the previous execution computer.
@@ -671,6 +677,8 @@ impl Sidebar {
             menu_trust: None,
             filter: String::new(),
             search_input,
+            search_visible: false,
+            search_focus_out: None,
             rename: None,
             rename_input: None,
             rename_focus_pending: false,
@@ -1190,11 +1198,37 @@ impl Sidebar {
     }
 
     pub(super) fn focus_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.search_visible = true;
+        self.reveal_row(1);
+        self.list.remeasure_items(1..2);
+        let handle = self.search_input.read(cx).focus_handle(cx);
+        handle.focus(window, cx);
+        self.search_focus_out = Some(cx.on_focus_out(&handle, window, |_this, _, window, cx| {
+            cx.defer_in(window, |this, window, cx| {
+                if !this.search_input.read(cx).menu_open() && !this.search_input_focused(window, cx)
+                {
+                    this.hide_empty_search(cx);
+                }
+            });
+        }));
+        cx.notify();
+    }
+
+    pub(super) fn search_input_focused(&self, window: &Window, cx: &gpui::App) -> bool {
         self.search_input
             .read(cx)
             .focus_handle(cx)
-            .focus(window, cx);
+            .is_focused(window)
+    }
+
+    pub(super) fn hide_empty_search(&mut self, cx: &mut Context<Self>) -> bool {
+        if !self.search_visible || !self.search_input.read(cx).text_ref().is_empty() {
+            return false;
+        }
+        self.search_visible = false;
+        self.list.remeasure_items(1..2);
         cx.notify();
+        true
     }
 
     /// Rebuild the sidebar sections: pinned tasks first, then the active
@@ -1309,7 +1343,11 @@ impl Sidebar {
     /// span that changed, so the scroll position and the measured
     /// heights of untouched rows survive every rebuild.
     fn rebuild_entries(&mut self) {
-        let mut entries = vec![SidebarEntry::NewTask, SidebarEntry::ProjectsHeader];
+        let mut entries = vec![
+            SidebarEntry::NewTask,
+            SidebarEntry::Search,
+            SidebarEntry::ProjectsHeader,
+        ];
         let tasks = |entries: &mut Vec<SidebarEntry>,
                      section: SidebarSection,
                      rows: &[usize],
@@ -2101,6 +2139,7 @@ impl Sidebar {
                 | SidebarEntry::Computer(_)
                 | SidebarEntry::ComputerMore(_)) => self.computer_target(entry),
                 SidebarEntry::NewTask => Some(SidebarTarget::NewTask),
+                SidebarEntry::Search => Some(SidebarTarget::Search),
                 SidebarEntry::ProjectsHeader => Some(SidebarTarget::Projects),
                 SidebarEntry::SectionLabel(_) | SidebarEntry::Empty(_) => None,
                 SidebarEntry::LoadMore(kind) => {
@@ -2251,6 +2290,70 @@ impl Sidebar {
 
     // ---- Render ------------------------------------------------------------
 
+    fn render_search(&self, cx: &mut Context<Self>) -> AnyElement {
+        let active = !self.filter.is_empty();
+        div()
+            .debug_selector(|| "sidebar-search".to_string())
+            // Most of the sidebar takes no focus, so a press anywhere else
+            // must end the search itself: drop the cursor, and return to
+            // the Search row when nothing was typed.
+            .on_mouse_down_out(cx.listener(|this, _event, window, cx| {
+                if this.search_input.read(cx).menu_open() {
+                    return;
+                }
+                if this.search_input_focused(window, cx) {
+                    window.blur();
+                }
+                this.hide_empty_search(cx);
+            }))
+            .flex()
+            .items_center()
+            .gap_2()
+            .w_full()
+            .my(px(1.))
+            .mb_3()
+            .px_2()
+            .h_8()
+            .rounded(SEARCH_ROW_RADIUS)
+            .bg(gpui::rgb(if active {
+                theme::bg_sidebar_row_selected()
+            } else {
+                theme::bg_sidebar_row_hover()
+            }))
+            .text_sm()
+            .child(icon("search", px(16.), theme::text_secondary()))
+            .child(div().flex_1().min_w_0().child(self.search_input.clone()))
+            .when(active, |row| {
+                row.child(
+                    div()
+                        .id("search-clear")
+                        .debug_selector(|| "search-clear".to_string())
+                        .size_5()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .rounded(theme::RADIUS_SM)
+                        .hover(|style| {
+                            style
+                                .bg(gpui::rgb(theme::bg_sidebar_row_selected()))
+                                .cursor_pointer()
+                        })
+                        .tooltip(widgets::tooltip_for_action(
+                            "Clear search",
+                            &super::ChatEscape,
+                        ))
+                        .on_click(cx.listener(|this, _event, window, cx| {
+                            this.clear_search(cx);
+                            if !this.search_input_focused(window, cx) {
+                                this.hide_empty_search(cx);
+                            }
+                        }))
+                        .child(icon("x", px(12.), theme::text_secondary())),
+                )
+            })
+            .into_any_element()
+    }
+
     /// One row of the sidebar list.
     fn render_entry(
         &mut self,
@@ -2268,40 +2371,68 @@ impl Sidebar {
                 | SidebarEntry::ComputerMore(_)),
             ) => self.render_computer_entry(entry, self.vim_selects_row(ix), cx),
             Some(SidebarEntry::LoadMore(kind)) => self.render_load_more(kind, cx),
-            Some(SidebarEntry::NewTask) => div()
-                .id("new-task")
-                .role(gpui::Role::Button)
-                .aria_label("New task")
-                .w_full()
-                .mb_3()
-                .px_4()
-                .py_1p5()
-                .rounded(theme::RADIUS_SM)
-                .flex()
-                .items_center()
-                .gap_2()
-                .text_sm()
-                .text_color(gpui::rgb(theme::accent()))
-                .hover(|style| {
-                    style
-                        .bg(gpui::rgb(theme::bg_sidebar_row_hover()))
-                        .cursor_pointer()
-                })
-                .active(|style| style.bg(gpui::rgb(theme::bg_sidebar_row_selected())))
-                .tooltip(widgets::tooltip_for_action(
-                    "Start a new task",
-                    &super::NewTask,
-                ))
-                .on_click(move |_event, window, cx| {
-                    if let Some(chat) = chat.upgrade() {
-                        chat.update(cx, |chat, cx| {
-                            chat.execute_command(ChatCommand::NewTask, window, cx);
-                        });
-                    }
-                })
-                .child(icon("square-pen", px(16.), theme::accent()))
-                .child("New Task")
-                .into_any_element(),
+            Some(SidebarEntry::Search) if self.search_visible => self.render_search(cx),
+            Some(entry @ (SidebarEntry::NewTask | SidebarEntry::Search)) => {
+                let search = entry == SidebarEntry::Search;
+                let (id, name, label, command, action, color): (_, _, _, _, &dyn gpui::Action, _) =
+                    if search {
+                        (
+                            "sidebar-search-row",
+                            "search",
+                            "Search",
+                            ChatCommand::FocusSearch,
+                            &super::FocusSearch,
+                            theme::text_secondary(),
+                        )
+                    } else {
+                        (
+                            "new-task",
+                            "square-pen",
+                            "New Task",
+                            ChatCommand::NewTask,
+                            &super::NewTask,
+                            theme::accent(),
+                        )
+                    };
+                div()
+                    .id(id)
+                    .debug_selector(move || id.to_string())
+                    .role(gpui::Role::Button)
+                    .aria_label(label)
+                    .w_full()
+                    .my(px(1.))
+                    .when(search, |row| {
+                        row.mb_3()
+                            .tab_index(2)
+                            .focus_visible(widgets::focus_ring)
+                            .on_key_down(ChatScreen::sidebar_button_key_down)
+                    })
+                    .px_2()
+                    .h_8()
+                    .rounded(SEARCH_ROW_RADIUS)
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .text_sm()
+                    .text_color(gpui::rgb(color))
+                    .hover(|style| {
+                        style
+                            .bg(gpui::rgb(theme::bg_sidebar_row_hover()))
+                            .cursor_pointer()
+                    })
+                    .active(|style| style.bg(gpui::rgb(theme::bg_sidebar_row_selected())))
+                    .tooltip(widgets::tooltip_for_action(label, action))
+                    .on_click(move |_event, window, cx| {
+                        if let Some(chat) = chat.upgrade() {
+                            chat.update(cx, |chat, cx| {
+                                chat.execute_command(command, window, cx);
+                            });
+                        }
+                    })
+                    .child(icon(name, px(16.), color))
+                    .child(label)
+                    .into_any_element()
+            }
             Some(SidebarEntry::ProjectsHeader) => self.render_projects_header(window, cx),
             Some(SidebarEntry::Task(task)) => {
                 let application_selected = self.vim_selects_row(ix);
@@ -2448,6 +2579,14 @@ impl Sidebar {
                     .into_any_element()
             }
             None => div().into_any_element(),
+        };
+        let entry = if matches!(
+            self.entries.get(ix),
+            Some(SidebarEntry::NewTask | SidebarEntry::Search)
+        ) {
+            div().w_full().px_2().child(entry).into_any_element()
+        } else {
+            entry
         };
         if !self.application_vim_enabled {
             return entry;
@@ -2983,7 +3122,6 @@ impl Render for Sidebar {
             sidebar.update(cx, |sidebar, cx| sidebar.render_entry(ix, window, cx))
         })
         .size_full();
-        let active = !self.filter.is_empty();
         div()
             .size_full()
             .flex()
@@ -3013,51 +3151,6 @@ impl Render for Sidebar {
                             ),
                     ),
             ))
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .mx_4()
-                    .mt_3()
-                    .px_2()
-                    .py_1()
-                    .rounded(theme::RADIUS_SM)
-                    .bg(gpui::rgb(theme::bg_sidebar_pill()))
-                    .border_1()
-                    .border_color(gpui::rgb(if active {
-                        theme::accent()
-                    } else {
-                        theme::border_subtle()
-                    }))
-                    .text_sm()
-                    .child(icon("search", px(14.), theme::text_muted()))
-                    .child(div().flex_1().min_w_0().child(self.search_input.clone()))
-                    .when(active, |row| {
-                        row.child(
-                            div()
-                                .id("search-clear")
-                                .size_5()
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .rounded(theme::RADIUS_SM)
-                                .hover(|style| {
-                                    style
-                                        .bg(gpui::rgb(theme::bg_sidebar_row_selected()))
-                                        .cursor_pointer()
-                                })
-                                .tooltip(widgets::tooltip_for_action(
-                                    "Clear search",
-                                    &super::ChatEscape,
-                                ))
-                                .on_click(cx.listener(|this, _event, _window, cx| {
-                                    this.clear_search(cx);
-                                }))
-                                .child(icon("x", px(12.), theme::text_secondary())),
-                        )
-                    }),
-            )
             .child(
                 div()
                     .id("session-list")
