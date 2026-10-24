@@ -89,11 +89,49 @@ impl Header {
 }
 
 fn body_limit(method: Method) -> usize {
-    if method.urgent() {
+    if matches!(method, Method::PeerInfo | Method::RemoteUpdateInstall) {
+        wire::MAX_PREFACE
+    } else if method.urgent() {
         MAX_CONTROL
     } else {
         wire::MAX_FRAME
     }
+}
+
+/// Optional management discovery never inherits ordinary RPC's unbounded wait
+/// for the first response byte. A legacy peer may reject only this stream.
+pub(crate) async fn peer_info(connection: &Connection) -> Option<super::update::PeerInfo> {
+    peer_info_with_timeout(connection, Duration::from_secs(5)).await
+}
+
+async fn peer_info_with_timeout(
+    connection: &Connection,
+    timeout: Duration,
+) -> Option<super::update::PeerInfo> {
+    let response = tokio::time::timeout(
+        timeout,
+        call(
+            connection,
+            Command {
+                id: 1,
+                method: Method::PeerInfo,
+                send_id: None,
+                params: serde_json::json!({}),
+            },
+        ),
+    )
+    .await
+    .ok()?
+    .ok()?;
+    let Message::Response {
+        result: Ok(value), ..
+    } = response
+    else {
+        return None;
+    };
+    let info: super::update::PeerInfo = serde_json::from_value(value).ok()?;
+    info.validate().ok()?;
+    Some(info)
 }
 
 fn transfer_timeout(method: Method) -> Duration {
@@ -142,10 +180,13 @@ pub async fn reply_with_limit(
         .await
         .map_err(|e| e.to_string())?;
     tx.finish().map_err(|_| "Remote reply closed")?;
-    tokio::time::timeout(TRANSFER_TIMEOUT, tx.stopped())
+    let stopped = tokio::time::timeout(TRANSFER_TIMEOUT, tx.stopped())
         .await
         .map_err(|_| "Remote reply transfer timed out")?
         .map_err(|_| "Remote reply disconnected")?;
+    if stopped.is_some() {
+        return Err("Remote consumer rejected the reply".into());
+    }
     Ok(())
 }
 
@@ -192,14 +233,36 @@ pub async fn call(connection: &Connection, command: Command) -> Result<Message, 
     } else {
         response.await
     };
-    match response {
-        Ok(message @ Message::Response { id: received, .. }) if received == id => Ok(message),
-        Ok(message @ Message::Closed { .. }) => Ok(message),
-        Err(error @ (wire::Error::Disconnected | wire::Error::TimedOut)) => Err(error.to_string()),
-        _ => Ok(Message::Closed {
-            reason: "Invalid remote reply; reconnect with compatible Maple versions".into(),
-        }),
+    let message = match response {
+        Ok(message @ Message::Response { id: received, .. }) if received == id => message,
+        Ok(message @ Message::Closed { .. }) => message,
+        Err(error @ (wire::Error::Disconnected | wire::Error::TimedOut)) => {
+            return Err(error.to_string());
+        }
+        _ => {
+            return Ok(Message::Closed {
+                reason: "Invalid remote reply; reconnect with compatible Maple versions".into(),
+            });
+        }
+    };
+    // A framed read alone does not consume QUIC FIN. Dropping rx at that point
+    // can send STOP_SENDING even for a valid response, so the server cannot
+    // distinguish normal receipt from rejection before activating an install.
+    // Only EOF belongs after the one bounded reply; reject extra data promptly.
+    finish_reply(&mut rx, IO_TIMEOUT).await?;
+    Ok(message)
+}
+
+async fn finish_reply(rx: &mut RecvStream, deadline: Duration) -> Result<(), String> {
+    let mut trailing = [0u8; 1];
+    let count = tokio::time::timeout(deadline, tokio::io::AsyncReadExt::read(rx, &mut trailing))
+        .await
+        .map_err(|_| "Remote reply did not finish")?
+        .map_err(|_| "Remote reply disconnected")?;
+    if count != 0 {
+        return Err("Remote reply contained unexpected extra data".into());
     }
+    Ok(())
 }
 
 #[cfg(test)]

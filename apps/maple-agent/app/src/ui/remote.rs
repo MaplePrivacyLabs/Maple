@@ -1,14 +1,20 @@
-//! Local-only device setup. Codes and account settings never traverse the remote
-//! task protocol; a paired computer is selected explicitly before opening tasks.
+//! Device setup and explicitly targeted remote update controls. Pairing codes
+//! and local account settings never traverse the remote task protocol.
 use crate::{
     backend::AgentBackend,
-    remote::manager::{PairingWindow, Status},
+    remote::{
+        manager::{PairingWindow, Status},
+        update::{
+            InstallAccepted, InstallRequest, OperationState, PeerInfo, ReleaseIdentity, UpdateState,
+        },
+    },
     ui::{task, text_input::TextInput, theme, widgets},
 };
 use gpui::{Context, Div, Entity, EventEmitter, Focusable, Render, Window, div, prelude::*, px};
 use maple_sdk::remote::RemoteDevice;
 use std::{
     cell::RefCell,
+    collections::HashMap,
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -33,8 +39,250 @@ pub(crate) fn computer_name(key: &str, advertised: &str, alias: &str) -> String 
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum PeerInfoPhase {
+    #[default]
+    Unchecked,
+    Loading,
+    Loaded,
+    Unsupported,
+    Unreachable,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum InstallPhase {
+    Sending,
+    Accepted,
+    Uncertain,
+    Succeeded,
+    Failed,
+}
+
+struct InstallAttempt {
+    request: InstallRequest,
+    phase: InstallPhase,
+    label: String,
+}
+
+#[derive(Default)]
+struct ComputerUpdate {
+    generation: u64,
+    phase: PeerInfoPhase,
+    info: Option<PeerInfo>,
+    running_label: String,
+    update_label: String,
+    blocked_label: Option<String>,
+    install_available: bool,
+    attempt: Option<InstallAttempt>,
+}
+
+struct InstallConfirmation {
+    peer: String,
+    grant: [u8; 16],
+    generation: u64,
+    action_label: String,
+    request: InstallRequest,
+    detail: String,
+    previous_focus: Option<gpui::FocusHandle>,
+    cancel_focus: gpui::FocusHandle,
+    install_focus: gpui::FocusHandle,
+}
+
+struct InstallIntent {
+    account: String,
+    peer: String,
+    grant: [u8; 16],
+    request: InstallRequest,
+}
+
+const CLIENT_READINESS: &str = "This client must already run this release or have the same verified update available. Client updates remain manual.";
+const UNCONFIRMED_INSTALL: &str = "The update request could not be confirmed. Do not resend it. Refresh this computer’s status, or check the remote computer directly.";
+const CLIENT_VERSION_LABEL: &str = concat!(
+    "Client v",
+    env!("CARGO_PKG_VERSION"),
+    " · client updates are manual"
+);
+
+fn client_can_recover(target: &ReleaseIdentity, local: &crate::update::Snapshot) -> bool {
+    if matches!(
+        local.state,
+        crate::update::State::Installing | crate::update::State::RestartRequired
+    ) {
+        return false;
+    }
+    (crate::profile::PROFILE == "prod"
+        && crate::remote::update::RunningApplication::current().matches_release(target))
+        || local
+            .remote_candidate
+            .as_ref()
+            .is_some_and(|candidate| candidate.same_release(target))
+}
+
+fn install_blocked(info: &PeerInfo, local: &crate::update::Snapshot) -> Option<String> {
+    if !info.supports_remote_updates() {
+        return Some("This version does not support remote update installation.".into());
+    }
+    if let Some(reason) = &info.update.blocked {
+        return Some(reason.message().into());
+    }
+    if operation_pending(info) {
+        return Some("A remote update request is already pending on this computer. Refresh its status before continuing.".into());
+    }
+    if info.update.state != UpdateState::Ready {
+        return Some("The update must be downloaded and ready on this computer first.".into());
+    }
+    let Some(target) = &info.update.offered else {
+        return Some("No verified update is ready on this computer.".into());
+    };
+    if info.running.matches_release(target) {
+        return Some("This release is already running on the remote computer.".into());
+    }
+    (!client_can_recover(target, local)).then(|| CLIENT_READINESS.into())
+}
+
+fn operation_pending(info: &PeerInfo) -> bool {
+    info.update.operation.as_ref().is_some_and(|operation| {
+        matches!(
+            operation.state,
+            OperationState::PendingAck
+                | OperationState::Queued
+                | OperationState::Installing
+                | OperationState::Unknown
+        )
+    })
+}
+
+impl ComputerUpdate {
+    fn refresh_presentation(&mut self, local: &crate::update::Snapshot) {
+        self.install_available = false;
+        let Some(info) = &self.info else {
+            self.running_label = "Version unavailable".into();
+            self.update_label = match self.phase {
+                PeerInfoPhase::Loading => "Reading update status…",
+                PeerInfoPhase::Unsupported => "Remote update status is unavailable. Use Open projects for ordinary remote access.",
+                PeerInfoPhase::Unreachable => "Could not read update status. Check that this computer is online, then refresh.",
+                _ => "Refresh to read this computer’s version and update status.",
+            }.into();
+            self.blocked_label = None;
+            return;
+        };
+        self.running_label = match &info.running.build {
+            Some(build) => format!("Running v{} · build {build}", info.running.version),
+            None => format!("Running v{}", info.running.version),
+        };
+        self.update_label = if self.phase == PeerInfoPhase::Loading {
+            "Refreshing update status…".into()
+        } else if self.phase == PeerInfoPhase::Unreachable {
+            "Could not refresh update status. The last reported version is shown above.".into()
+        } else if let Some(offered) = &info.update.offered {
+            format!("v{} · {}", offered.version, info.update.state.label())
+        } else {
+            info.update.state.label().into()
+        };
+        let blocked = install_blocked(info, local);
+        let healthy_without_offer = info.update.offered.is_none()
+            && matches!(
+                info.update.state,
+                UpdateState::Current | UpdateState::Idle | UpdateState::Checking
+            )
+            && matches!(
+                info.update.blocked,
+                None | Some(crate::remote::update::BlockedReason::UpdateNotReady)
+            )
+            && !operation_pending(info);
+        self.blocked_label = if healthy_without_offer {
+            None
+        } else {
+            blocked.clone()
+        };
+        let pending = self
+            .attempt
+            .as_ref()
+            .is_some_and(|attempt| match attempt.phase {
+                InstallPhase::Sending | InstallPhase::Accepted | InstallPhase::Uncertain => true,
+                InstallPhase::Succeeded => {
+                    info.update.offered.as_ref() == Some(&attempt.request.target)
+                }
+                InstallPhase::Failed => false,
+            });
+        self.install_available =
+            self.phase == PeerInfoPhase::Loaded && !pending && blocked.is_none();
+    }
+
+    fn reconcile_operation(&mut self) {
+        let Some(info) = &self.info else {
+            return;
+        };
+        if self.attempt.is_none()
+            && let Some(operation) = &info.update.operation
+        {
+            // A reopened Settings view can recover the authenticated host's
+            // operation identity. This never resubmits that mutation.
+            self.attempt = Some(InstallAttempt {
+                request: InstallRequest {
+                    operation_id: operation.operation_id.clone(),
+                    target: operation.target.clone(),
+                },
+                phase: InstallPhase::Uncertain,
+                label: UNCONFIRMED_INSTALL.into(),
+            });
+        }
+        let Some(attempt) = &mut self.attempt else {
+            return;
+        };
+        // Running a version is independent of the outcome of this request:
+        // a local install or another controller may have installed it. Only
+        // the matching durable receipt can establish this operation's result.
+        if matches!(
+            attempt.phase,
+            InstallPhase::Succeeded | InstallPhase::Failed
+        ) {
+            return;
+        }
+        let Some(operation) = &info.update.operation else {
+            // An absent receipt does not prove that a disconnected mutation
+            // never happened. Keep its nonce and require manual recovery.
+            return;
+        };
+        if operation.operation_id != attempt.request.operation_id
+            || operation.target != attempt.request.target
+        {
+            return;
+        }
+        match operation.state {
+            OperationState::PendingAck => {
+                attempt.phase = InstallPhase::Accepted;
+                attempt.label =
+                    "Waiting for the update request acknowledgement. Installation has not started."
+                        .into();
+            }
+            OperationState::Queued | OperationState::Installing => {
+                attempt.phase = InstallPhase::Accepted;
+                attempt.label = "Update accepted. Remote access will disconnect while this computer restarts. Refresh to check when it returns.".into();
+            }
+            OperationState::Succeeded => {
+                attempt.phase = InstallPhase::Succeeded;
+                attempt.label = format!(
+                    "The remote computer confirmed that requested v{} was running after this earlier update request.",
+                    attempt.request.target.version
+                );
+            }
+            OperationState::Failed => {
+                attempt.phase = InstallPhase::Failed;
+                attempt.label = format!(
+                    "The earlier remote update request for v{} did not complete.",
+                    attempt.request.target.version
+                );
+            }
+            OperationState::Unknown => {}
+        }
+    }
+}
+
 pub struct RemoteScreen {
     backend: Arc<AgentBackend>,
+    account: String,
+    active: bool,
     status: Option<Status>,
     devices: Option<Vec<RemoteDevice>>,
     selected_device: Option<String>,
@@ -46,6 +294,10 @@ pub struct RemoteScreen {
     error: Option<String>,
     notice: Option<String>,
     busy: Option<&'static str>,
+    local_update: crate::update::Snapshot,
+    computer_updates: HashMap<String, ComputerUpdate>,
+    next_update_generation: u64,
+    install_confirmation: Option<InstallConfirmation>,
     bridges: RefCell<Vec<gpui::Task<()>>>,
 }
 impl EventEmitter<ConnectComputer> for RemoteScreen {}
@@ -55,6 +307,8 @@ impl EventEmitter<ComputerNamed> for RemoteScreen {}
 impl RemoteScreen {
     pub fn new(
         backend: Arc<AgentBackend>,
+        account: String,
+        active: bool,
         names: std::collections::HashMap<String, String>,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -72,6 +326,8 @@ impl RemoteScreen {
         });
         let mut screen = Self {
             backend,
+            account,
+            active,
             status: None,
             devices: None,
             selected_device: None,
@@ -83,6 +339,10 @@ impl RemoteScreen {
             error: None,
             notice: None,
             busy: None,
+            local_update: crate::update::Snapshot::initial(),
+            computer_updates: HashMap::new(),
+            next_update_generation: 0,
+            install_confirmation: None,
             bridges: RefCell::new(Vec::new()),
         };
         screen.refresh(false, cx);
@@ -128,6 +388,308 @@ impl RemoteScreen {
         cx.notify();
     }
 
+    pub(crate) fn set_local_update(
+        &mut self,
+        snapshot: crate::update::Snapshot,
+        cx: &mut Context<Self>,
+    ) {
+        self.local_update = snapshot;
+        for update in self.computer_updates.values_mut() {
+            update.refresh_presentation(&self.local_update);
+        }
+        self.invalidate_confirmation();
+        cx.notify();
+    }
+
+    pub(crate) fn set_active(&mut self, active: bool, cx: &mut Context<Self>) {
+        if self.active == active {
+            return;
+        }
+        self.active = active;
+        if active {
+            self.refresh_peer_versions(cx);
+        } else {
+            self.install_confirmation = None;
+        }
+    }
+
+    fn refresh_peer_versions(&mut self, cx: &mut Context<Self>) {
+        if !self.active {
+            return;
+        }
+        let peers: Vec<_> = self
+            .status
+            .iter()
+            .flat_map(|status| status.peers.iter())
+            .filter(|(_, peer)| peer.can_connect)
+            .map(|(key, _)| key.clone())
+            .collect();
+        for peer in peers {
+            self.refresh_peer_info(peer, cx);
+        }
+    }
+
+    fn peer_grant(&self, peer: &str) -> Option<[u8; 16]> {
+        self.status
+            .as_ref()?
+            .peers
+            .get(peer)
+            .filter(|peer| peer.can_connect)
+            .map(|peer| peer.grant)
+    }
+
+    fn confirmation_is_current(&self, confirmation: &InstallConfirmation) -> bool {
+        self.peer_grant(&confirmation.peer) == Some(confirmation.grant)
+            && self
+                .computer_updates
+                .get(&confirmation.peer)
+                .is_some_and(|update| {
+                    update.generation == confirmation.generation
+                        && update.install_available
+                        && update
+                            .info
+                            .as_ref()
+                            .and_then(|info| info.update.offered.as_ref())
+                            == Some(&confirmation.request.target)
+                })
+    }
+
+    fn invalidate_confirmation(&mut self) {
+        if self
+            .install_confirmation
+            .as_ref()
+            .is_some_and(|confirmation| !self.confirmation_is_current(confirmation))
+        {
+            self.install_confirmation = None;
+        }
+    }
+
+    fn refresh_peer_info(&mut self, peer: String, cx: &mut Context<Self>) {
+        let Some(grant) = self.peer_grant(&peer) else {
+            return;
+        };
+        if self
+            .computer_updates
+            .get(&peer)
+            .is_some_and(|update| update.phase == PeerInfoPhase::Loading)
+        {
+            return;
+        }
+        self.next_update_generation = self.next_update_generation.wrapping_add(1);
+        let generation = self.next_update_generation;
+        let update = self.computer_updates.entry(peer.clone()).or_default();
+        update.generation = generation;
+        update.phase = PeerInfoPhase::Loading;
+        update.refresh_presentation(&self.local_update);
+        self.invalidate_confirmation();
+        let backend = self.backend.clone();
+        let account = self.account.clone();
+        let target = peer.clone();
+        let bridge = task::call(
+            &self.backend,
+            async move {
+                backend
+                    .remote_setting::<Option<PeerInfo>>("remote_peer_info", (account, target))
+                    .await
+            },
+            cx,
+            move |screen, result, cx| {
+                screen.apply_peer_info(&peer, grant, generation, result);
+                cx.notify();
+            },
+        );
+        task::retain(&self.bridges, bridge);
+        cx.notify();
+    }
+
+    fn apply_peer_info(
+        &mut self,
+        peer: &str,
+        grant: [u8; 16],
+        generation: u64,
+        result: Result<Option<PeerInfo>, String>,
+    ) {
+        if self.peer_grant(peer) != Some(grant) {
+            return;
+        }
+        let Some(update) = self.computer_updates.get_mut(peer) else {
+            return;
+        };
+        if update.generation != generation {
+            return;
+        }
+        match result {
+            Ok(Some(info)) => {
+                update.phase = PeerInfoPhase::Loaded;
+                update.info = Some(info);
+                update.reconcile_operation();
+            }
+            Ok(None) => {
+                update.phase = PeerInfoPhase::Unsupported;
+                update.info = None;
+            }
+            Err(_) => update.phase = PeerInfoPhase::Unreachable,
+        }
+        update.refresh_presentation(&self.local_update);
+        self.invalidate_confirmation();
+    }
+
+    fn ask_remote_install(&mut self, peer: String, window: &mut Window, cx: &mut Context<Self>) {
+        if self.install_confirmation.is_some() {
+            return;
+        }
+        let Some(grant) = self.peer_grant(&peer) else {
+            return;
+        };
+        let Some(update) = self
+            .computer_updates
+            .get(&peer)
+            .filter(|update| update.install_available)
+        else {
+            return;
+        };
+        let Some(target) = update
+            .info
+            .as_ref()
+            .and_then(|info| info.update.offered.clone())
+        else {
+            return;
+        };
+        let advertised = self
+            .status
+            .as_ref()
+            .and_then(|status| status.peers.get(&peer))
+            .map_or("Maple computer", |peer| peer.name.as_str());
+        let name = computer_name(
+            &peer,
+            advertised,
+            self.names.get(&peer).map_or("", String::as_str),
+        );
+        let cancel_focus = cx.focus_handle();
+        let install_focus = cx.focus_handle();
+        let previous_focus = window.focused(cx);
+        window.focus(&cancel_focus, cx);
+        self.install_confirmation = Some(InstallConfirmation {
+            peer,
+            grant,
+            generation: update.generation,
+            action_label: format!("Update {name}"),
+            detail: format!(
+                "Install v{} on {name}? This will stop running work and restart Maple on that computer. Remote access may not return, and you may need to restart, update or repair Maple directly on it. A later manual update of this client may affect compatibility with your other computers. Continue only if you have another way to access {name}. This client will not update or restart automatically.",
+                target.version
+            ),
+            request: InstallRequest {
+                operation_id: uuid::Uuid::new_v4().to_string(),
+                target,
+            },
+            previous_focus,
+            cancel_focus,
+            install_focus,
+        });
+        cx.notify();
+    }
+
+    fn cancel_remote_install(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(confirmation) = self.install_confirmation.take()
+            && let Some(previous) = confirmation.previous_focus
+        {
+            window.focus(&previous, cx);
+        }
+        cx.notify();
+    }
+
+    fn take_install_intent(&mut self) -> Option<InstallIntent> {
+        let confirmation = self.install_confirmation.take()?;
+        if !self.confirmation_is_current(&confirmation) {
+            self.notice = Some("This computer’s update or pairing changed. Refresh its status before trying again.".into());
+            return None;
+        }
+        Some(InstallIntent {
+            account: self.account.clone(),
+            peer: confirmation.peer,
+            grant: confirmation.grant,
+            request: confirmation.request,
+        })
+    }
+
+    fn confirm_remote_install(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(previous) = self
+            .install_confirmation
+            .as_ref()
+            .and_then(|confirmation| confirmation.previous_focus.as_ref())
+        {
+            window.focus(previous, cx);
+        }
+        let Some(intent) = self.take_install_intent() else {
+            cx.notify();
+            return;
+        };
+        let peer = intent.peer.clone();
+        let request = intent.request.clone();
+        let Some(update) = self.computer_updates.get_mut(&peer) else {
+            return;
+        };
+        // A lost reply is an uncertain mutation, not permission to submit it
+        // again. Keep this exact operation identity through status refreshes.
+        update.attempt = Some(InstallAttempt {
+            request: request.clone(),
+            phase: InstallPhase::Sending,
+            label: "Requesting the remote update…".into(),
+        });
+        update.refresh_presentation(&self.local_update);
+        let backend = self.backend.clone();
+        let grant = intent.grant;
+        let bridge = task::call(
+            &self.backend,
+            async move {
+                backend
+                    .remote_setting::<InstallAccepted>(
+                        "remote_install_update",
+                        (intent.account, intent.peer, intent.grant, intent.request),
+                    )
+                    .await
+            },
+            cx,
+            move |screen, result, cx| {
+                screen.apply_install_reply(&peer, grant, &request, result);
+                cx.notify();
+            },
+        );
+        task::retain(&self.bridges, bridge);
+        cx.notify();
+    }
+
+    fn apply_install_reply(
+        &mut self,
+        peer: &str,
+        grant: [u8; 16],
+        request: &InstallRequest,
+        result: Result<InstallAccepted, String>,
+    ) {
+        if self.peer_grant(peer) != Some(grant) {
+            return;
+        }
+        let Some(update) = self.computer_updates.get_mut(peer) else {
+            return;
+        };
+        let Some(attempt) = update.attempt.as_mut().filter(|attempt| {
+            attempt.request == *request && attempt.phase == InstallPhase::Sending
+        }) else {
+            return;
+        };
+        if let Ok(reply) = result
+            && reply.operation_id == request.operation_id
+            && reply.target == request.target
+        {
+            attempt.phase = InstallPhase::Accepted;
+            attempt.label = "Update accepted. Remote access will disconnect while this computer restarts. Refresh to check when it returns.".into();
+        } else {
+            attempt.phase = InstallPhase::Uncertain;
+            attempt.label = UNCONFIRMED_INSTALL.into();
+        }
+        update.refresh_presentation(&self.local_update);
+    }
+
     fn clear_local_code(&mut self) {
         if let Some((mut code, _)) = self.local_code.take() {
             zeroize::Zeroize::zeroize(&mut code);
@@ -169,7 +731,18 @@ impl RemoteScreen {
         {
             self.clear_selection(cx);
         }
+        self.computer_updates.retain(|key, _| {
+            status.peers.get(key).is_some_and(|peer| {
+                peer.can_connect
+                    && self
+                        .status
+                        .as_ref()
+                        .and_then(|old| old.peers.get(key))
+                        .is_some_and(|old| old.can_connect && old.grant == peer.grant)
+            })
+        });
         self.status = Some(status);
+        self.invalidate_confirmation();
         cx.notify();
     }
 
@@ -352,6 +925,7 @@ impl RemoteScreen {
                         }
                         cx.emit(ComputersChanged(status.clone()));
                         screen.update_status(status, cx);
+                        screen.refresh_peer_versions(cx);
                         if discover {
                             screen.devices = Some(devices);
                         }
@@ -448,6 +1022,12 @@ impl Render for RemoteScreen {
                 div().text_color(gpui::rgb(theme::text_secondary())).child(
                     "Work on another computer, or allow a paired computer to work on this one.",
                 ),
+            )
+            .child(
+                div()
+                    .text_sm()
+                    .text_color(gpui::rgb(theme::text_secondary()))
+                    .child(CLIENT_VERSION_LABEL),
             )
             .when_some(self.busy, |view, message| {
                 view.child(div().text_sm().child(message))
@@ -693,6 +1273,7 @@ impl RemoteScreen {
                             .on_click(cx.listener(move |_, _, _, cx| cx.emit(ConnectComputer(connect.clone()))))))
                         .child(widgets::ghost_button(format!("revoke-{key}")).aria_label("Unpair").child("Unpair")
                             .on_click(cx.listener(move |screen, _, _, cx| screen.action("remote_revoke", serde_json::json!([revoke]), cx)))))
+                    .when(peer.can_connect, |row| row.child(self.render_computer_update(key, cx)))
                     .when_some(editing, |row, (_, input)| row.child(div().flex().gap_2().items_center()
                         .child(widgets::input_frame().flex_1().child(input.clone()))
                         .child(widgets::secondary_button(format!("save-name-{key}")).aria_label("Save name").child("Save name")
@@ -701,6 +1282,209 @@ impl RemoteScreen {
                         widgets::secondary_button(format!("confirm-{key}")).aria_label("Confirm previous pairing").child("Confirm previous pairing")
                             .on_click(cx.listener(move |screen, _, _, cx| screen.action("remote_reconcile", serde_json::json!([confirm]), cx)))))
             }))
+    }
+
+    fn render_computer_update(&self, peer: &str, cx: &mut Context<Self>) -> Div {
+        let update = self.computer_updates.get(peer);
+        let loading = update.is_some_and(|update| update.phase == PeerInfoPhase::Loading);
+        let can_install = update.is_some_and(|update| update.install_available);
+        let has_offer = update.is_some_and(|update| {
+            update
+                .info
+                .as_ref()
+                .is_some_and(|info| info.supports_remote_updates() && info.update.offered.is_some())
+        });
+        let refresh = peer.to_owned();
+        let install = peer.to_owned();
+        div()
+            .w_full()
+            .min_w_0()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .child(
+                div().text_sm().child(
+                    update
+                        .map_or("Version unavailable", |update| {
+                            update.running_label.as_str()
+                        })
+                        .to_owned(),
+                ),
+            )
+            .child(
+                div()
+                    .text_sm()
+                    .text_color(gpui::rgb(theme::text_secondary()))
+                    .child(
+                        update
+                            .map_or(
+                                "Refresh to read this computer’s version and update status.",
+                                |update| update.update_label.as_str(),
+                            )
+                            .to_owned(),
+                    ),
+            )
+            .when_some(
+                update.and_then(|update| update.blocked_label.as_ref()),
+                |row, reason| {
+                    row.child(
+                        div()
+                            .text_sm()
+                            .text_color(gpui::rgb(theme::text_muted()))
+                            .child(reason.clone()),
+                    )
+                },
+            )
+            .when_some(
+                update.and_then(|update| update.attempt.as_ref()),
+                |row, attempt| row.child(div().text_sm().child(attempt.label.clone())),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .gap_2()
+                    .child(
+                        widgets::ghost_button(format!("refresh-update-{peer}"))
+                            .debug_selector({
+                                let peer = peer.to_owned();
+                                move || format!("refresh-update-{peer}")
+                            })
+                            .aria_label("Refresh this computer’s version and update status")
+                            .child(if loading {
+                                "Reading status…"
+                            } else {
+                                "Refresh update status"
+                            })
+                            .when(loading, |button| button.opacity(0.5))
+                            .when(!loading, |button| {
+                                button.on_click(cx.listener(move |screen, _, _, cx| {
+                                    screen.refresh_peer_info(refresh.clone(), cx)
+                                }))
+                            }),
+                    )
+                    .when(has_offer, |row| {
+                        row.child(
+                            widgets::secondary_button(format!("update-remote-{peer}"))
+                                .debug_selector({
+                                    let peer = peer.to_owned();
+                                    move || format!("update-remote-{peer}")
+                                })
+                                .aria_label(if can_install {
+                                    "Review experimental remote update"
+                                } else {
+                                    "Remote update is unavailable"
+                                })
+                                .child("Update remotely…")
+                                .when(!can_install, |button| button.opacity(0.5))
+                                .when(can_install, |button| {
+                                    button.on_click(cx.listener(move |screen, _, window, cx| {
+                                        screen.ask_remote_install(install.clone(), window, cx)
+                                    }))
+                                }),
+                        )
+                    }),
+            )
+            .when_some(
+                self.install_confirmation
+                    .as_ref()
+                    .filter(|confirmation| confirmation.peer == peer),
+                |row, confirmation| row.child(self.render_install_confirmation(confirmation, cx)),
+            )
+    }
+
+    fn render_install_confirmation(
+        &self,
+        confirmation: &InstallConfirmation,
+        cx: &mut Context<Self>,
+    ) -> gpui::Stateful<Div> {
+        div()
+            .id("remote-update-confirmation")
+            .debug_selector(|| "remote-update-confirmation".into())
+            .role(gpui::Role::Dialog)
+            .aria_label("Experimental remote update")
+            .key_context("Dialog")
+            .w_full()
+            .min_w_0()
+            .p_4()
+            .rounded(theme::RADIUS_MD)
+            .border_1()
+            .border_color(gpui::rgb(theme::status_warning()))
+            .flex()
+            .flex_col()
+            .gap_3()
+            .on_key_down(
+                cx.listener(|screen, event: &gpui::KeyDownEvent, window, cx| {
+                    match event.keystroke.key.as_str() {
+                        "escape" => screen.cancel_remote_install(window, cx),
+                        "tab" => {
+                            if let Some(confirmation) = &screen.install_confirmation {
+                                let focus = if confirmation.install_focus.is_focused(window) {
+                                    &confirmation.cancel_focus
+                                } else {
+                                    &confirmation.install_focus
+                                };
+                                window.focus(focus, cx);
+                            }
+                        }
+                        "enter" | "space" | " " if !event.keystroke.modifiers.modified() => {
+                            if screen
+                                .install_confirmation
+                                .as_ref()
+                                .is_some_and(|confirmation| {
+                                    confirmation.install_focus.is_focused(window)
+                                })
+                            {
+                                screen.confirm_remote_install(window, cx);
+                            } else {
+                                screen.cancel_remote_install(window, cx);
+                            }
+                        }
+                        _ => return,
+                    }
+                    cx.stop_propagation();
+                }),
+            )
+            .child(div().text_lg().child("Experimental remote update"))
+            .child(
+                div()
+                    .id("remote-update-warning")
+                    .debug_selector(|| "remote-update-warning".into())
+                    .w_full()
+                    .min_w_0()
+                    .max_h(px(240.))
+                    .overflow_y_scroll()
+                    .text_sm()
+                    .child(confirmation.detail.clone()),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .gap_2()
+                    .justify_end()
+                    .child(
+                        widgets::secondary_button("cancel-remote-update")
+                            .debug_selector(|| "cancel-remote-update".into())
+                            .track_focus(&confirmation.cancel_focus)
+                            .focus_visible(widgets::focus_ring)
+                            .child("Cancel")
+                            .on_click(cx.listener(|screen, _, window, cx| {
+                                screen.cancel_remote_install(window, cx)
+                            })),
+                    )
+                    .child(
+                        widgets::primary_button("confirm-remote-update")
+                            .debug_selector(|| "confirm-remote-update".into())
+                            .aria_label(confirmation.action_label.clone())
+                            .track_focus(&confirmation.install_focus)
+                            .focus_visible(widgets::focus_ring)
+                            .child("Update remote computer")
+                            .on_click(cx.listener(|screen, _, window, cx| {
+                                screen.confirm_remote_install(window, cx)
+                            })),
+                    ),
+            )
     }
 }
 

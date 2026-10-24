@@ -24,6 +24,8 @@ use crate::ui::settings::{
 };
 use crate::ui::titlebar::TitleBar;
 
+mod remote_updates;
+
 enum Screen {
     /// Construction placeholder. `run` replaces it before the first paint
     /// with the chat screen (saved sign-in) or the login form.
@@ -3157,10 +3159,15 @@ pub fn run() {
             // service. This also notices changes made through the CLI.
             let status_backend = backend.clone();
             let status_root = root.clone();
+            let remote_updater = updater.clone();
+            let update_bridge = remote_updates::Bridge::default();
             cx.spawn(async move |cx| {
                 loop {
                     let account = status_root.update(cx, |app, _| app.user_id.clone());
                     let backend = status_backend.clone();
+                    let expected_account = account.clone();
+                    let bridge = update_bridge.clone();
+                    let update_status = remote_updater.remote_status();
                     let task = status_backend.spawn(async move {
                         tokio::join!(
                             backend.remote_setting::<crate::remote::manager::Status>(
@@ -3168,9 +3175,10 @@ pub fn run() {
                                 ()
                             ),
                             backend.local_control::<DesktopStoreStatus>("store_status", ()),
+                            bridge.poll(backend.clone(), expected_account, update_status),
                         )
                     });
-                    if let Ok((remote, store)) = task.await {
+                    if let Ok((remote, store, update_command)) = task.await {
                         status_root.update(cx, |app, cx| {
                             if let Ok(store) = store {
                                 app.apply_store_completion_notice(&store, cx);
@@ -3181,6 +3189,9 @@ pub fn run() {
                                 {
                                     app.refresh_password_settings(cx);
                                 }
+                            }
+                            if let Some(command) = update_command {
+                                app.begin_remote_install(command, cx);
                             }
                             let Ok(status) = remote else { return };
                             if app.user_id == account && account.is_some() {

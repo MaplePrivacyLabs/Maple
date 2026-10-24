@@ -96,6 +96,59 @@ unlock, change passwords or erase a remote computer. Login alone does not unlock
 the local store. Window close and OS screen lock do not lock an unlocked host;
 Quit or `maple-agent host stop` completes local shutdown.
 
+## Experimental remote updates
+
+In **Settings → Remote computers**, each paired execution computer can report
+its running application version and update status. **Refresh update status**
+queries that computer; it does not check or update the controller's installation.
+It reads the remote updater's existing state; checks and automatic downloads
+continue to follow that computer's own schedule and saved preference.
+When available, the row shows the offered version and whether its verified
+download is ready. Numeric package build numbers may be absent from running
+executable metadata; the UI does not infer them from the protocol version.
+
+Installation requires the remote computer's running desktop updater and its
+exact prepared, signed candidate. A daemon without its desktop reports that
+installation is unavailable. Password-protected computers cannot install
+remotely, including while unlocked. Update those computers locally; this feature
+does not send passwords, transfer unlock keys or add an unlock handoff.
+
+The controller also needs the same release available through its own verified
+updater, or must already be running that release. Cross-platform release matching
+uses the version, build and source, with a missing running build left unknown;
+the execution computer separately binds its exact signed platform document.
+This is recovery readiness, not proof that a future protocol will remain
+compatible. The controller's own update and restart always remain manual, since
+it may be connected to other computers.
+
+The experimental confirmation names the execution computer and target version.
+It warns that updating stops its work and remote access, that reconnecting can
+fail and require direct access for repair, and that a later manual controller
+update could affect compatibility with other computers. Continue only with
+another way to access the execution computer.
+
+A remote install request carries a stable operation ID and the exact candidate,
+never a download URL, signing key or executable path. The host persists admission
+and acknowledges the request before its desktop can consume it. A lost response
+is uncertain: choose **Refresh update status**; the controller never automatically
+resends installation. Interrupted host receipts are not automatically resumed
+after a restart. The restarted host records success only when it observes the
+requested version and source running, checking the package build when known.
+That recorded outcome survives later updates. A changed or withdrawn offer needs
+a fresh confirmation.
+
+A refusal before shutdown leaves the same verified download ready to try again;
+it does not require quitting a healthy execution host. Uncertain shutdowns still
+require checking that computer. If reporting a failed attempt is interrupted,
+the execution desktop retries only the completion report, never installation.
+Running-version visibility remains available when its update journal needs
+attention, while remote installation stays blocked.
+
+The journal currently retains at most 512 operation receipts per profile. Safe
+retention beyond that limit is a follow-up: old operation identities must not
+be forgotten while their target remains installable. Reaching the cap requires
+updating that computer locally.
+
 ## Transport and recovery
 
 Iroh 1.3.0 supplies authenticated QUIC, direct connectivity and relay fallback.
@@ -110,7 +163,16 @@ Project-change events carry only changed metadata; snapshots and project pages
 provide authoritative names, revisions, and default-workspace flags.
 Update both computers to use it; version 5 and earlier peers receive an explicit
 version refusal. Bounded frames and an explicit task-operation allowlist apply.
-Account operations and whole-host administration cannot be forwarded.
+Account operations and arbitrary whole-host administration cannot be forwarded.
+The narrow experimental update capability uses the host's own signed updater;
+it does not expose the ordinary host-stop command.
+
+Optional management reports protocol version `6.1.0` and explicit capabilities
+over separate request streams. The wire-6 Hello, acknowledgement and ALPN remain
+unchanged. A bounded capability probe against an older wire-6 peer can fail
+without ending its ordinary task connection. Responses tolerate future optional
+fields; new operations require an advertised capability. Breaking protocol
+changes still require a coordinated major-version compatibility change.
 
 Four pre-admission handshakes and eight paired control connections have capacity
 separate from local IPC. Each control connection bounds ordinary calls and keeps

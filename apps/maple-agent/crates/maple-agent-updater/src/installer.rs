@@ -210,7 +210,13 @@ pub fn acquire_install_lock(installed: &Path) -> Result<InstallLock> {
     }
     let file = open_install_lock(installed)?;
     file.try_lock_exclusive().map_err(|e| {
-        if e.kind() == io::ErrorKind::WouldBlock {
+        // fs2 reports native lock errors. On Windows ERROR_LOCK_VIOLATION
+        // is not classified as WouldBlock by std::io, unlike Unix flock.
+        let native_contended = fs2::lock_contended_error().raw_os_error();
+        let contended = e
+            .raw_os_error()
+            .is_some_and(|code| Some(code) == native_contended);
+        if e.kind() == io::ErrorKind::WouldBlock || contended {
             InstallError::Busy
         } else {
             destination_error(e)
@@ -2390,5 +2396,29 @@ mod tests {
             "fake unsigned new app cannot pass checkpoint"
         );
         assert!(committed.backup_path.is_dir());
+    }
+}
+
+#[cfg(test)]
+mod portable_lock_tests {
+    use super::*;
+
+    #[test]
+    fn contention_is_busy_and_the_existing_lock_can_be_reacquired_after_drop() {
+        let directory = tempfile::tempdir().unwrap();
+        let installed = directory.path().canonicalize().unwrap().join(APP_NAME);
+        fs::create_dir(&installed).unwrap();
+        let first = acquire_install_lock(&installed).unwrap();
+        let error = match acquire_install_lock(&installed) {
+            Ok(_) => panic!("a second updater acquired the held installation lock"),
+            Err(error) => error,
+        };
+        assert!(
+            matches!(&error, InstallError::Busy),
+            "unexpected contention result: {error:?}"
+        );
+        drop(first);
+        let _next = acquire_install_lock(&installed)
+            .expect("the existing lock must be acquirable after its owner drops it");
     }
 }

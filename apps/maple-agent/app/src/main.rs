@@ -22,6 +22,7 @@ mod notify;
 mod platform;
 mod profile;
 mod remote;
+mod remote_updates;
 mod self_launch;
 mod settings;
 #[cfg(feature = "desktop")]

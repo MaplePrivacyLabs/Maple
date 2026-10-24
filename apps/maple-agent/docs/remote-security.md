@@ -86,6 +86,32 @@ API account/auth/billing/API-key/host-stop commands are excluded. Protocol versi
 identity scope, grant checks and account fences are checked before dispatch;
 account-local receipt lookup cannot expose another account's outcome.
 
+Experimental remote installation is a separate, narrow capability for already
+paired controllers. It does not forward general host administration. The
+execution host validates the current account, authenticated endpoint, pairing
+grant, desktop lease and exact prepared candidate. It rejects password mode
+even when the store is open. At the actual typed update-stop boundary, it checks
+these conditions again under exclusive host admission ordered against password,
+account and revocation changes. Failure never falls back to ordinary Stop.
+
+The existing desktop installer remains responsible for compiled feeds and keys,
+fresh signed-offer validation, payload/tree verification, installation locking,
+durable store shutdown and restart. Remote parameters cannot replace that trust
+configuration. A short desktop lease makes absent coordinators unavailable.
+The host's bounded private update journal records operation identity and outcome;
+only a successfully delivered reply releases a request to the desktop queue.
+Interrupted records cannot authorize replay. No password or encryption-key
+handoff is implemented, and the controller never updates itself as a consequence
+of a remote installation. See [remote access](remote-access.md#experimental-remote-updates)
+for the experimental confirmation and recovery limits.
+
+Like the updater's anti-rollback state, this journal lives outside `store-v1/`
+and remains after store erase or a later password-mode change. It holds bounded
+operation/release/status metadata and domain-separated hashes of account, peer
+and store scope. It contains no raw account or endpoint IDs, credentials, message
+content, passwords or unlock keys. Diagnostics are controlled text. Retention
+does not grant authority to resume or repeat an interrupted installation.
+
 Paired controllers can configure MCP servers, including adding, replacing and
 clearing environment variables and HTTP headers. Saved values are write-only:
 listing or saving returns names and presence flags, never stored values. Changing

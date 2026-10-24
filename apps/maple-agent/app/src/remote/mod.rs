@@ -3,6 +3,7 @@ mod network;
 mod pairing;
 mod store;
 pub(crate) mod streams;
+pub(crate) mod update;
 pub(crate) mod wire;
 
 pub mod control;

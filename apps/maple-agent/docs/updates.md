@@ -33,6 +33,16 @@ and confirmation that active work will stop. **Later** hides the banner while
 keeping the prepared update available in Settings. About, the native application
 menu, and the tray provide update access.
 
+Paired controllers can inspect a computer's version and prepared update through
+the optional [experimental remote update controls](remote-access.md#experimental-remote-updates).
+An acknowledged request is consumed by the execution computer's running desktop
+and uses this same installer. Password-protected hosts are excluded even while
+unlocked; an independent host-side check runs at the final shutdown boundary.
+The controller's updater is never installed or restarted by this operation.
+Daemon-only hosts require a local update. New capability discovery preserves the
+existing wire-6 handshake and does not require older peers to update for ordinary
+task access.
+
 The installer holds the per-application lock while staging a verified bundle
 beside the installed application and while that update is ready. It checks the
 fresh signed offer again and holds the profile's existing startup and host ownership locks from host stop

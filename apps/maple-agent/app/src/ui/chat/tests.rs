@@ -8279,6 +8279,7 @@ mod state_tests {
                 state: crate::update::State::Error,
                 label: "Could not install the update: permission denied. Quit and reopen Maple, then retry. If this keeps happening, download the latest version manually.".into(),
                 version: Some("0.0.6".into()),
+                remote_candidate: None,
                 primary: Some(crate::update::UpdateAction::ManualDownload),
                 primary_label: "Download",
                 manual_download_url: Some("https://updates.maple.ai/download/agent/stable/macos".into()),

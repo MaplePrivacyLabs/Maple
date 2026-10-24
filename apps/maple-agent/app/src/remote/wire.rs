@@ -9,6 +9,7 @@ pub const ALPN: &[u8] = b"maple-agent/remote/1";
 pub const VERSION: u32 = 6;
 pub const MAX_FRAME: usize = 16 * 1024 * 1024;
 pub const MAX_PREFACE: usize = 4096;
+pub const MAX_MANAGEMENT_REPLY: usize = 16 * 1024;
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -108,6 +109,8 @@ impl Hello {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Method {
+    PeerInfo,
+    RemoteUpdateInstall,
     NavigationBootstrap,
     ListTasks,
     ListProjects,
@@ -182,7 +185,9 @@ impl Method {
     }
 
     pub fn reply_limit(self) -> usize {
-        if matches!(
+        if matches!(self, Self::PeerInfo | Self::RemoteUpdateInstall) {
+            MAX_MANAGEMENT_REPLY
+        } else if matches!(
             self,
             Self::NavigationBootstrap
                 | Self::ListTasks
@@ -492,6 +497,18 @@ mod tests {
         assert_eq!(hello.check_version(), Err(Error::Incompatible));
         hello.version = VERSION;
         assert_eq!(hello.check_version(), Err(Error::Incompatible));
+    }
+
+    #[test]
+    fn optional_management_keeps_the_shipped_control_ack_and_alpn() {
+        assert_eq!(ALPN, b"maple-agent/remote/1");
+        assert_eq!(VERSION, 6);
+        assert_eq!(
+            serde_json::to_string(&Ok::<(), Refusal>(())).unwrap(),
+            r#"{"Ok":null}"#
+        );
+        assert_eq!(Method::PeerInfo.name(), "peer_info");
+        assert_eq!(Method::RemoteUpdateInstall.name(), "remote_update_install");
     }
     #[tokio::test]
     async fn paging_wire_upgrade_refuses_version_five_before_decoding() {

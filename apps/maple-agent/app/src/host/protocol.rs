@@ -25,6 +25,11 @@ pub enum ConnectionMode {
     Client,
     Acp,
     Stop,
+    /// Same-build, host-authorized stop for one acknowledged remote update.
+    /// Older hosts reject this variant; it must never degrade to plain Stop.
+    RemoteUpdateStop {
+        operation: [u8; 16],
+    },
 }
 
 #[derive(Serialize, Deserialize)]

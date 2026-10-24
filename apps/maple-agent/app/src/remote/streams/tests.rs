@@ -46,6 +46,244 @@ async fn receive(
 }
 
 #[tokio::test]
+async fn legacy_wire_six_rejects_optional_probe_without_losing_ordinary_requests() {
+    // This decoder is intentionally frozen to the old method set. It must not
+    // acquire the new enum variants from the implementation under test.
+    #[derive(Deserialize)]
+    #[serde(rename_all = "snake_case")]
+    enum LegacyMethod {
+        ListTasks,
+    }
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct LegacyHeader {
+        id: u64,
+        method: LegacyMethod,
+        send_id: Option<String>,
+    }
+    let (a, b, client, server) = endpoints().await;
+    let legacy = tokio::spawn(async move {
+        let (mut tx, mut rx) = server.accept_bi().await.unwrap();
+        let header = wire::read::<LegacyHeader>(&mut rx, wire::MAX_PREFACE).await;
+        assert!(matches!(header, Err(wire::Error::InvalidFrame)));
+        tx.reset(1u32.into()).unwrap();
+        rx.stop(1u32.into()).unwrap();
+        let (mut tx, mut rx) = server.accept_bi().await.unwrap();
+        let header: LegacyHeader = wire::read(&mut rx, wire::MAX_PREFACE).await.unwrap();
+        assert!(matches!(header.method, LegacyMethod::ListTasks));
+        assert!(header.send_id.is_none());
+        let _: serde_json::Value = wire::read(&mut rx, wire::MAX_FRAME).await.unwrap();
+        reply(
+            &mut tx,
+            &Message::Response {
+                id: header.id,
+                result: Ok(json!("ordinary task request still works")),
+            },
+        )
+        .await
+        .unwrap();
+    });
+    tokio::time::timeout(Duration::from_secs(3), async {
+        assert!(peer_info(&client).await.is_none());
+        let response = call(&client, command(2, Method::ListTasks)).await.unwrap();
+        assert!(matches!(response, Message::Response { result: Ok(value), .. } if value == json!("ordinary task request still works")));
+        legacy.await.unwrap();
+    }).await.unwrap();
+    a.close().await;
+    b.close().await;
+}
+
+#[tokio::test]
+async fn optional_probe_has_an_overall_deadline_even_before_first_reply_byte() {
+    let (a, b, client, server) = endpoints().await;
+    let exercise = async {
+        let probe = peer_info_with_timeout(&client, Duration::from_millis(50));
+        let stall = async {
+            let (tx, mut rx) = server.accept_bi().await.unwrap();
+            let header = Header::read(&mut rx).await.unwrap();
+            assert_eq!(header.method, Method::PeerInfo);
+            header.body(&mut rx).await.unwrap();
+            // Keep the stream open and provide no first reply byte.
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            drop(tx);
+        };
+        let (response, ()) = tokio::join!(probe, stall);
+        assert!(response.is_none());
+    };
+    tokio::time::timeout(Duration::from_secs(3), exercise)
+        .await
+        .unwrap();
+    a.close().await;
+    b.close().await;
+}
+
+#[test]
+fn management_messages_have_small_independent_limits() {
+    for method in [Method::PeerInfo, Method::RemoteUpdateInstall] {
+        assert_eq!(body_limit(method), 4096);
+        assert_eq!(method.reply_limit(), 16 * 1024);
+    }
+    assert_eq!(body_limit(Method::SendMessage), wire::MAX_FRAME);
+}
+
+#[tokio::test]
+async fn failed_reply_delivery_never_reaches_the_install_acknowledgement() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let (a, b, client, server) = endpoints().await;
+    let acknowledged = Arc::new(AtomicBool::new(false));
+    let effect = acknowledged.clone();
+    let exercise = async {
+        let (mut request, mut response) = client.open_bi().await.unwrap();
+        wire::write(&mut request, &json!({}), wire::MAX_PREFACE)
+            .await
+            .unwrap();
+        request.finish().unwrap();
+        let (mut tx, mut rx) = server.accept_bi().await.unwrap();
+        let _: serde_json::Value = wire::read(&mut rx, wire::MAX_PREFACE).await.unwrap();
+        let reply_task = tokio::spawn(async move {
+            // Backpressure makes rejection deterministic: the receiver cannot
+            // acknowledge this complete response before rejecting the stream.
+            reply_with_limit(
+                &mut tx,
+                &Message::Response {
+                    id: 1,
+                    result: Ok(json!("x".repeat(2 * 1024 * 1024))),
+                },
+                wire::MAX_FRAME,
+            )
+            .await?;
+            effect.store(true, Ordering::SeqCst);
+            Ok::<_, String>(())
+        });
+        assert!(response.read_u32().await.unwrap() > 512 * 1024);
+        response.stop(17u32.into()).unwrap();
+        assert!(reply_task.await.unwrap().is_err());
+        assert!(!acknowledged.load(Ordering::SeqCst));
+    };
+    tokio::time::timeout(Duration::from_secs(3), exercise)
+        .await
+        .unwrap();
+    a.close().await;
+    b.close().await;
+}
+
+#[tokio::test]
+async fn actual_install_call_consumes_fin_before_exactly_one_acknowledgement() {
+    use crate::remote::update::{InstallAccepted, InstallCommand, InstallRequest, ReleaseIdentity};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let (a, b, client, server) = endpoints().await;
+    let acknowledgements = Arc::new(AtomicUsize::new(0));
+    let acknowledged = acknowledgements.clone();
+    let install = InstallRequest {
+        operation_id: "11111111-1111-4111-8111-111111111111".into(),
+        target: ReleaseIdentity {
+            version: "0.0.7".into(),
+            build: "551".into(),
+            source_sha: "a".repeat(40),
+            manifest_sha256: "b".repeat(64),
+        },
+    };
+    let accepted = InstallAccepted {
+        operation_id: install.operation_id.clone(),
+        target: install.target.clone(),
+    };
+    let exercise = async {
+        let server_task = tokio::spawn(async move {
+            let capacity = Capacity::new();
+            let (header, mut tx, mut rx, _slot) = receive(&server, &capacity).await;
+            assert_eq!(header.method, Method::RemoteUpdateInstall);
+            let request = header.body(&mut rx).await.unwrap();
+            let command: InstallCommand = serde_json::from_value(request.params).unwrap();
+            command.request.validate().unwrap();
+            reply_with_limit(
+                &mut tx,
+                &Message::Response {
+                    id: request.id,
+                    result: Ok(serde_json::to_value(InstallAccepted {
+                        operation_id: command.request.operation_id,
+                        target: command.request.target,
+                    })
+                    .unwrap()),
+                },
+                wire::MAX_MANAGEMENT_REPLY,
+            )
+            .await
+            .unwrap();
+            acknowledged.fetch_add(1, Ordering::SeqCst);
+        });
+        let response = call(
+            &client,
+            Command {
+                id: 1,
+                method: Method::RemoteUpdateInstall,
+                send_id: None,
+                params: serde_json::to_value(InstallCommand {
+                    expected_grant: [7; 16],
+                    request: install,
+                })
+                .unwrap(),
+            },
+        )
+        .await
+        .unwrap();
+        let Message::Response {
+            result: Ok(value), ..
+        } = response
+        else {
+            panic!("expected accepted update");
+        };
+        assert_eq!(
+            serde_json::from_value::<InstallAccepted>(value).unwrap(),
+            accepted
+        );
+        server_task.await.unwrap();
+        assert_eq!(acknowledgements.load(Ordering::SeqCst), 1);
+    };
+    tokio::time::timeout(Duration::from_secs(3), exercise)
+        .await
+        .unwrap();
+    a.close().await;
+    b.close().await;
+}
+
+#[tokio::test]
+async fn framed_reply_requires_fin_and_rejects_trailing_data() {
+    let (a, b, client, server) = endpoints().await;
+    let exercise = async {
+        // A valid frame without FIN must not retain a management operation.
+        let (mut tx, mut rx) = client.open_bi().await.unwrap();
+        wire::write(&mut tx, &json!({}), wire::MAX_PREFACE)
+            .await
+            .unwrap();
+        tx.finish().unwrap();
+        let (mut reply, mut request) = server.accept_bi().await.unwrap();
+        let _: serde_json::Value = wire::read(&mut request, wire::MAX_PREFACE).await.unwrap();
+        wire::write(&mut reply, &json!("frame"), wire::MAX_PREFACE)
+            .await
+            .unwrap();
+        let _: serde_json::Value = wire::read(&mut rx, wire::MAX_PREFACE).await.unwrap();
+        assert!(
+            finish_reply(&mut rx, Duration::from_millis(30))
+                .await
+                .unwrap_err()
+                .contains("did not finish")
+        );
+        reply.write_all(b"x").await.unwrap();
+        assert!(
+            finish_reply(&mut rx, Duration::from_secs(1))
+                .await
+                .unwrap_err()
+                .contains("extra data")
+        );
+    };
+    tokio::time::timeout(Duration::from_secs(3), exercise)
+        .await
+        .unwrap();
+    a.close().await;
+    b.close().await;
+}
+
+#[tokio::test]
 async fn stop_and_answers_pass_stalled_upload_and_download() {
     let (a, b, client, server) = endpoints().await;
     let exercise = async {
@@ -250,10 +488,15 @@ async fn urgent_body_is_bounded_and_reply_identity_is_checked() {
                 },
             )
             .await
-            .unwrap();
         };
-        let (response, ()) = tokio::join!(send, wrong_reply);
+        let (response, delivery) = tokio::join!(send, wrong_reply);
         assert!(matches!(response.unwrap(), Message::Closed { .. }));
+        // Rejecting the deliberately wrong ID drops the receive stream before
+        // FIN. QUIC may acknowledge delivery before that rejection, or report
+        // STOP_SENDING to the sender. Both preserve the client's refusal.
+        if let Err(error) = delivery {
+            assert_eq!(error, "Remote consumer rejected the reply");
+        }
     };
     let result = tokio::time::timeout(Duration::from_secs(5), exercise).await;
     tokio::join!(a.close(), b.close());

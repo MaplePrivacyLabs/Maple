@@ -103,6 +103,7 @@ pub struct DictionaryPage {
 
 pub struct LocalBackend {
     store: Option<Arc<maple_agent::store::Store>>,
+    pub(crate) remote_updates: Arc<crate::remote_updates::Broker>,
     row_reader: Option<Arc<maple_agent::store::RowReader>>,
     #[cfg(test)]
     pub(super) ui_fixture: bool,
@@ -1132,6 +1133,7 @@ impl LocalBackend {
             .as_ref()
             .map(|store| Arc::new(maple_agent::store::RowReader::new(store.clone())));
         Ok(Self {
+            remote_updates: Arc::new(crate::remote_updates::Broker::new(store.clone())),
             store,
             row_reader,
             #[cfg(test)]

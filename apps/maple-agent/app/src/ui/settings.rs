@@ -264,7 +264,9 @@ impl SettingsScreen {
 
     pub fn set_update(&mut self, snapshot: crate::update::Snapshot, cx: &mut Context<Self>) {
         if self.update != snapshot {
-            self.update = snapshot;
+            self.update = snapshot.clone();
+            self.remote_screen
+                .update(cx, |screen, cx| screen.set_local_update(snapshot, cx));
             cx.notify();
         }
     }
@@ -326,8 +328,15 @@ impl SettingsScreen {
             .iter()
             .map(|(key, value)| (key.clone(), value.display_name.clone()))
             .collect();
-        let remote_screen =
-            cx.new(|cx| super::remote::RemoteScreen::new(backend.clone(), names, cx));
+        let remote_screen = cx.new(|cx| {
+            super::remote::RemoteScreen::new(
+                backend.clone(),
+                user_id.clone(),
+                section == Section::Remote,
+                names,
+                cx,
+            )
+        });
         cx.subscribe(
             &remote_screen,
             |this, _, event: &super::remote::ComputerNamed, cx| {
@@ -1491,6 +1500,9 @@ impl SettingsScreen {
         // A dropdown belongs to the pane that opened it.
         self.close_setting_menu(cx);
         self.section = section;
+        self.remote_screen.update(cx, |screen, cx| {
+            screen.set_active(section == Section::Remote, cx)
+        });
         if self.settings.application_vim_enabled {
             self.application_vim.section = section;
             self.reconcile_application_vim_target();
